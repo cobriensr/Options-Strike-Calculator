@@ -13,6 +13,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import * as Sentry from '@sentry/react';
 import type { CalculationResults } from '../../types';
 import { SectionBox } from '../ui';
 import type { AnalysisMode } from './types';
@@ -153,9 +154,13 @@ export default function ChartAnalysis({
         });
 
         if (!res.ok) {
-          const body = await res
-            .json()
-            .catch(() => ({ error: 'Upload failed' }));
+          const body = await res.json().catch((err: unknown) => {
+            Sentry.captureException(err, {
+              tags: { context: 'positions_upload_body_parse' },
+              extra: { status: res.status },
+            });
+            return { error: 'Upload failed' };
+          });
           throw new Error(body.error || `HTTP ${res.status}`);
         }
 

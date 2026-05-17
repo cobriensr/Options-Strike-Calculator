@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import * as Sentry from '@sentry/react';
 import type { VIXDayData, VIXDataMap, IVMode } from '../types';
 import { IV_MODES } from '../constants';
 import { parseVixCSV } from '../utils/csvParser';
@@ -122,8 +123,18 @@ export function useVixData(
           close: data.close,
         });
       })
-      .catch(() => {
-        // Silently ignore AbortError on cleanup, network errors, and 401 for guests
+      .catch((err: unknown) => {
+        // AbortError + guest 401s are expected (cleanup / auth gate) so
+        // we filter them out before capturing. Network failures and any
+        // other non-abort/non-401 error reach Sentry.
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        if (controller.signal.aborted) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('401')) return;
+        Sentry.captureException(err, {
+          level: 'warning',
+          tags: { context: 'vix_ohlc_fetch' },
+        });
       });
 
     return () => controller.abort();

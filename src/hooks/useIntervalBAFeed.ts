@@ -16,6 +16,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import * as Sentry from '@sentry/react';
 import { POLL_INTERVALS } from '../constants';
 
 export interface IntervalBAFeedAlert {
@@ -177,6 +178,9 @@ export function useIntervalBAFeed(
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
         if (msg === 'The operation was aborted') return;
+        Sentry.captureException(err, {
+          tags: { context: 'interval_ba_feed' },
+        });
         setError(msg);
         setLoading(false);
       });

@@ -11,8 +11,15 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import * as Sentry from '@sentry/react';
 import { POLL_INTERVALS } from '../constants';
 import { checkIsOwner } from '../utils/auth';
+
+// Sample rate for polling-failure capture. Without sampling, a sustained
+// outage would flood Sentry with one event per poll tick across every
+// open tab. 10% is enough to detect systemic failure within a couple
+// minutes while keeping volume bounded.
+const POLL_FAILURE_SAMPLE_RATE = 0.1;
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -189,8 +196,16 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
       if (fresh.length > 0) {
         setAlerts((prev) => [...fresh, ...prev].slice(0, 50));
       }
-    } catch {
-      // Network error — silent, retry on next interval
+    } catch (err: unknown) {
+      // Sampled capture so a 5-min outage doesn't flood Sentry with one
+      // event per poll tick × every open tab; the next interval retries
+      // unconditionally regardless of sampling.
+      if (Math.random() < POLL_FAILURE_SAMPLE_RATE) {
+        Sentry.captureException(err, {
+          level: 'warning',
+          tags: { context: 'alerts_poll', sampled: '10%' },
+        });
+      }
     }
   }, []);
 
@@ -218,8 +233,11 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
       setAlerts((prev) =>
         prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a)),
       );
-    } catch {
-      // Silent failure — user can retry
+    } catch (err: unknown) {
+      // User-initiated, low-frequency — capture every time so a broken
+      // ack endpoint surfaces immediately rather than waiting for the
+      // user to notice the chime won't stop.
+      Sentry.captureException(err, { tags: { context: 'alerts_ack' } });
     }
   }, []);
 
