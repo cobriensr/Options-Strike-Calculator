@@ -264,6 +264,24 @@ export interface LotteryFire {
    * spec for thresholds and outcome lift.
    */
   reignited?: boolean;
+  /**
+   * TRUE when this fire's CT minute carried at least
+   * MEGA_CLUSTER_MIN_DISTINCT_TICKERS (=12) distinct underlying tickers
+   * firing simultaneously. Cross-ticker minute concentration is a
+   * separate signal class from per-chain burst patterns — the 5/15
+   * cluster analysis (docs/tmp/cluster-2026-05-15-1205ct-findings.md)
+   * found ≥12-ticker minutes carry +16.3% median realized trail vs
+   * +6-7% in the 5-11 middle range. Always emitted by the API as a
+   * concrete boolean; typed optional to match the existing
+   * fixture-tolerance convention (`reignited?`, `roundTripScoreDeduct?`).
+   */
+  megaCluster?: boolean;
+  /**
+   * Actual distinct-ticker count for this fire's CT minute. Only
+   * present when `megaCluster === true`. Lets the UI render
+   * "MEGA CLUSTER · 18 tickers" instead of a bare badge.
+   */
+  megaClusterSize?: number;
 
   trigger: LotteryFireTrigger;
   entry: LotteryFireEntry;

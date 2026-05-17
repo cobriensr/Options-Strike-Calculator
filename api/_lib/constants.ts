@@ -478,3 +478,23 @@ export const REIGNITION_MIN_POST_GAP_FIRES = 2;
 /** Per-day cap on how many qualifying chains carry the REIGNITED flag.
  *  Ranked by post_gap_fires DESC, fire_count DESC. */
 export const REIGNITION_TOP_N_PER_DAY = 5;
+
+// ============================================================
+// MEGA-CLUSTER detection — cross-ticker minute concentration
+// ============================================================
+//
+// When the SAME CT minute carries fires from many distinct tickers,
+// the fires that follow outperform. Per the 2026-05-17 cluster
+// analysis (docs/tmp/cluster-2026-05-15-1205ct-findings.md) on 626k
+// fires across 93 days:
+//   - 1 ticker (solo):     n=3,774,   median trail = +13.9%, win 59.2%
+//   - 3-4 tickers:         n=30,118,  median trail = +6.2%,  win 57.0%
+//   - 5-11 tickers:        n=259,782, median trail = +7.0%,  win 56.5%
+//   - >=12 tickers:        n=324,911, median trail = +16.3%, win 60.0%
+// The 12+ bucket carries the strongest signal — when the whole flow
+// surface lights up at the same minute, those fires tend to work.
+
+/** Threshold above which a CT-minute is flagged as a "mega cluster" —
+ *  i.e. ≥ N distinct underlying tickers fired in the same 1-minute
+ *  bucket on the same trading day. */
+export const MEGA_CLUSTER_MIN_DISTINCT_TICKERS = 12;

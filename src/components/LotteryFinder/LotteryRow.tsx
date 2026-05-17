@@ -680,6 +680,27 @@ export const LotteryRow = memo(function LotteryRow({
             REIGNITED
           </span>
         )}
+        {/* MEGA-CLUSTER chip — this fire landed in a CT minute where
+            ≥12 distinct tickers fired simultaneously. Cross-ticker
+            minute concentration is a separate-axis signal; the 5/15
+            cluster analysis (docs/tmp/cluster-2026-05-15-1205ct-findings.md)
+            measured +16.3% median realized trail on this cohort vs
+            +6-7% in the 5-11 middle. */}
+        {fire.megaCluster === true && (
+          <span
+            className="inline-flex items-center gap-1 rounded border border-sky-400/60 bg-sky-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-sky-100 uppercase"
+            title={
+              fire.megaClusterSize != null
+                ? `MEGA CLUSTER: ${fire.megaClusterSize} distinct tickers fired in this CT minute. Cohort lift: +16.3% median realized trail30/10 vs +6-7% baseline (5/15 cluster analysis on 93-day fires).`
+                : 'MEGA CLUSTER: ≥12 distinct tickers fired in this CT minute. +16.3% median realized trail30/10 vs +6-7% baseline.'
+            }
+          >
+            <span aria-hidden="true">🌐</span>
+            {fire.megaClusterSize != null
+              ? `CLUSTER ×${fire.megaClusterSize}`
+              : 'MEGA CLUSTER'}
+          </span>
+        )}
         {/* "Still hot" indicator — only when market is open and the
             latest fire is within the last 10 minutes. Polling refresh
             (~30s) keeps this honest without per-row timers. */}

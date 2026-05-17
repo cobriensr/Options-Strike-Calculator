@@ -741,15 +741,15 @@ describe('lottery-finder endpoint', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // The rows CTE + the count subquery + the chainExtras query all
-    // bind 0.1 as a parameter (the entry-price floor). Neon's
+    // The rows CTE + count subquery + chainExtras + mega-cluster
+    // query all bind 0.1 as the entry-price floor parameter. Neon's
     // tagged-template invocation packs interpolated values as call
-    // args after the strings array, so we check every arg of every
-    // call. ChainExtras adds a 3rd binding alongside rows + count.
+    // args after the strings array. The mega-cluster query (added
+    // 2026-05-17) raised the count from 3 → 4.
     const callsWithFloor = mockSql.mock.calls.filter((args) =>
       args.slice(1).some((v) => v === 0.1),
     );
-    expect(callsWithFloor.length).toBe(3);
+    expect(callsWithFloor.length).toBe(4);
   });
 
   // ============================================================
@@ -997,6 +997,71 @@ describe('lottery-finder endpoint', () => {
     expect(body.fires[0]!.fireCountScoreAdjustment).toBe(2);
     // rawScore 20 + adj +2 = 22 → tier1
     expect(body.fires[0]!.score).toBe(22);
+  });
+
+  it('attaches megaCluster + megaClusterSize when this fire is in a ≥12-ticker minute', async () => {
+    // The mega-cluster query (4th Promise.all element) returns rows
+    // for any minute with >= MEGA_CLUSTER_MIN_DISTINCT_TICKERS distinct
+    // tickers firing. When that minute matches the fire's
+    // trigger_time_ct (truncated to minute), the handler attaches the
+    // flag + size to the row.
+    const ROW_AT_CLUSTER_MIN = {
+      ...ROW,
+      trigger_time_ct: '2026-05-01T19:00:00Z',
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_AT_CLUSTER_MIN])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([]) // chainExtras empty
+      .mockResolvedValueOnce([
+        // 2026-05-01T19:00:00 = 14:00 CT
+        { minute_bucket_ct: '2026-05-01T19:00:00Z', distinct_tickers: 18 },
+      ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{ megaCluster: boolean; megaClusterSize?: number }>;
+    };
+    expect(body.fires[0]!.megaCluster).toBe(true);
+    expect(body.fires[0]!.megaClusterSize).toBe(18);
+  });
+
+  it('omits megaClusterSize + sets megaCluster=false when the fire-minute is below the cluster threshold', async () => {
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]); // no qualifying mega-cluster minutes
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{ megaCluster: boolean; megaClusterSize?: number }>;
+    };
+    expect(body.fires[0]!.megaCluster).toBe(false);
+    expect(body.fires[0]!.megaClusterSize).toBeUndefined();
+  });
+
+  it('mega-cluster SQL binds MEGA_CLUSTER_MIN_DISTINCT_TICKERS (=12) as the HAVING threshold', async () => {
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // 4th Promise.all entry is the mega-cluster query.
+    const clusterCall = mockSql.mock.calls[3] as unknown[];
+    const boundValues = clusterCall.slice(1);
+    expect(boundValues).toContain(12);
   });
 
   it('stacks fireCountScoreAdjustment with round_trip_score_deduct (both apply)', async () => {

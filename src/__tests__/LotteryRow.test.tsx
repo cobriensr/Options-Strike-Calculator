@@ -917,3 +917,42 @@ describe('LotteryRow: REIGNITED chip', () => {
     expect(screen.queryByText('REIGNITED')).not.toBeInTheDocument();
   });
 });
+
+// ============================================================
+// MEGA-CLUSTER chip (cluster-2026-05-15-1205ct-findings.md)
+// ============================================================
+
+describe('LotteryRow: MEGA-CLUSTER chip', () => {
+  it('renders the chip with the ticker count when megaCluster=true + megaClusterSize is set', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ megaCluster: true, megaClusterSize: 18 })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByText('CLUSTER ×18')).toBeInTheDocument();
+  });
+
+  it('falls back to "MEGA CLUSTER" label when size is undefined but flag is true', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ megaCluster: true })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByText('MEGA CLUSTER')).toBeInTheDocument();
+  });
+
+  it('hides the chip when megaCluster is false / undefined', () => {
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText(/MEGA CLUSTER|CLUSTER ×/)).not.toBeInTheDocument();
+  });
+});

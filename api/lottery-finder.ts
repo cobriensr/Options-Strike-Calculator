@@ -28,6 +28,7 @@ import {
 } from './_lib/lottery-score-weights.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import {
+  MEGA_CLUSTER_MIN_DISTINCT_TICKERS,
   MIN_ALERT_ENTRY_PRICE,
   REIGNITION_MIN_FIRES,
   REIGNITION_MIN_GAP_MIN,
@@ -162,6 +163,17 @@ interface FireRow {
   // the live snapshot from /api/ticker-net-flow-current.
   fire_time_cum_ncp: DbNullableNumeric;
   fire_time_cum_npp: DbNullableNumeric;
+}
+
+/**
+ * Per-minute distinct-ticker aggregate row returned by the
+ * clusterByMinute parallel query. Drives MEGA-CLUSTER badge — when
+ * a CT-minute has ≥MEGA_CLUSTER_MIN_DISTINCT_TICKERS distinct
+ * underlying tickers firing, every fire in that minute gets the flag.
+ */
+interface ClusterByMinuteRow {
+  minute_bucket_ct: string | Date;
+  distinct_tickers: number;
 }
 
 /**
@@ -305,7 +317,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // previously these were computed via a LEFT JOIN LATERAL that
     // dominated wall time at ~30s/page (spec:
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md).
-    const [rows, totalRows, chainExtras] = (await Promise.all([
+    const [rows, totalRows, chainExtras, clusterByMinute] = (await Promise.all([
       sort === 'score'
         ? db`
         WITH filtered AS (
@@ -610,7 +622,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN qualified q USING (underlying_symbol, strike, option_type, expiry)
         WHERE pc.fire_count > 1
       `,
-    ])) as [FireRow[], { total: number }[], ChainExtrasRow[]];
+      // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
+      // badge. Truncates trigger_time_ct to the 1-min bucket and
+      // counts unique tickers per bucket across the date. Filtered
+      // by date + entry_price floor only (NOT user filters) so the
+      // count reflects the WHOLE market's minute concentration, not
+      // a filtered subset — same stable-semantics decision as the
+      // chainExtras reignition flag.
+      db`
+        SELECT
+          date_trunc('minute', trigger_time_ct) AS minute_bucket_ct,
+          COUNT(DISTINCT underlying_symbol)::int AS distinct_tickers
+        FROM lottery_finder_fires
+        WHERE date = ${targetDate}::date
+          AND trigger_time_ct < ${reignitionWindowEnd}::timestamptz
+          AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+        GROUP BY date_trunc('minute', trigger_time_ct)
+        HAVING COUNT(DISTINCT underlying_symbol) >= ${MEGA_CLUSTER_MIN_DISTINCT_TICKERS}
+      `,
+    ])) as [
+      FireRow[],
+      { total: number }[],
+      ChainExtrasRow[],
+      ClusterByMinuteRow[],
+    ];
 
     const total = totalRows[0]?.total ?? 0;
 
@@ -619,6 +654,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // a Date from the Neon driver (per the project's neon_date_columns
     // convention) — normalise to YYYY-MM-DD so the key shape is stable
     // regardless of the wire format.
+    // Mega-cluster lookup: minute-bucket ISO → distinct-ticker count.
+    // Only minute buckets with >= MEGA_CLUSTER_MIN_DISTINCT_TICKERS
+    // distinct tickers are present in the result set — the SQL HAVING
+    // clause filters out the long tail of normal minutes. Empty Map
+    // is the common case (most days have no qualifying minutes).
+    const megaClusterByMinute = new Map<string, number>();
+    for (const cm of clusterByMinute) {
+      const bucketIso =
+        typeof cm.minute_bucket_ct === 'string'
+          ? cm.minute_bucket_ct
+          : cm.minute_bucket_ct.toISOString();
+      // Normalize to whole-minute precision so the row-time lookup
+      // (date_trunc'd to the minute) matches regardless of seconds.
+      const minuteKey = bucketIso.slice(0, 16); // "YYYY-MM-DDTHH:MM"
+      megaClusterByMinute.set(minuteKey, Number(cm.distinct_tickers));
+    }
+
     const chainExtraByKey = new Map<
       string,
       {
@@ -766,6 +818,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           : toIso(r.expiry).slice(0, 10);
       const chainKey = `${r.underlying_symbol}|${Number(r.strike)}|${r.option_type}|${expiryKey}`;
       const chainExtra = chainExtraByKey.get(chainKey);
+      // Mega-cluster lookup: truncate the fire's trigger_time_ct to
+      // the minute and check whether that minute had ≥12 distinct
+      // tickers fire. Misses are the common case (`size === undefined`
+      // → not a mega-cluster).
+      const triggerIso = toIso(r.trigger_time_ct);
+      const minuteKey = triggerIso.slice(0, 16);
+      const clusterSize = megaClusterByMinute.get(minuteKey);
       return {
         id: Number(r.id),
         date: toIso(r.date).slice(0, 10),
@@ -825,6 +884,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? { historicalFires: chainExtra.historicalFires }
           : {}),
         reignited: chainExtra?.reignited === true,
+        // MEGA-CLUSTER flag — true when this fire's CT-minute had at
+        // least MEGA_CLUSTER_MIN_DISTINCT_TICKERS distinct tickers
+        // firing. `megaClusterSize` carries the actual count so the
+        // UI can render "MEGA CLUSTER · N tickers" instead of a bare
+        // badge. Empirical basis: 12+ ticker minutes have +16.3%
+        // median realized trail vs +6-7% in the 5-11 middle range
+        // (cluster-2026-05-15-1205ct-findings.md).
+        megaCluster: clusterSize != null,
+        ...(clusterSize != null ? { megaClusterSize: clusterSize } : {}),
 
         trigger: {
           volToOiWindow: Number(r.trigger_vol_to_oi_window),
