@@ -4587,4 +4587,27 @@ export const MIGRATIONS: Migration[] = [
             ON silent_boom_alerts (date DESC, combined_score DESC NULLS LAST)`,
     ],
   },
+  {
+    id: 160,
+    description:
+      'Add multileg classification columns (inferred_structure TEXT, is_isolated_leg BOOLEAN, match_confidence REAL, pattern_group_id TEXT) to lottery_finder_fires AND silent_boom_alerts. Populated by the detect crons via the sidecar POST /takeit/multileg-classify endpoint that runs the polars matcher in ml/src/multileg_assembler.py against a window of UW Full Tape trades around the alert. inferred_structure is one of the matcher v1 labels: "vertical" (2 strikes, same expiry, same option_type, opposite directions), "strangle" (OTM call + OTM put, same expiry, same direction), "risk_reversal" (OTM put + OTM call, same expiry, opposite directions), "butterfly" (3 equidistant strikes, body 2x wings), or "isolated_leg" (no pattern matched within the window). Adding patterns in v2 = adding entries to multileg_patterns.PATTERNS — no schema change required. is_isolated_leg = match_confidence < 0.5; match_confidence is in [0, 1]; pattern_group_id is a stable hash shared by all trades the matcher attributed to the same structure (isolated legs each get their own group id). All four columns are NULLABLE — pre-migration rows are unclassified and the matcher is best-effort (a classify call may fail without blocking alert insertion). No index in v1; takeit feature pipeline reads via the alert row PK.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS inferred_structure TEXT`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS is_isolated_leg BOOLEAN`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS match_confidence REAL`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS pattern_group_id TEXT`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS inferred_structure TEXT`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS is_isolated_leg BOOLEAN`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS match_confidence REAL`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS pattern_group_id TEXT`,
+    ],
+  },
 ];

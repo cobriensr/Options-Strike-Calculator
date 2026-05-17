@@ -29,3 +29,10 @@ pandas>=2.1.0
 scikit-learn>=1.4.0
 shap>=0.45.0
 xgboost>=2.1.0
+
+# Multileg classify endpoint deps — wraps ml/src/multileg_assembler.py
+# behind POST /takeit/multileg-classify. The matcher is built on polars
+# (vectorized self-joins over time-bucketed trade frames); the sidecar
+# imports from ml/src/ at runtime so we pin polars here to keep Railway
+# deploys reproducible.
+polars>=1.40.0

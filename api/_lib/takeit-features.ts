@@ -75,6 +75,15 @@ export interface LotteryAlertRow {
   gex_strike_put_ask_minus_bid: number | null;
   score: number | null;
   direction_gated: boolean | null;
+  // Multileg classification (migration #160, populated by Phase 2 Round 3
+  // detect-cron wire). Optional so that pre-Round-3 callers (and any
+  // historical fixtures) still type-check; pre-migration rows + matcher
+  // failures stay NULL. See encoding notes near INFERRED_STRUCTURE_LABELS
+  // below.
+  inferred_structure?: string | null;
+  is_isolated_leg?: boolean | null;
+  match_confidence?: number | null;
+  pattern_group_id?: string | null;
 }
 
 /**
@@ -105,6 +114,15 @@ export interface SilentBoomAlertRow {
   score: number | null;
   score_tier: string | null;
   direction_gated: boolean | null;
+  // Multileg classification (migration #160, populated by Phase 2 Round 3
+  // detect-cron wire). Optional so that pre-Round-3 callers (and any
+  // historical fixtures) still type-check; pre-migration rows + matcher
+  // failures stay NULL. See encoding notes near INFERRED_STRUCTURE_LABELS
+  // below.
+  inferred_structure?: string | null;
+  is_isolated_leg?: boolean | null;
+  match_confidence?: number | null;
+  pattern_group_id?: string | null;
 }
 
 /**
@@ -168,6 +186,43 @@ const BURST_STORM_WINDOW_MIN = 30;
 const BURST_STORM_MIN_COFIRES = 5;
 const COFIRE_WINDOW_MIN = 5;
 const SAME_DIR_WINDOW_MIN = 30;
+
+/**
+ * Stable label set for the multileg `inferred_structure` categorical.
+ *
+ * Why a frozen module-level constant: the column is encoded as a one-hot block
+ * by `expandOneHotCategoricals` (same mechanism as `mode`, `flow_quad`, `tod`,
+ * `score_tier`). Stability across retrains is enforced two ways:
+ *
+ *   1. The bundle's `feature_cols` array pins the exact set of one-hot
+ *      columns the trained model knows about (e.g. `inferred_structure_vertical`).
+ *      Unknown / NULL values produce an all-zero block, which XGBoost handles
+ *      via NaN-default routing — same NULL-handling story as every other
+ *      categorical in this file.
+ *   2. This constant documents the value set Phase 2 Round 3 will emit, so
+ *      reviewers (and the trainer pre-flight) can sanity-check that a retrain
+ *      with new data won't silently drop a value the bundle doesn't pin.
+ *
+ * Forward-compat: the v1 multileg matcher emits the 5-value spec set
+ * (`vertical | strangle | risk_reversal | butterfly | isolated_leg`); the
+ * Postgres column comment lists a richer set (`single_leg | calendar |
+ * diagonal | condor | complex`) for v2 matchers. Both are safe — adding a new
+ * value just means the next bundle's `feature_cols` includes the new
+ * `inferred_structure_<value>` column. Existing bundles ignore it.
+ *
+ * NULL semantics: `is_isolated_leg = null` and `inferred_structure = null`
+ * mean "not yet classified" (the matcher failed or pre-migration row), which
+ * is genuinely missing — we surface as nullable feature values, NOT as
+ * `false` / a default category.
+ */
+export const INFERRED_STRUCTURE_LABELS = [
+  'isolated_leg',
+  'vertical',
+  'strangle',
+  'risk_reversal',
+  'butterfly',
+] as const;
+export type InferredStructureLabel = (typeof INFERRED_STRUCTURE_LABELS)[number];
 
 /* ───────────────────────── CT timezone helpers ────────────────────────── */
 
@@ -498,6 +553,10 @@ export function featuresForLottery(
     ),
     score: nullableNumberToFeature(row.score),
     direction_gated: nullableBooleanToFeature(row.direction_gated),
+    // Multileg classification (migration #160). NULL = unclassified, surfaced
+    // as null so XGBoost treats as missing rather than as a false default.
+    is_isolated_leg: nullableBooleanToFeature(row.is_isolated_leg),
+    match_confidence: nullableNumberToFeature(row.match_confidence),
     // derived
     minute_of_day_ct,
     day_of_week,
@@ -515,7 +574,9 @@ export function featuresForLottery(
       priorWin === undefined ? null : priorWin,
   };
 
-  // One-hot categoricals.
+  // One-hot categoricals. `inferred_structure` joins the same mechanism as
+  // mode / flow_quad / tod — encoding stability is enforced by
+  // bundle.feature_cols (see INFERRED_STRUCTURE_LABELS).
   Object.assign(
     base,
     expandOneHotCategoricals(
@@ -525,6 +586,7 @@ export function featuresForLottery(
         mode: row.mode,
         flow_quad: row.flow_quad,
         tod: row.tod,
+        inferred_structure: row.inferred_structure,
       },
       row.underlying_symbol,
     ),
@@ -597,6 +659,10 @@ export function featuresForSilentBoom(
     ),
     score: nullableNumberToFeature(row.score),
     direction_gated: nullableBooleanToFeature(row.direction_gated),
+    // Multileg classification (migration #160). NULL = unclassified, surfaced
+    // as null so XGBoost treats as missing rather than as a false default.
+    is_isolated_leg: nullableBooleanToFeature(row.is_isolated_leg),
+    match_confidence: nullableNumberToFeature(row.match_confidence),
     // derived
     minute_of_day_ct,
     day_of_week,
@@ -614,12 +680,18 @@ export function featuresForSilentBoom(
       priorWin === undefined ? null : priorWin,
   };
 
-  // One-hot categoricals.
+  // One-hot categoricals. `inferred_structure` joins the same mechanism as
+  // option_type / score_tier — encoding stability is enforced by
+  // bundle.feature_cols (see INFERRED_STRUCTURE_LABELS).
   Object.assign(
     base,
     expandOneHotCategoricals(
       bundle,
-      { option_type: row.option_type, score_tier: row.score_tier },
+      {
+        option_type: row.option_type,
+        score_tier: row.score_tier,
+        inferred_structure: row.inferred_structure,
+      },
       row.underlying_symbol,
     ),
   );

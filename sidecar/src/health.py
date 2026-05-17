@@ -255,6 +255,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path == "/takeit/explain":
             self._handle_takeit_explain()
             return
+        if self.path == "/takeit/multileg-classify":
+            self._handle_takeit_multileg_classify()
+            return
         if self.path != "/admin/seed-archive":
             self.send_response(404)
             self.end_headers()
@@ -348,6 +351,30 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(body).encode())
+
+    def _handle_takeit_multileg_classify(self) -> None:
+        """POST /takeit/multileg-classify — wrap ml/src/multileg_assembler.
+
+        Stateless CPU-bound endpoint. Vercel detect-cron POSTs a batch of
+        Full Tape trade rows; we run polars-based pattern matching and
+        return per-trade classifications in the same order.
+        """
+        import multileg_routes  # noqa: PLC0415
+
+        content_length = int(self.headers.get("Content-Length", "0") or 0)
+        if content_length <= 0:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "empty body"}).encode())
+            return
+
+        body_bytes = self.rfile.read(content_length)
+        status, body = multileg_routes.handle_classify_payload(body_bytes)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body, default=str).encode())
 
     def _handle_archive_es_range(self) -> None:
         """GET /archive/es-range?date=YYYY-MM-DD → ES day summary from archive.
