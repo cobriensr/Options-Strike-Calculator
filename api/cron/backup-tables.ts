@@ -52,22 +52,35 @@ const RETENTION_WEEKS = 4;
 const EXPORT_CHUNK_ROWS = 50_000;
 
 /**
- * Export a single table as JSONL string.
+ * Export a single table as a JSONL `Buffer`.
  * Uses sql.unsafe() for dynamic table names (safe here — names are hardcoded constants).
  *
  * Pages through the table in `EXPORT_CHUNK_ROWS`-sized batches so a
  * single large table doesn't trip Neon's 64 MiB HTTP response cap.
- * Returns the concatenated JSONL plus the total row count. ORDER BY a
- * stable surrogate key so successive pages don't overlap or skip rows
- * mid-export — most tables have an `id` PK; for the few that don't
- * (schema_migrations) the row count is small enough that a single
+ *
+ * Returns a `Buffer` rather than a `string` because V8's `String.maxLength`
+ * is ~512 MiB — a large enough table (flow_data, strike_exposures) would
+ * throw `RangeError: Invalid string length` on the final `join` even when
+ * the per-chunk reads succeed (see SENTRY-EMERALD-DESERT — RangeError
+ * d758f914 on 2026-05-17). Buffers cap at ~4 GiB (Buffer.constants.MAX_LENGTH)
+ * which gives ~8× more headroom, and `@vercel/blob` `put()` accepts
+ * Buffer bodies directly.
+ *
+ * Byte-format is preserved (rows joined by `\n`, no trailing newline) so
+ * any existing restoration script continues to work.
+ *
+ * ORDER BY a stable surrogate key so successive pages don't overlap or
+ * skip rows mid-export — most tables have an `id` PK; for the few that
+ * don't (schema_migrations) the row count is small enough that a single
  * chunk covers it.
  */
 async function exportTable(
   tableName: string,
-): Promise<{ jsonl: string; rowCount: number }> {
+): Promise<{ body: Buffer; rowCount: number }> {
   const sql = getDb();
-  const lines: string[] = [];
+  const chunks: Buffer[] = [];
+  const NEWLINE = Buffer.from('\n');
+  let rowCount = 0;
   let offset = 0;
   while (true) {
     const rows = (await sql`
@@ -77,11 +90,15 @@ async function exportTable(
       OFFSET ${offset}
     `) as Record<string, unknown>[];
     if (rows.length === 0) break;
-    for (const row of rows) lines.push(JSON.stringify(row));
+    for (const row of rows) {
+      if (chunks.length > 0) chunks.push(NEWLINE);
+      chunks.push(Buffer.from(JSON.stringify(row)));
+    }
+    rowCount += rows.length;
     if (rows.length < EXPORT_CHUNK_ROWS) break;
     offset += EXPORT_CHUNK_ROWS;
   }
-  return { jsonl: lines.join('\n'), rowCount: lines.length };
+  return { body: Buffer.concat(chunks), rowCount };
 }
 
 /**
@@ -128,7 +145,7 @@ export default withCronCheckin('backup-tables', async (req, res) => {
 
   for (const table of TABLES) {
     try {
-      const { jsonl, rowCount } = await exportTable(table);
+      const { body, rowCount } = await exportTable(table);
 
       // Vercel Blob's put() rejects empty bodies with "body is required"
       // (SENTRY-EMERALD-DESERT-6T). Skip the upload for empty tables but
@@ -142,15 +159,15 @@ export default withCronCheckin('backup-tables', async (req, res) => {
       }
 
       const path = `backups/${today}/${table}.jsonl`;
-      await put(path, jsonl, {
+      await put(path, body, {
         access: 'private',
         allowOverwrite: true,
         contentType: 'application/x-ndjson',
       });
 
-      results[table] = { rows: rowCount, bytes: jsonl.length };
+      results[table] = { rows: rowCount, bytes: body.byteLength };
       logger.info(
-        { table, rows: rowCount, bytes: jsonl.length },
+        { table, rows: rowCount, bytes: body.byteLength },
         'Table backed up',
       );
     } catch (err) {

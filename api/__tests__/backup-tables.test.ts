@@ -204,9 +204,12 @@ describe('backup-tables handler', () => {
     const firstCall = mockPut.mock.calls[0]!;
     expect(firstCall[0]).toBe('backups/2026-03-29/market_snapshots.jsonl');
 
+    // Body is a Buffer to dodge V8's ~512 MiB String.maxLength on large
+    // tables (RangeError d758f914 fix). Decode for byte-exact comparison.
     const expectedJsonl =
       JSON.stringify(rows[0]) + '\n' + JSON.stringify(rows[1]);
-    expect(firstCall[1]).toBe(expectedJsonl);
+    expect(Buffer.isBuffer(firstCall[1])).toBe(true);
+    expect((firstCall[1] as Buffer).toString('utf-8')).toBe(expectedJsonl);
     expect(firstCall[2]).toEqual({
       access: 'private',
       allowOverwrite: true,
@@ -229,7 +232,10 @@ describe('backup-tables handler', () => {
     await handler(req, res);
 
     const json = res._json as Record<string, unknown>;
-    const expectedPerTable = JSON.stringify(row).length;
+    // .byteLength (not .length) matches the Buffer body produced by
+    // exportTable. ASCII JSON: byteLength === string length; the
+    // assertion stays stable across UTF-8 row payloads regardless.
+    const expectedPerTable = Buffer.byteLength(JSON.stringify(row));
     // 16 tables, each with one row
     expect(json.totalBytes).toBe(expectedPerTable * 16);
   });
