@@ -215,6 +215,40 @@ export interface LotteryFire {
    */
   firstFireTimeCt: string;
 
+  /**
+   * Past-fire entry timestamps + prices for this chain-day, excluding
+   * the latest fire (which is already represented by `triggerTimeCt` +
+   * `entry.price`). Used by the expanded contract chart to render an
+   * orange dashed line at each prior fire. Only populated when
+   * `fireCount > 1`; `undefined` for single-fire chains to keep the
+   * response compact.
+   *
+   * Spec: docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md
+   * (Phase 1 / Task B).
+   */
+  historicalFires?: Array<{
+    /** UTC ISO timestamp of the prior fire. */
+    triggerTimeCt: string;
+    /** Entry price ($/contract) snapshotted at that fire. */
+    entryPrice: number;
+  }>;
+
+  /**
+   * TRUE when this chain made the daily "REIGNITION" top-N — i.e. fired
+   * >= REIGNITION_MIN_FIRES times today, has a quiet stretch >=
+   * REIGNITION_MIN_GAP_MIN min somewhere in its fire history, has at
+   * least REIGNITION_MIN_POST_GAP_FIRES fires after that gap, AND ranks
+   * in the day's top REIGNITION_TOP_N_PER_DAY by (post_gap_fires,
+   * fire_count). The UI promotes these rows out of their ticker group
+   * into a pinned "Hot Right Now" section and renders a 🔥 REIGNITED
+   * chip on the row.
+   *
+   * Spec: docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md
+   * (Phase 1 / Task A). Empirical basis: tuning v4 on 93 days, see
+   * spec for thresholds and outcome lift.
+   */
+  reignited?: boolean;
+
   trigger: LotteryFireTrigger;
   entry: LotteryFireEntry;
   tags: LotteryFireTags;

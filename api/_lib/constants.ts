@@ -442,3 +442,39 @@ export const STRIKE_IV_TICKER_CONCURRENCY = 8;
  * noise floor creeps up; lower if a real signal gets caught.
  */
 export const MIN_ALERT_ENTRY_PRICE = 0.1;
+
+// ============================================================
+// LOTTERY FINDER — REIGNITION DETECTION (Task A of
+// docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md)
+// ============================================================
+//
+// A chain qualifies as REIGNITED when its same-day fire history shows
+// the "went quiet, came back" pattern: multiple fires earlier in the
+// session, a meaningful silent stretch, then a flurry of post-gap
+// fires. The pinned UI section promotes qualifying chains out of their
+// ticker group so the user catches the BOOM moment before scrolling.
+//
+// Tuned 2026-05-17 against 626k fires across 93 days (2026-01-02 →
+// 2026-05-15). The (3, 30, 2) prereq + top-5/day rank lifts precision
+// on outlier-peak winners from 40% (baseline of any multi-fire chain)
+// to 70%, with +18% median realized trail30/10 R. Mean R is slightly
+// negative (-2.3%, 95% CI [-7.0, +2.7]) — REIGNITION is a visual
+// surfacing tool, NOT an auto-trade signal. The trader filters further
+// by context (chart shape, ticker, time of day, plan).
+//
+// CRITICAL: gap math MUST use `trigger_time_ct` differences directly
+// and ignore the `minutes_since_prev_fire` column — the latter is
+// NULL/0 on the QQQ 708P 2026-05-15 anchor despite 21 distinct fires
+// spanning 6 hours, making it unreliable as a gap source.
+
+/** Minimum fires on a chain-day before it can be considered for REIGNITION. */
+export const REIGNITION_MIN_FIRES = 3;
+/** Minimum gap (minutes) between two consecutive fires for the chain to count
+ *  as having "gone quiet" at some point during the session. */
+export const REIGNITION_MIN_GAP_MIN = 30;
+/** Minimum fires that must land AFTER the longest gap on the chain
+ *  (inclusive of the fire that closes the gap). */
+export const REIGNITION_MIN_POST_GAP_FIRES = 2;
+/** Per-day cap on how many qualifying chains carry the REIGNITED flag.
+ *  Ranked by post_gap_fires DESC, fire_count DESC. */
+export const REIGNITION_TOP_N_PER_DAY = 5;

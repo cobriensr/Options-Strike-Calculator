@@ -738,13 +738,150 @@ describe('lottery-finder endpoint', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // Two SQL calls: the rows CTE + the count subquery. Both must bind
-    // 0.1 as a parameter (the entry-price floor). Neon's tagged-template
-    // invocation packs interpolated values as call args after the
-    // strings array, so we check every arg of every call.
+    // The rows CTE + the count subquery + the chainExtras query all
+    // bind 0.1 as a parameter (the entry-price floor). Neon's
+    // tagged-template invocation packs interpolated values as call
+    // args after the strings array, so we check every arg of every
+    // call. ChainExtras adds a 3rd binding alongside rows + count.
     const callsWithFloor = mockSql.mock.calls.filter((args) =>
       args.slice(1).some((v) => v === 0.1),
     );
-    expect(callsWithFloor.length).toBe(2);
+    expect(callsWithFloor.length).toBe(3);
+  });
+
+  // ============================================================
+  // Phase 1 of lottery-reignition-ui-2026-05-17 — historicalFires
+  // + reignited fields surfaced from the chainExtras parallel query.
+  // ============================================================
+
+  it('attaches historicalFires (past fires only) + reignited=true for a chain in the daily top-N', async () => {
+    // Latest fire is the row rep; chainExtras returns the full chain
+    // history including the latest. The handler slices off the last
+    // element so historicalFires carries past fires only — the chart
+    // already renders the latest as the purple marker.
+    const ROW_MULTI = {
+      ...ROW,
+      fire_count: 4,
+      first_fire_time_ct: '2026-05-01T14:00:00Z',
+      trigger_time_ct: '2026-05-01T19:30:00Z',
+    };
+    const CHAIN_EXTRA = {
+      underlying_symbol: 'SNDK',
+      strike: '1175',
+      option_type: 'C',
+      expiry: '2026-05-01',
+      fires_json: [
+        { triggerTimeCt: '2026-05-01T14:00:00Z', entryPrice: '0.40' },
+        { triggerTimeCt: '2026-05-01T14:10:00Z', entryPrice: '0.42' },
+        { triggerTimeCt: '2026-05-01T19:00:00Z', entryPrice: '0.55' },
+        { triggerTimeCt: '2026-05-01T19:30:00Z', entryPrice: '0.55' },
+      ],
+      reignited: true,
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_MULTI])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([CHAIN_EXTRA]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      fires: Array<{
+        reignited: boolean;
+        historicalFires?: Array<{ triggerTimeCt: string; entryPrice: number }>;
+      }>;
+    };
+    expect(body.fires[0]!.reignited).toBe(true);
+    expect(body.fires[0]!.historicalFires).toEqual([
+      { triggerTimeCt: '2026-05-01T14:00:00Z', entryPrice: 0.4 },
+      { triggerTimeCt: '2026-05-01T14:10:00Z', entryPrice: 0.42 },
+      { triggerTimeCt: '2026-05-01T19:00:00Z', entryPrice: 0.55 },
+    ]);
+  });
+
+  it('omits historicalFires entirely for a single-fire chain + sets reignited=false', async () => {
+    // Single-fire chain — chainExtras query filters on fire_count > 1,
+    // so this chain has no entry in the result set. Handler should
+    // emit `reignited: false` (the additive default) and skip the
+    // `historicalFires` key entirely to keep the response compact.
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([]); // empty chainExtras
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      fires: Array<{ reignited: boolean; historicalFires?: unknown }>;
+    };
+    expect(body.fires[0]!.reignited).toBe(false);
+    expect(body.fires[0]!.historicalFires).toBeUndefined();
+  });
+
+  it('sets reignited=false for a multi-fire chain that did not make the daily top-N', async () => {
+    // Chain has multiple fires + history populated, but its reignition
+    // rank fell outside REIGNITION_TOP_N_PER_DAY — the SQL emits
+    // reignited=false. Handler must preserve the flag verbatim.
+    const ROW_MULTI = { ...ROW, fire_count: 3 };
+    const CHAIN_EXTRA_NOT_TOP_N = {
+      underlying_symbol: 'SNDK',
+      strike: '1175',
+      option_type: 'C',
+      expiry: '2026-05-01',
+      fires_json: [
+        { triggerTimeCt: '2026-05-01T14:00:00Z', entryPrice: '0.40' },
+        { triggerTimeCt: '2026-05-01T19:00:00Z', entryPrice: '0.55' },
+      ],
+      reignited: false,
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_MULTI])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([CHAIN_EXTRA_NOT_TOP_N]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        reignited: boolean;
+        historicalFires?: Array<unknown>;
+      }>;
+    };
+    expect(body.fires[0]!.reignited).toBe(false);
+    expect(body.fires[0]!.historicalFires).toEqual([
+      { triggerTimeCt: '2026-05-01T14:00:00Z', entryPrice: 0.4 },
+    ]);
+  });
+
+  it('chainExtras SQL binds the REIGNITION threshold constants (3, 30, 2, 5)', async () => {
+    // Pin the locked thresholds into the SQL contract. The handler
+    // must pass REIGNITION_MIN_FIRES, REIGNITION_MIN_GAP_MIN,
+    // REIGNITION_MIN_POST_GAP_FIRES, and REIGNITION_TOP_N_PER_DAY as
+    // parameters into the chainExtras tagged template; changing any
+    // of them requires re-tuning against the parquet archive per
+    // feedback_tune_before_ship.
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const chainExtrasCall = mockSql.mock.calls[2] as unknown[];
+    const boundValues = chainExtrasCall.slice(1);
+    expect(boundValues).toContain(3); // REIGNITION_MIN_FIRES
+    expect(boundValues).toContain(30); // REIGNITION_MIN_GAP_MIN
+    expect(boundValues).toContain(2); // REIGNITION_MIN_POST_GAP_FIRES
+    expect(boundValues).toContain(5); // REIGNITION_TOP_N_PER_DAY
   });
 });

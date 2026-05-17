@@ -26,7 +26,13 @@ import {
   type LotteryScoreTier,
 } from './_lib/lottery-score-weights.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
-import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
+import {
+  MIN_ALERT_ENTRY_PRICE,
+  REIGNITION_MIN_FIRES,
+  REIGNITION_MIN_GAP_MIN,
+  REIGNITION_MIN_POST_GAP_FIRES,
+  REIGNITION_TOP_N_PER_DAY,
+} from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type DbId = number | string;
@@ -157,6 +163,26 @@ interface FireRow {
   fire_time_cum_npp: DbNullableNumeric;
 }
 
+/**
+ * Per-chain aggregate row returned by the chainExtras parallel query.
+ * Phase 1 of lottery-reignition-ui-2026-05-17 — fuels the
+ * `historicalFires` array on the chart panel and the `reignited` flag
+ * driving the pinned "Hot Right Now" section.
+ *
+ * `fires_json` is a jsonb_agg result; the Neon driver returns it as a
+ * parsed JS array. Embedded timestamps come back as strings (Postgres
+ * serialises timestamptz inside JSON to ISO 8601). `expiry` is a DATE
+ * column so it may be a Date OR a string depending on driver config.
+ */
+interface ChainExtrasRow {
+  underlying_symbol: string;
+  strike: DbNumeric;
+  option_type: DbOptionType;
+  expiry: string | Date;
+  fires_json: Array<{ triggerTimeCt: string; entryPrice: DbNumeric }> | null;
+  reignited: boolean;
+}
+
 /** Predicted peak-return range string for a given score tier. */
 function forecastForTier(tier: LotteryScoreTier): string {
   if (tier === 'tier1') return '30-50%';
@@ -232,6 +258,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       windowEnd = `${targetDate}T23:59:59.999Z`;
     }
 
+    // Reignition ranking + fire-history aggregation are cumulative
+    // through the requested cutoff, not bounded to the minute slice the
+    // main row payload uses. A chain that fired earlier in the day
+    // should keep its REIGNITED badge whether the timeline slider is
+    // parked on a quiet minute or the moment of the latest fire. The
+    // cutoff matches the main `windowEnd` for `at` + default modes; in
+    // `minute` mode we extend back to start-of-day so the rank reflects
+    // the chain's full session shape up through the bucket.
+    const reignitionWindowEnd = windowEnd;
+
     const db = getDb();
 
     // Two queries in parallel: (1) the row payload bounded by LIMIT,
@@ -268,7 +304,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // previously these were computed via a LEFT JOIN LATERAL that
     // dominated wall time at ~30s/page (spec:
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md).
-    const [rows, totalRows] = (await Promise.all([
+    const [rows, totalRows, chainExtras] = (await Promise.all([
       sort === 'score'
         ? db`
         WITH filtered AS (
@@ -494,9 +530,124 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           GROUP BY underlying_symbol, strike, option_type, expiry
         ) collapsed
       `,
-    ])) as [FireRow[], { total: number }[]];
+      // Chain-extras query (Phase 1 of lottery-reignition-ui-2026-05-17):
+      // returns per-chain fire history (jsonb array of all fires today,
+      // ordered chronologically) + the REIGNITION top-N flag. Joined to
+      // the row payload below by (ticker × strike × option_type × expiry).
+      //
+      // Reignition criteria — gap math uses trigger_time_ct differences
+      // directly, NOT the broken `minutes_since_prev_fire` column (NULL/0
+      // on the QQQ 708P 2026-05-15 anchor despite 21 distinct fires).
+      // The per-day rank is computed GLOBALLY (ignoring user filters
+      // beyond date + system-level entry_price floor) so the badge has
+      // stable semantics across filter views — a chain that's #3 of
+      // the day stays #3 whether the user is filtered to QQQ-only or
+      // showing all tickers.
+      db`
+        WITH ordered AS (
+          SELECT
+            underlying_symbol, strike, option_type, expiry,
+            trigger_time_ct, entry_price,
+            EXTRACT(EPOCH FROM trigger_time_ct - LAG(trigger_time_ct) OVER w) / 60.0 AS gap_min,
+            ROW_NUMBER() OVER w AS fire_seq,
+            COUNT(*) OVER w_total AS fire_count
+          FROM lottery_finder_fires
+          WHERE date = ${targetDate}::date
+            AND trigger_time_ct < ${reignitionWindowEnd}::timestamptz
+            AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          WINDOW
+            w AS (PARTITION BY underlying_symbol, strike, option_type, expiry ORDER BY trigger_time_ct ASC),
+            w_total AS (PARTITION BY underlying_symbol, strike, option_type, expiry)
+        ),
+        max_gap_by_chain AS (
+          SELECT DISTINCT ON (underlying_symbol, strike, option_type, expiry)
+            underlying_symbol, strike, option_type, expiry,
+            gap_min AS max_gap_min,
+            fire_seq AS post_gap_start_seq
+          FROM ordered
+          WHERE gap_min IS NOT NULL
+          ORDER BY underlying_symbol, strike, option_type, expiry, gap_min DESC
+        ),
+        per_chain AS (
+          SELECT
+            o.underlying_symbol,
+            o.strike,
+            o.option_type,
+            o.expiry,
+            MAX(o.fire_count)::int AS fire_count,
+            COALESCE(MAX(g.max_gap_min), 0)::numeric AS max_gap_min,
+            COALESCE(MAX(o.fire_count) - (MAX(g.post_gap_start_seq) - 1), 0)::int AS post_gap_fires,
+            jsonb_agg(
+              jsonb_build_object(
+                'triggerTimeCt', o.trigger_time_ct,
+                'entryPrice', o.entry_price
+              ) ORDER BY o.trigger_time_ct ASC
+            ) AS fires_json
+          FROM ordered o
+          LEFT JOIN max_gap_by_chain g USING (underlying_symbol, strike, option_type, expiry)
+          GROUP BY o.underlying_symbol, o.strike, o.option_type, o.expiry
+        ),
+        qualified AS (
+          SELECT
+            underlying_symbol, strike, option_type, expiry,
+            ROW_NUMBER() OVER (
+              ORDER BY post_gap_fires DESC, fire_count DESC
+            ) AS rn
+          FROM per_chain
+          WHERE fire_count >= ${REIGNITION_MIN_FIRES}
+            AND max_gap_min >= ${REIGNITION_MIN_GAP_MIN}::numeric
+            AND post_gap_fires >= ${REIGNITION_MIN_POST_GAP_FIRES}
+        )
+        SELECT
+          pc.underlying_symbol,
+          pc.strike,
+          pc.option_type,
+          pc.expiry,
+          pc.fires_json,
+          (q.rn IS NOT NULL AND q.rn <= ${REIGNITION_TOP_N_PER_DAY}) AS reignited
+        FROM per_chain pc
+        LEFT JOIN qualified q USING (underlying_symbol, strike, option_type, expiry)
+        WHERE pc.fire_count > 1
+      `,
+    ])) as [FireRow[], { total: number }[], ChainExtrasRow[]];
 
     const total = totalRows[0]?.total ?? 0;
+
+    // Build a Map keyed on (ticker | strike | option_type | expiry) for
+    // O(1) lookup when assembling the row payload. expiry comes back as
+    // a Date from the Neon driver (per the project's neon_date_columns
+    // convention) — normalise to YYYY-MM-DD so the key shape is stable
+    // regardless of the wire format.
+    const chainExtraByKey = new Map<
+      string,
+      {
+        historicalFires: Array<{ triggerTimeCt: string; entryPrice: number }>;
+        reignited: boolean;
+      }
+    >();
+    for (const ce of chainExtras) {
+      const expiryStr =
+        typeof ce.expiry === 'string'
+          ? ce.expiry.slice(0, 10)
+          : ce.expiry.toISOString().slice(0, 10);
+      const rawFires = Array.isArray(ce.fires_json) ? ce.fires_json : [];
+      // fires_json is sorted ASC by trigger_time_ct from the SQL ORDER BY;
+      // the LAST element is the latest fire (which is already represented
+      // on the row by `triggerTimeCt` + `entry.price`), so we slice it
+      // off here — `historicalFires` carries past fires only.
+      const past = rawFires.slice(0, -1).map((f) => ({
+        triggerTimeCt:
+          typeof f.triggerTimeCt === 'string'
+            ? f.triggerTimeCt
+            : new Date(f.triggerTimeCt as string).toISOString(),
+        entryPrice: Number(f.entryPrice),
+      }));
+      const key = `${ce.underlying_symbol}|${Number(ce.strike)}|${ce.option_type}|${expiryStr}`;
+      chainExtraByKey.set(key, {
+        historicalFires: past,
+        reignited: ce.reignited === true,
+      });
+    }
 
     // Macro Window lookup (spec: lottery-silentboom-eda-impl-2026-05-16.md
     // Finding 4). Pull every high-impact economic event whose event_time
@@ -582,6 +733,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               ciWidth: Number(r.ticker_ci_width ?? 0),
               tier: (r.ticker_tier ?? '') as 'reliable' | 'uncertain' | '',
             };
+
+      // Chain-extras lookup — same key shape as the map population
+      // above so single-fire chains (which the chainExtras query skips
+      // via WHERE fire_count > 1) miss the lookup and surface as
+      // undefined `historicalFires` + falsy `reignited`.
+      const expiryKey =
+        typeof r.expiry === 'string'
+          ? r.expiry.slice(0, 10)
+          : toIso(r.expiry).slice(0, 10);
+      const chainKey = `${r.underlying_symbol}|${Number(r.strike)}|${r.option_type}|${expiryKey}`;
+      const chainExtra = chainExtraByKey.get(chainKey);
       return {
         id: Number(r.id),
         date: toIso(r.date).slice(0, 10),
@@ -627,6 +789,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // routinely hit 50-300+ fires.
         fireCount: Number(r.fire_count ?? 1),
         firstFireTimeCt: toIso(r.first_fire_time_ct),
+        // Phase 1 of lottery-reignition-ui-2026-05-17. Both fields are
+        // additive: legacy clients ignoring them keep working.
+        // `historicalFires` is omitted entirely (rather than emitted
+        // as []) for single-fire chains to keep the response compact.
+        ...(chainExtra && chainExtra.historicalFires.length > 0
+          ? { historicalFires: chainExtra.historicalFires }
+          : {}),
+        reignited: chainExtra?.reignited === true,
 
         trigger: {
           volToOiWindow: Number(r.trigger_vol_to_oi_window),
