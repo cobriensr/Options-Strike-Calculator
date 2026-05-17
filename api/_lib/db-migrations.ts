@@ -4610,4 +4610,76 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS pattern_group_id TEXT`,
     ],
   },
+  {
+    id: 161,
+    description:
+      'Create tracker_contracts table for the Contract Tracker feature (spec: docs/superpowers/specs/contract-tracker-2026-05-17.md). Tracks manually entered options contracts to expiry with periodic price refresh and threshold-based in-app alerts. occ_symbol is the natural unique key (OCC format, e.g. "NVDA  260522P00225000"). up_thresholds/down_thresholds are per-contract overrides (NULL = use app defaults [50,100,200] / [-30,-50]). spot_alerts is a JSONB array of {op, level} objects for underlying-price alerts. status lifecycle: active → closed (manual) or expired (auto-archived at expiry by the cron). Two indexes: status (panel tab queries filter active/closed/expired) and ticker (group-by-ticker toggle).',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS tracker_contracts (
+        id              SERIAL PRIMARY KEY,
+        occ_symbol      TEXT NOT NULL UNIQUE,
+        ticker          TEXT NOT NULL,
+        expiry          DATE NOT NULL,
+        strike          NUMERIC(10,2) NOT NULL,
+        side            TEXT NOT NULL CHECK (side IN ('C','P')),
+        direction       TEXT NOT NULL CHECK (direction IN ('long','short')),
+        entry_price     NUMERIC(10,4) NOT NULL,
+        quantity        INTEGER NOT NULL CHECK (quantity > 0),
+        notes           TEXT,
+        status          TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active','closed','expired')),
+        closed_at       TIMESTAMPTZ,
+        closed_price    NUMERIC(10,4),
+        up_thresholds   NUMERIC[],
+        down_thresholds NUMERIC[],
+        spot_alerts     JSONB,
+        created_at      TIMESTAMPTZ DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ DEFAULT NOW()
+      )`,
+      sql`CREATE INDEX IF NOT EXISTS tracker_contracts_status_idx
+            ON tracker_contracts (status)`,
+      sql`CREATE INDEX IF NOT EXISTS tracker_contracts_ticker_idx
+            ON tracker_contracts (ticker)`,
+    ],
+  },
+  {
+    id: 162,
+    description:
+      'Create tracker_contract_ticks table for the Contract Tracker feature (spec: docs/superpowers/specs/contract-tracker-2026-05-17.md). Stores per-poll price snapshots written by the api/cron/refresh-tracker-contracts.ts cron every 5 min during market hours. FK ON DELETE CASCADE so ticks are purged with their parent contract. source defaults to "uw" (Unusual Whales). The (contract_id, fetched_at DESC) composite index serves the "latest tick for contract" pattern used by the active panel row renderer.',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS tracker_contract_ticks (
+        id           BIGSERIAL PRIMARY KEY,
+        contract_id  INTEGER NOT NULL REFERENCES tracker_contracts (id) ON DELETE CASCADE,
+        fetched_at   TIMESTAMPTZ NOT NULL,
+        last         NUMERIC(10,4),
+        bid          NUMERIC(10,4),
+        ask          NUMERIC(10,4),
+        volume       INTEGER,
+        open_int     INTEGER,
+        underlying   NUMERIC(10,4),
+        source       TEXT NOT NULL DEFAULT 'uw'
+      )`,
+      sql`CREATE INDEX IF NOT EXISTS tracker_ticks_contract_time_idx
+            ON tracker_contract_ticks (contract_id, fetched_at DESC)`,
+    ],
+  },
+  {
+    id: 163,
+    description:
+      'Create tracker_alerts table for the Contract Tracker feature (spec: docs/superpowers/specs/contract-tracker-2026-05-17.md). Each row is one threshold-breach event fired by the refresh cron. alert_type is one of: up_pct, down_pct, spot_level, dte_7. threshold stores the numeric trigger value (pct for up/down_pct, spot price for spot_level, 7 for dte_7) — NOT NULL intentionally so the UNIQUE (contract_id, alert_type, threshold) dedup index covers every alert type including DTE-7 (stored as threshold=7). INSERT ... ON CONFLICT DO NOTHING ensures each threshold fires at most once per contract over its lifetime. acknowledged is flipped via POST /api/tracker/alerts/:id/ack and polled by useTrackerAlerts every 30 s.',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS tracker_alerts (
+        id                 BIGSERIAL PRIMARY KEY,
+        contract_id        INTEGER NOT NULL REFERENCES tracker_contracts (id) ON DELETE CASCADE,
+        fired_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        alert_type         TEXT NOT NULL,
+        threshold          NUMERIC NOT NULL,
+        price_at_fire      NUMERIC(10,4),
+        underlying_at_fire NUMERIC(10,4),
+        acknowledged       BOOLEAN DEFAULT FALSE
+      )`,
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS tracker_alerts_dedup_idx
+            ON tracker_alerts (contract_id, alert_type, threshold)`,
+    ],
+  },
 ];
