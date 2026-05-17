@@ -1,5 +1,6 @@
 import { IV_MODES } from './constants';
 import {
+  Fragment,
   lazy,
   Suspense,
   useCallback,
@@ -7,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from 'react';
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
@@ -32,7 +34,12 @@ import {
 import { usePeriscopePlaybook } from './hooks/usePeriscopePlaybook';
 import { useAccessSession } from './hooks/useAccessSession';
 import { usePanelPrefs } from './hooks/usePanelPrefs';
-import { getPanelRegistry } from './constants/panel-registry';
+import {
+  getPanelRegistry,
+  PANEL_GROUP_ORDER,
+  type PanelGroup,
+} from './constants/panel-registry';
+import { resolveGroupOrder, resolvePanelOrder } from './utils/panel-order';
 import { PanelPrefsModal } from './components/PanelPrefsModal/PanelPrefsModal';
 import AccessKeyButton from './components/AccessKey/AccessKeyButton';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
@@ -652,20 +659,57 @@ export default function StrikeCalculator() {
   const hasMarketContext = isAuthenticated && hasMarketOrSnapshot;
 
   // Single source of truth: getPanelRegistry. The same registry feeds
-  // the section-nav menu AND the show/hide-panels modal. Adding a new
-  // panel is a one-line edit in src/constants/panel-registry.ts.
+  // the section-nav menu, the panel-prefs modal, AND the home-page
+  // render loop below. Adding a new panel is a one-line edit in
+  // src/constants/panel-registry.ts.
+  const panelRegistry = useMemo(
+    () => getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot }),
+    [isAuthenticated, hasMarketOrSnapshot],
+  );
+
+  // Canonical group order is PANEL_GROUP_ORDER + Results (which the
+  // registry pins to the bottom and the constant omits). resolvers
+  // need the full list so unknown-but-registered groups fall back
+  // correctly. See docs/superpowers/specs/panel-reordering-2026-05-17.md.
+  const registryGroups = useMemo<PanelGroup[]>(
+    () => [...PANEL_GROUP_ORDER, 'Results'],
+    [],
+  );
+
+  const resolvedGroups = useMemo(
+    () => resolveGroupOrder(panelPrefs.groupOrder, registryGroups),
+    [panelPrefs.groupOrder, registryGroups],
+  );
+
+  // Pre-compute per-group panel order so both the nav and the home
+  // page iterate from the same resolved Map without re-running the
+  // resolver per render-loop pass.
+  const resolvedPanelsByGroup = useMemo(() => {
+    const out = new Map<string, string[]>();
+    for (const group of resolvedGroups) {
+      out.set(group, resolvePanelOrder(panelPrefs.order, panelRegistry, group));
+    }
+    return out;
+  }, [resolvedGroups, panelPrefs.order, panelRegistry]);
+
   // Filter out hidden panels so the nav menu doesn't list jump targets
   // for sections the user has chosen to hide. Depending on the `hidden`
   // Set (not the whole `panelPrefs` object, which is fresh every render)
-  // keeps the memo from invalidating on unrelated re-renders.
+  // keeps the memo from invalidating on unrelated re-renders. `results`
+  // always lists (calculator output is structurally pinned).
   const hiddenPanels = panelPrefs.hidden;
-  const navSections = useMemo<NavSection[]>(
-    () =>
-      getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot })
-        .filter(({ id }) => id === 'results' || !hiddenPanels.has(id))
-        .map(({ id, label }) => ({ id, label })),
-    [isAuthenticated, hasMarketOrSnapshot, hiddenPanels],
-  );
+  const navSections = useMemo<NavSection[]>(() => {
+    const labelById = new Map(panelRegistry.map((p) => [p.id, p.label]));
+    const list: NavSection[] = [];
+    for (const group of resolvedGroups) {
+      for (const id of resolvedPanelsByGroup.get(group) ?? []) {
+        if (id !== 'results' && hiddenPanels.has(id)) continue;
+        const label = labelById.get(id);
+        if (label) list.push({ id, label });
+      }
+    }
+    return list;
+  }, [panelRegistry, resolvedGroups, resolvedPanelsByGroup, hiddenPanels]);
 
   const analysisContext = useAnalysisContext({
     selectedDate: vix.selectedDate,
@@ -777,452 +821,440 @@ export default function StrikeCalculator() {
               </p>
 
               <main>
-                <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 [&>*]:mt-0">
-                  {!panelPrefs.isHidden('sec-datetime') && (
-                    <div id="sec-datetime" className="scroll-mt-28">
-                      <DateTimeSection
-                        chevronUrl={chevronUrl}
-                        selectedDate={vix.selectedDate}
-                        onDateChange={handleDateChange}
-                        vixDataLoaded={vix.vixDataLoaded}
-                        timeHour={timeHour}
-                        onHourChange={handleTimeHourChange}
-                        timeMinute={timeMinute}
-                        onMinuteChange={handleTimeMinuteChange}
-                        timeAmPm={timeAmPm}
-                        onAmPmChange={handleTimeAmPmChange}
-                        timezone={timezone}
-                        onTimezoneChange={handleTimezoneChange}
-                        timeEdited={timeEditedForDisplay}
-                        onResumeLive={handleResumeLive}
-                        errors={errors}
-                      />
-                    </div>
-                  )}
-
-                  {!panelPrefs.isHidden('sec-spot-price') && (
-                    <div id="sec-spot-price" className="scroll-mt-28">
-                      <SpotPriceSection
-                        spotPrice={spotPrice}
-                        onSpotChange={handleSpotChange}
-                        spxDirect={spxDirect}
-                        onSpxDirectChange={handleSpxChange}
-                        spxRatio={spxRatio}
-                        onSpxRatioChange={setSpxRatio}
-                        dSpot={dSpot}
-                        effectiveRatio={effectiveRatio}
-                        spxDirectActive={spxDirectActive}
-                        derivedRatio={
-                          spxDirectActive ? spxVal / spyVal : spxRatio
-                        }
-                        errors={errors}
-                      />
-                    </div>
-                  )}
-                </div>
-
                 <EventDayWarning
                   selectedDate={vix.selectedDate}
                   liveEvents={market.data.events?.events}
                 />
 
-                {!panelPrefs.isHidden('sec-premarket') && (
-                  <div id="sec-premarket" className="mt-6 scroll-mt-28">
-                    <SectionBox label="Pre-Market Signals">
-                      <OpeningFlowSignal />
-                      <hr className="border-edge my-4" />
-                      <PinSetupTile
-                        marketOpen={market.data.quotes?.marketOpen ?? false}
-                      />
-                    </SectionBox>
-                    {market.hasData && (
-                      <PreMarketInput
-                        date={vix.selectedDate}
-                        spxPrice={results?.spot}
-                        prevClose={market.data.yesterday?.yesterday?.close}
-                      />
-                    )}
-                  </div>
-                )}
+                {/*
+                  Two-level panel render — outer iterates resolved
+                  groups (registry order, possibly user-reordered);
+                  inner iterates panels within each group (registry
+                  order, possibly user-reordered). The renderer map
+                  is defined inline because each entry closes over
+                  ~15 hooks from this component — extracting to
+                  separate files would require a giant prop bag.
+                  Lookup is O(1) per panel.
 
-                <div className="mt-6 grid grid-cols-1 items-stretch gap-4 [&>*]:mt-0">
-                  {!panelPrefs.isHidden('sec-advanced') && (
-                    <div id="sec-advanced" className="scroll-mt-28">
-                      <AdvancedSection
-                        skewPct={skewPct}
-                        onSkewChange={setSkewPct}
-                        showIC={showIC}
-                        onToggleIC={handleToggleIC}
-                        wingWidth={wingWidth}
-                        onWingWidthChange={setWingWidth}
-                        contracts={contracts}
-                        onContractsChange={setContracts}
-                        showBWB={showBWB}
-                        onToggleBWB={handleToggleBWB}
-                        bwbNarrowWidth={bwbNarrowWidth}
-                        onBwbNarrowWidthChange={setBwbNarrowWidth}
-                        bwbWideMultiplier={bwbWideMultiplier}
-                        onBwbWideMultiplierChange={setBwbWideMultiplier}
-                        results={results}
-                        vixOHLC={vix.vixOHLC}
-                        vixOHLCField={vix.vixOHLCField}
-                        onOHLCFieldChange={vix.setVixOHLCField}
-                        vixDataLoaded={vix.vixDataLoaded}
-                        selectedDate={vix.selectedDate}
-                        defaultCollapsed
-                      />
-                    </div>
-                  )}
+                  Auth/market context gating is delegated to
+                  getPanelRegistry() — if a panel id isn't in the
+                  resolved order, the renderer never runs, so the
+                  inline `isAuthenticated && ...` checks the
+                  pre-refactor code had are redundant here.
 
-                  {!panelPrefs.isHidden('sec-iv') && (
-                    <div id="sec-iv" className="scroll-mt-28">
-                      <IVInputSection
-                        ivMode={ivMode}
-                        onIvModeChange={setIvMode}
-                        vixInput={vixInput}
-                        onVixChange={handleVixChange}
-                        multiplier={multiplier}
-                        onMultiplierChange={setMultiplier}
-                        directIVInput={directIVInput}
-                        onDirectIVChange={setDirectIVInput}
-                        dVix={dVix}
-                        results={results}
-                        errors={errors}
-                        market={market}
-                        historySnapshot={historySnapshot}
-                        onUseVix1dAsSigma={handleUseVix1dAsSigma}
-                        termShape={signals.vixTermShape}
-                        termShapeAdvice={signals.vixTermShapeAdvice}
-                        defaultCollapsed
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {!panelPrefs.isHidden('sec-risk') && (
-                  <>
-                    <span id="sec-risk" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Risk Calculator">
-                      <Suspense fallback={<SkeletonSection lines={5} />}>
-                        <RiskCalculator defaultCollapsed />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
-
-                {!panelPrefs.isHidden('sec-regime') && (
-                  <>
-                    <span id="sec-regime" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Market Regime">
-                      <MarketRegimeSection
-                        dVix={dVix}
-                        results={results}
-                        errors={errors}
-                        skewPct={skewPct}
-                        selectedDate={vix.selectedDate}
-                        market={market}
-                        onClusterMultChange={setClusterMult}
-                        clusterMult={clusterMult}
-                        historySnapshot={historySnapshot}
-                        historyCandles={historyData.history?.spx.candles}
-                        entryTimeLabel={
-                          historySnapshot
-                            ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
-                            : undefined
-                        }
-                        signals={signals}
-                        chain={chainData.chain}
-                        defaultCollapsed
-                      />
-                    </ErrorBoundary>
-                  </>
-                )}
-
-                {!panelPrefs.isHidden('sec-darkpool') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-darkpool"
-                    label="Dark Pool Levels"
-                  >
-                    <DarkPoolLevels
-                      levels={darkPool.levels}
-                      loading={darkPool.loading}
-                      error={darkPool.error}
-                      updatedAt={darkPool.updatedAt}
-                      spxPrice={
-                        // SPX selector is the only one with a wired
-                        // reference price; pass null for NDX/SPY/QQQ so
-                        // the distance column hides cleanly until those
-                        // price sources are added in a follow-up.
-                        darkPool.selectedSymbol !== 'SPX'
-                          ? null
-                          : darkPool.isLive
-                            ? (market.data.quotes?.spx?.price ??
-                              results?.spot ??
-                              spxVal ??
-                              null)
-                            : (results?.spot ?? spxVal ?? null)
-                      }
-                      onRefresh={darkPool.refresh}
-                      selectedSymbol={darkPool.selectedSymbol}
-                      onSymbolChange={darkPool.setSelectedSymbol}
-                      selectedDate={darkPool.selectedDate}
-                      onDateChange={darkPool.setSelectedDate}
-                      scrubTime={darkPool.scrubTime}
-                      isLive={darkPool.isLive}
-                      isScrubbed={darkPool.isScrubbed}
-                      canScrubPrev={darkPool.canScrubPrev}
-                      canScrubNext={darkPool.canScrubNext}
-                      onScrubPrev={darkPool.scrubPrev}
-                      onScrubNext={darkPool.scrubNext}
-                      onScrubTo={darkPool.scrubTo}
-                      timeGrid={darkPool.timeGrid}
-                      onScrubLive={darkPool.scrubLive}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-gex-target') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-gex-target"
-                    label="GEX Target"
-                    fallback={<SkeletonSection lines={6} tall />}
-                  >
-                    <GexTarget
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                      gexTarget={gexTarget}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-gex-landscape') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-gex-landscape"
-                    label="GEX Landscape"
-                    fallback={<SkeletonSection lines={6} tall />}
-                  >
-                    <GexLandscape
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                      onBiasChange={setGexBiasContext}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-zero-gamma') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-zero-gamma"
-                    label="Zero Gamma"
-                    fallback={<SkeletonSection lines={4} />}
-                  >
-                    <ZeroGammaPanel
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-vega-spikes') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-vega-spikes"
-                    label="Dir Vega Spikes"
-                  >
-                    <VegaSpikeFeed
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-interval-ba-history') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-interval-ba-history"
-                    label="Interval B/A History"
-                  >
-                    <IntervalBAFeed
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-greek-flow') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-greek-flow"
-                    label="Greek Flow"
-                    fallback={<SkeletonSection lines={5} />}
-                  >
-                    <GreekFlowPanel
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-dealer-regime') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-dealer-regime"
-                    label="Dealer Regime"
-                    fallback={<SkeletonSection lines={2} />}
-                  >
-                    <DealerRegimeTile
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-strike-battle-map') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-strike-battle-map"
-                    label="Strike Battle Map"
-                    fallback={<SkeletonSection lines={5} />}
-                  >
-                    <StrikeBattleMap
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-lottery-finder') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-lottery-finder"
-                    label="Lottery Finder"
-                    fallback={<SkeletonSection lines={5} />}
-                  >
-                    <LotteryFinderSection
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-greek-heatmap') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-greek-heatmap"
-                    label="0DTE Greek Heatmap"
-                    fallback={<SkeletonSection lines={5} />}
-                  >
-                    <GreekHeatmapSection
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-silent-boom') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-silent-boom"
-                    label="Silent Boom"
-                    fallback={<SkeletonSection lines={5} />}
-                  >
-                    <SilentBoomSection
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {!panelPrefs.isHidden('sec-gexbot') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-gexbot"
-                    label="GEXBot Dealer State"
-                    fallback={<SkeletonSection lines={3} />}
-                  >
-                    <GexbotSection
-                      marketOpen={market.data.quotes?.marketOpen ?? false}
-                    />
-                  </GatedSection>
-                )}
-
-                {isAuthenticated && !panelPrefs.isHidden('sec-futures') && (
-                  <>
-                    <span id="sec-futures" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Futures">
-                      <Suspense fallback={<SkeletonSection lines={5} />}>
-                        <FuturesPanel defaultCollapsed />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
-
-                {/* Chart Analysis — requires auth session or backtest with results */}
-                {(market.hasData || !!historySnapshot) &&
-                  !panelPrefs.isHidden('sec-charts') && (
-                    <>
-                      <span id="sec-charts" className="block scroll-mt-28" />
-                      <ErrorBoundary label="Chart Analysis">
-                        <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                          <ChartAnalysis
+                  Spec: docs/superpowers/specs/panel-reordering-2026-05-17.md
+                */}
+                {(() => {
+                  const panelRenderers: Record<string, () => ReactNode> = {
+                    'sec-datetime': () => (
+                      <div id="sec-datetime" className="scroll-mt-28">
+                        <DateTimeSection
+                          chevronUrl={chevronUrl}
+                          selectedDate={vix.selectedDate}
+                          onDateChange={handleDateChange}
+                          vixDataLoaded={vix.vixDataLoaded}
+                          timeHour={timeHour}
+                          onHourChange={handleTimeHourChange}
+                          timeMinute={timeMinute}
+                          onMinuteChange={handleTimeMinuteChange}
+                          timeAmPm={timeAmPm}
+                          onAmPmChange={handleTimeAmPmChange}
+                          timezone={timezone}
+                          onTimezoneChange={handleTimezoneChange}
+                          timeEdited={timeEditedForDisplay}
+                          onResumeLive={handleResumeLive}
+                          errors={errors}
+                        />
+                      </div>
+                    ),
+                    'sec-spot-price': () => (
+                      <div id="sec-spot-price" className="scroll-mt-28">
+                        <SpotPriceSection
+                          spotPrice={spotPrice}
+                          onSpotChange={handleSpotChange}
+                          spxDirect={spxDirect}
+                          onSpxDirectChange={handleSpxChange}
+                          spxRatio={spxRatio}
+                          onSpxRatioChange={setSpxRatio}
+                          dSpot={dSpot}
+                          effectiveRatio={effectiveRatio}
+                          spxDirectActive={spxDirectActive}
+                          derivedRatio={
+                            spxDirectActive ? spxVal / spyVal : spxRatio
+                          }
+                          errors={errors}
+                        />
+                      </div>
+                    ),
+                    'sec-premarket': () => (
+                      <div id="sec-premarket" className="scroll-mt-28">
+                        <SectionBox label="Pre-Market Signals">
+                          <OpeningFlowSignal />
+                          <hr className="border-edge my-4" />
+                          <PinSetupTile
+                            marketOpen={market.data.quotes?.marketOpen ?? false}
+                          />
+                        </SectionBox>
+                        {market.hasData && (
+                          <PreMarketInput
+                            date={vix.selectedDate}
+                            spxPrice={results?.spot}
+                            prevClose={market.data.yesterday?.yesterday?.close}
+                          />
+                        )}
+                      </div>
+                    ),
+                    'sec-advanced': () => (
+                      <div id="sec-advanced" className="scroll-mt-28">
+                        <AdvancedSection
+                          skewPct={skewPct}
+                          onSkewChange={setSkewPct}
+                          showIC={showIC}
+                          onToggleIC={handleToggleIC}
+                          wingWidth={wingWidth}
+                          onWingWidthChange={setWingWidth}
+                          contracts={contracts}
+                          onContractsChange={setContracts}
+                          showBWB={showBWB}
+                          onToggleBWB={handleToggleBWB}
+                          bwbNarrowWidth={bwbNarrowWidth}
+                          onBwbNarrowWidthChange={setBwbNarrowWidth}
+                          bwbWideMultiplier={bwbWideMultiplier}
+                          onBwbWideMultiplierChange={setBwbWideMultiplier}
+                          results={results}
+                          vixOHLC={vix.vixOHLC}
+                          vixOHLCField={vix.vixOHLCField}
+                          onOHLCFieldChange={vix.setVixOHLCField}
+                          vixDataLoaded={vix.vixDataLoaded}
+                          selectedDate={vix.selectedDate}
+                          defaultCollapsed
+                        />
+                      </div>
+                    ),
+                    'sec-iv': () => (
+                      <div id="sec-iv" className="scroll-mt-28">
+                        <IVInputSection
+                          ivMode={ivMode}
+                          onIvModeChange={setIvMode}
+                          vixInput={vixInput}
+                          onVixChange={handleVixChange}
+                          multiplier={multiplier}
+                          onMultiplierChange={setMultiplier}
+                          directIVInput={directIVInput}
+                          onDirectIVChange={setDirectIVInput}
+                          dVix={dVix}
+                          results={results}
+                          errors={errors}
+                          market={market}
+                          historySnapshot={historySnapshot}
+                          onUseVix1dAsSigma={handleUseVix1dAsSigma}
+                          termShape={signals.vixTermShape}
+                          termShapeAdvice={signals.vixTermShapeAdvice}
+                          defaultCollapsed
+                        />
+                      </div>
+                    ),
+                    'sec-risk': () => (
+                      <>
+                        <span id="sec-risk" className="block scroll-mt-28" />
+                        <ErrorBoundary label="Risk Calculator">
+                          <Suspense fallback={<SkeletonSection lines={5} />}>
+                            <RiskCalculator defaultCollapsed />
+                          </Suspense>
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    'sec-regime': () => (
+                      <>
+                        <span id="sec-regime" className="block scroll-mt-28" />
+                        <ErrorBoundary label="Market Regime">
+                          <MarketRegimeSection
+                            dVix={dVix}
                             results={results}
-                            onAnalysisSaved={handleAnalysisSaved}
-                            context={analysisContext}
-                            csvPositionSummary={csvPositionSummary}
+                            errors={errors}
+                            skewPct={skewPct}
+                            selectedDate={vix.selectedDate}
+                            market={market}
+                            onClusterMultChange={setClusterMult}
+                            clusterMult={clusterMult}
+                            historySnapshot={historySnapshot}
+                            historyCandles={historyData.history?.spx.candles}
+                            entryTimeLabel={
+                              historySnapshot
+                                ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
+                                : undefined
+                            }
+                            signals={signals}
+                            chain={chainData.chain}
                             defaultCollapsed
                           />
-                        </Suspense>
-                      </ErrorBoundary>
-                    </>
-                  )}
-
-                {!panelPrefs.isHidden('sec-history') && (
-                  <>
-                    <span id="sec-history" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Analysis History">
-                      <AnalysisHistory
-                        refreshKey={historyRefreshKey}
-                        defaultCollapsed
-                      />
-                    </ErrorBoundary>
-                  </>
-                )}
-
-                {isAuthenticated && !panelPrefs.isHidden('sec-ml-insights') && (
-                  <>
-                    <span id="sec-ml-insights" className="block scroll-mt-28" />
-                    <ErrorBoundary label="ML Insights">
-                      <Suspense fallback={<SkeletonSection lines={6} tall />}>
-                        <MLInsights defaultCollapsed />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
-
-                {!panelPrefs.isHidden('sec-periscope-exposure') && (
-                  <GatedSection
-                    gate={hasMarketContext}
-                    id="sec-periscope-exposure"
-                    label="Periscope MM Exposure"
-                    fallback={<SkeletonSection lines={6} tall />}
-                  >
-                    <PeriscopePanel
-                      view={periscope.view}
-                      emptyReason={periscope.emptyReason}
-                      asOf={periscope.asOf}
-                      isLoading={periscope.isLoading}
-                      error={periscope.error}
-                      onRefresh={periscope.refresh}
-                      availableSlots={periscope.availableSlots}
-                      selectedSlot={periscopeSlot}
-                      onSelectSlot={setPeriscopeSlot}
-                      playbook={periscopePlaybook}
-                    />
-                  </GatedSection>
-                )}
-
-                {/* Manual Periscope Chat upload UI removed in Phase 4d
-                    of docs/superpowers/specs/periscope-auto-playbook-2026-05-10.md
-                    — the scraper-triggered auto-playbook now produces a
-                    playbook every 10-min RTH tick and renders directly in
-                    PeriscopePanel above. PeriscopeChatHistory remains for
-                    reviewing past entries (manual + auto). */}
-
-                {isAuthenticated && (
-                  <>
-                    {!panelPrefs.isHidden('sec-periscope-history') && (
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    'sec-darkpool': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-darkpool"
+                        label="Dark Pool Levels"
+                      >
+                        <DarkPoolLevels
+                          levels={darkPool.levels}
+                          loading={darkPool.loading}
+                          error={darkPool.error}
+                          updatedAt={darkPool.updatedAt}
+                          spxPrice={
+                            // SPX selector is the only one with a wired
+                            // reference price; pass null for NDX/SPY/QQQ
+                            // so the distance column hides cleanly until
+                            // those price sources are added in a
+                            // follow-up.
+                            darkPool.selectedSymbol !== 'SPX'
+                              ? null
+                              : darkPool.isLive
+                                ? (market.data.quotes?.spx?.price ??
+                                  results?.spot ??
+                                  spxVal ??
+                                  null)
+                                : (results?.spot ?? spxVal ?? null)
+                          }
+                          onRefresh={darkPool.refresh}
+                          selectedSymbol={darkPool.selectedSymbol}
+                          onSymbolChange={darkPool.setSelectedSymbol}
+                          selectedDate={darkPool.selectedDate}
+                          onDateChange={darkPool.setSelectedDate}
+                          scrubTime={darkPool.scrubTime}
+                          isLive={darkPool.isLive}
+                          isScrubbed={darkPool.isScrubbed}
+                          canScrubPrev={darkPool.canScrubPrev}
+                          canScrubNext={darkPool.canScrubNext}
+                          onScrubPrev={darkPool.scrubPrev}
+                          onScrubNext={darkPool.scrubNext}
+                          onScrubTo={darkPool.scrubTo}
+                          timeGrid={darkPool.timeGrid}
+                          onScrubLive={darkPool.scrubLive}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-gex-target': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-gex-target"
+                        label="GEX Target"
+                        fallback={<SkeletonSection lines={6} tall />}
+                      >
+                        <GexTarget
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                          gexTarget={gexTarget}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-gex-landscape': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-gex-landscape"
+                        label="GEX Landscape"
+                        fallback={<SkeletonSection lines={6} tall />}
+                      >
+                        <GexLandscape
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                          onBiasChange={setGexBiasContext}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-zero-gamma': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-zero-gamma"
+                        label="Zero Gamma"
+                        fallback={<SkeletonSection lines={4} />}
+                      >
+                        <ZeroGammaPanel
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-vega-spikes': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-vega-spikes"
+                        label="Dir Vega Spikes"
+                      >
+                        <VegaSpikeFeed
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-interval-ba-history': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-interval-ba-history"
+                        label="Interval B/A History"
+                      >
+                        <IntervalBAFeed
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-greek-flow': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-greek-flow"
+                        label="Greek Flow"
+                        fallback={<SkeletonSection lines={5} />}
+                      >
+                        <GreekFlowPanel
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-dealer-regime': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-dealer-regime"
+                        label="Dealer Regime"
+                        fallback={<SkeletonSection lines={2} />}
+                      >
+                        <DealerRegimeTile
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-strike-battle-map': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-strike-battle-map"
+                        label="Strike Battle Map"
+                        fallback={<SkeletonSection lines={5} />}
+                      >
+                        <StrikeBattleMap
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-lottery-finder': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-lottery-finder"
+                        label="Lottery Finder"
+                        fallback={<SkeletonSection lines={5} />}
+                      >
+                        <LotteryFinderSection
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-greek-heatmap': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-greek-heatmap"
+                        label="0DTE Greek Heatmap"
+                        fallback={<SkeletonSection lines={5} />}
+                      >
+                        <GreekHeatmapSection
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-silent-boom': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-silent-boom"
+                        label="Silent Boom"
+                        fallback={<SkeletonSection lines={5} />}
+                      >
+                        <SilentBoomSection
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-gexbot': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-gexbot"
+                        label="GEXBot Dealer State"
+                        fallback={<SkeletonSection lines={3} />}
+                      >
+                        <GexbotSection
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-periscope-exposure': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-periscope-exposure"
+                        label="Periscope MM Exposure"
+                        fallback={<SkeletonSection lines={6} tall />}
+                      >
+                        <PeriscopePanel
+                          view={periscope.view}
+                          emptyReason={periscope.emptyReason}
+                          asOf={periscope.asOf}
+                          isLoading={periscope.isLoading}
+                          error={periscope.error}
+                          onRefresh={periscope.refresh}
+                          availableSlots={periscope.availableSlots}
+                          selectedSlot={periscopeSlot}
+                          onSelectSlot={setPeriscopeSlot}
+                          playbook={periscopePlaybook}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-futures': () => (
+                      <>
+                        <span id="sec-futures" className="block scroll-mt-28" />
+                        <ErrorBoundary label="Futures">
+                          <Suspense fallback={<SkeletonSection lines={5} />}>
+                            <FuturesPanel defaultCollapsed />
+                          </Suspense>
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    'sec-charts': () => (
+                      <>
+                        <span id="sec-charts" className="block scroll-mt-28" />
+                        <ErrorBoundary label="Chart Analysis">
+                          <Suspense
+                            fallback={<SkeletonSection lines={6} tall />}
+                          >
+                            <ChartAnalysis
+                              results={results}
+                              onAnalysisSaved={handleAnalysisSaved}
+                              context={analysisContext}
+                              csvPositionSummary={csvPositionSummary}
+                              defaultCollapsed
+                            />
+                          </Suspense>
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    'sec-history': () => (
+                      <>
+                        <span id="sec-history" className="block scroll-mt-28" />
+                        <ErrorBoundary label="Analysis History">
+                          <AnalysisHistory
+                            refreshKey={historyRefreshKey}
+                            defaultCollapsed
+                          />
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    'sec-ml-insights': () => (
+                      <>
+                        <span
+                          id="sec-ml-insights"
+                          className="block scroll-mt-28"
+                        />
+                        <ErrorBoundary label="ML Insights">
+                          <Suspense
+                            fallback={<SkeletonSection lines={6} tall />}
+                          >
+                            <MLInsights defaultCollapsed />
+                          </Suspense>
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    'sec-periscope-history': () => (
                       <>
                         <span
                           id="sec-periscope-history"
@@ -1236,8 +1268,8 @@ export default function StrikeCalculator() {
                           </Suspense>
                         </ErrorBoundary>
                       </>
-                    )}
-                    {!panelPrefs.isHidden('sec-periscope-lessons') && (
+                    ),
+                    'sec-periscope-lessons': () => (
                       <>
                         <span
                           id="sec-periscope-lessons"
@@ -1251,74 +1283,99 @@ export default function StrikeCalculator() {
                           </Suspense>
                         </ErrorBoundary>
                       </>
-                    )}
-                  </>
-                )}
-
-                {/* Paper Dashboard — lazy-loaded */}
-                {!panelPrefs.isHidden('sec-positions') && (
-                  <>
-                    <span id="sec-positions" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Paper Dashboard">
-                      <Suspense fallback={<SkeletonSection lines={5} tall />}>
-                        <PositionMonitor
-                          spotPrice={results?.spot ?? spxVal ?? 0}
-                          onPositionSummaryChange={setCsvPositionSummary}
-                          portfolioRiskThresholdPct={portfolioRiskThresholdPct}
-                          defaultCollapsed
+                    ),
+                    'sec-positions': () => (
+                      <>
+                        <span
+                          id="sec-positions"
+                          className="block scroll-mt-28"
                         />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
-
-                {/* Contract Tracker — long-term position tracking (Wonce
-                    guest-shared single-tenant). See
-                    docs/superpowers/specs/contract-tracker-2026-05-17.md. */}
-                {isAuthenticated && !panelPrefs.isHidden('sec-tracker') && (
-                  <>
-                    <span id="sec-tracker" className="block scroll-mt-28" />
-                    <ErrorBoundary label="Contract Tracker">
-                      <Suspense fallback={<SkeletonSection lines={5} tall />}>
-                        <TrackerSection
-                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        <ErrorBoundary label="Paper Dashboard">
+                          <Suspense
+                            fallback={<SkeletonSection lines={5} tall />}
+                          >
+                            <PositionMonitor
+                              spotPrice={results?.spot ?? spxVal ?? 0}
+                              onPositionSummaryChange={setCsvPositionSummary}
+                              portfolioRiskThresholdPct={
+                                portfolioRiskThresholdPct
+                              }
+                              defaultCollapsed
+                            />
+                          </Suspense>
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    'sec-tracker': () => (
+                      <>
+                        <span id="sec-tracker" className="block scroll-mt-28" />
+                        <ErrorBoundary label="Contract Tracker">
+                          <Suspense
+                            fallback={<SkeletonSection lines={5} tall />}
+                          >
+                            <TrackerSection
+                              marketOpen={
+                                market.data.quotes?.marketOpen ?? false
+                              }
+                            />
+                          </Suspense>
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    'sec-bwb': () => (
+                      <>
+                        <span id="sec-bwb" className="block scroll-mt-28" />
+                        <ErrorBoundary label="BWB Calculator">
+                          <Suspense
+                            fallback={<SkeletonSection lines={5} tall />}
+                          >
+                            <BWBCalculator
+                              selectedDate={vix.selectedDate}
+                              vix={vixInput}
+                              defaultCollapsed
+                            />
+                          </Suspense>
+                        </ErrorBoundary>
+                      </>
+                    ),
+                    results: () => (
+                      <ErrorBoundary label="Results">
+                        <ResultsSection
+                          results={results}
+                          effectiveRatio={effectiveRatio}
+                          spxDirectActive={spxDirectActive}
+                          showIC={showIC}
+                          wingWidth={wingWidth}
+                          contracts={contracts}
+                          skewPct={skewPct}
+                          breakevenTarget={breakevenTarget}
+                          setBreakevenTarget={setBreakevenTarget}
+                          showBWB={showBWB}
+                          bwbNarrowWidth={bwbNarrowWidth}
+                          bwbWideMultiplier={bwbWideMultiplier}
                         />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
+                      </ErrorBoundary>
+                    ),
+                  };
 
-                {isAuthenticated && !panelPrefs.isHidden('sec-bwb') && (
-                  <>
-                    <span id="sec-bwb" className="block scroll-mt-28" />
-                    <ErrorBoundary label="BWB Calculator">
-                      <Suspense fallback={<SkeletonSection lines={5} tall />}>
-                        <BWBCalculator
-                          selectedDate={vix.selectedDate}
-                          vix={vixInput}
-                          defaultCollapsed
-                        />
-                      </Suspense>
-                    </ErrorBoundary>
-                  </>
-                )}
-
-                <ErrorBoundary label="Results">
-                  <ResultsSection
-                    results={results}
-                    effectiveRatio={effectiveRatio}
-                    spxDirectActive={spxDirectActive}
-                    showIC={showIC}
-                    wingWidth={wingWidth}
-                    contracts={contracts}
-                    skewPct={skewPct}
-                    breakevenTarget={breakevenTarget}
-                    setBreakevenTarget={setBreakevenTarget}
-                    showBWB={showBWB}
-                    bwbNarrowWidth={bwbNarrowWidth}
-                    bwbWideMultiplier={bwbWideMultiplier}
-                  />
-                </ErrorBoundary>
+                  const out: ReactNode[] = [];
+                  for (const group of resolvedGroups) {
+                    const ids = resolvedPanelsByGroup.get(group) ?? [];
+                    for (const id of ids) {
+                      // `results` is structurally pinned — toggling it
+                      // in the modal is a latent no-op (preserved from
+                      // the pre-refactor behavior). Every other id
+                      // respects the hidden Set.
+                      if (id !== 'results' && panelPrefs.isHidden(id)) {
+                        continue;
+                      }
+                      const render = panelRenderers[id];
+                      if (!render) continue;
+                      out.push(<Fragment key={id}>{render()}</Fragment>);
+                    }
+                  }
+                  return out;
+                })()}
               </main>
             </div>
           </div>
