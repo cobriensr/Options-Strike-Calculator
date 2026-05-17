@@ -16,9 +16,7 @@ import type {
 
 /* ───────────────────────── Fixture helpers ─────────────────────────── */
 
-function lotteryRow(
-  overrides: Partial<LotteryAlertRow> = {},
-): LotteryAlertRow {
+function lotteryRow(overrides: Partial<LotteryAlertRow> = {}): LotteryAlertRow {
   return {
     fire_time: new Date('2026-04-01T14:30:00Z'),
     date: new Date('2026-04-01'),
@@ -114,9 +112,9 @@ describe('clusterScoreFromCount', () => {
   });
 
   it('saturates at 1 at N=10 and stays at 1 for N>10', () => {
-    expect(
-      clusterScoreFromCount(CROSS_NAME_CLUSTER_SATURATION_TICKERS),
-    ).toBe(1);
+    expect(clusterScoreFromCount(CROSS_NAME_CLUSTER_SATURATION_TICKERS)).toBe(
+      1,
+    );
     expect(clusterScoreFromCount(50)).toBe(1);
   });
 

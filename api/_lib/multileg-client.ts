@@ -120,7 +120,9 @@ const MULTILEG_STRUCTURES: readonly MultilegStructure[] = [
 
 const classificationRowSchema = z.object({
   id: z.string().min(1),
-  inferred_structure: z.enum(MULTILEG_STRUCTURES as unknown as [string, ...string[]]),
+  inferred_structure: z.enum(
+    MULTILEG_STRUCTURES as unknown as [string, ...string[]],
+  ),
   is_isolated_leg: z.boolean(),
   match_confidence: z.number().min(0).max(1),
   pattern_group_id: z.string().min(1),
@@ -284,11 +286,9 @@ export async function classifyMultilegBatch(
       level: isServer ? 'warning' : 'error',
       extra: { status: sidecarStatus, body: bodyText, count: trades.length },
     });
-    throw new MultilegClassifyError(
-      kind,
-      `sidecar returned ${sidecarStatus}`,
-      { status: sidecarStatus },
-    );
+    throw new MultilegClassifyError(kind, `sidecar returned ${sidecarStatus}`, {
+      status: sidecarStatus,
+    });
   }
 
   let rawJson: unknown;

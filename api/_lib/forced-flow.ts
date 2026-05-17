@@ -24,10 +24,7 @@
  * real when the dependency lands without a feature-shape change.
  */
 
-import type {
-  LotteryAlertRow,
-  SilentBoomAlertRow,
-} from './takeit-features.js';
+import type { LotteryAlertRow, SilentBoomAlertRow } from './takeit-features.js';
 
 /**
  * Cross-asset stress trigger: VIX intraday change in absolute VIX points.

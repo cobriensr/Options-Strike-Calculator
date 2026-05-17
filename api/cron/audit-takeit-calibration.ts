@@ -68,6 +68,18 @@ interface AuditResult {
     observed_rate: number;
     residual_abs: number;
   }>;
+  /**
+   * Meta-detectors Phase 6: surfacing of new feature coverage. Informational
+   * only — no scoring impact. Helps detect dead pipes (e.g. multileg
+   * classifier silently returning NULL for 90% of fires) before they cause a
+   * silent AUC regression at retrain time.
+   */
+  feature_coverage: {
+    /** Fraction of last-7-day fires with a non-NULL inferred_structure. */
+    pct_inferred_structure_classified: number;
+    /** Counts of wave2_status buckets (null = still in flight or pre-Phase 4). */
+    wave2_status_distribution: Record<string, number>;
+  };
 }
 
 function computeBrier(rows: CalibrationRow[]): number {
@@ -137,6 +149,69 @@ function computeBuckets(
   return result;
 }
 
+/**
+ * Meta-detectors Phase 6 coverage probe. Single round-trip per alert type;
+ * cheap because the window is 7 days. Returns {} if the query fails — the
+ * coverage block is informational and must not break the audit cron.
+ */
+async function fetchFeatureCoverage(
+  alertType: AlertType,
+): Promise<AuditResult['feature_coverage']> {
+  const db = getDb();
+  try {
+    const rows =
+      alertType === 'lottery'
+        ? ((await db`
+            SELECT
+              inferred_structure,
+              wave2_status,
+              COUNT(*)::int AS n
+            FROM lottery_finder_fires
+            WHERE date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
+            GROUP BY inferred_structure, wave2_status
+          `) as Array<{
+            inferred_structure: string | null;
+            wave2_status: string | null;
+            n: number;
+          }>)
+        : ((await db`
+            SELECT
+              inferred_structure,
+              wave2_status,
+              COUNT(*)::int AS n
+            FROM silent_boom_alerts
+            WHERE date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
+            GROUP BY inferred_structure, wave2_status
+          `) as Array<{
+            inferred_structure: string | null;
+            wave2_status: string | null;
+            n: number;
+          }>);
+
+    let total = 0;
+    let classified = 0;
+    const waveDist: Record<string, number> = {};
+    for (const r of rows) {
+      total += r.n;
+      if (r.inferred_structure !== null) classified += r.n;
+      const waveKey = r.wave2_status ?? 'null';
+      waveDist[waveKey] = (waveDist[waveKey] ?? 0) + r.n;
+    }
+    return {
+      pct_inferred_structure_classified: total > 0 ? classified / total : 0,
+      wave2_status_distribution: waveDist,
+    };
+  } catch (err) {
+    // Coverage probe is best-effort. Don't break the audit on a transient
+    // DB hiccup — capture and return an empty block.
+    Sentry.captureException(err);
+    return {
+      pct_inferred_structure_classified: 0,
+      wave2_status_distribution: {},
+    };
+  }
+}
+
 async function auditOne(alertType: AlertType): Promise<AuditResult> {
   const db = getDb();
   const rows =
@@ -160,6 +235,8 @@ async function auditOne(alertType: AlertType): Promise<AuditResult> {
             AND date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
         `) as Array<{ prob: number; win: 0 | 1 }>);
 
+  const featureCoverage = await fetchFeatureCoverage(alertType);
+
   if (rows.length === 0) {
     return {
       n: 0,
@@ -167,6 +244,7 @@ async function auditOne(alertType: AlertType): Promise<AuditResult> {
       auc: null,
       brier_ok: true,
       bucket_residuals: [],
+      feature_coverage: featureCoverage,
     };
   }
 
@@ -229,6 +307,7 @@ async function auditOne(alertType: AlertType): Promise<AuditResult> {
     auc,
     brier_ok: brierOk,
     bucket_residuals: buckets,
+    feature_coverage: featureCoverage,
   };
 }
 

@@ -252,10 +252,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       metrics.increment('analyze.json_parse_failed');
       Sentry.captureException(parseErr, {
         tags: { context: 'analyze_json_parse' },
-        extra: { rawSnippet: text.slice(0, 500), stopReason: callResult.stopReason },
+        extra: {
+          rawSnippet: text.slice(0, 500),
+          stopReason: callResult.stopReason,
+        },
       });
       logger.error(
-        { err: parseErr, raw: text.slice(0, 500), stopReason: callResult.stopReason },
+        {
+          err: parseErr,
+          raw: text.slice(0, 500),
+          stopReason: callResult.stopReason,
+        },
         'Analysis response JSON parse failed',
       );
     }

@@ -73,9 +73,7 @@ describe('flowAtFireTime', () => {
   });
 
   it('handles a single-row series', () => {
-    const s = series([
-      { ts: '2026-05-12T14:00:00Z', cumNcp: 42, cumNpp: -7 },
-    ]);
+    const s = series([{ ts: '2026-05-12T14:00:00Z', cumNcp: 42, cumNpp: -7 }]);
     expect(flowAtFireTime(s, new Date('2026-05-12T14:00:00Z'))).toEqual({
       cumNcp: 42,
       cumNpp: -7,

@@ -257,7 +257,9 @@ describe('classifyAlertMultileg', () => {
 
   it('cache hit: same (ticker, chain, minute) returns memoized result with one sidecar call', async () => {
     const anchorId = 'anchor-cache';
-    const rows = [makeRow({ ws_trade_id: anchorId, option_chain: optionChain })];
+    const rows = [
+      makeRow({ ws_trade_id: anchorId, option_chain: optionChain }),
+    ];
     const classification: MultilegClassification = {
       id: anchorId,
       inferredStructure: 'isolated_leg',

@@ -86,7 +86,13 @@ describe('evaluate-round-trip handler', () => {
     // Batched aggregation returns one row keyed by id+source —
     // net_pct = (10 - 90) / 100 = -0.80 → deduct -3.
     mockSql.mockResolvedValueOnce([
-      { id: 42, source: 'lottery', ask_size: 10, bid_size: 90, total_size: 100 },
+      {
+        id: 42,
+        source: 'lottery',
+        ask_size: 10,
+        bid_size: 90,
+        total_size: 100,
+      },
     ]);
     // Single batched UPDATE for the lottery side.
     mockSql.mockResolvedValueOnce([]);
@@ -141,7 +147,13 @@ describe('evaluate-round-trip handler', () => {
     ]);
     // net_pct = (40 - 60) / 100 = -0.20 → deduct -1
     mockSql.mockResolvedValueOnce([
-      { id: 11, source: 'silent_boom', ask_size: 40, bid_size: 60, total_size: 100 },
+      {
+        id: 11,
+        source: 'silent_boom',
+        ask_size: 40,
+        bid_size: 60,
+        total_size: 100,
+      },
     ]);
     mockSql.mockResolvedValueOnce([]);
 
@@ -164,7 +176,13 @@ describe('evaluate-round-trip handler', () => {
     ]);
     // net_pct = (50 - 50) / 100 = 0.0 → deduct 0
     mockSql.mockResolvedValueOnce([
-      { id: 99, source: 'lottery', ask_size: 50, bid_size: 50, total_size: 100 },
+      {
+        id: 99,
+        source: 'lottery',
+        ask_size: 50,
+        bid_size: 50,
+        total_size: 100,
+      },
     ]);
     mockSql.mockResolvedValueOnce([]);
 
@@ -221,7 +239,13 @@ describe('evaluate-round-trip handler', () => {
     // from the unnest input.
     mockSql.mockResolvedValueOnce([
       { id: 1, source: 'lottery', ask_size: 5, bid_size: 95, total_size: 100 },
-      { id: 2, source: 'silent_boom', ask_size: 80, bid_size: 20, total_size: 100 },
+      {
+        id: 2,
+        source: 'silent_boom',
+        ask_size: 80,
+        bid_size: 20,
+        total_size: 100,
+      },
     ]);
     // Two batched UPDATEs — one per source table.
     mockSql.mockResolvedValueOnce([]); // lottery UPDATE
@@ -249,7 +273,13 @@ describe('evaluate-round-trip handler', () => {
       },
     ]);
     mockSql.mockResolvedValueOnce([
-      { id: 42, source: 'silent_boom', ask_size: 0, bid_size: 0, total_size: 0 },
+      {
+        id: 42,
+        source: 'silent_boom',
+        ask_size: 0,
+        bid_size: 0,
+        total_size: 0,
+      },
     ]);
     mockSql.mockResolvedValueOnce([]); // the batched UPDATE silent_boom_alerts call
 

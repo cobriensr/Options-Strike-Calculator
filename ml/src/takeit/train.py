@@ -62,11 +62,39 @@ NON_FEATURE_COLS: Final = {
     "win",
     "strike",
     "gex_strike_actual_strike",
+    # Phase 4 (meta-detectors) — wave2 columns are POST-FIRE labels.
+    # `wave2_status` is determined by a follow-up event 0-60 min AFTER
+    # the alert; including it as a feature would leak the future. It's
+    # available for a separate meta-classifier (per spec). The detected_at
+    # timestamp and the pattern_group_id (hash, not a feature) join the
+    # exclude list for the same reason.
+    "wave2_status",
+    "wave2_detected_at",
+    "pattern_group_id",
 }
 
 CATEGORICAL_COLS: Final = {
-    "lottery": ["option_type", "mode", "flow_quad", "tod"],
-    "silentboom": ["option_type", "score_tier"],
+    # Phase 2 (multileg): `inferred_structure` is one of
+    # {isolated_leg, vertical, strangle, risk_reversal, butterfly} — see
+    # api/_lib/takeit-features.ts INFERRED_STRUCTURE_LABELS.
+    # Phase 3 (time-of-day): `session_phase_cat` is the 7-bucket categorical
+    # label (pre_open, open, opening_30, morning, lunch, afternoon, closing).
+    # Both NULL-safe via pd.get_dummies(dummy_na=False) → NULL rows produce
+    # an all-zero one-hot block, which XGBoost handles via NaN-default routing.
+    "lottery": [
+        "option_type",
+        "mode",
+        "flow_quad",
+        "tod",
+        "inferred_structure",
+        "session_phase_cat",
+    ],
+    "silentboom": [
+        "option_type",
+        "score_tier",
+        "inferred_structure",
+        "session_phase_cat",
+    ],
 }
 
 MIN_LABELED_SAMPLES: Final = 500  # SilentBoom gate (spec resolved decision #2)

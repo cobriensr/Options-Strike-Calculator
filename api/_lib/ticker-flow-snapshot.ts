@@ -133,8 +133,7 @@ export async function fetchTickerFlowSeries(
   const nppArr = new Array<number>(n);
   for (let i = 0; i < n; i += 1) {
     const r = rows[i]!;
-    tsArr[i] =
-      typeof r.ts === 'string' ? Date.parse(r.ts) : r.ts.getTime();
+    tsArr[i] = typeof r.ts === 'string' ? Date.parse(r.ts) : r.ts.getTime();
     ncpArr[i] = Number(r.cum_ncp ?? 0);
     nppArr[i] = Number(r.cum_npp ?? 0);
   }

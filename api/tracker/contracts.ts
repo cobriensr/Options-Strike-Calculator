@@ -78,14 +78,32 @@ async function handleList(
 
   try {
     const sql = getDb();
+    // LEFT JOIN LATERAL picks the most-recent tick per contract so the
+    // frontend renders Current/Δ$/Δ% without a second round-trip. Active
+    // rows usually have a tick (cron fills every 5 min); freshly-created
+    // contracts and archived rows may have none, so the LEFT join keeps
+    // them in the result set with NULL `latest_*` columns.
     const rows = await sql`
-      SELECT id, occ_symbol, ticker, expiry, strike, side, direction,
-             entry_price, quantity, notes, status, closed_at, closed_price,
-             up_thresholds, down_thresholds, spot_alerts,
-             created_at, updated_at
-      FROM tracker_contracts
-      WHERE status = ${status}
-      ORDER BY expiry ASC, ticker ASC, id ASC
+      SELECT
+        c.id, c.occ_symbol, c.ticker, c.expiry, c.strike, c.side,
+        c.direction, c.entry_price, c.quantity, c.notes, c.status,
+        c.closed_at, c.closed_price, c.up_thresholds, c.down_thresholds,
+        c.spot_alerts, c.created_at, c.updated_at,
+        t.last         AS latest_last,
+        t.bid          AS latest_bid,
+        t.ask          AS latest_ask,
+        t.underlying   AS latest_underlying,
+        t.fetched_at   AS latest_fetched_at
+      FROM tracker_contracts c
+      LEFT JOIN LATERAL (
+        SELECT last, bid, ask, underlying, fetched_at
+        FROM tracker_contract_ticks
+        WHERE contract_id = c.id
+        ORDER BY fetched_at DESC
+        LIMIT 1
+      ) t ON true
+      WHERE c.status = ${status}
+      ORDER BY c.expiry ASC, c.ticker ASC, c.id ASC
     `;
     res.setHeader('Cache-Control', 'no-store');
     done({ status: 200 });

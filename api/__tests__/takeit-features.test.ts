@@ -991,12 +991,9 @@ describe('forced-flow features (silentboom integration)', () => {
 
   it('silent-boom respects macro arg for cross_asset_stress_flag', () => {
     const bundle = makeBundle('silentboom', FORCED_FLOW_COLS);
-    const out = featuresForSilentBoom(
-      bundle,
-      silentBoomRow(),
-      EMPTY_CTX,
-      { vixIntradayChange: 10 },
-    );
+    const out = featuresForSilentBoom(bundle, silentBoomRow(), EMPTY_CTX, {
+      vixIntradayChange: 10,
+    });
     expect(out.cross_asset_stress_flag).toBe(1);
   });
 

@@ -162,6 +162,11 @@ const SilentBoomSection = lazy(() =>
     .then((m) => ({ default: m.SilentBoomSection }))
     .catch(handleStaleChunk),
 );
+const TrackerSection = lazy(() =>
+  import('./components/Tracker/TrackerSection')
+    .then((m) => ({ default: m.TrackerSection }))
+    .catch(handleStaleChunk),
+);
 
 // ============================================================
 // ADMIN ENDPOINT RESPONSE SHAPES
@@ -688,6 +693,9 @@ export default function StrikeCalculator() {
         ? [{ id: 'sec-periscope-history', label: 'Periscope History' }]
         : []),
       { id: 'sec-positions', label: 'Position Monitor' },
+      ...(isAuthenticated
+        ? [{ id: 'sec-tracker', label: 'Contract Tracker' }]
+        : []),
       ...(isAuthenticated ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
       { id: 'results', label: 'Results' },
     ];
@@ -1221,6 +1229,24 @@ export default function StrikeCalculator() {
                     />
                   </Suspense>
                 </ErrorBoundary>
+
+                {/* Contract Tracker — long-term position tracking (Wonce
+                    guest-shared single-tenant). See
+                    docs/superpowers/specs/contract-tracker-2026-05-17.md. */}
+                {isAuthenticated && (
+                  <>
+                    <span id="sec-tracker" className="block scroll-mt-28" />
+                    <ErrorBoundary label="Contract Tracker">
+                      <Suspense fallback={<SkeletonSection lines={5} tall />}>
+                        <TrackerSection
+                          marketOpen={
+                            market.data.quotes?.marketOpen ?? false
+                          }
+                        />
+                      </Suspense>
+                    </ErrorBoundary>
+                  </>
+                )}
 
                 {isAuthenticated && (
                   <>

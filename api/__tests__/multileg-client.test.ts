@@ -125,21 +125,19 @@ describe('classifyMultilegBatch', () => {
   });
 
   it('camelCase → snake_case conversion on request body', async () => {
-    const spy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: TRADE_A.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: TRADE_A.id,
-            },
-          ],
-        }),
-      );
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        classifications: [
+          {
+            id: TRADE_A.id,
+            inferred_structure: 'isolated_leg',
+            is_isolated_leg: true,
+            match_confidence: 0,
+            pattern_group_id: TRADE_A.id,
+          },
+        ],
+      }),
+    );
 
     await classifyMultilegBatch([TRADE_A]);
 
@@ -174,21 +172,19 @@ describe('classifyMultilegBatch', () => {
   });
 
   it('forwards tolerance options in the request body when set', async () => {
-    const spy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: TRADE_A.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: TRADE_A.id,
-            },
-          ],
-        }),
-      );
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        classifications: [
+          {
+            id: TRADE_A.id,
+            inferred_structure: 'isolated_leg',
+            is_isolated_leg: true,
+            match_confidence: 0,
+            pattern_group_id: TRADE_A.id,
+          },
+        ],
+      }),
+    );
 
     await classifyMultilegBatch([TRADE_A], {
       windowSeconds: 60,
@@ -314,21 +310,19 @@ describe('classifyMultilegBatch', () => {
 
   it('strips trailing slash from SIDECAR_URL when building the endpoint URL', async () => {
     process.env.SIDECAR_URL = 'https://sidecar.example/';
-    const spy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: TRADE_A.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: TRADE_A.id,
-            },
-          ],
-        }),
-      );
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        classifications: [
+          {
+            id: TRADE_A.id,
+            inferred_structure: 'isolated_leg',
+            is_isolated_leg: true,
+            match_confidence: 0,
+            pattern_group_id: TRADE_A.id,
+          },
+        ],
+      }),
+    );
 
     await classifyMultilegBatch([TRADE_A]);
     const [calledUrl] = spy.mock.calls[0]!;
@@ -351,54 +345,50 @@ describe('classifyMultilegBatch', () => {
       premium: 125,
     };
 
-    const spy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: tradeNoDelta.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: tradeNoDelta.id,
-            },
-          ],
-        }),
-      );
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        classifications: [
+          {
+            id: tradeNoDelta.id,
+            inferred_structure: 'isolated_leg',
+            is_isolated_leg: true,
+            match_confidence: 0,
+            pattern_group_id: tradeNoDelta.id,
+          },
+        ],
+      }),
+    );
 
     await classifyMultilegBatch([tradeNoDelta]);
     const init = spy.mock.calls[0]![1];
-    const sent = JSON.parse(
-      (init?.body as string | undefined) ?? '{}',
-    ) as { trades: Array<Record<string, unknown>> };
+    const sent = JSON.parse((init?.body as string | undefined) ?? '{}') as {
+      trades: Array<Record<string, unknown>>;
+    };
     expect('delta' in sent.trades[0]!).toBe(false);
   });
 
   it('passes delta=null through to the wire body when caller set it null', async () => {
     const tradeNullDelta: MultilegTradeInput = { ...TRADE_A, delta: null };
 
-    const spy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(
-        makeJsonResponse({
-          classifications: [
-            {
-              id: tradeNullDelta.id,
-              inferred_structure: 'isolated_leg',
-              is_isolated_leg: true,
-              match_confidence: 0,
-              pattern_group_id: tradeNullDelta.id,
-            },
-          ],
-        }),
-      );
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        classifications: [
+          {
+            id: tradeNullDelta.id,
+            inferred_structure: 'isolated_leg',
+            is_isolated_leg: true,
+            match_confidence: 0,
+            pattern_group_id: tradeNullDelta.id,
+          },
+        ],
+      }),
+    );
 
     await classifyMultilegBatch([tradeNullDelta]);
     const init = spy.mock.calls[0]![1];
-    const sent = JSON.parse(
-      (init?.body as string | undefined) ?? '{}',
-    ) as { trades: Array<Record<string, unknown>> };
+    const sent = JSON.parse((init?.body as string | undefined) ?? '{}') as {
+      trades: Array<Record<string, unknown>>;
+    };
     expect(sent.trades[0]!.delta).toBeNull();
   });
 

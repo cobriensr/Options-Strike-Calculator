@@ -83,6 +83,9 @@ LOTTERY_SQL: Final = """
         gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
         gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
         score, direction_gated,
+        inferred_structure, is_isolated_leg, match_confidence,
+        pattern_group_id,
+        wave2_status, wave2_detected_at,
         peak_ceiling_pct
     FROM lottery_finder_fires
     WHERE peak_ceiling_pct IS NOT NULL
@@ -99,6 +102,9 @@ SILENTBOOM_SQL: Final = """
         spx_spot_gamma_oi,
         multi_leg_share, underlying_price_at_spike,
         score, score_tier, direction_gated,
+        inferred_structure, is_isolated_leg, match_confidence,
+        pattern_group_id,
+        wave2_status, wave2_detected_at,
         peak_ceiling_pct
     FROM silent_boom_alerts
     WHERE peak_ceiling_pct IS NOT NULL
@@ -159,6 +165,145 @@ def _session_phase_from_minute_ct(minute_of_day_ct: float) -> int:
     return 0
 
 
+# ── Phase 3: 7-phase categorical session label ───────────────────────────────
+#
+# Mirrors `sessionPhaseCatFromMinuteCt` / `SESSION_PHASES` in
+# api/_lib/takeit-features.ts. Lives alongside the legacy numeric
+# `session_phase` (0-5); both ship so the trainer can keep the existing
+# bundle stable while letting the new categorical participate in one-hot
+# expansion. LEFT-inclusive boundaries: 08:30:00 → 'open', 09:00:00 →
+# 'opening_30', etc. DO NOT REORDER — the trainer pins one-hot column
+# names like `session_phase_cat_open`; reordering would silently invalidate
+# bundles.
+
+SESSION_PHASES: Final = (
+    "pre_open",
+    "open",
+    "opening_30",
+    "morning",
+    "lunch",
+    "afternoon",
+    "closing",
+)
+
+
+def _session_phase_cat_from_minute_ct(minute_of_day_ct: float) -> str:
+    """7-phase categorical label aligned to the user's trading schedule.
+
+    CT (all LEFT-inclusive):
+      pre_open   : < 08:30
+      open       : 08:30-09:00 (cash-open overlap)
+      opening_30 : 09:00-09:30 (gamma rebalance window)
+      morning    : 09:30-11:00 (informed-flow window)
+      lunch      : 11:00-13:00
+      afternoon  : 13:00-14:00
+      closing    : 14:00 onward
+    """
+    if minute_of_day_ct < 8 * 60 + 30:
+        return "pre_open"
+    if minute_of_day_ct < 9 * 60:
+        return "open"
+    if minute_of_day_ct < 9 * 60 + 30:
+        return "opening_30"
+    if minute_of_day_ct < 11 * 60:
+        return "morning"
+    if minute_of_day_ct < 13 * 60:
+        return "lunch"
+    if minute_of_day_ct < 14 * 60:
+        return "afternoon"
+    return "closing"
+
+
+# ── Phase 5: Forced-flow features ────────────────────────────────────────────
+#
+# Mirrors api/_lib/forced-flow.ts. Two features are real (calendar quarter-end
+# last hour CT, VIX intraday change > +3 pts when available); the other two
+# are STUBS returning 0 by design (bilateral_flow + cross_name_cluster require
+# context the alert row does not carry — see the TS file's STUB notes).
+# Stub-zero is a truthful signal ("no info"); the rewire will swap in the
+# real derivation without a feature-shape change.
+
+CROSS_ASSET_STRESS_VIX_THRESHOLD_PTS: Final = 3.0
+
+
+def _is_quarter_end_last_hour_ct(ct_ts: pd.Timestamp) -> bool:
+    """Quarter-end last hour CT (14:00 ≤ minute < 15:00, last weekday of
+    Mar/Jun/Sep/Dec). Mirrors api/_lib/forced-flow.ts isQuarterEndLastHourCt.
+
+    Simplifications kept identical to the TS version:
+      - "Last trading day" approximated as last weekday (Mon-Fri).
+      - No US holiday calendar wired in v1.
+    """
+    if pd.isna(ct_ts):
+        return False
+    month = ct_ts.month
+    if month not in (3, 6, 9, 12):
+        return False
+    # Find last weekday of this CT month, iterating backward.
+    year = ct_ts.year
+    # Last day of month via timestamp math.
+    next_month_first = pd.Timestamp(
+        year=year + (1 if month == 12 else 0),
+        month=1 if month == 12 else month + 1,
+        day=1,
+        tz=ct_ts.tz,
+    )
+    last_day = (next_month_first - pd.Timedelta(days=1)).day
+    last_weekday = last_day
+    for d in range(last_day, 0, -1):
+        # weekday(): Mon=0..Sun=6 (matches the TS Mon-Fri = 1-5 after the
+        # JS `getUTCDay()` Sun=0..Sat=6 conversion; here we use Python's
+        # Mon=0..Sun=6 directly).
+        probe = pd.Timestamp(year=year, month=month, day=d, tz=ct_ts.tz)
+        if probe.weekday() < 5:  # Mon-Fri
+            last_weekday = d
+            break
+    if ct_ts.day != last_weekday:
+        return False
+    minute_of_day = ct_ts.hour * 60 + ct_ts.minute
+    return 14 * 60 <= minute_of_day < 15 * 60
+
+
+def _derive_forced_flow_features(
+    df: pd.DataFrame, ct_index: pd.DatetimeIndex
+) -> pd.DataFrame:
+    """Add the 4 forced-flow features to df.
+
+    Mirrors `computeForcedFlowFeatures` in api/_lib/forced-flow.ts.
+
+    Stub policy: bilateral_flow_score and cross_name_cluster_score are
+    hard-coded 0 here (same as TS v1) — the alert row doesn't carry the
+    sequential context they need. Documented dependency: when the alert row
+    gains `bilateral_qualifying_opposite_count` /
+    `sector_cluster_count_within_5min`, replace these column assignments
+    with the real derivation.
+
+    cross_asset_stress_flag: real iff the training row carries a
+    `vix_intraday_change` column (positive = stress). Otherwise stubbed to
+    0. The Phase 1 SELECT does NOT pull VIX intraday; consumers can join
+    it in before calling derive_common_features() if available.
+    """
+    out = df.copy()
+    out["bilateral_flow_score"] = 0.0
+    out["cross_name_cluster_score"] = 0.0
+    out["calendar_adjacency_flag"] = ct_index.map(_is_quarter_end_last_hour_ct).astype(
+        "int8"
+    )
+    if "vix_intraday_change" in out.columns:
+        vix = pd.to_numeric(out["vix_intraday_change"], errors="coerce")
+        out["cross_asset_stress_flag"] = (
+            (vix > CROSS_ASSET_STRESS_VIX_THRESHOLD_PTS).fillna(False).astype("int8")
+        )
+    else:
+        # Stub: no VIX intraday data in the alert row → 0. The model
+        # learns the all-zero feature carries no info; rewire when VIX
+        # joins the training SELECT.
+        out["cross_asset_stress_flag"] = pd.Series(
+            0, index=out.index, dtype="int8"
+        )
+    return out
+
+
 def derive_common_features(df: pd.DataFrame, spot_col: str, ask_pct_col: str) -> pd.DataFrame:
     """Derive features common to both alert types.
 
@@ -173,6 +318,12 @@ def derive_common_features(df: pd.DataFrame, spot_col: str, ask_pct_col: str) ->
     out["minute_of_day_ct"] = ct.dt.hour * 60 + ct.dt.minute
     out["day_of_week"] = ct.dt.dayofweek
     out["session_phase"] = out["minute_of_day_ct"].map(_session_phase_from_minute_ct)
+    # Phase 3 (meta-detectors): 7-phase categorical session label, lives
+    # alongside the legacy numeric session_phase. Encoded by pd.get_dummies
+    # in train.py via CATEGORICAL_COLS additions.
+    out["session_phase_cat"] = out["minute_of_day_ct"].map(
+        _session_phase_cat_from_minute_ct
+    )
 
     spot = out[spot_col]
     strike = out["strike"]
@@ -201,6 +352,10 @@ def derive_common_features(df: pd.DataFrame, spot_col: str, ask_pct_col: str) ->
     out["aggressive_premium_flag"] = (
         (out[ask_pct_col] >= AGGRESSIVE_ASK_PCT_THRESHOLD).astype("Int8")
     )
+
+    # Phase 5 (meta-detectors): forced-flow features. ct DatetimeIndex
+    # is reused so we don't pay the tz conversion twice.
+    out = _derive_forced_flow_features(out, pd.DatetimeIndex(ct))
     return out
 
 

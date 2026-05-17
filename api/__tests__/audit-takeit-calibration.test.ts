@@ -163,8 +163,14 @@ describe('computeBuckets', () => {
 
 describe('audit-takeit-calibration cron', () => {
   it('returns success with null metrics when both alert types have zero rows', async () => {
-    // Both SELECTs return [].
-    mockSql.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    // Each auditOne does 2 SQL calls: (1) calibration SELECT, (2) feature
+    // coverage SELECT. Provide 4 responses total — calib lottery, coverage
+    // lottery, calib silentboom, coverage silentboom.
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
 
     const req = mockRequest({
       method: 'GET',
@@ -184,7 +190,7 @@ describe('audit-takeit-calibration cron', () => {
   });
 
   it('emits Brier + AUC + bucket_residual_abs distributions for both alert types when rows exist', async () => {
-    // Lottery: perfectly calibrated 4-row set.
+    // Lottery: perfectly calibrated 4-row set + coverage probe.
     mockSql
       .mockResolvedValueOnce([
         { prob: 0.9, win: 1 },
@@ -192,13 +198,20 @@ describe('audit-takeit-calibration cron', () => {
         { prob: 0.2, win: 0 },
         { prob: 0.1, win: 0 },
       ])
+      // Coverage probe (lottery).
+      .mockResolvedValueOnce([
+        { inferred_structure: 'vertical', wave2_status: 'confirmed', n: 2 },
+        { inferred_structure: null, wave2_status: null, n: 2 },
+      ])
       // SilentBoom: 4-row set as well.
       .mockResolvedValueOnce([
         { prob: 0.85, win: 1 },
         { prob: 0.75, win: 1 },
         { prob: 0.25, win: 0 },
         { prob: 0.15, win: 0 },
-      ]);
+      ])
+      // Coverage probe (silentboom).
+      .mockResolvedValueOnce([]);
 
     const req = mockRequest({
       method: 'GET',
@@ -240,7 +253,8 @@ describe('audit-takeit-calibration cron', () => {
   });
 
   it('captureMessage + brier_breach count fire when brier exceeds threshold', async () => {
-    // 4 maximally-wrong predictions on lottery; empty on silentboom.
+    // 4 maximally-wrong predictions on lottery; empty on silentboom. Each
+    // auditOne also runs a coverage probe — 4 mock responses total.
     mockSql
       .mockResolvedValueOnce([
         { prob: 1, win: 0 },
@@ -248,6 +262,11 @@ describe('audit-takeit-calibration cron', () => {
         { prob: 0, win: 1 },
         { prob: 0, win: 1 },
       ])
+      // Coverage probe (lottery).
+      .mockResolvedValueOnce([])
+      // SilentBoom: empty calibration.
+      .mockResolvedValueOnce([])
+      // Coverage probe (silentboom).
       .mockResolvedValueOnce([]);
 
     const req = mockRequest({

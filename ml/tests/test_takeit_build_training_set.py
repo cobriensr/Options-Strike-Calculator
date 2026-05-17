@@ -10,6 +10,9 @@ from datetime import date as date_type
 import pandas as pd
 import pytest
 from ml.src.takeit.build_training_set import (
+    SESSION_PHASES,
+    _is_quarter_end_last_hour_ct,
+    _session_phase_cat_from_minute_ct,
     add_burst_storm,
     add_cofire_diff_chain_flag,
     add_cofire_flag,
@@ -684,6 +687,190 @@ def test_build_silentboom_from_raw_produces_expected_columns() -> None:
 
 
 # ── Leakage smoke: no outcome columns other than the label leak through ──────
+
+
+# ── Phase 3: 7-phase session_phase_cat ───────────────────────────────────────
+
+
+def test_session_phase_cat_left_inclusive_boundaries() -> None:
+    """Boundary convention is LEFT-inclusive — 08:30:00 → 'open', 09:00:00 →
+    'opening_30'. Mirrors api/_lib/takeit-features.ts sessionPhaseCatFromMinuteCt.
+    """
+    # Mid-bucket samples.
+    assert _session_phase_cat_from_minute_ct(8 * 60) == "pre_open"
+    assert _session_phase_cat_from_minute_ct(8 * 60 + 30) == "open"
+    assert _session_phase_cat_from_minute_ct(9 * 60) == "opening_30"
+    assert _session_phase_cat_from_minute_ct(9 * 60 + 30) == "morning"
+    assert _session_phase_cat_from_minute_ct(11 * 60) == "lunch"
+    assert _session_phase_cat_from_minute_ct(13 * 60) == "afternoon"
+    assert _session_phase_cat_from_minute_ct(14 * 60) == "closing"
+    # Late after-hours stays in 'closing' bucket (no separate post-close label).
+    assert _session_phase_cat_from_minute_ct(20 * 60) == "closing"
+
+
+def test_session_phases_constant_order_is_stable() -> None:
+    """SESSION_PHASES order must NOT change — the trainer pins one-hot column
+    names like `session_phase_cat_open` and a reorder silently invalidates
+    every existing bundle. See SESSION_PHASES doc comment in TS counterpart.
+    """
+    assert SESSION_PHASES == (
+        "pre_open",
+        "open",
+        "opening_30",
+        "morning",
+        "lunch",
+        "afternoon",
+        "closing",
+    )
+
+
+def test_derive_common_features_emits_session_phase_cat() -> None:
+    """derive_common_features adds the new session_phase_cat column alongside
+    the legacy numeric session_phase."""
+    rows = [
+        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
+                 underlying="SPY", option_type="C", strike=500, spot=500),  # 9:30 CT
+        _lot_row(id_=2, fire_time="2026-04-01 19:30:00+00:00", chain="B",
+                 underlying="SPY", option_type="C", strike=500, spot=500),  # 14:30 CT
+    ]
+    df = pd.DataFrame(rows)
+    out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
+    assert "session_phase_cat" in out.columns
+    assert list(out["session_phase_cat"]) == ["morning", "closing"]
+
+
+# ── Phase 5: Forced-flow features ────────────────────────────────────────────
+
+
+def test_quarter_end_last_hour_only_fires_on_last_weekday_of_quarter() -> None:
+    """Mar/Jun/Sep/Dec last-weekday, 14:00 ≤ minute < 15:00 CT only."""
+    # Mar 31 2026 = Tuesday → last weekday of Q1.
+    assert _is_quarter_end_last_hour_ct(
+        pd.Timestamp("2026-03-31 14:30", tz="America/Chicago")
+    )
+    # Mar 30 2026 (Monday) — not the last weekday.
+    assert not _is_quarter_end_last_hour_ct(
+        pd.Timestamp("2026-03-30 14:30", tz="America/Chicago")
+    )
+    # Quarter-end month + last weekday, but before 14:00 CT.
+    assert not _is_quarter_end_last_hour_ct(
+        pd.Timestamp("2026-03-31 13:59", tz="America/Chicago")
+    )
+    # Quarter-end month + last weekday, exactly 15:00 (right-exclusive).
+    assert not _is_quarter_end_last_hour_ct(
+        pd.Timestamp("2026-03-31 15:00", tz="America/Chicago")
+    )
+    # Non-quarter-end month (April) — flag stays 0 even on last weekday.
+    assert not _is_quarter_end_last_hour_ct(
+        pd.Timestamp("2026-04-30 14:30", tz="America/Chicago")
+    )
+
+
+def test_quarter_end_last_hour_handles_weekend_last_calendar_day() -> None:
+    """When the last calendar day of the quarter falls on a weekend, the last
+    weekday (Mon-Fri) is the quarter-end day. Mar 31 2024 = Sunday → last
+    weekday is Fri Mar 29.
+    """
+    assert _is_quarter_end_last_hour_ct(
+        pd.Timestamp("2024-03-29 14:30", tz="America/Chicago")
+    )
+    assert not _is_quarter_end_last_hour_ct(
+        pd.Timestamp("2024-03-31 14:30", tz="America/Chicago")
+    )
+
+
+def test_forced_flow_features_present_with_stub_defaults() -> None:
+    """derive_common_features emits all 4 forced-flow features. Stubbed ones
+    are 0 by design; calendar_adjacency reflects real CT-time gating.
+    """
+    rows = [
+        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ]
+    df = pd.DataFrame(rows)
+    out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
+    for col in (
+        "bilateral_flow_score",
+        "cross_name_cluster_score",
+        "calendar_adjacency_flag",
+        "cross_asset_stress_flag",
+    ):
+        assert col in out.columns, f"missing column {col}"
+    # Stubs default to 0 — alert row carries no bilateral / cluster context.
+    assert out.iloc[0]["bilateral_flow_score"] == 0
+    assert out.iloc[0]["cross_name_cluster_score"] == 0
+    # Apr 1 2026 14:30 CT is not a quarter-end day.
+    assert out.iloc[0]["calendar_adjacency_flag"] == 0
+    # No vix_intraday_change column → cross_asset_stress stubs to 0.
+    assert out.iloc[0]["cross_asset_stress_flag"] == 0
+
+
+def test_calendar_adjacency_fires_on_quarter_end_last_hour() -> None:
+    """Mar 31 2026 14:30 CT (Tue, last weekday of Q1) → calendar_adjacency = 1."""
+    rows = [
+        # 19:30 UTC = 14:30 CT (CDT, daylight time) on Mar 31 2026.
+        _lot_row(id_=1, fire_time="2026-03-31 19:30:00+00:00", chain="A",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ]
+    df = pd.DataFrame(rows)
+    out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
+    assert out.iloc[0]["calendar_adjacency_flag"] == 1
+
+
+def test_cross_asset_stress_uses_vix_intraday_change_when_present() -> None:
+    """If the training row carries `vix_intraday_change`, flag fires for
+    values strictly greater than +3 pts."""
+    rows = [
+        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+        _lot_row(id_=2, fire_time="2026-04-01 14:30:00+00:00", chain="B",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+        _lot_row(id_=3, fire_time="2026-04-01 14:30:00+00:00", chain="C",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ]
+    df = pd.DataFrame(rows)
+    # Inject vix_intraday_change post-hoc to simulate a future SQL join.
+    df["vix_intraday_change"] = [3.0, 3.01, 5.0]
+    out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
+    # Strict-greater than +3 — 3.0 itself is NOT stressed.
+    assert list(out["cross_asset_stress_flag"]) == [0, 1, 1]
+
+
+# ── Phase 2 / Phase 4 multileg + wave2 columns flow through unchanged ────────
+
+
+def test_multileg_and_wave2_columns_pass_through_unchanged() -> None:
+    """The SQL SELECT pulls inferred_structure, is_isolated_leg,
+    match_confidence, pattern_group_id, wave2_status, wave2_detected_at.
+    derive_common_features must NOT mutate them — they ride along into the
+    output DataFrame so train.py can either use them as features (multileg)
+    or exclude them (wave2 — see NON_FEATURE_COLS in train.py).
+    """
+    rows = [
+        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+        _lot_row(id_=2, fire_time="2026-04-01 14:35:00+00:00", chain="B",
+                 underlying="SPY", option_type="P", strike=500, spot=500),
+    ]
+    df = pd.DataFrame(rows)
+    df["inferred_structure"] = ["vertical", None]
+    df["is_isolated_leg"] = [False, None]
+    df["match_confidence"] = [0.85, None]
+    df["pattern_group_id"] = ["hash_abc", None]
+    df["wave2_status"] = ["confirmed", "fizzled"]
+    df["wave2_detected_at"] = [pd.Timestamp("2026-04-01 14:42:00+00:00"), None]
+    out = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
+    # All new columns flow through unchanged. pandas may surface None as NaN
+    # in object columns; both forms mean "unclassified" which is what XGBoost
+    # treats as missing.
+    assert out.iloc[0]["inferred_structure"] == "vertical"
+    assert pd.isna(out.iloc[1]["inferred_structure"])
+    assert out.iloc[0]["is_isolated_leg"] is False or (
+        out.iloc[0]["is_isolated_leg"] == 0  # noqa: PLR2004
+    )
+    assert pd.isna(out.iloc[1]["is_isolated_leg"])
+    assert out.iloc[0]["match_confidence"] == pytest.approx(0.85)
+    assert list(out["wave2_status"]) == ["confirmed", "fizzled"]
 
 
 def test_no_realized_columns_leak_into_feature_set() -> None:

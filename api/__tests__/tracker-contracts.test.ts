@@ -134,6 +134,37 @@ describe('GET /api/tracker/contracts', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
   });
+
+  it('list query joins the latest tracker_contract_ticks row per contract', async () => {
+    const SAMPLE_ROW_WITH_TICK = {
+      ...SAMPLE_ROW,
+      latest_last: '6.45',
+      latest_bid: '6.40',
+      latest_ask: '6.50',
+      latest_underlying: '225.10',
+      latest_fetched_at: '2026-05-17T15:05:00Z',
+    };
+    mockSql.mockResolvedValueOnce([SAMPLE_ROW_WITH_TICK]);
+    const res = mockResponse();
+    await listCreateHandler(mockRequest({ method: 'GET', query: {} }), res);
+    expect(res._status).toBe(200);
+    // Inspect the template-strings array of the tagged-template call.
+    // The strings array is the first arg (a TemplateStringsArray); we
+    // join it to verify the LATERAL join is present.
+    const call = mockSql.mock.calls[0]!;
+    const sqlText = Array.isArray(call[0])
+      ? call[0].join('?')
+      : String(call[0]);
+    expect(sqlText).toContain('LEFT JOIN LATERAL');
+    expect(sqlText).toContain('tracker_contract_ticks');
+    expect(sqlText).toContain('ORDER BY fetched_at DESC');
+    // The latest_* columns flow through unchanged to the response.
+    const body = res._json as {
+      contracts: Array<Record<string, unknown>>;
+    };
+    expect(body.contracts[0]?.latest_last).toBe('6.45');
+    expect(body.contracts[0]?.latest_fetched_at).toBe('2026-05-17T15:05:00Z');
+  });
 });
 
 // ============================================================
