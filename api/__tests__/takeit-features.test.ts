@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ForcedFlowMacroContext } from '../_lib/forced-flow.js';
 import {
   INFERRED_STRUCTURE_LABELS,
   type LotteryAlertRow,
@@ -925,5 +926,87 @@ describe('session_phase_cat one-hot (lottery + silentboom)', () => {
     for (const col of SESSION_PHASE_COLS) {
       expect(out[col]).toBeUndefined();
     }
+  });
+});
+
+/* ───────────────────────── Forced-flow integration (meta-detectors Phase 5) ── */
+
+describe('forced-flow features (lottery integration)', () => {
+  const FORCED_FLOW_COLS = [
+    'bilateral_flow_score',
+    'cross_name_cluster_score',
+    'calendar_adjacency_flag',
+    'cross_asset_stress_flag',
+  ];
+
+  it('lottery output always carries the 4 forced-flow keys as numbers (default macro)', () => {
+    const bundle = makeBundle('lottery', FORCED_FLOW_COLS);
+    const out = featuresForLottery(bundle, lotteryRow(), EMPTY_CTX);
+    for (const col of FORCED_FLOW_COLS) {
+      expect(typeof out[col]).toBe('number');
+    }
+    // Defaults: stubs return 0, no calendar/VIX trigger by default.
+    expect(out.bilateral_flow_score).toBe(0);
+    expect(out.cross_name_cluster_score).toBe(0);
+    expect(out.calendar_adjacency_flag).toBe(0);
+    expect(out.cross_asset_stress_flag).toBe(0);
+  });
+
+  it('lottery cross_asset_stress_flag flips when VIX intraday change > +3', () => {
+    const bundle = makeBundle('lottery', FORCED_FLOW_COLS);
+    const macro: ForcedFlowMacroContext = { vixIntradayChange: 4.5 };
+    const out = featuresForLottery(bundle, lotteryRow(), EMPTY_CTX, macro);
+    expect(out.cross_asset_stress_flag).toBe(1);
+    // Other features still 0 (stubs / no calendar trigger).
+    expect(out.calendar_adjacency_flag).toBe(0);
+    expect(out.bilateral_flow_score).toBe(0);
+    expect(out.cross_name_cluster_score).toBe(0);
+  });
+
+  it('lottery calendar_adjacency_flag fires on quarter-end last hour CT', () => {
+    const bundle = makeBundle('lottery', FORCED_FLOW_COLS);
+    // 2026-03-31 14:30 CT (CDT) = 19:30 UTC. Last weekday of Q1, in window.
+    const row = lotteryRow({ fire_time: new Date('2026-03-31T19:30:00Z') });
+    const out = featuresForLottery(bundle, row, EMPTY_CTX);
+    expect(out.calendar_adjacency_flag).toBe(1);
+  });
+});
+
+describe('forced-flow features (silentboom integration)', () => {
+  const FORCED_FLOW_COLS = [
+    'bilateral_flow_score',
+    'cross_name_cluster_score',
+    'calendar_adjacency_flag',
+    'cross_asset_stress_flag',
+  ];
+
+  it('silent-boom output always carries the 4 forced-flow keys', () => {
+    const bundle = makeBundle('silentboom', FORCED_FLOW_COLS);
+    const out = featuresForSilentBoom(bundle, silentBoomRow(), EMPTY_CTX);
+    expect(out.bilateral_flow_score).toBe(0);
+    expect(out.cross_name_cluster_score).toBe(0);
+    expect(out.calendar_adjacency_flag).toBe(0);
+    expect(out.cross_asset_stress_flag).toBe(0);
+  });
+
+  it('silent-boom respects macro arg for cross_asset_stress_flag', () => {
+    const bundle = makeBundle('silentboom', FORCED_FLOW_COLS);
+    const out = featuresForSilentBoom(
+      bundle,
+      silentBoomRow(),
+      EMPTY_CTX,
+      { vixIntradayChange: 10 },
+    );
+    expect(out.cross_asset_stress_flag).toBe(1);
+  });
+
+  it('silent-boom fires calendar_adjacency_flag on quarter-end last hour CT', () => {
+    const bundle = makeBundle('silentboom', FORCED_FLOW_COLS);
+    const row = silentBoomRow({
+      // 2026-09-30 14:30 CT (CDT) = 19:30 UTC. Last weekday of Q3.
+      fire_time: new Date('2026-09-30T19:30:00Z'),
+    });
+    const out = featuresForSilentBoom(bundle, row, EMPTY_CTX);
+    expect(out.calendar_adjacency_flag).toBe(1);
   });
 });

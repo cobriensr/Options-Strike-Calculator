@@ -22,7 +22,13 @@
 
 import { getCTDayOfWeek, getCTTime } from '../../src/utils/timezone.js';
 
+import {
+  type ForcedFlowMacroContext,
+  computeForcedFlowFeatures,
+} from './forced-flow.js';
 import type { TakeitBundle } from './takeit-score.js';
+
+export type { ForcedFlowMacroContext } from './forced-flow.js';
 
 export type AlertType = 'lottery' | 'silentboom';
 
@@ -554,6 +560,7 @@ export function featuresForLottery(
   bundle: TakeitBundle,
   row: LotteryAlertRow,
   ctx: SequentialContext,
+  macro: ForcedFlowMacroContext = {},
 ): Record<string, number | null> {
   const { minute_of_day_ct, day_of_week } = ctMinuteAndDow(row.fire_time);
   const sessionPhase = sessionPhaseFromMinuteCt(minute_of_day_ct);
@@ -594,6 +601,7 @@ export function featuresForLottery(
     ctx.recentSameTypeFires,
   );
   const priorWin = ctx.priorSessionWinRateByTicker.get(row.underlying_symbol);
+  const forcedFlow = computeForcedFlowFeatures(row, macro);
 
   const base: Record<string, number | null> = {
     // raw numerics carried straight through
@@ -660,6 +668,14 @@ export function featuresForLottery(
     n_same_dir_fires_last_30min: nSameDir,
     prior_session_win_rate_same_ticker:
       priorWin === undefined ? null : priorWin,
+    // Forced-flow features (meta-detectors Phase 5). Numeric — emitted as
+    // discrete features so the model can learn interactions (per spec
+    // §"Open question 3"). See api/_lib/forced-flow.ts for stub policy
+    // on bilateral_flow_score + cross_name_cluster_score.
+    bilateral_flow_score: forcedFlow.bilateral_flow_score,
+    cross_name_cluster_score: forcedFlow.cross_name_cluster_score,
+    calendar_adjacency_flag: forcedFlow.calendar_adjacency_flag,
+    cross_asset_stress_flag: forcedFlow.cross_asset_stress_flag,
   };
 
   // One-hot categoricals. `inferred_structure` joins the same mechanism as
@@ -691,6 +707,7 @@ export function featuresForSilentBoom(
   bundle: TakeitBundle,
   row: SilentBoomAlertRow,
   ctx: SequentialContext,
+  macro: ForcedFlowMacroContext = {},
 ): Record<string, number | null> {
   const { minute_of_day_ct, day_of_week } = ctMinuteAndDow(row.fire_time);
   const sessionPhase = sessionPhaseFromMinuteCt(minute_of_day_ct);
@@ -731,6 +748,7 @@ export function featuresForSilentBoom(
     ctx.recentSameTypeFires,
   );
   const priorWin = ctx.priorSessionWinRateByTicker.get(row.underlying_symbol);
+  const forcedFlow = computeForcedFlowFeatures(row, macro);
 
   const base: Record<string, number | null> = {
     dte: row.dte,
@@ -770,6 +788,14 @@ export function featuresForSilentBoom(
     n_same_dir_fires_last_30min: nSameDir,
     prior_session_win_rate_same_ticker:
       priorWin === undefined ? null : priorWin,
+    // Forced-flow features (meta-detectors Phase 5). See lottery branch +
+    // api/_lib/forced-flow.ts for design notes. Same 4 features ship on
+    // silent-boom so the model can learn forced-flow signal independently
+    // per detector.
+    bilateral_flow_score: forcedFlow.bilateral_flow_score,
+    cross_name_cluster_score: forcedFlow.cross_name_cluster_score,
+    calendar_adjacency_flag: forcedFlow.calendar_adjacency_flag,
+    cross_asset_stress_flag: forcedFlow.cross_asset_stress_flag,
   };
 
   // One-hot categoricals. `inferred_structure` joins the same mechanism as
