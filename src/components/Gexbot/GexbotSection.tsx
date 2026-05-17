@@ -17,6 +17,7 @@ import { memo } from 'react';
 
 import { SectionBox } from '../ui';
 import { CharmClock } from './CharmClock';
+import { GammaCompass } from './GammaCompass';
 import { VixDealerStateBadge } from './VixDealerStateBadge';
 
 interface GexbotSectionProps {
@@ -29,6 +30,7 @@ function GexbotSectionInner({ marketOpen }: GexbotSectionProps) {
       <div className="flex flex-col gap-3">
         <VixDealerStateBadge marketOpen={marketOpen} />
         <CharmClock marketOpen={marketOpen} />
+        <GammaCompass marketOpen={marketOpen} />
       </div>
       <p className="text-tertiary mt-3 text-[10px] leading-relaxed">
         GEXBot Orderflow-tier data — capture pipeline ships dealer
