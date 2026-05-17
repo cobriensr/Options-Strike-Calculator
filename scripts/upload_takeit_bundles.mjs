@@ -48,7 +48,7 @@ async function uploadBundle(alertType) {
     throw new Error(`bundle at ${bundlePath} missing version field`);
   }
   const remotePath = `takeit/${alertType}_classifier_${version}.json`;
-  console.log(`uploading ${alertType} v${version} (${(raw.length / 1024 / 1024).toFixed(1)}MB) → ${remotePath}`);
+  console.log(`uploading ${alertType} ${version} (${(raw.length / 1024 / 1024).toFixed(1)}MB) → ${remotePath}`);
   const result = await put(remotePath, raw, {
     access: 'private',
     contentType: 'application/json',
@@ -56,6 +56,32 @@ async function uploadBundle(alertType) {
     allowOverwrite: true,
   });
   console.log(`  ✓ ${result.url}`);
+
+  // Phase 3d sidecar SHAP path: shap.TreeExplainer needs the live Python
+  // objects (XGBClassifier + IsotonicRegression), which the JSON dump alone
+  // can't reconstruct losslessly. We upload the joblib (Python pickle) so
+  // the sidecar can re-hydrate them. Trust model is closed-loop: WE produce
+  // the joblib in our own GH Actions workflow, push it to OUR private
+  // Blob, and OUR sidecar code loads it — never accepting an external
+  // joblib. Standard ML deploy pattern.
+  const joblibPath = resolve(BUNDLE_DIR, `${alertType}_classifier.joblib`);
+  if (existsSync(joblibPath)) {
+    const joblibBytes = readFileSync(joblibPath);
+    const joblibRemotePath = `takeit/${alertType}_joblib_${version}.joblib`;
+    console.log(
+      `uploading ${alertType} joblib ${version} (${(joblibBytes.length / 1024 / 1024).toFixed(1)}MB) → ${joblibRemotePath}`,
+    );
+    const joblibResult = await put(joblibRemotePath, joblibBytes, {
+      access: 'private',
+      contentType: 'application/octet-stream',
+      addRandomSuffix: false,
+      allowOverwrite: true,
+    });
+    console.log(`  ✓ ${joblibResult.url}`);
+  } else {
+    console.log(`  ⚠ ${alertType} joblib missing — SHAP sidecar will 503 until uploaded`);
+  }
+
   return { alertType, remotePath, version, url: result.url };
 }
 

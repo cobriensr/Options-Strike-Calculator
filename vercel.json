@@ -178,6 +178,10 @@
       "schedule": "*/10 14-21 * * 1-5"
     },
     {
+      "path": "/api/cron/takeit-fill-shap",
+      "schedule": "*/2 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-net-flow-history",
       "schedule": "25 21 * * 1-5"
     },
@@ -235,6 +239,7 @@
     "api/cron/detect-lottery-fires.ts": { "maxDuration": 60 },
     "api/cron/detect-silent-boom.ts": { "maxDuration": 60 },
     "api/cron/evaluate-round-trip.ts": { "maxDuration": 60 },
+    "api/cron/takeit-fill-shap.ts": { "maxDuration": 60 },
     "api/cron/enrich-lottery-outcomes.ts": { "maxDuration": 300 },
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
     "api/periscope-auto-playbook.ts": {
