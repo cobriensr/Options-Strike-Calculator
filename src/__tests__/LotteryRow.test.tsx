@@ -953,7 +953,9 @@ describe('LotteryRow: MEGA-CLUSTER chip', () => {
         marketOpen={false}
       />,
     );
-    expect(screen.queryByText(/MEGA CLUSTER|CLUSTER ×/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/MEGA CLUSTER|CLUSTER ×/),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -993,5 +995,50 @@ describe('LotteryRow: DUAL-FLAG chip', () => {
       />,
     );
     expect(screen.queryByText('DUAL FLAG')).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// HIGH-Γ chip (gamma-deep-dive-findings-2026-05-17.md)
+// ============================================================
+
+describe('LotteryRow: HIGH-Γ chip', () => {
+  it('renders the chip when gammaScoreAdjustment > 0', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          gammaAtTrigger: 0.05,
+          gammaScoreAdjustment: 1,
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByText('HIGH-Γ')).toBeInTheDocument();
+  });
+
+  it('hides the chip when gammaScoreAdjustment is 0 (gamma below threshold)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          gammaAtTrigger: 0.01,
+          gammaScoreAdjustment: 0,
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText('HIGH-Γ')).not.toBeInTheDocument();
+  });
+
+  it('hides the chip when gammaScoreAdjustment is undefined (older fires)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText('HIGH-Γ')).not.toBeInTheDocument();
   });
 });

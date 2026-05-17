@@ -1115,6 +1115,83 @@ describe('lottery-finder endpoint', () => {
     expect(body.fires[0]!.dualFlag).toBe(false);
   });
 
+  it('applies +1 gamma bonus when gamma_at_trigger >= 0.025 AND ticker not in {SPY,USO}', async () => {
+    const ROW_HIGH_GAMMA = {
+      ...ROW,
+      underlying_symbol: 'TSLA',
+      gamma_at_trigger: 0.05,
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_HIGH_GAMMA])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        score: number | null;
+        gammaAtTrigger?: number | null;
+        gammaScoreAdjustment?: number;
+      }>;
+    };
+    // rawScore=20 + fireCountAdj=0 + gammaAdj=+1 = 21 → tier1
+    expect(body.fires[0]!.gammaAtTrigger).toBe(0.05);
+    expect(body.fires[0]!.gammaScoreAdjustment).toBe(1);
+    expect(body.fires[0]!.score).toBe(21);
+  });
+
+  it('does NOT apply gamma bonus when ticker is SPY (signal reverses on SPY)', async () => {
+    const ROW_SPY = {
+      ...ROW,
+      underlying_symbol: 'SPY',
+      gamma_at_trigger: 0.10, // high gamma, but SPY excluded
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_SPY])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        score: number | null;
+        gammaAtTrigger?: number | null;
+        gammaScoreAdjustment?: number;
+      }>;
+    };
+    expect(body.fires[0]!.gammaAtTrigger).toBe(0.1);
+    expect(body.fires[0]!.gammaScoreAdjustment).toBe(0);
+    // No bonus → score stays at rawScore + fireCountAdj = 20
+    expect(body.fires[0]!.score).toBe(20);
+  });
+
+  it('emits gammaAtTrigger=null + gammaScoreAdjustment=0 when DB column is NULL (older rows)', async () => {
+    const ROW_NULL_GAMMA = {
+      ...ROW,
+      gamma_at_trigger: null,
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_NULL_GAMMA])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        gammaAtTrigger?: number | null;
+        gammaScoreAdjustment?: number;
+      }>;
+    };
+    expect(body.fires[0]!.gammaAtTrigger).toBeNull();
+    expect(body.fires[0]!.gammaScoreAdjustment).toBe(0);
+  });
+
   it('stacks fireCountScoreAdjustment with round_trip_score_deduct (both apply)', async () => {
     // Multi-fire chain (10 fires → +1 adj) that ALSO round-tripped
     // (-2 deduct). Both must apply: 20 + 1 + (-2) = 19 → tier1.

@@ -186,6 +186,23 @@ export interface LotteryFire {
    */
   fireCountScoreAdjustment?: number;
   /**
+   * Volume-weighted gamma over the rolling trigger window — captured
+   * at fire-detect time by the cron from raw_payload->>'gamma'. NULL
+   * on rows inserted before migration #168 (the storage column was
+   * NULLable on add). Empirical lift (LF +4.8pp / SB +10.7pp at the
+   * top decile) is documented in
+   * docs/tmp/gamma-deep-dive-findings-2026-05-17.md.
+   */
+  gammaAtTrigger?: number | null;
+  /**
+   * Per-row score bonus from `gammaAtTrigger` — mirrors the SQL CASE
+   * expression in `combined_score`. Returns 1 when gamma ≥ 0.025 AND
+   * ticker ∉ {SPY, USO}, else 0. The bonus is already folded into
+   * `score`; this field exists so the UI can render a "+1 high-Γ"
+   * tooltip on the score badge.
+   */
+  gammaScoreAdjustment?: number;
+  /**
    * Take-It calibrated win probability (migration #155, spec
    * takeit-phase3-production-scoring-2026-05-16.md). XGBoost output
    * walked in pure TS at detect time. NULL when the bundle was

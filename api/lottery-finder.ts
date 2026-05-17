@@ -22,6 +22,7 @@ import {
 } from './_lib/api-helpers.js';
 import { lotteryFinderQuerySchema } from './_lib/validation.js';
 import {
+  gammaScoreAdjustment,
   lotteryScoreTier,
   type LotteryScoreTier,
 } from './_lib/lottery-score-weights.js';
@@ -135,6 +136,11 @@ interface FireRow {
   // rather than at API read time. Included in combined_score's
   // GENERATED expression so the score-sort ORDER BY picks it up.
   fire_count_score_adjustment: number;
+  // Gamma at trigger time (migration #168). Captured by the detect
+  // cron from raw_payload->>'gamma'. NULL on rows inserted before
+  // migration #168 lands. Feeds combined_score's gamma bonus CASE
+  // expression and the UI HIGH-Γ chip.
+  gamma_at_trigger: DbNullableNumeric;
   // Take-It calibrated win probability + bundle version (migration #155,
   // spec takeit-phase3-production-scoring-2026-05-16.md). Populated at
   // detect time via api/_lib/takeit-score.ts walking the XGBoost JSON
@@ -376,6 +382,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.score, f.direction_gated, f.range_pos_at_trigger,
           f.round_trip_net_pct, f.round_trip_score_deduct,
           f.fire_count_score_adjustment,
+          f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
@@ -445,6 +452,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.score, f.direction_gated, f.range_pos_at_trigger,
           f.round_trip_net_pct, f.round_trip_score_deduct,
           f.fire_count_score_adjustment,
+          f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
@@ -513,6 +521,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.score, f.direction_gated, f.range_pos_at_trigger,
           f.round_trip_net_pct, f.round_trip_score_deduct,
           f.fire_count_score_adjustment,
+          f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
           s.n_fires AS ticker_n_fires,
@@ -810,10 +819,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // documented in that commit. Read both `fire_count_score_adj`
       // and `combined_score` straight from the SELECT.
       const fireCountAdj = Number(r.fire_count_score_adjustment ?? 0);
+      // Gamma at trigger time + the derived bonus (mirrors the SQL
+      // CASE expression in combined_score, kept in sync via the
+      // helper). Tooltip on the UI chip uses the value; the SQL sort
+      // already includes the bonus via combined_score.
+      const gammaAtTrigger =
+        r.gamma_at_trigger != null ? Number(r.gamma_at_trigger) : null;
+      const gammaAdj = gammaScoreAdjustment(
+        gammaAtTrigger,
+        r.underlying_symbol,
+      );
       const score =
         rawScore == null
           ? null
-          : Math.max(0, rawScore + rtDeduct + fireCountAdj);
+          : Math.max(0, rawScore + rtDeduct + fireCountAdj + gammaAdj);
       const roundTripNetPct =
         r.round_trip_net_pct == null ? null : Number(r.round_trip_net_pct);
       // Phase 4 direction-gate override (spec:
@@ -880,6 +899,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // the DB, recomputed every request. Surfaced so the UI can
         // render a "+N burst" tooltip on the score badge.
         fireCountScoreAdjustment: fireCountAdj,
+        // Gamma at trigger time (migration #168) + the per-row +1
+        // bonus when gamma >= 0.025 AND ticker ∉ {'SPY','USO'}. The
+        // bonus is included in `score` above; the raw value is
+        // surfaced for the UI HIGH-Γ chip + tooltip.
+        gammaAtTrigger,
+        gammaScoreAdjustment: gammaAdj,
         takeitProb: r.takeit_prob == null ? null : Number(r.takeit_prob),
         takeitTopFeatures:
           r.takeit_top_features == null
