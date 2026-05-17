@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-05
+---
+
 # Lottery Flow-Inversion Automation — 2026-05-05
 
 ## Goal

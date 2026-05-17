@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-03
+---
+
 # Strike Battle Map + Dealer Regime Tile — spec
 
 **Date:** 2026-05-03

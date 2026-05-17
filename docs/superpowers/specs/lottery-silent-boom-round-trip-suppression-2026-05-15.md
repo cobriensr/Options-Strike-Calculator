@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-15
+---
+
 # Lottery + Silent Boom Round-Trip Suppression — 2026-05-15
 
 ## Goal

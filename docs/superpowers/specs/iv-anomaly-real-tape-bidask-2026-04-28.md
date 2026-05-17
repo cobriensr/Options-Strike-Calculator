@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-28
+---
+
 # IV Anomaly — Real Bid/Ask Tape Volume (replace IV-spread proxy)
 
 ## Goal

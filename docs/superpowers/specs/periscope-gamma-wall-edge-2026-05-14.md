@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-14
+---
+
 # Periscope Gamma-Level Edge Experiment
 
 **Date:** 2026-05-14

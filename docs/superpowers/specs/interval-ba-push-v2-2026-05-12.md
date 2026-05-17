@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-12
+---
+
 # Interval B/A Web Push — v2 (Phase 4)
 
 **Created:** 2026-05-12 (evening, market closed)

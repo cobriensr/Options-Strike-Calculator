@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-17
+---
+
 # Panel Visibility Preferences (per-identity)
 
 **Date:** 2026-05-17

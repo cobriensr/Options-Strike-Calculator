@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-18
+---
+
 # PAC Backtester & Manual-Live Validation → Automation Pipeline
 
 **Date:** 2026-04-18

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-14
+---
+
 # Silent Boom + Lottery: Direction gate + Trail-30/10 UI — 2026-05-14
 
 ## Goal

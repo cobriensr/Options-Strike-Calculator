@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # Round-Trip Score Deduct — Production Spec (2026-05-16)
 
 ## Goal

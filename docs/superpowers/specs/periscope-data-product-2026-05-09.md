@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-09
+---
+
 # Periscope Data Product — Phase plan for items 1-9
 
 **Date:** 2026-05-09 (decisions locked + bug fixes 2026-05-10; auto-playbook re-review 2026-05-10 PM)

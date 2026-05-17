@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-24
+---
+
 # PAC residual causality fix — causal OB + causal swing_highs_lows
 
 **Parent:** [pac-a2-causality-fix-addendum-2026-04-24.md](./pac-a2-causality-fix-addendum-2026-04-24.md)

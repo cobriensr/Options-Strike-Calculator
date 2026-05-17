@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-24
+---
+
 # PAC event classifier — XGBoost on win/loss + signed return
 
 **Activates if:** the regime-gated sweep

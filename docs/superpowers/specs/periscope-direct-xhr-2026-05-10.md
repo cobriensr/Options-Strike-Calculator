@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-10
+---
+
 # Periscope Scraper — Direct XHR Feasibility Spec
 
 **Date:** 2026-05-10

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-18
+---
+
 # Phase 1 — Cross-Asset Regime + Volume Profile + VIX Divergence — 2026-04-18
 
 Part of the max-leverage roadmap

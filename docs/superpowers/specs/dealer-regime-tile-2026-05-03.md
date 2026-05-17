@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-03
+---
+
 # Dealer Regime Tile — Phase 2 of Strike Battle Map
 
 **Status:** Spec — ready to build

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-26
+---
+
 # TRACE Live Dashboard — Plan
 
 **Date**: 2026-04-26

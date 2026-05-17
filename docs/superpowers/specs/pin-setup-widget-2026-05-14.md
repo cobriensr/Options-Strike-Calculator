@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-14
+---
+
 # Pin-Setup Widget (2026-05-14)
 
 ## Goal

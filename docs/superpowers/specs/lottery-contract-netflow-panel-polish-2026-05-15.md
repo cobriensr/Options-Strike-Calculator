@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-15
+---
+
 # Lottery Contract + Net Flow Panel Polish — 2026-05-15
 
 ## Goal

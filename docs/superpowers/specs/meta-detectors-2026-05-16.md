@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # Meta-Detectors for Lottery & Silent Boom
 
 **Status:** Active plan, scoped 2026-05-16.

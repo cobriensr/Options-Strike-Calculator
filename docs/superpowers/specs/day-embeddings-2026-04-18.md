@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-18
+---
+
 # Day Embeddings for Historical Analogs
 
 ## Goal

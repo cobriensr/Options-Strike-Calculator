@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-22
+---
+
 # PAC Exit Trigger Finding — OPPOSITE_CHOCH beats ATR_TARGET
 
 **Date:** 2026-04-22

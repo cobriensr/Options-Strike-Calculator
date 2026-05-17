@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-06
+---
+
 # Greek Flow — 0DTE/All-DTE Toggle (2026-05-06)
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-03
+---
+
 # GEX Landscape — WebSocket-Driven Accuracy Upgrade
 
 **Date:** 2026-05-03

@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-20
+---
+
 # ES Options Analyze-Context Candidates — Post-SIDE-015 Menu
 
 ## Purpose

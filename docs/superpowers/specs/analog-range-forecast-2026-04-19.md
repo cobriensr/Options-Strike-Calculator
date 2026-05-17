@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-19
+---
+
 # Analog Range Forecast — Production Wiring
 
 ## Goal

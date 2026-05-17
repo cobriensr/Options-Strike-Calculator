@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-22
+---
+
 # OTM SPXW Flow Alerts — Live + Backtest Viewer
 
 **Date:** 2026-04-22

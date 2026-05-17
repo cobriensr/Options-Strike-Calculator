@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-07
+---
+
 # Principal Engineer Audit — 2026-04-07
 
 Comprehensive review of the strike-calculator stack (frontend, backend, sidecar, ML pipeline) through the lens of a principal quant engineer. Captured as a reference document for incremental fixing.

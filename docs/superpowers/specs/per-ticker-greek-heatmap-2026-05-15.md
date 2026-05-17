@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-15
+---
+
 # Per-Ticker 0DTE Greek Heatmap + Net Flow
 
 **Date:** 2026-05-15

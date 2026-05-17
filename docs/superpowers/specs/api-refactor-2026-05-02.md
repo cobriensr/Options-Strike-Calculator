@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-02
+---
+
 # Backend Refactor — api/ cleanup pass — 2026-05-02
 
 ## Goal

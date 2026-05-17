@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-25
+---
+
 # IV-Anomaly Replay (Date + Time Scrubber)
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-18
+---
+
 # Experiment Isolation Convention
 
 **Date**: 2026-04-18

@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-27
+---
+
 # Frontend Coherence Pass — 2026-04-27
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-08
+---
+
 # Periscope Panel — time-travel navigation
 
 **Date:** 2026-05-08

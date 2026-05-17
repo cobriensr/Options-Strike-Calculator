@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-17
+---
+
 # Contract Tracker (Long-Term Position Tracking)
 
 **Date:** 2026-05-17
@@ -15,19 +20,19 @@ owner/guest cookies — single-tenant for v1.
 
 ## Locked-in scope
 
-| Decision | Value |
-|---|---|
-| Ticker universe | Any optionable underlying |
-| Pricing source | UW `option-contract/{symbol}` per row, `stock-state/{ticker}` for spot |
-| Refresh cadence | Every 5 min during market hours (`*/5 13-20 * * 1-5` UTC) |
-| Alert delivery | In-app Sonner toast (fires only while app is open) |
-| UI placement | New top-level section in `App.tsx`, three internal tabs |
-| Schwab integration | Fully independent — no read or write of Schwab CSV positions |
-| Thresholds | Defaults `+50/+100/+200%` up, `-30/-50%` down. Per-contract override. |
-| Underlying-level alerts | Included in v1 (e.g. "SPY >= 595") |
-| Close policy | Manual close + auto-archive at expiry |
-| Delete in UI | Hidden. Backend endpoint exists, frontend never calls it. |
-| Auth | `guardOwnerOrGuestEndpoint` on every endpoint. Single shared tracker. |
+| Decision                | Value                                                                  |
+| ----------------------- | ---------------------------------------------------------------------- |
+| Ticker universe         | Any optionable underlying                                              |
+| Pricing source          | UW `option-contract/{symbol}` per row, `stock-state/{ticker}` for spot |
+| Refresh cadence         | Every 5 min during market hours (`*/5 13-20 * * 1-5` UTC)              |
+| Alert delivery          | In-app Sonner toast (fires only while app is open)                     |
+| UI placement            | New top-level section in `App.tsx`, three internal tabs                |
+| Schwab integration      | Fully independent — no read or write of Schwab CSV positions           |
+| Thresholds              | Defaults `+50/+100/+200%` up, `-30/-50%` down. Per-contract override.  |
+| Underlying-level alerts | Included in v1 (e.g. "SPY >= 595")                                     |
+| Close policy            | Manual close + auto-archive at expiry                                  |
+| Delete in UI            | Hidden. Backend endpoint exists, frontend never calls it.              |
+| Auth                    | `guardOwnerOrGuestEndpoint` on every endpoint. Single shared tracker.  |
 
 ## Architecture
 
@@ -137,6 +142,7 @@ POST   /api/tracker/alerts/:id/ack
 ```
 
 Input parsing — accept either:
+
 - free-text format (`NVDA 225P 05/22/26 @ 4.30 x 5 long`)
 - structured form (ticker, expiry, strike, side, direction, entry_price, quantity)
 
@@ -219,27 +225,27 @@ Click toast → scroll to row, ack alert (server PATCH).
 
 ## Phase plan
 
-| Phase | Scope | Files |
-|---|---|---|
-| 1 | DB migrations + OCC helper + shared types | ~5 |
-| 2 | Backend endpoints + cron + vercel.json + botid | ~8 |
-| 3 | Frontend section + hooks + tests + e2e | ~12 |
+| Phase | Scope                                          | Files |
+| ----- | ---------------------------------------------- | ----- |
+| 1     | DB migrations + OCC helper + shared types      | ~5    |
+| 2     | Backend endpoints + cron + vercel.json + botid | ~8    |
+| 3     | Frontend section + hooks + tests + e2e         | ~12   |
 
 Each phase: implement → code-reviewer subagent → fix findings → commit + push → next.
 
 ## Testing
 
-| Test file | Covers |
-|---|---|
-| `api/__tests__/occ.test.ts` | OCC roundtrip (parse free-text, build OCC, parse OCC back) |
-| `api/__tests__/tracker-contracts.test.ts` | CRUD endpoints with mocked DB |
+| Test file                                         | Covers                                                               |
+| ------------------------------------------------- | -------------------------------------------------------------------- |
+| `api/__tests__/occ.test.ts`                       | OCC roundtrip (parse free-text, build OCC, parse OCC back)           |
+| `api/__tests__/tracker-contracts.test.ts`         | CRUD endpoints with mocked DB                                        |
 | `api/__tests__/refresh-tracker-contracts.test.ts` | Full cron — happy path, partial UW failure, auto-expiry, alert dedup |
-| `api/__tests__/tracker-alerts.test.ts` | Threshold evaluation pure logic |
-| `api/__tests__/db.test.ts` | Migrations #160/161/162 added to mock sequence |
-| `src/__tests__/Tracker/AddContractForm.test.tsx` | Free-text parser + form validation |
-| `src/__tests__/Tracker/ContractRow.test.tsx` | Render + close action |
-| `src/__tests__/hooks/useTrackerAlerts.test.ts` | Polling, toast firing, ack |
-| `e2e/tracker.spec.ts` | Add → mock cron tick → toast → close → archive |
+| `api/__tests__/tracker-alerts.test.ts`            | Threshold evaluation pure logic                                      |
+| `api/__tests__/db.test.ts`                        | Migrations #160/161/162 added to mock sequence                       |
+| `src/__tests__/Tracker/AddContractForm.test.tsx`  | Free-text parser + form validation                                   |
+| `src/__tests__/Tracker/ContractRow.test.tsx`      | Render + close action                                                |
+| `src/__tests__/hooks/useTrackerAlerts.test.ts`    | Polling, toast firing, ack                                           |
+| `e2e/tracker.spec.ts`                             | Add → mock cron tick → toast → close → archive                       |
 
 ## Open items deferred to v2
 

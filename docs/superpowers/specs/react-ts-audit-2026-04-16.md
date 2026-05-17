@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-16
+---
+
 # React & TypeScript Audit Remediation
 
 **Date:** 2026-04-16

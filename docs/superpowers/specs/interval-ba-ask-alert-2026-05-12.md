@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-12
+---
+
 # Interval B/A Ask Alert — SPXW (and SPX) 0DTE
 
 **Created:** 2026-05-12

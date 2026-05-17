@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-30
+---
+
 # Precision-Stack Overlay for Gamma Squeeze Detector — 2026-04-30
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-21
+---
+
 # Phase 2A — Server-Side Web Push Alerts for FuturesGammaPlaybook
 
 **Date:** 2026-04-21

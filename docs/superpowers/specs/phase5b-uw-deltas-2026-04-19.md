@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-19
+---
+
 # Phase 5b — UW Data Deltas + Rates-of-Change — 2026-04-19
 
 Part of the max-leverage roadmap. Phase 5b computes four derived

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-28
+---
+
 # Backend Audit Fixes — 2026-04-28
 
 ## Goal

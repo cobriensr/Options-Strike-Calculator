@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-11
+---
+
 # Periscope Daily Debrief — Playbook × Price × Flow Replay
 
 **Date:** 2026-05-11

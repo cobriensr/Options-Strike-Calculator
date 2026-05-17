@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-18
+---
+
 # Futures Historical Time Picker — 2026-04-18
 
 ## Goal

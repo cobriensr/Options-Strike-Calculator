@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-18
+---
+
 # Archive Volume Seed (Databento ES/NQ 1m historical)
 
 ## Goal

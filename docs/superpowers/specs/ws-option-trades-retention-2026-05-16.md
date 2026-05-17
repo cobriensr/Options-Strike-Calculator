@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-16
+---
+
 # `ws_option_trades` 2-day retention — 2026-05-16
 
 ## Goal

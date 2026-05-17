@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-20
+---
+
 # Futures Gamma Playbook Component — Phase 1
 
 **Date:** 2026-04-20

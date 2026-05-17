@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-12
+---
+
 # Silent Boom — multi-leg drop + ask=100% tier3 demotion + 5-band UI filter
 
 **Date:** 2026-05-12

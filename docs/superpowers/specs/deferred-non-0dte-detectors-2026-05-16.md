@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # Deferred — Non-0DTE Surface Detectors
 
 **Status:** Deferred 2026-05-16. User trades 0DTE only; these detectors carry edge primarily at 7-60 DTE and were dropped from active scope.

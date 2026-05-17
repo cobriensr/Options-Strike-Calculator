@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-02
+---
+
 # UW WebSocket Daemon — new Railway service
 
 **Date:** 2026-05-02

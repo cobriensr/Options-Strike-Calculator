@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # Alert Take-It Score (Lottery + Silent Boom) — 2026-05-16
 
 ## Goal

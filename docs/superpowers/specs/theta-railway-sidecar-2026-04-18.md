@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-18
+---
+
 # Theta Data Nightly EOD on Railway Sidecar
 
 ## Goal

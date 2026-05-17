@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-12
+---
+
 # GEX Landscape — MM-attributed swap (SPX-only)
 
 **Date:** 2026-05-12

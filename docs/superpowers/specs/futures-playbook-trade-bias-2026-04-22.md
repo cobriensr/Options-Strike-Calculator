@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-22
+---
+
 # Futures Playbook — Trade Bias verdict strip
 
 **Date:** 2026-04-22

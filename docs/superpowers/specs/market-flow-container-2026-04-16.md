@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-16
+---
+
 # Market Flow Container — Backtesting Controls
 
 ## Goal

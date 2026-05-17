@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-17
+---
+
 # Lottery + Silent-Boom feed perf regression fix
 
 **Date:** 2026-05-17
@@ -63,6 +68,7 @@ Switch lottery score-sort `ORDER BY` to `f.combined_score DESC NULLS LAST` and d
 ### Backfill — `scripts/backfill-ticker-flow-at-fire.mjs`
 
 Mirrors `backfill-range-pos.mjs`:
+
 1. Find distinct `(ticker, date)` pairs with `cum_ncp_at_fire IS NULL`
 2. For each pair: pull the full ticker-day net-flow slice ONCE (bounded by `ctSessionBounds(date)`)
 3. Walk in-memory cumulatively; binary-search each fire's `fire_ts` to get running totals

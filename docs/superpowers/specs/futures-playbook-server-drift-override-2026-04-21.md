@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-21
+---
+
 # Futures Playbook — Server-side drift-override parity
 
 **Date:** 2026-04-21

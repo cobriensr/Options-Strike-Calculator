@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-18
+---
+
 # Phase 4c — Microstructure Feature Engineering — 2026-04-18
 
 Part of the max-leverage roadmap. Phase 4c engineers per-day

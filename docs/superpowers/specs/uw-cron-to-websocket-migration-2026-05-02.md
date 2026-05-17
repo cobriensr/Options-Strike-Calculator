@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-02
+---
+
 # UW Cron → WebSocket Migration
 
 **Date:** 2026-05-02

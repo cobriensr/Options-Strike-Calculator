@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-18
+---
+
 # Phase 2a — Sidecar L1 Ingest (MBP-1 + TBBO) — 2026-04-18
 
 Part of the max-leverage roadmap

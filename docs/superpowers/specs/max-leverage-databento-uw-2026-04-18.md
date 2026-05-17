@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-18
+---
+
 # Maximum Leverage — Databento Standard + UW — 2026-04-18
 
 ## Goal

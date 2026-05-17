@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-25
+---
+
 # PAC Event Classifier — Phase 2 Results
 
 **Date:** 2026-04-25

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-24
+---
+
 # Tape-Side Volume for Exit-Signal Detection
 
 ## Goal

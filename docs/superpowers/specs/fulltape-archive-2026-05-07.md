@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-07
+---
+
 # UW Full Tape Parquet Archive (parallel to bot-eod-report)
 
 **Date:** 2026-05-07

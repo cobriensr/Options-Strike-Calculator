@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-30
+---
+
 # Frontend Refactor — src/ cleanup pass — 2026-04-30
 
 ## Goal

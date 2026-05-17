@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-19
+---
+
 # Phase 4b — Distribute TBBO Archive to Railway + Runtime Queries — 2026-04-19
 
 Part of the max-leverage roadmap. Phase 4b was paused during initial

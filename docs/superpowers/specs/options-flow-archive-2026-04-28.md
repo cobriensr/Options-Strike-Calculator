@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-28
+---
+
 # EOD Options Flow Archive (UW bot-eod-report → Parquet → Vercel Blob)
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-30
+---
+
 # Periscope Chat — Manual Read + Debrief Component
 
 ## Goal

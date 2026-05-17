@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-08
+---
+
 # Directional Buying Spec — 2026-04-08
 
 Enhancements for adding **directional long option trades** (buying delta) to a system built around theta selling. Captures the mental model difference, the current state of partial directional support, and 11 specific proposals for making long directional trades actually profitable.

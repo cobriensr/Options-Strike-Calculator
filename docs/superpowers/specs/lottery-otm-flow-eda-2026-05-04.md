@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-04
+---
+
 # Lottery OTM-NCP Inversion EDA
 
 **Date:** 2026-05-04

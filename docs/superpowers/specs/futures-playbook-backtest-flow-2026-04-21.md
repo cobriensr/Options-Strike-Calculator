@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-21
+---
+
 # Futures Playbook — Wall-flow signals work during backtest/scrub
 
 **Date:** 2026-04-21

@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-24
+---
+
 # PAC regime-gated sweep — deeper search + new dimensions
 
 **Parent:** [pac-v3-residual-fix-results-2026-04-24.md](./pac-v3-residual-fix-results-2026-04-24.md)

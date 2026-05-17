@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # EDA Findings Implementation — 4 Cross-Section Signals — 2026-05-16
 
 ## Goal

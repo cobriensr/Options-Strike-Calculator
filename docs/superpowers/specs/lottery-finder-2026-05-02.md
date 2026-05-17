@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-02
+---
+
 # Lottery Finder — replaces Gamma Squeezes (Velocity)
 
 **Date:** 2026-05-02

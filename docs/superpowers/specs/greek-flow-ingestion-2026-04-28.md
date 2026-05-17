@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-28
+---
+
 # Greek Flow UI Panel (SPY + QQQ)
 
 ## Goal

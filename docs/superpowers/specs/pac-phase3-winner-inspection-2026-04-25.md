@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-25
+---
+
 # PAC Phase 3 — winner inspection on 5m configs
 
 **Parent:** [pac-regime-gated-results-2026-04-25.md](./pac-regime-gated-results-2026-04-25.md)

@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-30
+---
+
 # UW Concurrency Semaphore — corrective design
 
 **Date:** 2026-04-30

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-21
+---
+
 # FuturesGammaPlaybook — Wire BiasMetrics signals into the rule engine
 
 **Date:** 2026-04-21

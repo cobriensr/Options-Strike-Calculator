@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-25
+---
+
 # Ichimoku Trailing + Confluence Features — Final Test
 
 **Date:** 2026-04-25

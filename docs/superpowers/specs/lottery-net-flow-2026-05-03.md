@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-03
+---
+
 # Lottery Finder — Per-Fire Net Flow Panel
 
 **Status:** Draft v0.1 (2026-05-03)

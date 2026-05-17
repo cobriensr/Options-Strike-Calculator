@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-22
+---
+
 # PAC Sweep Railway Service — `ml-sweep`
 
 **Date:** 2026-04-22

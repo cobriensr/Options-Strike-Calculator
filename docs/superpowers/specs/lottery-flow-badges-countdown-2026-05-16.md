@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # Lottery / SilentBoom — flow badges + cohort countdown — 2026-05-16
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-02
+---
+
 # Sidecar Refactor — Databento futures ingestion service — 2026-05-02
 
 ## Goal

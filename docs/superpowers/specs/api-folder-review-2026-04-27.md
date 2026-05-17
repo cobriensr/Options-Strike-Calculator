@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-27
+---
+
 # `api/` Folder Review — 2026-04-27
 
 ## Goal

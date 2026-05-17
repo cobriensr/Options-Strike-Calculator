@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-25
+---
+
 # Ichimoku Strategy C — Variant Sweep to Push Profitability
 
 **Date:** 2026-04-25

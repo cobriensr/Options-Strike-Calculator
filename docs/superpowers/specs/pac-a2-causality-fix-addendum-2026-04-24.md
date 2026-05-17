@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-24
+---
+
 # PAC A2 sweep — causality-fix addendum
 
 **Follow-up to:** [pac-a2-sweep-results-2026-04-23.md](./pac-a2-sweep-results-2026-04-23.md)

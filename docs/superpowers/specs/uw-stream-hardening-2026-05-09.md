@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-09
+---
+
 # uw-stream Hardening — 2026-05-09
 
 ## Goal

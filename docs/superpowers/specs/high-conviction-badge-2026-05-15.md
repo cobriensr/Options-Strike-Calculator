@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-15
+---
+
 # High-Conviction Badge + $0.10 Min-Entry Filter — 2026-05-15
 
 ## Goal

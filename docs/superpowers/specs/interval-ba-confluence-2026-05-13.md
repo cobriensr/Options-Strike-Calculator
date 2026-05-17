@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-13
+---
+
 # Interval B/A — cross-symbol confluence (SPY + SPXW + QQQ)
 
 **Created:** 2026-05-13 (market open, post-edge-validation)

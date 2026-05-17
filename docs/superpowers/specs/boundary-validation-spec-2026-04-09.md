@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-09
+---
+
 # Boundary Validation Spec — CROSS-005
 
 **Audit finding:** `CROSS-005` from [principal-engineer-audit-2026-04-07.md](principal-engineer-audit-2026-04-07.md#L795-L801). Severity: High.

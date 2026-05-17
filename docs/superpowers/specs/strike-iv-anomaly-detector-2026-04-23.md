@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-23
+---
+
 # Strike IV Anomaly Detector
 
 ## Goal

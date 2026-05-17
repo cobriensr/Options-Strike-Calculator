@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-05
+---
+
 # Futures Data Integration — Design Spec
 
 **Date:** 2026-04-05

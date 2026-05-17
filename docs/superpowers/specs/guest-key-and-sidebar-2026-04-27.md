@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-27
+---
+
 # Guest Access Key + Sidebar Overhaul — 2026-04-27
 
 ## Goal

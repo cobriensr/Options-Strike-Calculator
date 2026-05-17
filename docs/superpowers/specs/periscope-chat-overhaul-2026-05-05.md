@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-05
+---
+
 # Periscope Chat Overhaul — 3-Mode Lifecycle, Heat-Map OCR, VolSignals Heuristics
 
 **Status:** Spec — ready to build

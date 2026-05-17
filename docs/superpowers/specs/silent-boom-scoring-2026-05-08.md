@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-08
+---
+
 # Silent-Boom Scoring + Tier System
 
 **Created:** 2026-05-08 (after-hours, Thursday)

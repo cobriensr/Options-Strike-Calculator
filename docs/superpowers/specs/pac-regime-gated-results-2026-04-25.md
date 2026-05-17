@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-25
+---
+
 # PAC regime-gated sweep — Phase 1 results (150 trials × 6 chunks)
 
 **Parent:** [pac-regime-gated-sweep-2026-04-24.md](./pac-regime-gated-sweep-2026-04-24.md)

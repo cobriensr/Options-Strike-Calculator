@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-07
+---
+
 # Periscope HTML Ingestion + Dealer-Hedging Signal Pipeline
 
 **Date:** 2026-05-07

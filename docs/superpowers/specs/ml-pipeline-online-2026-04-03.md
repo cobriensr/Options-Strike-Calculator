@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-03
+---
+
 # ML Pipeline Online — Design Spec
 
 **Date:** 2026-04-03

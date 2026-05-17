@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-14
+---
+
 # Opening Flow Signal Widget (V4 Rule + Highest-Volume Strike)
 
 **Date:** 2026-05-14

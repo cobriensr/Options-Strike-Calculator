@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-10
+---
+
 # Periscope Auto-Playbook — Scraper-Triggered Claude Reads
 
 **Date:** 2026-05-10

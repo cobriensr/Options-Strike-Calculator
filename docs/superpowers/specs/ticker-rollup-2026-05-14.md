@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-14
+---
+
 # Ticker Rollup for Silent Boom + Lottery Finder — 2026-05-14
 
 ## Goal

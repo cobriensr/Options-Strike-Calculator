@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-20
+---
+
 # Analyze Endpoint: Position-State Honesty + Delta-Aware Strike Picks
 
 Date: 2026-04-20

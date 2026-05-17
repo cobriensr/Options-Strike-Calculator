@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-06
+---
+
 # Periscope Curate-Lessons — Continuous Learning From Debrief Sections
 
 **Status:** Spec — ready to build

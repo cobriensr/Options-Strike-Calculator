@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-23
+---
+
 # PAC A2 sweep — 3yr × 2tf × NQ results
 
 **Date:** 2026-04-23

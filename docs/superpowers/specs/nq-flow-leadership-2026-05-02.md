@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-02
+---
+
 # NQ Flow Leadership Analysis — 2026-05-02
 
 **v2 — simplified to forward-return correlation per user feedback.**

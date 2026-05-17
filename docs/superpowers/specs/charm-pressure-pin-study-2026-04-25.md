@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-25
+---
+
 # Charm Pressure Pin Study — Spec
 
 **Date:** 2026-04-25

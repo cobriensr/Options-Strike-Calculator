@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-19
+---
+
 # Phase 5c — Pre-warm cron for tbbo-ofi-percentile — 2026-04-19
 
 Small follow-up to Phase 4b. The `tbbo-ofi-percentile` sidecar

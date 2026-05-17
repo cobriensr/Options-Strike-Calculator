@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # GEXBot Orderflow-Tier Trial Capture — 2026-05-16
 
 ## Goal

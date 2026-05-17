@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-28
+---
+
 # Gamma Squeeze Velocity Detector
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-18
+---
+
 # Phase 3a — TBBO Daily DBN → Parquet Converter — 2026-04-18
 
 Part of the max-leverage roadmap. Phase 3a ingests the 1-year TBBO

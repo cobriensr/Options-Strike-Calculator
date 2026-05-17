@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-28
+---
+
 # Cross-Asset Zero-Gamma (SPX + NDX + SPY + QQQ)
 
 ## Goal

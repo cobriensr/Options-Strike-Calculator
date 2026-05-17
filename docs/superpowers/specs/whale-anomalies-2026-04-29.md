@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-29
+---
+
 # Whale Anomalies — Feature Spec
 
 **Date:** 2026-04-29

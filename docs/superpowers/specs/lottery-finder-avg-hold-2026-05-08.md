@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-08
+---
+
 # LotteryFinder: per-row avg-hold-minutes hint chip
 
 **Date:** 2026-05-08

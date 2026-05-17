@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-19
+---
+
 # Phase 4d — Microstructure EDA + Signal Validation — 2026-04-19
 
 Part of the max-leverage roadmap. Phase 4d analyzes the

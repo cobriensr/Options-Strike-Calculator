@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-07
+---
+
 # Sentry Monitoring + Alerting Hardening (2026-05-07)
 
 ## Goal

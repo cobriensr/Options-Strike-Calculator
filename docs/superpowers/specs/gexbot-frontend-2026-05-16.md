@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # GEXBot Frontend Components — 2026-05-16
 
 ## Goal

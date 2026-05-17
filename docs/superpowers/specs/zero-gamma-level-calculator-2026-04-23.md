@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-23
+---
+
 # Zero-Gamma Level Calculator
 
 ## Goal

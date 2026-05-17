@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-24
+---
+
 # PAC v3 residual-fix sweep results
 
 **Follow-up to:**

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-08
+---
+
 # Silent-Boom: Section-level exit chip + avg-hold-minutes hint
 
 **Date:** 2026-05-08

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-16
+---
+
 # Take-It Phase 3 — Production Scoring Pipeline — 2026-05-16
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-25
+---
+
 # Phase F — Cross-Asset Confluence UI for IV-Anomalies
 
 ## Goal

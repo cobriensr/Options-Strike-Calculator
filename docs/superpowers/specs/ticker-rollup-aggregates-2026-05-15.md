@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-15
+---
+
 # Ticker-Rollup At-a-Glance Aggregates — 2026-05-15
 
 ## Goal

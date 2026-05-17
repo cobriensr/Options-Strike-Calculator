@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-15
+---
+
 # Market Internals Panel (TICK / ADD / VOLD)
 
 **Date:** 2026-04-15

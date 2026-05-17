@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-27
+---
+
 # Dir Vega Spike Monitor (SPY + QQQ)
 
 ## Goal

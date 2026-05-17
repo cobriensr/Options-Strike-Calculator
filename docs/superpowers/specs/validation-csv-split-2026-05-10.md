@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-10
+---
+
 # Refactor: Split validation.ts and csv-parser.ts
 
 **Date:** 2026-05-10

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-25
+---
+
 # Ichimoku Strategy Sweep — Three Native Exits Tested
 
 **Date:** 2026-04-25

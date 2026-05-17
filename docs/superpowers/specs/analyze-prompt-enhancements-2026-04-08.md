@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-08
+---
+
 # Analyze Prompt Enhancements — 2026-04-08
 
 Recommendations for high-EV additions to the `/api/analyze` context and the `analyze-prompts.ts` system prompt, ranked by expected impact on **returns** (not accuracy). Captures the full investigation trail so this document can be used as a starting point without re-running the research.

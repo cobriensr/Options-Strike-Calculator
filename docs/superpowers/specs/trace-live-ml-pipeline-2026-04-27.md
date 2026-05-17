@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-04-27
+---
+
 # TRACE Live ML Pipeline — Outcomes, Analogs, Calibration, Drift
 
 **Status:** in progress

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-03
+---
+
 # Lottery Net Flow — EDA + Phase 3 Plateau Flag
 
 **Date:** 2026-05-03

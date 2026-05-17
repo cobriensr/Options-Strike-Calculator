@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-20
+---
+
 # PAC Backtest Search Space Expansion → Live-Trading Decision Tree
 
 **Date:** 2026-04-20

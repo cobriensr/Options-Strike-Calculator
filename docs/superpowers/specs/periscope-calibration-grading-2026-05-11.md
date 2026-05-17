@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-11
+---
+
 # Periscope Calibration & Grading — EOD Playbook Scorer
 
 **Date:** 2026-05-11

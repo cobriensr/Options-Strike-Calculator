@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-13
+---
+
 # MOC/MOO Order Imbalance Edge Study — 2026-05-13
 
 ## Goal

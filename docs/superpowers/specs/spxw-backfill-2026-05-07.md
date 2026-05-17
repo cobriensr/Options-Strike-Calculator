@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-07
+---
+
 # SPXW backfill from parquet
 
 **Status**: in-progress

@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-05-15
+---
+
 # GEX Landscape — Restore Naive GEX Alongside MM GEX
 
 **Date:** 2026-05-15

@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-15
+---
+
 # Futures Setups Backtest — 8 Candidate NQ/ES Setups
 
 **Date:** 2026-05-15

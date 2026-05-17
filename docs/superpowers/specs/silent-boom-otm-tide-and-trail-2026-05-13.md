@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-13
+---
+
 # Silent Boom: OTM Market Tide gate + Trail-30/10 enrichment — 2026-05-13
 
 ## Goal

@@ -1,3 +1,8 @@
+---
+status: TBD
+date: 2026-04-18
+---
+
 # Phase 2b — Microstructure Signals in Analyze Context — 2026-04-18
 
 Part of the max-leverage roadmap

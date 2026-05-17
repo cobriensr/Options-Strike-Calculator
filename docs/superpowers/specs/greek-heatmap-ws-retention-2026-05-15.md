@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-15
+---
+
 # `ws_gex_strike_expiry` retention + 0DTE-only ingest — 2026-05-15
 
 ## Goal

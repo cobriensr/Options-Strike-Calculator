@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-15
+---
+
 # Lottery Finder + Silent Boom: ITM/OTM Toggle and Aggressive Premium Parity — 2026-05-15
 
 ## Goal

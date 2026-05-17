@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-04-27
+---
+
 # Shared UW outbound rate limiter (2026-04-27)
 
 > **Superseded for the per-second concurrency concern by

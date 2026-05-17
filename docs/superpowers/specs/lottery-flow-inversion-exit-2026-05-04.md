@@ -1,3 +1,8 @@
+---
+status: Likely Shipped
+date: 2026-05-04
+---
+
 # Lottery Flow-Inversion Exit Policy
 
 **Date:** 2026-05-04

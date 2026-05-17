@@ -1,3 +1,8 @@
+---
+status: Shipped
+date: 2026-05-01
+---
+
 # Daemon Refactor — TRACE Live Capture daemon — 2026-05-01
 
 ## Goal
