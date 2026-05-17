@@ -228,6 +228,22 @@
     {
       "path": "/api/cron/fetch-gex-strike-expiry-etfs",
       "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-gexbot-fast",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-gexbot-strikes",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/archive-gexbot",
+      "schedule": "30 21 * * 2-6"
+    },
+    {
+      "path": "/api/cron/cleanup-gexbot",
+      "schedule": "15 12 * * 1-5"
     }
   ],
   "functions": {
@@ -242,6 +258,8 @@
     "api/cron/takeit-fill-shap.ts": { "maxDuration": 60 },
     "api/cron/enrich-lottery-outcomes.ts": { "maxDuration": 300 },
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
+    "api/cron/fetch-gexbot-strikes.ts": { "maxDuration": 60 },
+    "api/cron/archive-gexbot.ts": { "maxDuration": 300 },
     "api/periscope-auto-playbook.ts": {
       "maxDuration": 720,
       "includeFiles": ".claude/skills/**/*.md"
