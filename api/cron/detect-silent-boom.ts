@@ -45,6 +45,10 @@ import {
   flowAtFireTime,
   type TickerFlowSeries,
 } from '../_lib/ticker-flow-snapshot.js';
+import {
+  classifyAlertMultileg,
+  type MultilegClassifyCache,
+} from '../_lib/multileg-classify-batch.js';
 
 // 35-min scan window — needs at least baselineBuckets+1 buckets of
 // history (4+1 = 5 buckets = 25 min) plus 10 min slack for cron jitter
@@ -428,6 +432,13 @@ export default withCronInstrumentation(
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md.
     const tickerFlowCache = new Map<string, TickerFlowSeries>();
 
+    // Per-cron-tick multileg classification cache. Keyed inside the
+    // helper by (ticker, optionChain, minute) so multiple alerts on the
+    // same chain in the same minute reuse one sidecar call. Cleared
+    // when the handler returns. Spec: migration #160 columns; sidecar
+    // POST /takeit/multileg-classify (commit ced5ff10).
+    const multilegCache: MultilegClassifyCache = new Map();
+
     for (const g of groups.values()) {
       if (g.buckets.length < SILENT_BOOM_SPEC_V1.baselineBuckets + 1) {
         skippedShort += 1;
@@ -481,6 +492,24 @@ export default withCronInstrumentation(
           flowSeries,
           f.bucketTs,
         );
+
+        // Phase 2 multileg classification (spec: migration #160; sidecar
+        // POST /takeit/multileg-classify, commit ced5ff10). Fail-open —
+        // the helper returns null on sidecar errors, missing anchor
+        // trade, or oversized windows, and the four columns stay NULL
+        // on the row. Take-It feature pipeline already treats these as
+        // optional (`?: T | null`).
+        const multilegResult = await classifyAlertMultileg(
+          db,
+          multilegCache,
+          g.ticker,
+          g.optionChain,
+          f.bucketTs,
+        );
+        const inferredStructure = multilegResult?.inferredStructure ?? null;
+        const isIsolatedLeg = multilegResult?.isIsolatedLeg ?? null;
+        const matchConfidence = multilegResult?.matchConfidence ?? null;
+        const patternGroupId = multilegResult?.patternGroupId ?? null;
 
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
@@ -549,6 +578,7 @@ export default withCronInstrumentation(
             mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
             multi_leg_share, underlying_price_at_spike,
             cum_ncp_at_fire, cum_npp_at_fire,
+            inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
             takeit_prob, takeit_model_version, takeit_features
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
@@ -560,6 +590,7 @@ export default withCronInstrumentation(
             ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
             ${f.multiLegShare}, ${f.underlyingPriceAtSpike},
             ${cumNcpAtFire}, ${cumNppAtFire},
+            ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING

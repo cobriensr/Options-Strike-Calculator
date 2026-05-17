@@ -49,6 +49,10 @@ import {
   flowAtFireTime,
   type TickerFlowSeries,
 } from '../_lib/ticker-flow-snapshot.js';
+import {
+  classifyAlertMultileg,
+  type MultilegClassifyCache,
+} from '../_lib/multileg-classify-batch.js';
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
 // tick can't drop a trigger that landed at the start of its window.
@@ -340,6 +344,13 @@ export default withCronInstrumentation(
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md.
     const tickerFlowCache = new Map<string, TickerFlowSeries>();
 
+    // Per-cron-tick multileg classification cache. Keyed inside the
+    // helper by (ticker, optionChain, minute) so multiple alerts on the
+    // same chain in the same minute reuse one sidecar call. Cleared
+    // when the handler returns. Spec: migration #160 columns; sidecar
+    // POST /takeit/multileg-classify (commit ced5ff10).
+    const multilegCache: MultilegClassifyCache = new Map();
+
     for (const g of groups.values()) {
       if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
         skippedShort += 1;
@@ -458,6 +469,24 @@ export default withCronInstrumentation(
           rec.triggerTimeCt,
         );
 
+        // Phase 2 multileg classification (spec: migration #160; sidecar
+        // POST /takeit/multileg-classify, commit ced5ff10). Fail-open —
+        // the helper returns null on sidecar errors, missing anchor
+        // trade, or oversized windows, and the four columns stay NULL
+        // on the row. Take-It feature pipeline already treats these as
+        // optional (`?: T | null`).
+        const multilegResult = await classifyAlertMultileg(
+          db,
+          multilegCache,
+          rec.underlyingSymbol,
+          rec.optionChainId,
+          rec.triggerTimeCt,
+        );
+        const inferredStructure = multilegResult?.inferredStructure ?? null;
+        const isIsolatedLeg = multilegResult?.isIsolatedLeg ?? null;
+        const matchConfidence = multilegResult?.matchConfidence ?? null;
+        const patternGroupId = multilegResult?.patternGroupId ?? null;
+
         const score = applyEmpiricalBonuses({
           baseScore,
           triggerVolToOiWindow: rec.triggerVolToOiWindow,
@@ -564,6 +593,7 @@ export default withCronInstrumentation(
             gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
             score, direction_gated, range_pos_at_trigger,
             cum_ncp_at_fire, cum_npp_at_fire,
+            inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
             takeit_prob, takeit_model_version, takeit_features
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
@@ -584,6 +614,7 @@ export default withCronInstrumentation(
             ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
             ${score}, ${directionGated}, ${rangePosAtTrigger},
             ${cumNcpAtFire}, ${cumNppAtFire},
+            ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING

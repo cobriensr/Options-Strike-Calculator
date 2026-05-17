@@ -41,6 +41,15 @@ vi.mock('../_lib/uw-stock-candles.js', async (importOriginal) => {
   };
 });
 
+// Phase 2 multileg classifier — fail-open by design. Default to null so
+// the four migration #160 columns (inferred_structure, is_isolated_leg,
+// match_confidence, pattern_group_id) bind as null on the INSERT. Tests
+// that exercise the populated path override per-case via mockResolvedValue.
+const mockClassifyAlertMultileg = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/multileg-classify-batch.js', () => ({
+  classifyAlertMultileg: mockClassifyAlertMultileg,
+}));
+
 // Take-It scoring is fail-open by design. Tests mock loadTakeitDetectContext
 // to return null so no Blob fetch happens — the cron INSERTs with null
 // takeit_prob/takeit_model_version/takeit_features and that's the intended
@@ -169,6 +178,9 @@ describe('detect-lottery-fires handler', () => {
     // and the score bonus is not applied. Tests that care about range
     // behavior override this per-case.
     mockFetchStockCandles1m.mockResolvedValue([]);
+    // Default: classifier returns null — INSERT binds the four multileg
+    // columns as null. Tests that exercise the populated path override.
+    mockClassifyAlertMultileg.mockResolvedValue(null);
     process.env.CRON_SECRET = 'test-secret';
   });
 
@@ -254,20 +266,28 @@ describe('detect-lottery-fires handler', () => {
 
     expect(res._status).toBe(200);
     // The INSERT is the last mockSql call. Bind order now ends with
-    // `score, direction_gated, range_pos_at_trigger, takeit_prob,
-    // takeit_model_version, takeit_features` after the Phase 3d follow-up
-    // (spec: docs/superpowers/specs/takeit-phase3-production-scoring-
-    // 2026-05-16.md). takeit_features (JSONB) is at(-1), takeit_model_version
-    // at(-2), takeit_prob at(-3), range_pos at(-4), direction_gated at(-5),
-    // score at(-6). takeit_* are null because loadTakeitDetectContext is
-    // mocked to null.
+    // `score, direction_gated, range_pos_at_trigger,
+    //  cum_ncp_at_fire, cum_npp_at_fire,
+    //  inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
+    //  takeit_prob, takeit_model_version, takeit_features` after the
+    // Phase 2 multileg migration #160 tail-insert. Indices shifted by
+    // -4 from the prior layout.
+    // tail-from-end (12 args):
+    //   takeit_features=-1, takeit_model_version=-2, takeit_prob=-3,
+    //   pattern_group_id=-4, match_confidence=-5, is_isolated_leg=-6,
+    //   inferred_structure=-7, cum_npp_at_fire=-8, cum_ncp_at_fire=-9,
+    //   range_pos_at_trigger=-10, direction_gated=-11, score=-12.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
     const takeitFeatures = insertCall.at(-1);
     const takeitVersion = insertCall.at(-2);
     const takeitProb = insertCall.at(-3);
-    const rangePos = insertCall.at(-6);
-    const directionGated = insertCall.at(-7);
-    const score = insertCall.at(-8);
+    const patternGroupId = insertCall.at(-4);
+    const matchConfidence = insertCall.at(-5);
+    const isIsolatedLeg = insertCall.at(-6);
+    const inferredStructure = insertCall.at(-7);
+    const rangePos = insertCall.at(-10);
+    const directionGated = insertCall.at(-11);
+    const score = insertCall.at(-12);
     expect(score).toBe(25);
     // SNDK call with no OTM tide tick → ungated.
     expect(directionGated).toBe(false);
@@ -277,6 +297,12 @@ describe('detect-lottery-fires handler', () => {
     expect(takeitProb).toBeNull();
     expect(takeitVersion).toBeNull();
     expect(takeitFeatures).toBeNull();
+    // Default mock returns null classification → all four multileg
+    // columns bind as null.
+    expect(inferredStructure).toBeNull();
+    expect(isIsolatedLeg).toBeNull();
+    expect(matchConfidence).toBeNull();
+    expect(patternGroupId).toBeNull();
   });
 
   it('computes range_pos_at_trigger from UW stock candles for display use', async () => {
@@ -318,10 +344,10 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // takeit_features tail-appended (Phase 3d) — rangePos at(-4), score at(-6).
+    // Post-#160 multileg insert: rangePos at(-10), score at(-12).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-6);
-    const score = insertCall.at(-8);
+    const rangePos = insertCall.at(-10);
+    const score = insertCall.at(-12);
     // Spot 1170 between low 1150 and high 1200 → 0.4
     expect(rangePos).toBeCloseTo(0.4, 5);
     // No penalty applied; base 25 unchanged.
@@ -364,10 +390,10 @@ describe('detect-lottery-fires handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // takeit_features tail-appended (Phase 3d) — rangePos at(-4), score at(-6).
+    // Post-#160 multileg insert: rangePos at(-10), score at(-12).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-6);
-    const score = insertCall.at(-8);
+    const rangePos = insertCall.at(-10);
+    const score = insertCall.at(-12);
     expect(rangePos).toBe(0);
     // No penalty applied — Range Kill retired. Base 25 unchanged.
     expect(score).toBe(25);
@@ -398,23 +424,25 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // INSERT bind order (post Phase 3d takeit_features tail-append):
+    // INSERT bind order (post-#160 multileg tail-insert):
     //   ... mkt_tide_diff, mkt_tide_otm_diff, spx_flow_diff,
     //   spy_etf_diff, qqq_etf_diff, zero_dte_diff,
     //   spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi,
     //   spx_spot_vanna_oi, gex_strike_call_minus_put,
     //   gex_strike_call_ask_minus_bid, gex_strike_put_ask_minus_bid,
     //   gex_strike_actual_strike, score, direction_gated, range_pos_at_trigger,
+    //   cum_ncp_at_fire, cum_npp_at_fire,
+    //   inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
     //   takeit_prob, takeit_model_version, takeit_features
-    // → mkt_tide_otm_diff is now the 19th-from-last bind position after
-    //   takeit_features was tail-appended (was -14, -15, -16, -18 in prior eras).
+    // → mkt_tide_otm_diff is now the 25th-from-last bind position; the
+    //   four multileg columns shifted everything by -4 from prior layout.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-21)).toBe(3000); // 4000 - 1000
+    expect(insertCall.at(-25)).toBe(3000); // 4000 - 1000
     // Sanity: mkt_tide_diff (no 'market_tide' source in the mock) is null
-    expect(insertCall.at(-22)).toBeNull();
+    expect(insertCall.at(-26)).toBeNull();
     // SNDK call with otm_diff = +3000 (well below the ±150M gate) → ungated.
-    // direction_gated shifted to -5 after takeit_features tail-append.
-    expect(insertCall.at(-7)).toBe(false);
+    // direction_gated at -11 after the multileg tail-insert.
+    expect(insertCall.at(-11)).toBe(false);
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
@@ -436,14 +464,13 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Bind positions shifted -5 vs the original mkt_tide layout:
-    //   -1 from #151 direction_gated, -1 from #153 range_pos_at_trigger,
-    //   -2 from #155 takeit_prob + takeit_model_version, -1 from Phase 3d
-    //   takeit_features tail-append.
+    // Bind positions shifted by -4 from the prior layout for the
+    // four migration #160 multileg tail-insert columns:
+    //   inferred_structure, is_isolated_leg, match_confidence, pattern_group_id.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-22)).toBe(200); // mkt_tide_diff = 500 - 300
-    expect(insertCall.at(-21)).toBeNull(); // mkt_tide_otm_diff absent
-    expect(insertCall.at(-7)).toBe(false); // otm null → ungated (direction_gated shifted)
+    expect(insertCall.at(-26)).toBe(200); // mkt_tide_diff = 500 - 300
+    expect(insertCall.at(-25)).toBeNull(); // mkt_tide_otm_diff absent
+    expect(insertCall.at(-11)).toBe(false); // otm null → ungated
   });
 
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
@@ -669,15 +696,89 @@ describe('detect-lottery-fires handler', () => {
       inserted: 1,
     });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Post Phase 3d takeit_features tail-append, tail is:
-    //   score(-6), direction_gated(-5), range_pos(-4),
+    // Post-#160 multileg tail-insert, tail (12 args) is:
+    //   score(-12), direction_gated(-11), range_pos(-10),
+    //   cum_ncp_at_fire(-9), cum_npp_at_fire(-8),
+    //   inferred_structure(-7), is_isolated_leg(-6),
+    //   match_confidence(-5), pattern_group_id(-4),
     //   takeit_prob(-3), takeit_model_version(-2), takeit_features(-1).
     // The direction gate must NOT mutate the score value — only the
     // boolean column flips.
-    expect(insertCall.at(-7)).toBe(true);
+    expect(insertCall.at(-11)).toBe(true);
     // Score remains the computed value (not zeroed / not demoted).
-    expect(typeof insertCall.at(-8)).toBe('number');
-    expect(insertCall.at(-8) as number).toBeGreaterThan(0);
+    expect(typeof insertCall.at(-12)).toBe('number');
+    expect(insertCall.at(-12) as number).toBeGreaterThan(0);
+  });
+
+  it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
+    // classifyAlertMultileg returns a populated classification → the
+    // four migration #160 columns bind to non-null values on the INSERT.
+    mockClassifyAlertMultileg.mockResolvedValue({
+      id: 'anchor-id',
+      inferredStructure: 'vertical',
+      isIsolatedLeg: false,
+      matchConfidence: 0.83,
+      patternGroupId: 'pg-abc-123',
+    });
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 11 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    // Tail layout: ..., inferred_structure(-7), is_isolated_leg(-6),
+    //              match_confidence(-5), pattern_group_id(-4), takeit_*(-3..-1).
+    expect(insertCall.at(-7)).toBe('vertical');
+    expect(insertCall.at(-6)).toBe(false);
+    expect(insertCall.at(-5)).toBe(0.83);
+    expect(insertCall.at(-4)).toBe('pg-abc-123');
+    // Helper was called once with the alert's anchor coordinates.
+    expect(mockClassifyAlertMultileg).toHaveBeenCalledTimes(1);
+    const [, , ticker, optionChain] = mockClassifyAlertMultileg.mock.calls[0]!;
+    expect(ticker).toBe('SNDK');
+    expect(optionChain).toBe('SNDK260501C01175000');
+  });
+
+  it('inserts with null multileg columns when classifier returns null (graceful degradation)', async () => {
+    // Default mock returns null — INSERT still happens, four multileg
+    // columns bind as null. Confirms fail-open semantics: a sidecar
+    // outage does NOT block alert insertion (the columns are NULLABLE
+    // by migration #160 design).
+    mockClassifyAlertMultileg.mockResolvedValue(null);
+    mockSql
+      .mockResolvedValueOnce(fireableSndkStream())
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 12 }]); // insert still lands
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    expect(insertCall.at(-7)).toBeNull(); // inferred_structure
+    expect(insertCall.at(-6)).toBeNull(); // is_isolated_leg
+    expect(insertCall.at(-5)).toBeNull(); // match_confidence
+    expect(insertCall.at(-4)).toBeNull(); // pattern_group_id
   });
 
   it('still fires when prior-fire is older than the 5-min cooldown', async () => {

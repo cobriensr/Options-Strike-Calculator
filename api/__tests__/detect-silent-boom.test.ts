@@ -25,6 +25,15 @@ const { mockCronGuard } = vi.hoisted(() => ({
   mockCronGuard: vi.fn(),
 }));
 
+// Phase 2 multileg classifier — fail-open by design. Default to null so
+// the four migration #160 columns (inferred_structure, is_isolated_leg,
+// match_confidence, pattern_group_id) bind as null on the INSERT. Tests
+// that exercise the populated path override per-case via mockResolvedValue.
+const mockClassifyAlertMultileg = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/multileg-classify-batch.js', () => ({
+  classifyAlertMultileg: mockClassifyAlertMultileg,
+}));
+
 // Take-It scoring is fail-open. Mock loadTakeitDetectContext to return
 // null so no Blob fetch happens; scoreSilentBoom returns nulls; INSERT
 // gets null takeit_prob + takeit_model_version + takeit_features at the
@@ -138,6 +147,9 @@ describe('detect-silent-boom handler', () => {
     vi.resetAllMocks();
     mockCronGuard.mockReturnValue(GUARD);
     mockSql.mockResolvedValue([]);
+    // Default: classifier returns null — INSERT binds the four multileg
+    // columns as null. Tests that exercise the populated path override.
+    mockClassifyAlertMultileg.mockResolvedValue(null);
     process.env.CRON_SECRET = 'test-secret';
   });
 
@@ -350,21 +362,30 @@ describe('detect-silent-boom handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(8);
     // INSERT is the last call. Migration #158 tail-appended
     // cum_ncp_at_fire + cum_npp_at_fire before takeit_*; combined with
-    // Phase 3d's takeit_features tail-append the tail layout is now:
+    // Phase 3d's takeit_features tail-append and migration #160's four
+    // multileg columns inserted BETWEEN cum_npp_at_fire and takeit_*,
+    // the tail layout is now:
     //   ...mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff,
     //   spx_spot_gamma_oi, multi_leg_share, underlying_price_at_spike,
     //   cum_ncp_at_fire, cum_npp_at_fire,
+    //   inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
     //   takeit_prob, takeit_model_version, takeit_features.
+    // takeit_* indices unchanged; everything before the multileg insert
+    // shifted by -4.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
     const takeitFeatures = insertCall.at(-1);
     const takeitVersion = insertCall.at(-2);
     const takeitProb = insertCall.at(-3);
-    const underlyingAtSpike = insertCall.at(-6);
-    const multiLegShare = insertCall.at(-7);
-    const spxGamma = insertCall.at(-8);
-    const zeroDteDiff = insertCall.at(-9);
-    const tideOtmDiff = insertCall.at(-10);
-    const tideDiff = insertCall.at(-11);
+    const patternGroupId = insertCall.at(-4);
+    const matchConfidence = insertCall.at(-5);
+    const isIsolatedLeg = insertCall.at(-6);
+    const inferredStructure = insertCall.at(-7);
+    const underlyingAtSpike = insertCall.at(-10);
+    const multiLegShare = insertCall.at(-11);
+    const spxGamma = insertCall.at(-12);
+    const zeroDteDiff = insertCall.at(-13);
+    const tideOtmDiff = insertCall.at(-14);
+    const tideDiff = insertCall.at(-15);
     expect(takeitProb).toBeNull(); // mocked context returns null
     expect(takeitVersion).toBeNull();
     expect(takeitFeatures).toBeNull();
@@ -376,6 +397,12 @@ describe('detect-silent-boom handler', () => {
     expect(multiLegShare).toBe(0);
     // Fixture buckets don't set underlyingPrice → null at the boundary.
     expect(underlyingAtSpike).toBeNull();
+    // Default mock returns null classification → all four multileg
+    // columns bind as null.
+    expect(inferredStructure).toBeNull();
+    expect(isIsolatedLeg).toBeNull();
+    expect(matchConfidence).toBeNull();
+    expect(patternGroupId).toBeNull();
   });
 
   it('binds null tide diff when the latest tick is older than 30 minutes', async () => {
@@ -413,13 +440,15 @@ describe('detect-silent-boom handler', () => {
     // tide_otm, zero_dte, spx_gamma) are null because every tick was
     // stale. underlyingPrice not set in fixture → null at the boundary.
     // takeit_prob + takeit_model_version + takeit_features tail-appended
-    // → shift indices by 3 vs the pre-takeit layout.
-    expect(insertCall.at(-6)).toBeNull(); // underlying_price_at_spike
-    expect(insertCall.at(-7)).toBe(0); // multi_leg_share
-    expect(insertCall.at(-8)).toBeNull(); // spx_spot_gamma_oi
-    expect(insertCall.at(-9)).toBeNull(); // zero_dte_diff
-    expect(insertCall.at(-10)).toBeNull(); // mkt_tide_otm_diff
-    expect(insertCall.at(-11)).toBeNull(); // mkt_tide_diff
+    // → shift indices by 3 vs the pre-takeit layout. Migration #160
+    // inserted four multileg columns between cum_npp_at_fire and
+    // takeit_*, shifting all pre-takeit indices by an additional -4.
+    expect(insertCall.at(-10)).toBeNull(); // underlying_price_at_spike
+    expect(insertCall.at(-11)).toBe(0); // multi_leg_share
+    expect(insertCall.at(-12)).toBeNull(); // spx_spot_gamma_oi
+    expect(insertCall.at(-13)).toBeNull(); // zero_dte_diff
+    expect(insertCall.at(-14)).toBeNull(); // mkt_tide_otm_diff
+    expect(insertCall.at(-15)).toBeNull(); // mkt_tide_diff
   });
 
   it('flags direction_gated=true and demotes score_tier to tier3 on a counter-trend put fire (mkt_tide_diff > +100M)', async () => {
@@ -464,16 +493,97 @@ describe('detect-silent-boom handler', () => {
     // Bind order ends with score, score_tier, direction_gated,
     // mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff,
     // spx_spot_gamma_oi, multi_leg_share, underlying_price_at_spike,
-    // takeit_prob, takeit_model_version, takeit_features (Phase 3d
-    // tail-append). So:
+    // cum_ncp_at_fire, cum_npp_at_fire,
+    // inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
+    // takeit_prob, takeit_model_version, takeit_features (migration #160
+    // multileg tail-insert + Phase 3d takeit tail-append). So pre-multileg
+    // indices shifted by -4 from the prior layout:
     //   at(-1) = takeit_features  at(-2) = takeit_model_version
-    //   at(-3) = takeit_prob  at(-4) = underlying_price_at_spike
-    //   at(-5) = multi_leg_share  at(-9) = mkt_tide_diff
-    //   at(-10) = direction_gated  at(-11) = score_tier (demoted to 'tier3')
+    //   at(-3) = takeit_prob  at(-4) = pattern_group_id
+    //   at(-5) = match_confidence  at(-6) = is_isolated_leg
+    //   at(-7) = inferred_structure  at(-8) = cum_npp_at_fire
+    //   at(-9) = cum_ncp_at_fire  at(-10) = underlying_price_at_spike
+    //   at(-15) = mkt_tide_diff  at(-16) = direction_gated
+    //   at(-17) = score_tier (demoted to 'tier3')
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-11)).toBe(150_000_000);
-    expect(insertCall.at(-12)).toBe(true);
-    expect(insertCall.at(-13)).toBe('tier3');
+    expect(insertCall.at(-15)).toBe(150_000_000);
+    expect(insertCall.at(-16)).toBe(true);
+    expect(insertCall.at(-17)).toBe('tier3');
+  });
+
+  it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
+    // classifyAlertMultileg returns a populated classification → the
+    // four migration #160 columns bind to non-null values on the INSERT.
+    mockClassifyAlertMultileg.mockResolvedValue({
+      id: 'anchor-id',
+      inferredStructure: 'vertical',
+      isIsolatedLeg: false,
+      matchConfidence: 0.83,
+      patternGroupId: 'pg-abc-123',
+    });
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 11 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    // Tail layout: ..., inferred_structure(-7), is_isolated_leg(-6),
+    //              match_confidence(-5), pattern_group_id(-4), takeit_*(-3..-1).
+    expect(insertCall.at(-7)).toBe('vertical');
+    expect(insertCall.at(-6)).toBe(false);
+    expect(insertCall.at(-5)).toBe(0.83);
+    expect(insertCall.at(-4)).toBe('pg-abc-123');
+    // Helper was called once with the alert's anchor coordinates.
+    expect(mockClassifyAlertMultileg).toHaveBeenCalledTimes(1);
+    const [, , ticker, optionChain] = mockClassifyAlertMultileg.mock.calls[0]!;
+    expect(ticker).toBe('SNDK');
+    expect(optionChain).toBe('SNDK260507C01175000');
+  });
+
+  it('inserts with null multileg columns when classifier returns null (graceful degradation)', async () => {
+    // Default mock returns null — INSERT still happens, four multileg
+    // columns bind as null. Confirms fail-open semantics: a sidecar
+    // outage does NOT block alert insertion (the columns are NULLABLE
+    // by migration #160 design).
+    mockClassifyAlertMultileg.mockResolvedValue(null);
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 12 }]); // insert still lands
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    expect(insertCall.at(-7)).toBeNull(); // inferred_structure
+    expect(insertCall.at(-6)).toBeNull(); // is_isolated_leg
+    expect(insertCall.at(-5)).toBeNull(); // match_confidence
+    expect(insertCall.at(-4)).toBeNull(); // pattern_group_id
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
