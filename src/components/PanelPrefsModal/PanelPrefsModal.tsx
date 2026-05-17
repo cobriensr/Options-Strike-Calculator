@@ -1,23 +1,64 @@
 /**
- * PanelPrefsModal — gear-icon modal for choosing which home-page sections
- * render for the current identity (owner cookie session or guest key).
+ * PanelPrefsModal — gear-icon modal for choosing which home-page
+ * sections render and in what order.
+ *
+ * Three axes of preference are exposed via separate UI controls:
+ *
+ *   1. Visibility — per-row checkbox + footer "Reset visibility"
+ *   2. Panel order — per-row drag handle (within a group) + footer
+ *      "Reset panel order"
+ *   3. Group order — per-group-header drag handle + footer "Reset
+ *      group order"
+ *
+ * Panels cannot cross groups — `onDragEnd` rejects cross-group drops
+ * silently. Group order honors the same registry-as-fallback rule as
+ * panel order: stored prefix first, then unknown groups appended.
+ *
+ * Drag is `@dnd-kit/sortable` for keyboard parity (Space to grab,
+ * arrows to move, Space to drop, live-region announcements). Native
+ * HTML5 DnD has weak touch + zero screen-reader support and would
+ * fail the e2e axe-core gate.
  *
  * Reads the panel registry filtered by the caller's `(isAuthenticated,
- * hasMarketOrSnapshot)` context so a guest never sees a checkbox for the
- * Futures Calculator they couldn't reach anyway. The `results` panel is
- * excluded — hiding the calculator output is not a useful UX.
+ * hasMarketOrSnapshot)` context so a guest never sees a checkbox for
+ * the Futures Calculator they couldn't reach anyway. The `results`
+ * panel is excluded — hiding the calculator output is not a useful UX.
  *
- * Spec: docs/superpowers/specs/panel-prefs-2026-05-17.md
+ * Specs:
+ *   - docs/superpowers/specs/panel-prefs-2026-05-17.md (visibility)
+ *   - docs/superpowers/specs/panel-reordering-2026-05-17.md (orders)
  */
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import {
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import {
   getPanelRegistry,
   PANEL_GROUP_ORDER,
+  type PanelGroup,
   type PanelRegistryEntry,
 } from '../../constants/panel-registry';
+import { resolveGroupOrder, resolvePanelOrder } from '../../utils/panel-order';
 import type { PanelPrefs } from '../../hooks/usePanelPrefs';
+
+const GRIP_LABEL_PREFIX_GROUP = 'Drag to reorder group';
+const GRIP_LABEL_PREFIX_PANEL = 'Drag to reorder';
 
 interface Props {
   isOpen: boolean;
@@ -25,6 +66,129 @@ interface Props {
   panelPrefs: PanelPrefs;
   isAuthenticated: boolean;
   hasMarketOrSnapshot: boolean;
+}
+
+/**
+ * One row inside a group's panel list — the existing
+ * checkbox/label/id-chip layout plus a drag handle.
+ */
+function SortablePanelRow({
+  entry,
+  visible,
+  onToggle,
+}: {
+  entry: PanelRegistryEntry;
+  visible: boolean;
+  onToggle: () => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: entry.id });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <li ref={setNodeRef} style={style}>
+      <div className="border-edge hover:bg-surface-alt flex items-center gap-2 rounded-md border px-2 py-2 text-sm transition-colors">
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          aria-label={`${GRIP_LABEL_PREFIX_PANEL} ${entry.label}`}
+          className="text-tertiary hover:text-secondary flex h-6 w-6 shrink-0 cursor-grab items-center justify-center rounded active:cursor-grabbing"
+        >
+          {/* unicode grip icon — six dots in 2 cols */}
+          <span aria-hidden="true">⠿</span>
+        </button>
+        <label className="flex flex-1 cursor-pointer items-center gap-3">
+          <input
+            type="checkbox"
+            checked={visible}
+            onChange={onToggle}
+            className="accent-accent h-4 w-4 cursor-pointer"
+            aria-label={`${visible ? 'Hide' : 'Show'} ${entry.label}`}
+          />
+          <span className="text-primary flex-1">{entry.label}</span>
+          <span className="text-tertiary font-mono text-[10px]">
+            {entry.id}
+          </span>
+        </label>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * A whole group block — the header (draggable) and the panel list
+ * (its own SortableContext for within-group reordering).
+ */
+function SortableGroupSection({
+  group,
+  entries,
+  isHidden,
+  onToggle,
+}: {
+  group: string;
+  entries: PanelRegistryEntry[];
+  isHidden: (id: string) => boolean;
+  onToggle: (id: string) => void;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: group });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  const panelIds = entries.map((e) => e.id);
+
+  return (
+    <section ref={setNodeRef} style={style} className="mb-4 last:mb-0">
+      <div className="mb-2 flex items-center gap-2">
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          aria-label={`${GRIP_LABEL_PREFIX_GROUP} ${group}`}
+          className="text-tertiary hover:text-secondary flex h-5 w-5 shrink-0 cursor-grab items-center justify-center rounded active:cursor-grabbing"
+        >
+          <span aria-hidden="true">⠿</span>
+        </button>
+        <h3 className="text-tertiary font-sans text-[11px] font-semibold tracking-wider uppercase">
+          {group}
+        </h3>
+      </div>
+      <SortableContext items={panelIds} strategy={verticalListSortingStrategy}>
+        <ul className="space-y-1">
+          {entries.map((entry) => (
+            <SortablePanelRow
+              key={entry.id}
+              entry={entry}
+              visible={!isHidden(entry.id)}
+              onToggle={() => onToggle(entry.id)}
+            />
+          ))}
+        </ul>
+      </SortableContext>
+    </section>
+  );
 }
 
 export function PanelPrefsModal({
@@ -53,22 +217,126 @@ export function PanelPrefsModal({
     };
   }, [isOpen, onClose]);
 
-  const handleReset = useCallback(() => {
-    panelPrefs.reset();
-  }, [panelPrefs]);
+  const sensors = useSensors(
+    // 5px activation distance avoids accidental drag on a row click.
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+
+  // Build the registry view filtered by context + grouped + ordered.
+  const registry = useMemo(
+    () =>
+      getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot }).filter(
+        (entry) => entry.id !== 'results',
+      ),
+    [isAuthenticated, hasMarketOrSnapshot],
+  );
+
+  const registryGroups: PanelGroup[] = useMemo(
+    () => [...PANEL_GROUP_ORDER],
+    [],
+  );
+
+  const resolvedGroups = useMemo(
+    () => resolveGroupOrder(panelPrefs.groupOrder, registryGroups),
+    [panelPrefs.groupOrder, registryGroups],
+  );
+
+  // Per-group ordered entries (entries, not just ids) — pre-computed
+  // once so onDragEnd and the render loop both read from the same map.
+  const entriesByGroup = useMemo(() => {
+    const byId = new Map(registry.map((e) => [e.id, e]));
+    const out = new Map<string, PanelRegistryEntry[]>();
+    for (const group of resolvedGroups) {
+      const ids = resolvePanelOrder(panelPrefs.order, registry, group);
+      out.set(
+        group,
+        ids
+          .map((id) => byId.get(id))
+          .filter((e): e is PanelRegistryEntry => !!e),
+      );
+    }
+    return out;
+  }, [resolvedGroups, panelPrefs.order, registry]);
+
+  // Which group does a given panel id belong to (within the
+  // currently-shown registry)? Used to reject cross-group drops.
+  const groupForPanel = useCallback(
+    (id: string): string | undefined =>
+      registry.find((e) => e.id === id)?.group,
+    [registry],
+  );
+
+  const isGroupId = useCallback(
+    (id: string): boolean => registryGroups.includes(id as PanelGroup),
+    [registryGroups],
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const activeId = String(active.id);
+      const overId = String(over.id);
+      const activeIsGroup = isGroupId(activeId);
+      const overIsGroup = isGroupId(overId);
+
+      if (activeIsGroup && overIsGroup) {
+        const oldIndex = resolvedGroups.indexOf(activeId);
+        const newIndex = resolvedGroups.indexOf(overId);
+        if (oldIndex < 0 || newIndex < 0) return;
+        const next = arrayMove(resolvedGroups, oldIndex, newIndex);
+        panelPrefs.setGroupOrder(next);
+        return;
+      }
+
+      if (!activeIsGroup && !overIsGroup) {
+        // Cross-group drop is rejected silently.
+        const activeGroup = groupForPanel(activeId);
+        const overGroup = groupForPanel(overId);
+        if (!activeGroup || activeGroup !== overGroup) return;
+
+        const entries = entriesByGroup.get(activeGroup) ?? [];
+        const ids = entries.map((e) => e.id);
+        const oldIndex = ids.indexOf(activeId);
+        const newIndex = ids.indexOf(overId);
+        if (oldIndex < 0 || newIndex < 0) return;
+        const newIdsInGroup = arrayMove(ids, oldIndex, newIndex);
+
+        // Build the new flat panel_order: walk resolved groups, swap
+        // in the new order for the active group, and concatenate.
+        const newFlatOrder: string[] = [];
+        for (const g of resolvedGroups) {
+          if (g === activeGroup) {
+            newFlatOrder.push(...newIdsInGroup);
+          } else {
+            const groupEntries = entriesByGroup.get(g) ?? [];
+            newFlatOrder.push(...groupEntries.map((e) => e.id));
+          }
+        }
+        panelPrefs.setOrder(newFlatOrder);
+      }
+      // Mixed drops (group <-> panel) are no-ops by design.
+    },
+    [isGroupId, groupForPanel, resolvedGroups, entriesByGroup, panelPrefs],
+  );
+
+  const handleResetVisibility = useCallback(
+    () => panelPrefs.reset(),
+    [panelPrefs],
+  );
+  const handleResetPanelOrder = useCallback(
+    () => panelPrefs.resetPanelOrder(),
+    [panelPrefs],
+  );
+  const handleResetGroupOrder = useCallback(
+    () => panelPrefs.resetGroupOrder(),
+    [panelPrefs],
+  );
 
   if (!isOpen) return null;
-
-  const registry = getPanelRegistry({
-    isAuthenticated,
-    hasMarketOrSnapshot,
-  }).filter((entry) => entry.id !== 'results');
-  const grouped = new Map<string, PanelRegistryEntry[]>();
-  for (const entry of registry) {
-    const bucket = grouped.get(entry.group) ?? [];
-    bucket.push(entry);
-    grouped.set(entry.group, bucket);
-  }
 
   const totalHidden = registry.filter((e) => panelPrefs.isHidden(e.id)).length;
   const totalVisible = registry.length - totalHidden;
@@ -91,11 +359,12 @@ export function PanelPrefsModal({
               id="panel-prefs-title"
               className="text-primary font-serif text-lg font-bold"
             >
-              Show / Hide Panels
+              Show / Hide / Reorder Panels
             </h2>
             <p className="text-secondary mt-1 text-sm">
-              Pick which sections appear on the home page. Your selection is
-              saved server-side and follows you across devices.
+              Pick which sections appear and drag the grip handles to reorder.
+              Your selection is saved server-side and follows you across
+              devices.
             </p>
           </div>
           <span className="text-tertiary shrink-0 font-mono text-xs whitespace-nowrap">
@@ -104,52 +373,56 @@ export function PanelPrefsModal({
         </div>
 
         <div className="-mr-2 flex-1 overflow-y-auto pr-2">
-          {PANEL_GROUP_ORDER.filter((group) => grouped.has(group)).map(
-            (group) => {
-              const entries = grouped.get(group) ?? [];
-              return (
-                <section key={group} className="mb-4 last:mb-0">
-                  <h3 className="text-tertiary mb-2 font-sans text-[11px] font-semibold tracking-wider uppercase">
-                    {group}
-                  </h3>
-                  <ul className="space-y-1">
-                    {entries.map((entry) => {
-                      const visible = !panelPrefs.isHidden(entry.id);
-                      return (
-                        <li key={entry.id}>
-                          <label className="border-edge hover:bg-surface-alt flex cursor-pointer items-center gap-3 rounded-md border px-3 py-2 text-sm transition-colors">
-                            <input
-                              type="checkbox"
-                              checked={visible}
-                              onChange={() => panelPrefs.toggle(entry.id)}
-                              className="accent-accent h-4 w-4 cursor-pointer"
-                              aria-label={`${visible ? 'Hide' : 'Show'} ${entry.label}`}
-                            />
-                            <span className="text-primary flex-1">
-                              {entry.label}
-                            </span>
-                            <span className="text-tertiary font-mono text-[10px]">
-                              {entry.id}
-                            </span>
-                          </label>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </section>
-              );
-            },
-          )}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={resolvedGroups}
+              strategy={verticalListSortingStrategy}
+            >
+              {resolvedGroups.map((group) => {
+                const entries = entriesByGroup.get(group) ?? [];
+                if (entries.length === 0) return null;
+                return (
+                  <SortableGroupSection
+                    key={group}
+                    group={group}
+                    entries={entries}
+                    isHidden={panelPrefs.isHidden}
+                    onToggle={panelPrefs.toggle}
+                  />
+                );
+              })}
+            </SortableContext>
+          </DndContext>
         </div>
 
-        <div className="border-edge mt-4 flex gap-2 border-t pt-4">
+        <div className="border-edge mt-4 flex flex-col gap-2 border-t pt-4 sm:flex-row">
           <button
             type="button"
-            onClick={handleReset}
+            onClick={handleResetVisibility}
             disabled={totalHidden === 0}
-            className="border-edge-strong text-primary hover:bg-surface-alt flex-1 rounded-lg border px-4 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            className="border-edge-strong text-primary hover:bg-surface-alt flex-1 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Reset (show all)
+            Reset visibility
+          </button>
+          <button
+            type="button"
+            onClick={handleResetPanelOrder}
+            disabled={panelPrefs.order.length === 0}
+            className="border-edge-strong text-primary hover:bg-surface-alt flex-1 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Reset panel order
+          </button>
+          <button
+            type="button"
+            onClick={handleResetGroupOrder}
+            disabled={panelPrefs.groupOrder.length === 0}
+            className="border-edge-strong text-primary hover:bg-surface-alt flex-1 rounded-lg border px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Reset group order
           </button>
           <button
             ref={doneButtonRef}
