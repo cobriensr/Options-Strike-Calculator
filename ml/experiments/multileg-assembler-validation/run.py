@@ -62,15 +62,19 @@ SIZE_TOLERANCE = 0.10
 #   OKLO (~27K rows / day) → ~83s
 #   SPXW (1.3M rows / day) extrapolates to many hours.
 #
-# Smoke-test strategy: combine a per-ticker row cap (excludes mega-cap
-# tail) with an optional ``--time-window`` slice (cuts the day to e.g.
-# 1 hour so big tickers fit under the cap and DO get classified). This
-# yields a representative cross-section of all $1M+ prints rather than
-# leaving 89% of them in the unclassified mega-ticker tail.
+# Strategy (post-Phase-1.5): the matcher now has its own internal
+# overload guard at ``_MAX_CELL_ROWS_PER_CLASSIFY=500_000`` (in
+# ``multileg_assembler.py``) that skips SPXW cleanly while still
+# classifying SPY/QQQ/NVDA/AAPL/META/AMZN/TSLA at full size. The
+# runner's old 10K row cap was a workaround for the pre-vectorized
+# matcher's O(N²) blow-up; with bucket-bounded + overload guard it's
+# no longer needed.
 #
-# 10K default chosen so a typical ticker classifies in <30s and the
-# smoke test completes in a bounded wall-clock budget.
-PER_TICKER_ROW_CAP = 10_000
+# Set to ~2M which covers the largest tickers in the universe
+# (SPXW ≈ 1.33M, SPY ≈ 1.27M) — the matcher itself decides what's
+# tractable. The runner now sees the FULL universe of $1M+ prints
+# instead of the small/mid-cap tail.
+PER_TICKER_ROW_CAP = 2_000_000
 
 SAMPLE_GROUP_COUNT = 50
 SAMPLE_SEED = 20260516
