@@ -701,6 +701,20 @@ export const LotteryRow = memo(function LotteryRow({
               : 'MEGA CLUSTER'}
           </span>
         )}
+        {/* DUAL-FLAG chip — chain appears in BOTH lottery_finder_fires
+            AND silent_boom_alerts for the same date. Highest-conviction
+            cohort in the alert stack: 81% best-fire win rate / 64%
+            median best peak (vs 72% / 35% for LF-only). Empirical
+            basis: docs/tmp/lf-vs-sb-backtest-findings-2026-05-17.md. */}
+        {fire.dualFlag === true && (
+          <span
+            className="inline-flex items-center gap-1 rounded border border-emerald-400/60 bg-emerald-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-100 uppercase"
+            title="DUAL FLAG: this chain fired on BOTH Lottery Finder AND Silent Boom today. Highest-conviction cohort — 81% win rate on best fire / median best peak 64% (vs 72% / 35% LF-only) on the 25-day backtest. ~39 chain-days/day on average."
+          >
+            <span aria-hidden="true">⚑⚑</span>
+            DUAL FLAG
+          </span>
+        )}
         {/* "Still hot" indicator — only when market is open and the
             latest fire is within the last 10 minutes. Polling refresh
             (~30s) keeps this honest without per-row timers. */}

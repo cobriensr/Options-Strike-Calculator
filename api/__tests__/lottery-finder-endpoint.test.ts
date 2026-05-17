@@ -1052,6 +1052,7 @@ describe('lottery-finder endpoint', () => {
       .mockResolvedValueOnce([ROW])
       .mockResolvedValueOnce([{ total: 1 }])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
@@ -1062,6 +1063,42 @@ describe('lottery-finder endpoint', () => {
     const clusterCall = mockSql.mock.calls[3] as unknown[];
     const boundValues = clusterCall.slice(1);
     expect(boundValues).toContain(12);
+  });
+
+  it('attaches dualFlag=true when the chain appears in silent_boom_alerts for the date', async () => {
+    // 5th Promise.all entry — Silent Boom chain-id Set for the date.
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ option_chain_id: ROW.option_chain_id }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { fires: Array<{ dualFlag: boolean }> };
+    expect(body.fires[0]!.dualFlag).toBe(true);
+  });
+
+  it('sets dualFlag=false when the chain is not in silent_boom_alerts', async () => {
+    mockSql
+      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([{ total: 1 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        // A different chain — should NOT match
+        { option_chain_id: 'AAPL260501C00200000' },
+      ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { fires: Array<{ dualFlag: boolean }> };
+    expect(body.fires[0]!.dualFlag).toBe(false);
   });
 
   it('stacks fireCountScoreAdjustment with round_trip_score_deduct (both apply)', async () => {

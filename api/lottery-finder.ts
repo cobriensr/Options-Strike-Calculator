@@ -317,7 +317,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // previously these were computed via a LEFT JOIN LATERAL that
     // dominated wall time at ~30s/page (spec:
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md).
-    const [rows, totalRows, chainExtras, clusterByMinute] = (await Promise.all([
+    const [rows, totalRows, chainExtras, clusterByMinute, sbChains] = (await Promise.all([
       sort === 'score'
         ? db`
         WITH filtered AS (
@@ -640,11 +640,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         GROUP BY date_trunc('minute', trigger_time_ct)
         HAVING COUNT(DISTINCT underlying_symbol) >= ${MEGA_CLUSTER_MIN_DISTINCT_TICKERS}
       `,
+      // Silent Boom chain-IDs for the date — drives the DUAL FLAG
+      // badge. When the same chain-day appears in BOTH
+      // lottery_finder_fires AND silent_boom_alerts, the cohort is
+      // the highest-conviction surface in the alert stack — 81% win
+      // rate on best fire / median best peak 64% (vs 72% / 35% for
+      // LF-only). Empirical basis:
+      // docs/tmp/lf-vs-sb-backtest-findings-2026-05-17.md (25-day
+      // window, 981 BOTH chain-days, ~39/day). Cross-table check
+      // wrapped in try/catch at execution because silent_boom_alerts
+      // started 2026-04-13; for older dates the table may have no
+      // matching rows but the query is still cheap.
+      db`
+        SELECT DISTINCT option_chain_id
+        FROM silent_boom_alerts
+        WHERE date = ${targetDate}::date
+      `,
     ])) as [
       FireRow[],
       { total: number }[],
       ChainExtrasRow[],
       ClusterByMinuteRow[],
+      { option_chain_id: string }[],
     ];
 
     const total = totalRows[0]?.total ?? 0;
@@ -654,6 +671,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // a Date from the Neon driver (per the project's neon_date_columns
     // convention) — normalise to YYYY-MM-DD so the key shape is stable
     // regardless of the wire format.
+    // Silent Boom dual-flag lookup: Set of option_chain_ids that also
+    // fired on the Silent Boom detector for the same date. O(1)
+    // membership check during row mapping. Empty Set is the common
+    // case on dates before silent_boom_alerts started populating
+    // (2026-04-13 onward).
+    const sbChainSet = new Set<string>();
+    for (const sb of sbChains) {
+      sbChainSet.add(sb.option_chain_id);
+    }
+
     // Mega-cluster lookup: minute-bucket ISO → distinct-ticker count.
     // Only minute buckets with >= MEGA_CLUSTER_MIN_DISTINCT_TICKERS
     // distinct tickers are present in the result set — the SQL HAVING
@@ -893,6 +920,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // (cluster-2026-05-15-1205ct-findings.md).
         megaCluster: clusterSize != null,
         ...(clusterSize != null ? { megaClusterSize: clusterSize } : {}),
+        // DUAL FLAG — chain appears in both lottery_finder_fires AND
+        // silent_boom_alerts for the same date. 2.9% Jaccard overlap
+        // / 81% win rate on best fire / median best peak 64%
+        // (docs/tmp/lf-vs-sb-backtest-findings-2026-05-17.md, 25-day
+        // window). Highest-conviction cohort in the alert stack.
+        dualFlag: sbChainSet.has(r.option_chain_id),
 
         trigger: {
           volToOiWindow: Number(r.trigger_vol_to_oi_window),

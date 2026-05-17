@@ -282,6 +282,17 @@ export interface LotteryFire {
    * "MEGA CLUSTER · 18 tickers" instead of a bare badge.
    */
   megaClusterSize?: number;
+  /**
+   * TRUE when this fire's chain-day appears in BOTH
+   * `lottery_finder_fires` AND `silent_boom_alerts` for the same date
+   * — i.e. the two independent detectors agreed. Per the LF vs SB
+   * backtest (docs/tmp/lf-vs-sb-backtest-findings-2026-05-17.md), the
+   * intersection cohort had 81% win rate on best fire / median best
+   * peak 64% vs LF-only's 72% / 35%. Rare — ~39 chain-days/day across
+   * the 25-day window. Always emitted by the API; typed optional to
+   * match the existing fixture-tolerance convention.
+   */
+  dualFlag?: boolean;
 
   trigger: LotteryFireTrigger;
   entry: LotteryFireEntry;

@@ -956,3 +956,42 @@ describe('LotteryRow: MEGA-CLUSTER chip', () => {
     expect(screen.queryByText(/MEGA CLUSTER|CLUSTER ×/)).not.toBeInTheDocument();
   });
 });
+
+// ============================================================
+// DUAL-FLAG chip (lf-vs-sb-backtest-findings-2026-05-17.md)
+// ============================================================
+
+describe('LotteryRow: DUAL-FLAG chip', () => {
+  it('renders the chip when fire.dualFlag is true', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ dualFlag: true })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByText('DUAL FLAG')).toBeInTheDocument();
+  });
+
+  it('hides the chip when dualFlag is undefined', () => {
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText('DUAL FLAG')).not.toBeInTheDocument();
+  });
+
+  it('hides the chip when dualFlag is explicitly false', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ dualFlag: false })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText('DUAL FLAG')).not.toBeInTheDocument();
+  });
+});
