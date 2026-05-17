@@ -31,6 +31,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+from ml.src.takeit.build_training_set import (
+    INFERRED_STRUCTURE_LABELS,
+    SESSION_PHASES,
+)
 from ml.src.takeit.config import (
     BRIER_ALERT_THRESHOLD,
     ISOTONIC_HOLDOUT_FRAC,
@@ -39,6 +43,19 @@ from ml.src.takeit.config import (
     WIN_LABEL_THRESHOLD_PCT,
     XGB_PARAMS,
 )
+
+# Categorical category-pinning map. Before `get_dummies` we coerce each
+# column to `pd.Categorical(..., categories=...)` so an absent label still
+# emits its one-hot column. Without this, a training set where (say)
+# `inferred_structure='butterfly'` never appears would silently drop
+# `inferred_structure_butterfly` from `feature_cols`; the TS scorer
+# (which always emits all 5 labels per INFERRED_STRUCTURE_LABELS) would
+# then set an un-pinned key the model ignores. Pinning keeps the
+# feature contract stable across retrains.
+_PINNED_CATEGORIES: Final = {
+    "inferred_structure": INFERRED_STRUCTURE_LABELS,
+    "session_phase_cat": SESSION_PHASES,
+}
 from sklearn.calibration import calibration_curve
 from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import brier_score_loss, roc_auc_score, roc_curve
@@ -163,6 +180,12 @@ def prepare_features(
 
     cat_cols = [c for c in CATEGORICAL_COLS[alert_type] if c in out.columns]
     cat_cols.append("ticker_bucket")
+    # Pin categories for the columns we own the label set for; this makes
+    # `get_dummies` emit the full one-hot block even when a label is absent
+    # in the training data, so feature_cols stays stable across retrains.
+    for col, categories in _PINNED_CATEGORIES.items():
+        if col in out.columns:
+            out[col] = pd.Categorical(out[col], categories=list(categories))
     out = pd.get_dummies(out, columns=cat_cols, drop_first=False, dummy_na=False)
 
     feature_cols = [c for c in out.columns if c not in NON_FEATURE_COLS]

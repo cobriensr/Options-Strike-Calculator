@@ -187,6 +187,20 @@ SESSION_PHASES: Final = (
 )
 
 
+# Mirrors `INFERRED_STRUCTURE_LABELS` in api/_lib/takeit-features.ts. Pinned
+# so the trainer emits a full one-hot block even if a label is absent in
+# the training set — keeps `feature_cols` stable across retrains so the TS
+# scorer (which always emits all 5 labels) never sets an un-pinned key.
+# Order is the labels' identity, not a ranking — DO NOT REORDER.
+INFERRED_STRUCTURE_LABELS: Final = (
+    "isolated_leg",
+    "vertical",
+    "strangle",
+    "risk_reversal",
+    "butterfly",
+)
+
+
 def _session_phase_cat_from_minute_ct(minute_of_day_ct: float) -> str:
     """7-phase categorical label aligned to the user's trading schedule.
 
