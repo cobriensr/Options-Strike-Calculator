@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import {
-  CohortCountdown,
-  computeCountdownRemaining,
-} from '../../components/ui/CohortCountdown';
+import { CohortCountdown } from '../../components/ui/CohortCountdown';
+import { computeCountdownRemaining } from '../../components/ui/cohort-countdown-utils';
 
 describe('computeCountdownRemaining', () => {
   it('returns full P75 when triggered exactly now', () => {

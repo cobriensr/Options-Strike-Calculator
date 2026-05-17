@@ -17,10 +17,8 @@ import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import { computeExitNow } from '../../utils/exit-now.js';
-import {
-  CohortCountdown,
-  computeCountdownRemaining,
-} from '../ui/CohortCountdown.js';
+import { CohortCountdown } from '../ui/CohortCountdown.js';
+import { computeCountdownRemaining } from '../ui/cohort-countdown-utils.js';
 import { useNowMinute } from '../../hooks/useNowMinute.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 

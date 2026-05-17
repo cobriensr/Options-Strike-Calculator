@@ -188,6 +188,13 @@ export function useIntervalBAFeed(
     return () => {
       cancelled = true;
     };
+    // Intentionally enumerate each `params` field rather than depend on
+    // the `params` object itself — the parent re-creates the object
+    // every render, which would re-fire the fetch on unrelated parent
+    // updates. Each access here is listed individually so a new field
+    // added to `params` would surface as a TS error before becoming a
+    // missed dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     params.date,
     params.startTime,

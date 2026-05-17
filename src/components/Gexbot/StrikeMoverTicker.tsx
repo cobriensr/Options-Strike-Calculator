@@ -73,7 +73,6 @@ function shortCategory(category: string): string {
   if (label) return label;
   if (!warnedCategories.has(base)) {
     warnedCategories.add(base);
-    // eslint-disable-next-line no-console
     console.warn(
       `StrikeMoverTicker: unknown GEXBot category "${base}" — add to CATEGORY_LABEL_MAP`,
     );

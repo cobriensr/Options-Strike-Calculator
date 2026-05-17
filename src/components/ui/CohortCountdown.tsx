@@ -25,6 +25,7 @@
  */
 
 import { memo, useEffect, useState } from 'react';
+import { computeCountdownRemaining } from './cohort-countdown-utils.js';
 
 interface CohortCountdownProps {
   /** ISO timestamp when the alert triggered. */
@@ -51,17 +52,6 @@ function formatRemaining(remainingMin: number): string {
   return `${remainingMin}m left`;
 }
 
-function computeRemainingMin(
-  triggerTimeCt: string,
-  p75MinutesToPeak: number,
-  nowMs: number,
-): number {
-  const triggerMs = Date.parse(triggerTimeCt);
-  if (!Number.isFinite(triggerMs)) return p75MinutesToPeak;
-  const elapsedMin = Math.floor((nowMs - triggerMs) / 60_000);
-  return p75MinutesToPeak - elapsedMin;
-}
-
 export const CohortCountdown = memo(function CohortCountdown({
   triggerTimeCt,
   p75MinutesToPeak,
@@ -76,7 +66,11 @@ export const CohortCountdown = memo(function CohortCountdown({
 
   if (p75MinutesToPeak == null) return null;
 
-  const remaining = computeRemainingMin(triggerTimeCt, p75MinutesToPeak, nowMs);
+  const remaining = computeCountdownRemaining(
+    triggerTimeCt,
+    p75MinutesToPeak,
+    nowMs,
+  );
   const label = formatRemaining(remaining);
   const cls = chipClass(remaining);
   const tooltip =
@@ -95,15 +89,3 @@ export const CohortCountdown = memo(function CohortCountdown({
     </span>
   );
 });
-
-/**
- * Pure helper exported for testing. Returns the remaining minutes
- * vs the cohort P75, given the trigger ISO + a wall-clock ms value.
- */
-export function computeCountdownRemaining(
-  triggerTimeCt: string,
-  p75MinutesToPeak: number,
-  nowMs: number,
-): number {
-  return computeRemainingMin(triggerTimeCt, p75MinutesToPeak, nowMs);
-}
