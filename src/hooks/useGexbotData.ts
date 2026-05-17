@@ -140,9 +140,11 @@ export function useGexbotData<V extends GexbotView['view']>(
   // Depend on primitives — callers may pass a fresh `spec` object each
   // render. Pulling primitives out keeps the fetcher reference stable
   // and avoids re-firing the mount-fetch effect every render.
+  // `'in'` checks let TS narrow the discriminated union without the
+  // intersection-with-V interfering with view-string narrowing.
   const view = spec.view;
-  const ticker = spec.view === 'sibling-confirm' ? spec.ticker : undefined;
-  const side = spec.view === 'sibling-confirm' ? spec.side : undefined;
+  const ticker = 'ticker' in spec ? spec.ticker : undefined;
+  const side = 'side' in spec ? spec.side : undefined;
 
   const fetchNow = useCallback(async () => {
     const url =

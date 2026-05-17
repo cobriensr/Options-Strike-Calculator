@@ -152,6 +152,11 @@ const GreekHeatmapSection = lazy(() =>
     .then((m) => ({ default: m.GreekHeatmapSection }))
     .catch(handleStaleChunk),
 );
+const GexbotSection = lazy(() =>
+  import('./components/Gexbot/GexbotSection')
+    .then((m) => ({ default: m.GexbotSection }))
+    .catch(handleStaleChunk),
+);
 const SilentBoomSection = lazy(() =>
   import('./components/SilentBoom/SilentBoomSection')
     .then((m) => ({ default: m.SilentBoomSection }))
@@ -1091,6 +1096,17 @@ export default function StrikeCalculator() {
                   fallback={<SkeletonSection lines={5} />}
                 >
                   <SilentBoomSection
+                    marketOpen={market.data.quotes?.marketOpen ?? false}
+                  />
+                </GatedSection>
+
+                <GatedSection
+                  gate={hasMarketContext}
+                  id="sec-gexbot"
+                  label="GEXBot Dealer State"
+                  fallback={<SkeletonSection lines={3} />}
+                >
+                  <GexbotSection
                     marketOpen={market.data.quotes?.marketOpen ?? false}
                   />
                 </GatedSection>

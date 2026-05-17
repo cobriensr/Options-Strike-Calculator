@@ -75,25 +75,27 @@ export interface SiblingConfirmRow {
 // Sibling-asset grouping — see spec for rationale
 // ────────────────────────────────────────────────────────────
 
-export const SIBLING_GROUPS: Record<string, readonly string[]> = {
-  broad: ['SPX', 'SPY', 'QQQ', 'IWM', 'NDX'],
-  vol: ['VIX', 'UVXY'],
-  bonds: ['TLT', 'HYG'],
-  metals: ['GLD', 'SLV'],
-  energy: ['USO'],
-  // Single-stock alerts get matched against the broad market as their
-  // sibling set since most large-caps live or die with SPY/QQQ.
+/**
+ * Const-typed grouping so `SIBLING_GROUPS.broad` is a readonly tuple
+ * (not `T | undefined` under noUncheckedIndexedAccess). Single-stock
+ * alerts default to `broad` siblings since most large-caps move with
+ * SPY/QQQ.
+ */
+export const SIBLING_GROUPS = {
+  broad: ['SPX', 'SPY', 'QQQ', 'IWM', 'NDX'] as const,
+  vol: ['VIX', 'UVXY'] as const,
+  bonds: ['TLT', 'HYG'] as const,
+  metals: ['GLD', 'SLV'] as const,
+  energy: ['USO'] as const,
 } as const;
 
 function siblingsFor(ticker: string): readonly string[] {
   for (const group of Object.values(SIBLING_GROUPS)) {
-    if (group.includes(ticker)) {
+    if ((group as readonly string[]).includes(ticker)) {
       return group.filter((t) => t !== ticker);
     }
   }
-  // Default: single-stock → broad-market siblings (excluding the ticker
-  // itself if it appears, which it won't for true single stocks).
-  return SIBLING_GROUPS['broad'].filter((t) => t !== ticker);
+  return SIBLING_GROUPS.broad.filter((t) => t !== ticker);
 }
 
 // ────────────────────────────────────────────────────────────
