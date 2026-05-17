@@ -24,7 +24,9 @@ vi.mock('../../components/Tracker/TrackerTabs', () => ({
     counts: Record<string, number>;
   }) => (
     <div data-testid="tabs" data-current={current}>
-      <button onClick={() => onChange('active')}>active({counts.active})</button>
+      <button onClick={() => onChange('active')}>
+        active({counts.active})
+      </button>
       <button onClick={() => onChange('watchlist')}>
         watchlist({counts.watchlist})
       </button>
@@ -37,8 +39,12 @@ vi.mock('../../components/Tracker/TrackerTabs', () => ({
 vi.mock('../../components/Tracker/ContractTable', () => ({
   ContractTable: ({
     contracts,
+    onUpdate,
+    onClose,
   }: {
     contracts: { id: number }[];
+    onUpdate: (id: number, body: Record<string, unknown>) => Promise<void>;
+    onClose: (id: number, closedPrice: number) => Promise<void>;
   }) => (
     <div data-testid="table">
       {contracts.map((c) => (
@@ -46,6 +52,20 @@ vi.mock('../../components/Tracker/ContractTable', () => ({
           row-{c.id}
         </div>
       ))}
+      {/* Harness buttons — exposed so tests can invoke the handlers
+          TrackerSection threads in (handleUpdate / handleClose). */}
+      <button
+        data-testid="harness-update"
+        onClick={() => void onUpdate(42, { notes: 'updated' })}
+      >
+        upd
+      </button>
+      <button
+        data-testid="harness-close"
+        onClick={() => void onClose(42, 1.23)}
+      >
+        cls
+      </button>
     </div>
   ),
 }));
@@ -53,8 +73,33 @@ vi.mock('../../components/Tracker/ArchiveStats', () => ({
   ArchiveStats: () => <div data-testid="archive-stats" />,
 }));
 vi.mock('../../components/Tracker/AddContractForm', () => ({
-  AddContractForm: ({ open }: { open: boolean }) =>
-    open ? <div data-testid="add-form-open" /> : null,
+  AddContractForm: ({
+    open,
+    onCreate,
+  }: {
+    open: boolean;
+    onCreate: (body: Record<string, unknown>) => Promise<void>;
+  }) =>
+    open ? (
+      <div data-testid="add-form-open">
+        <button
+          data-testid="harness-create"
+          onClick={() =>
+            void onCreate({
+              ticker: 'NVDA',
+              expiry: '2026-05-22',
+              strike: 225,
+              side: 'P',
+              direction: 'long',
+              entry_price: 4.3,
+              quantity: 5,
+            })
+          }
+        >
+          create
+        </button>
+      </div>
+    ) : null,
 }));
 vi.mock('../../components/ui/SectionBox', () => ({
   // Real SectionBox starts collapsed and toggles via a header click;
@@ -227,9 +272,7 @@ describe('TrackerSection', () => {
 
   it('shows "Loading…" placeholder and hides table when active hook is loading', () => {
     vi.mocked(useTrackerContracts)
-      .mockReturnValueOnce(
-        mockContractsHook('active', [], { loading: true }),
-      )
+      .mockReturnValueOnce(mockContractsHook('active', [], { loading: true }))
       .mockReturnValueOnce(mockContractsHook('closed', []));
 
     render(<TrackerSection marketOpen={true} />);
@@ -247,6 +290,128 @@ describe('TrackerSection', () => {
     render(<TrackerSection marketOpen={true} />);
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent('pg down');
+  });
+
+  it('handleSelectContract scrolls the matching DOM row into view and adds ring classes', () => {
+    let captured: ((id: number) => void) | undefined;
+    vi.mocked(useTrackerAlerts).mockImplementation((opts) => {
+      captured = opts.onSelectContract;
+      return {
+        data: [],
+        loading: false,
+        error: null,
+        acknowledge: vi.fn(),
+        refresh: vi.fn(),
+      } as unknown as ReturnType<typeof useTrackerAlerts>;
+    });
+    vi.mocked(useTrackerContracts)
+      .mockReturnValueOnce(mockContractsHook('active', [makeContract(7)]))
+      .mockReturnValueOnce(mockContractsHook('closed', []));
+
+    // Inject a target DOM element the callback will find.
+    const target = document.createElement('div');
+    target.id = 'tracker-row-7';
+    const scrollSpy = vi.fn();
+    const addSpy = vi.spyOn(target.classList, 'add');
+    target.scrollIntoView = scrollSpy;
+    document.body.appendChild(target);
+
+    render(<TrackerSection marketOpen={true} />);
+    expect(captured).toBeDefined();
+    captured!(7);
+    expect(scrollSpy).toHaveBeenCalledWith({
+      behavior: 'smooth',
+      block: 'center',
+    });
+    expect(addSpy).toHaveBeenCalledWith('ring-2', 'ring-accent');
+
+    document.body.removeChild(target);
+  });
+
+  it('handleSelectContract is a no-op when the DOM row is missing', () => {
+    let captured: ((id: number) => void) | undefined;
+    vi.mocked(useTrackerAlerts).mockImplementation((opts) => {
+      captured = opts.onSelectContract;
+      return {
+        data: [],
+        loading: false,
+        error: null,
+        acknowledge: vi.fn(),
+        refresh: vi.fn(),
+      } as unknown as ReturnType<typeof useTrackerAlerts>;
+    });
+    vi.mocked(useTrackerContracts)
+      .mockReturnValueOnce(mockContractsHook('active', [makeContract(1)]))
+      .mockReturnValueOnce(mockContractsHook('closed', []));
+
+    render(<TrackerSection marketOpen={true} />);
+    // No tracker-row-9999 in the DOM — should not throw.
+    expect(() => captured!(9999)).not.toThrow();
+  });
+
+  it('handleCreate dispatches to the active hook create()', () => {
+    const activeHook = mockContractsHook('active', [makeContract(1)]);
+    const archiveHook = mockContractsHook('closed', []);
+    vi.mocked(useTrackerContracts).mockImplementation((opts) =>
+      opts.status === 'active' ? activeHook : archiveHook,
+    );
+
+    render(<TrackerSection marketOpen={true} />);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Add new contract to tracker' }),
+    );
+    fireEvent.click(screen.getByTestId('harness-create'));
+
+    expect(activeHook.create).toHaveBeenCalledTimes(1);
+    expect(activeHook.create).toHaveBeenCalledWith(
+      expect.objectContaining({ ticker: 'NVDA', strike: 225 }),
+    );
+  });
+
+  it('handleUpdate routes to active.update on the active tab', () => {
+    const activeHook = mockContractsHook('active', [makeContract(1)]);
+    const archiveHook = mockContractsHook('closed', []);
+    vi.mocked(useTrackerContracts).mockImplementation((opts) =>
+      opts.status === 'active' ? activeHook : archiveHook,
+    );
+
+    render(<TrackerSection marketOpen={true} />);
+    fireEvent.click(screen.getByTestId('harness-update'));
+
+    expect(activeHook.update).toHaveBeenCalledWith(42, {
+      notes: 'updated',
+    });
+    expect(archiveHook.update).not.toHaveBeenCalled();
+  });
+
+  it('handleUpdate routes to archive.update when the archive tab is current', () => {
+    const activeHook = mockContractsHook('active', [makeContract(1)]);
+    const archiveHook = mockContractsHook('closed', [makeContract(10)]);
+    vi.mocked(useTrackerContracts).mockImplementation((opts) =>
+      opts.status === 'active' ? activeHook : archiveHook,
+    );
+
+    render(<TrackerSection marketOpen={true} />);
+    fireEvent.click(screen.getByText(/archive\(/));
+    fireEvent.click(screen.getByTestId('harness-update'));
+
+    expect(archiveHook.update).toHaveBeenCalledWith(42, {
+      notes: 'updated',
+    });
+    expect(activeHook.update).not.toHaveBeenCalled();
+  });
+
+  it('handleClose dispatches to the active hook close()', () => {
+    const activeHook = mockContractsHook('active', [makeContract(1)]);
+    const archiveHook = mockContractsHook('closed', []);
+    vi.mocked(useTrackerContracts).mockImplementation((opts) =>
+      opts.status === 'active' ? activeHook : archiveHook,
+    );
+
+    render(<TrackerSection marketOpen={true} />);
+    fireEvent.click(screen.getByTestId('harness-close'));
+
+    expect(activeHook.close).toHaveBeenCalledWith(42, 1.23);
   });
 
   it('passes marketOpen through to the active contracts hook', () => {

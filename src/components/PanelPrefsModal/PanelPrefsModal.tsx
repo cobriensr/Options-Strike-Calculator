@@ -42,7 +42,6 @@ import {
 } from '@dnd-kit/core';
 import {
   SortableContext,
-  arrayMove,
   sortableKeyboardCoordinates,
   useSortable,
   verticalListSortingStrategy,
@@ -56,6 +55,7 @@ import {
 } from '../../constants/panel-registry';
 import { resolveGroupOrder, resolvePanelOrder } from '../../utils/panel-order';
 import type { PanelPrefs } from '../../hooks/usePanelPrefs';
+import { resolveDragEnd } from './drag-resolver';
 
 const GRIP_LABEL_PREFIX_GROUP = 'Drag to reorder group';
 const GRIP_LABEL_PREFIX_PANEL = 'Drag to reorder';
@@ -277,48 +277,17 @@ export function PanelPrefsModal({
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
-      if (!over || active.id === over.id) return;
-      const activeId = String(active.id);
-      const overId = String(over.id);
-      const activeIsGroup = isGroupId(activeId);
-      const overIsGroup = isGroupId(overId);
-
-      if (activeIsGroup && overIsGroup) {
-        const oldIndex = resolvedGroups.indexOf(activeId);
-        const newIndex = resolvedGroups.indexOf(overId);
-        if (oldIndex < 0 || newIndex < 0) return;
-        const next = arrayMove(resolvedGroups, oldIndex, newIndex);
-        panelPrefs.setGroupOrder(next);
-        return;
-      }
-
-      if (!activeIsGroup && !overIsGroup) {
-        // Cross-group drop is rejected silently.
-        const activeGroup = groupForPanel(activeId);
-        const overGroup = groupForPanel(overId);
-        if (!activeGroup || activeGroup !== overGroup) return;
-
-        const entries = entriesByGroup.get(activeGroup) ?? [];
-        const ids = entries.map((e) => e.id);
-        const oldIndex = ids.indexOf(activeId);
-        const newIndex = ids.indexOf(overId);
-        if (oldIndex < 0 || newIndex < 0) return;
-        const newIdsInGroup = arrayMove(ids, oldIndex, newIndex);
-
-        // Build the new flat panel_order: walk resolved groups, swap
-        // in the new order for the active group, and concatenate.
-        const newFlatOrder: string[] = [];
-        for (const g of resolvedGroups) {
-          if (g === activeGroup) {
-            newFlatOrder.push(...newIdsInGroup);
-          } else {
-            const groupEntries = entriesByGroup.get(g) ?? [];
-            newFlatOrder.push(...groupEntries.map((e) => e.id));
-          }
-        }
-        panelPrefs.setOrder(newFlatOrder);
-      }
-      // Mixed drops (group <-> panel) are no-ops by design.
+      const res = resolveDragEnd({
+        activeId: String(active.id),
+        overId: over == null ? null : String(over.id),
+        resolvedGroups,
+        entriesByGroup,
+        isGroupId,
+        groupForPanel,
+      });
+      if (res.kind === 'group') panelPrefs.setGroupOrder(res.nextOrder);
+      else if (res.kind === 'panel') panelPrefs.setOrder(res.nextOrder);
+      // 'noop' falls through silently — see drag-resolver.ts for cases.
     },
     [isGroupId, groupForPanel, resolvedGroups, entriesByGroup, panelPrefs],
   );
