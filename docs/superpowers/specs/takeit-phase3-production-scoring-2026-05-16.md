@@ -121,10 +121,10 @@ Output: `takeit_top_features` is populated within ~2 min of INSERT; graceful deg
 
 Files:
 
-- Sidecar endpoint (location depends on which Railway service we extend; recommend `sidecar/src/takeit_explain.py` since it already has the Python ML deps):
+- Sidecar endpoint (as shipped: lives in `sidecar/src/takeit_server.py`, dispatched from the existing health HTTP server in `sidecar/src/health.py` on the single public port `8080` — Railway only exposes one public port per service, so a separate Flask process on 8123 was dropped during 3d and folded into the stdlib `http.server` HealthHandler. All SHAP code stays inside `sidecar/`):
   - `POST /takeit/explain { alert_type, rows: [{ alert_id, features: {...} }] }` → array of `{ alert_id, top_features: { positive: [...], negative: [...] } }`.
-  - Loads the same Blob bundle (Python side reads the joblib, not the JSON dump, for speed).
-  - Uses `ml.src.takeit.shap_explainer.explain_batch` directly (chunked to 10K already in Phase 2).
+  - Loads the same Blob bundle (Python side reads the joblib via urllib, not the JSON dump, for speed). xgboost/shap/joblib are lazy-imported on first request so cold paths don't pay the load cost.
+  - The `/takeit/health` and `/takeit/explain` routes both short-circuit with 503 when `takeit_server.is_enabled()` is False (env flag missing) so the rest of the sidecar keeps serving.
 - `api/cron/takeit-fill-shap.ts` — every 2 min, query `SELECT id, ...features FROM <table> WHERE takeit_prob IS NOT NULL AND takeit_top_features IS NULL ORDER BY id DESC LIMIT 500`, batch-POST to sidecar, UPDATE the JSONB column. Sentry-log if sidecar returns non-200.
 - `vercel.json` — register the new cron (every 2 min).
 - `api/__tests__/takeit-fill-shap.test.ts` — mock fetch + DB; verify batch query, sidecar call, UPDATE sequence, error handling.

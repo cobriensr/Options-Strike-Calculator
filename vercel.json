@@ -182,6 +182,10 @@
       "schedule": "*/2 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/audit-takeit-calibration",
+      "schedule": "0 11 * * 1"
+    },
+    {
       "path": "/api/cron/fetch-net-flow-history",
       "schedule": "25 21 * * 1-5"
     },
@@ -256,6 +260,7 @@
     "api/cron/detect-silent-boom.ts": { "maxDuration": 60 },
     "api/cron/evaluate-round-trip.ts": { "maxDuration": 60 },
     "api/cron/takeit-fill-shap.ts": { "maxDuration": 60 },
+    "api/cron/audit-takeit-calibration.ts": { "maxDuration": 60 },
     "api/cron/enrich-lottery-outcomes.ts": { "maxDuration": 300 },
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
     "api/cron/fetch-gexbot-strikes.ts": { "maxDuration": 60 },
