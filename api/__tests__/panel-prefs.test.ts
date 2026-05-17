@@ -54,7 +54,7 @@ describe('GET /api/panel-prefs', () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
   });
 
-  it('returns empty hiddenPanels for owner on first read', async () => {
+  it('returns empty arrays for all three axes on first read', async () => {
     mockSql.mockResolvedValueOnce([]); // no row
     const req = {
       method: 'GET',
@@ -66,12 +66,20 @@ describe('GET /api/panel-prefs', () => {
     const res = makeRes();
     await handler(req, res as never);
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ hiddenPanels: [] });
+    expect(res.body).toEqual({
+      hiddenPanels: [],
+      panelOrder: [],
+      groupOrder: [],
+    });
   });
 
-  it('returns stored hiddenPanels for owner with existing row', async () => {
+  it('returns stored hiddenPanels + panelOrder + groupOrder for owner', async () => {
     mockSql.mockResolvedValueOnce([
-      { hidden_panels: ['sec-darkpool', 'sec-greek-flow'] },
+      {
+        hidden_panels: ['sec-darkpool', 'sec-greek-flow'],
+        panel_order: ['sec-spot-price', 'sec-datetime'],
+        group_order: ['Market Context', 'Inputs'],
+      },
     ]);
     const req = {
       method: 'GET',
@@ -85,6 +93,29 @@ describe('GET /api/panel-prefs', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({
       hiddenPanels: ['sec-darkpool', 'sec-greek-flow'],
+      panelOrder: ['sec-spot-price', 'sec-datetime'],
+      groupOrder: ['Market Context', 'Inputs'],
+    });
+  });
+
+  it('coerces missing panel_order / group_order columns to empty arrays', async () => {
+    mockSql.mockResolvedValueOnce([
+      { hidden_panels: ['sec-spot-price'] }, // panel_order/group_order absent (older row)
+    ]);
+    const req = {
+      method: 'GET',
+      headers: { cookie: 'sc-owner=secret' },
+      query: {},
+      body: undefined,
+    } as never;
+    process.env.OWNER_SECRET = 'secret';
+    const res = makeRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      hiddenPanels: ['sec-spot-price'],
+      panelOrder: [],
+      groupOrder: [],
     });
   });
 
@@ -100,7 +131,6 @@ describe('GET /api/panel-prefs', () => {
         return Promise.resolve([{ hidden_panels: ['sec-spot-price'] }]);
       },
     );
-    // No owner secret → not owner; guest cookie present
     process.env.OWNER_SECRET = 'secret';
     const req = {
       method: 'GET',
@@ -111,7 +141,11 @@ describe('GET /api/panel-prefs', () => {
     const res = makeRes();
     await handler(req, res as never);
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ hiddenPanels: ['sec-spot-price'] });
+    expect(res.body).toEqual({
+      hiddenPanels: ['sec-spot-price'],
+      panelOrder: [],
+      groupOrder: [],
+    });
   });
 
   it('returns 405 for unsupported methods', async () => {
@@ -148,7 +182,16 @@ describe('PUT /api/panel-prefs', () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
   });
 
-  it('upserts and echoes the saved list', async () => {
+  it('upserts hiddenPanels-only PUT and preserves existing order arrays', async () => {
+    // 1st query: SELECT existing → has stored order
+    mockSql.mockResolvedValueOnce([
+      {
+        hidden_panels: ['sec-datetime'],
+        panel_order: ['sec-spot-price', 'sec-datetime'],
+        group_order: ['Market Context', 'Inputs'],
+      },
+    ]);
+    // 2nd query: UPSERT
     mockSql.mockResolvedValueOnce([]);
     process.env.OWNER_SECRET = 'secret';
     const req = {
@@ -162,6 +205,59 @@ describe('PUT /api/panel-prefs', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({
       hiddenPanels: ['sec-darkpool', 'sec-greek-flow'],
+      panelOrder: ['sec-spot-price', 'sec-datetime'],
+      groupOrder: ['Market Context', 'Inputs'],
+    });
+  });
+
+  it('upserts panelOrder-only PUT and preserves existing visibility + groups', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        hidden_panels: ['sec-darkpool'],
+        panel_order: [],
+        group_order: ['Trading', 'Inputs'],
+      },
+    ]);
+    mockSql.mockResolvedValueOnce([]);
+    process.env.OWNER_SECRET = 'secret';
+    const req = {
+      method: 'PUT',
+      headers: { cookie: 'sc-owner=secret' },
+      query: {},
+      body: { panelOrder: ['sec-spot-price', 'sec-datetime'] },
+    } as never;
+    const res = makeRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      hiddenPanels: ['sec-darkpool'],
+      panelOrder: ['sec-spot-price', 'sec-datetime'],
+      groupOrder: ['Trading', 'Inputs'],
+    });
+  });
+
+  it('upserts all three axes when full body provided (fresh identity)', async () => {
+    // SELECT returns empty
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+    process.env.OWNER_SECRET = 'secret';
+    const req = {
+      method: 'PUT',
+      headers: { cookie: 'sc-owner=secret' },
+      query: {},
+      body: {
+        hiddenPanels: ['sec-iv'],
+        panelOrder: ['sec-spot-price'],
+        groupOrder: ['Inputs', 'Market Context'],
+      },
+    } as never;
+    const res = makeRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      hiddenPanels: ['sec-iv'],
+      panelOrder: ['sec-spot-price'],
+      groupOrder: ['Inputs', 'Market Context'],
     });
   });
 
@@ -172,6 +268,45 @@ describe('PUT /api/panel-prefs', () => {
       headers: { cookie: 'sc-owner=secret' },
       query: {},
       body: { hiddenPanels: ['NOT-A-PANEL-ID'] },
+    } as never;
+    const res = makeRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects malformed panel ids in panelOrder with 400', async () => {
+    process.env.OWNER_SECRET = 'secret';
+    const req = {
+      method: 'PUT',
+      headers: { cookie: 'sc-owner=secret' },
+      query: {},
+      body: { panelOrder: ['totally-bogus'] },
+    } as never;
+    const res = makeRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects unknown group names in groupOrder with 400', async () => {
+    process.env.OWNER_SECRET = 'secret';
+    const req = {
+      method: 'PUT',
+      headers: { cookie: 'sc-owner=secret' },
+      query: {},
+      body: { groupOrder: ['NotARealGroup'] },
+    } as never;
+    const res = makeRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects duplicate panel ids in panelOrder with 400', async () => {
+    process.env.OWNER_SECRET = 'secret';
+    const req = {
+      method: 'PUT',
+      headers: { cookie: 'sc-owner=secret' },
+      query: {},
+      body: { panelOrder: ['sec-spot-price', 'sec-spot-price'] },
     } as never;
     const res = makeRes();
     await handler(req, res as never);
@@ -194,5 +329,20 @@ describe('PUT /api/panel-prefs', () => {
     const res = makeRes();
     await handler(req, res as never);
     expect(res.statusCode).toBe(400);
+  });
+
+  it('accepts `results` as a valid panel id', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+    process.env.OWNER_SECRET = 'secret';
+    const req = {
+      method: 'PUT',
+      headers: { cookie: 'sc-owner=secret' },
+      query: {},
+      body: { panelOrder: ['results', 'sec-spot-price'] },
+    } as never;
+    const res = makeRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(200);
   });
 });

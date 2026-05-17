@@ -4715,4 +4715,14 @@ export const MIGRATIONS: Migration[] = [
           )`,
     ],
   },
+  {
+    id: 166,
+    description:
+      'Add panel_order + group_order JSONB columns to panel_prefs for two-level user-controlled layout (spec: docs/superpowers/specs/panel-reordering-2026-05-17.md). Both columns are sparse arrays — stored ids are the user-customized prefix, anything missing falls back to registry / PANEL_GROUP_ORDER. NOT NULL DEFAULT \'[]\' so the GET path can read them unconditionally; existing rows pick up the empty default (= "use registry order"). One combined ALTER statement keeps the migration atomic and matches the column-add idiom used by #66 and #95.',
+    statements: (sql) => [
+      sql`ALTER TABLE panel_prefs
+            ADD COLUMN IF NOT EXISTS panel_order JSONB NOT NULL DEFAULT '[]'::jsonb,
+            ADD COLUMN IF NOT EXISTS group_order JSONB NOT NULL DEFAULT '[]'::jsonb`,
+    ],
+  },
 ];

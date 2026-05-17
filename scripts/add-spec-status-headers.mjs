@@ -28,6 +28,9 @@ import { execSync } from 'node:child_process';
 const SPECS_DIR = 'docs/superpowers/specs';
 const DATE_RE = /^(.+)-(\d{4}-\d{2}-\d{2})\.md$/;
 
+// One-shot internal script invoking `git`, which is a trusted binary on
+// every dev / CI machine that runs this repo. No user-supplied input.
+// eslint-disable-next-line sonarjs/no-os-command-from-path
 const allCommits = execSync('git log --pretty=format:%s', {
   encoding: 'utf-8',
 })

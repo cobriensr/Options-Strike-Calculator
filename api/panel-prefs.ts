@@ -1,13 +1,23 @@
 /**
- * GET  /api/panel-prefs  → { hiddenPanels: string[] }
- * PUT  /api/panel-prefs  body { hiddenPanels: string[] } → { hiddenPanels }
+ * GET  /api/panel-prefs  → { hiddenPanels, panelOrder, groupOrder }
+ * PUT  /api/panel-prefs  body { hiddenPanels?, panelOrder?, groupOrder? }
+ *      → { hiddenPanels, panelOrder, groupOrder }
  *
- * Per-identity show/hide preferences for the home-page panels.
- * Identity is `'owner'` for the cookie session, or sha256(guest_key) for
- * a guest. Storing the hash means a leak of panel_prefs reveals no live
- * guest credential — see spec docs/superpowers/specs/panel-prefs-2026-05-17.md.
+ * Per-identity show/hide + layout-order preferences for the home-page
+ * panels. Identity is `'owner'` for the cookie session, or
+ * sha256(guest_key) for a guest. Storing the hash means a leak of
+ * panel_prefs reveals no live guest credential — see spec
+ * docs/superpowers/specs/panel-prefs-2026-05-17.md.
  *
- * Returns empty array when no row exists (first read for an identity).
+ * PUT is a partial update: any field omitted from the body is left
+ * untouched on the existing row (read-merge-write). The single hook
+ * caller (usePanelPrefs) always sends all three, but the merge path
+ * keeps the endpoint safe against partial clients (and against
+ * single-axis writes from `Reset visibility` / `Reset panel order` /
+ * `Reset group order`).
+ *
+ * Returns empty arrays for all three when no row exists (first read
+ * for an identity).
  */
 import crypto from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -27,6 +37,10 @@ function resolveIdentity(req: VercelRequest): string {
   if (isOwner(req)) return 'owner';
   const key = parseCookies(req)[GUEST_COOKIE] ?? '';
   return crypto.createHash('sha256').update(key).digest('hex');
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? (value as string[]) : [];
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -52,14 +66,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'GET') {
     try {
       const rows = await db`
-        SELECT hidden_panels FROM panel_prefs WHERE identity = ${identity}
+        SELECT hidden_panels, panel_order, group_order
+          FROM panel_prefs WHERE identity = ${identity}
       `;
-      const hiddenPanels =
-        rows.length > 0
-          ? ((rows[0]?.hidden_panels as string[] | null) ?? [])
-          : [];
+      const row = rows[0];
       done({ status: 200 });
-      return res.status(200).json({ hiddenPanels });
+      return res.status(200).json({
+        hiddenPanels: asStringArray(row?.hidden_panels),
+        panelOrder: asStringArray(row?.panel_order),
+        groupOrder: asStringArray(row?.group_order),
+      });
     } catch (err) {
       Sentry.captureException(err);
       logger.error({ err }, 'panel-prefs GET failed');
@@ -70,17 +86,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const parsed = panelPrefsBodySchema.safeParse(req.body);
   if (respondIfInvalid(parsed, res, done)) return;
-  const { hiddenPanels } = parsed.data;
+  const { hiddenPanels, panelOrder, groupOrder } = parsed.data;
+
   try {
+    const existing = await db`
+      SELECT hidden_panels, panel_order, group_order
+        FROM panel_prefs WHERE identity = ${identity}
+    `;
+    const prior = existing[0];
+    const mergedHidden = hiddenPanels ?? asStringArray(prior?.hidden_panels);
+    const mergedPanelOrder = panelOrder ?? asStringArray(prior?.panel_order);
+    const mergedGroupOrder = groupOrder ?? asStringArray(prior?.group_order);
+
     await db`
-      INSERT INTO panel_prefs (identity, hidden_panels, updated_at)
-      VALUES (${identity}, ${JSON.stringify(hiddenPanels)}::jsonb, NOW())
+      INSERT INTO panel_prefs
+        (identity, hidden_panels, panel_order, group_order, updated_at)
+      VALUES (
+        ${identity},
+        ${JSON.stringify(mergedHidden)}::jsonb,
+        ${JSON.stringify(mergedPanelOrder)}::jsonb,
+        ${JSON.stringify(mergedGroupOrder)}::jsonb,
+        NOW()
+      )
       ON CONFLICT (identity) DO UPDATE SET
         hidden_panels = EXCLUDED.hidden_panels,
-        updated_at = NOW()
+        panel_order   = EXCLUDED.panel_order,
+        group_order   = EXCLUDED.group_order,
+        updated_at    = NOW()
     `;
     done({ status: 200 });
-    return res.status(200).json({ hiddenPanels });
+    return res.status(200).json({
+      hiddenPanels: mergedHidden,
+      panelOrder: mergedPanelOrder,
+      groupOrder: mergedGroupOrder,
+    });
   } catch (err) {
     Sentry.captureException(err);
     logger.error({ err }, 'panel-prefs PUT failed');
