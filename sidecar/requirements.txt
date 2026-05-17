@@ -20,9 +20,9 @@ ruff>=0.11
 # docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md).
 # Off-by-default; only loaded when TAKEIT_SERVER_ENABLED=1. Adds ~250MB
 # to the deploy image so it's gated by env, not stripped from this list —
-# Railway redeploys pull these regardless. If image size becomes the
-# constraint, consider splitting takeit-server into its own service.
-flask>=3.0.0
+# Railway redeploys pull these regardless. Routes live on the existing
+# health server (port 8080), so Flask is NOT a dep — http.server handles
+# the wire format.
 joblib>=1.3.0
 numpy>=1.26.0
 pandas>=2.1.0

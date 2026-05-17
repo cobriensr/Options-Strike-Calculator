@@ -1,4 +1,4 @@
-"""Take-It SHAP explainer — Flask HTTP endpoint co-resident with the sidecar.
+"""Take-It SHAP explainer — handler functions co-resident with the sidecar.
 
 Spec: docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md
 
@@ -7,16 +7,17 @@ feature rows here; we run shap.TreeExplainer against the joblib bundle
 (downloaded from Vercel Blob on first request, then cached in memory) and
 return the top-K positive + top-K negative contributors per row.
 
-Run as a daemon thread alongside the Databento streamers. Starts when
-TAKEIT_SERVER_ENABLED=1 is set in the environment; off by default so
-sidecars without the extra deps installed don't crash.
+Architecturally: this module exposes pure handler functions
+(`handle_explain_payload`, `handle_health_payload`) that the sidecar's
+existing health-server HealthHandler dispatches to. We don't run our own
+HTTP server — Railway only forwards one public port (8080, the health
+server), so co-resident routes on that handler is the practical path.
 
-Required env vars when enabled:
+Required env vars when enabled (via TAKEIT_SERVER_ENABLED=1):
     - BLOB_READ_WRITE_TOKEN          read access to the takeit/ namespace
     - TAKEIT_SIDECAR_SHARED_SECRET   bearer token the cron sends
-    - TAKEIT_SERVER_PORT             default 8123
 
-Endpoint:
+Endpoint (wired in sidecar/src/health.py):
     POST /takeit/explain
     Headers: Authorization: Bearer <TAKEIT_SIDECAR_SHARED_SECRET>
     Body: {
@@ -26,7 +27,7 @@ Endpoint:
         "features": { <feature_name>: <number | null>, ... }
       }, ...]
     }
-    → 200: { "results": [{ "alert_id": ..., "top_positive": [...], "top_negative": [...] }, ...] }
+    → 200: { "results": [...] }
     → 401: bad/missing bearer
     → 503: bundle unreachable
 """
@@ -69,7 +70,7 @@ def _fetch_blob(url: str) -> bytes:
 def _load_bundle(alert_type: str) -> dict:
     """Resolve the manifest's current version for `alert_type`, then download
     and joblib.load() the bundle. Cached per-alert_type in-process."""
-    import joblib  # noqa: PLC0415  — heavy, intentionally lazy
+    import joblib  # noqa: PLC0415
 
     with _bundle_lock:
         if alert_type in _bundle_cache:
@@ -167,75 +168,86 @@ def _json_safe(v):
     return v
 
 
-def _build_app():
-    """Construct the Flask app on demand so import-time failures don't kill
-    the sidecar's main process when ML deps aren't installed."""
-    from flask import Flask, jsonify, request  # noqa: PLC0415
-
-    app = Flask(__name__)
-    shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
-    if not shared_secret:
-        raise RuntimeError("TAKEIT_SIDECAR_SHARED_SECRET not set")
-
-    @app.route("/takeit/health", methods=["GET"])
-    def health():
-        return jsonify({"status": "ok", "bundles_loaded": list(_bundle_cache.keys())})
-
-    @app.route("/takeit/explain", methods=["POST"])
-    def explain():
-        auth = request.headers.get("Authorization", "")
-        if auth != f"Bearer {shared_secret}":
-            return jsonify({"error": "unauthorized"}), 401
-        payload = request.get_json(force=True, silent=False)
-        alert_type = payload.get("alert_type")
-        if alert_type not in ("lottery", "silentboom"):
-            return jsonify({"error": "alert_type must be lottery|silentboom"}), 400
-        rows = payload.get("rows") or []
-        if not rows:
-            return jsonify({"results": []})
-        try:
-            results = _explain_rows(alert_type, rows)
-        except RuntimeError as e:
-            logger.error("takeit explain failed: %s", e)
-            return jsonify({"error": str(e)}), 503
-        return jsonify({"results": results})
-
-    return app
-
-
-def start_in_thread() -> threading.Thread | None:
-    """Spawn the Flask server in a daemon thread. No-op when disabled or when
-    optional ML deps are missing — the sidecar's main duties (Databento
-    streaming) keep working either way."""
+def is_enabled() -> bool:
+    """True iff the takeit server is enabled AND all required ML deps are
+    importable. Cached on first call so the import-probe overhead is paid once.
+    """
     if os.environ.get("TAKEIT_SERVER_ENABLED", "0") != "1":
-        logger.info("takeit_server: disabled (TAKEIT_SERVER_ENABLED!=1); skipping")
-        return None
+        return False
     try:
-        # Probe dep availability with explicit imports — better error than a
-        # mid-request ModuleNotFoundError.
-        import flask  # noqa: F401, PLC0415
         import joblib  # noqa: F401, PLC0415
         import numpy  # noqa: F401, PLC0415
         import pandas  # noqa: F401, PLC0415
         import shap  # noqa: F401, PLC0415
         import xgboost  # noqa: F401, PLC0415
     except ImportError as e:
-        logger.error(
-            "takeit_server: missing dep %s; install xgboost/shap/joblib/flask in sidecar venv",
+        logger.warning(
+            "takeit_server: missing dep %s; install xgboost/shap/joblib in sidecar venv",
             e.name,
         )
-        return None
+        return False
+    if not os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", ""):
+        logger.warning("takeit_server: TAKEIT_SIDECAR_SHARED_SECRET not set")
+        return False
+    return True
 
-    port = int(os.environ.get("TAKEIT_SERVER_PORT", "8123"))
-    app = _build_app()
 
-    def _run():
-        # waitress is the Python WSGI server we'd ideally use; Flask's dev
-        # server is fine for the single-owner traffic profile and avoids a
-        # new dep.
-        logger.info("takeit_server: listening on 0.0.0.0:%d", port)
-        app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)  # noqa: S104
+def handle_health_payload() -> dict:
+    """GET /takeit/health body. Always returns 200-shaped JSON; the handler
+    in health.py wraps this with HTTP status + headers."""
+    return {
+        "status": "ok",
+        "enabled": is_enabled(),
+        "bundles_loaded": sorted(_bundle_cache.keys()),
+    }
 
-    t = threading.Thread(target=_run, name="takeit-server", daemon=True)
-    t.start()
-    return t
+
+def handle_explain_payload(
+    body_bytes: bytes, auth_header: str
+) -> tuple[int, dict]:
+    """Parse + dispatch a POST /takeit/explain body. Returns (http_status, body).
+
+    The HealthHandler caller is responsible for writing the response headers
+    + body; we just emit the status code and the JSON payload.
+    """
+    shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
+    if not shared_secret:
+        return 503, {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
+    if auth_header != f"Bearer {shared_secret}":
+        return 401, {"error": "unauthorized"}
+
+    try:
+        payload = json.loads(body_bytes)
+    except (ValueError, json.JSONDecodeError):
+        return 400, {"error": "body must be valid JSON"}
+
+    alert_type = payload.get("alert_type")
+    if alert_type not in ("lottery", "silentboom"):
+        return 400, {"error": "alert_type must be lottery|silentboom"}
+    rows = payload.get("rows") or []
+    if not isinstance(rows, list):
+        return 400, {"error": "rows must be a list"}
+    if not rows:
+        return 200, {"results": []}
+
+    try:
+        results = _explain_rows(alert_type, rows)
+    except RuntimeError as e:
+        logger.exception("takeit explain failed: bundle/model error")
+        return 503, {"error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        logger.exception("takeit explain failed: unexpected")
+        return 500, {"error": str(e)}
+    return 200, {"results": results}
+
+
+# Kept for backward compatibility while main.py is being updated; this is
+# now a no-op since the takeit routes live on the existing health server
+# (port 8080) instead of a separate Flask process. Safe to delete after
+# the next deploy.
+def start_in_thread() -> threading.Thread | None:
+    logger.info(
+        "takeit_server.start_in_thread: takeit routes now live on the "
+        "health server (port 8080); no separate thread needed"
+    )
+    return None

@@ -200,6 +200,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/archive/tbbo-ofi-percentile"):
             self._handle_archive_tbbo_ofi_percentile()
             return
+        if self.path == "/takeit/health":
+            self._handle_takeit_health()
+            return
         if self.path != "/health":
             self.send_response(404)
             self.end_headers()
@@ -240,7 +243,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(body.encode())
 
     def do_POST(self) -> None:  # noqa: N802 — http.server naming convention
-        """Dispatch POST requests. Currently only /admin/seed-archive."""
+        """Dispatch POST requests."""
+        if self.path == "/takeit/explain":
+            self._handle_takeit_explain()
+            return
         if self.path != "/admin/seed-archive":
             self.send_response(404)
             self.end_headers()
@@ -291,6 +297,49 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
+    def _handle_takeit_health(self) -> None:
+        """GET /takeit/health — cheap liveness + readiness probe for the
+        take-it SHAP explainer. Wraps takeit_server.handle_health_payload."""
+        import takeit_server  # noqa: PLC0415  — heavy imports stay lazy
+
+        body = takeit_server.handle_health_payload()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+
+    def _handle_takeit_explain(self) -> None:
+        """POST /takeit/explain — Phase 3d SHAP top-K explainer. Wraps
+        takeit_server.handle_explain_payload."""
+        import takeit_server  # noqa: PLC0415
+
+        if not takeit_server.is_enabled():
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {"error": "takeit server disabled or missing ML deps"}
+                ).encode()
+            )
+            return
+
+        content_length = int(self.headers.get("Content-Length", "0") or 0)
+        if content_length <= 0:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "empty body"}).encode())
+            return
+
+        body_bytes = self.rfile.read(content_length)
+        auth_header = self.headers.get("Authorization", "")
+        status, body = takeit_server.handle_explain_payload(body_bytes, auth_header)
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
 
     def _handle_archive_es_range(self) -> None:
         """GET /archive/es-range?date=YYYY-MM-DD → ES day summary from archive.

@@ -28,7 +28,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import archive_seeder
-import takeit_server
 import theta_fetcher
 import theta_launcher
 from config import settings
@@ -109,13 +108,14 @@ def main() -> None:
             daemon=True,
         ).start()
 
-    # Take-It SHAP HTTP server (Phase 3d, spec:
-    # docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md).
-    # Daemon thread; off by default. Enable per-deployment by setting
-    # TAKEIT_SERVER_ENABLED=1 + TAKEIT_SIDECAR_SHARED_SECRET in Railway.
-    # When disabled or when ML deps are missing, returns None and logs;
-    # the rest of the sidecar (Databento streaming) is unaffected.
-    takeit_server.start_in_thread()
+    # Take-It SHAP routes (Phase 3d, spec
+    # docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md)
+    # are served by the existing health_server on port 8080 — no separate
+    # process needed. Enable per-deployment via TAKEIT_SERVER_ENABLED=1 +
+    # TAKEIT_SIDECAR_SHARED_SECRET; sidecar/src/takeit_server.is_enabled()
+    # short-circuits /takeit/explain when disabled or when ML deps are
+    # missing, leaving the rest of the sidecar (Databento streaming)
+    # unaffected.
 
     # Verify database connection
     verify_connection()
