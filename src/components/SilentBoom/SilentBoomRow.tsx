@@ -13,6 +13,8 @@ import {
   type SilentBoomScoreTier,
 } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
+import { computeFlowMatch } from '../../utils/flow-match.js';
+import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
 interface SilentBoomRowProps {
   alert: SilentBoomAlert;
@@ -20,6 +22,13 @@ interface SilentBoomRowProps {
   marketOpen: boolean;
   /** Which realized exit policy to surface as the primary % column. */
   exitPolicy: SilentBoomExitPolicy;
+  /**
+   * Live cumulative ticker net flow for this alert's underlying.
+   * Optional so existing test fixtures continue to type-check;
+   * production sites always pass it. Null before the first poll
+   * resolves or when the ticker isn't yet on the WS subscription.
+   */
+  liveFlowSnapshot?: TickerNetFlowSnapshot | null;
 }
 
 const uwContractUrl = (alert: { optionChainId: string }): string =>
@@ -172,6 +181,41 @@ const gatedPill = (): { label: string; cls: string; tooltip: string } => ({
 });
 
 /**
+ * Flow Match / Flow Mismatch badge — does the ticker's current
+ * cumulative net flow agree with this alert's option type? Green when
+ * NCP > NPP for a call (or NPP > NCP for a put); red on the inverse.
+ * No badge when the snapshot is missing (cold start) or flat.
+ */
+const flowMatchBadge = (
+  optionType: 'C' | 'P',
+  liveFlowSnapshot: { cumNcp: number; cumNpp: number } | null,
+): { label: string; cls: string; tooltip: string } | null => {
+  const state = computeFlowMatch(
+    optionType,
+    liveFlowSnapshot?.cumNcp,
+    liveFlowSnapshot?.cumNpp,
+  );
+  if (state === 'unknown' || state === 'flat') return null;
+  const delta =
+    liveFlowSnapshot != null
+      ? liveFlowSnapshot.cumNcp - liveFlowSnapshot.cumNpp
+      : 0;
+  const deltaStr = `${delta >= 0 ? '+' : ''}$${(delta / 1_000_000).toFixed(1)}M`;
+  if (state === 'match') {
+    return {
+      label: 'Flow Match',
+      cls: 'border-emerald-500/60 bg-emerald-950/40 text-emerald-200',
+      tooltip: `Ticker cum NCP − NPP = ${deltaStr}. Same direction as this ${optionType === 'C' ? 'call' : 'put'} alert — the dominant side of the tape agrees with the bet.`,
+    };
+  }
+  return {
+    label: 'Flow Mismatch',
+    cls: 'border-red-500/60 bg-red-950/40 text-red-200',
+    tooltip: `Ticker cum NCP − NPP = ${deltaStr}. Opposite direction from this ${optionType === 'C' ? 'call' : 'put'} alert — the dominant side of the tape is fighting the bet.`,
+  };
+};
+
+/**
  * Multi-leg share sweet-spot — 10–50% spread legs is the "spread-
  * confirmed" cohort with 2.08× win50 and 2.73× win100 lift per the
  * 2026-05-15 cross-section EDA. Below 10% is single-leg-dominated
@@ -271,6 +315,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   alert,
   marketOpen,
   exitPolicy,
+  liveFlowSnapshot,
 }: SilentBoomRowProps) {
   const peak = alert.outcomes.peakCeilingPct;
   const realizedEod = alert.outcomes.realizedEodPct;
@@ -287,6 +332,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const tide = tideBadge(alert.mktTideDiff);
   const gated = alert.directionGated ? gatedPill() : null;
   const spreadConfirmed = spreadConfirmedBadge(alert.multiLegShare);
+  const flowMatch = flowMatchBadge(alert.optionType, liveFlowSnapshot ?? null);
 
   const [expanded, setExpanded] = useState(false);
 
@@ -374,6 +420,19 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             aria-label={gated.tooltip}
           >
             {gated.label}
+          </span>
+        )}
+        {/* Flow Match / Mismatch — does the ticker's live cum NCP/NPP
+            delta agree with this alert's option type? Green when the
+            tape is on the bet's side, red when fighting it. */}
+        {flowMatch && (
+          <span
+            data-testid="silent-boom-flow-match-badge"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flowMatch.cls}`}
+            title={flowMatch.tooltip}
+            aria-label={flowMatch.tooltip}
+          >
+            {flowMatch.label}
           </span>
         )}
         {/* Take-It score tile (Phase 4 of takeit-phase3-production-scoring-

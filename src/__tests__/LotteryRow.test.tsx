@@ -606,3 +606,73 @@ describe('LotteryRow: expand / collapse', () => {
     expect(screen.getByText(/tape error: HTTP 500/)).toBeInTheDocument();
   });
 });
+
+describe('LotteryRow: flow-match badge', () => {
+  it('renders "Flow Match" (emerald) for a call when live NCP > NPP', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ optionType: 'C' })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 31_500_000,
+          cumNpp: -13_400_000,
+          asOfTs: '2026-05-15T19:59:00.000Z',
+        }}
+      />,
+    );
+    const badge = screen.getByTestId('lottery-flow-match-badge');
+    expect(badge).toHaveTextContent('Flow Match');
+    expect(badge.className).toContain('emerald');
+  });
+
+  it('renders "Flow Mismatch" (red) for a call when live NCP < NPP', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ optionType: 'C' })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 5_000_000,
+          cumNpp: 12_000_000,
+          asOfTs: '2026-05-15T19:59:00.000Z',
+        }}
+      />,
+    );
+    const badge = screen.getByTestId('lottery-flow-match-badge');
+    expect(badge).toHaveTextContent('Flow Mismatch');
+    expect(badge.className).toContain('red');
+  });
+
+  it('omits the badge when liveFlowSnapshot is null (cold start)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ optionType: 'C' })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={null}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-flow-match-badge'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('flips polarity for puts — NCP < NPP renders Flow Match', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ optionType: 'P' })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 5_000_000,
+          cumNpp: 12_000_000,
+          asOfTs: '2026-05-15T19:59:00.000Z',
+        }}
+      />,
+    );
+    expect(screen.getByTestId('lottery-flow-match-badge')).toHaveTextContent(
+      'Flow Match',
+    );
+  });
+});

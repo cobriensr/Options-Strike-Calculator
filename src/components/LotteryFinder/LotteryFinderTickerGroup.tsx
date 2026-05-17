@@ -9,6 +9,7 @@
 import { memo, useCallback, useMemo } from 'react';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { LotteryRow } from './LotteryRow.js';
+import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 import {
   BURST_STORM_BADGE_LABEL,
   BURST_STORM_INTENSITY_THRESHOLDS,
@@ -63,6 +64,14 @@ interface LotteryFinderTickerGroupProps {
   onToggle: (ticker: string) => void;
   marketOpen: boolean;
   exitPolicy: ExitPolicy;
+  /**
+   * Live cumulative ticker NCP/NPP from useTickerNetFlowBatch. Null
+   * before the first poll resolves or when the ticker isn't yet in the
+   * WS subscription. Optional so existing test fixtures continue to
+   * type-check; production sites always pass it. Forwarded to each
+   * LotteryRow so the Flow Match / Inverted badges can render.
+   */
+  liveFlowSnapshot?: TickerNetFlowSnapshot | null;
 }
 
 function formatPeakPct(v: number | null): string {
@@ -138,6 +147,7 @@ function LotteryFinderTickerGroupBase({
   onToggle,
   marketOpen,
   exitPolicy,
+  liveFlowSnapshot,
 }: LotteryFinderTickerGroupProps) {
   const handleToggle = useCallback(() => onToggle(ticker), [onToggle, ticker]);
 
@@ -357,6 +367,7 @@ function LotteryFinderTickerGroupBase({
                 fire={f}
                 marketOpen={marketOpen}
                 exitPolicy={exitPolicy}
+                liveFlowSnapshot={liveFlowSnapshot}
               />
             </div>
           );

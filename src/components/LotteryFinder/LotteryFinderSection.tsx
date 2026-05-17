@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
+import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from './ct-window.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryTierBanner } from './LotteryTierBanner.js';
@@ -636,6 +637,20 @@ export function LotteryFinderSection({
         return b.latestTriggerMs - a.latestTriggerMs;
       });
   }, [displayedFires, sortMode]);
+
+  // Live ticker net-flow snapshots driving the Flow Match / Mismatch /
+  // Inverted badges. One panel-level poll (60s while marketOpen)
+  // replaces what would otherwise be N per-row chart fetches. Empty
+  // ticker list short-circuits the fetch.
+  const visibleTickers = useMemo(
+    () => groupedByTicker.map((g) => g.ticker),
+    [groupedByTicker],
+  );
+  const { data: tickerFlowSnapshots } = useTickerNetFlowBatch({
+    tickers: visibleTickers,
+    date,
+    marketOpen,
+  });
 
   // Per-ticker expand state, persisted to localStorage so users keep
   // their open tickers across refreshes / filter changes. Default
@@ -1297,6 +1312,7 @@ export function LotteryFinderSection({
                 onToggle={handleTickerToggle}
                 marketOpen={marketOpen}
                 exitPolicy={exitPolicy}
+                liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}
               />
             ))}
           </div>

@@ -124,9 +124,17 @@ function renderRow(
   alert: SilentBoomAlert,
   marketOpen = false,
   policy: SilentBoomExitPolicy = 'realized60mPct',
+  liveFlowSnapshot:
+    | { cumNcp: number; cumNpp: number; asOfTs: string }
+    | null = null,
 ) {
   return render(
-    <SilentBoomRow alert={alert} marketOpen={marketOpen} exitPolicy={policy} />,
+    <SilentBoomRow
+      alert={alert}
+      marketOpen={marketOpen}
+      exitPolicy={policy}
+      liveFlowSnapshot={liveFlowSnapshot}
+    />,
   );
 }
 
@@ -554,5 +562,47 @@ describe('SilentBoomRow: expand / collapse', () => {
     renderRow(makeAlert());
     fireEvent.click(screen.getByRole('button', { name: /▸ expand/ }));
     expect(screen.getByText(/tape error: HTTP 500/)).toBeInTheDocument();
+  });
+});
+
+describe('SilentBoomRow: flow-match badge', () => {
+  it('renders "Flow Match" (emerald) for a call when live NCP > NPP', () => {
+    renderRow(makeAlert({ optionType: 'C' }), true, 'realized60mPct', {
+      cumNcp: 31_500_000,
+      cumNpp: -13_400_000,
+      asOfTs: '2026-05-15T19:59:00.000Z',
+    });
+    const badge = screen.getByTestId('silent-boom-flow-match-badge');
+    expect(badge).toHaveTextContent('Flow Match');
+    expect(badge.className).toContain('emerald');
+  });
+
+  it('renders "Flow Mismatch" (red) for a call when live NCP < NPP', () => {
+    renderRow(makeAlert({ optionType: 'C' }), true, 'realized60mPct', {
+      cumNcp: 5_000_000,
+      cumNpp: 12_000_000,
+      asOfTs: '2026-05-15T19:59:00.000Z',
+    });
+    const badge = screen.getByTestId('silent-boom-flow-match-badge');
+    expect(badge).toHaveTextContent('Flow Mismatch');
+    expect(badge.className).toContain('red');
+  });
+
+  it('omits the badge when liveFlowSnapshot is null (cold start)', () => {
+    renderRow(makeAlert({ optionType: 'C' }), true, 'realized60mPct', null);
+    expect(
+      screen.queryByTestId('silent-boom-flow-match-badge'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('flips polarity for puts — NCP < NPP renders Flow Match', () => {
+    renderRow(makeAlert({ optionType: 'P' }), true, 'realized60mPct', {
+      cumNcp: 5_000_000,
+      cumNpp: 12_000_000,
+      asOfTs: '2026-05-15T19:59:00.000Z',
+    });
+    expect(
+      screen.getByTestId('silent-boom-flow-match-badge'),
+    ).toHaveTextContent('Flow Match');
   });
 });

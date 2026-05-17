@@ -13,6 +13,8 @@ import type {
 } from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
+import { computeFlowMatch } from '../../utils/flow-match.js';
+import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
 interface LotteryRowProps {
   fire: LotteryFire;
@@ -20,6 +22,13 @@ interface LotteryRowProps {
   exitPolicy: ExitPolicy;
   /** Whether the parent's date is today (drives polling). */
   marketOpen: boolean;
+  /**
+   * Live cumulative ticker net flow for this fire's underlying.
+   * Optional so existing test fixtures continue to type-check;
+   * production sites always pass it. Null before the first poll
+   * resolves or when the ticker isn't yet on the WS subscription.
+   */
+  liveFlowSnapshot?: TickerNetFlowSnapshot | null;
 }
 
 /**
@@ -210,6 +219,43 @@ const gatedPill = (): { label: string; cls: string; tooltip: string } => ({
     'Counter-trend per OTM Market Tide at fire time — demoted to tier3 by the direction gate (T=±150M on mkt_tide_otm_diff). Score is preserved on the row; only the displayed tier is forced down.',
 });
 
+/**
+ * Flow Match / Flow Mismatch badge — does the ticker's current
+ * cumulative net flow agree with this alert's option type? Green when
+ * the side that owns the tape (NCP for a call, NPP for a put) is
+ * winning; red when the opposite is winning. No badge when the
+ * snapshot is missing (cold start) or flat — the row stays clean
+ * rather than displaying a meaningless chip.
+ */
+const flowMatchBadge = (
+  optionType: 'C' | 'P',
+  liveFlowSnapshot: { cumNcp: number; cumNpp: number } | null,
+): { label: string; cls: string; tooltip: string } | null => {
+  const state = computeFlowMatch(
+    optionType,
+    liveFlowSnapshot?.cumNcp,
+    liveFlowSnapshot?.cumNpp,
+  );
+  if (state === 'unknown' || state === 'flat') return null;
+  const delta =
+    liveFlowSnapshot != null
+      ? liveFlowSnapshot.cumNcp - liveFlowSnapshot.cumNpp
+      : 0;
+  const deltaStr = `${delta >= 0 ? '+' : ''}$${(delta / 1_000_000).toFixed(1)}M`;
+  if (state === 'match') {
+    return {
+      label: 'Flow Match',
+      cls: 'border-emerald-500/60 bg-emerald-950/40 text-emerald-200',
+      tooltip: `Ticker cum NCP − NPP = ${deltaStr}. Same direction as this ${optionType === 'C' ? 'call' : 'put'} alert — the dominant side of the tape agrees with the bet.`,
+    };
+  }
+  return {
+    label: 'Flow Mismatch',
+    cls: 'border-red-500/60 bg-red-950/40 text-red-200',
+    tooltip: `Ticker cum NCP − NPP = ${deltaStr}. Opposite direction from this ${optionType === 'C' ? 'call' : 'put'} alert — the dominant side of the tape is fighting the bet.`,
+  };
+};
+
 const tideBadge = (
   diff: number | null,
 ): { label: string; cls: string; tooltip: string } | null => {
@@ -232,6 +278,7 @@ export const LotteryRow = memo(function LotteryRow({
   fire,
   exitPolicy,
   marketOpen,
+  liveFlowSnapshot,
 }: LotteryRowProps) {
   const realized = fire.outcomes[exitPolicy];
   const peak = fire.outcomes.peakCeilingPct;
@@ -250,6 +297,7 @@ export const LotteryRow = memo(function LotteryRow({
   const tier = tierBadge(fire.scoreTier, fire.score);
   const ci = ciIndicator(fire.tickerStats, fire.underlyingSymbol);
   const gated = fire.directionGated ? gatedPill() : null;
+  const flowMatch = flowMatchBadge(fire.optionType, liveFlowSnapshot ?? null);
 
   // Expand state — when true, the per-fire panel renders below the
   // summary lines and the two hooks fetch their data. Collapsed by
@@ -405,6 +453,19 @@ export const LotteryRow = memo(function LotteryRow({
             aria-label={gated.tooltip}
           >
             {gated.label}
+          </span>
+        )}
+        {/* Flow Match / Mismatch — does the ticker's live cum NCP/NPP
+            delta agree with this alert's option type? Green when the
+            tape is on the bet's side, red when fighting it. */}
+        {flowMatch && (
+          <span
+            data-testid="lottery-flow-match-badge"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flowMatch.cls}`}
+            title={flowMatch.tooltip}
+            aria-label={flowMatch.tooltip}
+          >
+            {flowMatch.label}
           </span>
         )}
         {/* Take-It score tile (Phase 4 of takeit-phase3-production-scoring-

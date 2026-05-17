@@ -10,6 +10,7 @@
 import { memo, useCallback, useMemo } from 'react';
 import type { SilentBoomAlert, SilentBoomExitPolicy } from './types.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
+import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 import {
   BURST_STORM_BADGE_LABEL,
   BURST_STORM_INTENSITY_THRESHOLDS,
@@ -33,6 +34,14 @@ interface SilentBoomTickerGroupProps {
   onToggle: (ticker: string) => void;
   marketOpen: boolean;
   exitPolicy: SilentBoomExitPolicy;
+  /**
+   * Live cumulative ticker NCP/NPP from useTickerNetFlowBatch. Null
+   * before the first poll resolves or when the ticker isn't yet in the
+   * WS subscription. Optional so existing test fixtures continue to
+   * type-check; production sites always pass it. Forwarded to each
+   * SilentBoomRow so the Flow Match / Inverted badges can render.
+   */
+  liveFlowSnapshot?: TickerNetFlowSnapshot | null;
 }
 
 function formatPeakPct(v: number | null): string {
@@ -109,6 +118,7 @@ function SilentBoomTickerGroupBase({
   onToggle,
   marketOpen,
   exitPolicy,
+  liveFlowSnapshot,
 }: SilentBoomTickerGroupProps) {
   const handleToggle = useCallback(() => onToggle(ticker), [onToggle, ticker]);
 
@@ -284,6 +294,7 @@ function SilentBoomTickerGroupBase({
             alert={a}
             marketOpen={marketOpen}
             exitPolicy={exitPolicy}
+            liveFlowSnapshot={liveFlowSnapshot}
           />
         ))}
       </div>
