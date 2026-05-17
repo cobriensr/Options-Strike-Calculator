@@ -229,3 +229,132 @@ describe('ContractTapeChart: cross-panel hover sync', () => {
     ).toBeNull();
   });
 });
+
+// ============================================================
+// HISTORICAL FIRES — Task B of lottery-reignition-ui-2026-05-17
+// ============================================================
+
+describe('ContractTapeChart: historical fire markers', () => {
+  // Multi-bar span so the chart has a real session timeline to clamp
+  // historical-fire timestamps into.
+  const bars = [
+    makeBar({ ts: '2026-05-08T14:30:00Z', avgPrice: 1.2 }),
+    makeBar({ ts: '2026-05-08T15:00:00Z', avgPrice: 1.3 }),
+    makeBar({ ts: '2026-05-08T15:30:00Z', avgPrice: 1.5 }),
+    makeBar({ ts: '2026-05-08T16:00:00Z', avgPrice: 1.7 }),
+    makeBar({ ts: '2026-05-08T16:30:00Z', avgPrice: 1.9 }),
+  ];
+
+  it('renders one orange dashed line per historical fire', () => {
+    const { container } = render(
+      <ContractTapeChart
+        series={bars}
+        markerTs="2026-05-08T16:30:00Z"
+        historicalFires={[
+          { triggerTimeCt: '2026-05-08T14:30:00Z', entryPrice: 0.5 },
+          { triggerTimeCt: '2026-05-08T15:00:00Z', entryPrice: 0.7 },
+          { triggerTimeCt: '2026-05-08T15:45:00Z', entryPrice: 1.1 },
+        ]}
+        ariaLabel="tape"
+      />,
+    );
+    const historicalLines = container.querySelectorAll(
+      '[data-testid="historical-fire-line"]',
+    );
+    expect(historicalLines.length).toBe(3);
+    historicalLines.forEach((line) => {
+      expect(line.getAttribute('stroke')).toBe('rgb(251, 146, 60)');
+      expect(line.getAttribute('stroke-dasharray')).toBe('2 3');
+    });
+  });
+
+  it('still renders the purple latest-fire line when historicalFires is set', () => {
+    const { container } = render(
+      <ContractTapeChart
+        series={bars}
+        markerTs="2026-05-08T16:30:00Z"
+        historicalFires={[
+          { triggerTimeCt: '2026-05-08T14:30:00Z', entryPrice: 0.5 },
+        ]}
+        ariaLabel="tape"
+      />,
+    );
+    const latestLine = container.querySelector(
+      '[data-testid="latest-fire-line"]',
+    );
+    expect(latestLine).not.toBeNull();
+    expect(latestLine!.getAttribute('stroke')).toBe('rgb(196, 181, 253)');
+  });
+
+  it('renders no historical lines when historicalFires is undefined', () => {
+    const { container } = render(
+      <ContractTapeChart
+        series={bars}
+        markerTs="2026-05-08T16:30:00Z"
+        ariaLabel="tape"
+      />,
+    );
+    const historicalLines = container.querySelectorAll(
+      '[data-testid="historical-fire-line"]',
+    );
+    expect(historicalLines.length).toBe(0);
+  });
+
+  it('renders no historical lines when historicalFires is empty', () => {
+    const { container } = render(
+      <ContractTapeChart
+        series={bars}
+        markerTs="2026-05-08T16:30:00Z"
+        historicalFires={[]}
+        ariaLabel="tape"
+      />,
+    );
+    const historicalLines = container.querySelectorAll(
+      '[data-testid="historical-fire-line"]',
+    );
+    expect(historicalLines.length).toBe(0);
+  });
+
+  it('skips a historical fire whose timestamp equals markerTs (no double-draw)', () => {
+    // Defensive: if the API ever sent the latest fire inside the
+    // historicalFires array (it shouldn't — Phase 1 slices it off),
+    // the chart must not paint the latest fire in two colors.
+    const { container } = render(
+      <ContractTapeChart
+        series={bars}
+        markerTs="2026-05-08T16:30:00Z"
+        historicalFires={[
+          { triggerTimeCt: '2026-05-08T14:30:00Z', entryPrice: 0.5 },
+          { triggerTimeCt: '2026-05-08T16:30:00Z', entryPrice: 1.9 }, // same as markerTs
+        ]}
+        ariaLabel="tape"
+      />,
+    );
+    expect(
+      container.querySelectorAll('[data-testid="historical-fire-line"]').length,
+    ).toBe(1);
+  });
+
+  it('clamps a historical fire timestamp outside the series window to the chart edge', () => {
+    // 12:00 UTC is before the first bar (14:30 UTC) — line should still
+    // render at x = PAD_X (left edge) instead of being dropped or NaN'd.
+    const { container } = render(
+      <ContractTapeChart
+        series={bars}
+        markerTs="2026-05-08T16:30:00Z"
+        historicalFires={[
+          { triggerTimeCt: '2026-05-08T12:00:00Z', entryPrice: 0.3 },
+        ]}
+        ariaLabel="tape"
+      />,
+    );
+    const line = container.querySelector(
+      '[data-testid="historical-fire-line"]',
+    );
+    expect(line).not.toBeNull();
+    const x1 = Number(line!.getAttribute('x1'));
+    expect(Number.isFinite(x1)).toBe(true);
+    // PAD_X = 4 in the source — the clamped position should land at PAD_X.
+    expect(x1).toBe(4);
+  });
+});

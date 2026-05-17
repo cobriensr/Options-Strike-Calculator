@@ -981,6 +981,7 @@ export const LotteryRow = memo(function LotteryRow({
               <ContractTapeChart
                 series={tape.series}
                 markerTs={fire.triggerTimeCt}
+                historicalFires={fire.historicalFires}
                 syncHoverTime={hoverTime}
                 onHoverTime={onHoverTimeChange}
                 ariaLabel={`${fire.optionChainId} per-minute tape`}

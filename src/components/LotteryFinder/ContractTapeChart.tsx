@@ -37,6 +37,19 @@ interface ContractTapeChartProps {
   series: ContractTapeBar[];
   /** Optional fire-time marker (UTC ISO). */
   markerTs?: string;
+  /**
+   * Past fires on this chain-day, excluding the latest (which is
+   * already represented by `markerTs` + the row's entry price). Each
+   * past fire renders as an orange dashed vertical line spanning the
+   * price zone, letting the reader eyeball burst density across the
+   * session. Source: `LotteryFire.historicalFires` from
+   * /api/lottery-finder (Phase 1 of lottery-reignition-ui-2026-05-17).
+   * Pass `undefined` or `[]` on single-fire chains to skip rendering.
+   */
+  historicalFires?: Array<{
+    triggerTimeCt: string;
+    entryPrice: number;
+  }>;
   /** Fixed height override (SVG units). Default 130. */
   height?: number;
   /**
@@ -102,6 +115,7 @@ const median = (xs: number[]): number => {
 function ContractTapeChartInner({
   series,
   markerTs,
+  historicalFires,
   height = 130,
   syncHoverTime,
   onHoverTime,
@@ -259,6 +273,24 @@ function ContractTapeChartInner({
           })()
         : null;
 
+    // Past-fire markers (Task B of lottery-reignition-ui-2026-05-17).
+    // Each prior fire renders as an orange dashed vertical line. We
+    // skip any fire whose timestamp equals `markerTs` so a server-side
+    // off-by-one wouldn't double-draw the latest fire in two colors.
+    // Empty array when there are no historical fires (single-fire
+    // chain) — the renderer below short-circuits in that case.
+    const historicalMarkers: number[] = [];
+    if (historicalFires && historicalFires.length > 0) {
+      const markerMs = markerTs != null ? Date.parse(markerTs) : null;
+      for (const fire of historicalFires) {
+        const ms = Date.parse(fire.triggerTimeCt);
+        if (!Number.isFinite(ms)) continue;
+        if (markerMs != null && ms === markerMs) continue;
+        const clamped = Math.max(tsMin, Math.min(tsMax, ms));
+        historicalMarkers.push(xAt(clamped));
+      }
+    }
+
     // Five-point CT time axis: evenly spaced across the session. Three
     // ticks read sparse on a 6.5-hour session; five gives ~80-minute
     // resolution which matches the reader's mental clock cadence.
@@ -289,12 +321,13 @@ function ContractTapeChartInner({
       maxIdx,
       isSpike,
       markerX,
+      historicalMarkers,
       sepY,
       volBaseY,
       axisLabels,
       axisLabelY,
     };
-  }, [series, markerTs, height]);
+  }, [series, markerTs, historicalFires, height]);
 
   if (layout == null) {
     return (
@@ -321,6 +354,7 @@ function ContractTapeChartInner({
     maxIdx,
     isSpike,
     markerX,
+    historicalMarkers,
     sepY,
     volBaseY,
     axisLabels,
@@ -624,6 +658,27 @@ function ContractTapeChartInner({
             />
           )}
 
+        {/* Past-fire entry-line markers — orange, dashed, semi-transparent.
+            Rendered BEFORE the purple latest-fire line so the purple sits
+            on top when timestamps collide (the layout helper already
+            filters exact-equality dupes, but visual-stack order is the
+            belt-and-suspenders defense). Task B of
+            lottery-reignition-ui-2026-05-17. */}
+        {historicalMarkers.map((x, i) => (
+          <line
+            key={`hf-${i}`}
+            x1={x}
+            x2={x}
+            y1={PAD_Y}
+            y2={volBaseY}
+            stroke="rgb(251, 146, 60)"
+            strokeWidth={0.6}
+            strokeDasharray="2 3"
+            opacity={0.5}
+            data-testid="historical-fire-line"
+          />
+        ))}
+
         {/* Fire-time vertical marker — purple, dashed. */}
         {markerX != null && (
           <line
@@ -634,6 +689,7 @@ function ContractTapeChartInner({
             stroke="rgb(196, 181, 253)"
             strokeWidth={0.8}
             strokeDasharray="3 2"
+            data-testid="latest-fire-line"
           />
         )}
 
