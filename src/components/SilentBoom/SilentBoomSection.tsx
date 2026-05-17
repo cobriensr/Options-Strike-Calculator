@@ -754,10 +754,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   );
 
   // Group the displayed alerts by ticker so each underlying renders
-  // as one collapsible row instead of N scattered cards. Within-group
-  // ordering preserves the user's chosen `sortMode` (the alerts arrive
-  // pre-sorted from the server). Group ordering sorts by count desc,
-  // then most-recent bucket desc as tiebreak.
+  // as one collapsible row instead of N scattered cards. When
+  // sortMode === 'peak', both group order AND within-group order use
+  // realized peak desc (nulls last) so the user's chosen sort survives
+  // the grouping. Otherwise: conviction → storm → alert count desc →
+  // most-recent bucket desc.
   const groupedByTicker = useMemo(() => {
     const map = new Map<string, SilentBoomAlert[]>();
     for (const a of displayedAlerts) {
@@ -767,8 +768,16 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     }
     return [...map.entries()]
       .map(([ticker, list]) => {
+        const orderedAlerts =
+          sortMode === 'peak'
+            ? [...list].sort((a, b) => {
+                const ap = a.outcomes.peakCeilingPct ?? -Infinity;
+                const bp = b.outcomes.peakCeilingPct ?? -Infinity;
+                return bp - ap;
+              })
+            : list;
         const agg = computeRollupAggregates(
-          list.map<RollupAlertSummary>((a) => ({
+          orderedAlerts.map<RollupAlertSummary>((a) => ({
             optionType: a.optionType,
             mktTideDiff: a.mktTideDiff,
             directionGated: a.directionGated,
@@ -778,24 +787,37 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             intensity: a.spikeRatio,
           })),
         );
+        const peakBest = orderedAlerts.reduce<number | null>((best, a) => {
+          const p = a.outcomes.peakCeilingPct;
+          if (p == null) return best;
+          if (best == null) return p;
+          return Math.max(best, p);
+        }, null);
         return {
           ticker,
-          alerts: list,
-          conviction: isHighConviction(agg, list.length),
+          alerts: orderedAlerts,
+          conviction: isHighConviction(agg, orderedAlerts.length),
           storm: isBurstStorm(
             agg,
-            list.length,
+            orderedAlerts.length,
             BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
           ),
+          peakBest,
           // Latest bucket within the group — used as tiebreak so two
           // tickers with the same alert count are ordered by recency.
-          latestBucketMs: list.reduce<number>((max, a) => {
+          latestBucketMs: orderedAlerts.reduce<number>((max, a) => {
             const t = Date.parse(a.bucketCt);
             return Number.isFinite(t) && t > max ? t : max;
           }, 0),
         };
       })
       .sort((a, b) => {
+        if (sortMode === 'peak') {
+          const ap = a.peakBest ?? -Infinity;
+          const bp = b.peakBest ?? -Infinity;
+          if (ap !== bp) return bp - ap;
+          return b.latestBucketMs - a.latestBucketMs;
+        }
         // Conviction first (clean), then storm (loud); both above the
         // alert-count + recency rule.
         if (a.conviction !== b.conviction) return a.conviction ? -1 : 1;
@@ -805,7 +827,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
         }
         return b.latestBucketMs - a.latestBucketMs;
       });
-  }, [displayedAlerts]);
+  }, [displayedAlerts, sortMode]);
 
   // Per-ticker expand state, persisted to localStorage so users keep
   // their open tickers across refreshes / filter changes. Default

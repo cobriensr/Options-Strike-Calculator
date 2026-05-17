@@ -564,9 +564,10 @@ export function LotteryFinderSection({
   );
 
   // Group displayed fires by ticker so each underlying renders as one
-  // collapsible row. Within-group ordering preserves the user's
-  // sortMode (fires arrive pre-sorted from the server). Group order:
-  // fire count desc, latest trigger time desc as tiebreak.
+  // collapsible row. When sortMode === 'peak', both group order AND
+  // within-group order use realized peak desc (nulls last) so the
+  // user's chosen sort survives the grouping. Otherwise: conviction →
+  // storm → fire count desc → latest trigger desc.
   const groupedByTicker = useMemo(() => {
     const map = new Map<string, LotteryFire[]>();
     for (const f of displayedFires) {
@@ -576,8 +577,16 @@ export function LotteryFinderSection({
     }
     return [...map.entries()]
       .map(([ticker, list]) => {
+        const orderedFires =
+          sortMode === 'peak'
+            ? [...list].sort((a, b) => {
+                const ap = a.outcomes.peakCeilingPct ?? -Infinity;
+                const bp = b.outcomes.peakCeilingPct ?? -Infinity;
+                return bp - ap;
+              })
+            : list;
         const agg = computeRollupAggregates(
-          list.map<RollupAlertSummary>((f) => ({
+          orderedFires.map<RollupAlertSummary>((f) => ({
             optionType: f.optionType,
             mktTideDiff: f.macro.mktTideDiff,
             directionGated: f.directionGated,
@@ -587,22 +596,35 @@ export function LotteryFinderSection({
             intensity: f.fireCount,
           })),
         );
+        const peakBest = orderedFires.reduce<number | null>((best, f) => {
+          const p = f.outcomes.peakCeilingPct;
+          if (p == null) return best;
+          if (best == null) return p;
+          return Math.max(best, p);
+        }, null);
         return {
           ticker,
-          fires: list,
-          conviction: isHighConviction(agg, list.length),
+          fires: orderedFires,
+          conviction: isHighConviction(agg, orderedFires.length),
           storm: isBurstStorm(
             agg,
-            list.length,
+            orderedFires.length,
             BURST_STORM_INTENSITY_THRESHOLDS.lottery,
           ),
-          latestTriggerMs: list.reduce<number>((max, f) => {
+          peakBest,
+          latestTriggerMs: orderedFires.reduce<number>((max, f) => {
             const t = Date.parse(f.triggerTimeCt);
             return Number.isFinite(t) && t > max ? t : max;
           }, 0),
         };
       })
       .sort((a, b) => {
+        if (sortMode === 'peak') {
+          const ap = a.peakBest ?? -Infinity;
+          const bp = b.peakBest ?? -Infinity;
+          if (ap !== bp) return bp - ap;
+          return b.latestTriggerMs - a.latestTriggerMs;
+        }
         // Conviction first (clean), then storm (loud) — both surface
         // above the regular fire-count + recency rule. A ticker that
         // hits BOTH lives at the very top.
@@ -613,7 +635,7 @@ export function LotteryFinderSection({
         }
         return b.latestTriggerMs - a.latestTriggerMs;
       });
-  }, [displayedFires]);
+  }, [displayedFires, sortMode]);
 
   // Per-ticker expand state, persisted to localStorage so users keep
   // their open tickers across refreshes / filter changes. Default
