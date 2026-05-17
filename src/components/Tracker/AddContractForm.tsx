@@ -16,8 +16,10 @@ import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type FormEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -29,6 +31,7 @@ import type {
   OptionSide,
 } from './types.js';
 import { getErrorMessage } from '../../utils/error.js';
+import { tryParseOccChain } from '../../utils/uw-occ-parse.js';
 
 type Mode = 'structured' | 'free-text';
 
@@ -71,6 +74,10 @@ export const AddContractForm = memo(function AddContractForm({
   const [structured, setStructured] =
     useState<StructuredFormState>(EMPTY_STRUCTURED);
   const [freeText, setFreeText] = useState('');
+  // OCC / UW-URL paste field at the top of the structured tab — when
+  // it parses, the four structural fields below auto-populate so the
+  // user only has to type entry price + quantity.
+  const [pasteInput, setPasteInput] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -87,6 +94,7 @@ export const AddContractForm = memo(function AddContractForm({
       setSubmitting(false);
       setStructured(EMPTY_STRUCTURED);
       setFreeText('');
+      setPasteInput('');
       setMode('structured');
       // Focus the first field on open for keyboard users.
       const t = setTimeout(() => firstFieldRef.current?.focus(), 50);
@@ -155,6 +163,37 @@ export const AddContractForm = memo(function AddContractForm({
       }
     },
     [structured, onCreate, onClose],
+  );
+
+  // Memoize parse so the success indicator can render without
+  // re-running the regex on every keystroke (cheap, but stable
+  // identity also lets future memoized children opt in).
+  const pasteResult = useMemo(
+    () => tryParseOccChain(pasteInput),
+    [pasteInput],
+  );
+
+  const handlePasteChange = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const value = e.target.value;
+      setPasteInput(value);
+      const parsed = tryParseOccChain(value);
+      if (parsed) {
+        // Populate the four structural fields and leave
+        // direction / entry_price / quantity / notes for the user to
+        // edit. setStructured uses the functional form so a fast
+        // paste while the user is mid-type elsewhere doesn't clobber
+        // their typed entry price or quantity.
+        setStructured((s) => ({
+          ...s,
+          ticker: parsed.ticker,
+          expiry: parsed.expiry,
+          strike: String(parsed.strike),
+          side: parsed.side,
+        }));
+      }
+    },
+    [],
   );
 
   const handleFreeTextSubmit = useCallback(
@@ -263,6 +302,35 @@ export const AddContractForm = memo(function AddContractForm({
 
         {mode === 'structured' ? (
           <form onSubmit={handleStructuredSubmit} className="space-y-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-tertiary font-sans text-[11px] font-semibold uppercase">
+                Paste OCC / UW URL{' '}
+                <span className="text-tertiary/60 normal-case">
+                  (optional — auto-fills the four fields below)
+                </span>
+              </span>
+              <input
+                type="text"
+                value={pasteInput}
+                onChange={handlePasteChange}
+                placeholder="https://unusualwhales.com/option-chain/TSLA261016C00800000"
+                aria-label="Paste OCC symbol or Unusual Whales option-chain URL"
+                className="border-edge bg-surface focus:border-accent rounded border px-2 py-1.5 font-mono text-[11px] outline-none"
+              />
+              {pasteResult && (
+                <span className="text-success font-sans text-[11px]">
+                  ✓ Parsed: {pasteResult.ticker} {pasteResult.expiry}{' '}
+                  {pasteResult.strike}
+                  {pasteResult.side}
+                </span>
+              )}
+              {pasteInput.trim().length > 0 && !pasteResult && (
+                <span className="text-tertiary font-sans text-[11px] italic">
+                  Doesn't look like an OCC body or UW URL — fields below
+                  unchanged.
+                </span>
+              )}
+            </label>
             <div className="grid grid-cols-2 gap-2">
               <label className="flex flex-col gap-1">
                 <span className="text-tertiary font-sans text-[11px] font-semibold uppercase">

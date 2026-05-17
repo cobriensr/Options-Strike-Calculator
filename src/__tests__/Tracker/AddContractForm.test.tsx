@@ -84,6 +84,71 @@ describe('AddContractForm', () => {
     expect(onCreate).not.toHaveBeenCalled();
   });
 
+  it('pasting a UW URL into the OCC field auto-fills ticker/expiry/strike/side', async () => {
+    setup();
+    const pasteField = screen.getByLabelText(
+      /Paste OCC symbol or Unusual Whales/,
+    );
+    fireEvent.change(pasteField, {
+      target: {
+        value: 'https://unusualwhales.com/option-chain/TSLA261016C00800000',
+      },
+    });
+    // Confirmation chip surfaces the resolved fields
+    await waitFor(() => {
+      expect(screen.getByText(/Parsed: TSLA 2026-10-16/)).toBeInTheDocument();
+    });
+    // Structured fields are populated
+    expect(screen.getByLabelText(/Ticker/i)).toHaveValue('TSLA');
+    expect(screen.getByLabelText(/Expiry/i)).toHaveValue('2026-10-16');
+    expect(screen.getByLabelText(/Strike/i)).toHaveValue(800);
+  });
+
+  it('pasting a bare OCC body also auto-fills the structured fields', async () => {
+    setup();
+    const pasteField = screen.getByLabelText(
+      /Paste OCC symbol or Unusual Whales/,
+    );
+    fireEvent.change(pasteField, {
+      target: { value: 'NVDA  260522P00225000' },
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Parsed: NVDA 2026-05-22/)).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText(/Ticker/i)).toHaveValue('NVDA');
+  });
+
+  it('paste field shows hint when input is non-empty but unparseable, leaves form alone', () => {
+    setup();
+    const pasteField = screen.getByLabelText(
+      /Paste OCC symbol or Unusual Whales/,
+    );
+    fireEvent.change(pasteField, { target: { value: 'not an occ body' } });
+    expect(screen.getByText(/Doesn't look like an OCC body/)).toBeInTheDocument();
+    // Structured ticker stays empty
+    expect(screen.getByLabelText(/Ticker/i)).toHaveValue('');
+  });
+
+  it('paste auto-fill preserves user-typed entry price + quantity', async () => {
+    setup();
+    fireEvent.change(screen.getByLabelText(/Entry price/i), {
+      target: { value: '12.50' },
+    });
+    fireEvent.change(screen.getByLabelText(/Quantity/i), {
+      target: { value: '3' },
+    });
+    fireEvent.change(
+      screen.getByLabelText(/Paste OCC symbol or Unusual Whales/),
+      { target: { value: 'TSLA261016C00800000' } },
+    );
+    await waitFor(() => {
+      expect(screen.getByText(/Parsed: TSLA/)).toBeInTheDocument();
+    });
+    // Entry + qty intact
+    expect(screen.getByLabelText(/Entry price/i)).toHaveValue(12.5);
+    expect(screen.getByLabelText(/Quantity/i)).toHaveValue(3);
+  });
+
   it('switches to free-text tab and submits free-text payload', async () => {
     const { onCreate, onClose } = setup();
     fireEvent.click(screen.getByRole('tab', { name: /Free-text/i }));
