@@ -14,6 +14,7 @@ import {
 } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
+import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
 interface SilentBoomRowProps {
@@ -181,6 +182,36 @@ const gatedPill = (): { label: string; cls: string; tooltip: string } => ({
 });
 
 /**
+ * Flow Inverted badge — amber. Fires only when the alert had a flow
+ * tailwind at trigger time and that tailwind has since reversed. Per
+ * the lottery-net-flow-eda simulation this is the single highest-edge
+ * exit signal we surface. We deliberately do NOT light up Inverted
+ * for alerts that fired against the tape — those never had a
+ * tailwind, so its reversal isn't actionable.
+ */
+const flowInvertedBadge = (
+  optionType: 'C' | 'P',
+  fireTimeCumNcp: number | null,
+  fireTimeCumNpp: number | null,
+  liveFlowSnapshot: { cumNcp: number; cumNpp: number } | null,
+): { label: string; cls: string; tooltip: string } | null => {
+  const state = computeFlowInverted({
+    optionType,
+    fireTimeCumNcp,
+    fireTimeCumNpp,
+    currentCumNcp: liveFlowSnapshot?.cumNcp,
+    currentCumNpp: liveFlowSnapshot?.cumNpp,
+  });
+  if (state !== 'inverted') return null;
+  return {
+    label: 'Flow Inverted ⚠',
+    cls: 'border-amber-500/70 bg-amber-950/40 text-amber-200',
+    tooltip:
+      'Ticker net flow agreed with this alert at fire time but no longer does. Per the lottery-net-flow-eda simulation, this is the strongest documented exit signal — the matched side has stopped winning.',
+  };
+};
+
+/**
  * Flow Match / Flow Mismatch badge — does the ticker's current
  * cumulative net flow agree with this alert's option type? Green when
  * NCP > NPP for a call (or NPP > NCP for a put); red on the inverse.
@@ -333,6 +364,12 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const gated = alert.directionGated ? gatedPill() : null;
   const spreadConfirmed = spreadConfirmedBadge(alert.multiLegShare);
   const flowMatch = flowMatchBadge(alert.optionType, liveFlowSnapshot ?? null);
+  const flowInverted = flowInvertedBadge(
+    alert.optionType,
+    alert.tickerCumNcpAtFire,
+    alert.tickerCumNppAtFire,
+    liveFlowSnapshot ?? null,
+  );
 
   const [expanded, setExpanded] = useState(false);
 
@@ -433,6 +470,18 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             aria-label={flowMatch.tooltip}
           >
             {flowMatch.label}
+          </span>
+        )}
+        {/* Flow Inverted — strongest documented exit signal: tailwind
+            at fire time has reversed. Amber, eye-catching. */}
+        {flowInverted && (
+          <span
+            data-testid="silent-boom-flow-inverted-badge"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flowInverted.cls}`}
+            title={flowInverted.tooltip}
+            aria-label={flowInverted.tooltip}
+          >
+            {flowInverted.label}
           </span>
         )}
         {/* Take-It score tile (Phase 4 of takeit-phase3-production-scoring-

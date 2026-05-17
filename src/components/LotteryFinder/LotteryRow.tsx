@@ -2,6 +2,7 @@ import { memo, useCallback, useMemo, useState } from 'react';
 import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
+import { SiblingAssetConfirmationBar } from '../Gexbot/SiblingAssetConfirmationBar.js';
 import { TakeItScore } from '../TakeItScore/TakeItScore.js';
 import { ContractTapeChart } from './ContractTapeChart.js';
 import { TickerNetFlowChart } from './TickerNetFlowChart.js';
@@ -14,6 +15,7 @@ import type {
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
+import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
 interface LotteryRowProps {
@@ -256,6 +258,37 @@ const flowMatchBadge = (
   };
 };
 
+/**
+ * Flow Inverted badge — amber. Fires only when the alert had a flow
+ * tailwind at trigger time and that tailwind has since reversed. Per
+ * the lottery-net-flow-eda simulation this is the single highest-edge
+ * exit signal we surface: when the matched side stops winning, the
+ * trade has typically passed its peak. We deliberately do NOT light
+ * up Inverted for alerts that fired against the tape — those never
+ * had a tailwind, so its reversal isn't actionable.
+ */
+const flowInvertedBadge = (
+  optionType: 'C' | 'P',
+  fireTimeCumNcp: number | null,
+  fireTimeCumNpp: number | null,
+  liveFlowSnapshot: { cumNcp: number; cumNpp: number } | null,
+): { label: string; cls: string; tooltip: string } | null => {
+  const state = computeFlowInverted({
+    optionType,
+    fireTimeCumNcp,
+    fireTimeCumNpp,
+    currentCumNcp: liveFlowSnapshot?.cumNcp,
+    currentCumNpp: liveFlowSnapshot?.cumNpp,
+  });
+  if (state !== 'inverted') return null;
+  return {
+    label: 'Flow Inverted ⚠',
+    cls: 'border-amber-500/70 bg-amber-950/40 text-amber-200',
+    tooltip:
+      'Ticker net flow agreed with this alert at fire time but no longer does. Per the lottery-net-flow-eda simulation, this is the strongest documented exit signal — the matched side has stopped winning.',
+  };
+};
+
 const tideBadge = (
   diff: number | null,
 ): { label: string; cls: string; tooltip: string } | null => {
@@ -298,6 +331,12 @@ export const LotteryRow = memo(function LotteryRow({
   const ci = ciIndicator(fire.tickerStats, fire.underlyingSymbol);
   const gated = fire.directionGated ? gatedPill() : null;
   const flowMatch = flowMatchBadge(fire.optionType, liveFlowSnapshot ?? null);
+  const flowInverted = flowInvertedBadge(
+    fire.optionType,
+    fire.macro.tickerCumNcpAtFire,
+    fire.macro.tickerCumNppAtFire,
+    liveFlowSnapshot ?? null,
+  );
 
   // Expand state — when true, the per-fire panel renders below the
   // summary lines and the two hooks fetch their data. Collapsed by
@@ -466,6 +505,18 @@ export const LotteryRow = memo(function LotteryRow({
             aria-label={flowMatch.tooltip}
           >
             {flowMatch.label}
+          </span>
+        )}
+        {/* Flow Inverted — strongest documented exit signal: tailwind
+            at fire time has reversed. Amber, eye-catching. */}
+        {flowInverted && (
+          <span
+            data-testid="lottery-flow-inverted-badge"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flowInverted.cls}`}
+            title={flowInverted.tooltip}
+            aria-label={flowInverted.tooltip}
+          >
+            {flowInverted.label}
           </span>
         )}
         {/* Take-It score tile (Phase 4 of takeit-phase3-production-scoring-

@@ -676,3 +676,98 @@ describe('LotteryRow: flow-match badge', () => {
     );
   });
 });
+
+describe('LotteryRow: flow-inverted badge', () => {
+  it('renders Flow Inverted (amber) when call alert was matched at fire and current is mismatch', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          optionType: 'C',
+          macro: {
+            ...makeFire().macro,
+            tickerCumNcpAtFire: 10_000_000,
+            tickerCumNppAtFire: 1_000_000,
+          },
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 2_000_000,
+          cumNpp: 15_000_000,
+          asOfTs: '2026-05-15T19:59:00.000Z',
+        }}
+      />,
+    );
+    const badge = screen.getByTestId('lottery-flow-inverted-badge');
+    expect(badge).toHaveTextContent('Flow Inverted');
+    expect(badge.className).toContain('amber');
+  });
+
+  it('omits Flow Inverted when fire-time was mismatched (no tailwind to lose)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          optionType: 'C',
+          macro: {
+            ...makeFire().macro,
+            tickerCumNcpAtFire: 1_000_000,
+            tickerCumNppAtFire: 10_000_000,
+          },
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 2_000_000,
+          cumNpp: 15_000_000,
+          asOfTs: '2026-05-15T19:59:00.000Z',
+        }}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('omits Flow Inverted when current still matches (stable)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          optionType: 'C',
+          macro: {
+            ...makeFire().macro,
+            tickerCumNcpAtFire: 10_000_000,
+            tickerCumNppAtFire: 1_000_000,
+          },
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 20_000_000,
+          cumNpp: 5_000_000,
+          asOfTs: '2026-05-15T19:59:00.000Z',
+        }}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('omits Flow Inverted when fire-time snapshot is null (pre-LATERAL row)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ optionType: 'C' })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 2_000_000,
+          cumNpp: 15_000_000,
+          asOfTs: '2026-05-15T19:59:00.000Z',
+        }}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+  });
+});

@@ -606,3 +606,76 @@ describe('SilentBoomRow: flow-match badge', () => {
     ).toHaveTextContent('Flow Match');
   });
 });
+
+describe('SilentBoomRow: flow-inverted badge', () => {
+  it('renders Flow Inverted (amber) when call alert was matched at fire and current is mismatch', () => {
+    renderRow(
+      makeAlert({
+        optionType: 'C',
+        tickerCumNcpAtFire: 10_000_000,
+        tickerCumNppAtFire: 1_000_000,
+      }),
+      true,
+      'realized60mPct',
+      {
+        cumNcp: 2_000_000,
+        cumNpp: 15_000_000,
+        asOfTs: '2026-05-15T19:59:00.000Z',
+      },
+    );
+    const badge = screen.getByTestId('silent-boom-flow-inverted-badge');
+    expect(badge).toHaveTextContent('Flow Inverted');
+    expect(badge.className).toContain('amber');
+  });
+
+  it('omits Flow Inverted when fire-time was mismatched (no tailwind to lose)', () => {
+    renderRow(
+      makeAlert({
+        optionType: 'C',
+        tickerCumNcpAtFire: 1_000_000,
+        tickerCumNppAtFire: 10_000_000,
+      }),
+      true,
+      'realized60mPct',
+      {
+        cumNcp: 2_000_000,
+        cumNpp: 15_000_000,
+        asOfTs: '2026-05-15T19:59:00.000Z',
+      },
+    );
+    expect(
+      screen.queryByTestId('silent-boom-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('omits Flow Inverted when current still matches (stable)', () => {
+    renderRow(
+      makeAlert({
+        optionType: 'C',
+        tickerCumNcpAtFire: 10_000_000,
+        tickerCumNppAtFire: 1_000_000,
+      }),
+      true,
+      'realized60mPct',
+      {
+        cumNcp: 20_000_000,
+        cumNpp: 5_000_000,
+        asOfTs: '2026-05-15T19:59:00.000Z',
+      },
+    );
+    expect(
+      screen.queryByTestId('silent-boom-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('omits Flow Inverted when fire-time snapshot is null (pre-LATERAL row)', () => {
+    renderRow(makeAlert({ optionType: 'C' }), true, 'realized60mPct', {
+      cumNcp: 2_000_000,
+      cumNpp: 15_000_000,
+      asOfTs: '2026-05-15T19:59:00.000Z',
+    });
+    expect(
+      screen.queryByTestId('silent-boom-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+  });
+});
