@@ -28,7 +28,7 @@ numpy>=1.26.0
 pandas>=2.1.0
 scikit-learn>=1.4.0
 shap>=0.45.0
-xgboost>=2.1.0
+xgboost>=3.2.0
 
 # Multileg classify endpoint deps — wraps ml/src/multileg_assembler.py
 # behind POST /takeit/multileg-classify. The matcher is built on polars
