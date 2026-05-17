@@ -70,6 +70,7 @@ export const SectionBox = memo(function SectionBox({
   headerRight,
   collapsible,
   defaultCollapsed,
+  onCollapsedChange,
   children,
 }: {
   label: string;
@@ -79,11 +80,26 @@ export const SectionBox = memo(function SectionBox({
   headerRight?: ReactNode;
   collapsible?: boolean;
   defaultCollapsed?: boolean;
+  /**
+   * Notified whenever the collapse state changes (user click OR the
+   * collapse-all broadcast). Optional — most sections don't care, but
+   * polling-heavy sections (Contract Tracker) use this to pause
+   * 30s/60s polls while collapsed.
+   */
+  onCollapsedChange?: (collapsed: boolean) => void;
   children: ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed ?? false);
   const toggle = useCallback(() => setCollapsed((v) => !v), []);
   const isOpen = !collapsible || !collapsed;
+
+  // Surface the current collapsed state to interested parents. Effect
+  // (not callback-on-toggle) so the collapse-all broadcast below also
+  // reaches subscribers. The dependency on `onCollapsedChange` is fine —
+  // parents wrap their handler in useCallback so it's stable.
+  useEffect(() => {
+    onCollapsedChange?.(collapsed);
+  }, [collapsed, onCollapsedChange]);
 
   // Respond to "collapse all" / "expand all" broadcast. Only applies when
   // this section is collapsible; non-collapsible sections are unaffected.

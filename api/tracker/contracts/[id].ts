@@ -145,10 +145,17 @@ async function handlePatch(
         closed_price = COALESCE(${data.closed_price ?? null}::numeric, closed_price),
         updated_at = NOW()
       WHERE id = ${id}
-      RETURNING id, occ_symbol, ticker, expiry, strike, side, direction,
+      RETURNING id, occ_symbol, ticker,
+                TO_CHAR(expiry, 'YYYY-MM-DD') AS expiry,
+                strike, side, direction,
                 entry_price, quantity, notes, status, closed_at, closed_price,
                 up_thresholds, down_thresholds, spot_alerts,
-                created_at, updated_at
+                created_at, updated_at,
+                NULL::numeric     AS latest_last,
+                NULL::numeric     AS latest_bid,
+                NULL::numeric     AS latest_ask,
+                NULL::numeric     AS latest_underlying,
+                NULL::timestamptz AS latest_fetched_at
     `;
 
     if (rows.length === 0) {

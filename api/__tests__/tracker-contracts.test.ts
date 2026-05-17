@@ -158,6 +158,10 @@ describe('GET /api/tracker/contracts', () => {
     expect(sqlText).toContain('LEFT JOIN LATERAL');
     expect(sqlText).toContain('tracker_contract_ticks');
     expect(sqlText).toContain('ORDER BY fetched_at DESC');
+    // Expiry must be stringified at the SQL boundary so the Neon driver
+    // doesn't hydrate it as a Date (which then ISO-serializes and breaks
+    // dteFromExpiry on the frontend).
+    expect(sqlText).toContain("TO_CHAR(c.expiry, 'YYYY-MM-DD')");
     // The latest_* columns flow through unchanged to the response.
     const body = res._json as {
       contracts: Array<Record<string, unknown>>;
@@ -211,6 +215,18 @@ describe('POST /api/tracker/contracts (structured)', () => {
     // Verify OCC symbol was generated and passed as first arg.
     const call = mockSql.mock.calls[0]!;
     expect(call[1]).toBe('NVDA  260522P00225000');
+    // Verify the RETURNING clause stringifies expiry AND includes the
+    // five latest_* placeholders so the frontend's TrackerContract type
+    // stays satisfied on the optimistic post-create row.
+    const sqlText = Array.isArray(call[0])
+      ? call[0].join('?')
+      : String(call[0]);
+    expect(sqlText).toContain("TO_CHAR(expiry, 'YYYY-MM-DD')");
+    expect(sqlText).toContain('NULL::numeric     AS latest_last');
+    expect(sqlText).toContain('NULL::numeric     AS latest_bid');
+    expect(sqlText).toContain('NULL::numeric     AS latest_ask');
+    expect(sqlText).toContain('NULL::numeric     AS latest_underlying');
+    expect(sqlText).toContain('NULL::timestamptz AS latest_fetched_at');
   });
 
   it('returns 400 when ticker is missing', async () => {

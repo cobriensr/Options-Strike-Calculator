@@ -83,9 +83,17 @@ async function handleList(
     // rows usually have a tick (cron fills every 5 min); freshly-created
     // contracts and archived rows may have none, so the LEFT join keeps
     // them in the result set with NULL `latest_*` columns.
+    // `expiry` is cast to text via TO_CHAR so the frontend receives a
+    // stable YYYY-MM-DD string. The Neon driver hydrates DATE columns
+    // as JS Date objects which then JSON-serialize to an ISO timestamp
+    // ("2026-05-22T00:00:00.000Z") — that breaks helpers.dteFromExpiry
+    // which splits on '-'. Bind the format at the SQL boundary so every
+    // consumer (REST, ML export, tests) gets the same shape.
     const rows = await sql`
       SELECT
-        c.id, c.occ_symbol, c.ticker, c.expiry, c.strike, c.side,
+        c.id, c.occ_symbol, c.ticker,
+        TO_CHAR(c.expiry, 'YYYY-MM-DD') AS expiry,
+        c.strike, c.side,
         c.direction, c.entry_price, c.quantity, c.notes, c.status,
         c.closed_at, c.closed_price, c.up_thresholds, c.down_thresholds,
         c.spot_alerts, c.created_at, c.updated_at,
@@ -280,10 +288,17 @@ async function handleCreate(
         ${spotAlertsJson}::jsonb
       )
       ON CONFLICT (occ_symbol) DO NOTHING
-      RETURNING id, occ_symbol, ticker, expiry, strike, side, direction,
+      RETURNING id, occ_symbol, ticker,
+                TO_CHAR(expiry, 'YYYY-MM-DD') AS expiry,
+                strike, side, direction,
                 entry_price, quantity, notes, status, closed_at, closed_price,
                 up_thresholds, down_thresholds, spot_alerts,
-                created_at, updated_at
+                created_at, updated_at,
+                NULL::numeric     AS latest_last,
+                NULL::numeric     AS latest_bid,
+                NULL::numeric     AS latest_ask,
+                NULL::numeric     AS latest_underlying,
+                NULL::timestamptz AS latest_fetched_at
     `;
 
     if (rows.length === 0) {

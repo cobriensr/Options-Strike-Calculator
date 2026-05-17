@@ -16,7 +16,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 
-import { ToastContext } from '../hooks/useToast';
+import { ToastContext, type ToastShowOptions } from '../hooks/useToast';
 
 type ToastType = 'success' | 'error' | 'info';
 
@@ -25,6 +25,8 @@ interface Toast {
   message: string;
   type: ToastType;
   exiting: boolean;
+  onClick?: () => void;
+  actionLabel?: string;
 }
 
 const MAX_VISIBLE = 3;
@@ -62,6 +64,16 @@ const ToastItem = memo(function ToastItem({
   toast: Toast;
   onDismiss: (id: number) => void;
 }) {
+  const hasAction = typeof toast.onClick === 'function';
+  const actionLabel = toast.actionLabel ?? 'Open';
+  // When the toast carries an onClick, fire it then dismiss. The dismiss
+  // is implicit so the user doesn't have to click the X after clicking
+  // the action.
+  const fireAction = useCallback(() => {
+    toast.onClick?.();
+    onDismiss(toast.id);
+  }, [onDismiss, toast]);
+
   return (
     <output
       aria-live="polite"
@@ -71,6 +83,17 @@ const ToastItem = memo(function ToastItem({
       style={TOAST_STYLES[toast.type]}
     >
       <span className="min-w-0 flex-1">{toast.message}</span>
+      {hasAction && (
+        <button
+          type="button"
+          onClick={fireAction}
+          aria-label={actionLabel}
+          className="shrink-0 cursor-pointer rounded px-2 py-0.5 text-[12px] font-semibold underline-offset-2 transition-opacity hover:underline"
+          style={{ color: 'inherit' }}
+        >
+          {actionLabel}
+        </button>
+      )}
       <button
         type="button"
         onClick={() => onDismiss(toast.id)}
@@ -111,9 +134,19 @@ export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
   }, []);
 
   const show = useCallback(
-    (message: string, type: ToastType = 'info') => {
+    (message: string, type: ToastType = 'info', opts?: ToastShowOptions) => {
       const id = ++counterRef.current;
-      const toast: Toast = { id, message, type, exiting: false };
+      // Spread opts into the toast so existing 2-arg callers keep working
+      // unchanged. When `opts` is undefined the optional fields stay
+      // absent and ToastItem renders the original no-action layout.
+      const toast: Toast = {
+        id,
+        message,
+        type,
+        exiting: false,
+        onClick: opts?.onClick,
+        actionLabel: opts?.actionLabel,
+      };
 
       setToasts((prev) => {
         const next = [...prev, toast];
