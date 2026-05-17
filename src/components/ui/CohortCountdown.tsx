@@ -76,11 +76,7 @@ export const CohortCountdown = memo(function CohortCountdown({
 
   if (p75MinutesToPeak == null) return null;
 
-  const remaining = computeRemainingMin(
-    triggerTimeCt,
-    p75MinutesToPeak,
-    nowMs,
-  );
+  const remaining = computeRemainingMin(triggerTimeCt, p75MinutesToPeak, nowMs);
   const label = formatRemaining(remaining);
   const cls = chipClass(remaining);
   const tooltip =

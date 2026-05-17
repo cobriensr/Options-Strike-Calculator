@@ -328,9 +328,9 @@ describe('lottery-finder endpoint', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    const sqlText = (
-      mockSql.mock.calls[0]![0] as TemplateStringsArray
-    ).join(' ');
+    const sqlText = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+      ' ',
+    );
     expect(sqlText).toContain('fire_time_cum_ncp');
     expect(sqlText).toContain('fire_time_cum_npp');
     expect(sqlText).toContain('LEFT JOIN LATERAL');

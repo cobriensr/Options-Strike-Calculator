@@ -41,11 +41,7 @@ export function computeFlowInverted({
   currentCumNcp,
   currentCumNpp,
 }: FlowInvertedArgs): FlowInvertedState {
-  const wasMatch = computeFlowMatch(
-    optionType,
-    fireTimeCumNcp,
-    fireTimeCumNpp,
-  );
+  const wasMatch = computeFlowMatch(optionType, fireTimeCumNcp, fireTimeCumNpp);
   const isMatch = computeFlowMatch(optionType, currentCumNcp, currentCumNpp);
   // Both snapshots must resolve to a concrete state to make a call.
   if (wasMatch === 'unknown' || isMatch === 'unknown') return 'unknown';

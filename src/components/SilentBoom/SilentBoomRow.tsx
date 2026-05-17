@@ -382,11 +382,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const nowMs = useNowMinute();
   const remainingMin =
     alert.avgHoldMinutes != null
-      ? computeCountdownRemaining(
-          alert.bucketCt,
-          alert.avgHoldMinutes,
-          nowMs,
-        )
+      ? computeCountdownRemaining(alert.bucketCt, alert.avgHoldMinutes, nowMs)
       : null;
   const exitNow = computeExitNow({
     remainingMin,

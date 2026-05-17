@@ -124,9 +124,11 @@ function renderRow(
   alert: SilentBoomAlert,
   marketOpen = false,
   policy: SilentBoomExitPolicy = 'realized60mPct',
-  liveFlowSnapshot:
-    | { cumNcp: number; cumNpp: number; asOfTs: string }
-    | null = null,
+  liveFlowSnapshot: {
+    cumNcp: number;
+    cumNpp: number;
+    asOfTs: string;
+  } | null = null,
 ) {
   return render(
     <SilentBoomRow
@@ -718,9 +720,7 @@ describe('SilentBoomRow: EXIT badge', () => {
         asOfTs: '2026-05-15T14:00:00.000Z',
       },
     );
-    expect(
-      screen.getByTestId('silent-boom-exit-now-badge'),
-    ).toHaveAttribute(
+    expect(screen.getByTestId('silent-boom-exit-now-badge')).toHaveAttribute(
       'title',
       expect.stringContaining('Ticker net flow inverted'),
     );
@@ -744,9 +744,7 @@ describe('SilentBoomRow: EXIT badge', () => {
         asOfTs: '2026-05-15T14:00:00.000Z',
       },
     );
-    expect(
-      screen.getByTestId('silent-boom-exit-now-badge'),
-    ).toHaveAttribute(
+    expect(screen.getByTestId('silent-boom-exit-now-badge')).toHaveAttribute(
       'title',
       expect.stringContaining('Hold expired + flow inverted'),
     );

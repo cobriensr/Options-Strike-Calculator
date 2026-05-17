@@ -43,6 +43,7 @@ into `ws_net_flow_per_ticker` (and the REST backfill in
   (yes — same auth posture as `net-flow-history`).
 
 **Test:** `api/__tests__/ticker-net-flow-current.test.ts`
+
 - mocks `getDb`, verifies query shape + zod rejection + 200 happy path.
 
 ### Phase 2 — Server: snapshot fire-time flow on each fire
@@ -83,12 +84,14 @@ useTickerNetFlowBatch({
 - Returns an empty Map until first fetch resolves (no stale flashing).
 
 **Test:** `src/__tests__/useTickerNetFlowBatch.test.ts`
+
 - vi.useFakeTimers, mock fetch, verify 60 s cadence + gate on
   `marketOpen=false`.
 
 ### Phase 4 — Client: Flow Match / Flow Mismatch badge
 
 **Files:**
+
 - `src/components/LotteryFinder/LotteryRow.tsx`
 - `src/components/SilentBoom/SilentBoomRow.tsx`
 - `src/components/LotteryFinder/LotteryFinderSection.tsx` (pass hook
@@ -100,10 +103,10 @@ Pure helper (testable in isolation):
 ```ts
 // src/utils/flow-match.ts (new)
 export type FlowMatchState =
-  | 'match'      // call & Δ>0, or put & Δ<0
-  | 'mismatch'   // call & Δ<0, or put & Δ>0
-  | 'flat'       // Δ === 0 or both sides null
-  | 'unknown';   // no current snapshot for this ticker yet
+  | 'match' // call & Δ>0, or put & Δ<0
+  | 'mismatch' // call & Δ<0, or put & Δ>0
+  | 'flat' // Δ === 0 or both sides null
+  | 'unknown'; // no current snapshot for this ticker yet
 
 export function computeFlowMatch(
   optionType: 'C' | 'P',
@@ -127,12 +130,13 @@ Pure helper:
 ```ts
 // src/utils/flow-inverted.ts (new)
 export type FlowInvertedState =
-  | 'inverted'   // fire-time matched, current does NOT match
-  | 'stable'     // current state matches fire-time state
-  | 'unknown';   // missing fire-time or current snapshot
+  | 'inverted' // fire-time matched, current does NOT match
+  | 'stable' // current state matches fire-time state
+  | 'unknown'; // missing fire-time or current snapshot
 ```
 
 Logic:
+
 - `wasMatch = computeFlowMatch(type, fireTimeCumNcp, fireTimeCumNpp) === 'match'`
 - `isMatch = computeFlowMatch(type, currentCumNcp, currentCumNpp) === 'match'`
 - `inverted` ⟺ `wasMatch && !isMatch`
@@ -186,12 +190,13 @@ Pure helper (composes Phase 5 + Phase 6):
 export type ExitNowReason = 'expired' | 'inverted' | 'expired_and_inverted';
 
 export function computeExitNow(args: {
-  remainingMin: number | null;   // null = no cohort stat available
+  remainingMin: number | null; // null = no cohort stat available
   flowInverted: boolean;
 }): { active: boolean; reason: ExitNowReason | null };
 ```
 
 Badge UX: pulsing red `EXIT` chip with a one-line tooltip:
+
 - `expired` → "Cohort P75 hold elapsed — historical median peak has
   passed."
 - `inverted` → "Ticker net flow inverted — strongest documented exit
@@ -229,6 +234,7 @@ the three reason states + the inactive case.
 ## Files touched / created
 
 **New:**
+
 - `api/ticker-net-flow-current.ts`
 - `api/__tests__/ticker-net-flow-current.test.ts`
 - `src/hooks/useTickerNetFlowBatch.ts`
@@ -242,6 +248,7 @@ the three reason states + the inactive case.
 - `src/__tests__/components/CohortCountdown.test.tsx`
 
 **Modified:**
+
 - `api/lottery-finder.ts` (+ types.ts, test)
 - `api/silent-boom-feed.ts` (+ types.ts, test)
 - `src/components/LotteryFinder/LotteryRow.tsx`

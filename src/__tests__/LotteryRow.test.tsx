@@ -857,9 +857,7 @@ describe('LotteryRow: EXIT badge', () => {
         }}
       />,
     );
-    expect(
-      screen.getByTestId('lottery-exit-now-badge'),
-    ).toHaveAttribute(
+    expect(screen.getByTestId('lottery-exit-now-badge')).toHaveAttribute(
       'title',
       expect.stringContaining('Hold expired + flow inverted'),
     );

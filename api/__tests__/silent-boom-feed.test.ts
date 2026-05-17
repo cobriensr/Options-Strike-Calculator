@@ -338,9 +338,11 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('falls through to null tickerCumNcp/Npp when LATERAL has no rows', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
-      makeAlert({ fire_time_cum_ncp: null, fire_time_cum_npp: null }),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({ fire_time_cum_ncp: null, fire_time_cum_npp: null }),
+      ]);
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -368,9 +370,9 @@ describe('silent-boom-feed handler', () => {
     await handler(req, res);
 
     // The second SQL call is the rows query (count is first).
-    const sqlText = (
-      mockSql.mock.calls[1]![0] as TemplateStringsArray
-    ).join(' ');
+    const sqlText = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+      ' ',
+    );
     expect(sqlText).toContain('fire_time_cum_ncp');
     expect(sqlText).toContain('fire_time_cum_npp');
     expect(sqlText).toContain('LEFT JOIN LATERAL');
