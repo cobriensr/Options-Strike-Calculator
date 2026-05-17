@@ -16,7 +16,7 @@
  *
  * Spec: docs/superpowers/specs/panel-prefs-2026-05-17.md
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAccessMode } from '../utils/auth.js';
 
 const DEBOUNCE_MS = 500;
@@ -107,5 +107,13 @@ export function usePanelPrefs(): PanelPrefs {
     persist(next);
   }, [persist]);
 
-  return { hidden, isHidden, toggle, reset, isLoaded };
+  // Stable object reference: without useMemo, the return is a fresh
+  // literal every render, which breaks downstream useMemo caches that
+  // depend on `panelPrefs` (e.g., App.tsx's `navSections` filter). The
+  // inner refs (hidden Set, useCallback fns) only change when their own
+  // deps change, so this memo lets identity flow through.
+  return useMemo(
+    () => ({ hidden, isHidden, toggle, reset, isLoaded }),
+    [hidden, isHidden, toggle, reset, isLoaded],
+  );
 }

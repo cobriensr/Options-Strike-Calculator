@@ -82,6 +82,7 @@ function renderHeader(overrides: Partial<AppHeaderProps> = {}) {
     backfillRunning: false,
     darkMode: false,
     onDarkModeToggle: vi.fn(),
+    onOpenPanelPrefs: vi.fn(),
     ...overrides,
   };
   return { ...render(<AppHeader {...props} />), props };

@@ -116,6 +116,8 @@ export interface AppHeaderProps {
   /** Dark-mode toggle. */
   darkMode: boolean;
   onDarkModeToggle: () => void;
+  /** Opens the show/hide-panels modal. */
+  onOpenPanelPrefs: () => void;
 }
 
 export default function AppHeader({
@@ -136,6 +138,7 @@ export default function AppHeader({
   backfillRunning,
   darkMode,
   onDarkModeToggle,
+  onOpenPanelPrefs,
 }: AppHeaderProps) {
   return (
     <header
@@ -333,6 +336,35 @@ export default function AppHeader({
               </button>
             </>
           )}
+          <button
+            onClick={onOpenPanelPrefs}
+            aria-label="Show or hide panels"
+            title="Show or hide panels"
+            className="border-edge-strong bg-surface hover:bg-surface-alt hover:border-edge-heavy text-primary flex min-h-[44px] cursor-pointer items-center gap-1.5 rounded-lg border-[1.5px] p-[6px_10px] font-sans text-base transition-all duration-200"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <circle
+                cx="8"
+                cy="8"
+                r="2.25"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              />
+              <path
+                d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="text-[11px] font-semibold">Panels</span>
+          </button>
           <button
             onClick={onDarkModeToggle}
             aria-label={

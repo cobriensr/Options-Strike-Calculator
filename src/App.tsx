@@ -32,6 +32,8 @@ import {
 import { usePeriscopePlaybook } from './hooks/usePeriscopePlaybook';
 import { useAccessSession } from './hooks/useAccessSession';
 import { usePanelPrefs } from './hooks/usePanelPrefs';
+import { getPanelRegistry } from './constants/panel-registry';
+import { PanelPrefsModal } from './components/PanelPrefsModal/PanelPrefsModal';
 import AccessKeyButton from './components/AccessKey/AccessKeyButton';
 import { useAnalysisContext } from './hooks/useAnalysisContext';
 import { getEarlyCloseHourET } from './data/marketHours';
@@ -204,6 +206,7 @@ export default function StrikeCalculator() {
   const isAuthenticated = accessMode !== 'public';
   const state = useAppState();
   const panelPrefs = usePanelPrefs();
+  const [panelPrefsOpen, setPanelPrefsOpen] = useState(false);
   const {
     darkMode,
     setDarkMode,
@@ -648,60 +651,21 @@ export default function StrikeCalculator() {
   const hasMarketOrSnapshot = market.hasData || !!historySnapshot;
   const hasMarketContext = isAuthenticated && hasMarketOrSnapshot;
 
-  const navSections = useMemo<NavSection[]>(() => {
-    return [
-      { id: 'sec-datetime', label: 'Date & Time' },
-      { id: 'sec-spot-price', label: 'Spot Price' },
-      { id: 'sec-premarket', label: 'Pre-Market' },
-      { id: 'sec-advanced', label: 'Advanced' },
-      { id: 'sec-iv', label: 'Implied Volatility' },
-      { id: 'sec-risk', label: 'Risk Calculator' },
-      { id: 'sec-regime', label: 'Market Regime' },
-      ...(isAuthenticated && hasMarketOrSnapshot
-        ? [
-            { id: 'sec-darkpool', label: 'Dark Pool Levels' },
-            { id: 'sec-gex-target', label: 'GEX Target' },
-            { id: 'sec-gex-landscape', label: 'GEX Landscape' },
-            { id: 'sec-zero-gamma', label: 'Zero Gamma' },
-            { id: 'sec-vega-spikes', label: 'Dir Vega Spikes' },
-            { id: 'sec-interval-ba-history', label: 'Interval B/A History' },
-            { id: 'sec-greek-flow', label: 'Greek Flow' },
-            { id: 'sec-dealer-regime', label: 'Dealer Regime' },
-            { id: 'sec-strike-battle-map', label: 'Strike Battle Map' },
-            { id: 'sec-lottery-finder', label: 'Lottery Finder' },
-            { id: 'sec-greek-heatmap', label: 'Greek Heatmap' },
-            { id: 'sec-silent-boom', label: 'Silent Boom' },
-          ]
-        : []),
-      ...(isAuthenticated
-        ? [{ id: 'sec-futures', label: 'Futures Calculator' }]
-        : []),
-      ...(hasMarketOrSnapshot
-        ? [{ id: 'sec-charts', label: 'Chart Analysis' }]
-        : []),
-      { id: 'sec-history', label: 'Analysis History' },
-      ...(isAuthenticated
-        ? [{ id: 'sec-ml-insights', label: 'ML Insights' }]
-        : []),
-      ...(hasMarketOrSnapshot
-        ? [
-            {
-              id: 'sec-periscope-exposure',
-              label: 'Periscope MM Exposure',
-            },
-          ]
-        : []),
-      ...(isAuthenticated
-        ? [{ id: 'sec-periscope-history', label: 'Periscope History' }]
-        : []),
-      { id: 'sec-positions', label: 'Position Monitor' },
-      ...(isAuthenticated
-        ? [{ id: 'sec-tracker', label: 'Contract Tracker' }]
-        : []),
-      ...(isAuthenticated ? [{ id: 'sec-bwb', label: 'BWB Calculator' }] : []),
-      { id: 'results', label: 'Results' },
-    ];
-  }, [isAuthenticated, hasMarketOrSnapshot]);
+  // Single source of truth: getPanelRegistry. The same registry feeds
+  // the section-nav menu AND the show/hide-panels modal. Adding a new
+  // panel is a one-line edit in src/constants/panel-registry.ts.
+  // Filter out hidden panels so the nav menu doesn't list jump targets
+  // for sections the user has chosen to hide. Depending on the `hidden`
+  // Set (not the whole `panelPrefs` object, which is fresh every render)
+  // keeps the memo from invalidating on unrelated re-renders.
+  const hiddenPanels = panelPrefs.hidden;
+  const navSections = useMemo<NavSection[]>(
+    () =>
+      getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot })
+        .filter(({ id }) => id === 'results' || !hiddenPanels.has(id))
+        .map(({ id, label }) => ({ id, label })),
+    [isAuthenticated, hasMarketOrSnapshot, hiddenPanels],
+  );
 
   const analysisContext = useAnalysisContext({
     selectedDate: vix.selectedDate,
@@ -765,6 +729,15 @@ export default function StrikeCalculator() {
           backfillRunning={backfillRunning}
           darkMode={darkMode}
           onDarkModeToggle={handleDarkModeToggle}
+          onOpenPanelPrefs={() => setPanelPrefsOpen(true)}
+        />
+
+        <PanelPrefsModal
+          isOpen={panelPrefsOpen}
+          onClose={() => setPanelPrefsOpen(false)}
+          panelPrefs={panelPrefs}
+          isAuthenticated={isAuthenticated}
+          hasMarketOrSnapshot={hasMarketOrSnapshot}
         />
 
         <div className="lg:flex lg:items-start">
