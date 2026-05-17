@@ -10,6 +10,12 @@ function makePrefs(hidden: string[] = []): PanelPrefs {
     isHidden: (id) => set.has(id),
     toggle: vi.fn(),
     reset: vi.fn(),
+    order: [],
+    setOrder: vi.fn(),
+    resetPanelOrder: vi.fn(),
+    groupOrder: [],
+    setGroupOrder: vi.fn(),
+    resetGroupOrder: vi.fn(),
     isLoaded: true,
   };
 }

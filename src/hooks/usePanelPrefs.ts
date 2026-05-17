@@ -1,20 +1,31 @@
 /**
- * usePanelPrefs — per-identity show/hide panel preferences.
+ * usePanelPrefs — per-identity panel preferences across three axes:
  *
- * Reads `hidden_panels` from `GET /api/panel-prefs` on mount (skipped for
+ *   1. visibility — which panels are hidden (`hidden_panels`)
+ *   2. panel order — drag-reordered ids within each group (`panel_order`)
+ *   3. group order — drag-reordered group names (`group_order`)
+ *
+ * Reads all three from `GET /api/panel-prefs` on mount (skipped for
  * public visitors who have no server-side row). Mutations are optimistic:
- * `toggle` updates local state synchronously and schedules a debounced
- * `PUT` so rapidly flipping 10 checkboxes collapses into one network
- * round-trip. A failed PUT keeps the optimistic state — the user can
- * re-toggle to retry — rather than reverting silently, which would feel
- * like the checkbox is broken.
+ * setters update local state synchronously and schedule a debounced
+ * `PUT` so rapidly flipping 10 checkboxes / dragging a panel a few times
+ * collapses into one network round-trip. Every PUT sends all three axes
+ * — partial-update semantics live on the server (see api/panel-prefs.ts)
+ * but the normal flow uses full sends so client state is the source of
+ * truth.
+ *
+ * A failed PUT keeps the optimistic state — the user can re-toggle /
+ * re-drag to retry — rather than reverting silently, which would feel
+ * like the UI is broken.
  *
  * `isLoaded` is true immediately for public visitors (no fetch) and
  * flips true on owner/guest after the GET resolves (success or failure).
- * Callers can gate render on `isLoaded` to avoid a flash-of-all-panels
- * for returning users with hides set.
+ * Callers can gate render on `isLoaded` to avoid a flash-of-default
+ * layout for returning users with customized order.
  *
- * Spec: docs/superpowers/specs/panel-prefs-2026-05-17.md
+ * Specs:
+ *   - docs/superpowers/specs/panel-prefs-2026-05-17.md (visibility)
+ *   - docs/superpowers/specs/panel-reordering-2026-05-17.md (orders)
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAccessMode } from '../utils/auth.js';
@@ -22,20 +33,44 @@ import { getAccessMode } from '../utils/auth.js';
 const DEBOUNCE_MS = 500;
 
 export interface PanelPrefs {
+  // Visibility (axis 1)
   hidden: ReadonlySet<string>;
   isHidden: (id: string) => boolean;
   toggle: (id: string) => void;
   reset: () => void;
+
+  // Panel order within group (axis 2)
+  order: readonly string[];
+  setOrder: (ids: readonly string[]) => void;
+  resetPanelOrder: () => void;
+
+  // Group order (axis 3)
+  groupOrder: readonly string[];
+  setGroupOrder: (groups: readonly string[]) => void;
+  resetGroupOrder: () => void;
+
   isLoaded: boolean;
 }
 
 interface PanelPrefsResponse {
   hiddenPanels: string[];
+  panelOrder?: string[];
+  groupOrder?: string[];
+}
+
+interface PendingPut {
+  hiddenPanels: string[];
+  panelOrder: string[];
+  groupOrder: string[];
 }
 
 export function usePanelPrefs(): PanelPrefs {
   const initialMode = useRef(getAccessMode()).current;
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  const [order, setOrderState] = useState<readonly string[]>(() => []);
+  const [groupOrder, setGroupOrderState] = useState<readonly string[]>(
+    () => [],
+  );
   const [isLoaded, setIsLoaded] = useState(() => initialMode === 'public');
   const pendingPutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -51,6 +86,8 @@ export function usePanelPrefs(): PanelPrefs {
         }
         const data = (await res.json()) as PanelPrefsResponse;
         setHidden(new Set(data.hiddenPanels));
+        setOrderState(data.panelOrder ?? []);
+        setGroupOrderState(data.groupOrder ?? []);
         setIsLoaded(true);
       } catch (err) {
         if ((err as Error).name === 'AbortError') return;
@@ -63,16 +100,16 @@ export function usePanelPrefs(): PanelPrefs {
   }, [initialMode]);
 
   const persist = useCallback(
-    (nextHidden: Set<string>) => {
+    (next: PendingPut) => {
       if (initialMode === 'public') return;
       if (pendingPutRef.current) clearTimeout(pendingPutRef.current);
       pendingPutRef.current = setTimeout(() => {
-        // Optimistic update stays on failure; user can re-toggle to retry.
-        // Reverting would look like the checkbox is broken.
+        // Optimistic update stays on failure; user can re-toggle / re-drag
+        // to retry. Reverting silently would look like the UI is broken.
         fetch('/api/panel-prefs', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ hiddenPanels: [...nextHidden] }),
+          body: JSON.stringify(next),
         }).catch(() => undefined);
       }, DEBOUNCE_MS);
     },
@@ -94,18 +131,70 @@ export function usePanelPrefs(): PanelPrefs {
         const next = new Set(prev);
         if (next.has(id)) next.delete(id);
         else next.add(id);
-        persist(next);
+        persist({
+          hiddenPanels: [...next],
+          panelOrder: [...order],
+          groupOrder: [...groupOrder],
+        });
         return next;
       });
     },
-    [persist],
+    [persist, order, groupOrder],
   );
 
   const reset = useCallback(() => {
     const next = new Set<string>();
     setHidden(next);
-    persist(next);
-  }, [persist]);
+    persist({
+      hiddenPanels: [],
+      panelOrder: [...order],
+      groupOrder: [...groupOrder],
+    });
+  }, [persist, order, groupOrder]);
+
+  const setOrder = useCallback(
+    (ids: readonly string[]) => {
+      const nextOrder = [...ids];
+      setOrderState(nextOrder);
+      persist({
+        hiddenPanels: [...hidden],
+        panelOrder: nextOrder,
+        groupOrder: [...groupOrder],
+      });
+    },
+    [persist, hidden, groupOrder],
+  );
+
+  const resetPanelOrder = useCallback(() => {
+    setOrderState([]);
+    persist({
+      hiddenPanels: [...hidden],
+      panelOrder: [],
+      groupOrder: [...groupOrder],
+    });
+  }, [persist, hidden, groupOrder]);
+
+  const setGroupOrder = useCallback(
+    (groups: readonly string[]) => {
+      const nextGroupOrder = [...groups];
+      setGroupOrderState(nextGroupOrder);
+      persist({
+        hiddenPanels: [...hidden],
+        panelOrder: [...order],
+        groupOrder: nextGroupOrder,
+      });
+    },
+    [persist, hidden, order],
+  );
+
+  const resetGroupOrder = useCallback(() => {
+    setGroupOrderState([]);
+    persist({
+      hiddenPanels: [...hidden],
+      panelOrder: [...order],
+      groupOrder: [],
+    });
+  }, [persist, hidden, order]);
 
   // Stable object reference: without useMemo, the return is a fresh
   // literal every render, which breaks downstream useMemo caches that
@@ -113,7 +202,31 @@ export function usePanelPrefs(): PanelPrefs {
   // inner refs (hidden Set, useCallback fns) only change when their own
   // deps change, so this memo lets identity flow through.
   return useMemo(
-    () => ({ hidden, isHidden, toggle, reset, isLoaded }),
-    [hidden, isHidden, toggle, reset, isLoaded],
+    () => ({
+      hidden,
+      isHidden,
+      toggle,
+      reset,
+      order,
+      setOrder,
+      resetPanelOrder,
+      groupOrder,
+      setGroupOrder,
+      resetGroupOrder,
+      isLoaded,
+    }),
+    [
+      hidden,
+      isHidden,
+      toggle,
+      reset,
+      order,
+      setOrder,
+      resetPanelOrder,
+      groupOrder,
+      setGroupOrder,
+      resetGroupOrder,
+      isLoaded,
+    ],
   );
 }
