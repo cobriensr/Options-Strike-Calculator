@@ -883,9 +883,12 @@ describe('ChartAnalysis', () => {
       await addImageViaInput(container);
       await clickAnalyzeAndConfirm(user);
       await act(() => vi.advanceTimersByTimeAsync(5000));
+      // Friendly message replaces the raw SyntaxError ("Unexpected token")
+      // surface — the underlying parseErr is still captured to Sentry so
+      // operators can see what malformed payload was returned.
       await waitFor(() => {
         expect(
-          screen.getByText((t) => t.includes('Unexpected token')),
+          screen.getByText((t) => t.includes('malformed response')),
         ).toBeInTheDocument();
       });
       vi.useRealTimers();

@@ -9,6 +9,8 @@
  * prop-drilling.
  */
 
+import * as Sentry from '@sentry/react';
+
 type UpdateSW = (reloadPage?: boolean) => Promise<void>;
 
 let updateSWFn: UpdateSW | null = null;
@@ -63,8 +65,15 @@ export function applyUpdate(): void {
   }
   // updateSW failures are surfaced by vite-plugin-pwa internally; on the
   // off chance the postMessage round-trip fails, the user can still reload
-  // manually — silently swallowing here is intentional.
-  updateSWFn(true).catch(() => {});
+  // manually. Capture at warning level (not error) — the manual-reload
+  // path keeps the UX usable, but persistent SW update failures across
+  // users would indicate a real PWA regression worth investigating.
+  updateSWFn(true).catch((err: unknown) => {
+    Sentry.captureException(err, {
+      level: 'warning',
+      tags: { context: 'sw_update_apply' },
+    });
+  });
 }
 
 export function subscribeToUpdateState(cb: () => void): () => void {

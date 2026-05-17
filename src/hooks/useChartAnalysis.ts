@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import * as Sentry from '@sentry/react';
 import type { CalculationResults } from '../types';
 import type {
   AnalysisMode,
@@ -249,7 +250,29 @@ export function useChartAnalysis(opts: {
         const ndjson = await res.text();
         const lines = ndjson.split('\n').filter((l) => l.trim().length > 0);
         const lastLine = lines.at(-1) ?? '{}';
-        const data = JSON.parse(lastLine);
+        // Preserve the original `any`-typed shape — downstream consumers
+        // read data.analysis (AnalysisResult), data.raw (string),
+        // data.error (string), all derived from JSON.parse's any return.
+        let data: ReturnType<typeof JSON.parse>;
+        try {
+          data = JSON.parse(lastLine);
+        } catch (parseErr) {
+          // Stream corruption — server returned malformed NDJSON. Surface
+          // to Sentry so we can see if it's a server-side serialization
+          // bug or a transit truncation issue.
+          Sentry.captureException(parseErr, {
+            tags: { context: 'analyze_ndjson_parse' },
+            extra: {
+              status: res.status,
+              lastLineSnippet: lastLine.slice(0, 300),
+              lineCount: lines.length,
+            },
+          });
+          return {
+            outcome: 'retryable',
+            error: 'Server returned a malformed response — please retry.',
+          };
+        }
 
         if (data.error) {
           const status = res.status;

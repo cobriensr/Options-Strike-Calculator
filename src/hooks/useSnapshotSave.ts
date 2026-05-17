@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useRef } from 'react';
+import * as Sentry from '@sentry/react';
 import type { CalculationResults } from '../types';
 import type { ComputedSignals } from './useComputedSignals';
 
@@ -132,10 +133,15 @@ export function useSnapshotSave(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       signal: controller.signal,
-    }).catch((err) => {
+    }).catch((err: unknown) => {
       // Don't retry on abort — component unmounted or deps changed
       if (err instanceof DOMException && err.name === 'AbortError') return;
-      // Network/server error — remove from saved set so it retries next render
+      // Network/server error — capture so persistent snapshot-save
+      // failures are visible (the next-render retry hides the symptom
+      // from the UI), then remove from saved set so it retries.
+      Sentry.captureException(err, {
+        tags: { context: 'snapshot_save' },
+      });
       savedRef.current.delete(key);
     });
 
