@@ -20,6 +20,7 @@ import {
   useState,
   type FormEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import type {
   ContractCreateInput,
@@ -180,7 +181,11 @@ export const AddContractForm = memo(function AddContractForm({
 
   if (!open) return null;
 
-  return (
+  // Portal to <body> so `position: fixed` anchors to the viewport
+  // rather than the SectionBox containing block — SectionBox uses
+  // overflow-hidden for its collapse animation, which would otherwise
+  // pin the modal inside the panel bounds (see screenshot bug 2026-05-17).
+  return createPortal(
     <div
       className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/50 p-4 pt-16"
       onClick={(e) => {
@@ -487,6 +492,7 @@ export const AddContractForm = memo(function AddContractForm({
           </form>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 });
