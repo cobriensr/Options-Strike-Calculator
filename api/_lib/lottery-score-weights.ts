@@ -75,6 +75,37 @@ export function lotteryScoreTier(score: number | null): LotteryScoreTier {
 }
 
 /**
+ * Read-time score adjustment based on the chain's same-day fire_count.
+ *
+ * Empirical basis: 93-day burst-profitability analysis on 626k fires
+ * (docs/tmp/burst-profitability-findings-2026-05-17.md). Single-fire
+ * chains are negative-expectancy (mean R = -5.8%, 45% win rate); the
+ * realized-outcome curve lifts monotonically through every fire_count
+ * bucket with the knee at fire_count >= 8 (mean R = -1.6%, 94% win on
+ * the chain's best fire). 16+ fires has 64% median win rate on the
+ * median fire.
+ *
+ * The adjustment is applied at the API serialization layer alongside
+ * `round_trip_score_deduct` so the displayed score, tier, and rank
+ * all reflect the burst lift without needing a re-detect or backfill.
+ *
+ * Magnitudes mirror the round-trip deduct range (-3 to +2):
+ *   fire_count == 1 → -3 (severe; worst-observed cohort)
+ *   2-3              → -1
+ *   4-7              →  0 (neutral baseline)
+ *   8-15             → +1
+ *   >= 16            → +2
+ */
+export function fireCountScoreAdjustment(fireCount: number): number {
+  if (fireCount <= 0) return 0; // defensive — never happens in practice
+  if (fireCount === 1) return -3;
+  if (fireCount <= 3) return -1;
+  if (fireCount <= 7) return 0;
+  if (fireCount <= 15) return 1;
+  return 2;
+}
+
+/**
  * Compute the integer score for a fire. Returns `null` when any input
  * needed to score deterministically is missing (caller should treat
  * null as Tier 3 in the UI but still surface the fire).

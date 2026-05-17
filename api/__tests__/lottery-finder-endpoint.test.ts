@@ -99,11 +99,13 @@ const ROW = {
   // enriched, mirroring the other realized_* columns above.
   realized_flow_inversion_pct: null,
   // fire_count comes from the chain-day dedup CTE's window function.
-  // 1 = unique row, no cluster. Tests exercising multi-fire collapse
-  // override. first_fire_time_ct mirrors trigger_time_ct for unique
-  // rows; multi-fire tests override with the burst-start time.
-  fire_count: 1,
-  first_fire_time_ct: '2026-05-01T19:00:00Z',
+  // 5 lands in the neutral fireCountScoreAdjustment bucket (4-7 fires
+  // → 0 adjustment), so existing tests that pin a specific score
+  // outcome stay correct under the burst-count adjustment introduced
+  // 2026-05-17. Tests exercising single-fire (-3) or 8+ (+1/+2)
+  // adjustments override locally.
+  fire_count: 5,
+  first_fire_time_ct: '2026-05-01T18:55:00Z',
   // Ticker net flow snapshot at trigger_time_ct (LATERAL on
   // ws_net_flow_per_ticker + history). Used by Flow Match / Flow
   // Inverted badges. Null is the cold-start default.
@@ -150,7 +152,8 @@ describe('lottery-finder endpoint', () => {
       forecastHighPeakPct: '30-50%',
       // SNDK tier1 has a per-ticker override at 340 (vs tier1 default of 219).
       avgHoldMinutes: 340,
-      fireCount: 1,
+      // Neutral 4-7 bucket per the 2026-05-17 burst-count adjustment.
+      fireCount: 5,
       tickerStats: {
         nFires: 8147,
         highPeakRate: 67.4,
@@ -807,8 +810,9 @@ describe('lottery-finder endpoint', () => {
     // so this chain has no entry in the result set. Handler should
     // emit `reignited: false` (the additive default) and skip the
     // `historicalFires` key entirely to keep the response compact.
+    const ROW_SINGLE = { ...ROW, fire_count: 1 };
     mockSql
-      .mockResolvedValueOnce([ROW])
+      .mockResolvedValueOnce([ROW_SINGLE])
       .mockResolvedValueOnce([{ total: 1 }])
       .mockResolvedValueOnce([]); // empty chainExtras
 
@@ -883,5 +887,146 @@ describe('lottery-finder endpoint', () => {
     expect(boundValues).toContain(30); // REIGNITION_MIN_GAP_MIN
     expect(boundValues).toContain(2); // REIGNITION_MIN_POST_GAP_FIRES
     expect(boundValues).toContain(5); // REIGNITION_TOP_N_PER_DAY
+  });
+
+  // ============================================================
+  // fireCountScoreAdjustment integration (basis:
+  // docs/tmp/burst-profitability-findings-2026-05-17.md)
+  // ============================================================
+
+  it('applies -3 score adjustment + surfaces fireCountScoreAdjustment for single-fire chains', async () => {
+    // Single-fire chains carry -3 from fireCountScoreAdjustment.
+    // rawScore=20, so the displayed score drops to 17 → tier2.
+    const ROW_SINGLE = { ...ROW, fire_count: 1 };
+    mockSql
+      .mockResolvedValueOnce([ROW_SINGLE])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        score: number | null;
+        rawScore: number | null;
+        scoreTier: string;
+        fireCountScoreAdjustment: number;
+      }>;
+    };
+    expect(body.fires[0]!.rawScore).toBe(20);
+    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(-3);
+    expect(body.fires[0]!.score).toBe(17);
+    expect(body.fires[0]!.scoreTier).toBe('tier2');
+  });
+
+  it('applies -1 score adjustment for 2-3 fire chains (still below baseline)', async () => {
+    const ROW_2_FIRES = {
+      ...ROW,
+      fire_count: 3,
+      first_fire_time_ct: '2026-05-01T18:00:00Z',
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_2_FIRES])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        score: number | null;
+        rawScore: number | null;
+        scoreTier: string;
+        fireCountScoreAdjustment: number;
+      }>;
+    };
+    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(-1);
+    // rawScore 20 + adj -1 = 19 → still tier1 (≥18)
+    expect(body.fires[0]!.score).toBe(19);
+    expect(body.fires[0]!.scoreTier).toBe('tier1');
+  });
+
+  it('applies +1 score adjustment for 8-15 fire chains', async () => {
+    const ROW_8_FIRES = {
+      ...ROW,
+      fire_count: 10,
+      first_fire_time_ct: '2026-05-01T14:00:00Z',
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_8_FIRES])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        score: number | null;
+        rawScore: number | null;
+        scoreTier: string;
+        fireCountScoreAdjustment: number;
+      }>;
+    };
+    expect(body.fires[0]!.rawScore).toBe(20);
+    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(1);
+    // rawScore 20 + adj +1 = 21 → still tier1 (≥18)
+    expect(body.fires[0]!.score).toBe(21);
+    expect(body.fires[0]!.scoreTier).toBe('tier1');
+  });
+
+  it('applies +2 score adjustment for ≥16 fire chains (highest-edge cohort)', async () => {
+    const ROW_BURST = {
+      ...ROW,
+      fire_count: 21, // matches the QQQ 708P 2026-05-15 anchor
+      first_fire_time_ct: '2026-05-01T13:30:00Z',
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_BURST])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{ fireCountScoreAdjustment: number; score: number | null }>;
+    };
+    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(2);
+    // rawScore 20 + adj +2 = 22 → tier1
+    expect(body.fires[0]!.score).toBe(22);
+  });
+
+  it('stacks fireCountScoreAdjustment with round_trip_score_deduct (both apply)', async () => {
+    // Multi-fire chain (10 fires → +1 adj) that ALSO round-tripped
+    // (-2 deduct). Both must apply: 20 + 1 + (-2) = 19 → tier1.
+    const ROW_STACKED = {
+      ...ROW,
+      fire_count: 10,
+      first_fire_time_ct: '2026-05-01T14:00:00Z',
+      round_trip_score_deduct: -2,
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_STACKED])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        score: number | null;
+        rawScore: number | null;
+        roundTripScoreDeduct?: number;
+        fireCountScoreAdjustment: number;
+      }>;
+    };
+    expect(body.fires[0]!.rawScore).toBe(20);
+    expect(body.fires[0]!.roundTripScoreDeduct).toBe(-2);
+    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(1);
+    expect(body.fires[0]!.score).toBe(19);
   });
 });

@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeLotteryScore,
+  fireCountScoreAdjustment,
   lotteryScoreTier,
   LOTTERY_TICKER_WEIGHTS,
   LOTTERY_TIER_THRESHOLDS,
@@ -112,5 +113,42 @@ describe('lotteryScoreTier', () => {
 
   it('treats null score as tier3', () => {
     expect(lotteryScoreTier(null)).toBe('tier3');
+  });
+});
+
+// ============================================================
+// fireCountScoreAdjustment — read-time burst-count modifier
+// (basis: docs/tmp/burst-profitability-findings-2026-05-17.md)
+// ============================================================
+
+describe('fireCountScoreAdjustment', () => {
+  it('penalises single-fire chains by -3 (mean R = -5.8%, 45% win rate)', () => {
+    expect(fireCountScoreAdjustment(1)).toBe(-3);
+  });
+
+  it('penalises 2-3 fire chains by -1', () => {
+    expect(fireCountScoreAdjustment(2)).toBe(-1);
+    expect(fireCountScoreAdjustment(3)).toBe(-1);
+  });
+
+  it('returns 0 (neutral) for the 4-7 fire baseline bucket', () => {
+    expect(fireCountScoreAdjustment(4)).toBe(0);
+    expect(fireCountScoreAdjustment(7)).toBe(0);
+  });
+
+  it('awards +1 to the 8-15 fire bucket (knee of the burst curve)', () => {
+    expect(fireCountScoreAdjustment(8)).toBe(1);
+    expect(fireCountScoreAdjustment(15)).toBe(1);
+  });
+
+  it('awards +2 to chains with ≥16 fires (highest-edge cohort)', () => {
+    expect(fireCountScoreAdjustment(16)).toBe(2);
+    expect(fireCountScoreAdjustment(100)).toBe(2);
+    expect(fireCountScoreAdjustment(359)).toBe(2); // max observed across 93 days
+  });
+
+  it('defensive: 0 and negative fire_count return 0 (never observed in production)', () => {
+    expect(fireCountScoreAdjustment(0)).toBe(0);
+    expect(fireCountScoreAdjustment(-1)).toBe(0);
   });
 });

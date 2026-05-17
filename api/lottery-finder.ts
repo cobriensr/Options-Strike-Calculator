@@ -22,6 +22,7 @@ import {
 } from './_lib/api-helpers.js';
 import { lotteryFinderQuerySchema } from './_lib/validation.js';
 import {
+  fireCountScoreAdjustment,
   lotteryScoreTier,
   type LotteryScoreTier,
 } from './_lib/lottery-score-weights.js';
@@ -711,7 +712,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         r.round_trip_score_deduct == null
           ? 0
           : Number(r.round_trip_score_deduct);
-      const score = rawScore == null ? null : Math.max(0, rawScore + rtDeduct);
+      // Fire-count adjustment — read-time score modifier driven by the
+      // chain's same-day fire_count. Single-fire chains are penalised,
+      // 8+ fire chains get a small bonus. Spec / empirical basis in
+      // api/_lib/lottery-score-weights.ts:fireCountScoreAdjustment.
+      //
+      // KNOWN DIVERGENCE: the score-sort SQL ORDER BY uses
+      // `f.combined_score` (a STORED generated column = GREATEST(0,
+      // score + round_trip_score_deduct)) which does NOT include this
+      // fireCount adjustment. Within a page, displayed scores may
+      // diverge from rank order — e.g. a 1-fire rawScore=20 row
+      // (combined_score=20, displayed=17) can sit above an 8-fire
+      // rawScore=18 row (combined_score=18, displayed=19). Accepted
+      // trade-off: extending combined_score to include the adjustment
+      // requires a DB migration + index rebuild, and would lose the
+      // indexed early-LIMIT path that migration #159 specifically
+      // restored. Default chronological sort is unaffected. Promote
+      // to a stored column when the read-time adjustment stabilises.
+      const fireCountAdj = fireCountScoreAdjustment(Number(r.fire_count ?? 1));
+      const score =
+        rawScore == null
+          ? null
+          : Math.max(0, rawScore + rtDeduct + fireCountAdj);
       const roundTripNetPct =
         r.round_trip_net_pct == null ? null : Number(r.round_trip_net_pct);
       // Phase 4 direction-gate override (spec:
@@ -765,6 +787,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         rawScore,
         roundTripNetPct,
         roundTripScoreDeduct: rtDeduct,
+        // Read-time score adjustment from the chain's fire_count.
+        // Single-fire chains carry -3, ≥16 fires carry +2. Mirrors the
+        // round-trip deduct's read-time-only nature — not stored in
+        // the DB, recomputed every request. Surfaced so the UI can
+        // render a "+N burst" tooltip on the score badge.
+        fireCountScoreAdjustment: fireCountAdj,
         takeitProb: r.takeit_prob == null ? null : Number(r.takeit_prob),
         takeitTopFeatures:
           r.takeit_top_features == null

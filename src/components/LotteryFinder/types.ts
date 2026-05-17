@@ -170,6 +170,22 @@ export interface LotteryFire {
    *  read time. Drives the "Hide round-tripped" filter chip. */
   roundTripScoreDeduct?: number;
   /**
+   * Read-time score adjustment from the chain's same-day `fireCount`.
+   * Mapped via api/_lib/lottery-score-weights.ts:fireCountScoreAdjustment:
+   *   1 fire    → -3 (severe; mean R = -5.8%, 45% win rate)
+   *   2-3 fires → -1 (still below baseline)
+   *   4-7 fires →  0 (neutral)
+   *   8-15      → +1 (knee of the burst curve)
+   *   ≥16       → +2 (highest-edge cohort)
+   * Spec basis: docs/tmp/burst-profitability-findings-2026-05-17.md.
+   * Surfaced so the UI can render a "+N burst" tooltip on the score
+   * badge. Always emitted by the API (defaults to 0 for the neutral
+   * 4-7 fire bucket), but typed optional to match the rest of the
+   * API-emitted-but-stale-fixture fields (`rawScore?`, `takeitProb?`,
+   * `roundTripScoreDeduct?` — same pattern).
+   */
+  fireCountScoreAdjustment?: number;
+  /**
    * Take-It calibrated win probability (migration #155, spec
    * takeit-phase3-production-scoring-2026-05-16.md). XGBoost output
    * walked in pure TS at detect time. NULL when the bundle was
