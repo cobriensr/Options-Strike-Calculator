@@ -4,10 +4,9 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
-  const actual =
-    await vi.importActual<typeof import('../hooks/useGexbotData')>(
-      '../hooks/useGexbotData',
-    );
+  const actual = await vi.importActual<typeof import('../hooks/useGexbotData')>(
+    '../hooks/useGexbotData',
+  );
   return {
     ...actual,
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
@@ -50,7 +49,9 @@ describe('<GexbotSection>', () => {
     // Each child has a distinct *-empty testid; if any import broke,
     // one of these would be absent.
     expect(screen.getByTestId('strike-mover-empty')).toBeInTheDocument();
-    expect(screen.getByTestId('vix-dealer-state-badge-empty')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('vix-dealer-state-badge-empty'),
+    ).toBeInTheDocument();
     expect(screen.getByTestId('charm-clock-empty')).toBeInTheDocument();
     expect(screen.getByTestId('gamma-compass-empty')).toBeInTheDocument();
     expect(screen.getByTestId('dexoflow-tape-empty')).toBeInTheDocument();
@@ -70,8 +71,6 @@ describe('<GexbotSection>', () => {
 
   it('renders the trial-context footnote', () => {
     render(<GexbotSection marketOpen />);
-    expect(
-      screen.getByText(/GEXBot Orderflow-tier data/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/GEXBot Orderflow-tier data/i)).toBeInTheDocument();
   });
 });

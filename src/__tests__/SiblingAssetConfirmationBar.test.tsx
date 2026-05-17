@@ -7,10 +7,9 @@ import type { SiblingConfirmRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
-  const actual =
-    await vi.importActual<typeof import('../hooks/useGexbotData')>(
-      '../hooks/useGexbotData',
-    );
+  const actual = await vi.importActual<typeof import('../hooks/useGexbotData')>(
+    '../hooks/useGexbotData',
+  );
   return {
     ...actual,
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
@@ -86,30 +85,33 @@ describe('<SiblingAssetConfirmationBar>', () => {
       error: null,
       freshestAt: '2026-05-19T14:00:00Z',
     });
-    render(<SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />);
+    render(
+      <SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />,
+    );
     expect(screen.getByTestId('sibling-bar-AAPL-call')).toBeInTheDocument();
-    expect(screen.getByTestId('sibling-pill-AAPL-SPY')).toHaveTextContent('SPY');
+    expect(screen.getByTestId('sibling-pill-AAPL-SPY')).toHaveTextContent(
+      'SPY',
+    );
     expect(screen.getByTestId('sibling-pill-AAPL-SPY')).toHaveTextContent('✓');
     expect(screen.getByTestId('sibling-pill-AAPL-IWM')).toHaveTextContent('✗');
   });
 
   it('applies emerald tone to confirm and rose to contradict', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [
-        makeRow('SPY', 'confirm'),
-        makeRow('QQQ', 'contradict'),
-      ],
+      rows: [makeRow('SPY', 'confirm'), makeRow('QQQ', 'contradict')],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T14:00:00Z',
     });
-    render(<SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />);
-    expect(
-      screen.getByTestId('sibling-pill-AAPL-SPY').className,
-    ).toMatch(/emerald/);
-    expect(
-      screen.getByTestId('sibling-pill-AAPL-QQQ').className,
-    ).toMatch(/rose/);
+    render(
+      <SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />,
+    );
+    expect(screen.getByTestId('sibling-pill-AAPL-SPY').className).toMatch(
+      /emerald/,
+    );
+    expect(screen.getByTestId('sibling-pill-AAPL-QQQ').className).toMatch(
+      /rose/,
+    );
   });
 
   it('renders neutral pills in tertiary tone', () => {
@@ -119,7 +121,9 @@ describe('<SiblingAssetConfirmationBar>', () => {
       error: null,
       freshestAt: '2026-05-19T14:00:00Z',
     });
-    render(<SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />);
+    render(
+      <SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />,
+    );
     const pill = screen.getByTestId('sibling-pill-AAPL-SPY');
     expect(pill).toHaveTextContent('·');
     expect(pill.className).toMatch(/tertiary/);
@@ -134,7 +138,9 @@ describe('<SiblingAssetConfirmationBar>', () => {
       error: null,
       freshestAt: '2026-05-19T14:00:00Z',
     });
-    render(<SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />);
+    render(
+      <SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />,
+    );
     const pill = screen.getByTestId('sibling-pill-AAPL-SPY');
     expect(pill.getAttribute('title')).toMatch(/zcvr=1\.25/);
     expect(pill.getAttribute('title')).toMatch(/RR=0\.040/);
@@ -149,7 +155,9 @@ describe('<SiblingAssetConfirmationBar>', () => {
       error: null,
       freshestAt: '2026-05-19T14:00:00Z',
     });
-    render(<SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />);
+    render(
+      <SiblingAssetConfirmationBar ticker="AAPL" side="call" marketOpen />,
+    );
     const pill = screen.getByTestId('sibling-pill-AAPL-SPY');
     const title = pill.getAttribute('title') ?? '';
     expect(title).toBe('SPY neutral');

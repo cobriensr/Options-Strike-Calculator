@@ -115,7 +115,9 @@ function Badge({ sign, spot, zeroGamma }: BadgeProps) {
     >
       <span className={`h-2 w-2 rounded-full ${dotClass}`} aria-hidden />
       <div className="flex flex-col leading-tight">
-        <span className={`text-xs font-semibold tracking-wide ${headlineClass}`}>
+        <span
+          className={`text-xs font-semibold tracking-wide ${headlineClass}`}
+        >
           VIX · {label}
         </span>
         <span className="text-tertiary text-[10px]">

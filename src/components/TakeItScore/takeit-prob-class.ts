@@ -16,8 +16,7 @@ export function takeitProbClass(prob: number | null | undefined): string {
   }
   if (prob >= 0.7)
     return 'border-emerald-400/60 bg-emerald-950/50 text-emerald-200';
-  if (prob >= 0.55)
-    return 'border-green-500/40 bg-green-950/30 text-green-200';
+  if (prob >= 0.55) return 'border-green-500/40 bg-green-950/30 text-green-200';
   if (prob >= 0.4) return 'border-amber-500/40 bg-amber-950/30 text-amber-200';
   return 'border-rose-500/40 bg-rose-950/30 text-rose-200';
 }

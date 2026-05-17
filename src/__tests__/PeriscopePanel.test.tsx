@@ -690,23 +690,30 @@ describe('PeriscopePanel: Claude playbook section', () => {
   });
 
   it('renders staleness as a red chip when slot is over 25 minutes old', () => {
-    const stale = new Date(Date.now() - 40 * 60_000).toISOString();
-    render(
-      <PeriscopePanel
-        {...baseProps}
-        view={makeView()}
-        playbook={makePlaybook({
-          data: fullRow({
-            slotCapturedAt: stale,
-            readTime: stale,
-            createdAt: stale,
-          }),
-        })}
-      />,
-    );
-    // The staleness chip uses an aria-label like "Slot age 40m ago" — we
-    // assert the chip exists and is rendered with the minute count.
-    expect(screen.getByLabelText(/Slot age 40m ago/i)).toBeInTheDocument();
+    // Pin "now" to mid-day CT so the 40-minute offset can't cross the
+    // CT date boundary and trip isPriorSession (the test was flaking
+    // when run between 00:00 and 00:40 CT).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-08T18:00:00Z'));
+    try {
+      const stale = new Date(Date.now() - 40 * 60_000).toISOString();
+      render(
+        <PeriscopePanel
+          {...baseProps}
+          view={makeView()}
+          playbook={makePlaybook({
+            data: fullRow({
+              slotCapturedAt: stale,
+              readTime: stale,
+              createdAt: stale,
+            }),
+          })}
+        />,
+      );
+      expect(screen.getByLabelText(/Slot age 40m ago/i)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('renders "PRIOR SESSION" badge instead of staleness when slot is from a previous CT date', () => {

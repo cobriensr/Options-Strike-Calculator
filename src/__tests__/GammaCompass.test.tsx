@@ -7,10 +7,9 @@ import type { SnapshotsLatestRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
-  const actual =
-    await vi.importActual<typeof import('../hooks/useGexbotData')>(
-      '../hooks/useGexbotData',
-    );
+  const actual = await vi.importActual<typeof import('../hooks/useGexbotData')>(
+    '../hooks/useGexbotData',
+  );
   return {
     ...actual,
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
@@ -53,7 +52,9 @@ describe('<GammaCompass>', () => {
 
   it('shows empty-state when no rows have spot + at least one gamma strike', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: null, zMsgamma: null })],
+      rows: [
+        makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: null, zMsgamma: null }),
+      ],
       loading: false,
       error: null,
       freshestAt: null,
@@ -86,7 +87,9 @@ describe('<GammaCompass>', () => {
 
   it('renders a row when only floor is set (danger renders as em-dash)', () => {
     mockUseGexbotData.mockReturnValue({
-      rows: [makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: 5950, zMsgamma: null })],
+      rows: [
+        makeRow({ ticker: 'SPX', spot: 5985, zMlgamma: 5950, zMsgamma: null }),
+      ],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T14:00:00Z',

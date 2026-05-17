@@ -7,10 +7,9 @@ import type { SnapshotsLatestRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
-  const actual =
-    await vi.importActual<typeof import('../hooks/useGexbotData')>(
-      '../hooks/useGexbotData',
-    );
+  const actual = await vi.importActual<typeof import('../hooks/useGexbotData')>(
+    '../hooks/useGexbotData',
+  );
   return {
     ...actual,
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),

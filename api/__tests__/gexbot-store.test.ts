@@ -79,10 +79,7 @@ describe('insertCaptureRows', () => {
     expect(endpoints).toEqual(['classic', 'state']);
     expect(categories).toEqual(['gex_zero/maxchange', 'gamma_zero']);
     expect(sourceTs).toEqual([1_700_000_000, 1_700_000_001]);
-    expect(rawJsons).toEqual([
-      '{"current":[5950,1.2]}',
-      '{"spot":540}',
-    ]);
+    expect(rawJsons).toEqual(['{"current":[5950,1.2]}', '{"spot":540}']);
   });
 
   it('preserves null sourceTimestamp without coercing to a number', async () => {
@@ -100,7 +97,9 @@ describe('insertCaptureRows', () => {
     // sourceTs array is the 4th spread array (after ticker/endpoint/category)
     const tsArr = dynamicArgs.find(
       (a): a is Array<number | null> =>
-        Array.isArray(a) && a.length === 1 && (a[0] === null || typeof a[0] === 'number'),
+        Array.isArray(a) &&
+        a.length === 1 &&
+        (a[0] === null || typeof a[0] === 'number'),
     );
     expect(tsArr).toEqual([null]);
   });

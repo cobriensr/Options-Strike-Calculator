@@ -418,12 +418,9 @@ export const gexbotQuerySchema = z
       .optional(),
     side: z.enum(['call', 'put']).optional(),
   })
-  .refine(
-    (v) => v.view !== 'sibling-confirm' || (v.ticker && v.side),
-    {
-      message: 'sibling-confirm requires ticker and side',
-      path: ['view'],
-    },
-  );
+  .refine((v) => v.view !== 'sibling-confirm' || (v.ticker && v.side), {
+    message: 'sibling-confirm requires ticker and side',
+    path: ['view'],
+  });
 
 export type GexbotQuery = z.infer<typeof gexbotQuerySchema>;

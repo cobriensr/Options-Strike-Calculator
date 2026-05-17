@@ -53,10 +53,7 @@ function CrossAssetSkewDashboardInner({
   // a valid — if rare — RR). Distinguishing "no row" from "RR exactly 0"
   // matters here so the empty-state doesn't suppress legit data.
   const hasData = bars.some((b) => b.value != null);
-  const maxAbs = Math.max(
-    ...bars.map((b) => Math.abs(b.value ?? 0)),
-    0.0001,
-  );
+  const maxAbs = Math.max(...bars.map((b) => Math.abs(b.value ?? 0)), 0.0001);
 
   if (loading) {
     return (

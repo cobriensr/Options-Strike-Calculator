@@ -45,7 +45,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const parsed = gexbotQuerySchema.safeParse(req.query);
   if (!parsed.success) {
     done({ status: 400 });
-    res.status(400).json({ error: 'Invalid query', issues: parsed.error.issues });
+    res
+      .status(400)
+      .json({ error: 'Invalid query', issues: parsed.error.issues });
     return;
   }
 

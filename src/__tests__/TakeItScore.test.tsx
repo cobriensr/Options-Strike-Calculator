@@ -39,10 +39,7 @@ describe('<TakeItScore>', () => {
   it('renders "—" when prob is null', () => {
     // Provide a non-null topFeatures so the component still renders.
     render(
-      <TakeItScore
-        prob={null}
-        topFeatures={{ positive: [], negative: [] }}
-      />,
+      <TakeItScore prob={null} topFeatures={{ positive: [], negative: [] }} />,
     );
     const chip = screen.getByTestId('takeit-score-chip');
     expect(chip).toHaveTextContent('—');
@@ -63,10 +60,7 @@ describe('<TakeItScore>', () => {
 
   it('does NOT show "flags…" when topFeatures is populated', () => {
     render(
-      <TakeItScore
-        prob={0.55}
-        topFeatures={{ positive: [], negative: [] }}
-      />,
+      <TakeItScore prob={0.55} topFeatures={{ positive: [], negative: [] }} />,
     );
     expect(screen.queryByText('flags…')).not.toBeInTheDocument();
   });
@@ -80,11 +74,19 @@ describe('<TakeItScore>', () => {
           positive: [
             { name: 'session_phase', shap_value: 0.31, feature_value: 2 },
             { name: 'reload_tagged', shap_value: 0.18, feature_value: true },
-            { name: 'mode_A_intraday_0DTE', shap_value: 0.09, feature_value: 1 },
+            {
+              name: 'mode_A_intraday_0DTE',
+              shap_value: 0.09,
+              feature_value: 1,
+            },
           ],
           negative: [
             { name: 'is_itm_at_fire', shap_value: -0.24, feature_value: 1 },
-            { name: 'aggressive_premium_flag', shap_value: -0.08, feature_value: 1 },
+            {
+              name: 'aggressive_premium_flag',
+              shap_value: -0.08,
+              feature_value: 1,
+            },
           ],
         }}
       />,
@@ -130,7 +132,9 @@ describe('<TakeItScore>', () => {
       <TakeItScore
         prob={0.6}
         topFeatures={{
-          positive: [{ name: 'session_phase', shap_value: 0.3, feature_value: 2 }],
+          positive: [
+            { name: 'session_phase', shap_value: 0.3, feature_value: 2 },
+          ],
           negative: [],
         }}
       />,
@@ -140,11 +144,7 @@ describe('<TakeItScore>', () => {
 
   it('gracefully handles malformed topFeatures blob (missing arrays)', () => {
     render(
-      <TakeItScore
-        prob={0.6}
-        expanded
-        topFeatures={{ unexpected: 'shape' }}
-      />,
+      <TakeItScore prob={0.6} expanded topFeatures={{ unexpected: 'shape' }} />,
     );
     // Just the chip — no crash, no flag rendering.
     expect(screen.getByTestId('takeit-score-chip')).toHaveTextContent('0.60');

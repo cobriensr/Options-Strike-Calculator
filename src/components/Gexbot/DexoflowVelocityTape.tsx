@@ -82,13 +82,9 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         // to the bottom — convexity acceleration is the marquee signal
         // per the JSDoc.
         const aMag =
-          magnitude(a.dexoflow) +
-          magnitude(a.gexoflow) +
-          magnitude(a.cvroflow);
+          magnitude(a.dexoflow) + magnitude(a.gexoflow) + magnitude(a.cvroflow);
         const bMag =
-          magnitude(b.dexoflow) +
-          magnitude(b.gexoflow) +
-          magnitude(b.cvroflow);
+          magnitude(b.dexoflow) + magnitude(b.gexoflow) + magnitude(b.cvroflow);
         // Stable tiebreaker on ticker so render order is deterministic
         // when magnitudes match.
         return bMag - aMag || a.ticker.localeCompare(b.ticker);

@@ -13,7 +13,10 @@
 
 import { memo, useMemo } from 'react';
 
-import { useGexbotData, type SnapshotsLatestRow } from '../../hooks/useGexbotData';
+import {
+  useGexbotData,
+  type SnapshotsLatestRow,
+} from '../../hooks/useGexbotData';
 
 interface GammaCompassProps {
   marketOpen: boolean;
@@ -100,15 +103,17 @@ function GammaCompassInner({ marketOpen }: GammaCompassProps) {
       data-testid="gamma-compass"
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
-      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] uppercase tracking-wide">
+      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
         Long/Short Gamma Compass — 0DTE peak strikes (typical regime: long γ
         below spot = floor, short γ above = ceiling/danger)
       </div>
       <table className="w-full text-left text-xs">
-        <thead className="text-tertiary text-[10px] uppercase tracking-wide">
+        <thead className="text-tertiary text-[10px] tracking-wide uppercase">
           <tr>
             <th className="px-3 py-1.5 font-medium">Ticker</th>
-            <th className="px-3 py-1.5 text-right font-medium">Long γ strike</th>
+            <th className="px-3 py-1.5 text-right font-medium">
+              Long γ strike
+            </th>
             <th className="px-3 py-1.5 text-right font-medium">Spot</th>
             <th className="px-3 py-1.5 text-right font-medium">
               Short γ strike
@@ -126,20 +131,20 @@ function GammaCompassInner({ marketOpen }: GammaCompassProps) {
             return (
               <tr key={row.ticker} className="border-t border-white/5">
                 <td className="px-3 py-1.5 font-medium">{row.ticker}</td>
-                <td className="px-3 py-1.5 text-right tabular-nums text-emerald-300">
+                <td className="px-3 py-1.5 text-right text-emerald-300 tabular-nums">
                   {formatDistance(row.floor, row.spot)}
                 </td>
                 <td className="text-secondary px-3 py-1.5 text-right tabular-nums">
                   {row.spot.toFixed(2)}
                 </td>
-                <td className="px-3 py-1.5 text-right tabular-nums text-rose-300">
+                <td className="px-3 py-1.5 text-right text-rose-300 tabular-nums">
                   {formatDistance(row.danger, row.spot)}
                 </td>
                 <td className="px-3 py-1.5 text-right">
                   {inverted ? (
                     <span
                       data-testid={`gamma-compass-inverted-${row.ticker}`}
-                      className="inline-block rounded-sm border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-300"
+                      className="inline-block rounded-sm border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] tracking-wide text-amber-300 uppercase"
                       title="Floor above spot OR ceiling below spot — typical floor/danger intuition does not apply"
                     >
                       inverted

@@ -41,9 +41,9 @@ function GexbotSectionInner({ marketOpen }: GexbotSectionProps) {
         <CrossAssetSkewDashboard marketOpen={marketOpen} />
       </div>
       <p className="text-tertiary mt-3 text-[10px] leading-relaxed">
-        GEXBot Orderflow-tier data — capture pipeline ships dealer
-        positioning + flow metrics for 16 Index/ETF tickers every minute
-        during market hours. More tiles in upcoming waves.
+        GEXBot Orderflow-tier data — capture pipeline ships dealer positioning +
+        flow metrics for 16 Index/ETF tickers every minute during market hours.
+        More tiles in upcoming waves.
       </p>
     </SectionBox>
   );

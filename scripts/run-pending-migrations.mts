@@ -25,7 +25,8 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-const skipConfirm = process.argv.includes('--yes') || process.argv.includes('-y');
+const skipConfirm =
+  process.argv.includes('--yes') || process.argv.includes('-y');
 
 const host =
   process.env.DATABASE_URL.split('@')[1]?.split('/')[0] ?? '(unknown host)';

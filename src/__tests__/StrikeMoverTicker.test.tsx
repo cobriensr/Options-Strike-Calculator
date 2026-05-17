@@ -7,10 +7,9 @@ import type { MaxchangeWinnerRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
-  const actual =
-    await vi.importActual<typeof import('../hooks/useGexbotData')>(
-      '../hooks/useGexbotData',
-    );
+  const actual = await vi.importActual<typeof import('../hooks/useGexbotData')>(
+    '../hooks/useGexbotData',
+  );
   return {
     ...actual,
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
@@ -108,12 +107,8 @@ describe('<StrikeMoverTicker>', () => {
       freshestAt: '2026-05-19T14:00:00Z',
     });
     render(<StrikeMoverTicker marketOpen />);
-    const spx = screen.getByTestId(
-      'strike-mover-chip-SPX-gex_zero/maxchange',
-    );
-    const qqq = screen.getByTestId(
-      'strike-mover-chip-QQQ-gex_zero/maxchange',
-    );
+    const spx = screen.getByTestId('strike-mover-chip-SPX-gex_zero/maxchange');
+    const qqq = screen.getByTestId('strike-mover-chip-QQQ-gex_zero/maxchange');
     expect(spx.className).toMatch(/emerald/);
     expect(qqq.className).toMatch(/rose/);
   });

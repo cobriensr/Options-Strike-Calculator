@@ -8,14 +8,18 @@ import type { SnapshotsLatestRow } from '../hooks/useGexbotData';
 // Mock the data hook so we drive the badge from synthetic VIX rows.
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
-  const actual =
-    await vi.importActual<typeof import('../hooks/useGexbotData')>(
-      '../hooks/useGexbotData',
-    );
-  return { ...actual, useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args) };
+  const actual = await vi.importActual<typeof import('../hooks/useGexbotData')>(
+    '../hooks/useGexbotData',
+  );
+  return {
+    ...actual,
+    useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
+  };
 });
 
-function makeVix(overrides: Partial<SnapshotsLatestRow> = {}): SnapshotsLatestRow {
+function makeVix(
+  overrides: Partial<SnapshotsLatestRow> = {},
+): SnapshotsLatestRow {
   return {
     ticker: 'VIX',
     capturedAt: '2026-05-19T14:00:00Z',

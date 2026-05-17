@@ -48,7 +48,9 @@ async function uploadBundle(alertType) {
     throw new Error(`bundle at ${bundlePath} missing version field`);
   }
   const remotePath = `takeit/${alertType}_classifier_${version}.json`;
-  console.log(`uploading ${alertType} ${version} (${(raw.length / 1024 / 1024).toFixed(1)}MB) → ${remotePath}`);
+  console.log(
+    `uploading ${alertType} ${version} (${(raw.length / 1024 / 1024).toFixed(1)}MB) → ${remotePath}`,
+  );
   const result = await put(remotePath, raw, {
     access: 'private',
     contentType: 'application/json',
@@ -79,7 +81,9 @@ async function uploadBundle(alertType) {
     });
     console.log(`  ✓ ${joblibResult.url}`);
   } else {
-    console.log(`  ⚠ ${alertType} joblib missing — SHAP sidecar will 503 until uploaded`);
+    console.log(
+      `  ⚠ ${alertType} joblib missing — SHAP sidecar will 503 until uploaded`,
+    );
   }
 
   return { alertType, remotePath, version, url: result.url };
@@ -109,7 +113,9 @@ async function main() {
     uploaded.push(await uploadBundle(alertType));
   }
   await uploadManifest(uploaded);
-  console.log('\ndone. Vercel functions will pick up the new bundle on next cold start.');
+  console.log(
+    '\ndone. Vercel functions will pick up the new bundle on next cold start.',
+  );
 }
 
 main().catch((err) => {

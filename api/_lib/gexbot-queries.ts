@@ -235,10 +235,7 @@ interface RawCaptureRow {
   raw_response: unknown;
 }
 
-function pickWindowTuple(
-  raw: unknown,
-  key: string,
-): [number, number] | null {
+function pickWindowTuple(raw: unknown, key: string): [number, number] | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const value = (raw as Record<string, unknown>)[key];
   if (!Array.isArray(value) || value.length < 2) return null;

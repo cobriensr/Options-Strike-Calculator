@@ -411,7 +411,11 @@ describe('isBurstStorm', () => {
     ];
     const agg = computeRollupAggregates(rows);
     expect(
-      isBurstStorm(agg, rows.length, BURST_STORM_INTENSITY_THRESHOLDS.silentBoom),
+      isBurstStorm(
+        agg,
+        rows.length,
+        BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+      ),
     ).toBe(true);
   });
 

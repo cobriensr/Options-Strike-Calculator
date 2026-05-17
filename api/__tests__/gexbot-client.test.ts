@@ -143,9 +143,7 @@ describe('gexbot-client', () => {
       await fetchStateMaxchange('s', 'SPX', 'charm_zero');
       const url = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0] as string;
-      expect(url).toBe(
-        'https://api.gex.bot/v2/SPX/state/charm_zero/maxchange',
-      );
+      expect(url).toBe('https://api.gex.bot/v2/SPX/state/charm_zero/maxchange');
     });
   });
 

@@ -72,7 +72,7 @@ function SiblingAssetConfirmationBarInner({
       data-testid={`sibling-bar-${ticker}-${side}`}
       className="inline-flex items-center gap-1"
     >
-      <span className="text-tertiary mr-1 text-[9px] uppercase tracking-wide">
+      <span className="text-tertiary mr-1 text-[9px] tracking-wide uppercase">
         siblings:
       </span>
       {rows.map((row) => (
@@ -99,4 +99,6 @@ function SiblingAssetConfirmationBarInner({
   );
 }
 
-export const SiblingAssetConfirmationBar = memo(SiblingAssetConfirmationBarInner);
+export const SiblingAssetConfirmationBar = memo(
+  SiblingAssetConfirmationBarInner,
+);

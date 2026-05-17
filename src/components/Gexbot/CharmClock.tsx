@@ -21,7 +21,10 @@
 import { memo, useMemo } from 'react';
 
 import { getETToday, getETCloseUtcIso } from '../../utils/timezone';
-import { useGexbotData, type SnapshotsLatestRow } from '../../hooks/useGexbotData';
+import {
+  useGexbotData,
+  type SnapshotsLatestRow,
+} from '../../hooks/useGexbotData';
 
 interface CharmClockProps {
   marketOpen: boolean;
@@ -81,7 +84,9 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
 
   const charmRows = useMemo<CharmRow[]>(() => {
     return rows
-      .filter((r): r is SnapshotsLatestRow & { zcharm: number } => r.zcharm != null)
+      .filter(
+        (r): r is SnapshotsLatestRow & { zcharm: number } => r.zcharm != null,
+      )
       .map((r) => ({
         ticker: r.ticker,
         zcharm: r.zcharm,
@@ -139,12 +144,12 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
       data-testid="charm-clock"
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
-      <div className="text-tertiary flex items-baseline justify-between border-b border-white/5 px-3 py-2 text-[10px] uppercase tracking-wide">
+      <div className="text-tertiary flex items-baseline justify-between border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
         <span>Charm Clock — 0DTE hedge drift</span>
         <span>time to close: {formatHoursMinutes(hoursRemaining)}</span>
       </div>
       <table className="w-full text-left text-xs">
-        <thead className="text-tertiary text-[10px] uppercase tracking-wide">
+        <thead className="text-tertiary text-[10px] tracking-wide uppercase">
           <tr>
             <th className="px-3 py-1.5 font-medium">Ticker</th>
             <th className="px-3 py-1.5 text-right font-medium">Net charm</th>

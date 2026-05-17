@@ -15,18 +15,19 @@ state) until then.
 
 ## Locked design decisions
 
-| Decision | Choice |
-|---|---|
-| Section placement | **New dedicated `<GexbotSection />`** in `App.tsx`, contains all 7 standalone tiles + child component for the Strike Mover marquee at top |
-| Polling cadence | **30s** (frontend) against a 60s cron cadence — catches new ticks at most 30s late |
-| Sibling-Asset Confirmation Bar integration | **Inline in the same row** as existing TakeItScore badges in Lottery + Silent Boom feeds |
-| Mock data | **No mock mode** — components render empty state until Monday's first tick |
+| Decision                                   | Choice                                                                                                                                    |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Section placement                          | **New dedicated `<GexbotSection />`** in `App.tsx`, contains all 7 standalone tiles + child component for the Strike Mover marquee at top |
+| Polling cadence                            | **30s** (frontend) against a 60s cron cadence — catches new ticks at most 30s late                                                        |
+| Sibling-Asset Confirmation Bar integration | **Inline in the same row** as existing TakeItScore badges in Lottery + Silent Boom feeds                                                  |
+| Mock data                                  | **No mock mode** — components render empty state until Monday's first tick                                                                |
 
 ## Components (8 total)
 
 ### Wave 2 — Small scalar tiles (4)
 
 #### 1. `<VixDealerStateBadge />` (Wave 2a — pipeline validator)
+
 - **Data:** `gexbot_snapshots WHERE ticker='VIX'` ORDER BY captured_at DESC LIMIT 1
 - **Render:** Pill with VIX label + LONG/SHORT gamma state + zero-gamma level. Green when long-gamma (vol stable), red when short-gamma (vol may expand).
 - **Sketch:**
@@ -39,6 +40,7 @@ state) until then.
   ```
 
 #### 2. `<CharmClock />` (multi-ticker)
+
 - **Data:** `gexbot_snapshots.zcharm` for each ticker, latest row + current time
 - **Render:** Per-ticker mini-row showing time-to-close + net charm + projected dollar-drift if dealers mechanically rehedge. Tickers in a vertical list.
 - **Sketch:**
@@ -56,6 +58,7 @@ state) until then.
   Projection formula: `projected_drift_pct = (zcharm × time_remaining_hours) / spot / 1e9` (scale will need calibration once data lands).
 
 #### 3. `<GammaCompass />` (multi-ticker)
+
 - **Data:** `gexbot_snapshots.{z_mlgamma, z_msgamma, spot}` per ticker
 - **Render:** Per-ticker row: spot in center, long-gamma strike (floor) on left arrow, short-gamma strike (ceiling) on right arrow, distance + percent.
 - **Sketch:**
@@ -71,6 +74,7 @@ state) until then.
   ```
 
 #### 4. `<DexoflowVelocityTape />`
+
 - **Data:** `gexbot_snapshots.{dexoflow, gexoflow, cvroflow}` per ticker, last 5 ticks (5 min history)
 - **Render:** Per-ticker row showing the 3 flow-rate scalars as small speedometer-style gauges. Color-graded by direction (positive = green, negative = red). Trend arrow showing 5-min slope.
 - **Sketch:**
@@ -88,6 +92,7 @@ state) until then.
 ### Wave 3 — Larger visualizations (3)
 
 #### 5. `<ConvexityMatrix />`
+
 - **Data:** `gexbot_snapshots.zcvr` per ticker, last 60 minutes
 - **Render:** 4×4 grid of mini-sparklines (one per ticker). Each cell shows the 60-min `zcvr` trend as a tiny line chart. Cell background heat-mapped (green high → red low). Click cell → opens detail panel with full timeseries.
 - **Sketch:**
@@ -107,6 +112,7 @@ state) until then.
   ```
 
 #### 6. `<CrossAssetSkewDashboard />`
+
 - **Data:** `gexbot_snapshots.delta_risk_reversal` per ticker, latest + 1-day-ago
 - **Render:** Bar chart, one bar per ticker, height = risk reversal value. Positive (call-skewed/greed) above zero line, negative (put-skewed/fear) below. Today vs 1d-ago overlay.
 - **Sketch:**
@@ -124,6 +130,7 @@ state) until then.
   ```
 
 #### 7. `<StrikeMoverTicker />`
+
 - **Data:** `gexbot_api_capture WHERE category LIKE '%/maxchange'` joined to extract the 5-min strike-change winner per (ticker, category)
 - **Render:** Horizontal scrolling marquee at the top of `<GexbotSection />`. Format: `TICKER STRIKE±CHANGE  |  TICKER STRIKE±CHANGE  |  ...` — pause on hover, click to deep-dive.
 - **Sketch:**
@@ -137,6 +144,7 @@ state) until then.
 ### Wave 4 — Integrated component (1)
 
 #### 8. `<SiblingAssetConfirmationBar />` (lives inline in lottery/silent-boom rows)
+
 - **Data:** Given a lottery row for `{ticker, side}`, query `gexbot_snapshots` for sibling tickers' `zcvr` + `delta_risk_reversal` direction over the last 5 minutes. "Sibling" = same asset class (large-cap = SPX/SPY/QQQ/IWM/NDX; volatility = VIX; commodity = GLD/USO/SLV; etc.).
 - **Render:** Inline 3-pill bar next to existing TakeItScore badges. Each pill represents a sibling ticker; color indicates whether it confirms (green) or contradicts (red) the lottery row's direction. Tooltip on hover shows the underlying convexity ratio.
 - **Sketch:**
@@ -203,13 +211,13 @@ None — design decisions all locked.
 
 ## Thresholds / constants
 
-| Constant | Value | Location |
-|---|---|---|
-| Frontend poll interval | 30 s | `useGexbotData` |
-| Stale-data threshold | 5 min (any tile whose `captured_at` is older shows "stale" indicator) | `useGexbotData` |
-| Sibling-asset groups | `{ broad: [SPY,QQQ,IWM,NDX,SPX], vol: [VIX,UVXY], bonds: [TLT,HYG], metals: [GLD,SLV], energy: [USO] }` | `api/_lib/gexbot-queries.ts` |
-| Charm projection scale | TBD — calibrate after first week of data | `CharmClock` |
-| Empty-state copy | "Awaiting first GEXBot tick — capture pipeline starts Monday 13:00 UTC" | shared component |
+| Constant               | Value                                                                                                   | Location                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| Frontend poll interval | 30 s                                                                                                    | `useGexbotData`              |
+| Stale-data threshold   | 5 min (any tile whose `captured_at` is older shows "stale" indicator)                                   | `useGexbotData`              |
+| Sibling-asset groups   | `{ broad: [SPY,QQQ,IWM,NDX,SPX], vol: [VIX,UVXY], bonds: [TLT,HYG], metals: [GLD,SLV], energy: [USO] }` | `api/_lib/gexbot-queries.ts` |
+| Charm projection scale | TBD — calibrate after first week of data                                                                | `CharmClock`                 |
+| Empty-state copy       | "Awaiting first GEXBot tick — capture pipeline starts Monday 13:00 UTC"                                 | shared component             |
 
 ## Risk notes
 

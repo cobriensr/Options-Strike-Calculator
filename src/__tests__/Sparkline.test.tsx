@@ -27,9 +27,7 @@ describe('<Sparkline>', () => {
   });
 
   it('survives a constant series (range=0) without dividing by zero', () => {
-    const { container } = render(
-      <Sparkline values={[1.0, 1.0, 1.0, 1.0]} />,
-    );
+    const { container } = render(<Sparkline values={[1.0, 1.0, 1.0, 1.0]} />);
     const path = container.querySelector('path');
     expect(path).not.toBeNull();
     // All points clamp to the same y; the path d-string should contain

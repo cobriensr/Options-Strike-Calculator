@@ -213,7 +213,5 @@ for (const g of groups) {
 
 console.log('\n── Backfill summary ──');
 console.log(`  Groups processed:  ${groupsProcessed}`);
-console.log(
-  `  Rows updated:      ${rowsUpdated}${dryRun ? ' (dry-run)' : ''}`,
-);
+console.log(`  Rows updated:      ${rowsUpdated}${dryRun ? ' (dry-run)' : ''}`);
 console.log(`  Rows left NULL:    ${rowsLeftNull}`);

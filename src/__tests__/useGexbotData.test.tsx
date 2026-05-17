@@ -123,9 +123,7 @@ describe('useGexbotData', () => {
   describe('polling behavior (fake timers)', () => {
     it('does not poll while marketOpen=false', async () => {
       mockFetchJson.mockResolvedValue({ data: { rows: [] } });
-      renderHook(() =>
-        useGexbotData({ view: 'snapshots-latest' }, false),
-      );
+      renderHook(() => useGexbotData({ view: 'snapshots-latest' }, false));
       // Let the eager mount fetch resolve.
       await Promise.resolve();
       await Promise.resolve();

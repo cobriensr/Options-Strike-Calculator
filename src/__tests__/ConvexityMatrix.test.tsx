@@ -7,28 +7,21 @@ import type { ConvexityTrendRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
-  const actual =
-    await vi.importActual<typeof import('../hooks/useGexbotData')>(
-      '../hooks/useGexbotData',
-    );
+  const actual = await vi.importActual<typeof import('../hooks/useGexbotData')>(
+    '../hooks/useGexbotData',
+  );
   return {
     ...actual,
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
   };
 });
 
-function makeTrend(
-  ticker: string,
-  values: number[],
-): ConvexityTrendRow {
+function makeTrend(ticker: string, values: number[]): ConvexityTrendRow {
   return {
     ticker,
     series: values.map(
       (v, i) =>
-        [
-          new Date(2026, 4, 19, 9, 30 + i).toISOString(),
-          v,
-        ] as [string, number],
+        [new Date(2026, 4, 19, 9, 30 + i).toISOString(), v] as [string, number],
     ),
   };
 }
@@ -81,9 +74,22 @@ describe('<ConvexityMatrix>', () => {
     render(<ConvexityMatrix marketOpen />);
     // All 16 tickers should be present as cells.
     const tickers = [
-      'SPX', 'ES_SPX', 'NDX', 'NQ_NDX', 'RUT', 'VIX',
-      'SPY', 'QQQ', 'IWM', 'TLT', 'GLD', 'USO',
-      'TQQQ', 'UVXY', 'HYG', 'SLV',
+      'SPX',
+      'ES_SPX',
+      'NDX',
+      'NQ_NDX',
+      'RUT',
+      'VIX',
+      'SPY',
+      'QQQ',
+      'IWM',
+      'TLT',
+      'GLD',
+      'USO',
+      'TQQQ',
+      'UVXY',
+      'HYG',
+      'SLV',
     ];
     for (const t of tickers) {
       expect(screen.getByTestId(`convexity-cell-${t}`)).toBeInTheDocument();
