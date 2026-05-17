@@ -169,6 +169,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -333,6 +334,7 @@ describe('detect-silent-boom handler', () => {
         { ts_ms: String(tickMs), ncp: '500', npp: '200' },
       ]) // zero_dte ticks → diff +300
       .mockResolvedValueOnce([{ ts_ms: String(tickMs), gamma_oi: '12345' }]) // spx_gamma ticks
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
     const req = mockRequest({
@@ -343,23 +345,26 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(7);
-    // INSERT is the last call. Phase 3d follow-up tail-appended
-    // takeit_features (JSONB) — indices shifted by 1 vs the earlier
-    // takeit_prob/takeit_model_version layout. Tail layout is now:
+    // Migration #158 added a per-fire ticker_flow_snapshot query between
+    // spx_gamma and INSERT — bumps this path from 7 to 8 calls.
+    expect(mockSql).toHaveBeenCalledTimes(8);
+    // INSERT is the last call. Migration #158 tail-appended
+    // cum_ncp_at_fire + cum_npp_at_fire before takeit_*; combined with
+    // Phase 3d's takeit_features tail-append the tail layout is now:
     //   ...mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff,
     //   spx_spot_gamma_oi, multi_leg_share, underlying_price_at_spike,
+    //   cum_ncp_at_fire, cum_npp_at_fire,
     //   takeit_prob, takeit_model_version, takeit_features.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
     const takeitFeatures = insertCall.at(-1);
     const takeitVersion = insertCall.at(-2);
     const takeitProb = insertCall.at(-3);
-    const underlyingAtSpike = insertCall.at(-4);
-    const multiLegShare = insertCall.at(-5);
-    const spxGamma = insertCall.at(-6);
-    const zeroDteDiff = insertCall.at(-7);
-    const tideOtmDiff = insertCall.at(-8);
-    const tideDiff = insertCall.at(-9);
+    const underlyingAtSpike = insertCall.at(-6);
+    const multiLegShare = insertCall.at(-7);
+    const spxGamma = insertCall.at(-8);
+    const zeroDteDiff = insertCall.at(-9);
+    const tideOtmDiff = insertCall.at(-10);
+    const tideDiff = insertCall.at(-11);
     expect(takeitProb).toBeNull(); // mocked context returns null
     expect(takeitVersion).toBeNull();
     expect(takeitFeatures).toBeNull();
@@ -392,6 +397,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([
         { ts_ms: String(staleTickMs), gamma_oi: '12345' },
       ]) // spx_gamma tick — also stale
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 2 }]);
 
     const req = mockRequest({
@@ -408,12 +414,12 @@ describe('detect-silent-boom handler', () => {
     // stale. underlyingPrice not set in fixture → null at the boundary.
     // takeit_prob + takeit_model_version + takeit_features tail-appended
     // → shift indices by 3 vs the pre-takeit layout.
-    expect(insertCall.at(-4)).toBeNull(); // underlying_price_at_spike
-    expect(insertCall.at(-5)).toBe(0); // multi_leg_share
-    expect(insertCall.at(-6)).toBeNull(); // spx_spot_gamma_oi
-    expect(insertCall.at(-7)).toBeNull(); // zero_dte_diff
-    expect(insertCall.at(-8)).toBeNull(); // mkt_tide_otm_diff
-    expect(insertCall.at(-9)).toBeNull(); // mkt_tide_diff
+    expect(insertCall.at(-6)).toBeNull(); // underlying_price_at_spike
+    expect(insertCall.at(-7)).toBe(0); // multi_leg_share
+    expect(insertCall.at(-8)).toBeNull(); // spx_spot_gamma_oi
+    expect(insertCall.at(-9)).toBeNull(); // zero_dte_diff
+    expect(insertCall.at(-10)).toBeNull(); // mkt_tide_otm_diff
+    expect(insertCall.at(-11)).toBeNull(); // mkt_tide_diff
   });
 
   it('flags direction_gated=true and demotes score_tier to tier3 on a counter-trend put fire (mkt_tide_diff > +100M)', async () => {
@@ -438,6 +444,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
     const req = mockRequest({
@@ -464,9 +471,9 @@ describe('detect-silent-boom handler', () => {
     //   at(-5) = multi_leg_share  at(-9) = mkt_tide_diff
     //   at(-10) = direction_gated  at(-11) = score_tier (demoted to 'tier3')
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-9)).toBe(150_000_000);
-    expect(insertCall.at(-10)).toBe(true);
-    expect(insertCall.at(-11)).toBe('tier3');
+    expect(insertCall.at(-11)).toBe(150_000_000);
+    expect(insertCall.at(-12)).toBe(true);
+    expect(insertCall.at(-13)).toBe('tier3');
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
@@ -485,6 +492,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 99 }]); // insert
 
     const req = mockRequest({

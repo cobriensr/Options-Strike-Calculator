@@ -40,6 +40,11 @@ import {
   type RecentFireRow,
 } from '../_lib/takeit-detect.js';
 import type { SilentBoomAlertRow } from '../_lib/takeit-features.js';
+import {
+  fetchTickerFlowSeries,
+  flowAtFireTime,
+  type TickerFlowSeries,
+} from '../_lib/ticker-flow-snapshot.js';
 
 // 35-min scan window — needs at least baselineBuckets+1 buckets of
 // history (4+1 = 5 buckets = 25 min) plus 10 min slack for cron jitter
@@ -417,6 +422,12 @@ export default withCronInstrumentation(
     let skippedShort = 0;
     let skippedNoOi = 0;
 
+    // Per-(ticker, date) cumulative net-flow series cache. Shared across
+    // all chain groups so two TSLA chains in the same cron tick fetch
+    // the TSLA series once. Spec:
+    // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md.
+    const tickerFlowCache = new Map<string, TickerFlowSeries>();
+
     for (const g of groups.values()) {
       if (g.buckets.length < SILENT_BOOM_SPEC_V1.baselineBuckets + 1) {
         skippedShort += 1;
@@ -456,6 +467,20 @@ export default withCronInstrumentation(
         const mktTideOtmDiff = tideOtmDiffAt(targetMs);
         const zeroDteDiff = zeroDteDiffAt(targetMs);
         const spxSpotGammaOi = spxGammaAt(targetMs);
+
+        // Snapshot ticker cumulative net call/put premium at spike-bucket
+        // time. Replaces the per-row LATERAL the feed used to run
+        // (caused ~30s page loads). Cached per (ticker, date).
+        const flowCacheKey = `${g.ticker}_${ctx.today}`;
+        let flowSeries = tickerFlowCache.get(flowCacheKey);
+        if (flowSeries == null) {
+          flowSeries = await fetchTickerFlowSeries(db, g.ticker, ctx.today);
+          tickerFlowCache.set(flowCacheKey, flowSeries);
+        }
+        const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
+          flowSeries,
+          f.bucketTs,
+        );
 
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
@@ -523,6 +548,7 @@ export default withCronInstrumentation(
             score, score_tier, direction_gated,
             mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
             multi_leg_share, underlying_price_at_spike,
+            cum_ncp_at_fire, cum_npp_at_fire,
             takeit_prob, takeit_model_version, takeit_features
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
@@ -533,6 +559,7 @@ export default withCronInstrumentation(
             ${score}, ${effectiveTier}, ${directionGated},
             ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
             ${f.multiLegShare}, ${f.underlyingPriceAtSpike},
+            ${cumNcpAtFire}, ${cumNppAtFire},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING

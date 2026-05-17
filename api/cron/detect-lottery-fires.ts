@@ -44,6 +44,11 @@ import {
   type RecentFireRow,
 } from '../_lib/takeit-detect.js';
 import type { LotteryAlertRow } from '../_lib/takeit-features.js';
+import {
+  fetchTickerFlowSeries,
+  flowAtFireTime,
+  type TickerFlowSeries,
+} from '../_lib/ticker-flow-snapshot.js';
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
 // tick can't drop a trigger that landed at the start of its window.
@@ -328,6 +333,13 @@ export default withCronInstrumentation(
       },
     });
 
+    // Per-(ticker, date) ticker net-flow cumulative series cache. Shared
+    // across all chain groups so two TSLA chains in the same cron tick
+    // only fetch the TSLA flow series once. Scoped to handler lifetime
+    // (cleared when handler returns). Spec:
+    // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md.
+    const tickerFlowCache = new Map<string, TickerFlowSeries>();
+
     for (const g of groups.values()) {
       if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
         skippedShort += 1;
@@ -426,6 +438,26 @@ export default withCronInstrumentation(
         // applyEmpiricalBonuses — the original -3 bottom-10% penalty
         // was retired after the 2026-05-16 EDA rerun showed no edge
         // at either tail. See ml/findings/eda-rerun-2026-05-16/.
+
+        // Snapshot the ticker cumulative net call/put premium at fire
+        // time. Replaces the per-row LATERAL the feed used to run
+        // (caused ~30s page loads). Cached per (ticker, date) so
+        // multiple fires reuse one SQL fetch + binary-search.
+        const flowCacheKey = `${rec.underlyingSymbol}_${rec.date}`;
+        let flowSeries = tickerFlowCache.get(flowCacheKey);
+        if (flowSeries == null) {
+          flowSeries = await fetchTickerFlowSeries(
+            db,
+            rec.underlyingSymbol,
+            rec.date,
+          );
+          tickerFlowCache.set(flowCacheKey, flowSeries);
+        }
+        const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
+          flowSeries,
+          rec.triggerTimeCt,
+        );
+
         const score = applyEmpiricalBonuses({
           baseScore,
           triggerVolToOiWindow: rec.triggerVolToOiWindow,
@@ -531,6 +563,7 @@ export default withCronInstrumentation(
             gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
             gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
             score, direction_gated, range_pos_at_trigger,
+            cum_ncp_at_fire, cum_npp_at_fire,
             takeit_prob, takeit_model_version, takeit_features
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
@@ -550,6 +583,7 @@ export default withCronInstrumentation(
             ${macro.gex_strike_call_minus_put}, ${macro.gex_strike_call_ask_minus_bid},
             ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
             ${score}, ${directionGated}, ${rangePosAtTrigger},
+            ${cumNcpAtFire}, ${cumNppAtFire},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING

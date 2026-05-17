@@ -209,6 +209,7 @@ describe('detect-lottery-fires handler', () => {
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -241,6 +242,7 @@ describe('detect-lottery-fires handler', () => {
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]);
 
     const req = mockRequest({
@@ -263,9 +265,9 @@ describe('detect-lottery-fires handler', () => {
     const takeitFeatures = insertCall.at(-1);
     const takeitVersion = insertCall.at(-2);
     const takeitProb = insertCall.at(-3);
-    const rangePos = insertCall.at(-4);
-    const directionGated = insertCall.at(-5);
-    const score = insertCall.at(-6);
+    const rangePos = insertCall.at(-6);
+    const directionGated = insertCall.at(-7);
+    const score = insertCall.at(-8);
     expect(score).toBe(25);
     // SNDK call with no OTM tide tick → ungated.
     expect(directionGated).toBe(false);
@@ -305,6 +307,7 @@ describe('detect-lottery-fires handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]);
 
     const req = mockRequest({
@@ -317,8 +320,8 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     // takeit_features tail-appended (Phase 3d) — rangePos at(-4), score at(-6).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-4);
-    const score = insertCall.at(-6);
+    const rangePos = insertCall.at(-6);
+    const score = insertCall.at(-8);
     // Spot 1170 between low 1150 and high 1200 → 0.4
     expect(rangePos).toBeCloseTo(0.4, 5);
     // No penalty applied; base 25 unchanged.
@@ -351,6 +354,7 @@ describe('detect-lottery-fires handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]);
 
     const req = mockRequest({
@@ -362,8 +366,8 @@ describe('detect-lottery-fires handler', () => {
 
     // takeit_features tail-appended (Phase 3d) — rangePos at(-4), score at(-6).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-4);
-    const score = insertCall.at(-6);
+    const rangePos = insertCall.at(-6);
+    const score = insertCall.at(-8);
     expect(rangePos).toBe(0);
     // No penalty applied — Range Kill retired. Base 25 unchanged.
     expect(score).toBe(25);
@@ -383,6 +387,7 @@ describe('detect-lottery-fires handler', () => {
         { source: 'market_tide_otm', ncp: '4000', npp: '1000' },
       ]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -404,12 +409,12 @@ describe('detect-lottery-fires handler', () => {
     // → mkt_tide_otm_diff is now the 19th-from-last bind position after
     //   takeit_features was tail-appended (was -14, -15, -16, -18 in prior eras).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-19)).toBe(3000); // 4000 - 1000
+    expect(insertCall.at(-21)).toBe(3000); // 4000 - 1000
     // Sanity: mkt_tide_diff (no 'market_tide' source in the mock) is null
-    expect(insertCall.at(-20)).toBeNull();
+    expect(insertCall.at(-22)).toBeNull();
     // SNDK call with otm_diff = +3000 (well below the ±150M gate) → ungated.
     // direction_gated shifted to -5 after takeit_features tail-append.
-    expect(insertCall.at(-5)).toBe(false);
+    expect(insertCall.at(-7)).toBe(false);
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
@@ -420,6 +425,7 @@ describe('detect-lottery-fires handler', () => {
         { source: 'market_tide', ncp: '500', npp: '300' },
       ]) // flow_data — only all-in tide, no OTM
       .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -435,9 +441,9 @@ describe('detect-lottery-fires handler', () => {
     //   -2 from #155 takeit_prob + takeit_model_version, -1 from Phase 3d
     //   takeit_features tail-append.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-20)).toBe(200); // mkt_tide_diff = 500 - 300
-    expect(insertCall.at(-19)).toBeNull(); // mkt_tide_otm_diff absent
-    expect(insertCall.at(-5)).toBe(false); // otm null → ungated (direction_gated shifted)
+    expect(insertCall.at(-22)).toBe(200); // mkt_tide_diff = 500 - 300
+    expect(insertCall.at(-21)).toBeNull(); // mkt_tide_otm_diff absent
+    expect(insertCall.at(-7)).toBe(false); // otm null → ungated (direction_gated shifted)
   });
 
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
@@ -457,6 +463,7 @@ describe('detect-lottery-fires handler', () => {
       .mockResolvedValueOnce([]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
       .mockResolvedValueOnce([]) // strike_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
     const req = mockRequest({
@@ -468,7 +475,9 @@ describe('detect-lottery-fires handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    expect(mockSql).toHaveBeenCalledTimes(6);
+    // Migration #158 added a per-fire ticker_flow_snapshot query between
+    // spot_exposures and INSERT — bumps the SPY path from 6 to 7 calls.
+    expect(mockSql).toHaveBeenCalledTimes(7);
   });
 
   it('skips chains with fewer than the per-chain min prints', async () => {
@@ -536,6 +545,7 @@ describe('detect-lottery-fires handler', () => {
       // remaining two are still consumed even though Promise.all
       // already short-circuited via the rejection.
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 99 }]); // insert proceeds with EMPTY_MACRO
 
     const req = mockRequest({
@@ -641,6 +651,7 @@ describe('detect-lottery-fires handler', () => {
         { source: 'market_tide_otm', ncp: '300000000', npp: '100000000' },
       ]) // flow_data → otm_diff +200_000_000
       .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
     const req = mockRequest({
@@ -663,10 +674,10 @@ describe('detect-lottery-fires handler', () => {
     //   takeit_prob(-3), takeit_model_version(-2), takeit_features(-1).
     // The direction gate must NOT mutate the score value — only the
     // boolean column flips.
-    expect(insertCall.at(-5)).toBe(true);
+    expect(insertCall.at(-7)).toBe(true);
     // Score remains the computed value (not zeroed / not demoted).
-    expect(typeof insertCall.at(-6)).toBe('number');
-    expect(insertCall.at(-6) as number).toBeGreaterThan(0);
+    expect(typeof insertCall.at(-8)).toBe('number');
+    expect(insertCall.at(-8) as number).toBeGreaterThan(0);
   });
 
   it('still fires when prior-fire is older than the 5-min cooldown', async () => {
@@ -684,6 +695,7 @@ describe('detect-lottery-fires handler', () => {
       ])
       .mockResolvedValueOnce([]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 7 }]); // insert
 
     const req = mockRequest({
