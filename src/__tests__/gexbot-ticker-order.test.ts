@@ -35,7 +35,7 @@ describe('GEXBOT_TICKER_ORDER', () => {
   });
 
   it('places indexes before ETFs (display convention)', () => {
-    const indexes = ['SPX', 'ES_SPX', 'NDX', 'NQ_NDX', 'RUT', 'VIX'];
+    const indexes = ['SPX', 'ES_SPX', 'NDX', 'NQ_NDX', 'RUT', 'VIX'] as const;
     const firstEtfIdx = GEXBOT_TICKER_ORDER.indexOf('SPY');
     for (const idx of indexes) {
       expect(GEXBOT_TICKER_ORDER.indexOf(idx)).toBeLessThan(firstEtfIdx);

@@ -92,7 +92,11 @@ describe('gexbot-queries', () => {
 
     it('skips NaN zcvr rows', async () => {
       mockSql.mockResolvedValueOnce([
-        { ticker: 'SPX', captured_at: '2026-05-19T13:00:00Z', zcvr: 'not-a-number' },
+        {
+          ticker: 'SPX',
+          captured_at: '2026-05-19T13:00:00Z',
+          zcvr: 'not-a-number',
+        },
         { ticker: 'SPX', captured_at: '2026-05-19T13:01:00Z', zcvr: '1.1' },
       ]);
       const result = await getConvexityTrend();
@@ -193,6 +197,81 @@ describe('gexbot-queries', () => {
       mockSql.mockResolvedValueOnce([]);
       const result = await getSiblingConfirmation('SPY', 'call');
       expect(result).toEqual([]);
+    });
+
+    // ── Group resolution matrix ────────────────────────────
+
+    /**
+     * Helper: pull the ticker array that was passed to the SQL query.
+     * The `sql` tagged-template call interleaves args with strings;
+     * the only array in `dynamicArgs` should be the siblings list.
+     */
+    function siblingsPassedTo(call: unknown[]): string[] {
+      const dynamicArgs = call.slice(1);
+      const arr = dynamicArgs.find(
+        (a): a is string[] =>
+          Array.isArray(a) && a.every((x) => typeof x === 'string'),
+      );
+      if (!arr) throw new Error('no siblings array found in sql call args');
+      return arr;
+    }
+
+    it('resolves vol-group siblings for a VIX call (UVXY only)', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('VIX', 'call');
+      const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
+      expect(siblings).toEqual(['UVXY']);
+    });
+
+    it('resolves bonds-group siblings for a TLT put (HYG only)', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('TLT', 'put');
+      const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
+      expect(siblings).toEqual(['HYG']);
+    });
+
+    it('resolves metals-group siblings for a GLD call (SLV only)', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('GLD', 'call');
+      const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
+      expect(siblings).toEqual(['SLV']);
+    });
+
+    it('returns [] without sql call for energy-group USO (no siblings)', async () => {
+      // USO is alone in the energy group → siblingsFor returns [].
+      // The function should short-circuit before issuing the SQL query.
+      const result = await getSiblingConfirmation('USO', 'put');
+      expect(result).toEqual([]);
+      expect(mockSql).not.toHaveBeenCalled();
+    });
+
+    it('resolves broad-group siblings for an SPX call (4 others, self excluded)', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('SPX', 'call');
+      const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
+      // broad = [SPX, SPY, QQQ, IWM, NDX]; SPX excluded → 4 siblings.
+      expect(siblings.sort()).toEqual(['IWM', 'NDX', 'QQQ', 'SPY']);
+      expect(siblings).not.toContain('SPX');
+    });
+
+    it('falls back to broad-market siblings for an out-of-group single stock', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      await getSiblingConfirmation('AAPL', 'put');
+      const siblings = siblingsPassedTo(mockSql.mock.calls[0] as unknown[]);
+      // AAPL isn't in any group → broad-minus-self. AAPL isn't in
+      // broad either so all 5 broad tickers come through.
+      expect(siblings.sort()).toEqual(['IWM', 'NDX', 'QQQ', 'SPX', 'SPY']);
+    });
+
+    it('classifies neutral when only zcvr OR only DRR has a same-direction signal', async () => {
+      // Reviewer note v0: heuristic is OR semantics. zcvr=1.05 (only
+      // mildly call-leaning, below threshold) + DRR=null → callBias
+      // false (zcvr ≤ 1 threshold) → neutral.
+      mockSql.mockResolvedValueOnce([
+        { ticker: 'QQQ', zcvr: '1.0', delta_risk_reversal: null },
+      ]);
+      const [row] = await getSiblingConfirmation('SPY', 'call');
+      expect(row!.verdict).toBe('neutral');
     });
   });
 

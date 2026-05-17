@@ -258,4 +258,81 @@ describe('archive-gexbot handler', () => {
     const sqlCalls = mockSql.mock.calls.map((c) => String(c[0])).join('\n');
     expect(sqlCalls).not.toMatch(/INSERT INTO gexbot_archive_audit/);
   });
+
+  it('archives an empty day cleanly (still writes audit row with row_count=0)', async () => {
+    // No rows to archive → streamRows generator yields nothing →
+    // writeRowsToParquet still produces a (schema-only) buffer →
+    // audit row with row_count=0 still lands so cleanup knows the
+    // date is "accounted for".
+    mockSql.mockResolvedValueOnce([]); // snapshots page 1 (empty)
+    mockSql.mockResolvedValueOnce([]); // snapshots audit INSERT
+    mockSql.mockResolvedValueOnce([]); // captures page 1 (empty)
+    mockSql.mockResolvedValueOnce([]); // captures audit INSERT
+
+    mockWriteParquet.mockResolvedValue({
+      buffer: Buffer.alloc(0),
+      bytes: 0,
+      sha256: 'empty-sha',
+      rowCount: 0,
+    });
+    mockPut.mockResolvedValue({
+      url: 'https://blob.example/empty.parquet',
+      pathname: 'x',
+      contentDisposition: '',
+      contentType: '',
+      size: 0,
+    });
+    mockHead.mockResolvedValue({
+      url: 'https://blob.example/empty.parquet',
+      pathname: 'x',
+      size: 0,
+      uploadedAt: new Date(),
+      contentType: '',
+      contentDisposition: '',
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
+    expect(mockPut).toHaveBeenCalledTimes(2);
+  });
+
+  it('issues the audit INSERT with ON CONFLICT UPDATE for idempotent re-runs', async () => {
+    // Idempotency invariant: re-running on the same archive_date
+    // must UPDATE the existing audit row rather than fail.
+    // Verify the SQL shape carries the ON CONFLICT DO UPDATE clause.
+    setupSuccessfulRun([{ id: 1, captured_at: new Date(), ticker: 'SPX' }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+
+    // The audit INSERTs are the calls whose SQL contains
+    // gexbot_archive_audit. Pull them and verify upsert shape.
+    const auditCalls = mockSql.mock.calls.filter((call) => {
+      const sqlStrings = (call[0] as string[]) ?? [];
+      return sqlStrings.some((s) =>
+        s.includes('INSERT INTO gexbot_archive_audit'),
+      );
+    });
+    expect(auditCalls.length).toBe(2); // one per table
+    for (const call of auditCalls) {
+      const joinedSql = ((call[0] as string[]) ?? []).join(' ');
+      expect(joinedSql).toMatch(
+        /ON CONFLICT\s*\(\s*table_name,\s*archive_date\s*\)/,
+      );
+      expect(joinedSql).toMatch(/DO UPDATE SET/);
+    }
+  });
 });

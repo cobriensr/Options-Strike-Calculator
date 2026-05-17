@@ -233,4 +233,75 @@ describe('fetch-gexbot-fast handler', () => {
     // One Sentry capture for the SPX/orderflow 500
     expect(mockSentryCapture).toHaveBeenCalledTimes(1);
   });
+
+  it('hits all 3 endpoint families in a single tick', async () => {
+    // Verifies fetch is called with at least one URL from each of:
+    //   /orderflow/orderflow
+    //   /classic/{gex_zero|gex_one|gex_full}/maxchange
+    //   /state/{gamma|delta|vanna|charm}_{zero|one}/maxchange
+    // Regression guard for the wave-3c expansion where state-maxchange
+    // routes were added and could be silently dropped.
+    stubFetchHappyPath();
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    const urls = (
+      globalThis.fetch as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.map((c) => String(c[0]));
+
+    const hasOrderflow = urls.some((u) => u.includes('/orderflow/orderflow'));
+    const hasClassicMax = urls.some((u) =>
+      /\/classic\/(gex_zero|gex_one|gex_full)\/maxchange/.test(u),
+    );
+    const hasStateMax = urls.some((u) =>
+      /\/state\/(gamma|delta|vanna|charm)_(zero|one)\/maxchange/.test(u),
+    );
+    expect(hasOrderflow).toBe(true);
+    expect(hasClassicMax).toBe(true);
+    expect(hasStateMax).toBe(true);
+  });
+
+  it('tags Sentry with full per-failure context (ticker + endpoint + category)', async () => {
+    // When SPX/state/gamma_zero/maxchange fails, the captured Sentry
+    // event must carry tags identifying which ticker + endpoint +
+    // category exploded — needed for "is this a GEXBot-wide outage or
+    // a single-symbol issue" triage during the trial.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/SPX/state/gamma_zero/maxchange')) {
+          return {
+            ok: false,
+            status: 503,
+            text: async () => 'unavailable',
+          } as Response;
+        }
+        const ticker =
+          url.split('/').find((seg) => GEXBOT_TICKERS.includes(seg as never)) ??
+          'SPX';
+        const body = url.includes('/orderflow/orderflow')
+          ? makeOrderflowBody(ticker)
+          : makeMaxchangeBody(ticker);
+        return { ok: true, status: 200, json: async () => body } as Response;
+      }),
+    );
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+    const opts = mockSentryCapture.mock.calls[0]?.[1] as {
+      tags: Record<string, string>;
+    };
+    expect(opts.tags['gexbot.cron']).toBe('fast');
+    expect(opts.tags['gexbot.ticker']).toBe('SPX');
+    expect(opts.tags['gexbot.endpoint']).toBe('state-maxchange');
+    expect(opts.tags['gexbot.category']).toBe('gamma_zero');
+  });
 });
