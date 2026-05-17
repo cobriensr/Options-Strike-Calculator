@@ -278,6 +278,59 @@ describe('usePanelPrefs — owner', () => {
     expect(body.groupOrder).toEqual(['Trading', 'Inputs']);
   });
 
+  it('load-race: toggle BEFORE GET resolves — user wins on touched axis, server wins on untouched axes', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    // Defer the GET so we can toggle before it resolves
+    let resolveGet: (value: Response) => void = () => undefined;
+    const getPromise = new Promise<Response>((r) => {
+      resolveGet = r;
+    });
+    fetchMock.mockImplementationOnce(() => getPromise);
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+
+    const { result } = renderHook(() => usePanelPrefs());
+
+    // User toggles BEFORE the GET resolves — `isLoaded` is still false
+    expect(result.current.isLoaded).toBe(false);
+    act(() => {
+      result.current.toggle('sec-darkpool');
+    });
+    expect(result.current.isHidden('sec-darkpool')).toBe(true);
+
+    // GET now resolves with stored state across all three axes
+    resolveGet(
+      jsonResponse({
+        hiddenPanels: ['sec-stored-hidden'],
+        panelOrder: ['sec-spot-price', 'sec-datetime'],
+        groupOrder: ['Trading', 'Inputs'],
+      }),
+    );
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    // hiddenPanels: user touched it pre-load → user value wins, server
+    // value is rejected
+    expect(result.current.isHidden('sec-darkpool')).toBe(true);
+    expect(result.current.isHidden('sec-stored-hidden')).toBe(false);
+    // panelOrder + groupOrder: user didn't touch → server values apply
+    expect(result.current.order).toEqual(['sec-spot-price', 'sec-datetime']);
+    expect(result.current.groupOrder).toEqual(['Trading', 'Inputs']);
+
+    await flushDebounce();
+
+    // PUT body has ONLY the touched axis — stored panelOrder + groupOrder
+    // are never sent, so the server's partial-update merge preserves them.
+    const puts = fetchMock.mock.calls.filter((c) => c[1]?.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    const body = JSON.parse(
+      (puts[0]?.[1] as RequestInit).body as string,
+    ) as Record<string, unknown>;
+    expect(body).toEqual({ hiddenPanels: ['sec-darkpool'] });
+    expect('panelOrder' in body).toBe(false);
+    expect('groupOrder' in body).toBe(false);
+  });
+
   it('GET on mount loads panelOrder + groupOrder from server', async () => {
     vi.mocked(getAccessMode).mockReturnValue('owner');
     fetchMock.mockResolvedValueOnce(

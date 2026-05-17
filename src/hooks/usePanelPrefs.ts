@@ -8,11 +8,23 @@
  * Reads all three from `GET /api/panel-prefs` on mount (skipped for
  * public visitors who have no server-side row). Mutations are optimistic:
  * setters update local state synchronously and schedule a debounced
- * `PUT` so rapidly flipping 10 checkboxes / dragging a panel a few times
- * collapses into one network round-trip. Every PUT sends all three axes
- * — partial-update semantics live on the server (see api/panel-prefs.ts)
- * but the normal flow uses full sends so client state is the source of
- * truth.
+ * `PUT` that bundles per-axis changes — only the axes the user actually
+ * touched get sent. The server merges via partial-update semantics
+ * (api/panel-prefs.ts) so untouched axes stay untouched. This matters
+ * for two scenarios:
+ *
+ *   - A toggle followed by a drag both land in one PUT body, both
+ *     axes touched, both persisted.
+ *   - A toggle dispatched BEFORE the initial GET resolves correctly
+ *     scopes the eventual PUT to just `hiddenPanels`, so the stored
+ *     `panelOrder` + `groupOrder` aren't clobbered by client-side
+ *     defaults.
+ *
+ * Same pattern covers `pagehide` / `visibilitychange→hidden` / unmount
+ * via `flushPending()` + `fetch(..., { keepalive: true })`, so
+ * cmd+shift+r, tab close, and mobile-backgrounded PWA paths persist
+ * the user's last change rather than dropping the in-flight 500 ms
+ * debounce.
  *
  * A failed PUT keeps the optimistic state — the user can re-toggle /
  * re-drag to retry — rather than reverting silently, which would feel
@@ -58,10 +70,15 @@ interface PanelPrefsResponse {
   groupOrder?: string[];
 }
 
-interface PendingPut {
-  hiddenPanels: string[];
-  panelOrder: string[];
-  groupOrder: string[];
+/**
+ * The PUT body sent to /api/panel-prefs. All three axes are optional
+ * — only the ones the user has touched since last sync are included,
+ * so the server's partial-update merge preserves the rest.
+ */
+interface PartialBody {
+  hiddenPanels?: string[];
+  panelOrder?: string[];
+  groupOrder?: string[];
 }
 
 export function usePanelPrefs(): PanelPrefs {
@@ -75,8 +92,11 @@ export function usePanelPrefs(): PanelPrefs {
   const pendingPutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The latest body the debounce timer will send. Held in a ref so the
   // flush path (pagehide / unmount) can grab the most recent state even
-  // if React state has moved on. Cleared after a successful send.
-  const pendingBodyRef = useRef<PendingPut | null>(null);
+  // if React state has moved on, AND so the GET handler can check
+  // axis-presence to avoid clobbering user changes that happened
+  // pre-load. Keys present = "user touched this axis"; cleared after a
+  // successful send.
+  const pendingBodyRef = useRef<PartialBody>({});
 
   useEffect(() => {
     if (initialMode === 'public') return;
@@ -89,9 +109,20 @@ export function usePanelPrefs(): PanelPrefs {
           return;
         }
         const data = (await res.json()) as PanelPrefsResponse;
-        setHidden(new Set(data.hiddenPanels));
-        setOrderState(data.panelOrder ?? []);
-        setGroupOrderState(data.groupOrder ?? []);
+        // Only apply axes the user HASN'T touched since mount —
+        // otherwise the GET overwrites the user's pre-load toggle /
+        // drag with stored state. Touched-axis presence is encoded as
+        // key presence in pendingBodyRef.
+        const pending = pendingBodyRef.current;
+        if (!('hiddenPanels' in pending)) {
+          setHidden(new Set(data.hiddenPanels));
+        }
+        if (!('panelOrder' in pending)) {
+          setOrderState(data.panelOrder ?? []);
+        }
+        if (!('groupOrder' in pending)) {
+          setGroupOrderState(data.groupOrder ?? []);
+        }
         setIsLoaded(true);
       } catch (err) {
         if ((err as Error).name === 'AbortError') return;
@@ -103,7 +134,7 @@ export function usePanelPrefs(): PanelPrefs {
     };
   }, [initialMode]);
 
-  const sendPut = useCallback((body: PendingPut, keepalive: boolean) => {
+  const sendPut = useCallback((body: PartialBody, keepalive: boolean) => {
     // `keepalive: true` lets the request outlive the page when fired
     // from a pagehide / unmount handler — that's how cmd+shift+r and
     // tab-close paths persist the user's latest drag/toggle instead
@@ -117,18 +148,21 @@ export function usePanelPrefs(): PanelPrefs {
   }, []);
 
   const persist = useCallback(
-    (next: PendingPut) => {
+    (patch: PartialBody) => {
       if (initialMode === 'public') return;
-      pendingBodyRef.current = next;
+      // Merge the new per-axis change into the pending body. Earlier
+      // touches stick around so a toggle + drag in the same debounce
+      // window both make it into one PUT.
+      pendingBodyRef.current = { ...pendingBodyRef.current, ...patch };
       if (pendingPutRef.current) clearTimeout(pendingPutRef.current);
       pendingPutRef.current = setTimeout(() => {
         const body = pendingBodyRef.current;
-        if (body) {
+        if (Object.keys(body).length > 0) {
           // Optimistic update stays on failure; user can re-toggle /
           // re-drag to retry. Reverting silently would look like the
           // UI is broken.
           sendPut(body, false);
-          pendingBodyRef.current = null;
+          pendingBodyRef.current = {};
         }
         pendingPutRef.current = null;
       }, DEBOUNCE_MS);
@@ -145,9 +179,10 @@ export function usePanelPrefs(): PanelPrefs {
       clearTimeout(pendingPutRef.current);
       pendingPutRef.current = null;
     }
-    if (pendingBodyRef.current) {
-      sendPut(pendingBodyRef.current, true);
-      pendingBodyRef.current = null;
+    const body = pendingBodyRef.current;
+    if (Object.keys(body).length > 0) {
+      sendPut(body, true);
+      pendingBodyRef.current = {};
     }
   }, [sendPut]);
 
@@ -178,70 +213,45 @@ export function usePanelPrefs(): PanelPrefs {
         const next = new Set(prev);
         if (next.has(id)) next.delete(id);
         else next.add(id);
-        persist({
-          hiddenPanels: [...next],
-          panelOrder: [...order],
-          groupOrder: [...groupOrder],
-        });
+        persist({ hiddenPanels: [...next] });
         return next;
       });
     },
-    [persist, order, groupOrder],
+    [persist],
   );
 
   const reset = useCallback(() => {
-    const next = new Set<string>();
-    setHidden(next);
-    persist({
-      hiddenPanels: [],
-      panelOrder: [...order],
-      groupOrder: [...groupOrder],
-    });
-  }, [persist, order, groupOrder]);
+    setHidden(new Set());
+    persist({ hiddenPanels: [] });
+  }, [persist]);
 
   const setOrder = useCallback(
     (ids: readonly string[]) => {
       const nextOrder = [...ids];
       setOrderState(nextOrder);
-      persist({
-        hiddenPanels: [...hidden],
-        panelOrder: nextOrder,
-        groupOrder: [...groupOrder],
-      });
+      persist({ panelOrder: nextOrder });
     },
-    [persist, hidden, groupOrder],
+    [persist],
   );
 
   const resetPanelOrder = useCallback(() => {
     setOrderState([]);
-    persist({
-      hiddenPanels: [...hidden],
-      panelOrder: [],
-      groupOrder: [...groupOrder],
-    });
-  }, [persist, hidden, groupOrder]);
+    persist({ panelOrder: [] });
+  }, [persist]);
 
   const setGroupOrder = useCallback(
     (groups: readonly string[]) => {
       const nextGroupOrder = [...groups];
       setGroupOrderState(nextGroupOrder);
-      persist({
-        hiddenPanels: [...hidden],
-        panelOrder: [...order],
-        groupOrder: nextGroupOrder,
-      });
+      persist({ groupOrder: nextGroupOrder });
     },
-    [persist, hidden, order],
+    [persist],
   );
 
   const resetGroupOrder = useCallback(() => {
     setGroupOrderState([]);
-    persist({
-      hiddenPanels: [...hidden],
-      panelOrder: [...order],
-      groupOrder: [],
-    });
-  }, [persist, hidden, order]);
+    persist({ groupOrder: [] });
+  }, [persist]);
 
   // Stable object reference: without useMemo, the return is a fresh
   // literal every render, which breaks downstream useMemo caches that
