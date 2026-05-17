@@ -135,6 +135,7 @@ if (import.meta.env.PROD)
       { path: '/api/silent-boom-ticker-counts', method: 'GET' },
       { path: '/api/silent-boom-export', method: 'GET' },
       { path: '/api/net-flow-history', method: 'GET' },
+      { path: '/api/ticker-net-flow-current', method: 'GET' },
       { path: '/api/greek-heatmap', method: 'GET' },
       { path: '/api/ticker-candles', method: 'GET' },
       { path: '/api/strike-trade-volume', method: 'GET' },

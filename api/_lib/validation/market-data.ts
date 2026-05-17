@@ -316,6 +316,49 @@ export const netFlowHistoryQuerySchema = z.object({
 export type NetFlowHistoryQuery = z.infer<typeof netFlowHistoryQuerySchema>;
 
 // ============================================================
+// /api/ticker-net-flow-current
+// ============================================================
+
+/**
+ * Validator for the batch "latest cumulative net flow" snapshot used
+ * by the Lottery / SilentBoom row badges. Returns one row per ticker
+ * with the most-recent `(cum_ncp, cum_npp)` for the requested date.
+ *
+ * - `tickers` required, comma-separated, deduped + uppercased before
+ *   the SQL query runs. Cap of 100 matches the lottery-finder page
+ *   size so the section can request its full visible set in one call.
+ * - `date` defaults to ET-today when omitted (mirrors net-flow-history).
+ */
+export const tickerNetFlowCurrentQuerySchema = z.object({
+  tickers: z
+    .string()
+    .transform((s) =>
+      Array.from(
+        new Set(
+          s
+            .split(',')
+            .map((t) => t.trim().toUpperCase())
+            .filter((t) => t.length > 0),
+        ),
+      ),
+    )
+    .pipe(
+      z
+        .array(z.string().regex(/^[A-Z]{1,8}$/, 'each ticker must be A-Z 1-8'))
+        .min(1, 'tickers must contain at least one symbol')
+        .max(100, 'tickers may not exceed 100'),
+    ),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+    .optional(),
+});
+
+export type TickerNetFlowCurrentQuery = z.infer<
+  typeof tickerNetFlowCurrentQuerySchema
+>;
+
+// ============================================================
 // /api/ticker-candles
 // ============================================================
 
