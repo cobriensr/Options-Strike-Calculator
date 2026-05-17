@@ -18,6 +18,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { getDb } from './db.js';
+import { MAX_LESSON_CHARS_EACH } from './lessons.js';
 import logger from './logger.js';
 import { Sentry } from './sentry.js';
 
@@ -536,7 +537,13 @@ export function formatLessonsBlock(
   active.forEach((lesson, idx) => {
     const cites =
       lesson.citation_count > 1 ? ` _(cited ${lesson.citation_count}x)_` : '';
-    lines.push(`${idx + 1}. ${lesson.lesson_text}${cites}`);
+    // Mirror MAX_LESSON_CHARS_EACH from lessons.ts — safety net so a
+    // single verbose lesson can't blow out the periscope cached prefix.
+    const text =
+      lesson.lesson_text.length > MAX_LESSON_CHARS_EACH
+        ? lesson.lesson_text.slice(0, MAX_LESSON_CHARS_EACH - 1) + '…'
+        : lesson.lesson_text;
+    lines.push(`${idx + 1}. ${text}${cites}`);
   });
 
   lines.push('');

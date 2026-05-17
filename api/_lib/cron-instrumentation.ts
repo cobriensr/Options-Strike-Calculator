@@ -239,7 +239,7 @@ async function sentryCheckInDirect(input: SentryCheckInInput): Promise<string> {
  * decision must be made BEFORE the wrapper sends its `in_progress`
  * check-in, which is before cronGuard runs inside the inner handler.
  */
-function isCronAuthenticated(req: VercelRequest): boolean {
+export function isCronAuthenticated(req: VercelRequest): boolean {
   const cronSecret = process.env.CRON_SECRET ?? '';
   if (cronSecret.length === 0) return false;
   const authHeader = req.headers.authorization ?? '';

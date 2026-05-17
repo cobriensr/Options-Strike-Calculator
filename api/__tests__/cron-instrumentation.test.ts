@@ -14,6 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
+import { isCronAuthenticated } from '../_lib/cron-instrumentation.js';
 
 const { waitUntilCalls } = vi.hoisted(() => ({
   waitUntilCalls: [] as Promise<unknown>[],
@@ -981,5 +982,64 @@ describe('withCronCheckin', () => {
     expect(inner).toHaveBeenCalledTimes(1);
     expect(res._status).toBe(200);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// isCronAuthenticated — constant-time header check
+// ============================================================
+//
+// Direct unit tests for the auth primitive used by withCronCheckin.
+// The wrapper's path was exercised indirectly via 'auth failure (401)'
+// above, but those used the cronGuard mock; the actual header parsing
+// and timingSafeEqual call was never under test.
+describe('isCronAuthenticated', () => {
+  beforeEach(() => {
+    process.env.CRON_SECRET = 'test-cron-secret-32-chars-padding';
+  });
+  afterEach(() => {
+    delete process.env.CRON_SECRET;
+  });
+
+  it('returns true with matching Bearer header', () => {
+    const req = mockRequest({
+      headers: { authorization: 'Bearer test-cron-secret-32-chars-padding' },
+    });
+    expect(isCronAuthenticated(req)).toBe(true);
+  });
+
+  it('returns false with wrong secret of the same length', () => {
+    const req = mockRequest({
+      headers: { authorization: 'Bearer WRONG-cron-secret-32-chars-padding' },
+    });
+    expect(isCronAuthenticated(req)).toBe(false);
+  });
+
+  it('returns false when secret length differs (timingSafeEqual prereq)', () => {
+    const req = mockRequest({
+      headers: { authorization: 'Bearer short' },
+    });
+    expect(isCronAuthenticated(req)).toBe(false);
+  });
+
+  it('returns false when Authorization header is missing', () => {
+    const req = mockRequest({ headers: {} });
+    expect(isCronAuthenticated(req)).toBe(false);
+  });
+
+  it('returns false when CRON_SECRET env is unset', () => {
+    delete process.env.CRON_SECRET;
+    const req = mockRequest({
+      headers: { authorization: 'Bearer anything' },
+    });
+    expect(isCronAuthenticated(req)).toBe(false);
+  });
+
+  it('returns false when CRON_SECRET is empty string', () => {
+    process.env.CRON_SECRET = '';
+    const req = mockRequest({
+      headers: { authorization: 'Bearer ' },
+    });
+    expect(isCronAuthenticated(req)).toBe(false);
   });
 });

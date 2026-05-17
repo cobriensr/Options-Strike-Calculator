@@ -121,6 +121,60 @@ describe('runCachedAnthropicCall', () => {
     expect(result.cacheHit).toBe(false);
   });
 
+  it('emits metrics.anthropicCache(model, true) on cache hit', async () => {
+    const client = makeClient([
+      {
+        content: [{ type: 'text', text: 'x' }],
+        usage: { cache_read_input_tokens: 100 },
+      },
+    ]);
+
+    await runCachedAnthropicCall({
+      client,
+      systemBlocks: SYS_BLOCKS,
+      messages: USER_MSG,
+      primaryModel: 'claude-opus-4-7',
+      maxTokens: 1024,
+    });
+
+    expect(metrics.anthropicCache).toHaveBeenCalledWith(
+      'claude-opus-4-7',
+      true,
+    );
+    // No cache_write means no miss-on-write counter
+    expect(metrics.increment).not.toHaveBeenCalledWith(
+      'anthropic.cache_miss_on_write',
+    );
+  });
+
+  it('emits cache_miss_on_write when prefix invalidated (write>0, read=0)', async () => {
+    const client = makeClient([
+      {
+        content: [{ type: 'text', text: 'x' }],
+        usage: {
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 500,
+        },
+      },
+    ]);
+
+    await runCachedAnthropicCall({
+      client,
+      systemBlocks: SYS_BLOCKS,
+      messages: USER_MSG,
+      primaryModel: 'claude-opus-4-7',
+      maxTokens: 1024,
+    });
+
+    expect(metrics.anthropicCache).toHaveBeenCalledWith(
+      'claude-opus-4-7',
+      false,
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'anthropic.cache_miss_on_write',
+    );
+  });
+
   it('falls back to fallbackModel on availability error', async () => {
     const client = makeClient([
       () => {
