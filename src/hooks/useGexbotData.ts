@@ -116,9 +116,14 @@ function buildUrl(spec: GexbotView): string {
 
 function freshestFrom(rows: unknown[]): string | null {
   let best: string | null = null;
-  for (const r of rows as Array<{ capturedAt?: string }>) {
-    if (r.capturedAt && (best === null || r.capturedAt > best)) {
-      best = r.capturedAt;
+  for (const r of rows) {
+    // Defensive: rows may transit through unknown[] casts at the call
+    // site; guard against null entries and non-object shapes so a
+    // malformed API response can't throw inside the timestamp scan.
+    if (typeof r !== 'object' || r === null) continue;
+    const ts = (r as { capturedAt?: unknown }).capturedAt;
+    if (typeof ts === 'string' && (best === null || ts > best)) {
+      best = ts;
     }
   }
   return best;

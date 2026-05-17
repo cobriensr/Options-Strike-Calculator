@@ -110,13 +110,18 @@ jobs:
             echo "::warning::Claude analysis returned HTTP $http_code — analysis may be incomplete"
           fi
 
-      - name: Commit findings.json
+      - name: Commit findings.json + plots
+        # Plots are version-controlled per project convention so the user
+        # can review historical visualizations without round-tripping to
+        # Vercel Blob. The Blob upload above is for the frontend carousel;
+        # this commit is for git history.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git diff --quiet ml/findings.json || (
-            git add ml/findings.json &&
-            git commit -m "chore(ml): update pipeline findings [skip ci]" &&
+          git add ml/plots/*.png 2>/dev/null || true
+          git add ml/findings.json
+          git diff --staged --quiet || (
+            git commit -m "chore(ml): update pipeline findings + plots [skip ci]" &&
             git pull --rebase --autostash &&
             git push
           )
