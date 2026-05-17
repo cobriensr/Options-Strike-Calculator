@@ -233,12 +233,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (validated.success) {
         analysis = validated.data;
       } else {
+        // Schema mismatch: persist the parsed response anyway (better
+        // than forcing a 502 retry mid-market) but emit a metric so
+        // dashboards can alert if Claude regresses against the schema.
+        // If `analyze.schema_mismatch` starts climbing, tighten the
+        // prompt or update the schema — silent acceptance was the gap.
+        metrics.increment('analyze.schema_mismatch');
         logger.warn(
           {
             issues: validated.error.issues.slice(0, 5),
             stopReason: callResult.stopReason,
           },
-          'Analysis response schema mismatch — using raw parsed output',
+          'Analysis response schema mismatch — persisting raw parsed output',
         );
         analysis = parsed as AnalysisResponse;
       }

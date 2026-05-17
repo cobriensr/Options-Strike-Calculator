@@ -270,10 +270,15 @@ export async function runCachedAnthropicCall(
 
   const cacheHit = usage.cacheRead > 0;
 
+  metrics.anthropicCache(modelUsed, cacheHit);
+
   // Mirror analyze.ts's existing cache-miss alert: if we wrote new
   // cache content but read none, the prompt prefix likely changed and
-  // the cache-busting needs investigating.
+  // the cache-busting needs investigating. Distinguish this from a
+  // cold-start (no cache_write either) so dashboards can alert on
+  // unexpected invalidations instead of natural TTL expiry.
   if (usage.cacheRead === 0 && usage.cacheWrite > 0) {
+    metrics.increment('anthropic.cache_miss_on_write');
     logger.warn(
       { model: modelUsed },
       'Anthropic cache miss on system prompt — prefix may have changed',

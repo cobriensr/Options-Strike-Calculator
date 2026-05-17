@@ -24,6 +24,8 @@ installAuthInterceptor();
 
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN || undefined,
+  environment: import.meta.env.PROD ? 'production' : 'development',
+  initialScope: { tags: { service: 'frontend' } },
   integrations: [Sentry.browserTracingIntegration()],
   sendDefaultPii: false,
   tracesSampleRate: 0.2,

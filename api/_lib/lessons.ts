@@ -48,7 +48,25 @@ export interface ReportData {
 // ============================================================
 
 /**
- * Query all active lessons ordered by source_date DESC.
+ * Maximum number of active lessons returned by `getActiveLessons()`.
+ * Bounds the size of the lessons block injected into the analyze prompt
+ * so a multi-year backlog can't silently inflate token cost. Recency
+ * wins ties because the curator emits one new lesson per Friday review.
+ */
+export const MAX_ACTIVE_LESSONS = 20;
+
+/**
+ * Per-lesson character cap applied in `formatLessonsBlock()`. Safety net
+ * against a single verbose lesson consuming disproportionate prompt
+ * cache space — actual curated lessons should be 1–3 sentences.
+ */
+export const MAX_LESSON_CHARS_EACH = 500;
+
+/**
+ * Query the most recent active lessons, ordered source_date DESC and
+ * capped at MAX_ACTIVE_LESSONS. The curator (`curate-lessons.ts`) does
+ * NOT call this — it manages the full active set directly via its own
+ * queries — so the cap only affects analyze-context injection.
  */
 export async function getActiveLessons(): Promise<Lesson[]> {
   const sql = getDb();
@@ -59,6 +77,7 @@ export async function getActiveLessons(): Promise<Lesson[]> {
     FROM lessons
     WHERE status = 'active'
     ORDER BY source_date DESC
+    LIMIT ${MAX_ACTIVE_LESSONS}
   `;
 
   return rows.map((row) => ({
@@ -204,7 +223,11 @@ export function formatLessonsBlock(lessons: Lesson[]): string {
 
   lessons.forEach((lesson, index) => {
     const context = buildContextString(lesson);
-    lines.push(`[${index + 1}] ${context}`, lesson.text);
+    const text =
+      lesson.text.length > MAX_LESSON_CHARS_EACH
+        ? lesson.text.slice(0, MAX_LESSON_CHARS_EACH - 1) + '…'
+        : lesson.text;
+    lines.push(`[${index + 1}] ${context}`, text);
     if (lesson.tags.length > 0) {
       lines.push(`Tags: ${lesson.tags.join(', ')}`);
     }

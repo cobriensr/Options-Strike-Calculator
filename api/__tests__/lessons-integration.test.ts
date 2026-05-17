@@ -122,6 +122,7 @@ vi.mock('../_lib/sentry.js', () => ({
     analyzeCall: vi.fn(),
     dbSave: vi.fn(),
     cacheResult: vi.fn(),
+    anthropicCache: vi.fn(),
     distribution: vi.fn(),
     // CROSS-002: analyze-context.ts now calls metrics.increment at its
     // catch sites. This test exercises the catch path transitively via

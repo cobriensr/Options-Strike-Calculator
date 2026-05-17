@@ -11,6 +11,7 @@ import { optionalEnv } from './env.js';
 Sentry.init({
   dsn: optionalEnv('SENTRY_DSN'),
   environment: process.env.VERCEL_ENV ?? 'development',
+  serverName: 'api',
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.25 : 1,
   enabled: process.env.VERCEL_ENV === 'production',
   beforeSend(event) {
@@ -165,6 +166,18 @@ function cacheResult(route: string, hit: boolean) {
   });
 }
 
+/**
+ * Track an Anthropic prompt-cache hit/miss. Distinct from `cacheResult`
+ * which is for Redis. Surfaces the 5-min TTL effectiveness across
+ * analyze / periscope-chat / trace-live so dashboards can see when
+ * request spacing is too wide for prompt caching to pay off.
+ */
+function anthropicCache(model: string, hit: boolean) {
+  Sentry.metrics.count('anthropic.cache_result', 1, {
+    attributes: { model, hit: String(hit) },
+  });
+}
+
 /** Increment a named counter by 1. */
 function increment(name: string) {
   Sentry.metrics.count(name, 1);
@@ -179,6 +192,7 @@ export const metrics = {
   analyzeCall,
   dbSave,
   cacheResult,
+  anthropicCache,
   increment,
 };
 
