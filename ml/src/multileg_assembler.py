@@ -106,6 +106,18 @@ _CELL_BATCH_BUCKETS: Final = 4
 # mega-tickers. Greedy walk cost drops in proportion.
 _TOPK_PER_TRADE: Final = 8
 
+# Size-bucket explosion cap. Partner side (B) of a 2-leg join is exploded
+# into one row per integer in its size band [floor(s*(1-tol)),
+# ceil(s*(1+tol))]. Band width scales linearly with size: for
+# size_tolerance=0.1, size=10 → 3 buckets, size=100 → 21, size=1000 →
+# 201. Past a threshold the explosion factor dwarfs the selectivity
+# benefit, so we cap the per-row expansion. Rows whose band exceeds the
+# cap are routed onto a fallback non-size-key join path (slower
+# per-pair but rare). With cap=30, partner-side expansion peaks at 30x
+# and the size threshold for fallback is ~150 (at tol=0.1). Bigger
+# trades fall through.
+_SIZE_BUCKET_CAP: Final = 30
+
 # Per-batch prune threshold. When a single batch emits more than this
 # many candidates we run the top-K-per-trade prune inline so the
 # per-cell accumulator stays bounded. Without it, a dense hot-cell
@@ -739,36 +751,148 @@ _A_COLS_TWO_LEG = (
 )
 
 
+def _split_b_for_bucket_join(
+    batch: pl.DataFrame, *, size_tolerance: float
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Partition a batch's rows into (in-band, overflow) by size-band width.
+
+    For each row compute ``[lo, hi]`` = ``[floor(size*(1-tol)),
+    ceil(size*(1+tol))]`` (both clamped to ≥1). Rows whose band has
+    ``hi - lo + 1 <= _SIZE_BUCKET_CAP`` are *in-band* and will be
+    exploded onto a per-bucket key. Rows whose band exceeds the cap are
+    *overflow* and routed through the legacy no-size-key fallback join
+    (rare but unbounded explosion would otherwise dominate runtime).
+
+    The in-band frame gains an integer column ``_size_bucket`` (one row
+    per integer in the band, exploded). The overflow frame is passed
+    through untouched so the caller can join it with a non-size key.
+    """
+    if batch.height == 0:
+        # Both halves are empty but the in-band frame still needs the
+        # ``_size_bucket`` column so downstream projections type-check.
+        empty_in_band = batch.with_columns(
+            pl.lit(0, dtype=pl.Int64).alias("_size_bucket")
+        )
+        return empty_in_band, batch
+    tol_lit = pl.lit(float(size_tolerance))
+    with_band = batch.with_columns(
+        pl.max_horizontal(
+            [
+                pl.lit(1, dtype=pl.Int64),
+                (pl.col("size") * (pl.lit(1.0) - tol_lit))
+                .floor()
+                .cast(pl.Int64),
+            ]
+        ).alias("_band_lo"),
+        pl.max_horizontal(
+            [
+                pl.lit(1, dtype=pl.Int64),
+                (pl.col("size") * (pl.lit(1.0) + tol_lit))
+                .ceil()
+                .cast(pl.Int64),
+            ]
+        ).alias("_band_hi"),
+    ).with_columns(
+        (pl.col("_band_hi") - pl.col("_band_lo") + 1).alias("_band_n")
+    )
+
+    in_band = with_band.filter(pl.col("_band_n") <= _SIZE_BUCKET_CAP)
+    overflow = with_band.filter(pl.col("_band_n") > _SIZE_BUCKET_CAP).drop(
+        ["_band_lo", "_band_hi", "_band_n"]
+    )
+
+    if in_band.height > 0:
+        in_band = (
+            in_band.with_columns(
+                pl.int_ranges(
+                    pl.col("_band_lo"), pl.col("_band_hi") + 1
+                ).alias("_size_bucket")
+            )
+            .explode("_size_bucket")
+            .with_columns(pl.col("_size_bucket").cast(pl.Int64))
+            .drop(["_band_lo", "_band_hi", "_band_n"])
+        )
+    else:
+        in_band = with_band.drop(["_band_lo", "_band_hi", "_band_n"]).with_columns(
+            pl.lit(0, dtype=pl.Int64).alias("_size_bucket")
+        ).head(0)
+    return in_band, overflow
+
+
 def _self_join_two_leg(
     batch: pl.DataFrame, *, key_extra: list[str], size_tolerance: float
 ) -> pl.DataFrame:
-    """Same-type self-join: A × A on tbk (same bucket) OR A.tbk + 1 = B.tbk
-    (adjacent). Caller pre-partitioned by (expiry, option_type), so
-    ``key_extra`` is just a safety belt.
+    """Same-type self-join: A × B on (tbk, size key) for same bucket OR
+    (A.tbk + 1, size key) for adjacent. Caller pre-partitioned by
+    (expiry, option_type) so ``key_extra`` is mostly a safety belt.
 
-    ``size_tolerance`` is honoured post-join inside
-    ``_apply_two_leg_window_and_size`` via the ``_size_err`` filter — not
-    pushed into the join key. An earlier rewrite tried a size-bucket
-    explosion to push it into the equi-join (B exploded into one row per
-    bucket in [floor(s*(1-t)), ceil(s*(1+t))]); that turned out to be
-    catastrophic on real data because mega-cap tickers (NVDA, QQQ, SPY)
-    have many size>=100 prints — explosion factor scales with size, so
-    size=1000 prints expand 200× per row and OOM/stall the join. The
-    post-join filter approach loses no information: every (A,B) pair the
-    bucket explosion would have admitted is still emitted by the bare
-    join, then filtered by the same ``_size_err <= size_tolerance`` rule
-    the bucket version used implicitly. Slower per-row constant but
-    bounded — and on dense cells, dramatically faster overall.
+    Bucket-bounded size key
+    -----------------------
+    ``size_tolerance`` is pushed into the join key via a partner-side
+    explosion. Each B row is replaced with N rows, where N = band width
+    ``ceil(s*(1+tol)) - floor(s*(1-tol)) + 1``. The join key is
+    ``key_extra + tbk + size`` on A and ``key_extra + tbk +
+    _size_bucket`` on B. A pair surfaces iff A's integer size falls in
+    B's band — the same set the post-join ``_size_err <= tol`` filter
+    would have admitted (within band approximation; ``_size_err`` is
+    still computed downstream so the size penalty fires unchanged).
+
+    Pathological-size protection
+    ----------------------------
+    Band width grows linearly with size (size=1000 → 201 buckets at
+    tol=0.1). To prevent OOM/stall on mega-tickers, B rows with band
+    width > ``_SIZE_BUCKET_CAP`` are NOT exploded — they're peeled off
+    and run through a legacy no-size-key join (the prior implementation,
+    bounded only by ``ridx_b > ridx_a`` + post-join filter). On real
+    data the overflow slice is small (size>~150 prints are rare), so the
+    O(N²) cost there is bounded.
 
     Returns one frame with A's columns and B's columns suffixed _b,
     plus ``tbk`` (A's bucket; preserved for parity, not used downstream).
     """
+    # ── A side: one row per anchor, integer size key for the join. ────
+    a_size_int = pl.col("size").round(0).cast(pl.Int64).alias("_size_a_key")
     a_with_keys = batch.select(
         *(pl.col(c) for c in _A_COLS_TWO_LEG),
         pl.col("tbk"),
         *(pl.col(k) for k in key_extra),
+        a_size_int,
     )
-    b_with_keys = batch.select(
+
+    # ── B side: split into in-band (exploded) and overflow (raw). ─────
+    b_in_band, b_overflow = _split_b_for_bucket_join(
+        batch, size_tolerance=size_tolerance
+    )
+
+    b_in_band_proj = (
+        b_in_band.select(
+            pl.col("ridx").alias("ridx_b"),
+            pl.col("sid").alias("sid_b"),
+            pl.col("executed_at").alias("executed_at_b"),
+            pl.col("strike").alias("strike_b"),
+            pl.col("size").alias("size_b"),
+            pl.col("side").alias("side_b"),
+            pl.col("_is_anchor").alias("_is_anchor_b"),
+            pl.col("tbk"),
+            *(pl.col(k) for k in key_extra),
+            pl.col("_size_bucket"),
+        )
+        if b_in_band.height > 0
+        else b_in_band.select(
+            pl.col("ridx").cast(pl.UInt32).alias("ridx_b"),
+            pl.col("sid").alias("sid_b"),
+            pl.col("executed_at").alias("executed_at_b"),
+            pl.col("strike").alias("strike_b"),
+            pl.col("size").alias("size_b"),
+            pl.col("side").alias("side_b"),
+            pl.col("_is_anchor").alias("_is_anchor_b"),
+            pl.col("tbk"),
+            *(pl.col(k) for k in key_extra),
+            pl.col("_size_bucket"),
+        )
+    )
+
+    b_overflow_proj = b_overflow.select(
         pl.col("ridx").alias("ridx_b"),
         pl.col("sid").alias("sid_b"),
         pl.col("executed_at").alias("executed_at_b"),
@@ -780,27 +904,60 @@ def _self_join_two_leg(
         *(pl.col(k) for k in key_extra),
     )
 
-    # Same-bucket join on (key_extra + tbk).
-    same = a_with_keys.join(
-        b_with_keys, on=list(key_extra) + ["tbk"], how="inner"
-    )
-    if same.height > 0:
-        same = same.filter(pl.col("ridx_b") > pl.col("ridx"))
+    frames: list[pl.DataFrame] = []
 
-    # Adjacent-bucket: A.tbk + 1 == B.tbk.
-    a_adj = a_with_keys.with_columns(
-        (pl.col("tbk") + 1).alias("_tbk_next")
-    )
-    adj = a_adj.join(
-        b_with_keys,
-        left_on=list(key_extra) + ["_tbk_next"],
-        right_on=list(key_extra) + ["tbk"],
-        how="inner",
-    )
-    if adj.height > 0:
-        adj = adj.filter(pl.col("ridx_b") > pl.col("ridx")).drop("_tbk_next")
+    # ── Bucket-bounded path: A.size_int == B._size_bucket ──────────────
+    if b_in_band_proj.height > 0:
+        same = a_with_keys.join(
+            b_in_band_proj,
+            left_on=list(key_extra) + ["tbk", "_size_a_key"],
+            right_on=list(key_extra) + ["tbk", "_size_bucket"],
+            how="inner",
+        )
+        if same.height > 0:
+            same = same.filter(pl.col("ridx_b") > pl.col("ridx"))
+        a_adj = a_with_keys.with_columns(
+            (pl.col("tbk") + 1).alias("_tbk_next")
+        )
+        adj = a_adj.join(
+            b_in_band_proj,
+            left_on=list(key_extra) + ["_tbk_next", "_size_a_key"],
+            right_on=list(key_extra) + ["tbk", "_size_bucket"],
+            how="inner",
+        )
+        if adj.height > 0:
+            adj = adj.filter(pl.col("ridx_b") > pl.col("ridx")).drop(
+                "_tbk_next"
+            )
+        for f in (same, adj):
+            if f.height > 0:
+                frames.append(f.drop("_size_a_key"))
 
-    frames = [f for f in (same, adj) if f.height > 0]
+    # ── Fallback path: large-size B rows, no size key in join. ────────
+    if b_overflow_proj.height > 0:
+        a_fallback = a_with_keys.drop("_size_a_key")
+        same_f = a_fallback.join(
+            b_overflow_proj, on=list(key_extra) + ["tbk"], how="inner"
+        )
+        if same_f.height > 0:
+            same_f = same_f.filter(pl.col("ridx_b") > pl.col("ridx"))
+        a_adj_f = a_fallback.with_columns(
+            (pl.col("tbk") + 1).alias("_tbk_next")
+        )
+        adj_f = a_adj_f.join(
+            b_overflow_proj,
+            left_on=list(key_extra) + ["_tbk_next"],
+            right_on=list(key_extra) + ["tbk"],
+            how="inner",
+        )
+        if adj_f.height > 0:
+            adj_f = adj_f.filter(pl.col("ridx_b") > pl.col("ridx")).drop(
+                "_tbk_next"
+            )
+        for f in (same_f, adj_f):
+            if f.height > 0:
+                frames.append(f)
+
     if not frames:
         return _empty_two_leg_pairs(with_keys=key_extra)
     return pl.concat(frames, how="vertical_relaxed")
@@ -810,26 +967,57 @@ def _cross_join_two_leg(
     *, a: pl.DataFrame, b: pl.DataFrame, size_tolerance: float
 ) -> pl.DataFrame:
     """Cross-type join: a × b on tbk (same bucket) OR a.tbk + 1 = b.tbk
-    (adjacent). Same post-join ``size_tolerance`` treatment as
-    ``_self_join_two_leg`` — the bare equi-join emits every pair the
-    bucket-bounded version would have, and the size constraint is applied
-    later via ``_size_err``.
+    (adjacent). Same bucket-bounded size-key approach as
+    ``_self_join_two_leg`` — partner side (b) is exploded into one row
+    per integer in the size band, and the join keys on ``A.size_int ==
+    B._size_bucket`` plus tbk. Pathological-size rows (band >
+    ``_SIZE_BUCKET_CAP``) fall through to a no-size-key fallback path.
 
     ``a`` and ``b`` must share ``expiry``. Caller does the per-expiry
-    grouping. ridx_b > ridx_a deduplicates within one pass.
+    grouping. ridx_b > ridx_a deduplicates within one pass. Unlike the
+    self-join, the two sides are DIFFERENT (calls vs. puts) — so we do
+    NOT need a second orientation: the caller invokes this helper twice
+    (a=calls,b=puts AND a=puts,b=calls) to cover both directions.
     """
-    # size_tolerance is intentionally ignored at the join layer — see the
-    # docstring on _self_join_two_leg. Keeping it in the signature so the
-    # two helpers share an interface and a future bucket-bounded join can
-    # be re-introduced behind the same call sites without churn.
-    _ = size_tolerance
-
+    a_size_int = pl.col("size").round(0).cast(pl.Int64).alias("_size_a_key")
     a_with_opttype = a.select(
         *(pl.col(c) for c in _A_COLS_TWO_LEG),
         pl.col("option_type"),
         pl.col("tbk"),
+        a_size_int,
     )
-    b_with_opttype = b.select(
+
+    b_in_band, b_overflow = _split_b_for_bucket_join(
+        b, size_tolerance=size_tolerance
+    )
+    b_in_band_proj = (
+        b_in_band.select(
+            pl.col("ridx").alias("ridx_b"),
+            pl.col("sid").alias("sid_b"),
+            pl.col("executed_at").alias("executed_at_b"),
+            pl.col("strike").alias("strike_b"),
+            pl.col("size").alias("size_b"),
+            pl.col("side").alias("side_b"),
+            pl.col("_is_anchor").alias("_is_anchor_b"),
+            pl.col("option_type").alias("option_type_b"),
+            pl.col("tbk"),
+            pl.col("_size_bucket"),
+        )
+        if b_in_band.height > 0
+        else b_in_band.select(
+            pl.col("ridx").cast(pl.UInt32).alias("ridx_b"),
+            pl.col("sid").alias("sid_b"),
+            pl.col("executed_at").alias("executed_at_b"),
+            pl.col("strike").alias("strike_b"),
+            pl.col("size").alias("size_b"),
+            pl.col("side").alias("side_b"),
+            pl.col("_is_anchor").alias("_is_anchor_b"),
+            pl.col("option_type").alias("option_type_b"),
+            pl.col("tbk"),
+            pl.col("_size_bucket"),
+        )
+    )
+    b_overflow_proj = b_overflow.select(
         pl.col("ridx").alias("ridx_b"),
         pl.col("sid").alias("sid_b"),
         pl.col("executed_at").alias("executed_at_b"),
@@ -841,20 +1029,56 @@ def _cross_join_two_leg(
         pl.col("tbk"),
     )
 
-    same = a_with_opttype.join(b_with_opttype, on="tbk", how="inner")
-    if same.height > 0:
-        same = same.filter(pl.col("ridx_b") > pl.col("ridx"))
+    frames: list[pl.DataFrame] = []
 
-    a_adj = a_with_opttype.with_columns(
-        (pl.col("tbk") + 1).alias("_tbk_next")
-    )
-    adj = a_adj.join(
-        b_with_opttype, left_on="_tbk_next", right_on="tbk", how="inner"
-    )
-    if adj.height > 0:
-        adj = adj.filter(pl.col("ridx_b") > pl.col("ridx")).drop("_tbk_next")
+    if b_in_band_proj.height > 0:
+        same = a_with_opttype.join(
+            b_in_band_proj,
+            left_on=["tbk", "_size_a_key"],
+            right_on=["tbk", "_size_bucket"],
+            how="inner",
+        )
+        if same.height > 0:
+            same = same.filter(pl.col("ridx_b") > pl.col("ridx"))
+        a_adj = a_with_opttype.with_columns(
+            (pl.col("tbk") + 1).alias("_tbk_next")
+        )
+        adj = a_adj.join(
+            b_in_band_proj,
+            left_on=["_tbk_next", "_size_a_key"],
+            right_on=["tbk", "_size_bucket"],
+            how="inner",
+        )
+        if adj.height > 0:
+            adj = adj.filter(pl.col("ridx_b") > pl.col("ridx")).drop(
+                "_tbk_next"
+            )
+        for f in (same, adj):
+            if f.height > 0:
+                frames.append(f.drop("_size_a_key"))
 
-    frames = [f for f in (same, adj) if f.height > 0]
+    if b_overflow_proj.height > 0:
+        a_fallback = a_with_opttype.drop("_size_a_key")
+        same_f = a_fallback.join(b_overflow_proj, on="tbk", how="inner")
+        if same_f.height > 0:
+            same_f = same_f.filter(pl.col("ridx_b") > pl.col("ridx"))
+        a_adj_f = a_fallback.with_columns(
+            (pl.col("tbk") + 1).alias("_tbk_next")
+        )
+        adj_f = a_adj_f.join(
+            b_overflow_proj,
+            left_on="_tbk_next",
+            right_on="tbk",
+            how="inner",
+        )
+        if adj_f.height > 0:
+            adj_f = adj_f.filter(pl.col("ridx_b") > pl.col("ridx")).drop(
+                "_tbk_next"
+            )
+        for f in (same_f, adj_f):
+            if f.height > 0:
+                frames.append(f)
+
     if not frames:
         return _empty_two_leg_pairs(with_keys=["option_type"])
     return pl.concat(frames, how="vertical_relaxed")
