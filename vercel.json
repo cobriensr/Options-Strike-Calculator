@@ -150,6 +150,10 @@
       "schedule": "*/5 13-20 * * 1-5"
     },
     {
+      "path": "/api/cron/refresh-tracker-contracts",
+      "schedule": "*/5 13-20 * * 1-5"
+    },
+    {
       "path": "/api/health",
       "schedule": "25 13 * * 1-5"
     },

@@ -337,6 +337,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'refresh-tracker-contracts': {
+    schedule: '*/5 13-20 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
   'refresh-vix1d': {
     schedule: '0 11 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
