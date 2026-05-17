@@ -180,4 +180,121 @@ describe('usePanelPrefs — owner', () => {
 
     expect(result.current.isHidden('sec-darkpool')).toBe(true);
   });
+
+  it('pagehide flushes pending PUT immediately with keepalive: true', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    fetchMock.mockResolvedValueOnce(jsonResponse({ hiddenPanels: [] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ hiddenPanels: [] }));
+
+    const { result } = renderHook(() => usePanelPrefs());
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.toggle('sec-darkpool');
+    });
+
+    // No PUT yet — still in the 500 ms debounce window
+    let puts = fetchMock.mock.calls.filter((c) => c[1]?.method === 'PUT');
+    expect(puts).toHaveLength(0);
+
+    // Simulate cmd+shift+r / tab close — pagehide fires before debounce
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
+
+    puts = fetchMock.mock.calls.filter((c) => c[1]?.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(
+      (puts[0]?.[1] as RequestInit & { keepalive?: boolean }).keepalive,
+    ).toBe(true);
+    const body = JSON.parse(
+      (puts[0]?.[1] as RequestInit).body as string,
+    ) as { hiddenPanels: string[] };
+    expect(body.hiddenPanels).toEqual(['sec-darkpool']);
+  });
+
+  it('visibilitychange→hidden flushes pending PUT (iOS Safari path)', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    fetchMock.mockResolvedValueOnce(jsonResponse({ hiddenPanels: [] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ hiddenPanels: [] }));
+
+    const { result } = renderHook(() => usePanelPrefs());
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.setOrder(['sec-spot-price', 'sec-datetime']);
+    });
+
+    let puts = fetchMock.mock.calls.filter((c) => c[1]?.method === 'PUT');
+    expect(puts).toHaveLength(0);
+
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'hidden',
+    });
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    puts = fetchMock.mock.calls.filter((c) => c[1]?.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    expect(
+      (puts[0]?.[1] as RequestInit & { keepalive?: boolean }).keepalive,
+    ).toBe(true);
+    const body = JSON.parse(
+      (puts[0]?.[1] as RequestInit).body as string,
+    ) as { panelOrder: string[] };
+    expect(body.panelOrder).toEqual(['sec-spot-price', 'sec-datetime']);
+  });
+
+  it('hook unmount flushes pending PUT (SPA teardown path)', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    fetchMock.mockResolvedValueOnce(jsonResponse({ hiddenPanels: [] }));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ hiddenPanels: [] }));
+
+    const { result, unmount } = renderHook(() => usePanelPrefs());
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    act(() => {
+      result.current.setGroupOrder(['Trading', 'Inputs']);
+    });
+
+    let puts = fetchMock.mock.calls.filter((c) => c[1]?.method === 'PUT');
+    expect(puts).toHaveLength(0);
+
+    unmount();
+
+    puts = fetchMock.mock.calls.filter((c) => c[1]?.method === 'PUT');
+    expect(puts).toHaveLength(1);
+    const body = JSON.parse(
+      (puts[0]?.[1] as RequestInit).body as string,
+    ) as { groupOrder: string[] };
+    expect(body.groupOrder).toEqual(['Trading', 'Inputs']);
+  });
+
+  it('GET on mount loads panelOrder + groupOrder from server', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        hiddenPanels: ['sec-darkpool'],
+        panelOrder: ['sec-spot-price', 'sec-datetime'],
+        groupOrder: ['Trading', 'Inputs'],
+      }),
+    );
+
+    const { result } = renderHook(() => usePanelPrefs());
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    expect(result.current.isHidden('sec-darkpool')).toBe(true);
+    expect(result.current.order).toEqual(['sec-spot-price', 'sec-datetime']);
+    expect(result.current.groupOrder).toEqual(['Trading', 'Inputs']);
+  });
 });

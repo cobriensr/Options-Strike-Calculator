@@ -73,6 +73,10 @@ export function usePanelPrefs(): PanelPrefs {
   );
   const [isLoaded, setIsLoaded] = useState(() => initialMode === 'public');
   const pendingPutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The latest body the debounce timer will send. Held in a ref so the
+  // flush path (pagehide / unmount) can grab the most recent state even
+  // if React state has moved on. Cleared after a successful send.
+  const pendingBodyRef = useRef<PendingPut | null>(null);
 
   useEffect(() => {
     if (initialMode === 'public') return;
@@ -99,29 +103,72 @@ export function usePanelPrefs(): PanelPrefs {
     };
   }, [initialMode]);
 
+  const sendPut = useCallback((body: PendingPut, keepalive: boolean) => {
+    // `keepalive: true` lets the request outlive the page when fired
+    // from a pagehide / unmount handler — that's how cmd+shift+r and
+    // tab-close paths persist the user's latest drag/toggle instead
+    // of dropping the in-flight debounce timer.
+    fetch('/api/panel-prefs', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      keepalive,
+    }).catch(() => undefined);
+  }, []);
+
   const persist = useCallback(
     (next: PendingPut) => {
       if (initialMode === 'public') return;
+      pendingBodyRef.current = next;
       if (pendingPutRef.current) clearTimeout(pendingPutRef.current);
       pendingPutRef.current = setTimeout(() => {
-        // Optimistic update stays on failure; user can re-toggle / re-drag
-        // to retry. Reverting silently would look like the UI is broken.
-        fetch('/api/panel-prefs', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(next),
-        }).catch(() => undefined);
+        const body = pendingBodyRef.current;
+        if (body) {
+          // Optimistic update stays on failure; user can re-toggle /
+          // re-drag to retry. Reverting silently would look like the
+          // UI is broken.
+          sendPut(body, false);
+          pendingBodyRef.current = null;
+        }
+        pendingPutRef.current = null;
       }, DEBOUNCE_MS);
     },
-    [initialMode],
+    [initialMode, sendPut],
   );
 
-  useEffect(
-    () => () => {
-      if (pendingPutRef.current) clearTimeout(pendingPutRef.current);
-    },
-    [],
-  );
+  // Flush the latest pending body immediately. Called on hook unmount
+  // AND on pagehide / visibility-hidden so cmd+shift+r, tab close, and
+  // mobile-backgrounded PWA paths all persist the user's last action
+  // instead of dropping the in-flight 500 ms debounce.
+  const flushPending = useCallback(() => {
+    if (pendingPutRef.current) {
+      clearTimeout(pendingPutRef.current);
+      pendingPutRef.current = null;
+    }
+    if (pendingBodyRef.current) {
+      sendPut(pendingBodyRef.current, true);
+      pendingBodyRef.current = null;
+    }
+  }, [sendPut]);
+
+  useEffect(() => {
+    if (initialMode === 'public') return;
+    const onPageHide = () => flushPending();
+    // pagehide doesn't fire on iOS Safari when the user swipes the
+    // browser away — visibilitychange→hidden does, so listen to both.
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushPending();
+    };
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      // Final flush on component unmount — covers SPA teardown paths
+      // that don't trigger pagehide.
+      flushPending();
+    };
+  }, [initialMode, flushPending]);
 
   const isHidden = useCallback((id: string) => hidden.has(id), [hidden]);
 
