@@ -42,6 +42,13 @@ export function getTopOIStrikes(
   topN: number = 8,
   pinProximityPct: number = PIN_ZONE_PCT,
 ): OIStrike[] {
+  // distPct (inside the per-strike loop) divides by spot. The near-spot
+  // filter already guards on spot > 0 at line 85, but distPct didn't —
+  // a non-positive or non-finite spot would emit "Infinity" / "NaN"
+  // strings into the formatted output. Test fixture: pin-risk near-spot
+  // inclusion with spot=0 expects top-N to still return, so we guard
+  // the division locally rather than early-returning.
+  const spotIsUsable = spot > 0 && Number.isFinite(spot);
   const oiMap = new Map<number, { putOI: number; callOI: number }>();
 
   for (const p of puts) {
@@ -66,7 +73,7 @@ export function getTopOIStrikes(
       callOI,
       totalOI,
       distFromSpot,
-      distPct: ((distFromSpot / spot) * 100).toFixed(2),
+      distPct: spotIsUsable ? ((distFromSpot / spot) * 100).toFixed(2) : '0.00',
       side: putOI > callOI * 2 ? 'put' : callOI > putOI * 2 ? 'call' : 'both',
     });
   }

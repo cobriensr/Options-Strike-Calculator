@@ -14,6 +14,7 @@
 import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../themes';
 import { formatTimeCT } from '../utils/component-formatters';
+import { getETToday } from '../utils/timezone';
 import { DateInput } from './ui/DateInput';
 import { SectionBox } from './ui';
 import { StatusBadge } from './ui';
@@ -91,9 +92,7 @@ export default memo(function DarkPoolLevels({
   onRefresh,
   selectedSymbol = 'SPX',
   onSymbolChange,
-  selectedDate = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  }),
+  selectedDate = getETToday(),
   onDateChange,
   scrubTime = null,
   isLive = true,
@@ -149,11 +148,13 @@ export default memo(function DarkPoolLevels({
     [sorted, visibleCount],
   );
 
-  // Max premium for bar scaling — always use the visible set
+  // Max premium for bar scaling — always use the visible set. Use
+  // reduce instead of Math.max with spread to avoid allocating a new
+  // args array on every render when filtered grows past ~50 items.
   const maxPremium = useMemo(
     () =>
       filtered.length > 0
-        ? Math.max(...filtered.map((l) => l.totalPremium))
+        ? filtered.reduce((m, l) => Math.max(m, l.totalPremium), 0)
         : 1,
     [filtered],
   );
