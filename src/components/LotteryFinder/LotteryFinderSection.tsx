@@ -141,6 +141,64 @@ const CONVICTION_TO_MIN_SCORE: Record<ConvictionFloor, number | null> = {
   tier1: TIER1_MIN_SCORE,
 };
 
+// ============================================================
+// MIN FIRE COUNT — burst-quality filter
+// ============================================================
+//
+// Burst-profitability analysis 2026-05-17
+// (docs/tmp/burst-profitability-findings-2026-05-17.md) on 626k fires
+// across 93 days:
+//   - fire_count = 1: 45% win rate, mean R = -5.8% (negative expectancy)
+//   - fire_count 2-3: 50% median win rate, mean R = -5.7%
+//   - fire_count 4-7: 53% median win rate, mean R = -4.2%
+//   - fire_count >= 8: 60% median win rate, mean R = -1.6% (knee point)
+//   - fire_count >= 16: 64% median win rate, mean R = -1.4%
+// Single-fire chains are 27% of total chain-days — biggest noise source.
+// This filter lets the user dial in the floor without changing the score
+// formula. Default `all` keeps the panel behavior unchanged on first
+// launch; users opt-in to de-clutter.
+
+const MIN_FIRE_COUNT_LS_KEY = 'lottery.minFireCount';
+
+type MinFireCountFloor = 'all' | 'gte3' | 'gte8' | 'gte16';
+
+const MIN_FIRE_COUNT_OPTIONS: Array<{
+  value: MinFireCountFloor;
+  label: string;
+  tooltip: string;
+}> = [
+  {
+    value: 'all',
+    label: 'all fires',
+    tooltip: 'No fire-count floor — show single-fire chains too.',
+  },
+  {
+    value: 'gte3',
+    label: '×≥3',
+    tooltip:
+      'Hide single + 2-fire chains. Drops the worst-EV cohort (mean -5.8% / 45% win on singletons).',
+  },
+  {
+    value: 'gte8',
+    label: '×≥8',
+    tooltip:
+      'Knee of the burst curve. Chains in this bucket have median trail +9% and 94% win on the best fire. Recommended day-to-day filter.',
+  },
+  {
+    value: 'gte16',
+    label: '×≥16',
+    tooltip:
+      'Highest-edge cohort — median best peak 127%, median chain trail +16%. Few alerts but every one is a real burst.',
+  },
+];
+
+const MIN_FIRE_COUNT_TO_FLOOR: Record<MinFireCountFloor, number> = {
+  all: 1,
+  gte3: 3,
+  gte8: 8,
+  gte16: 16,
+};
+
 const SORT_OPTIONS: Array<{
   value: LotterySortMode;
   label: string;
@@ -315,6 +373,19 @@ export function LotteryFinderSection({
       return legacy === '1' ? 'tier1' : 'all';
     },
   );
+  const [minFireCount, setMinFireCount] = useState<MinFireCountFloor>(() => {
+    if (typeof window === 'undefined') return 'all';
+    const stored = window.localStorage.getItem(MIN_FIRE_COUNT_LS_KEY);
+    if (
+      stored === 'all' ||
+      stored === 'gte3' ||
+      stored === 'gte8' ||
+      stored === 'gte16'
+    ) {
+      return stored;
+    }
+    return 'all';
+  });
   const [hideLatePm, setHideLatePm] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_LATE_PM_LS_KEY) === '1';
@@ -358,6 +429,11 @@ export function LotteryFinderSection({
       window.localStorage.setItem(CONVICTION_LS_KEY, convictionFloor);
     }
   }, [convictionFloor]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(MIN_FIRE_COUNT_LS_KEY, minFireCount);
+    }
+  }, [minFireCount]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(HIDE_LATE_PM_LS_KEY, hideLatePm ? '1' : '0');
@@ -530,6 +606,10 @@ export function LotteryFinderSection({
         return moneynessMode === 'otm' ? otm : !otm;
       });
     }
+    const floor = MIN_FIRE_COUNT_TO_FLOOR[minFireCount];
+    if (floor > 1) {
+      out = out.filter((f) => f.fireCount >= floor);
+    }
     return out;
   }, [
     fires,
@@ -538,6 +618,7 @@ export function LotteryFinderSection({
     hideRoundTripped,
     aggressivePremium,
     moneynessMode,
+    minFireCount,
     ctMinuteOfDay,
   ]);
   // Per-filter hidden counts — computed against the unfiltered set so
@@ -977,6 +1058,37 @@ export function LotteryFinderSection({
                   }`}
                   title={c.tooltip}
                   aria-pressed={active}
+                >
+                  {c.label}
+                </button>
+              );
+            })}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>burst</span>
+            {MIN_FIRE_COUNT_OPTIONS.map((c) => {
+              const active = minFireCount === c.value;
+              // Tighter floor → deeper orange. Matches the row's ×N
+              // badge + the REIGNITION pinned section palette so the
+              // visual hierarchy stays consistent.
+              const activeColor: keyof typeof CHIP_ACTIVE =
+                c.value === 'gte16'
+                  ? 'rose'
+                  : c.value === 'gte8'
+                    ? 'orange'
+                    : c.value === 'gte3'
+                      ? 'amber'
+                      : 'emerald';
+              return (
+                <button
+                  key={c.value}
+                  type="button"
+                  onClick={() => setMinFireCount(c.value)}
+                  className={`${CHIP_BASE} ${
+                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
+                  }`}
+                  title={c.tooltip}
+                  aria-pressed={active}
+                  data-testid={`burst-filter-${c.value}`}
                 >
                   {c.label}
                 </button>
