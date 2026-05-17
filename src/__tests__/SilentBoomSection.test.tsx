@@ -556,3 +556,97 @@ describe('SilentBoomSection: exit-policy chip', () => {
     );
   });
 });
+
+// ============================================================
+// SORT MODE === 'peak' — two-tier sort (panel order + within-panel)
+// ============================================================
+
+function peakAlert(
+  ticker: string,
+  strike: number,
+  peakCeilingPct: number | null,
+  bucketCt = '2026-05-08T14:30:00Z',
+): SilentBoomAlert {
+  const optionChainId = `${ticker}260508C${String(strike * 1000).padStart(8, '0')}`;
+  return makeAlert({
+    id: strike,
+    optionChainId,
+    underlyingSymbol: ticker,
+    strike,
+    bucketCt,
+    outcomes: {
+      peakCeilingPct,
+      minutesToPeak: null,
+      realized30mPct: null,
+      realized60mPct: null,
+      realized120mPct: null,
+      realizedEodPct: null,
+      realizedTrail3010Pct: null,
+      enrichedAt: null,
+    },
+  });
+}
+
+describe("SilentBoomSection: sortMode === 'peak' two-tier ordering", () => {
+  it('orders panels by max peak desc and alerts within each panel by peak desc', () => {
+    const alerts = [
+      peakAlert('AAPL', 200, 80),
+      peakAlert('TSLA', 250, 50),
+      peakAlert('TSLA', 260, 150),
+      peakAlert('SNDK', 1175, 30),
+      peakAlert('RKLB', 123, null),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: alerts.length,
+    });
+    window.localStorage.setItem('silentBoom.sortMode', 'peak');
+
+    const { container } = render(<SilentBoomSection marketOpen={false} />);
+    const renderedRows = Array.from(
+      container.querySelectorAll('[data-testid^="silent-boom-row-"]'),
+    ) as HTMLElement[];
+
+    // Expected: TSLA (150) → TSLA (50) → AAPL (80) → SNDK (30) → RKLB (null)
+    expect(renderedRows.map((el) => el.dataset.ticker)).toEqual([
+      'TSLA',
+      'TSLA',
+      'AAPL',
+      'SNDK',
+      'RKLB',
+    ]);
+    const tslaChainIds = renderedRows
+      .filter((el) => el.dataset.ticker === 'TSLA')
+      .map((el) => el.getAttribute('data-testid'));
+    expect(tslaChainIds[0]).toContain('TSLA260508C00260000');
+    expect(tslaChainIds[1]).toContain('TSLA260508C00250000');
+  });
+
+  it("restores conviction → recency ordering when sortMode is 'newest'", () => {
+    const alerts = [
+      peakAlert('AAPL', 200, 80, '2026-05-08T14:00:00Z'),
+      peakAlert('TSLA', 260, 150, '2026-05-08T14:30:00Z'),
+      peakAlert('SNDK', 1175, 30, '2026-05-08T15:00:00Z'),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: alerts.length,
+    });
+    // Default sortMode is 'newest'; with no conviction/storm and equal
+    // alert counts, the fall-through tiebreak is latestBucketMs desc.
+
+    const { container } = render(<SilentBoomSection marketOpen={false} />);
+    const renderedRows = Array.from(
+      container.querySelectorAll('[data-testid^="silent-boom-row-"]'),
+    ) as HTMLElement[];
+
+    // Expected: SNDK (15:00) → TSLA (14:30) → AAPL (14:00)
+    expect(renderedRows.map((el) => el.dataset.ticker)).toEqual([
+      'SNDK',
+      'TSLA',
+      'AAPL',
+    ]);
+  });
+});

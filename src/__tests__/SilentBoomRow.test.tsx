@@ -50,6 +50,7 @@ vi.mock('../components/LotteryFinder/TickerNetFlowChart', () => ({
 
 // Static import AFTER mocks so the mocks are registered first.
 import { SilentBoomRow } from '../components/SilentBoom/SilentBoomRow';
+import type { TickerNetFlowSnapshot } from '../hooks/useTickerNetFlowBatch';
 
 // ── Fixture factory ───────────────────────────────────────────────────
 
@@ -124,11 +125,7 @@ function renderRow(
   alert: SilentBoomAlert,
   marketOpen = false,
   policy: SilentBoomExitPolicy = 'realized60mPct',
-  liveFlowSnapshot: {
-    cumNcp: number;
-    cumNpp: number;
-    asOfTs: string;
-  } | null = null,
+  liveFlowSnapshot: TickerNetFlowSnapshot | null = null,
 ) {
   return render(
     <SilentBoomRow

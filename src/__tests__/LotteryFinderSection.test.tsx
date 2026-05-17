@@ -576,3 +576,124 @@ describe('LotteryFinderSection: filter interactions', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+// ============================================================
+// SORT MODE === 'peak' — two-tier sort (panel order + within-panel)
+// ============================================================
+
+/**
+ * Helper to build a fire with a peakCeilingPct override and a unique
+ * chain id, so a multi-ticker fixture renders distinct rows we can
+ * assert DOM order on.
+ */
+function peakFire(
+  ticker: string,
+  strike: number,
+  peakCeilingPct: number | null,
+  triggerTimeCt = '2026-05-08T19:30:00Z',
+) {
+  const optionChainId = `${ticker}260508C${String(strike * 1000).padStart(8, '0')}`;
+  return makeFire({
+    id: strike,
+    optionChainId,
+    underlyingSymbol: ticker,
+    strike,
+    triggerTimeCt,
+    outcomes: {
+      realizedTrail30_10Pct: null,
+      realizedHard30mPct: null,
+      realizedTier50HoldEodPct: null,
+      realizedFlowInversionPct: null,
+      realizedEodPct: null,
+      peakCeilingPct,
+      minutesToPeak: null,
+      enrichedAt: '2026-05-08T20:00:00Z',
+    },
+  });
+}
+
+describe("LotteryFinderSection: sortMode === 'peak' two-tier ordering", () => {
+  it('orders panels by max peak desc and fires within each panel by peak desc', () => {
+    // 4 tickers with varying peakBest:
+    //   AAPL: max 80 (single fire)
+    //   TSLA: max 150 (two fires: 150 + 50; tests within-panel sort)
+    //   SNDK: max 30 (single fire)
+    //   RKLB: all-null peaks (single fire) — must sort last
+    const fires = [
+      peakFire('AAPL', 200, 80),
+      peakFire('TSLA', 250, 50),
+      peakFire('TSLA', 260, 150),
+      peakFire('SNDK', 1175, 30),
+      peakFire('RKLB', 123, null),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: fires.length,
+    });
+
+    // Pre-set sortMode=peak via localStorage so the section boots into
+    // that mode without a UI click.
+    window.localStorage.setItem('lottery.sortMode', 'peak');
+
+    const { container } = render(<LotteryFinderSection marketOpen={false} />);
+
+    // Pull the rendered ticker rows in DOM order.
+    const renderedRows = Array.from(
+      container.querySelectorAll('[data-testid^="lottery-row-"]'),
+    ) as HTMLElement[];
+
+    // Expected order:
+    //   TSLA 260 (peak 150)  ← TSLA panel, within: 150 first
+    //   TSLA 250 (peak 50)
+    //   AAPL 200 (peak 80)   ← AAPL panel
+    //   SNDK 1175 (peak 30)  ← SNDK panel
+    //   RKLB 123 (null)      ← all-null panel last
+    expect(renderedRows.map((el) => el.dataset.ticker)).toEqual([
+      'TSLA',
+      'TSLA',
+      'AAPL',
+      'SNDK',
+      'RKLB',
+    ]);
+    // Within the TSLA panel, the 150-peak fire must come before 50.
+    const tslaChainIds = renderedRows
+      .filter((el) => el.dataset.ticker === 'TSLA')
+      .map((el) => el.getAttribute('data-testid'));
+    expect(tslaChainIds[0]).toContain('TSLA260508C00260000');
+    expect(tslaChainIds[1]).toContain('TSLA260508C00250000');
+  });
+
+  it("restores conviction → count ordering when sortMode flips back to 'score'", () => {
+    // Same fire set as above. Under 'score' (or any non-peak sort),
+    // the previous conviction/storm/count/recency rule applies. With
+    // no conviction or storm flags and equal fire counts, the
+    // tiebreak falls through to latestTriggerMs desc — so we vary
+    // triggerTimeCt to make the order deterministic.
+    const fires = [
+      peakFire('AAPL', 200, 80, '2026-05-08T19:00:00Z'),
+      peakFire('TSLA', 260, 150, '2026-05-08T19:30:00Z'),
+      peakFire('SNDK', 1175, 30, '2026-05-08T20:00:00Z'),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: fires.length,
+    });
+
+    // Default sortMode is 'chronological' which uses the same fall-
+    // through ordering — newest trigger wins on the count tiebreak.
+    const { container } = render(<LotteryFinderSection marketOpen={false} />);
+    const renderedRows = Array.from(
+      container.querySelectorAll('[data-testid^="lottery-row-"]'),
+    ) as HTMLElement[];
+
+    // Each ticker is a 1-fire group. Expected order (latest first):
+    //   SNDK (20:00) → TSLA (19:30) → AAPL (19:00)
+    expect(renderedRows.map((el) => el.dataset.ticker)).toEqual([
+      'SNDK',
+      'TSLA',
+      'AAPL',
+    ]);
+  });
+});
