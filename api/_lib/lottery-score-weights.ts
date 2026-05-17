@@ -19,6 +19,11 @@
  */
 
 import type { LotteryMode, TimeOfDay } from './lottery-finder.js';
+import {
+  GAMMA_BONUS_EXCLUDED_TICKERS,
+  GAMMA_HIGH_BONUS_POINTS,
+  GAMMA_HIGH_BONUS_THRESHOLD,
+} from './constants.js';
 
 export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
   RKLB: 10,
@@ -103,6 +108,31 @@ export function fireCountScoreAdjustment(fireCount: number): number {
   if (fireCount <= 7) return 0;
   if (fireCount <= 15) return 1;
   return 2;
+}
+
+/**
+ * Gamma-at-trigger score bonus. Mirrors the SQL CASE expression baked
+ * into `combined_score` by migration #168 — TS helper used for
+ * tooltips + tests so the per-fire bonus reason is computable in JS
+ * without re-fetching combined_score.
+ *
+ * Returns GAMMA_HIGH_BONUS_POINTS (=1) when:
+ *   - gamma is non-null AND >= GAMMA_HIGH_BONUS_THRESHOLD (0.025)
+ *   - ticker is NOT in GAMMA_BONUS_EXCLUDED_TICKERS (SPY, USO)
+ *
+ * Empirical basis: docs/tmp/gamma-deep-dive-findings-2026-05-17.md.
+ * The threshold is the LF decile-5 inflection point. Excluded
+ * tickers SPY and USO show -7pp / -16pp lift reversal in the data.
+ */
+export function gammaScoreAdjustment(
+  gamma: number | null,
+  ticker: string,
+): number {
+  if (gamma == null) return 0;
+  if (!Number.isFinite(gamma)) return 0;
+  if (GAMMA_BONUS_EXCLUDED_TICKERS.includes(ticker)) return 0;
+  if (gamma < GAMMA_HIGH_BONUS_THRESHOLD) return 0;
+  return GAMMA_HIGH_BONUS_POINTS;
 }
 
 /**

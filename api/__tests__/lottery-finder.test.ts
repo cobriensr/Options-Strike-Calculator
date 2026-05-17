@@ -37,6 +37,7 @@ function makeTick(
     side: 'ask',
     impliedVolatility: 0.5,
     delta: 0.2,
+    gamma: 0.03,
     openInterest: 1000,
     ...overrides,
   };
@@ -398,6 +399,7 @@ describe('enrichFires', () => {
         triggerVolToOiCum: 0.12,
         triggerIv: 0.4,
         triggerDelta: 0.2,
+        triggerGamma: 0.03,
         triggerAskPct: 0.7,
         triggerWindowPrints: 5,
         triggerWindowSize: 100,
@@ -414,6 +416,7 @@ describe('enrichFires', () => {
         triggerVolToOiCum: 0.12,
         triggerIv: 0.4,
         triggerDelta: 0.2,
+        triggerGamma: 0.03,
         triggerAskPct: 0.7,
         triggerWindowPrints: 5,
         triggerWindowSize: 250, // 2.5× the prior burst

@@ -498,3 +498,46 @@ export const REIGNITION_TOP_N_PER_DAY = 5;
  *  i.e. ≥ N distinct underlying tickers fired in the same 1-minute
  *  bucket on the same trading day. */
 export const MEGA_CLUSTER_MIN_DISTINCT_TICKERS = 12;
+
+// ============================================================
+// GAMMA-AT-TRIGGER bonus — outside-the-box winner-feature
+// ============================================================
+//
+// Per the 2026-05-17 gamma deep-dive
+// (docs/tmp/gamma-deep-dive-findings-2026-05-17.md), high gamma at
+// trigger time carries +4.8pp (LF) to +10.7pp (SB) winrate lift on
+// the trail30/10 exit. The lift is BOTH ticker-conditional AND
+// exit-conditional:
+//   - Ticker-conditional: 11/13 tickers show positive lift (CRCL,
+//     SNDK, META, SLV, AVGO, QQQ, TSLA, NVDA, AMD, INTC, MU), but
+//     SPY (-7pp) and USO (-16pp) REVERSE the signal. Likely
+//     mechanism: SPY is heavily index-rebalanced (gamma signals MM
+//     positioning, not directional info) and USO is commodity-
+//     correlated (different gamma dynamics).
+//   - Exit-conditional: the lift HOLDS on trail30/10 + hard30m
+//     (active exits) but REVERSES on hold-EoD (-10pp at top decile).
+//     Reason: high gamma = ATM = peak theta exposure; holding to
+//     close destroys 0DTE premium regardless of direction.
+//
+// LF curve shape is a step function (drag below ~0.025, +4-5pp
+// plateau above). SB curve is a monotonic gradient (top decile
+// +13pp, no plateau). Single threshold of 0.025 captures LF's
+// inflection point and the start of SB's lift.
+
+/** Gamma threshold above which a fire earns the score bonus, IFF
+ *  ticker is not excluded. From the LF decile-5 inflection point. */
+export const GAMMA_HIGH_BONUS_THRESHOLD = 0.025;
+
+/** Tickers excluded from the gamma bonus because their per-ticker
+ *  data shows the signal REVERSES (negative lift). SPY: index-
+ *  rebalancing flow proxy. USO: commodity-driven gamma dynamics. */
+export const GAMMA_BONUS_EXCLUDED_TICKERS: readonly string[] = [
+  'SPY',
+  'USO',
+];
+
+/** Score points added when a fire qualifies for the gamma bonus.
+ *  Matches the magnitude of the existing fire_count_score_adjustment
+ *  top bracket (+2 for ≥16 fires, +1 for 8-15 fires); +1 keeps the
+ *  bonus from dominating the displayed tier. */
+export const GAMMA_HIGH_BONUS_POINTS = 1;

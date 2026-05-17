@@ -91,6 +91,12 @@ interface TickRow {
   side: DbSide;
   implied_volatility: DbNullableNumeric;
   delta: DbNullableNumeric;
+  // Gamma is extracted from raw_payload JSONB at SELECT time —
+  // ws_option_trades' typed columns only carry implied_volatility and
+  // delta; the full UW payload (which includes gamma) lives in
+  // raw_payload. Migration #168 added the storage column on
+  // lottery_finder_fires; this is the read side.
+  gamma: DbNullableNumeric;
   open_interest: number | null;
 }
 
@@ -190,7 +196,15 @@ export default withCronInstrumentation(
       SELECT
         ticker, option_chain, option_type, strike, expiry::text AS expiry,
         executed_at, price, size, underlying_price, side,
-        implied_volatility, delta, open_interest
+        implied_volatility, delta,
+        -- Gamma extracted from raw_payload JSONB (migration #168).
+        -- UW's option_trades wire format includes 'gamma' alongside
+        -- delta in the payload; the uw-stream daemon currently only
+        -- promotes delta to a typed column, so we pull gamma from the
+        -- JSONB envelope here. NULL when the payload lacks the field
+        -- (older rows from before UW's wire format included it).
+        (raw_payload->>'gamma')::numeric AS gamma,
+        open_interest
       FROM ws_option_trades
       WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
         AND canceled = FALSE
@@ -239,6 +253,7 @@ export default withCronInstrumentation(
         impliedVolatility:
           r.implied_volatility != null ? Number(r.implied_volatility) : null,
         delta: r.delta != null ? Number(r.delta) : null,
+        gamma: r.gamma != null ? Number(r.gamma) : null,
         openInterest: r.open_interest,
       });
       // Take the per-chain max OI — matches Python p14.py
@@ -594,7 +609,8 @@ export default withCronInstrumentation(
             score, direction_gated, range_pos_at_trigger,
             cum_ncp_at_fire, cum_npp_at_fire,
             inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
-            takeit_prob, takeit_model_version, takeit_features
+            takeit_prob, takeit_model_version, takeit_features,
+            gamma_at_trigger
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -615,7 +631,8 @@ export default withCronInstrumentation(
             ${score}, ${directionGated}, ${rangePosAtTrigger},
             ${cumNcpAtFire}, ${cumNppAtFire},
             ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
-            ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb
+            ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
+            ${rec.triggerGamma}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id

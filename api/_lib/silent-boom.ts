@@ -116,6 +116,17 @@ export interface ChainBucket {
    * IS NOT NULL.
    */
   underlyingVwap?: number | null;
+  /**
+   * Volume-weighted gamma over the bucket — extracted from
+   * raw_payload->>'gamma' in ws_option_trades at SELECT time, since
+   * the daemon doesn't promote gamma to a typed column. Null when no
+   * tick in the bucket carried a gamma value. Empirical basis for
+   * the gamma feature: docs/tmp/gamma-deep-dive-findings-2026-05-17.md
+   * (+10.7pp SB winrate lift at top decile; gradient curve, not
+   * stepped). Stored as gamma_at_trigger on silent_boom_alerts by
+   * migration #168.
+   */
+  bucketGamma?: number | null;
 }
 
 /** One silent-boom alert emitted by the detector. */
@@ -143,6 +154,12 @@ export interface SilentBoomFire {
   /** Volume-weighted underlying spot during the spike bucket. NULL
    *  on buckets where the source didn't carry underlying_price. */
   underlyingPriceAtSpike: number | null;
+  /**
+   * Volume-weighted gamma over the spike bucket. NULL when no tick
+   * in the bucket carried a gamma value (older raw_payloads). Fed
+   * straight to silent_boom_alerts.gamma_at_trigger (migration #168).
+   */
+  gammaAtSpike: number | null;
 }
 
 // ============================================================
@@ -237,6 +254,10 @@ export function detectSilentBoomFires(
       underlyingPriceAtSpike:
         cur.underlyingVwap != null && Number.isFinite(cur.underlyingVwap)
           ? cur.underlyingVwap
+          : null,
+      gammaAtSpike:
+        cur.bucketGamma != null && Number.isFinite(cur.bucketGamma)
+          ? cur.bucketGamma
           : null,
     });
     lastFireMs = tsMs;

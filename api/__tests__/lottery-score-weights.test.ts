@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeLotteryScore,
   fireCountScoreAdjustment,
+  gammaScoreAdjustment,
   lotteryScoreTier,
   LOTTERY_TICKER_WEIGHTS,
   LOTTERY_TIER_THRESHOLDS,
@@ -150,5 +151,42 @@ describe('fireCountScoreAdjustment', () => {
   it('defensive: 0 and negative fire_count return 0 (never observed in production)', () => {
     expect(fireCountScoreAdjustment(0)).toBe(0);
     expect(fireCountScoreAdjustment(-1)).toBe(0);
+  });
+});
+
+// ============================================================
+// gammaScoreAdjustment — outside-the-box winner-feature bonus
+// (basis: docs/tmp/gamma-deep-dive-findings-2026-05-17.md)
+// ============================================================
+
+describe('gammaScoreAdjustment', () => {
+  it('awards +1 for gamma >= 0.025 on a non-excluded ticker', () => {
+    expect(gammaScoreAdjustment(0.025, 'TSLA')).toBe(1);
+    expect(gammaScoreAdjustment(0.05, 'NVDA')).toBe(1);
+    expect(gammaScoreAdjustment(1.2, 'META')).toBe(1);
+  });
+
+  it('returns 0 below the 0.025 threshold (even on a non-excluded ticker)', () => {
+    expect(gammaScoreAdjustment(0.024, 'TSLA')).toBe(0);
+    expect(gammaScoreAdjustment(0.001, 'NVDA')).toBe(0);
+  });
+
+  it('returns 0 for SPY regardless of gamma magnitude (signal reverses)', () => {
+    expect(gammaScoreAdjustment(0.05, 'SPY')).toBe(0);
+    expect(gammaScoreAdjustment(1.0, 'SPY')).toBe(0);
+  });
+
+  it('returns 0 for USO regardless of gamma magnitude (signal reverses)', () => {
+    expect(gammaScoreAdjustment(0.05, 'USO')).toBe(0);
+    expect(gammaScoreAdjustment(0.5, 'USO')).toBe(0);
+  });
+
+  it('returns 0 for null gamma (no data — fail-open semantics)', () => {
+    expect(gammaScoreAdjustment(null, 'TSLA')).toBe(0);
+  });
+
+  it('returns 0 for non-finite gamma (defensive)', () => {
+    expect(gammaScoreAdjustment(Number.NaN, 'TSLA')).toBe(0);
+    expect(gammaScoreAdjustment(Number.POSITIVE_INFINITY, 'TSLA')).toBe(0);
   });
 });

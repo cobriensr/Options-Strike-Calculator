@@ -4829,4 +4829,49 @@ export const MIGRATIONS: Migration[] = [
             EXECUTE FUNCTION update_lottery_fire_count_score_adj()`,
     ],
   },
+  {
+    id: 168,
+    description:
+      'Add gamma_at_trigger NUMERIC column to lottery_finder_fires AND silent_boom_alerts. Stored greek snapshot at fire-detection time, populated by the detect crons via raw_payload->>\'gamma\' extraction from ws_option_trades. Empirical basis: docs/tmp/gamma-deep-dive-findings-2026-05-17.md — high gamma carries +4.8pp (LF) to +10.7pp (SB) winrate lift on the trail30/10 exit, but the lift is ticker-conditional (SPY and USO REVERSE the signal; -7pp and -16pp drag respectively). The lift is also exit-conditional (hold-EoD reverses because high gamma = theta-burn at 0DTE). Combined_score is dropped and recreated to include the gamma bonus as a row-local CASE expression: +1 when ticker NOT IN (\'SPY\',\'USO\') AND gamma_at_trigger >= 0.025, else 0. Unlike fire_count_score_adjustment (#167), gamma_at_trigger is row-local so it lives directly in the GENERATED expression — no trigger needed. silent_boom_alerts gets the column for UI/analysis only (no combined_score on that table). Older rows remain NULL; only new fires inserted after this migration carry a populated value.',
+    statements: (sql) => [
+      // Step 1: add the new column to both tables. Nullable — older
+      // rows have no value, only fires inserted after this migration
+      // by the updated detect crons carry a populated gamma.
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS gamma_at_trigger NUMERIC`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS gamma_at_trigger NUMERIC`,
+      // Step 2: drop the existing combined_score generated column so
+      // we can redefine its expression to include the gamma bonus.
+      sql`ALTER TABLE lottery_finder_fires DROP COLUMN IF EXISTS combined_score`,
+      // Step 3: recreate combined_score with the gamma CASE
+      // expression added. SPY + USO are excluded because the
+      // per-ticker analysis showed those two tickers REVERSE the
+      // gamma signal (-7pp to -16pp drag). The 0.025 threshold is
+      // the LF step-function inflection point identified in the
+      // decile sweep (deciles 5-9 cluster at +4-5pp lift; deciles 0-4
+      // are flat or drag). gamma_at_trigger IS NULL → 0 so rows
+      // inserted pre-#168 (or via cron paths that don't populate
+      // gamma) keep their existing score semantics.
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN combined_score INT GENERATED ALWAYS AS (
+              GREATEST(
+                0,
+                COALESCE(score, 0)
+                + COALESCE(round_trip_score_deduct, 0)
+                + COALESCE(fire_count_score_adjustment, 0)
+                + CASE
+                    WHEN underlying_symbol IN ('SPY', 'USO') THEN 0
+                    WHEN gamma_at_trigger IS NULL THEN 0
+                    WHEN gamma_at_trigger >= 0.025 THEN 1
+                    ELSE 0
+                  END
+              )
+            ) STORED`,
+      // Step 4: recreate the indexed-LIMIT path index that migration
+      // #159 added and #167 already rebuilt once.
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_combined_score_idx
+            ON lottery_finder_fires (date DESC, combined_score DESC NULLS LAST)`,
+    ],
+  },
 ];

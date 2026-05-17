@@ -223,6 +223,15 @@ export interface OptionTradeTick {
   impliedVolatility: number | null;
   /** Trade-time delta. May be null. */
   delta: number | null;
+  /**
+   * Trade-time gamma — extracted from raw_payload->>'gamma' at SQL
+   * SELECT time (ws_option_trades' typed columns only carry
+   * implied_volatility + delta; the full UW payload is preserved in
+   * raw_payload JSONB). NULL when the wire format omitted it.
+   * Migration #168 added the storage column for the fire-time
+   * snapshot; this is the read side that feeds it.
+   */
+  gamma: number | null;
   /** OI snapshot at trade time. May be null. */
   openInterest: number | null;
 }
@@ -244,6 +253,13 @@ export interface LotteryFire {
   triggerIv: number;
   /** Mean delta in the rolling window. */
   triggerDelta: number;
+  /**
+   * Mean gamma in the rolling window. NULL when no tick in the window
+   * carried a gamma value (older raw_payloads pre-UW gamma emission).
+   * Feeds gamma_at_trigger on the lottery_finder_fires row +
+   * combined_score's gamma bonus expression (migration #168).
+   */
+  triggerGamma: number | null;
   /** Ask-side fraction in the rolling window (0-1). */
   triggerAskPct: number;
   /** Print count in the rolling window. */
@@ -482,6 +498,8 @@ export function detectChainFires(
   let ivCount = 0;
   let deltaSum = 0;
   let deltaCount = 0;
+  let gammaSum = 0;
+  let gammaCount = 0;
   let sizeSum = 0;
   let printCount = 0;
 
@@ -495,6 +513,10 @@ export function detectChainFires(
     if (t.delta != null) {
       deltaSum += sign * t.delta;
       deltaCount += sign;
+    }
+    if (t.gamma != null) {
+      gammaSum += sign * t.gamma;
+      gammaCount += sign;
     }
     sizeSum += sign * t.size;
     printCount += sign;
@@ -554,6 +576,11 @@ export function detectChainFires(
       triggerVolToOiCum: volToOiCum,
       triggerIv: ivMean,
       triggerDelta: deltaMean,
+      // Mean gamma over the same window. NULL when no tick carried
+      // a gamma value (older raw_payloads). Not part of any v4 gate
+      // — informational, used for the gamma_at_trigger snapshot
+      // column + combined_score's gamma bonus.
+      triggerGamma: gammaCount > 0 ? gammaSum / gammaCount : null,
       triggerAskPct: askPct,
       triggerWindowPrints: printCount,
       triggerWindowSize: sizeSum,

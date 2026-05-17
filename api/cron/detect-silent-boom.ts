@@ -86,6 +86,10 @@ interface BucketRow {
   /** SUM(underlying_price * size) — paired with `size` to compute the
    *  volume-weighted underlying spot for the OTM filter (migration #152). */
   underlying_notional: DbNumeric | null;
+  /** Volume-weighted gamma extracted from raw_payload->>'gamma' over
+   *  the bucket. NULL when no tick carried a gamma value. Stored as
+   *  silent_boom_alerts.gamma_at_trigger by migration #168. */
+  bucket_gamma: DbNumeric | null;
 }
 
 /** OPRA-standard multi-leg sale condition codes — drop buckets whose
@@ -176,7 +180,17 @@ export default withCronInstrumentation(
         SUM(price * size) AS notional,
         MAX(open_interest) AS bucket_max_oi,
         (ARRAY_AGG(price ORDER BY executed_at DESC))[1] AS last_price,
-        SUM(underlying_price * size) FILTER (WHERE underlying_price IS NOT NULL) AS underlying_notional
+        SUM(underlying_price * size) FILTER (WHERE underlying_price IS NOT NULL) AS underlying_notional,
+        -- Size-weighted gamma over the bucket. raw_payload->>'gamma'
+        -- because ws_option_trades only promotes delta/iv to typed
+        -- columns; gamma stays in the JSONB envelope. NULL when the
+        -- bucket has zero non-null gamma weight. Migration #168
+        -- added gamma_at_trigger as the storage column on
+        -- silent_boom_alerts.
+        SUM((raw_payload->>'gamma')::numeric * size)
+          FILTER (WHERE raw_payload->>'gamma' IS NOT NULL)
+          / NULLIF(SUM(size) FILTER (WHERE raw_payload->>'gamma' IS NOT NULL), 0)
+          AS bucket_gamma
       FROM ws_option_trades
       WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
         AND canceled = FALSE
@@ -236,6 +250,8 @@ export default withCronInstrumentation(
           underlyingNotional != null && size > 0
             ? underlyingNotional / size
             : null,
+        bucketGamma:
+          r.bucket_gamma != null ? Number(r.bucket_gamma) : null,
       });
       if (r.bucket_max_oi != null && r.bucket_max_oi > g.oi) {
         g.oi = r.bucket_max_oi;
@@ -579,7 +595,8 @@ export default withCronInstrumentation(
             multi_leg_share, underlying_price_at_spike,
             cum_ncp_at_fire, cum_npp_at_fire,
             inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
-            takeit_prob, takeit_model_version, takeit_features
+            takeit_prob, takeit_model_version, takeit_features,
+            gamma_at_trigger
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
@@ -591,7 +608,8 @@ export default withCronInstrumentation(
             ${f.multiLegShare}, ${f.underlyingPriceAtSpike},
             ${cumNcpAtFire}, ${cumNppAtFire},
             ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
-            ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb
+            ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
+            ${f.gammaAtSpike}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id
