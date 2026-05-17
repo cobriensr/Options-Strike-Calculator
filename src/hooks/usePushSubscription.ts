@@ -22,6 +22,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import * as Sentry from '@sentry/react';
 
 export interface PushSubscriptionState {
   /**
@@ -158,6 +159,7 @@ export function usePushSubscription(): PushSubscriptionState {
       await postSubscription(subscription);
       if (mountedRef.current) setSubscribed(true);
     } catch (e) {
+      Sentry.captureException(e, { tags: { context: 'push_subscription' } });
       const msg = e instanceof Error ? e.message : String(e);
       if (mountedRef.current) setError(msg);
     }
@@ -181,6 +183,7 @@ export function usePushSubscription(): PushSubscriptionState {
       await postUnsubscribe(endpoint);
       if (mountedRef.current) setSubscribed(false);
     } catch (e) {
+      Sentry.captureException(e, { tags: { context: 'push_subscription' } });
       const msg = e instanceof Error ? e.message : String(e);
       if (mountedRef.current) setError(msg);
     }

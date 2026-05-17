@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import * as parquet from '@dsnp/parquetjs';
+import { Sentry } from './sentry.js';
 
 export interface ParquetResult {
   /** Encoded Parquet bytes ready for Blob upload. */
@@ -66,9 +67,15 @@ export async function writeRowsToParquet(
 
   const buffer = await readFile(tmpPath);
   // Best-effort cleanup; failure to unlink is non-fatal (next cron run
-  // will overwrite via openFile).
-  await unlink(tmpPath).catch(() => {
-    /* ignore */
+  // will overwrite via openFile) but worth surfacing at info level so
+  // disk-space or permission issues on the Vercel runtime FS are
+  // visible before they snowball.
+  await unlink(tmpPath).catch((err: unknown) => {
+    Sentry.captureException(err, {
+      level: 'info',
+      tags: { context: 'gexbot_parquet_cleanup' },
+      extra: { tmpPath },
+    });
   });
 
   return {

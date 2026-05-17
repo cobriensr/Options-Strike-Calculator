@@ -16,6 +16,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import * as Sentry from '@sentry/react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
@@ -223,6 +224,12 @@ export function useGexStrikeExpiry(
           : null,
       );
     } catch (err) {
+      // Filter expected abort path; everything else is operator-visible.
+      if (!(err instanceof DOMException && err.name === 'AbortError')) {
+        Sentry.captureException(err, {
+          tags: { context: 'gex_strike_expiry_outer' },
+        });
+      }
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
       if (mountedRef.current) setLoading(false);

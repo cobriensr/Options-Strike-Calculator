@@ -6,7 +6,13 @@
  * dependencies.
  */
 
+import * as Sentry from '@sentry/react';
 import { getErrorMessage } from '../utils/error';
+
+// Sample rate for malformed-error-body capture. Most non-2xx responses
+// have JSON bodies; rare HTML-or-empty-body responses sample at 5% so
+// systematic regressions are visible without flooding Sentry.
+const ERROR_BODY_PARSE_SAMPLE_RATE = 0.05;
 import type {
   QuotesResponse,
   IntradayResponse,
@@ -56,9 +62,16 @@ export async function fetchJson<T>(
       signal: combinedSignal,
     });
     if (!res.ok) {
-      const body = await res
-        .json()
-        .catch(() => ({ error: `HTTP ${res.status}` }));
+      const body = await res.json().catch((err: unknown) => {
+        if (Math.random() < ERROR_BODY_PARSE_SAMPLE_RATE) {
+          Sentry.captureException(err, {
+            level: 'info',
+            tags: { context: 'fetch_error_body_parse', sampled: '5%' },
+            extra: { status: res.status },
+          });
+        }
+        return { error: `HTTP ${res.status}` };
+      });
       return {
         error: body.error || `HTTP ${res.status}`,
         status: res.status,
