@@ -163,9 +163,13 @@ export function parseOccSymbol(occ: string): OccParsed {
  *   short NVDA 225P 05/22/26 @ 4.30 x 5
  *   NVDA 225C 05/22/26
  *
- * Order is: optional `long|short` prefix, ticker, strike+side (e.g. 225P),
- * MM/DD/YY or MM/DD/YYYY date, optional `@ <entry>` and `x <qty>`, optional
- * trailing `long|short` (overrides the prefix).
+ *   TSLA261016C00800000 @ 4.30 x 5 long
+ *   https://unusualwhales.com/option-chain/TSLA261016C00800000 @ 4.30 x 5
+ *
+ * Order is: optional `long|short` prefix, then EITHER a natural-language
+ * `ticker strike+side date` OR an OCC symbol / Unusual Whales option-chain
+ * URL, then optional `@ <entry>` and `x <qty>`, optional trailing
+ * `long|short` (overrides the prefix).
  *
  * The parser is strict — anything that doesn't match throws a descriptive
  * Error. Side must be 'C' or 'P' uppercase in the strike token; lowercase
@@ -233,43 +237,67 @@ export function parseFreeText(input: string): FreeTextParsed {
     remaining = remaining.slice(0, entryMatch.index).trimEnd();
   }
 
-  // Core: ticker, strike+side, date. Side is matched case-insensitively
-  // here so we can give a precise "must be uppercase" error below rather
-  // than a generic parse failure.
-  const corePattern =
-    /^([A-Z][A-Z0-9.-]{0,5})\s+(\d+(?:\.\d+)?)([CPcp])\s+(\d{1,2}\/\d{1,2}\/\d{2,4})$/;
-  const match = corePattern.exec(remaining);
-  if (!match) {
-    failParse();
+  // OCC fast-path: paste of "TSLA261016C00800000" or the equivalent
+  // Unusual Whales URL "https://unusualwhales.com/option-chain/<OCC>".
+  // If `remaining` is exactly one of these forms we resolve ticker /
+  // expiry / strike / side from the OCC fields directly and skip the
+  // natural-language core regex. Trailing `@ entry x qty long|short`
+  // suffixes have already been peeled above, so the OCC token sits
+  // alone at this point.
+  let ticker: string;
+  let strike: number;
+  let side: 'C' | 'P';
+  let expiry: Date;
+  const occToken = extractOccToken(remaining);
+  if (occToken !== null) {
+    const occ = parseOccSymbol(normalizeOccSymbol(occToken));
+    ticker = occ.ticker;
+    strike = occ.strike;
+    side = occ.side;
+    // parseOccSymbol returns YYYY-MM-DD; coerce to a UTC Date so the
+    // caller-facing FreeTextParsed shape matches the natural-language
+    // branch below.
+    expiry = coerceExpiryToDate(occ.expiry);
+  } else {
+    // Core: ticker, strike+side, date. Side is matched case-insensitively
+    // here so we can give a precise "must be uppercase" error below rather
+    // than a generic parse failure.
+    const corePattern =
+      /^([A-Z][A-Z0-9.-]{0,5})\s+(\d+(?:\.\d+)?)([CPcp])\s+(\d{1,2}\/\d{1,2}\/\d{2,4})$/;
+    const match = corePattern.exec(remaining);
+    if (!match) {
+      failParse();
+    }
+
+    const rawTicker = match?.[1] ?? '';
+    const rawStrike = match?.[2] ?? '';
+    const rawSide = match?.[3] ?? '';
+    const rawDate = match?.[4] ?? '';
+
+    // Reject lowercase side in the strike token. We use a case-insensitive
+    // regex so we can give a clearer error than "no match" — but the spec
+    // demands strict uppercase for the contract side.
+    if (rawSide !== 'C' && rawSide !== 'P') {
+      throw new Error(
+        `parseFreeText: side must be uppercase 'C' or 'P', got "${rawSide}" in "${input}"`,
+      );
+    }
+
+    ticker = rawTicker.toUpperCase();
+    if (ticker.length > 6) {
+      throw new Error(
+        `parseFreeText: ticker "${ticker}" exceeds 6 characters (OCC limit)`,
+      );
+    }
+
+    strike = Number.parseFloat(rawStrike);
+    if (!Number.isFinite(strike) || strike <= 0) {
+      throw new Error(`parseFreeText: invalid strike "${rawStrike}"`);
+    }
+
+    expiry = parseUsDate(rawDate);
+    side = rawSide;
   }
-
-  const rawTicker = match?.[1] ?? '';
-  const rawStrike = match?.[2] ?? '';
-  const rawSide = match?.[3] ?? '';
-  const rawDate = match?.[4] ?? '';
-
-  // Reject lowercase side in the strike token. We use a case-insensitive
-  // regex so we can give a clearer error than "no match" — but the spec
-  // demands strict uppercase for the contract side.
-  if (rawSide !== 'C' && rawSide !== 'P') {
-    throw new Error(
-      `parseFreeText: side must be uppercase 'C' or 'P', got "${rawSide}" in "${input}"`,
-    );
-  }
-
-  const ticker = rawTicker.toUpperCase();
-  if (ticker.length > 6) {
-    throw new Error(
-      `parseFreeText: ticker "${ticker}" exceeds 6 characters (OCC limit)`,
-    );
-  }
-
-  const strike = Number.parseFloat(rawStrike);
-  if (!Number.isFinite(strike) || strike <= 0) {
-    throw new Error(`parseFreeText: invalid strike "${rawStrike}"`);
-  }
-
-  const expiry = parseUsDate(rawDate);
 
   let entry_price: number | undefined;
   if (rawEntry !== undefined) {
@@ -302,7 +330,7 @@ export function parseFreeText(input: string): FreeTextParsed {
   return {
     ticker,
     expiry,
-    side: rawSide,
+    side,
     strike,
     direction: directionRaw,
     ...(entry_price !== undefined ? { entry_price } : {}),
@@ -393,4 +421,48 @@ function parseUsDate(s: string): Date {
     throw new Error(`parseFreeText: "${s}" is not a real calendar date`);
   }
   return d;
+}
+
+// OCC fast-path helpers — match either a bare OCC symbol (with or
+// without root padding) or an Unusual Whales option-chain URL of the
+// form `[https://[www.]]unusualwhales.com/option-chain/<OCC>`. Body
+// shape: <root 1–6><YYMMDD 6 digits><C|P><strike 8 digits>.
+const UW_URL_RE =
+  /^(?:https?:\/\/)?(?:www\.)?unusualwhales\.com\/option-chain\/([A-Z][A-Z0-9.-]{0,5}\d{6}[CP]\d{8})$/i;
+// Root may include trailing spaces (OCC's 6-char padding) — match a
+// flexible internal whitespace and normalize after.
+const BARE_OCC_RE = /^([A-Z][A-Z0-9.-]{0,5}\s{0,5}\d{6}[CP]\d{8})$/i;
+
+/**
+ * Try to extract an OCC symbol from a fully-trimmed input that's
+ * supposed to BE either a bare OCC or a UW URL (no surrounding
+ * grammar). Returns the OCC body (uppercase) or `null` when neither
+ * shape matches. Trailing `@ entry x qty` etc. must already be
+ * peeled by the caller.
+ */
+function extractOccToken(input: string): string | null {
+  const trimmed = input.trim();
+  const urlMatch = UW_URL_RE.exec(trimmed);
+  if (urlMatch) return urlMatch[1]!.toUpperCase();
+  const bareMatch = BARE_OCC_RE.exec(trimmed);
+  if (bareMatch) return bareMatch[1]!.toUpperCase();
+  return null;
+}
+
+/**
+ * Normalize a UW-style unpadded OCC token (e.g. `TSLA261016C00800000`)
+ * to the 21-character canonical form parseOccSymbol expects (root
+ * right-padded with spaces). Pass-through for already-padded inputs.
+ * The fixed tail is 15 chars (6 date + 1 side + 8 strike), so any
+ * length between 16 and 21 has a unique root slice.
+ */
+function normalizeOccSymbol(raw: string): string {
+  const cleaned = raw.trim().toUpperCase().replace(/\s+/g, '');
+  if (cleaned.length < 16 || cleaned.length > 21) {
+    throw new Error(
+      `parseFreeText: OCC token length ${String(cleaned.length)} out of range (16-21)`,
+    );
+  }
+  const rootLen = cleaned.length - 15;
+  return cleaned.slice(0, rootLen).padEnd(6, ' ') + cleaned.slice(rootLen);
 }

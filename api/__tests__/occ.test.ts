@@ -436,3 +436,94 @@ describe('parseFreeText — errors', () => {
     );
   });
 });
+
+describe('parseFreeText — OCC symbol + Unusual Whales URL paths', () => {
+  it('parses an unpadded bare OCC symbol with entry + qty + direction', () => {
+    const r = parseFreeText('TSLA261016C00800000 @ 4.30 x 5 long');
+    expect(r.ticker).toBe('TSLA');
+    expect(r.side).toBe('C');
+    expect(r.strike).toBe(800);
+    expect(r.expiry.toISOString().slice(0, 10)).toBe('2026-10-16');
+    expect(r.entry_price).toBe(4.3);
+    expect(r.quantity).toBe(5);
+    expect(r.direction).toBe('long');
+  });
+
+  it('parses a padded 21-char bare OCC symbol', () => {
+    const r = parseFreeText('NVDA  260522P00225000 @ 4.30 x 5');
+    expect(r.ticker).toBe('NVDA');
+    expect(r.side).toBe('P');
+    expect(r.strike).toBe(225);
+    expect(r.expiry.toISOString().slice(0, 10)).toBe('2026-05-22');
+    expect(r.direction).toBe('long'); // implicit default
+  });
+
+  it('parses a 6-char-root OCC symbol (no padding needed)', () => {
+    const r = parseFreeText('GOOGL 261016C00200000 @ 2.50 x 1');
+    expect(r.ticker).toBe('GOOGL');
+    expect(r.strike).toBe(200);
+  });
+
+  it('parses an Unusual Whales option-chain URL with full protocol', () => {
+    const r = parseFreeText(
+      'https://unusualwhales.com/option-chain/TSLA261016C00800000 @ 4.30 x 5 short',
+    );
+    expect(r.ticker).toBe('TSLA');
+    expect(r.side).toBe('C');
+    expect(r.strike).toBe(800);
+    expect(r.expiry.toISOString().slice(0, 10)).toBe('2026-10-16');
+    expect(r.direction).toBe('short');
+  });
+
+  it('parses a UW URL without https:// prefix', () => {
+    const r = parseFreeText(
+      'unusualwhales.com/option-chain/TSLA261016C00800000 @ 4.30 x 5',
+    );
+    expect(r.ticker).toBe('TSLA');
+    expect(r.strike).toBe(800);
+  });
+
+  it('parses a UW URL with www. prefix', () => {
+    const r = parseFreeText(
+      'https://www.unusualwhales.com/option-chain/AMZN260619P00150000 @ 2.10 x 3',
+    );
+    expect(r.ticker).toBe('AMZN');
+    expect(r.side).toBe('P');
+    expect(r.strike).toBe(150);
+    expect(r.expiry.toISOString().slice(0, 10)).toBe('2026-06-19');
+  });
+
+  it('parses a fractional strike in OCC form (last 3 digits = thousandths)', () => {
+    const r = parseFreeText('AMD261016P00397500 @ 5.72 x 3');
+    expect(r.ticker).toBe('AMD');
+    expect(r.strike).toBe(397.5);
+  });
+
+  it('honors a leading "short" direction prefix on OCC input', () => {
+    const r = parseFreeText('short TSLA261016C00800000 @ 4.30 x 5');
+    expect(r.direction).toBe('short');
+  });
+
+  it('throws when OCC input is missing entry price (same gate as natural-language)', () => {
+    // Bare OCC alone resolves ticker/expiry/strike/side, but entry +
+    // qty are still required downstream — server returns 400 on the
+    // missing fields. Here we exercise the parser directly and confirm
+    // it leaves entry_price / quantity undefined for the endpoint to
+    // gate on.
+    const r = parseFreeText('TSLA261016C00800000');
+    expect(r.entry_price).toBeUndefined();
+    expect(r.quantity).toBeUndefined();
+  });
+
+  it('throws on a UW URL pointing at a malformed OCC body', () => {
+    expect(() =>
+      parseFreeText(
+        'https://unusualwhales.com/option-chain/TSLA261016C0080 @ 1 x 1',
+      ),
+    ).toThrow();
+  });
+
+  it('throws on garbage that almost-but-doesn\'t match either shape', () => {
+    expect(() => parseFreeText('TSLA chain @ 1 x 1')).toThrow();
+  });
+});

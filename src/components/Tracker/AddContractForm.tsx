@@ -465,12 +465,16 @@ export const AddContractForm = memo(function AddContractForm({
                 type="text"
                 value={freeText}
                 onChange={(e) => setFreeText(e.target.value)}
-                placeholder="NVDA 225P 05/22/26 @ 4.30 x 5 long"
+                placeholder="NVDA 225P 05/22/26 @ 4.30 x 5 long  —  or paste UW URL / OCC"
                 required
                 className="border-edge bg-surface focus:border-accent rounded border px-2 py-1.5 font-mono text-[13px] outline-none"
               />
               <span className="text-tertiary font-sans text-[11px]">
-                Format: TICKER STRIKE+SIDE EXPIRY @ PRICE x QTY long|short
+                Accepts: <code>TICKER STRIKE+SIDE EXPIRY</code>,{' '}
+                <code>OCC symbol</code> (e.g. TSLA261016C00800000), or{' '}
+                <code>UW URL</code> (e.g.
+                unusualwhales.com/option-chain/TSLA261016C00800000). Append{' '}
+                <code>@ PRICE x QTY long|short</code> in every case.
               </span>
             </label>
             <div className="mt-4 flex items-center justify-end gap-2">
