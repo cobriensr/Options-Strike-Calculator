@@ -10,7 +10,11 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureMessage: vi.fn(), captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureMessage: vi.fn(),
+    captureException: vi.fn(),
+    setTag: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -66,10 +70,19 @@ describe('takeit-fill-shap cron', () => {
     process.env.SIDECAR_TAKEIT_URL = 'http://sidecar.test:8123';
     process.env.SIDECAR_TAKEIT_SECRET = 'shh';
 
-    // Lottery: 1 row needing flags. SilentBoom: empty.
+    // Lottery: 1 row needing flags, with the bundle-shaped features dict
+    // persisted by the detect cron at fire time. SilentBoom: empty.
     mockSql
       .mockResolvedValueOnce([
-        { id: 42, takeit_prob: 0.7, underlying_symbol: 'SPY' },
+        {
+          id: 42,
+          takeit_features: {
+            session_phase: 2,
+            is_itm_at_fire: 0,
+            ticker_bucket_SPY: 1,
+            option_type_C: 1,
+          },
+        },
       ]) // SELECT lottery
       .mockResolvedValueOnce([{}]) // UPDATE lottery
       .mockResolvedValueOnce([]); // SELECT silentboom (empty)
@@ -80,8 +93,12 @@ describe('takeit-fill-shap cron', () => {
           results: [
             {
               alert_id: 42,
-              top_positive: [{ name: 'session_phase', shap_value: 0.3, feature_value: 1 }],
-              top_negative: [{ name: 'is_itm_at_fire', shap_value: -0.2, feature_value: 1 }],
+              top_positive: [
+                { name: 'session_phase', shap_value: 0.3, feature_value: 1 },
+              ],
+              top_negative: [
+                { name: 'is_itm_at_fire', shap_value: -0.2, feature_value: 1 },
+              ],
             },
           ],
         }),
@@ -103,12 +120,28 @@ describe('takeit-fill-shap cron', () => {
       lottery: { scanned: 1, updated: 1, failed: 0 },
       silentboom: { scanned: 0, updated: 0, failed: 0 },
     });
-    // fetch call shape
+    // fetch call shape — verify the body forwards the persisted features
+    // dict unchanged, not the raw SQL row.
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, opts] = fetchSpy.mock.calls[0]!;
     expect(url).toBe('http://sidecar.test:8123/takeit/explain');
     expect((opts as RequestInit).headers).toMatchObject({
       Authorization: 'Bearer shh',
+    });
+    const body = JSON.parse(((opts as RequestInit).body as string) ?? '{}');
+    expect(body).toMatchObject({
+      alert_type: 'lottery',
+      rows: [
+        {
+          alert_id: 42,
+          features: {
+            session_phase: 2,
+            is_itm_at_fire: 0,
+            ticker_bucket_SPY: 1,
+            option_type_C: 1,
+          },
+        },
+      ],
     });
     fetchSpy.mockRestore();
   });
@@ -116,7 +149,9 @@ describe('takeit-fill-shap cron', () => {
   it('returns sidecar_unreachable + Sentry warn on fetch failure', async () => {
     process.env.SIDECAR_TAKEIT_URL = 'http://sidecar.test:8123';
     process.env.SIDECAR_TAKEIT_SECRET = 'shh';
-    mockSql.mockResolvedValueOnce([{ id: 1, takeit_prob: 0.5 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ id: 1, takeit_features: { session_phase: 2 } }])
+      .mockResolvedValueOnce([]);
     vi.spyOn(global, 'fetch').mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
     const req = mockRequest({
@@ -139,7 +174,9 @@ describe('takeit-fill-shap cron', () => {
   it('returns sidecar_5xx + Sentry warn on server-side error', async () => {
     process.env.SIDECAR_TAKEIT_URL = 'http://sidecar.test:8123';
     process.env.SIDECAR_TAKEIT_SECRET = 'shh';
-    mockSql.mockResolvedValueOnce([{ id: 1, takeit_prob: 0.5 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ id: 1, takeit_features: { session_phase: 2 } }])
+      .mockResolvedValueOnce([]);
     vi.spyOn(global, 'fetch').mockResolvedValueOnce(
       new Response('boom', { status: 503 }),
     );
@@ -158,6 +195,36 @@ describe('takeit-fill-shap cron', () => {
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
       'takeit.shap_fill.sidecar_non_2xx',
       expect.objectContaining({ level: 'warning' }),
+    );
+  });
+
+  it('returns sidecar_4xx + Sentry ERROR (not warning) when sidecar rejects auth', async () => {
+    // 4xx is a config/auth bug — should page as `error`, not the transient
+    // `warning` we use for 5xx. Regression guard for the level-by-status
+    // branch in takeit-fill-shap.ts.
+    process.env.SIDECAR_TAKEIT_URL = 'http://sidecar.test:8123';
+    process.env.SIDECAR_TAKEIT_SECRET = 'shh';
+    mockSql
+      .mockResolvedValueOnce([{ id: 1, takeit_features: { session_phase: 2 } }])
+      .mockResolvedValueOnce([]);
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce(
+      new Response('unauthorized', { status: 401 }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      lottery: { reason: 'sidecar_401' },
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'takeit.shap_fill.sidecar_non_2xx',
+      expect.objectContaining({ level: 'error' }),
     );
   });
 });

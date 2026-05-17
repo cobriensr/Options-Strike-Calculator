@@ -191,11 +191,14 @@ BLOB_MANIFEST_PATH = "takeit/latest.json"
 
 ## Out of Scope (v1)
 
-- The UI tile / color bands (Phase 4 — wire is open, feed endpoints will return the new columns from Phase 3 onward but the React component is deferred).
-- Calibration drift monitoring + Sentry weekly metric (Phase 5).
 - Replacing the heuristic `score` column with `takeit_prob` outright (explicit non-goal until 2 weeks of side-by-side data).
 - Historical-analogs panel ("last 12 similar fires") — Phase 5+.
 - Auto-suppression of low-prob alerts from the feed — explicitly rejected; score-only contract.
+
+### Shipped after v1 (originally out-of-scope, then promoted)
+
+- The UI tile / color bands — **Phase 4** shipped 2026-05-16 (`cb62ce62`); `src/components/TakeItScore/` renders `takeit_prob` chip with the spec decision #6 colour bands and the SHAP top-K positive/negative flag chips on every Lottery + Silent Boom row.
+- Calibration drift monitoring + Sentry weekly metric — **Phase 5** shipped 2026-05-16 (`4aa24d05`); `api/cron/audit-takeit-calibration.ts` emits Brier / AUC / per-bucket residual distributions and pages on Brier > 0.27. Cron registered Monday 11:00 UTC.
 
 ## Risks
 

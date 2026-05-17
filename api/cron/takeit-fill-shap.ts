@@ -27,19 +27,24 @@ import {
 import { Sentry } from '../_lib/sentry.js';
 
 const BATCH_SIZE = 500;
-// The Phase 1 feature set has 74 (lottery) / 49 (silentboom) features. The
-// sidecar can derive features itself from the alert row — but to keep the
-// network payload small AND to insulate the sidecar from feature-derivation
-// drift, we send the raw alert-row columns and let the sidecar rebuild the
-// feature record using the same takeit-features Python module that Phase 1
-// uses. That's the contract; sidecar is the single source of truth for
-// feature derivation in the SHAP path.
+// Phase 3d follow-up: read the persisted `takeit_features` JSONB written
+// by the detect crons (scoreLottery / scoreSilentBoom return the same
+// feature dict they used to score the prob). The sidecar consumes it
+// directly — no re-derivation, no raw-row passthrough that would miss
+// the derived flags + one-hot encoded categoricals the model was trained
+// on. Rows where takeit_features IS NULL are skipped (legacy fires
+// pre-migration #157 just stay unflagged forever).
 
 type AlertType = 'lottery' | 'silentboom';
 
 interface SidecarRequestRow {
   alert_id: number;
   features: Record<string, number | null>;
+}
+
+interface FillCandidateRow {
+  id: number;
+  takeit_features: Record<string, number | null> | null;
 }
 
 interface SidecarResponse {
@@ -58,9 +63,12 @@ interface SidecarResponse {
   }>;
 }
 
-async function fillForAlertType(
-  alertType: AlertType,
-): Promise<{ scanned: number; updated: number; failed: number; reason?: string }> {
+async function fillForAlertType(alertType: AlertType): Promise<{
+  scanned: number;
+  updated: number;
+  failed: number;
+  reason?: string;
+}> {
   const sidecarUrl = process.env.SIDECAR_TAKEIT_URL;
   const sidecarSecret = process.env.SIDECAR_TAKEIT_SECRET;
   if (!sidecarUrl || !sidecarSecret) {
@@ -70,36 +78,56 @@ async function fillForAlertType(
   const db = getDb();
 
   // Pull the most-recent unflagged rows first — they're the most useful to
-  // surface flags for in the live UI. Separate branches keep the SQL
-  // literal-table-name (neon-serverless tagged-template can't interpolate
-  // identifiers) and let each return its own typed row shape.
+  // surface flags for in the live UI. We project only (id, takeit_features)
+  // because that's all the sidecar needs; the JSONB blob already carries
+  // the full bundle-shaped feature vector the detect cron persisted.
+  // Filter on takeit_features IS NOT NULL: legacy rows pre-migration #157
+  // can't get SHAP retroactively (no captured features at fire time) and
+  // are skipped on purpose.
   const rows =
     alertType === 'lottery'
       ? ((await db`
-          SELECT * FROM lottery_finder_fires
-          WHERE takeit_prob IS NOT NULL AND takeit_top_features IS NULL
+          SELECT id, takeit_features
+          FROM lottery_finder_fires
+          WHERE takeit_prob IS NOT NULL
+            AND takeit_features IS NOT NULL
+            AND takeit_top_features IS NULL
           ORDER BY id DESC
           LIMIT ${BATCH_SIZE}
-        `) as Array<Record<string, unknown> & { id: number }>)
+        `) as FillCandidateRow[])
       : ((await db`
-          SELECT * FROM silent_boom_alerts
-          WHERE takeit_prob IS NOT NULL AND takeit_top_features IS NULL
+          SELECT id, takeit_features
+          FROM silent_boom_alerts
+          WHERE takeit_prob IS NOT NULL
+            AND takeit_features IS NOT NULL
+            AND takeit_top_features IS NULL
           ORDER BY id DESC
           LIMIT ${BATCH_SIZE}
-        `) as Array<Record<string, unknown> & { id: number }>);
+        `) as FillCandidateRow[]);
 
   if (rows.length === 0) {
     return { scanned: 0, updated: 0, failed: 0 };
   }
 
-  // Build the request body. The sidecar's /takeit/explain accepts the row's
-  // raw column dict and derives features Python-side via the same Phase 1
-  // module that produced the trained features — no feature-derivation
-  // duplication on the TS side here.
-  const sidecarRows: SidecarRequestRow[] = rows.map((r) => ({
-    alert_id: r.id,
-    features: r as Record<string, number | null>,
-  }));
+  // Build the request body. takeit_features is already the bundle-shaped
+  // dict (one-hots + derived flags) produced by scoreLottery/scoreSilentBoom
+  // — ship it through unchanged so the sidecar's SHAP TreeExplainer sees
+  // exactly the same matrix the prob scorer used.
+  const sidecarRows: SidecarRequestRow[] = rows
+    .filter(
+      (
+        r,
+      ): r is FillCandidateRow & {
+        takeit_features: Record<string, number | null>;
+      } => r.takeit_features !== null,
+    )
+    .map((r) => ({
+      alert_id: r.id,
+      features: r.takeit_features,
+    }));
+  if (sidecarRows.length === 0) {
+    return { scanned: rows.length, updated: 0, failed: 0 };
+  }
 
   let payload: SidecarResponse;
   try {
@@ -173,4 +201,7 @@ async function takeitFillShapHandler(): Promise<CronResult> {
   };
 }
 
-export default withCronInstrumentation('takeit-fill-shap', takeitFillShapHandler);
+export default withCronInstrumentation(
+  'takeit-fill-shap',
+  takeitFillShapHandler,
+);

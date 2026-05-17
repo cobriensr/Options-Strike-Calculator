@@ -17,6 +17,7 @@ import {
   type SilentBoomAlertRow,
   featuresForLottery,
   featuresForSilentBoom,
+  tickerDirKey,
 } from './takeit-features.js';
 import { getBundle } from './takeit-bundle-loader.js';
 import {
@@ -42,6 +43,8 @@ export interface RecentFireRow {
 
 export interface RecentCofireRow {
   option_chain_id: string;
+  underlying_symbol: string;
+  option_type: 'C' | 'P';
   fire_time: Date;
 }
 
@@ -96,10 +99,23 @@ export async function loadTakeitDetectContext(
     ]);
 
     const recentOtherTypeByChain = new Map<string, RecentCofireRow[]>();
+    const recentOtherTypeByTickerDir = new Map<
+      string,
+      Array<{ fire_time: Date; option_chain_id: string }>
+    >();
     for (const r of other) {
-      const list = recentOtherTypeByChain.get(r.option_chain_id);
-      if (list) list.push(r);
+      const chainList = recentOtherTypeByChain.get(r.option_chain_id);
+      if (chainList) chainList.push(r);
       else recentOtherTypeByChain.set(r.option_chain_id, [r]);
+
+      const dirKey = tickerDirKey(r.underlying_symbol, r.option_type);
+      const dirEntry = {
+        fire_time: r.fire_time,
+        option_chain_id: r.option_chain_id,
+      };
+      const dirList = recentOtherTypeByTickerDir.get(dirKey);
+      if (dirList) dirList.push(dirEntry);
+      else recentOtherTypeByTickerDir.set(dirKey, [dirEntry]);
     }
 
     const priorSessionWinRateByTicker = new Map<string, number | null>();
@@ -112,6 +128,7 @@ export async function loadTakeitDetectContext(
       ctx: {
         recentSameTypeFires: same,
         recentOtherTypeByChain,
+        recentOtherTypeByTickerDir,
         priorSessionWinRateByTicker,
       },
     };
@@ -123,17 +140,29 @@ export async function loadTakeitDetectContext(
   }
 }
 
+/** Result of a per-row Take-It scoring pass — also returns the feature
+ *  record so the detect cron can persist it for the SHAP fill cron. */
+export interface TakeitScoreResult {
+  prob: number | null;
+  version: string | null;
+  features: Record<string, number | null> | null;
+}
+
 /** Score one lottery alert row → calibrated prob (null on failure). */
 export function scoreLottery(
   detectCtx: TakeitDetectContext | null,
   row: LotteryAlertRow,
-): { prob: number | null; version: string | null } {
-  if (!detectCtx) return { prob: null, version: null };
+): TakeitScoreResult {
+  if (!detectCtx) return { prob: null, version: null, features: null };
   try {
     const featureRec = featuresForLottery(detectCtx.bundle, row, detectCtx.ctx);
     const featureArr = featuresFromRow(detectCtx.bundle, featureRec);
     const result = predictTakeitScore(detectCtx.bundle, featureArr);
-    return { prob: result.prob_calibrated, version: detectCtx.bundle.version };
+    return {
+      prob: result.prob_calibrated,
+      version: detectCtx.bundle.version,
+      features: featureRec,
+    };
   } catch (err) {
     Sentry.captureException(err as Error, {
       extra: {
@@ -142,7 +171,7 @@ export function scoreLottery(
         option_chain_id: row.option_chain_id,
       },
     });
-    return { prob: null, version: null };
+    return { prob: null, version: null, features: null };
   }
 }
 
@@ -150,8 +179,8 @@ export function scoreLottery(
 export function scoreSilentBoom(
   detectCtx: TakeitDetectContext | null,
   row: SilentBoomAlertRow,
-): { prob: number | null; version: string | null } {
-  if (!detectCtx) return { prob: null, version: null };
+): TakeitScoreResult {
+  if (!detectCtx) return { prob: null, version: null, features: null };
   try {
     const featureRec = featuresForSilentBoom(
       detectCtx.bundle,
@@ -160,7 +189,11 @@ export function scoreSilentBoom(
     );
     const featureArr = featuresFromRow(detectCtx.bundle, featureRec);
     const result = predictTakeitScore(detectCtx.bundle, featureArr);
-    return { prob: result.prob_calibrated, version: detectCtx.bundle.version };
+    return {
+      prob: result.prob_calibrated,
+      version: detectCtx.bundle.version,
+      features: featureRec,
+    };
   } catch (err) {
     Sentry.captureException(err as Error, {
       extra: {
@@ -169,6 +202,6 @@ export function scoreSilentBoom(
         option_chain_id: row.option_chain_id,
       },
     });
-    return { prob: null, version: null };
+    return { prob: null, version: null, features: null };
   }
 }

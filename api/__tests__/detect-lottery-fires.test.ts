@@ -43,13 +43,14 @@ vi.mock('../_lib/uw-stock-candles.js', async (importOriginal) => {
 
 // Take-It scoring is fail-open by design. Tests mock loadTakeitDetectContext
 // to return null so no Blob fetch happens — the cron INSERTs with null
-// takeit_prob and that's the intended degraded-path behavior. Per-fire
-// scoreLottery returns { prob: null, version: null } via a plain function
-// (vi.fn().mockReturnValue chains can lose the return value inside vi.mock
-// factories on some module-resolution paths).
+// takeit_prob/takeit_model_version/takeit_features and that's the intended
+// degraded-path behavior. Per-fire scoreLottery returns { prob: null,
+// version: null, features: null } via a plain function (vi.fn().mockReturnValue
+// chains can lose the return value inside vi.mock factories on some module-
+// resolution paths).
 vi.mock('../_lib/takeit-detect.js', () => ({
   loadTakeitDetectContext: () => Promise.resolve(null),
-  scoreLottery: () => ({ prob: null, version: null }),
+  scoreLottery: () => ({ prob: null, version: null, features: null }),
 }));
 
 import handler from '../cron/detect-lottery-fires.js';
@@ -252,25 +253,28 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     // The INSERT is the last mockSql call. Bind order now ends with
     // `score, direction_gated, range_pos_at_trigger, takeit_prob,
-    // takeit_model_version` after the Phase 3c take-it rollout (spec:
-    // docs/superpowers/specs/takeit-phase3-production-scoring-
-    // 2026-05-16.md). takeit_model_version is at(-1), takeit_prob at(-2),
-    // range_pos at(-3), direction_gated at(-4), score at(-5). takeit_*
-    // are null because loadTakeitDetectContext is mocked to null.
+    // takeit_model_version, takeit_features` after the Phase 3d follow-up
+    // (spec: docs/superpowers/specs/takeit-phase3-production-scoring-
+    // 2026-05-16.md). takeit_features (JSONB) is at(-1), takeit_model_version
+    // at(-2), takeit_prob at(-3), range_pos at(-4), direction_gated at(-5),
+    // score at(-6). takeit_* are null because loadTakeitDetectContext is
+    // mocked to null.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const takeitVersion = insertCall.at(-1);
-    const takeitProb = insertCall.at(-2);
-    const rangePos = insertCall.at(-3);
-    const directionGated = insertCall.at(-4);
-    const score = insertCall.at(-5);
+    const takeitFeatures = insertCall.at(-1);
+    const takeitVersion = insertCall.at(-2);
+    const takeitProb = insertCall.at(-3);
+    const rangePos = insertCall.at(-4);
+    const directionGated = insertCall.at(-5);
+    const score = insertCall.at(-6);
     expect(score).toBe(25);
     // SNDK call with no OTM tide tick → ungated.
     expect(directionGated).toBe(false);
     // No UW candle data in default fixture → range_pos null.
     expect(rangePos).toBeNull();
-    // Mocked takeit context returns null → both takeit fields null.
+    // Mocked takeit context returns null → all three takeit fields null.
     expect(takeitProb).toBeNull();
     expect(takeitVersion).toBeNull();
+    expect(takeitFeatures).toBeNull();
   });
 
   it('computes range_pos_at_trigger from UW stock candles for display use', async () => {
@@ -311,10 +315,10 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // takeit_* added at end of bind list (Phase 3c) — shift indices by 2.
+    // takeit_features tail-appended (Phase 3d) — rangePos at(-4), score at(-6).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-3);
-    const score = insertCall.at(-5);
+    const rangePos = insertCall.at(-4);
+    const score = insertCall.at(-6);
     // Spot 1170 between low 1150 and high 1200 → 0.4
     expect(rangePos).toBeCloseTo(0.4, 5);
     // No penalty applied; base 25 unchanged.
@@ -356,10 +360,10 @@ describe('detect-lottery-fires handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // takeit_* added at end of bind list (Phase 3c) — shift indices by 2.
+    // takeit_features tail-appended (Phase 3d) — rangePos at(-4), score at(-6).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-3);
-    const score = insertCall.at(-5);
+    const rangePos = insertCall.at(-4);
+    const score = insertCall.at(-6);
     expect(rangePos).toBe(0);
     // No penalty applied — Range Kill retired. Base 25 unchanged.
     expect(score).toBe(25);
@@ -389,25 +393,23 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // INSERT bind order (post Phase 4 gate, spec
-    // silent-boom-direction-gate-and-trail-ui-2026-05-14.md):
+    // INSERT bind order (post Phase 3d takeit_features tail-append):
     //   ... mkt_tide_diff, mkt_tide_otm_diff, spx_flow_diff,
     //   spy_etf_diff, qqq_etf_diff, zero_dte_diff,
     //   spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi,
     //   spx_spot_vanna_oi, gex_strike_call_minus_put,
     //   gex_strike_call_ask_minus_bid, gex_strike_put_ask_minus_bid,
     //   gex_strike_actual_strike, score, direction_gated, range_pos_at_trigger,
-    //   takeit_prob, takeit_model_version
-    // → mkt_tide_otm_diff is now the 18th-from-last bind position after
-    //   #155 added takeit_prob + takeit_model_version (was -14 pre-#151,
-    //   -15 pre-#153, -16 pre-#155).
+    //   takeit_prob, takeit_model_version, takeit_features
+    // → mkt_tide_otm_diff is now the 19th-from-last bind position after
+    //   takeit_features was tail-appended (was -14, -15, -16, -18 in prior eras).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-18)).toBe(3000); // 4000 - 1000
+    expect(insertCall.at(-19)).toBe(3000); // 4000 - 1000
     // Sanity: mkt_tide_diff (no 'market_tide' source in the mock) is null
-    expect(insertCall.at(-19)).toBeNull();
+    expect(insertCall.at(-20)).toBeNull();
     // SNDK call with otm_diff = +3000 (well below the ±150M gate) → ungated.
-    // direction_gated shifted from -2 to -4 with takeit_* at the tail.
-    expect(insertCall.at(-4)).toBe(false);
+    // direction_gated shifted to -5 after takeit_features tail-append.
+    expect(insertCall.at(-5)).toBe(false);
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
@@ -428,13 +430,14 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Bind positions shifted -4 vs the original mkt_tide layout:
+    // Bind positions shifted -5 vs the original mkt_tide layout:
     //   -1 from #151 direction_gated, -1 from #153 range_pos_at_trigger,
-    //   -2 from #155 takeit_prob + takeit_model_version.
+    //   -2 from #155 takeit_prob + takeit_model_version, -1 from Phase 3d
+    //   takeit_features tail-append.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-19)).toBe(200); // mkt_tide_diff = 500 - 300
-    expect(insertCall.at(-18)).toBeNull(); // mkt_tide_otm_diff absent
-    expect(insertCall.at(-4)).toBe(false); // otm null → ungated (direction_gated shifted)
+    expect(insertCall.at(-20)).toBe(200); // mkt_tide_diff = 500 - 300
+    expect(insertCall.at(-19)).toBeNull(); // mkt_tide_otm_diff absent
+    expect(insertCall.at(-5)).toBe(false); // otm null → ungated (direction_gated shifted)
   });
 
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
@@ -655,14 +658,15 @@ describe('detect-lottery-fires handler', () => {
       inserted: 1,
     });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Post-#155 (takeit_*), tail is: score(-5), direction_gated(-4),
-    // range_pos(-3), takeit_prob(-2), takeit_model_version(-1).
+    // Post Phase 3d takeit_features tail-append, tail is:
+    //   score(-6), direction_gated(-5), range_pos(-4),
+    //   takeit_prob(-3), takeit_model_version(-2), takeit_features(-1).
     // The direction gate must NOT mutate the score value — only the
     // boolean column flips.
-    expect(insertCall.at(-4)).toBe(true);
+    expect(insertCall.at(-5)).toBe(true);
     // Score remains the computed value (not zeroed / not demoted).
-    expect(typeof insertCall.at(-5)).toBe('number');
-    expect(insertCall.at(-5) as number).toBeGreaterThan(0);
+    expect(typeof insertCall.at(-6)).toBe('number');
+    expect(insertCall.at(-6) as number).toBeGreaterThan(0);
   });
 
   it('still fires when prior-fire is older than the 5-min cooldown', async () => {

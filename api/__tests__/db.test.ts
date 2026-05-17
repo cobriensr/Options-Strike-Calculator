@@ -583,6 +583,7 @@ describe('db.ts', () => {
         { id: 154 },
         { id: 155 },
         { id: 156 },
+        { id: 157 },
       ]);
 
       const applied = await migrateDb();
@@ -757,6 +758,7 @@ describe('db.ts', () => {
         '#154: Add round_trip_net_pct + round_trip_score_deduct columns to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/round-trip-score-deduct-production-2026-05-16.md). round_trip_net_pct stores post_fire_net_pct_of_volume from a 60-min look-forward window on the alert contract: (ask_size − bid_size) / total_size using per-print tag classification (NOT the cumulative *_vol fields — see memory feedback_uw_fulltape_vols_cumulative.md). Negative values indicate post-fire bid-side flow dominated (likely round-trip / position closed). Phase 1 EDA on 641,638 enriched alerts × 92 days fulltape showed AUC 0.59 cohort-uniform, with signal concentrated in 0-7 DTE (collapses to ~random above). round_trip_score_deduct is the stepped-bracket penalty: < −0.50 → −3, [−0.50, −0.30) → −2, [−0.30, −0.10) → −1, else 0. NOT NULL DEFAULT 0 so existing rows read as un-penalized. Populated by api/cron/evaluate-round-trip.ts 60-75 min after fire (Phase 2B), DTE ≤ 7 only. Backfill via scripts/backfill_round_trip_score.py from the existing alert_features.parquet (Phase 2A). Partial index on negative deducts is small (~30% of rows) and supports the "Hide round-tripped" filter chip queries.',
         '#155: Add takeit_prob + takeit_top_features + takeit_model_version columns to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md). takeit_prob is the calibrated P(peak_ceiling_pct ≥ 20) from the XGBoost classifier (range [0,1], computed in TS at detect time via api/_lib/takeit-score.ts walking the XGBoost JSON tree dump fetched from Vercel Blob). takeit_top_features is the SHAP top-3 green + top-3 red flags ({"positive": [...], "negative": [...]}) populated ~2 min post-fire by api/cron/takeit-fill-shap.ts calling the sidecar /takeit/explain endpoint. takeit_model_version is the bundle version string (e.g. "v2026-05-23"); enables idempotent backfill and version-aware filtering. Partial index on (date DESC, takeit_prob DESC) WHERE takeit_prob IS NOT NULL supports the future "sort feed by prob" queries. Phase 2 OOF AUC: lottery 0.6991 (+8.5pp over heuristic), silentboom 0.7667 (+4.2pp). Backfill via scripts/backfill_takeit.py.',
         '#156: Create gexbot_snapshots + gexbot_api_capture + gexbot_archive_audit tables for GEXBot Orderflow-tier trial capture (spec: docs/superpowers/specs/gexbot-trial-capture-2026-05-16.md). gexbot_snapshots stores extracted orderflow scalar columns (40 NUMERIC + raw_response JSONB) for hot-path SQL queries against /{ticker}/orderflow/orderflow polled once per minute across 16 Index+ETF tickers. gexbot_api_capture is the generic raw-JSONB store for the other 10 tier-eligible endpoints (8 state per-strike categories {gamma,delta,vanna,charm}_{zero,one} + 2 classic maxchange categories gex_zero/gex_full) — pre-extraction strategy: store everything, derive columns later via SQL views once value-add patterns emerge. gexbot_archive_audit records every successful Parquet → Vercel Blob export (one row per (table, archive_date) with UNIQUE constraint supporting ON CONFLICT DO UPDATE for idempotent re-runs), gating the cleanup-gexbot cron which only deletes confirmed-archived rows. Trial-month volume: ~176 calls/min × 8h × 22 trading days; archive + cleanup keep live DB bounded at ~3.5 GB (today + yesterday).',
+        '#157: Add takeit_features JSONB column to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md Phase 3d follow-up). Persists the full feature vector — including derived features (session_phase, is_itm_at_fire, otm_distance_pct, aggressive_premium_flag, dealer_gamma_sign, burst_storm_distinct_count, n_same_dir_fires_last_30min, prior_session_win_rate_same_ticker, minute_of_day_ct, day_of_week) AND one-hot encoded categoricals (option_type_*, ticker_bucket_*, mode_*, flow_quad_*, tod_*, score_tier_*) — exactly as scoreLottery/scoreSilentBoom produced it at detect time. The SHAP fill cron reads this back and ships it to the sidecar /takeit/explain endpoint as-is, eliminating the prior bug where takeit-fill-shap was sending raw SQL row dicts (missing all derived/one-hot features), which would have produced near-empty SHAP matrices on first invocation. Nullable because rows pre-migration have no captured features; the SHAP fill cron filters on `takeit_features IS NOT NULL` so older rows just stay unflagged.',
       ]);
       // Pyramid migrations #65/66/67 remain in the chain (migration history is
       // immutable — fresh DBs replay create → alter → alter → drop). TRACE
@@ -766,9 +768,9 @@ describe('db.ts', () => {
       // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
       // toward the total — the only delta is that they route through
       // sql.transaction() instead of sequential awaits.
-      expect(mockSql).toHaveBeenCalledTimes(552); // #156: 3 CREATE TABLE+5 INDEX+INSERT = 9
-      // Migrations #3 and #15-156 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(143);
+      expect(mockSql).toHaveBeenCalledTimes(555); // #157: 2 ALTER+INSERT = 3
+      // Migrations #3 and #15-157 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(144);
     });
 
     it('propagates errors from migration SQL', async () => {

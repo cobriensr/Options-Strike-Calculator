@@ -4544,4 +4544,15 @@ export const MIGRATIONS: Migration[] = [
             ON gexbot_archive_audit (archive_date DESC)`,
     ],
   },
+  {
+    id: 157,
+    description:
+      'Add takeit_features JSONB column to lottery_finder_fires AND silent_boom_alerts (spec: docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md Phase 3d follow-up). Persists the full feature vector — including derived features (session_phase, is_itm_at_fire, otm_distance_pct, aggressive_premium_flag, dealer_gamma_sign, burst_storm_distinct_count, n_same_dir_fires_last_30min, prior_session_win_rate_same_ticker, minute_of_day_ct, day_of_week) AND one-hot encoded categoricals (option_type_*, ticker_bucket_*, mode_*, flow_quad_*, tod_*, score_tier_*) — exactly as scoreLottery/scoreSilentBoom produced it at detect time. The SHAP fill cron reads this back and ships it to the sidecar /takeit/explain endpoint as-is, eliminating the prior bug where takeit-fill-shap was sending raw SQL row dicts (missing all derived/one-hot features), which would have produced near-empty SHAP matrices on first invocation. Nullable because rows pre-migration have no captured features; the SHAP fill cron filters on `takeit_features IS NOT NULL` so older rows just stay unflagged.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS takeit_features JSONB`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS takeit_features JSONB`,
+    ],
+  },
 ];

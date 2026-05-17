@@ -282,15 +282,31 @@ export default withCronInstrumentation(
           SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
           FROM lottery_finder_fires
           WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-        `) as Array<{ fire_time: Date; underlying_symbol: string; option_type: 'C' | 'P' }>;
+        `) as Array<{
+          fire_time: Date;
+          underlying_symbol: string;
+          option_type: 'C' | 'P';
+        }>;
         return rows as RecentFireRow[];
       },
       fetchRecentOtherTypeByChain: async (lookbackMin) => {
+        // Pulls underlying_symbol + option_type too so the same row set powers
+        // both the chain-keyed cofire map AND the sibling-chain (ticker+dir)
+        // cofire map. One round-trip.
         const rows = (await db`
-          SELECT option_chain_id, bucket_ct AS fire_time
+          SELECT
+            option_chain_id,
+            underlying_symbol,
+            option_type,
+            bucket_ct AS fire_time
           FROM silent_boom_alerts
           WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-        `) as Array<{ option_chain_id: string; fire_time: Date }>;
+        `) as Array<{
+          option_chain_id: string;
+          underlying_symbol: string;
+          option_type: 'C' | 'P';
+          fire_time: Date;
+        }>;
         return rows as RecentCofireRow[];
       },
       fetchPriorSessionWinRateByTicker: async () => {
@@ -485,10 +501,17 @@ export default withCronInstrumentation(
           score,
           direction_gated: directionGated,
         };
-        const { prob: takeitProb, version: takeitVersion } = scoreLottery(
-          takeitCtx,
-          takeitRow,
-        );
+        const {
+          prob: takeitProb,
+          version: takeitVersion,
+          features: takeitFeatures,
+        } = scoreLottery(takeitCtx, takeitRow);
+        // Stash the feature dict alongside prob so the SHAP fill cron has
+        // the exact bundle-shaped input the explainer needs (one-hots,
+        // derived flags, sequential context) without re-deriving from raw
+        // row columns and risking drift.
+        const takeitFeaturesJson =
+          takeitFeatures === null ? null : JSON.stringify(takeitFeatures);
 
         const result = (await db`
           INSERT INTO lottery_finder_fires (
@@ -508,7 +531,7 @@ export default withCronInstrumentation(
             gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
             gex_strike_put_ask_minus_bid, gex_strike_actual_strike,
             score, direction_gated, range_pos_at_trigger,
-            takeit_prob, takeit_model_version
+            takeit_prob, takeit_model_version, takeit_features
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -527,7 +550,7 @@ export default withCronInstrumentation(
             ${macro.gex_strike_call_minus_put}, ${macro.gex_strike_call_ask_minus_bid},
             ${macro.gex_strike_put_ask_minus_bid}, ${macro.gex_strike_actual_strike},
             ${score}, ${directionGated}, ${rangePosAtTrigger},
-            ${takeitProb}, ${takeitVersion}
+            ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id

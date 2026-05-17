@@ -98,9 +98,11 @@ def _load_bundle(alert_type: str) -> dict:
         )
         if not joblib_entry:
             raise RuntimeError(
-                f"joblib bundle missing at {joblib_path}. Upload it alongside "
-                f"the JSON via scripts/upload_takeit_bundles.mjs (TODO: extend "
-                f"to upload the joblib too)."
+                f"joblib bundle missing at {joblib_path}. Re-run "
+                f"scripts/upload_takeit_bundles.mjs from a checkout that has "
+                f"ml/data/takeit/{alert_type}_classifier.joblib on disk; the "
+                f"uploader pushes JSON + joblib in lock-step under the same "
+                f"version string."
             )
         joblib_bytes = _fetch_blob(joblib_entry["url"])
         bundle = joblib.load(io.BytesIO(joblib_bytes))

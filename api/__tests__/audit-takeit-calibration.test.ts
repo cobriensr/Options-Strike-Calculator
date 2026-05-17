@@ -183,7 +183,7 @@ describe('audit-takeit-calibration cron', () => {
     expect(Sentry.metrics.distribution).not.toHaveBeenCalled();
   });
 
-  it('emits Brier + AUC distributions for both alert types when rows exist', async () => {
+  it('emits Brier + AUC + bucket_residual_abs distributions for both alert types when rows exist', async () => {
     // Lottery: perfectly calibrated 4-row set.
     mockSql
       .mockResolvedValueOnce([
@@ -214,12 +214,29 @@ describe('audit-takeit-calibration cron', () => {
       lottery: { n: 4, brier_ok: true, auc: 1 },
       silentboom: { n: 4, brier_ok: true, auc: 1 },
     });
-    // Two Brier distributions (one per alert type)
-    const distCalls = vi
-      .mocked(Sentry.metrics.distribution)
-      .mock.calls.map((c) => c[0]);
-    expect(distCalls).toContain('takeit.brier');
-    expect(distCalls).toContain('takeit.auc');
+    // Distribution calls — Brier, AUC, and per-bucket residual all emitted.
+    const distCalls = vi.mocked(Sentry.metrics.distribution).mock.calls;
+    const distNames = distCalls.map((c) => c[0]);
+    expect(distNames).toContain('takeit.brier');
+    expect(distNames).toContain('takeit.auc');
+    expect(distNames).toContain('takeit.calibration.bucket_residual_abs');
+    // Bucket residual calls carry both alert_type and the bucket range.
+    const bucketCalls = distCalls.filter(
+      (c) => c[0] === 'takeit.calibration.bucket_residual_abs',
+    );
+    expect(bucketCalls.length).toBeGreaterThan(0);
+    for (const [, , opts] of bucketCalls) {
+      const attrs = (opts as { attributes?: Record<string, string> })
+        ?.attributes;
+      expect(attrs?.alert_type).toMatch(/^(lottery|silentboom)$/);
+      expect(attrs?.bucket).toMatch(/^\d\.\d-\d\.\d$/);
+    }
+    // Regression guard for the NaN-bucket short-circuit: only 4 rows per
+    // alert type means at most 4 of the 10 deciles have data. The Sentry
+    // call MUST NOT fire for empty / NaN-residual buckets — line 212 of
+    // audit-takeit-calibration.ts. Bound: 2 alert types × ≤4 populated
+    // buckets = at most 8 bucket_residual_abs calls.
+    expect(bucketCalls.length).toBeLessThanOrEqual(8);
   });
 
   it('captureMessage + brier_breach count fire when brier exceeds threshold', async () => {

@@ -271,15 +271,31 @@ export default withCronInstrumentation(
           SELECT bucket_ct AS fire_time, underlying_symbol, option_type
           FROM silent_boom_alerts
           WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-        `) as Array<{ fire_time: Date; underlying_symbol: string; option_type: 'C' | 'P' }>;
+        `) as Array<{
+          fire_time: Date;
+          underlying_symbol: string;
+          option_type: 'C' | 'P';
+        }>;
         return rows as RecentFireRow[];
       },
       fetchRecentOtherTypeByChain: async (lookbackMin) => {
+        // Pulls underlying_symbol + option_type too so the same row set powers
+        // both the chain-keyed cofire map AND the sibling-chain (ticker+dir)
+        // cofire map. One round-trip.
         const rows = (await db`
-          SELECT option_chain_id, trigger_time_ct AS fire_time
+          SELECT
+            option_chain_id,
+            underlying_symbol,
+            option_type,
+            trigger_time_ct AS fire_time
           FROM lottery_finder_fires
           WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-        `) as Array<{ option_chain_id: string; fire_time: Date }>;
+        `) as Array<{
+          option_chain_id: string;
+          underlying_symbol: string;
+          option_type: 'C' | 'P';
+          fire_time: Date;
+        }>;
         return rows as RecentCofireRow[];
       },
       fetchPriorSessionWinRateByTicker: async () => {
@@ -487,10 +503,16 @@ export default withCronInstrumentation(
           score_tier: effectiveTier,
           direction_gated: directionGated,
         };
-        const { prob: takeitProb, version: takeitVersion } = scoreSilentBoom(
-          takeitCtx,
-          takeitRow,
-        );
+        const {
+          prob: takeitProb,
+          version: takeitVersion,
+          features: takeitFeatures,
+        } = scoreSilentBoom(takeitCtx, takeitRow);
+        // Persist the bundle-shaped feature dict so the SHAP fill cron can
+        // hand it straight to the sidecar — no re-derivation in TS, no
+        // raw-row passthrough that would miss one-hots + derived features.
+        const takeitFeaturesJson =
+          takeitFeatures === null ? null : JSON.stringify(takeitFeatures);
 
         const result = (await db`
           INSERT INTO silent_boom_alerts (
@@ -501,7 +523,7 @@ export default withCronInstrumentation(
             score, score_tier, direction_gated,
             mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
             multi_leg_share, underlying_price_at_spike,
-            takeit_prob, takeit_model_version
+            takeit_prob, takeit_model_version, takeit_features
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
@@ -511,7 +533,7 @@ export default withCronInstrumentation(
             ${score}, ${effectiveTier}, ${directionGated},
             ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
             ${f.multiLegShare}, ${f.underlyingPriceAtSpike},
-            ${takeitProb}, ${takeitVersion}
+            ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id
