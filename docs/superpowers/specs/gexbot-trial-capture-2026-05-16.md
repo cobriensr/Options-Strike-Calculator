@@ -444,21 +444,24 @@ value_2, [5 priors]]` array turns out to matter, we add a child table
 
 ## Thresholds / constants
 
-| Constant             | Value                                                        | Location                                     |
-| -------------------- | ------------------------------------------------------------ | -------------------------------------------- |
-| Fetch cadence        | every minute, 13–21 UTC, Mon–Fri                             | `vercel.json` cron schedule (×2 fetch crons) |
-| Archive cadence      | 21:30 UTC, Tue–Sat (archives prior Mon–Fri)                  | `vercel.json` → `api/cron/archive-gexbot.ts` |
-| Cleanup cadence      | 12:15 UTC, Mon–Fri (10 min after `cleanup-ws-option-trades`) | `vercel.json`                                |
-| Retention window     | 2 days (today + yesterday)                                   | `cleanup-gexbot.ts`, audit-gated             |
-| HTTP timeout         | 1000 ms per call                                             | `gexbot-client.ts` AbortController           |
-| Auth prefix          | literal `gexbot_custom_`                                     | hard-coded in client                         |
-| Ticker list          | 16 (above)                                                   | exported const `GEXBOT_TICKERS` in client    |
-| State categories     | 8 (`{gamma,delta,vanna,charm}_{zero,one}`)                   | exported const `STATE_CATEGORIES`            |
-| Maxchange categories | 2 (`gex_zero`, `gex_full`)                                   | hard-coded in fast cron                      |
-| Total calls/min      | 320 (192 fast + 128 strikes)                                 | —                                            |
-| Migration id         | 156                                                          | next available after #155                    |
-| Parquet compression  | Snappy, 50k-row row groups                                   | `archive_gexbot_daily.py`                    |
-| Blob key format      | `gexbot/{table}/{yyyy-mm-dd}.parquet`                        | `archive_gexbot_daily.py`                    |
+| Constant            | Value                                                        | Location                                       |
+| ------------------- | ------------------------------------------------------------ | ---------------------------------------------- |
+| Fetch cadence       | every minute, 13–21 UTC, Mon–Fri                             | `vercel.json` cron schedule (×2 fetch crons)   |
+| Archive cadence     | 21:30 UTC, Tue–Sat (archives prior Mon–Fri)                  | `vercel.json` → `api/cron/archive-gexbot.ts`   |
+| Cleanup cadence     | 12:15 UTC, Mon–Fri (10 min after `cleanup-ws-option-trades`) | `vercel.json`                                  |
+| Retention window    | 2 days (today + yesterday)                                   | `cleanup-gexbot.ts`, audit-gated               |
+| HTTP timeout        | 1000 ms per call                                             | `gexbot-client.ts` AbortController             |
+| Auth prefix         | literal `gexbot_custom_`                                     | hard-coded in client                           |
+| Ticker list         | 16 (above)                                                   | exported const `GEXBOT_TICKERS` in client      |
+| State categories    | 8 (`{gamma,delta,vanna,charm}_{zero,one}`)                   | exported const `STATE_CATEGORIES`              |
+| Classic maxchange   | 3 (`gex_zero`, `gex_one`, `gex_full`)                        | exported const `MAXCHANGE_CATEGORIES`          |
+| State maxchange     | 8 (same as `STATE_CATEGORIES`)                               | exported alias `STATE_MAXCHANGE_CATEGORIES`    |
+| Fan-out concurrency | 32 per cron tick                                             | `FETCH_CONCURRENCY` in `fetch-gexbot-fast.ts`  |
+| Sentry error cap    | 10 captures + 1 summary message per tick                     | `SENTRY_CAPTURE_CAP` in `fetch-gexbot-fast.ts` |
+| Total calls/min     | 320 (192 fast + 128 strikes)                                 | —                                              |
+| Migration id        | 156                                                          | next available after #155                      |
+| Parquet compression | Snappy, 50k-row row groups                                   | `archive_gexbot_daily.py`                      |
+| Blob key format     | `gexbot/{table}/{yyyy-mm-dd}.parquet`                        | `archive_gexbot_daily.py`                      |
 
 ## Risk notes
 

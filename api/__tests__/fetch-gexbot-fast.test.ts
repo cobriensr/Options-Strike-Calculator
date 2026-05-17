@@ -186,7 +186,8 @@ describe('fetch-gexbot-fast handler', () => {
       captures: CAPTURE_COUNT,
       failed: 0,
     });
-    // 16 per-row snapshot INSERTs + 1 batched UNNEST captures INSERT = 17
+    // GEXBOT_TICKERS.length per-row snapshot INSERTs + 1 batched UNNEST
+    // captures INSERT. Stays correct when the ticker list grows.
     expect(mockSql).toHaveBeenCalledTimes(GEXBOT_TICKERS.length + 1);
     expect(mockSentryCapture).not.toHaveBeenCalled();
   });

@@ -58,6 +58,41 @@ function i(v: unknown): number | null {
   return null;
 }
 
+/**
+ * Concurrency cap for the per-tick fetch fan-out. Sized to keep wall time
+ * tight while preventing all 192 calls from launching simultaneously — a
+ * 192-way burst paired with a 1s timeout can produce 192 Sentry events in
+ * a single tick if GEXBot has a slow minute.
+ */
+const FETCH_CONCURRENCY = 32;
+
+/**
+ * Max Sentry events per tick. Beyond this we emit a single summary
+ * captureMessage and drop the remaining stack traces — better signal
+ * than 100+ identical TimeoutError reports during a GEXBot outage.
+ */
+const SENTRY_CAPTURE_CAP = 10;
+
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () =>
+    (async () => {
+      while (true) {
+        const idx = cursor++;
+        if (idx >= items.length) return;
+        results[idx] = await fn(items[idx]!);
+      }
+    })(),
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 interface SnapshotRow {
   ticker: GexbotTicker;
   body: GexbotResponse;
@@ -150,8 +185,12 @@ export default withCronInstrumentation(
 
     // Wrap each fetch so the rejection carries `task` context for
     // Sentry tagging — Promise.allSettled exposes only `reason`.
-    const results = await Promise.all(
-      tasks.map(async (task) => {
+    // Concurrency-capped (FETCH_CONCURRENCY) to avoid a 192-way burst on
+    // every cron tick.
+    const results = await mapWithConcurrency(
+      tasks,
+      FETCH_CONCURRENCY,
+      async (task) => {
         try {
           let body: GexbotResponse;
           switch (task.kind) {
@@ -168,53 +207,90 @@ export default withCronInstrumentation(
                 task.category,
               );
               break;
+            default: {
+              // Exhaustiveness check — adding a new Task variant without
+              // a matching case here trips a TS error at compile time.
+              const _exhaustive: never = task;
+              throw new Error(
+                `unhandled task kind: ${JSON.stringify(_exhaustive)}`,
+              );
+            }
           }
           return { ok: true as const, task, body };
         } catch (err) {
           return { ok: false as const, task, err };
         }
-      }),
+      },
     );
 
     const snapshots: SnapshotRow[] = [];
     const captures: CaptureRow[] = [];
     let failed = 0;
+    let sentryCaptured = 0;
 
     for (const result of results) {
       if (!result.ok) {
         failed += 1;
-        const tagCategory =
-          result.task.kind === 'orderflow' ? 'orderflow' : result.task.category;
-        Sentry.captureException(result.err, {
-          tags: {
-            'gexbot.cron': 'fast',
-            'gexbot.ticker': result.task.ticker,
-            'gexbot.endpoint': result.task.kind,
-            'gexbot.category': tagCategory,
-          },
-        });
+        if (sentryCaptured < SENTRY_CAPTURE_CAP) {
+          const tagCategory =
+            result.task.kind === 'orderflow'
+              ? 'orderflow'
+              : result.task.category;
+          Sentry.captureException(result.err, {
+            tags: {
+              'gexbot.cron': 'fast',
+              'gexbot.ticker': result.task.ticker,
+              'gexbot.endpoint': result.task.kind,
+              'gexbot.category': tagCategory,
+            },
+          });
+          sentryCaptured += 1;
+        }
         continue;
       }
       const { task, body } = result;
-      if (task.kind === 'orderflow') {
-        snapshots.push({ ticker: task.ticker, body });
-      } else if (task.kind === 'classic-maxchange') {
-        captures.push({
-          ticker: task.ticker,
-          endpoint: 'classic',
-          category: `${task.category}/maxchange`,
-          sourceTimestamp: i(body.timestamp),
-          rawJson: JSON.stringify(body),
-        });
-      } else {
-        captures.push({
-          ticker: task.ticker,
-          endpoint: 'state',
-          category: `${task.category}/maxchange`,
-          sourceTimestamp: i(body.timestamp),
-          rawJson: JSON.stringify(body),
-        });
+      switch (task.kind) {
+        case 'orderflow':
+          snapshots.push({ ticker: task.ticker, body });
+          break;
+        case 'classic-maxchange':
+          captures.push({
+            ticker: task.ticker,
+            endpoint: 'classic',
+            category: `${task.category}/maxchange`,
+            sourceTimestamp: i(body.timestamp),
+            rawJson: JSON.stringify(body),
+          });
+          break;
+        case 'state-maxchange':
+          captures.push({
+            ticker: task.ticker,
+            endpoint: 'state',
+            category: `${task.category}/maxchange`,
+            sourceTimestamp: i(body.timestamp),
+            rawJson: JSON.stringify(body),
+          });
+          break;
+        default: {
+          const _exhaustive: never = task;
+          throw new Error(
+            `unhandled task kind in result loop: ${JSON.stringify(_exhaustive)}`,
+          );
+        }
       }
+    }
+
+    if (failed > SENTRY_CAPTURE_CAP) {
+      Sentry.captureMessage(
+        `fetch-gexbot-fast: ${failed - SENTRY_CAPTURE_CAP} additional failures suppressed (cap=${SENTRY_CAPTURE_CAP})`,
+        {
+          level: 'warning',
+          tags: {
+            'gexbot.cron': 'fast',
+            'gexbot.summary': 'true',
+          },
+        },
+      );
     }
 
     await storeSnapshots(snapshots);
