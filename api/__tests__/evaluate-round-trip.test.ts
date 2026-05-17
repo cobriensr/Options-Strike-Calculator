@@ -83,12 +83,12 @@ describe('evaluate-round-trip handler', () => {
         fire_time: new Date('2026-05-19T16:50:00.000Z'),
       },
     ]);
-    // ws_option_trades aggregate: heavy bid flow, light ask.
-    // net_pct = (10 - 90) / 100 = -0.80 → deduct -3
+    // Batched aggregation returns one row keyed by id+source —
+    // net_pct = (10 - 90) / 100 = -0.80 → deduct -3.
     mockSql.mockResolvedValueOnce([
-      { ask_size: 10, bid_size: 90, total_size: 100 },
+      { id: 42, source: 'lottery', ask_size: 10, bid_size: 90, total_size: 100 },
     ]);
-    // UPDATE returns no rows back (sql doesn't care)
+    // Single batched UPDATE for the lottery side.
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
@@ -102,6 +102,9 @@ describe('evaluate-round-trip handler', () => {
       deducted: 1,
       noFlow: 0,
     });
+    // Exactly three DB calls: eligible SELECT + batched aggregation +
+    // one lottery batched UPDATE (no silent_boom rows → branch skipped).
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   it('applies -2 deduct in [-0.50, -0.30)', async () => {
@@ -115,7 +118,7 @@ describe('evaluate-round-trip handler', () => {
     ]);
     // net_pct = (30 - 70) / 100 = -0.40 → deduct -2
     mockSql.mockResolvedValueOnce([
-      { ask_size: 30, bid_size: 70, total_size: 100 },
+      { id: 7, source: 'lottery', ask_size: 30, bid_size: 70, total_size: 100 },
     ]);
     mockSql.mockResolvedValueOnce([]);
 
@@ -138,7 +141,7 @@ describe('evaluate-round-trip handler', () => {
     ]);
     // net_pct = (40 - 60) / 100 = -0.20 → deduct -1
     mockSql.mockResolvedValueOnce([
-      { ask_size: 40, bid_size: 60, total_size: 100 },
+      { id: 11, source: 'silent_boom', ask_size: 40, bid_size: 60, total_size: 100 },
     ]);
     mockSql.mockResolvedValueOnce([]);
 
@@ -161,7 +164,7 @@ describe('evaluate-round-trip handler', () => {
     ]);
     // net_pct = (50 - 50) / 100 = 0.0 → deduct 0
     mockSql.mockResolvedValueOnce([
-      { ask_size: 50, bid_size: 50, total_size: 100 },
+      { id: 99, source: 'lottery', ask_size: 50, bid_size: 50, total_size: 100 },
     ]);
     mockSql.mockResolvedValueOnce([]);
 
@@ -184,9 +187,9 @@ describe('evaluate-round-trip handler', () => {
     ]);
     // No post-fire trades at all.
     mockSql.mockResolvedValueOnce([
-      { ask_size: 0, bid_size: 0, total_size: 0 },
+      { id: 1, source: 'lottery', ask_size: 0, bid_size: 0, total_size: 0 },
     ]);
-    // The no-flow path still UPDATEs (to set net_pct = 0).
+    // Batched UPDATE still fires (with deduct=0, net_pct=0).
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
@@ -214,16 +217,15 @@ describe('evaluate-round-trip handler', () => {
         fire_time: new Date('2026-05-19T16:51:00.000Z'),
       },
     ]);
-    // First alert — deduct -3
+    // One batched aggregation returns BOTH rows — id+source preserved
+    // from the unnest input.
     mockSql.mockResolvedValueOnce([
-      { ask_size: 5, bid_size: 95, total_size: 100 },
+      { id: 1, source: 'lottery', ask_size: 5, bid_size: 95, total_size: 100 },
+      { id: 2, source: 'silent_boom', ask_size: 80, bid_size: 20, total_size: 100 },
     ]);
-    mockSql.mockResolvedValueOnce([]);
-    // Second alert — deduct 0
-    mockSql.mockResolvedValueOnce([
-      { ask_size: 80, bid_size: 20, total_size: 100 },
-    ]);
-    mockSql.mockResolvedValueOnce([]);
+    // Two batched UPDATEs — one per source table.
+    mockSql.mockResolvedValueOnce([]); // lottery UPDATE
+    mockSql.mockResolvedValueOnce([]); // silent_boom UPDATE
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -233,6 +235,8 @@ describe('evaluate-round-trip handler', () => {
       deducted: 1,
       noFlow: 0,
     });
+    // 4 calls flat: SELECT + agg + lottery UPDATE + silent_boom UPDATE.
+    expect(mockSql).toHaveBeenCalledTimes(4);
   });
 
   it('writes silent_boom no-flow row via the silent_boom UPDATE branch', async () => {
@@ -245,9 +249,9 @@ describe('evaluate-round-trip handler', () => {
       },
     ]);
     mockSql.mockResolvedValueOnce([
-      { ask_size: 0, bid_size: 0, total_size: 0 },
+      { id: 42, source: 'silent_boom', ask_size: 0, bid_size: 0, total_size: 0 },
     ]);
-    mockSql.mockResolvedValueOnce([]); // the UPDATE silent_boom_alerts call
+    mockSql.mockResolvedValueOnce([]); // the batched UPDATE silent_boom_alerts call
 
     const res = mockResponse();
     await handler(authedReq(), res);
@@ -257,6 +261,8 @@ describe('evaluate-round-trip handler', () => {
     const updateSql = (updateCall?.[0] as readonly string[]).join('');
     expect(updateSql).toContain('silent_boom_alerts');
     expect(updateSql).not.toContain('lottery_finder_fires');
+    // Batched UPDATE uses unnest, not per-row WHERE id = ...
+    expect(updateSql).toContain('unnest');
   });
 
   it('eligibility SELECT enforces dte <= 7 and uses safe INTERVAL pattern', async () => {

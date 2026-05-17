@@ -69,10 +69,18 @@ interface EligibleAlert {
   fire_time: Date;
 }
 
-interface FlowAgg {
+interface AggRow {
+  id: number;
+  source: 'lottery' | 'silent_boom';
   ask_size: number;
   bid_size: number;
   total_size: number;
+}
+
+interface UpdatePayload {
+  id: number;
+  netPct: number;
+  deduct: number;
 }
 
 export default withCronInstrumentation(
@@ -111,77 +119,105 @@ export default withCronInstrumentation(
       return { status: 'success', rows: 0 };
     }
 
+    // ONE batched aggregation — unnest the eligible alerts into a virtual
+    // input table, LEFT JOIN LATERAL the per-row post-fire window aggregation.
+    // Replaces the prior per-row SELECT loop (1 + 2N queries → 4 queries
+    // flat). The pattern matches fetch-net-flow-history.ts:149 and
+    // _lib/path-shape.ts:110. See memory feedback_batched_inserts.md.
+    const ids = eligible.map((a) => a.id);
+    const sources = eligible.map((a) => a.source);
+    const chains = eligible.map((a) => a.option_chain_id);
+    const fires = eligible.map((a) =>
+      a.fire_time instanceof Date
+        ? a.fire_time.toISOString()
+        : new Date(a.fire_time).toISOString(),
+    );
+
+    const aggRows = (await db`
+      SELECT t.id, t.source,
+             COALESCE(f.ask_size, 0)::int   AS ask_size,
+             COALESCE(f.bid_size, 0)::int   AS bid_size,
+             COALESCE(f.total_size, 0)::int AS total_size
+        FROM unnest(
+               ${ids}::int[],
+               ${sources}::text[],
+               ${chains}::text[],
+               ${fires}::timestamptz[]
+             ) AS t(id, source, chain, fire_time)
+   LEFT JOIN LATERAL (
+               SELECT
+                 SUM(size) FILTER (WHERE side = 'ask') AS ask_size,
+                 SUM(size) FILTER (WHERE side = 'bid') AS bid_size,
+                 SUM(size)                              AS total_size
+                 FROM ws_option_trades
+                WHERE option_chain = t.chain
+                  AND executed_at > t.fire_time
+                  AND executed_at <= t.fire_time + (${WINDOW_MIN}::int * INTERVAL '1 minute')
+                  AND NOT canceled
+             ) f ON TRUE
+    `) as AggRow[];
+
     let evaluated = 0;
     let noFlow = 0;
     let deducted = 0;
+    const lotUpdates: UpdatePayload[] = [];
+    const sbUpdates: UpdatePayload[] = [];
 
-    for (const alert of eligible) {
-      // Aggregate post-fire flow on the contract over a fixed 60-min window
-      // starting at the alert's fire_time. side is pre-classified by the
-      // uw-stream daemon, so SUM-FILTER-by-side gives us per-print attribution
-      // directly (no tag parsing needed — see header comment).
-      const aggRows = (await db`
-        SELECT
-          COALESCE(SUM(size) FILTER (WHERE side = 'ask'), 0)::int AS ask_size,
-          COALESCE(SUM(size) FILTER (WHERE side = 'bid'), 0)::int AS bid_size,
-          COALESCE(SUM(size), 0)::int                              AS total_size
-        FROM ws_option_trades
-        WHERE option_chain = ${alert.option_chain_id}
-          AND executed_at > ${alert.fire_time}
-          AND executed_at <= ${alert.fire_time}::timestamptz + (${WINDOW_MIN}::int * INTERVAL '1 minute')
-          AND NOT canceled
-      `) as FlowAgg[];
-
-      const agg = aggRows[0] ?? { ask_size: 0, bid_size: 0, total_size: 0 };
-
-      if (agg.total_size === 0) {
-        // No post-fire flow on this contract within the window. Common for
-        // illiquid expirations or late-day fires. We still mark
-        // round_trip_net_pct (to 0.0) so the cron doesn't re-evaluate this
-        // alert on the next tick. Deduct stays 0.
+    for (const row of aggRows) {
+      const isNoFlow = row.total_size === 0;
+      // No post-fire flow on this contract within the window. Common for
+      // illiquid expirations or late-day fires. We still write
+      // round_trip_net_pct (to 0.0) so the cron doesn't re-evaluate this
+      // alert on the next tick. round_trip_score_deduct is NOT NULL
+      // DEFAULT 0 (migration #154) so writing 0 explicitly is a no-op
+      // semantically — kept here to make the batched UPDATE shape uniform.
+      const netPct = isNoFlow
+        ? 0
+        : (row.ask_size - row.bid_size) / row.total_size;
+      const deduct = isNoFlow ? 0 : computeDeduct(netPct);
+      if (isNoFlow) {
         noFlow += 1;
-        // Branch by source to avoid `${db(identifier)}` dynamic-identifier
-        // interpolation — keeps the SQL static and tests deterministic.
-        if (alert.source === 'lottery') {
-          await db`
-            UPDATE lottery_finder_fires
-               SET round_trip_net_pct = 0
-             WHERE id = ${alert.id}
-               AND round_trip_net_pct IS NULL
-          `;
-        } else {
-          await db`
-            UPDATE silent_boom_alerts
-               SET round_trip_net_pct = 0
-             WHERE id = ${alert.id}
-               AND round_trip_net_pct IS NULL
-          `;
-        }
-        continue;
-      }
-
-      const netPct = (agg.ask_size - agg.bid_size) / agg.total_size;
-      const deduct = computeDeduct(netPct);
-      if (deduct < 0) deducted += 1;
-
-      if (alert.source === 'lottery') {
-        await db`
-          UPDATE lottery_finder_fires
-             SET round_trip_net_pct = ${netPct},
-                 round_trip_score_deduct = ${deduct}
-           WHERE id = ${alert.id}
-             AND round_trip_net_pct IS NULL
-        `;
       } else {
-        await db`
-          UPDATE silent_boom_alerts
-             SET round_trip_net_pct = ${netPct},
-                 round_trip_score_deduct = ${deduct}
-           WHERE id = ${alert.id}
-             AND round_trip_net_pct IS NULL
-        `;
+        evaluated += 1;
+        if (deduct < 0) deducted += 1;
       }
-      evaluated += 1;
+      const update: UpdatePayload = { id: row.id, netPct, deduct };
+      if (row.source === 'lottery') lotUpdates.push(update);
+      else sbUpdates.push(update);
+    }
+
+    // Up to TWO batched UPDATEs total — one per source table — regardless
+    // of how many alerts were evaluated. unnest of 3 typed arrays mirrors
+    // fetch-net-flow-history.ts:149. The IS NULL guard preserves
+    // idempotency (concurrent re-run can't overwrite an already-written
+    // value).
+    if (lotUpdates.length > 0) {
+      const lotIds = lotUpdates.map((u) => u.id);
+      const lotNet = lotUpdates.map((u) => u.netPct);
+      const lotDed = lotUpdates.map((u) => u.deduct);
+      await db`
+        UPDATE lottery_finder_fires AS l
+           SET round_trip_net_pct      = u.net_pct,
+               round_trip_score_deduct = u.deduct
+          FROM unnest(${lotIds}::int[], ${lotNet}::numeric[], ${lotDed}::smallint[])
+                 AS u(id, net_pct, deduct)
+         WHERE l.id = u.id
+           AND l.round_trip_net_pct IS NULL
+      `;
+    }
+    if (sbUpdates.length > 0) {
+      const sbIds = sbUpdates.map((u) => u.id);
+      const sbNet = sbUpdates.map((u) => u.netPct);
+      const sbDed = sbUpdates.map((u) => u.deduct);
+      await db`
+        UPDATE silent_boom_alerts AS s
+           SET round_trip_net_pct      = u.net_pct,
+               round_trip_score_deduct = u.deduct
+          FROM unnest(${sbIds}::int[], ${sbNet}::numeric[], ${sbDed}::smallint[])
+                 AS u(id, net_pct, deduct)
+         WHERE s.id = u.id
+           AND s.round_trip_net_pct IS NULL
+      `;
     }
 
     ctx.logger.info(
