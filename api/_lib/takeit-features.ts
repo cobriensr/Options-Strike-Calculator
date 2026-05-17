@@ -259,6 +259,93 @@ export function sessionPhaseFromMinuteCt(minuteOfDayCt: number): number {
   return 0;
 }
 
+/**
+ * 7-phase categorical session label (meta-detectors Phase 3).
+ *
+ * Why this exists alongside the numeric `session_phase`:
+ *   - The numeric `session_phase` (0-5) is already pinned in every trained
+ *     bundle's `feature_cols` and uses 6 phases with DIFFERENT boundaries
+ *     (8:30/9:00/10:30/12:00/14:00/15:00). It stays as-is — touching it
+ *     would invalidate all existing bundles.
+ *   - The new categorical `session_phase_cat` uses 7 phases aligned to the
+ *     user's intraday trading schedule (see memory `user_trading_schedule`,
+ *     5-phase intraday, trades 9:00-3:00 CT). The 7 boundaries are finer
+ *     around the open (split 08:30-09:00 "cash-open overlap" from
+ *     09:00-09:30 "gamma-rebalance") so the model can learn the
+ *     informational asymmetry between e.g. a 9:32 print (institutional) and
+ *     a 14:55 print (gamma-hedge mechanics).
+ *   - Coexistence with lottery's existing `tod` feature: `tod` has 4
+ *     coarse buckets (AM_open | MID | LUNCH | PM) and IS pinned in lottery
+ *     bundles. We keep `tod` untouched and add `session_phase_cat` to both
+ *     lottery and silent-boom (silent-boom never had a time-of-day
+ *     categorical before today). The model can learn from either, both, or
+ *     neither depending on what `feature_cols` pins at training time.
+ *
+ * BOUNDARY ORDER — DO NOT REARRANGE. The trainer pins one-hot columns by
+ * exact name (`session_phase_cat_open`, `session_phase_cat_closing`, …) and
+ * a reorder here would silently invalidate retrains. If SHAP shows the
+ * feature concentrates importance in 1-2 phases, propose tightening the
+ * cutpoints rather than reordering this array.
+ *
+ * BOUNDARY CONVENTION — LEFT-inclusive (08:30:00 belongs to `open`, not
+ * `pre_open`). Identical to the existing `sessionPhaseFromMinuteCt`.
+ *
+ * FALLBACK — `morning` is the "no information" bucket if any timestamp
+ * extraction fails. It's the widest informed-flow window and least likely
+ * to mislead the model.
+ */
+export const SESSION_PHASES = [
+  'pre_open',
+  'open',
+  'opening_30',
+  'morning',
+  'lunch',
+  'afternoon',
+  'closing',
+] as const;
+
+export type SessionPhase = (typeof SESSION_PHASES)[number];
+
+/**
+ * Map CT minute-of-day to the 7-phase categorical label.
+ *
+ * Phases (CT, all LEFT-inclusive):
+ *   - pre_open    : < 08:30
+ *   - open        : 08:30-09:00 (cash-open overlap)
+ *   - opening_30  : 09:00-09:30 (opening 30 min, gamma rebalance)
+ *   - morning     : 09:30-11:00 (informed-flow window)
+ *   - lunch       : 11:00-13:00 (liquidity probes, weak signal)
+ *   - afternoon   : 13:00-14:00 (trending window)
+ *   - closing     : 14:00 onward (positioning into close)
+ */
+export function sessionPhaseCatFromMinuteCt(
+  minuteOfDayCt: number,
+): SessionPhase {
+  if (minuteOfDayCt < 8 * 60 + 30) return 'pre_open';
+  if (minuteOfDayCt < 9 * 60) return 'open';
+  if (minuteOfDayCt < 9 * 60 + 30) return 'opening_30';
+  if (minuteOfDayCt < 11 * 60) return 'morning';
+  if (minuteOfDayCt < 13 * 60) return 'lunch';
+  if (minuteOfDayCt < 14 * 60) return 'afternoon';
+  return 'closing';
+}
+
+/**
+ * Pure helper: map a UTC trigger time to a CT 7-phase categorical label.
+ * No clock dependency — pass the timestamp in. Falls back to `morning` on
+ * any extraction error (see SESSION_PHASES comment for rationale).
+ */
+export function deriveSessionPhase(triggerTimeCt: Date): SessionPhase {
+  try {
+    const { hour, minute } = getCTTime(triggerTimeCt);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 'morning';
+    return sessionPhaseCatFromMinuteCt(hour * 60 + minute);
+  } catch {
+    // Timezone parse failure → safest "no information" bucket.
+    return 'morning';
+  }
+}
+
 /* ───────────────────────── Per-row derivations ────────────────────────── */
 
 /**
@@ -470,6 +557,7 @@ export function featuresForLottery(
 ): Record<string, number | null> {
   const { minute_of_day_ct, day_of_week } = ctMinuteAndDow(row.fire_time);
   const sessionPhase = sessionPhaseFromMinuteCt(minute_of_day_ct);
+  const sessionPhaseCat = deriveSessionPhase(row.fire_time);
   const isItm = deriveIsItmAtFire(
     row.option_type,
     row.spot_at_first,
@@ -576,7 +664,9 @@ export function featuresForLottery(
 
   // One-hot categoricals. `inferred_structure` joins the same mechanism as
   // mode / flow_quad / tod — encoding stability is enforced by
-  // bundle.feature_cols (see INFERRED_STRUCTURE_LABELS).
+  // bundle.feature_cols (see INFERRED_STRUCTURE_LABELS). `session_phase_cat`
+  // is a 7-phase time-of-day label that coexists with `tod` (4 buckets) —
+  // the bundle decides which (or both) make it into feature_cols.
   Object.assign(
     base,
     expandOneHotCategoricals(
@@ -587,6 +677,7 @@ export function featuresForLottery(
         flow_quad: row.flow_quad,
         tod: row.tod,
         inferred_structure: row.inferred_structure,
+        session_phase_cat: sessionPhaseCat,
       },
       row.underlying_symbol,
     ),
@@ -603,6 +694,7 @@ export function featuresForSilentBoom(
 ): Record<string, number | null> {
   const { minute_of_day_ct, day_of_week } = ctMinuteAndDow(row.fire_time);
   const sessionPhase = sessionPhaseFromMinuteCt(minute_of_day_ct);
+  const sessionPhaseCat = deriveSessionPhase(row.fire_time);
   const isItm = deriveIsItmAtFire(
     row.option_type,
     row.underlying_price_at_spike,
@@ -683,6 +775,8 @@ export function featuresForSilentBoom(
   // One-hot categoricals. `inferred_structure` joins the same mechanism as
   // option_type / score_tier — encoding stability is enforced by
   // bundle.feature_cols (see INFERRED_STRUCTURE_LABELS).
+  // `session_phase_cat` is silent-boom's FIRST time-of-day categorical
+  // (lottery has `tod`; silent-boom previously had no TOD feature).
   Object.assign(
     base,
     expandOneHotCategoricals(
@@ -691,6 +785,7 @@ export function featuresForSilentBoom(
         option_type: row.option_type,
         score_tier: row.score_tier,
         inferred_structure: row.inferred_structure,
+        session_phase_cat: sessionPhaseCat,
       },
       row.underlying_symbol,
     ),

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   INFERRED_STRUCTURE_LABELS,
   type LotteryAlertRow,
+  SESSION_PHASES,
   type SequentialContext,
   type SilentBoomAlertRow,
   ctMinuteAndDow,
@@ -15,9 +16,11 @@ import {
   deriveIsItmAtFire,
   deriveNSameDirFiresLast30Min,
   deriveOtmDistancePct,
+  deriveSessionPhase,
   expandOneHotCategoricals,
   featuresForLottery,
   featuresForSilentBoom,
+  sessionPhaseCatFromMinuteCt,
   sessionPhaseFromMinuteCt,
   tickerDirKey,
 } from '../_lib/takeit-features.js';
@@ -779,5 +782,148 @@ describe('INFERRED_STRUCTURE_LABELS stability', () => {
       'risk_reversal',
       'butterfly',
     ]);
+  });
+});
+
+/* ───────────────────────── Session-phase categorical (meta-detectors Phase 3) ── */
+
+describe('sessionPhaseCatFromMinuteCt', () => {
+  it('partitions the trading day into 7 LEFT-inclusive phases', () => {
+    expect(sessionPhaseCatFromMinuteCt(7 * 60)).toBe('pre_open'); // 07:00
+    expect(sessionPhaseCatFromMinuteCt(8 * 60 + 29)).toBe('pre_open'); // 08:29
+    expect(sessionPhaseCatFromMinuteCt(8 * 60 + 30)).toBe('open'); // 08:30 boundary
+    expect(sessionPhaseCatFromMinuteCt(8 * 60 + 59)).toBe('open'); // 08:59
+    expect(sessionPhaseCatFromMinuteCt(9 * 60)).toBe('opening_30'); // 09:00 boundary
+    expect(sessionPhaseCatFromMinuteCt(9 * 60 + 29)).toBe('opening_30'); // 09:29
+    expect(sessionPhaseCatFromMinuteCt(9 * 60 + 30)).toBe('morning'); // 09:30 boundary
+    expect(sessionPhaseCatFromMinuteCt(10 * 60 + 59)).toBe('morning'); // 10:59
+    expect(sessionPhaseCatFromMinuteCt(11 * 60)).toBe('lunch'); // 11:00 boundary
+    expect(sessionPhaseCatFromMinuteCt(12 * 60 + 59)).toBe('lunch'); // 12:59
+    expect(sessionPhaseCatFromMinuteCt(13 * 60)).toBe('afternoon'); // 13:00 boundary
+    expect(sessionPhaseCatFromMinuteCt(13 * 60 + 59)).toBe('afternoon'); // 13:59
+    expect(sessionPhaseCatFromMinuteCt(14 * 60)).toBe('closing'); // 14:00 boundary
+    expect(sessionPhaseCatFromMinuteCt(15 * 60)).toBe('closing'); // 15:00 still closing
+  });
+});
+
+describe('deriveSessionPhase', () => {
+  it('maps 08:35 CT to "open" (cash-open overlap)', () => {
+    // 08:35 CT = 13:35 UTC during CDT (summer); use a date safely inside CDT.
+    const utc = new Date('2026-05-15T13:35:00Z');
+    expect(deriveSessionPhase(utc)).toBe('open');
+  });
+
+  it('maps 09:32 CT to "morning" (just past opening_30 boundary)', () => {
+    const utc = new Date('2026-05-15T14:32:00Z');
+    expect(deriveSessionPhase(utc)).toBe('morning');
+  });
+
+  it('maps 14:55 CT to "closing"', () => {
+    const utc = new Date('2026-05-15T19:55:00Z');
+    expect(deriveSessionPhase(utc)).toBe('closing');
+  });
+
+  it('treats 08:30:00 CT exactly as "open" (LEFT-inclusive)', () => {
+    const utc = new Date('2026-05-15T13:30:00Z');
+    expect(deriveSessionPhase(utc)).toBe('open');
+  });
+
+  it('treats 09:00:00 CT exactly as "opening_30" (LEFT-inclusive)', () => {
+    const utc = new Date('2026-05-15T14:00:00Z');
+    expect(deriveSessionPhase(utc)).toBe('opening_30');
+  });
+
+  it('returns "morning" as fallback for invalid Date', () => {
+    expect(deriveSessionPhase(new Date(Number.NaN))).toBe('morning');
+  });
+});
+
+describe('SESSION_PHASES stability', () => {
+  it('pins the 7-phase label set in a frozen order (regression guard)', () => {
+    // The trainer pins one-hot columns by exact name
+    // (`session_phase_cat_<phase>`). Reorder / add / remove = model-break.
+    expect([...SESSION_PHASES]).toEqual([
+      'pre_open',
+      'open',
+      'opening_30',
+      'morning',
+      'lunch',
+      'afternoon',
+      'closing',
+    ]);
+  });
+
+  it('has length 7', () => {
+    expect(SESSION_PHASES).toHaveLength(7);
+  });
+});
+
+describe('session_phase_cat one-hot (lottery + silentboom)', () => {
+  // 08:35 CT = 13:35 UTC during CDT → phase `open`.
+  const OPEN_UTC = new Date('2026-05-15T13:35:00Z');
+  // 14:55 CT = 19:55 UTC during CDT → phase `closing`.
+  const CLOSING_UTC = new Date('2026-05-15T19:55:00Z');
+
+  const SESSION_PHASE_COLS = [
+    'session_phase_cat_pre_open',
+    'session_phase_cat_open',
+    'session_phase_cat_opening_30',
+    'session_phase_cat_morning',
+    'session_phase_cat_lunch',
+    'session_phase_cat_afternoon',
+    'session_phase_cat_closing',
+  ];
+
+  it('emits session_phase_cat_open=1 at 08:35 CT for lottery (others unset)', () => {
+    const bundle = makeBundle(
+      'lottery',
+      SESSION_PHASE_COLS,
+      ['SPY'],
+      ['session_phase_cat'],
+    );
+    const out = featuresForLottery(
+      bundle,
+      lotteryRow({ fire_time: OPEN_UTC }),
+      EMPTY_CTX,
+    );
+    expect(out.session_phase_cat_open).toBe(1);
+    // Sibling buckets stay unset (treated as 0 at inference time).
+    expect(out.session_phase_cat_pre_open).toBeUndefined();
+    expect(out.session_phase_cat_opening_30).toBeUndefined();
+    expect(out.session_phase_cat_morning).toBeUndefined();
+    expect(out.session_phase_cat_lunch).toBeUndefined();
+    expect(out.session_phase_cat_afternoon).toBeUndefined();
+    expect(out.session_phase_cat_closing).toBeUndefined();
+  });
+
+  it('emits session_phase_cat_closing=1 at 14:55 CT for silent-boom', () => {
+    const bundle = makeBundle(
+      'silentboom',
+      SESSION_PHASE_COLS,
+      ['SPY'],
+      ['session_phase_cat'],
+    );
+    const out = featuresForSilentBoom(
+      bundle,
+      silentBoomRow({ fire_time: CLOSING_UTC }),
+      EMPTY_CTX,
+    );
+    expect(out.session_phase_cat_closing).toBe(1);
+    expect(out.session_phase_cat_open).toBeUndefined();
+    expect(out.session_phase_cat_morning).toBeUndefined();
+  });
+
+  it('emits no session_phase_cat one-hot when bundle does not pin them (forward-compat)', () => {
+    // A bundle trained BEFORE Phase 3 has no `session_phase_cat_*` columns.
+    // The feature should compute silently with no output keys.
+    const bundle = makeBundle('lottery', ['dte'], ['SPY'], []);
+    const out = featuresForLottery(
+      bundle,
+      lotteryRow({ fire_time: OPEN_UTC }),
+      EMPTY_CTX,
+    );
+    for (const col of SESSION_PHASE_COLS) {
+      expect(out[col]).toBeUndefined();
+    }
   });
 });
