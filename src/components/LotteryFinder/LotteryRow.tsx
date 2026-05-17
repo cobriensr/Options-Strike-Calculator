@@ -668,6 +668,20 @@ export const LotteryRow = memo(function LotteryRow({
             ×{fire.fireCount} · since {formatTimeCT(fire.firstFireTimeCt)}
           </span>
         )}
+        {/* REIGNITED chip — chain matches the daily top-N reignition
+            pattern (multi-fire chain that went quiet ≥30 min, then had
+            ≥2 post-gap fires). Same row also renders in the pinned
+            "Hot Right Now" section above the ticker groups. Phase 3 of
+            lottery-reignition-ui-2026-05-17. */}
+        {fire.reignited === true && (
+          <span
+            className="inline-flex items-center gap-1 rounded border border-orange-400/60 bg-orange-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-orange-100 uppercase"
+            title="REIGNITION: chain fired 3+ times, went quiet ≥30 min, then re-ignited with ≥2 post-gap fires. Daily top 5 by post-gap intensity. 70% precision on outlier-peak winners (vs 40% baseline); median realized trail30/10 +18%."
+          >
+            <span aria-hidden="true">🔥</span>
+            REIGNITED
+          </span>
+        )}
         {/* "Still hot" indicator — only when market is open and the
             latest fire is within the last 10 minutes. Polling refresh
             (~30s) keeps this honest without per-row timers. */}

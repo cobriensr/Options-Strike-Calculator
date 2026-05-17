@@ -7,6 +7,7 @@ import { ctSessionBounds } from './ct-window.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryTierBanner } from './LotteryTierBanner.js';
 import { LotteryFinderTickerGroup } from './LotteryFinderTickerGroup.js';
+import { ReignitionSection } from './ReignitionSection.js';
 import {
   EXIT_POLICY_LABELS,
   EXIT_POLICY_TOOLTIPS,
@@ -564,6 +565,36 @@ export function LotteryFinderSection({
     [tickerCounts.tickers],
   );
 
+  // Task A of lottery-reignition-ui-2026-05-17 — promote REIGNITED
+  // chains into a pinned "Hot Right Now" section above the ticker
+  // groups. The `reignited` flag is computed globally per-day in
+  // api/lottery-finder.ts (top 5/day by post_gap_fires DESC, fire_count
+  // DESC) so the badge stays stable across filter views. Each fire
+  // renders in EXACTLY ONE place (reignited list OR ticker group),
+  // never both — split below.
+  const reignitedFires = useMemo(
+    () =>
+      [...displayedFires]
+        .filter((f) => f.reignited === true)
+        .sort((a, b) => {
+          // Guard against malformed triggerTimeCt — Date.parse returns
+          // NaN on invalid input, and NaN comparators yield unspecified
+          // sort order. Production data is always ISO; defensive only.
+          const at = Date.parse(a.triggerTimeCt);
+          const bt = Date.parse(b.triggerTimeCt);
+          return (
+            (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0)
+          );
+        }),
+    [displayedFires],
+  );
+  // Fires that don't qualify for the pinned section feed the regular
+  // ticker grouping below — keeps the per-ticker rollup counts honest.
+  const tickerGroupFires = useMemo(
+    () => displayedFires.filter((f) => f.reignited !== true),
+    [displayedFires],
+  );
+
   // Group displayed fires by ticker so each underlying renders as one
   // collapsible row. When sortMode === 'peak', both group order AND
   // within-group order use realized peak desc (nulls last) so the
@@ -571,7 +602,7 @@ export function LotteryFinderSection({
   // storm → fire count desc → latest trigger desc.
   const groupedByTicker = useMemo(() => {
     const map = new Map<string, LotteryFire[]>();
-    for (const f of displayedFires) {
+    for (const f of tickerGroupFires) {
       const arr = map.get(f.underlyingSymbol);
       if (arr) arr.push(f);
       else map.set(f.underlyingSymbol, [f]);
@@ -636,7 +667,7 @@ export function LotteryFinderSection({
         }
         return b.latestTriggerMs - a.latestTriggerMs;
       });
-  }, [displayedFires, sortMode]);
+  }, [tickerGroupFires, sortMode]);
 
   // Live ticker net-flow snapshots driving the Flow Match / Mismatch /
   // Inverted badges. One panel-level poll (60s while marketOpen)
@@ -651,6 +682,16 @@ export function LotteryFinderSection({
     date,
     marketOpen,
   });
+
+  // Stable lookup for ReignitionSection — keeps the new function
+  // identity tied to `tickerFlowSnapshots` so the memo'd section
+  // doesn't re-render on every parent tick (the 30s `nowMinuteMs`
+  // interval alone re-renders this section twice a minute, so an
+  // inline-literal closure here would defeat the section's memo).
+  const getReignitionSnapshot = useCallback(
+    (ticker: string) => tickerFlowSnapshots.get(ticker) ?? null,
+    [tickerFlowSnapshots],
+  );
 
   // Per-ticker expand state, persisted to localStorage so users keep
   // their open tickers across refreshes / filter changes. Default
@@ -1303,6 +1344,16 @@ export function LotteryFinderSection({
                 </span>
               )}
             </div>
+            {/* Pinned REIGNITION section — renders above ticker groups.
+                Section component returns null when there are no qualifying
+                rows, so an empty top-N doesn't show an empty box. Phase 3
+                of lottery-reignition-ui-2026-05-17. */}
+            <ReignitionSection
+              fires={reignitedFires}
+              exitPolicy={exitPolicy}
+              marketOpen={marketOpen}
+              getFlowSnapshot={getReignitionSnapshot}
+            />
             {groupedByTicker.map((g) => (
               <LotteryFinderTickerGroup
                 key={g.ticker}

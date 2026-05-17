@@ -878,3 +878,42 @@ describe('LotteryRow: EXIT badge', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+// ============================================================
+// Phase 3 of lottery-reignition-ui-2026-05-17 — REIGNITED chip
+// ============================================================
+
+describe('LotteryRow: REIGNITED chip', () => {
+  it('renders the REIGNITED chip when fire.reignited is true', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ reignited: true, fireCount: 8 })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByText('REIGNITED')).toBeInTheDocument();
+  });
+
+  it('hides the REIGNITED chip when fire.reignited is undefined', () => {
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText('REIGNITED')).not.toBeInTheDocument();
+  });
+
+  it('hides the REIGNITED chip when fire.reignited is explicitly false', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ reignited: false, fireCount: 8 })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText('REIGNITED')).not.toBeInTheDocument();
+  });
+});
