@@ -7,7 +7,7 @@
  * SVG layout isn't what we're testing here.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type {
   LotteryFire,
@@ -768,6 +768,115 @@ describe('LotteryRow: flow-inverted badge', () => {
     );
     expect(
       screen.queryByTestId('lottery-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('LotteryRow: EXIT badge', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders EXIT (red) when cohort hold has expired', () => {
+    // Trigger far enough in the past that avgHoldMinutes has elapsed.
+    const trigger = '2026-05-15T13:30:00.000Z';
+    vi.setSystemTime(
+      new Date(Date.parse(trigger) + 1000 * 60_000), // 1000m later
+    );
+    render(
+      <LotteryRow
+        fire={makeFire({
+          optionType: 'C',
+          triggerTimeCt: trigger,
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const exit = screen.getByTestId('lottery-exit-now-badge');
+    expect(exit).toHaveTextContent('EXIT');
+    expect(exit).toHaveAttribute(
+      'title',
+      expect.stringContaining('Cohort P75 hold elapsed'),
+    );
+  });
+
+  it('renders EXIT when flow has inverted (countdown still in window)', () => {
+    const trigger = '2026-05-15T13:30:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(trigger) + 30 * 60_000));
+    render(
+      <LotteryRow
+        fire={makeFire({
+          optionType: 'C',
+          triggerTimeCt: trigger,
+          macro: {
+            ...makeFire().macro,
+            tickerCumNcpAtFire: 10_000_000,
+            tickerCumNppAtFire: 1_000_000,
+          },
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 1_000_000,
+          cumNpp: 20_000_000,
+          asOfTs: '2026-05-15T14:00:00.000Z',
+        }}
+      />,
+    );
+    const exit = screen.getByTestId('lottery-exit-now-badge');
+    expect(exit).toHaveAttribute(
+      'title',
+      expect.stringContaining('Ticker net flow inverted'),
+    );
+  });
+
+  it('renders EXIT with combined tooltip when both rules fire', () => {
+    const trigger = '2026-05-15T13:30:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(trigger) + 1000 * 60_000));
+    render(
+      <LotteryRow
+        fire={makeFire({
+          optionType: 'C',
+          triggerTimeCt: trigger,
+          macro: {
+            ...makeFire().macro,
+            tickerCumNcpAtFire: 10_000_000,
+            tickerCumNppAtFire: 1_000_000,
+          },
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={{
+          cumNcp: 1_000_000,
+          cumNpp: 20_000_000,
+          asOfTs: '2026-05-15T14:00:00.000Z',
+        }}
+      />,
+    );
+    expect(
+      screen.getByTestId('lottery-exit-now-badge'),
+    ).toHaveAttribute(
+      'title',
+      expect.stringContaining('Hold expired + flow inverted'),
+    );
+  });
+
+  it('omits EXIT when nothing has fired', () => {
+    const trigger = '2026-05-15T13:30:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(trigger) + 30 * 60_000));
+    render(
+      <LotteryRow
+        fire={makeFire({ optionType: 'C', triggerTimeCt: trigger })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-exit-now-badge'),
     ).not.toBeInTheDocument();
   });
 });

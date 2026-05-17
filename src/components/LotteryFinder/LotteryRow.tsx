@@ -16,7 +16,12 @@ import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
-import { CohortCountdown } from '../ui/CohortCountdown.js';
+import { computeExitNow } from '../../utils/exit-now.js';
+import {
+  CohortCountdown,
+  computeCountdownRemaining,
+} from '../ui/CohortCountdown.js';
+import { useNowMinute } from '../../hooks/useNowMinute.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
 interface LotteryRowProps {
@@ -338,6 +343,21 @@ export const LotteryRow = memo(function LotteryRow({
     fire.macro.tickerCumNppAtFire,
     liveFlowSnapshot ?? null,
   );
+  // EXIT chip composition. Reuse the per-minute clock to derive
+  // remainingMin without spawning a second interval per row.
+  const nowMs = useNowMinute();
+  const remainingMin =
+    fire.avgHoldMinutes != null
+      ? computeCountdownRemaining(
+          fire.triggerTimeCt,
+          fire.avgHoldMinutes,
+          nowMs,
+        )
+      : null;
+  const exitNow = computeExitNow({
+    remainingMin,
+    flowInverted: flowInverted != null,
+  });
 
   // Expand state — when true, the per-fire panel renders below the
   // summary lines and the two hooks fetch their data. Collapsed by
@@ -784,6 +804,27 @@ export const LotteryRow = memo(function LotteryRow({
         <span className="ml-auto text-neutral-500">
           {EXIT_POLICY_LABELS[exitPolicy]}
         </span>
+        {/* EXIT — pulsing red chip. Composes the cohort countdown +
+            flow-inversion signals into a single high-visibility
+            indicator that fires when either rule has triggered. Placed
+            at the far right so it's the first thing the eye lands on
+            when scrolling the list. */}
+        {exitNow.active && (
+          <span
+            data-testid="lottery-exit-now-badge"
+            className="ml-2 inline-flex animate-pulse items-center rounded border border-red-500/70 bg-red-950/60 px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-wide text-red-100"
+            title={
+              exitNow.reason === 'expired'
+                ? 'Cohort P75 hold elapsed — historical median peak has passed.'
+                : exitNow.reason === 'inverted'
+                  ? 'Ticker net flow inverted — strongest documented exit signal.'
+                  : 'Hold expired + flow inverted — both exit rules fired.'
+            }
+            aria-label={`Exit signal active: ${exitNow.reason}`}
+          >
+            EXIT
+          </span>
+        )}
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}

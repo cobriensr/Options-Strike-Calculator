@@ -8,7 +8,7 @@
  * we're testing here.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type {
   SilentBoomAlert,
@@ -676,6 +676,88 @@ describe('SilentBoomRow: flow-inverted badge', () => {
     });
     expect(
       screen.queryByTestId('silent-boom-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+  });
+});
+
+describe('SilentBoomRow: EXIT badge', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('renders EXIT (red) when cohort hold has expired', () => {
+    const bucket = '2026-05-15T13:30:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(bucket) + 1000 * 60_000));
+    renderRow(makeAlert({ bucketCt: bucket }));
+    const exit = screen.getByTestId('silent-boom-exit-now-badge');
+    expect(exit).toHaveTextContent('EXIT');
+    expect(exit).toHaveAttribute(
+      'title',
+      expect.stringContaining('Cohort P75 hold elapsed'),
+    );
+  });
+
+  it('renders EXIT when flow has inverted', () => {
+    const bucket = '2026-05-15T13:30:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(bucket) + 30 * 60_000));
+    renderRow(
+      makeAlert({
+        optionType: 'C',
+        bucketCt: bucket,
+        tickerCumNcpAtFire: 10_000_000,
+        tickerCumNppAtFire: 1_000_000,
+      }),
+      true,
+      'realized60mPct',
+      {
+        cumNcp: 1_000_000,
+        cumNpp: 20_000_000,
+        asOfTs: '2026-05-15T14:00:00.000Z',
+      },
+    );
+    expect(
+      screen.getByTestId('silent-boom-exit-now-badge'),
+    ).toHaveAttribute(
+      'title',
+      expect.stringContaining('Ticker net flow inverted'),
+    );
+  });
+
+  it('renders EXIT with combined tooltip when both rules fire', () => {
+    const bucket = '2026-05-15T13:30:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(bucket) + 1000 * 60_000));
+    renderRow(
+      makeAlert({
+        optionType: 'C',
+        bucketCt: bucket,
+        tickerCumNcpAtFire: 10_000_000,
+        tickerCumNppAtFire: 1_000_000,
+      }),
+      true,
+      'realized60mPct',
+      {
+        cumNcp: 1_000_000,
+        cumNpp: 20_000_000,
+        asOfTs: '2026-05-15T14:00:00.000Z',
+      },
+    );
+    expect(
+      screen.getByTestId('silent-boom-exit-now-badge'),
+    ).toHaveAttribute(
+      'title',
+      expect.stringContaining('Hold expired + flow inverted'),
+    );
+  });
+
+  it('omits EXIT when nothing has fired', () => {
+    const bucket = '2026-05-15T13:30:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(bucket) + 30 * 60_000));
+    renderRow(makeAlert({ bucketCt: bucket }));
+    expect(
+      screen.queryByTestId('silent-boom-exit-now-badge'),
     ).not.toBeInTheDocument();
   });
 });
