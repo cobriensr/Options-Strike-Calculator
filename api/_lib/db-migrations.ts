@@ -4682,4 +4682,37 @@ export const MIGRATIONS: Migration[] = [
             ON tracker_alerts (contract_id, alert_type, threshold)`,
     ],
   },
+  {
+    id: 164,
+    description:
+      'Add wave2_status TEXT + wave2_detected_at TIMESTAMPTZ columns to lottery_finder_fires AND silent_boom_alerts for Phase 4 wave-2 confirmation tracking (spec: docs/superpowers/specs/meta-detectors-2026-05-16.md Phase 4). The wave2-confirmation cron scans each fire for a second qualifying same-ticker + same-option_type event in the same table within 60 min of trigger time and writes one of three labels: "confirmed" (a wave-2 event landed within 0-30 min), "lagging" (30-60 min), or "fizzled" (60 min elapsed with no follow-up). wave2_detected_at carries the second event\'s timestamp on confirmed/lagging and stays NULL on fizzled. Status is left loose (no CHECK constraint) for forward-compat with v2 labels like "cross_type_confirmed". The partial indexes are the cron hot path — without them every tick scans the full table; with them only NULL-status rows are touched (which is exactly the candidate set). lottery uses trigger_time_ct, silent_boom uses bucket_ct. Both tables get the same two columns + one partial index symmetrically. Status transitions are one-way (NULL → confirmed/lagging/fizzled) and the cron never reverses a verdict — the IS NULL guard on the read makes the whole job idempotent.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS wave2_status TEXT`,
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS wave2_detected_at TIMESTAMPTZ`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS wave2_status TEXT`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS wave2_detected_at TIMESTAMPTZ`,
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_wave2_pending_idx
+            ON lottery_finder_fires (trigger_time_ct)
+            WHERE wave2_status IS NULL`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_wave2_pending_idx
+            ON silent_boom_alerts (bucket_ct)
+            WHERE wave2_status IS NULL`,
+    ],
+  },
+  {
+    id: 165,
+    description:
+      'Create panel_prefs table for per-identity panel visibility preferences (spec: docs/superpowers/specs/panel-prefs-2026-05-17.md). One row per identity — `\'owner\'` literal sentinel for the cookie session, or sha256(guest_key) hex for guests so a leaked panel_prefs row reveals no live credential. hidden_panels is a JSONB deny-list of `sec-*` panel IDs; storing "hidden" (not "visible") means new panels you ship later auto-appear for existing users instead of being invisible until each one re-toggles. updated_at supports a future "last touched" diagnostic but is not currently read on the hot path. No additional index — identity is the PK and the only read pattern is `WHERE identity = $1`.',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS panel_prefs (
+            identity      TEXT PRIMARY KEY,
+            hidden_panels JSONB NOT NULL DEFAULT '[]'::jsonb,
+            updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+          )`,
+    ],
+  },
 ];

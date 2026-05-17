@@ -17,4 +17,5 @@ export * from './validation/snapshot.js';
 export * from './validation/market-data.js';
 export * from './validation/opening-flow.js';
 export * from './validation/greek-heatmap.js';
+export * from './validation/panel-prefs.js';
 export * from './validation/tracker.js';

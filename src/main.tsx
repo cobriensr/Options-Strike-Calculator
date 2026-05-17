@@ -145,6 +145,8 @@ if (import.meta.env.PROD)
       { path: '/api/system-status', method: 'GET' },
       { path: '/api/auth/guest-key', method: 'POST' },
       { path: '/api/auth/guest-logout', method: 'POST' },
+      { path: '/api/panel-prefs', method: 'GET' },
+      { path: '/api/panel-prefs', method: 'PUT' },
       { path: '/api/tracker/contracts', method: 'GET' },
       { path: '/api/tracker/contracts', method: 'POST' },
       { path: '/api/tracker/contracts/[id]', method: 'PATCH' },
