@@ -16,6 +16,7 @@
 import { memo } from 'react';
 
 import { SectionBox } from '../ui';
+import { CharmClock } from './CharmClock';
 import { VixDealerStateBadge } from './VixDealerStateBadge';
 
 interface GexbotSectionProps {
@@ -23,12 +24,11 @@ interface GexbotSectionProps {
 }
 
 function GexbotSectionInner({ marketOpen }: GexbotSectionProps) {
-  // defaultCollapsed=true for Wave 2a (one tile, saves vertical space).
-  // Flip to false when Wave 2b+ adds Charm Clock / Gamma Compass etc.
   return (
-    <SectionBox label="GEXBot Dealer State" collapsible defaultCollapsed>
+    <SectionBox label="GEXBot Dealer State" collapsible>
       <div className="flex flex-col gap-3">
         <VixDealerStateBadge marketOpen={marketOpen} />
+        <CharmClock marketOpen={marketOpen} />
       </div>
       <p className="text-tertiary mt-3 text-[10px] leading-relaxed">
         GEXBot Orderflow-tier data — capture pipeline ships dealer
