@@ -189,6 +189,8 @@ describe('useSilentBoomFeed', () => {
               spxSpotGammaOi: 12345,
               underlyingPriceAtSpike: 580,
               multiLegShare: 0.25,
+              tickerCumNcpAtFire: null,
+              tickerCumNppAtFire: null,
               avgHoldMinutes: 144,
               outcomes: {
                 peakCeilingPct: 25,

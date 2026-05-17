@@ -31,6 +31,8 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     spxSpotGammaOi: null,
     underlyingPriceAtSpike: null,
     multiLegShare: null,
+    tickerCumNcpAtFire: null,
+    tickerCumNppAtFire: null,
     avgHoldMinutes: 197,
     outcomes: {
       peakCeilingPct: null,

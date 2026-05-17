@@ -159,6 +159,16 @@ export interface SilentBoomAlert {
    */
   multiLegShare: number | null;
   /**
+   * Ticker-level cumulative net call premium at bucket_ct, snapshotted
+   * by the silent-boom-feed LATERAL join against
+   * ws_net_flow_per_ticker + net_flow_per_ticker_history. Distinct from
+   * mktTideDiff (which is SPY-wide market tide). Null when the ws/REST
+   * tables held no rows for the ticker before the alert.
+   */
+  tickerCumNcpAtFire: number | null;
+  /** Ticker-level cumulative net put premium at bucket_ct. */
+  tickerCumNppAtFire: number | null;
+  /**
    * Underlying spot price at the spike-bucket time (migration #152).
    * Null on pre-#152 rows that were inserted before the field existed.
    * The UI uses this to derive ITM/OTM moneyness client-side for the

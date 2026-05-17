@@ -59,6 +59,8 @@ interface AlertFixture {
   round_trip_net_pct: string | null;
   round_trip_score_deduct: number | null;
   inserted_at: string;
+  fire_time_cum_ncp?: string | null;
+  fire_time_cum_npp?: string | null;
 }
 
 function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
@@ -98,6 +100,11 @@ function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
     round_trip_net_pct: null,
     round_trip_score_deduct: 0,
     inserted_at: '2026-05-07T13:30:30Z',
+    // Ticker-level cum flow at bucket_ct (LATERAL on
+    // ws_net_flow_per_ticker + history). Defaults set for the
+    // happy-path test; individual tests override for null fall-through.
+    fire_time_cum_ncp: '5500.00',
+    fire_time_cum_npp: '-2200.00',
     ...overrides,
   };
 }
@@ -306,6 +313,71 @@ describe('silent-boom-feed handler', () => {
       alerts: { multiLegShare: number | null }[];
     };
     expect(body.alerts[0]?.multiLegShare).toBeNull();
+  });
+
+  it('exposes fire-time ticker net flow via tickerCumNcp/NppAtFire', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
+      makeAlert({
+        fire_time_cum_ncp: '4250.50',
+        fire_time_cum_npp: '-1800.75',
+      }),
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: {
+        tickerCumNcpAtFire: number | null;
+        tickerCumNppAtFire: number | null;
+      }[];
+    };
+    expect(body.alerts[0]?.tickerCumNcpAtFire).toBe(4250.5);
+    expect(body.alerts[0]?.tickerCumNppAtFire).toBe(-1800.75);
+  });
+
+  it('falls through to null tickerCumNcp/Npp when LATERAL has no rows', async () => {
+    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
+      makeAlert({ fire_time_cum_ncp: null, fire_time_cum_npp: null }),
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: {
+        tickerCumNcpAtFire: number | null;
+        tickerCumNppAtFire: number | null;
+      }[];
+    };
+    expect(body.alerts[0]?.tickerCumNcpAtFire).toBeNull();
+    expect(body.alerts[0]?.tickerCumNppAtFire).toBeNull();
+  });
+
+  it('rows query joins LATERAL ticker net flow at bucket_ct', async () => {
+    // Pin the LATERAL shape across all 4 sort branches so a future
+    // query rewrite doesn't silently drop the fire-time snapshot.
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([makeAlert()]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // The second SQL call is the rows query (count is first).
+    const sqlText = (
+      mockSql.mock.calls[1]![0] as TemplateStringsArray
+    ).join(' ');
+    expect(sqlText).toContain('fire_time_cum_ncp');
+    expect(sqlText).toContain('fire_time_cum_npp');
+    expect(sqlText).toContain('LEFT JOIN LATERAL');
+    expect(sqlText).toContain('ws_net_flow_per_ticker');
+    expect(sqlText).toContain('net_flow_per_ticker_history');
+    expect(sqlText).toContain('DISTINCT ON');
+    expect(sqlText).toContain('s.bucket_ct');
   });
 
   it('returns null underlyingPriceAtSpike for pre-#152 rows missing the spot snapshot', async () => {
