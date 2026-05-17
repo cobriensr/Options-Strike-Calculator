@@ -939,23 +939,28 @@ npm run dev:full     # Frontend + API functions via Vercel dev (localhost:3000)
 
 ### Environment Variables
 
-See [.env.example](.env.example) for a copy-paste template with descriptions.
+[.env.example](.env.example) is the canonical reference — it is kept in sync with the Zod schema in [api/\_lib/env.ts](api/_lib/env.ts). The table below covers the vars most likely to bite a first-time setup; consult `.env.example` for the full list (push notifications, takeit sidecar, periscope webhooks, etc.).
 
-| Variable                   | Source                       | Purpose                           |
-| -------------------------- | ---------------------------- | --------------------------------- |
-| `SCHWAB_CLIENT_ID`         | developer.schwab.com         | Schwab API app key                |
-| `SCHWAB_CLIENT_SECRET`     | developer.schwab.com         | Schwab API app secret             |
-| `OWNER_SECRET`             | `openssl rand -hex 32`       | Owner session cookie value        |
-| `UPSTASH_REDIS_REST_URL`   | Auto-set by Vercel (Upstash) | Redis REST endpoint               |
-| `UPSTASH_REDIS_REST_TOKEN` | Auto-set by Vercel (Upstash) | Redis auth token                  |
-| `ANTHROPIC_API_KEY`        | console.anthropic.com        | Claude API key for chart analysis |
-| `OPENAI_API_KEY`           | platform.openai.com          | Embeddings for lesson dedup       |
-| `DATABASE_URL`             | Auto-set by Vercel (Neon)    | Postgres connection string        |
-| `SENTRY_DSN`               | Auto-set by Vercel (Sentry)  | Sentry error tracking DSN         |
-| `FRED_API_KEY`             | fred.stlouisfed.org          | Economic calendar data (optional) |
-| `FINNHUB_API_KEY`          | finnhub.io                   | Mega-cap earnings data (optional) |
-| `UW_API_KEY`               | unusualwhales.com            | Market flow, GEX, dark pool data  |
-| `CRON_SECRET`              | Auto-set by Vercel           | Cron job auth (auto in prod)      |
+| Variable                   | Source                       | Purpose                                         |
+| -------------------------- | ---------------------------- | ----------------------------------------------- |
+| `SCHWAB_CLIENT_ID`         | developer.schwab.com         | Schwab API app key                              |
+| `SCHWAB_CLIENT_SECRET`     | developer.schwab.com         | Schwab API app secret                           |
+| `OWNER_SECRET`             | `openssl rand -hex 32`       | Owner session cookie value                      |
+| `GUEST_ACCESS_KEYS`        | self-generated, comma-sep    | Read-only guest keys (optional)                 |
+| `UPSTASH_REDIS_REST_URL`   | Auto-set by Vercel (Upstash) | Redis REST endpoint                             |
+| `UPSTASH_REDIS_REST_TOKEN` | Auto-set by Vercel (Upstash) | Redis auth token                                |
+| `ANTHROPIC_API_KEY`        | console.anthropic.com        | Claude API key for chart analysis               |
+| `OPENAI_API_KEY`           | platform.openai.com          | Embeddings for lesson dedup                     |
+| `DATABASE_URL`             | Auto-set by Vercel (Neon)    | Postgres connection string                      |
+| `DATABENTO_API_KEY`        | databento.com                | Futures data feed (Railway sidecar)             |
+| `BLOB_READ_WRITE_TOKEN`    | Auto-set by Vercel (Blob)    | ML plots, archive seeding, DB backups           |
+| `SIDECAR_URL`              | Railway dashboard            | Public URL of the Databento sidecar (prod only) |
+| `APP_URL`                  | self-set                     | Public origin; `http://localhost:3000` for dev  |
+| `SENTRY_DSN`               | Auto-set by Vercel (Sentry)  | Sentry error tracking DSN                       |
+| `FRED_API_KEY`             | fred.stlouisfed.org          | Economic calendar data (optional)               |
+| `FINNHUB_API_KEY`          | finnhub.io                   | Mega-cap earnings data (optional)               |
+| `UW_API_KEY`               | unusualwhales.com            | Market flow, GEX, dark pool data                |
+| `CRON_SECRET`              | Auto-set by Vercel           | Cron job auth (auto in prod)                    |
 
 ### Database Setup
 
@@ -964,13 +969,15 @@ See [.env.example](.env.example) for a copy-paste template with descriptions.
 # 2. Pull env vars
 vercel env pull .env.local
 
-# 3. Deploy and initialize tables (one-time, also runs migrations)
-curl -X POST https://theta-options.com/api/journal/init \
-  -b "sc-owner=YOUR_COOKIE_VALUE"
+# 3. Initialize tables + run migrations (one-time per database).
+#    Local dev: hit your running vercel dev server.
+#    Production: replace localhost:3000 with your deployed origin.
+curl -X POST http://localhost:3000/api/journal/init \
+  -b "sc-owner=$OWNER_SECRET"
 
 # 3b. Or run migrations only (safe to repeat — adds new columns to existing tables)
-curl -X POST https://theta-options.com/api/journal/migrate \
-  -b "sc-owner=YOUR_COOKIE_VALUE"
+curl -X POST http://localhost:3000/api/journal/migrate \
+  -b "sc-owner=$OWNER_SECRET"
 ```
 
 ---
