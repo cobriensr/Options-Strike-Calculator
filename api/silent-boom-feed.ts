@@ -397,36 +397,9 @@ export default async function handler(
       rows = (await db`
         SELECT
           s.*,
-          tnf.cum_ncp AS fire_time_cum_ncp,
-          tnf.cum_npp AS fire_time_cum_npp
+          s.cum_ncp_at_fire AS fire_time_cum_ncp,
+          s.cum_npp_at_fire AS fire_time_cum_npp
         FROM silent_boom_alerts s
-        LEFT JOIN LATERAL (
-          -- Snapshot cumulative ticker net flow at this alert's
-          -- bucket_ct. DISTINCT ON (ts) priority WS=1 / REST=2 so live
-          -- rows win minute collisions. Lower bound is the date's
-          -- midnight UTC — over-inclusive but harmless since both
-          -- source tables only carry session-hours rows.
-          SELECT
-            SUM(net_call_prem) AS cum_ncp,
-            SUM(net_put_prem) AS cum_npp
-          FROM (
-            SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
-            FROM (
-              SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-              FROM ws_net_flow_per_ticker
-              WHERE ticker = s.underlying_symbol
-                AND ts >= s.date::timestamptz
-                AND ts <= s.bucket_ct
-              UNION ALL
-              SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-              FROM net_flow_per_ticker_history
-              WHERE ticker = s.underlying_symbol
-                AND ts >= s.date::timestamptz
-                AND ts <= s.bucket_ct
-            ) combined
-            ORDER BY ts, priority
-          ) unified
-        ) tnf ON TRUE
         WHERE s.date = ${date}::date
           AND (${tickerUpper ?? null}::text IS NULL OR underlying_symbol = ${tickerUpper ?? null}::text)
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
@@ -466,36 +439,9 @@ export default async function handler(
       rows = (await db`
         SELECT
           s.*,
-          tnf.cum_ncp AS fire_time_cum_ncp,
-          tnf.cum_npp AS fire_time_cum_npp
+          s.cum_ncp_at_fire AS fire_time_cum_ncp,
+          s.cum_npp_at_fire AS fire_time_cum_npp
         FROM silent_boom_alerts s
-        LEFT JOIN LATERAL (
-          -- Snapshot cumulative ticker net flow at this alert's
-          -- bucket_ct. DISTINCT ON (ts) priority WS=1 / REST=2 so live
-          -- rows win minute collisions. Lower bound is the date's
-          -- midnight UTC — over-inclusive but harmless since both
-          -- source tables only carry session-hours rows.
-          SELECT
-            SUM(net_call_prem) AS cum_ncp,
-            SUM(net_put_prem) AS cum_npp
-          FROM (
-            SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
-            FROM (
-              SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-              FROM ws_net_flow_per_ticker
-              WHERE ticker = s.underlying_symbol
-                AND ts >= s.date::timestamptz
-                AND ts <= s.bucket_ct
-              UNION ALL
-              SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-              FROM net_flow_per_ticker_history
-              WHERE ticker = s.underlying_symbol
-                AND ts >= s.date::timestamptz
-                AND ts <= s.bucket_ct
-            ) combined
-            ORDER BY ts, priority
-          ) unified
-        ) tnf ON TRUE
         WHERE s.date = ${date}::date
           AND (${tickerUpper ?? null}::text IS NULL OR underlying_symbol = ${tickerUpper ?? null}::text)
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
@@ -535,36 +481,9 @@ export default async function handler(
       rows = (await db`
         SELECT
           s.*,
-          tnf.cum_ncp AS fire_time_cum_ncp,
-          tnf.cum_npp AS fire_time_cum_npp
+          s.cum_ncp_at_fire AS fire_time_cum_ncp,
+          s.cum_npp_at_fire AS fire_time_cum_npp
         FROM silent_boom_alerts s
-        LEFT JOIN LATERAL (
-          -- Snapshot cumulative ticker net flow at this alert's
-          -- bucket_ct. DISTINCT ON (ts) priority WS=1 / REST=2 so live
-          -- rows win minute collisions. Lower bound is the date's
-          -- midnight UTC — over-inclusive but harmless since both
-          -- source tables only carry session-hours rows.
-          SELECT
-            SUM(net_call_prem) AS cum_ncp,
-            SUM(net_put_prem) AS cum_npp
-          FROM (
-            SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
-            FROM (
-              SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-              FROM ws_net_flow_per_ticker
-              WHERE ticker = s.underlying_symbol
-                AND ts >= s.date::timestamptz
-                AND ts <= s.bucket_ct
-              UNION ALL
-              SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-              FROM net_flow_per_ticker_history
-              WHERE ticker = s.underlying_symbol
-                AND ts >= s.date::timestamptz
-                AND ts <= s.bucket_ct
-            ) combined
-            ORDER BY ts, priority
-          ) unified
-        ) tnf ON TRUE
         WHERE s.date = ${date}::date
           AND (${tickerUpper ?? null}::text IS NULL OR underlying_symbol = ${tickerUpper ?? null}::text)
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
@@ -605,36 +524,9 @@ export default async function handler(
       rows = (await db`
         SELECT
           s.*,
-          tnf.cum_ncp AS fire_time_cum_ncp,
-          tnf.cum_npp AS fire_time_cum_npp
+          s.cum_ncp_at_fire AS fire_time_cum_ncp,
+          s.cum_npp_at_fire AS fire_time_cum_npp
         FROM silent_boom_alerts s
-        LEFT JOIN LATERAL (
-          -- Snapshot cumulative ticker net flow at this alert's
-          -- bucket_ct. DISTINCT ON (ts) priority WS=1 / REST=2 so live
-          -- rows win minute collisions. Lower bound is the date's
-          -- midnight UTC — over-inclusive but harmless since both
-          -- source tables only carry session-hours rows.
-          SELECT
-            SUM(net_call_prem) AS cum_ncp,
-            SUM(net_put_prem) AS cum_npp
-          FROM (
-            SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
-            FROM (
-              SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-              FROM ws_net_flow_per_ticker
-              WHERE ticker = s.underlying_symbol
-                AND ts >= s.date::timestamptz
-                AND ts <= s.bucket_ct
-              UNION ALL
-              SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-              FROM net_flow_per_ticker_history
-              WHERE ticker = s.underlying_symbol
-                AND ts >= s.date::timestamptz
-                AND ts <= s.bucket_ct
-            ) combined
-            ORDER BY ts, priority
-          ) unified
-        ) tnf ON TRUE
         WHERE s.date = ${date}::date
           AND (${tickerUpper ?? null}::text IS NULL OR underlying_symbol = ${tickerUpper ?? null}::text)
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)

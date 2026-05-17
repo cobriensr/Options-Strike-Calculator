@@ -256,13 +256,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     //   - chronological: most-recent first (default; preserves prior UX)
     //   - score: Tier-1 fires float to the top, score-tied chronological
     //   - peak: highest realized peak first (post-hoc browsing)
-    // The (date, score DESC NULLS LAST) index from migration #126 supports
-    // the inner CTE's `WHERE f.date = $1` scan; the score sort's outer
-    // ORDER BY is now an expression `(score + round_trip_score_deduct)`
-    // (Phase 2C, spec round-trip-score-deduct-production-2026-05-16.md), so
-    // the planner sorts on the materialized CTE result rather than reading
-    // the index back-to-front. The peak sort relies on (date DESC,
-    // trigger_time_ct DESC) for the date prefix.
+    // The score sort uses migration #159's `combined_score` STORED
+    // generated column + (date DESC, combined_score DESC NULLS LAST)
+    // index — restores the indexed early-LIMIT path that commit 4fc7ec99
+    // lost when it changed ORDER BY to a computed expression on
+    // (score + round_trip_score_deduct). The peak sort relies on
+    // (date DESC, trigger_time_ct DESC) for the date prefix.
+    // Per-row cum_ncp / cum_npp at fire time come straight off the row
+    // (migration #158 cum_ncp_at_fire / cum_npp_at_fire columns,
+    // populated at detect time by api/_lib/ticker-flow-snapshot.ts);
+    // previously these were computed via a LEFT JOIN LATERAL that
+    // dominated wall time at ~30s/page (spec:
+    // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md).
     const [rows, totalRows] = (await Promise.all([
       sort === 'score'
         ? db`
@@ -323,39 +328,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier,
-          tnf.cum_ncp AS fire_time_cum_ncp,
-          tnf.cum_npp AS fire_time_cum_npp
+          f.cum_ncp_at_fire AS fire_time_cum_ncp,
+          f.cum_npp_at_fire AS fire_time_cum_npp
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
-        LEFT JOIN LATERAL (
-          -- Snapshot cumulative ticker net flow at this fire's
-          -- trigger_time_ct. DISTINCT ON (ts) priority WS=1 / REST=2
-          -- so live rows win minute collisions. Lower bound is the
-          -- date's midnight UTC — over-inclusive but harmless since
-          -- both source tables only carry session-hours rows.
-          SELECT
-            SUM(net_call_prem) AS cum_ncp,
-            SUM(net_put_prem) AS cum_npp
-          FROM (
-            SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
-            FROM (
-              SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-              FROM ws_net_flow_per_ticker
-              WHERE ticker = f.underlying_symbol
-                AND ts >= f.date::timestamptz
-                AND ts <= f.trigger_time_ct
-              UNION ALL
-              SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-              FROM net_flow_per_ticker_history
-              WHERE ticker = f.underlying_symbol
-                AND ts >= f.date::timestamptz
-                AND ts <= f.trigger_time_ct
-            ) combined
-            ORDER BY ts, priority
-          ) unified
-        ) tnf ON TRUE
         WHERE f.rn = 1
-        ORDER BY (COALESCE(f.score, 0) + COALESCE(f.round_trip_score_deduct, 0)) DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
+        ORDER BY f.combined_score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
       `
@@ -418,37 +396,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier,
-          tnf.cum_ncp AS fire_time_cum_ncp,
-          tnf.cum_npp AS fire_time_cum_npp
+          f.cum_ncp_at_fire AS fire_time_cum_ncp,
+          f.cum_npp_at_fire AS fire_time_cum_npp
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
-        LEFT JOIN LATERAL (
-          -- Snapshot cumulative ticker net flow at this fire's
-          -- trigger_time_ct. DISTINCT ON (ts) priority WS=1 / REST=2
-          -- so live rows win minute collisions. Lower bound is the
-          -- date's midnight UTC — over-inclusive but harmless since
-          -- both source tables only carry session-hours rows.
-          SELECT
-            SUM(net_call_prem) AS cum_ncp,
-            SUM(net_put_prem) AS cum_npp
-          FROM (
-            SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
-            FROM (
-              SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-              FROM ws_net_flow_per_ticker
-              WHERE ticker = f.underlying_symbol
-                AND ts >= f.date::timestamptz
-                AND ts <= f.trigger_time_ct
-              UNION ALL
-              SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-              FROM net_flow_per_ticker_history
-              WHERE ticker = f.underlying_symbol
-                AND ts >= f.date::timestamptz
-                AND ts <= f.trigger_time_ct
-            ) combined
-            ORDER BY ts, priority
-          ) unified
-        ) tnf ON TRUE
         WHERE f.rn = 1
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
@@ -512,37 +463,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier,
-          tnf.cum_ncp AS fire_time_cum_ncp,
-          tnf.cum_npp AS fire_time_cum_npp
+          f.cum_ncp_at_fire AS fire_time_cum_ncp,
+          f.cum_npp_at_fire AS fire_time_cum_npp
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
-        LEFT JOIN LATERAL (
-          -- Snapshot cumulative ticker net flow at this fire's
-          -- trigger_time_ct. DISTINCT ON (ts) priority WS=1 / REST=2
-          -- so live rows win minute collisions. Lower bound is the
-          -- date's midnight UTC — over-inclusive but harmless since
-          -- both source tables only carry session-hours rows.
-          SELECT
-            SUM(net_call_prem) AS cum_ncp,
-            SUM(net_put_prem) AS cum_npp
-          FROM (
-            SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
-            FROM (
-              SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-              FROM ws_net_flow_per_ticker
-              WHERE ticker = f.underlying_symbol
-                AND ts >= f.date::timestamptz
-                AND ts <= f.trigger_time_ct
-              UNION ALL
-              SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-              FROM net_flow_per_ticker_history
-              WHERE ticker = f.underlying_symbol
-                AND ts >= f.date::timestamptz
-                AND ts <= f.trigger_time_ct
-            ) combined
-            ORDER BY ts, priority
-          ) unified
-        ) tnf ON TRUE
         WHERE f.rn = 1
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}

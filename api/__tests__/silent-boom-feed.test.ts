@@ -358,9 +358,12 @@ describe('silent-boom-feed handler', () => {
     expect(body.alerts[0]?.tickerCumNppAtFire).toBeNull();
   });
 
-  it('rows query joins LATERAL ticker net flow at bucket_ct', async () => {
-    // Pin the LATERAL shape across all 4 sort branches so a future
-    // query rewrite doesn't silently drop the fire-time snapshot.
+  it('rows query reads cum_ncp/cum_npp from the snapshot column on the row', async () => {
+    // Pin the post-LATERAL shape: migration #158 added cum_ncp_at_fire +
+    // cum_npp_at_fire columns populated at detect time by
+    // api/_lib/ticker-flow-snapshot.ts; the feed now reads them directly
+    // and aliases them as fire_time_cum_ncp / fire_time_cum_npp. Spec:
+    // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md.
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
       .mockResolvedValueOnce([makeAlert()]);
@@ -373,13 +376,12 @@ describe('silent-boom-feed handler', () => {
     const sqlText = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
       ' ',
     );
-    expect(sqlText).toContain('fire_time_cum_ncp');
-    expect(sqlText).toContain('fire_time_cum_npp');
-    expect(sqlText).toContain('LEFT JOIN LATERAL');
-    expect(sqlText).toContain('ws_net_flow_per_ticker');
-    expect(sqlText).toContain('net_flow_per_ticker_history');
-    expect(sqlText).toContain('DISTINCT ON');
-    expect(sqlText).toContain('s.bucket_ct');
+    expect(sqlText).toContain('s.cum_ncp_at_fire AS fire_time_cum_ncp');
+    expect(sqlText).toContain('s.cum_npp_at_fire AS fire_time_cum_npp');
+    // No LATERAL — the per-row sub-aggregation was what made page loads ~30s.
+    expect(sqlText).not.toContain('LEFT JOIN LATERAL');
+    expect(sqlText).not.toContain('ws_net_flow_per_ticker');
+    expect(sqlText).not.toContain('net_flow_per_ticker_history');
   });
 
   it('returns null underlyingPriceAtSpike for pre-#152 rows missing the spot snapshot', async () => {
