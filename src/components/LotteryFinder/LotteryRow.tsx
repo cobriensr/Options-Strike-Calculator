@@ -16,6 +16,7 @@ import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
+import { CohortCountdown } from '../ui/CohortCountdown.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
 interface LotteryRowProps {
@@ -529,6 +530,14 @@ export const LotteryRow = memo(function LotteryRow({
           topFeatures={fire.takeitTopFeatures}
           expanded
         />
+        {/* Sibling-asset confirmation bar (gexbot-frontend spec Phase 4).
+            Renders cross-asset confirm/contradict pills inline next to
+            TakeItScore. Empty when GEXBot data hasn't landed yet. */}
+        <SiblingAssetConfirmationBar
+          ticker={fire.underlyingSymbol}
+          side={fire.optionType === 'C' ? 'call' : 'put'}
+          marketOpen={marketOpen}
+        />
         {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
             winners for this (tier, ticker) cohort. Tells the user "if
             this fire is going to work, expect it to peak around this
@@ -549,6 +558,14 @@ export const LotteryRow = memo(function LotteryRow({
         >
           ~{fire.avgHoldMinutes}min
         </span>
+        {/* Live countdown vs. the cohort P75 hold time. Ticks every
+            minute, goes amber at ≤15m and red on expiry. Pairs with
+            the static ~Nmin hint above (which shows the cohort's
+            full window). */}
+        <CohortCountdown
+          triggerTimeCt={fire.triggerTimeCt}
+          p75MinutesToPeak={fire.avgHoldMinutes}
+        />
 
         {/* Ticker + strike + side — the whole block links to UW's
             per-contract flow page so the user can pivot from the row

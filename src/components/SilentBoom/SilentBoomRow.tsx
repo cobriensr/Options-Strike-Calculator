@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from 'react';
 import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
+import { SiblingAssetConfirmationBar } from '../Gexbot/SiblingAssetConfirmationBar.js';
 import { ContractTapeChart } from '../LotteryFinder/ContractTapeChart.js';
 import { TickerNetFlowChart } from '../LotteryFinder/TickerNetFlowChart.js';
 import { TakeItScore } from '../TakeItScore/TakeItScore.js';
@@ -15,6 +16,7 @@ import {
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
+import { CohortCountdown } from '../ui/CohortCountdown.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
 interface SilentBoomRowProps {
@@ -493,6 +495,14 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           topFeatures={alert.takeitTopFeatures}
           expanded
         />
+        {/* Sibling-asset confirmation bar (gexbot-frontend spec Phase 4).
+            Renders cross-asset confirm/contradict pills inline next to
+            TakeItScore. Empty when GEXBot data hasn't landed yet. */}
+        <SiblingAssetConfirmationBar
+          ticker={alert.underlyingSymbol}
+          side={alert.optionType === 'C' ? 'call' : 'put'}
+          marketOpen={marketOpen}
+        />
         {/* Spread-Confirmed badge — surfaces alerts in the 10-50%
             multi-leg share sweet spot (2.08×/2.73× lift per the
             2026-05-15 cross-section EDA). Display-only; no score
@@ -518,6 +528,13 @@ export const SilentBoomRow = memo(function SilentBoomRow({
         >
           ~{alert.avgHoldMinutes}min
         </span>
+        {/* Live countdown vs. the cohort P75 hold time. Ticks every
+            minute, goes amber at ≤15m and red on expiry. Pairs with
+            the static ~Nmin hint above. */}
+        <CohortCountdown
+          triggerTimeCt={alert.bucketCt}
+          p75MinutesToPeak={alert.avgHoldMinutes}
+        />
         <a
           href={uwContractUrl(alert)}
           target="_blank"
