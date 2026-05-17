@@ -280,8 +280,11 @@ describe('usePanelPrefs — owner', () => {
 
   it('load-race: toggle BEFORE GET resolves — user wins on touched axis, server wins on untouched axes', async () => {
     vi.mocked(getAccessMode).mockReturnValue('owner');
-    // Defer the GET so we can toggle before it resolves
-    let resolveGet: (value: Response) => void = () => undefined;
+    // Defer the GET so we can toggle before it resolves. The `!`
+    // definite-assignment assertion captures the Promise constructor's
+    // synchronous executor pattern — TS + sonarjs both then see the
+    // correct (Response) => void signature for the later call.
+    let resolveGet!: (value: Response) => void;
     const getPromise = new Promise<Response>((r) => {
       resolveGet = r;
     });
