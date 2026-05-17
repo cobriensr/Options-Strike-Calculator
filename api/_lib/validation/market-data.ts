@@ -385,3 +385,45 @@ export const tickerCandlesQuerySchema = z.object({
 });
 
 export type TickerCandlesQuery = z.infer<typeof tickerCandlesQuerySchema>;
+
+// ============================================================
+// /api/gexbot
+// ============================================================
+
+/**
+ * Query params for GET /api/gexbot.
+ *
+ * Discriminated by the `view` param. Each view maps to one query
+ * helper in `api/_lib/gexbot-queries.ts`:
+ *   - `snapshots-latest` → latest snapshot row per ticker (16 rows)
+ *   - `convexity-trend`  → 60-min zcvr timeseries per ticker
+ *   - `maxchange-winners` → latest maxchange winner per (ticker, category)
+ *   - `sibling-confirm`  → requires `ticker` + `side`; returns sibling
+ *                          confirmation rows for an alert
+ *
+ * Optional `ticker` (1-8 A-Z) and `side` ('call'|'put') only consumed
+ * by the `sibling-confirm` view; both required when that view is used.
+ */
+export const gexbotQuerySchema = z
+  .object({
+    view: z.enum([
+      'snapshots-latest',
+      'convexity-trend',
+      'maxchange-winners',
+      'sibling-confirm',
+    ]),
+    ticker: z
+      .string()
+      .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
+      .optional(),
+    side: z.enum(['call', 'put']).optional(),
+  })
+  .refine(
+    (v) => v.view !== 'sibling-confirm' || (v.ticker && v.side),
+    {
+      message: 'sibling-confirm requires ticker and side',
+      path: ['view'],
+    },
+  );
+
+export type GexbotQuery = z.infer<typeof gexbotQuerySchema>;

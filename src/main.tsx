@@ -95,6 +95,7 @@ if (import.meta.env.PROD)
       { path: '/api/periscope-lessons-update', method: 'POST' },
       { path: '/api/greek-flow', method: 'GET' },
       { path: '/api/gex-strike-expiry', method: 'GET' },
+      { path: '/api/gexbot', method: 'GET' },
       { path: '/api/positions', method: 'GET' },
       { path: '/api/positions', method: 'POST' },
       { path: '/api/vix-ohlc', method: 'GET' },
