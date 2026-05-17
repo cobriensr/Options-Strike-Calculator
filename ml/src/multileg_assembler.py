@@ -69,7 +69,10 @@ import hashlib
 from collections.abc import Iterable
 from typing import Final
 
+import numpy as np
 import polars as pl
+
+from multileg_patterns import PATTERNS, PatternSpec
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -103,6 +106,15 @@ _CELL_BATCH_BUCKETS: Final = 4
 # mega-tickers. Greedy walk cost drops in proportion.
 _TOPK_PER_TRADE: Final = 8
 
+# Per-batch prune threshold. When a single batch emits more than this
+# many candidates we run the top-K-per-trade prune inline so the
+# per-cell accumulator stays bounded. Without it, a dense hot-cell
+# (SPXW 0DTE size=1) can emit tens of millions of low-confidence
+# candidates per batch and OOM during cell accumulation.
+# TODO: re-tune after SPY/SPXW OOM is resolved.
+_PER_BATCH_PRUNE_THRESHOLD: Final = 50_000
+
+
 # Butterfly skip threshold. A 3-leg butterfly body × low_wing × high_wing
 # join is structurally O(N²) in the per-cell row count (size-constraints
 # selectivity is high but the intermediate cross-product is not). For
@@ -112,7 +124,19 @@ _TOPK_PER_TRADE: Final = 8
 # trade-off is favourable: we trade a tiny butterfly-recall loss for
 # headroom to classify SPXW/SPY/QQQ at all. Vertical / strangle /
 # risk_reversal continue on these cells unaffected.
+# TODO: re-tune after SPY/SPXW OOM is resolved.
 _BUTTERFLY_CELL_LIMIT: Final = 30_000
+
+
+# Pattern dispatch: the 2-leg patterns drive the per-cell + per-expiry
+# matching loops. ``PATTERNS`` (from ``multileg_patterns``) is the single
+# source of truth; adding a new 2-leg pattern there will pick it up here
+# automatically, provided the new pattern's join shape is expressible as
+# (same_option_type, direction_rule). Butterfly remains its own dedicated
+# code path because it's structurally 3-leg.
+_TWO_LEG_PATTERNS: Final[tuple[PatternSpec, ...]] = tuple(
+    p for p in PATTERNS if p.leg_count == 2
+)
 
 # Fields the matcher uses. Optional fields (delta, premium, nbbo_*) are
 # tolerated if absent.
@@ -341,21 +365,40 @@ def _classify_ticker(
         if c3.height > 0:
             butterfly_candidates.append(c3)
 
-    # ── Per-cell: vertical + butterfly (same expiry, same option_type) ──
+    # Split 2-leg pattern set by join shape — same-type patterns share one
+    # self-join per cell, cross-type patterns share one cross-join per
+    # expiry. Direction filter + scoring are per-pattern downstream.
+    same_type_patterns = tuple(
+        p for p in _TWO_LEG_PATTERNS if p.same_option_type
+    )
+    cross_type_patterns = tuple(
+        p for p in _TWO_LEG_PATTERNS if not p.same_option_type
+    )
+
+    # ── Per-cell: same-type 2-leg + butterfly (same expiry, same opttype) ──
     for k in cell_keys:
         cell = cells[k]
         if cell.height < 2:
             continue
         cell_two: list[pl.DataFrame] = []
         cell_three: list[pl.DataFrame] = []
-        for batch in _iter_two_leg_batches(cell):
-            vcand = _vertical_from_batch(
-                batch,
-                window_seconds=window_seconds,
-                size_tolerance=size_tolerance,
-            )
-            if vcand.height > 0:
-                cell_two.append(vcand)
+        if same_type_patterns:
+            for batch in _iter_two_leg_batches(cell):
+                vcand = _two_leg_same_type_from_batch(
+                    batch,
+                    patterns=same_type_patterns,
+                    window_seconds=window_seconds,
+                    size_tolerance=size_tolerance,
+                )
+                if vcand.height > 0:
+                    # Per-batch prune: very dense hot-cell batches can emit
+                    # millions of candidates which would OOM if accumulated
+                    # across the cell's 100+ batches before per-cell prune.
+                    if vcand.height > _PER_BATCH_PRUNE_THRESHOLD:
+                        vcand, _ = _prune_top_k_per_trade(
+                            vcand, _empty_candidates_3leg()
+                        )
+                    cell_two.append(vcand)
         if cell.height >= 3 and cell.height <= _BUTTERFLY_CELL_LIMIT:
             for batch in _iter_butterfly_batches(cell):
                 bcand = _butterfly_from_batch(
@@ -365,39 +408,59 @@ def _classify_ticker(
                     size_tolerance=size_tolerance,
                 )
                 if bcand.height > 0:
+                    if bcand.height > _PER_BATCH_PRUNE_THRESHOLD:
+                        _, bcand = _prune_top_k_per_trade(
+                            _empty_candidates_2leg(), bcand
+                        )
                     cell_three.append(bcand)
         if cell_two or cell_three:
             _accumulate(cell_two, cell_three)
 
-    # ── Per-expiry: cross-type (strangle, risk_reversal) ────────────────
-    for ek in expiry_keys:
-        cells_for_expiry = cells_by_expiry[ek]
-        if len(cells_for_expiry) < 2:
-            continue
-        calls = next(
-            (c for c in cells_for_expiry if c.get_column("option_type")[0] == "call"),
-            None,
-        )
-        puts = next(
-            (c for c in cells_for_expiry if c.get_column("option_type")[0] == "put"),
-            None,
-        )
-        if calls is None or puts is None:
-            continue
-        if calls.height == 0 or puts.height == 0:
-            continue
-        cell_two: list[pl.DataFrame] = []
-        for chunk_calls, chunk_puts in _iter_cross_type_batches(calls, puts):
-            ccand = _cross_type_from_batch(
-                chunk_calls,
-                chunk_puts,
-                window_seconds=window_seconds,
-                size_tolerance=size_tolerance,
+    # ── Per-expiry: cross-type 2-leg (strangle, risk_reversal, …) ────────
+    if cross_type_patterns:
+        for ek in expiry_keys:
+            cells_for_expiry = cells_by_expiry[ek]
+            if len(cells_for_expiry) < 2:
+                continue
+            calls = next(
+                (
+                    c
+                    for c in cells_for_expiry
+                    if c.get_column("option_type")[0] == "call"
+                ),
+                None,
             )
-            if ccand.height > 0:
-                cell_two.append(ccand)
-        if cell_two:
-            _accumulate(cell_two, [])
+            puts = next(
+                (
+                    c
+                    for c in cells_for_expiry
+                    if c.get_column("option_type")[0] == "put"
+                ),
+                None,
+            )
+            if calls is None or puts is None:
+                continue
+            if calls.height == 0 or puts.height == 0:
+                continue
+            cell_two_xtype: list[pl.DataFrame] = []
+            for chunk_calls, chunk_puts in _iter_cross_type_batches(
+                calls, puts
+            ):
+                ccand = _two_leg_cross_type_from_batch(
+                    chunk_calls,
+                    chunk_puts,
+                    patterns=cross_type_patterns,
+                    window_seconds=window_seconds,
+                    size_tolerance=size_tolerance,
+                )
+                if ccand.height > 0:
+                    if ccand.height > _PER_BATCH_PRUNE_THRESHOLD:
+                        ccand, _ = _prune_top_k_per_trade(
+                            ccand, _empty_candidates_3leg()
+                        )
+                    cell_two_xtype.append(ccand)
+            if cell_two_xtype:
+                _accumulate(cell_two_xtype, [])
 
     two_leg = (
         pl.concat(two_leg_candidates, how="vertical_relaxed")
@@ -539,24 +602,30 @@ def _iter_cross_type_batches(
         yield c_batch, p_batch
 
 
-# ── 2-leg same-type (vertical) ────────────────────────────────────────────
+# ── 2-leg same-type (vertical and any future same-type patterns) ─────────
 
 
-def _vertical_from_batch(
+def _two_leg_same_type_from_batch(
     batch: pl.DataFrame,
     *,
+    patterns: tuple[PatternSpec, ...],
     window_seconds: int,
     size_tolerance: float,
 ) -> pl.DataFrame:
-    """Self-join one batch frame to itself for same-type opposite-direction
-    pairs (vertical).
+    """Pattern-driven self-join for same-option-type 2-leg patterns.
 
-    Two joins: same-bucket and adjacent-bucket (tbk + 1).
+    Runs ONE self-join per batch (the expensive step) and then loops over
+    ``patterns`` to apply each pattern's direction filter and emit scored
+    candidates labelled with the pattern's name. New same-type 2-leg
+    patterns added to ``PATTERNS`` in ``multileg_patterns`` flow through
+    here automatically.
     """
-    if batch.height < 2:
+    if batch.height < 2 or not patterns:
         return _empty_candidates_2leg()
 
-    pairs = _self_join_two_leg(batch, key_extra=["option_type"])
+    pairs = _self_join_two_leg(
+        batch, key_extra=["option_type"], size_tolerance=size_tolerance
+    )
     if pairs.height == 0:
         return _empty_candidates_2leg()
 
@@ -572,42 +641,45 @@ def _vertical_from_batch(
     if pairs.height == 0:
         return _empty_candidates_2leg()
 
-    pairs = pairs.filter(_dir_opposite_expr())
-    if pairs.height == 0:
-        return _empty_candidates_2leg()
-
-    return _score_two_leg(
-        pairs, pattern_name="vertical", size_tolerance=size_tolerance
+    return _score_per_pattern(
+        pairs, patterns=patterns, size_tolerance=size_tolerance
     )
 
 
-# ── 2-leg cross-type (strangle, risk_reversal) ────────────────────────────
+# ── 2-leg cross-type (strangle, risk_reversal, any future cross-type) ────
 
 
-def _cross_type_from_batch(
+def _two_leg_cross_type_from_batch(
     calls: pl.DataFrame,
     puts: pl.DataFrame,
     *,
+    patterns: tuple[PatternSpec, ...],
     window_seconds: int,
     size_tolerance: float,
 ) -> pl.DataFrame:
-    """Join calls × puts for one batch → strangle + risk_reversal.
+    """Pattern-driven cross-type join (calls × puts) for one batch.
 
-    Single pass: union ``calls`` and ``puts`` then do a same-tbk
-    self-join with ``option_type != option_type_b`` and ridx_b > ridx_a.
-    The ridx-ordering filter dedups regardless of which side came first
-    chronologically — there is exactly one ordered (a, b) pair per
-    unordered (call, put) pair.
+    Runs ONE pair of cross-joins per batch (calls-as-A and puts-as-A so
+    ridx_b > ridx_a covers both orientations) and then loops over
+    ``patterns`` to apply each pattern's direction filter and emit scored
+    candidates. New cross-type 2-leg patterns added to ``PATTERNS`` flow
+    through here automatically.
+
+    Peak memory is bounded by max(|calls|, |puts|) × ~bucket_size.
     """
-    if calls.height == 0 or puts.height == 0:
+    if calls.height == 0 or puts.height == 0 or not patterns:
         return _empty_candidates_2leg()
 
-    # Union once, then a single cross-type self-join. The ridx_b > ridx_a
-    # filter keeps each unordered (call, put) pair exactly once.
-    union = pl.concat([calls, puts], how="vertical_relaxed")
-    pairs = _cross_join_two_leg_union(union)
-    if pairs.height == 0:
+    pairs1 = _cross_join_two_leg(
+        a=calls, b=puts, size_tolerance=size_tolerance
+    )
+    pairs2 = _cross_join_two_leg(
+        a=puts, b=calls, size_tolerance=size_tolerance
+    )
+    frames = [f for f in (pairs1, pairs2) if f.height > 0]
+    if not frames:
         return _empty_candidates_2leg()
+    pairs = pl.concat(frames, how="vertical_relaxed")
 
     # Restrict anchor side to non-overlap (the larger side has the wider
     # bucket range; A's _is_anchor_a tells us if A is in the anchor set).
@@ -621,19 +693,31 @@ def _cross_type_from_batch(
     if pairs.height == 0:
         return _empty_candidates_2leg()
 
-    strangle = _score_two_leg(
-        pairs.filter(_dir_same_expr()),
-        pattern_name="strangle",
-        size_tolerance=size_tolerance,
+    return _score_per_pattern(
+        pairs, patterns=patterns, size_tolerance=size_tolerance
     )
-    risk_rev = _score_two_leg(
-        pairs.filter(_dir_opposite_expr()),
-        pattern_name="risk_reversal",
-        size_tolerance=size_tolerance,
-    )
-    frames_out = [f for f in (strangle, risk_rev) if f.height > 0]
+
+
+def _score_per_pattern(
+    pairs: pl.DataFrame,
+    *,
+    patterns: tuple[PatternSpec, ...],
+    size_tolerance: float,
+) -> pl.DataFrame:
+    """Apply each pattern's direction filter and emit scored candidates."""
+    frames_out: list[pl.DataFrame] = []
+    for pattern in patterns:
+        scored = _score_two_leg(
+            pairs.filter(_dir_expr_for(pattern)),
+            pattern_name=pattern.name,
+            size_tolerance=size_tolerance,
+        )
+        if scored.height > 0:
+            frames_out.append(scored)
     if not frames_out:
         return _empty_candidates_2leg()
+    if len(frames_out) == 1:
+        return frames_out[0]
     return pl.concat(frames_out, how="vertical_relaxed")
 
 
@@ -656,15 +740,28 @@ _A_COLS_TWO_LEG = (
 
 
 def _self_join_two_leg(
-    batch: pl.DataFrame, *, key_extra: list[str]
+    batch: pl.DataFrame, *, key_extra: list[str], size_tolerance: float
 ) -> pl.DataFrame:
     """Same-type self-join: A × A on tbk (same bucket) OR A.tbk + 1 = B.tbk
     (adjacent). Caller pre-partitioned by (expiry, option_type), so
     ``key_extra`` is just a safety belt.
 
+    ``size_tolerance`` is honoured post-join inside
+    ``_apply_two_leg_window_and_size`` via the ``_size_err`` filter — not
+    pushed into the join key. An earlier rewrite tried a size-bucket
+    explosion to push it into the equi-join (B exploded into one row per
+    bucket in [floor(s*(1-t)), ceil(s*(1+t))]); that turned out to be
+    catastrophic on real data because mega-cap tickers (NVDA, QQQ, SPY)
+    have many size>=100 prints — explosion factor scales with size, so
+    size=1000 prints expand 200× per row and OOM/stall the join. The
+    post-join filter approach loses no information: every (A,B) pair the
+    bucket explosion would have admitted is still emitted by the bare
+    join, then filtered by the same ``_size_err <= size_tolerance`` rule
+    the bucket version used implicitly. Slower per-row constant but
+    bounded — and on dense cells, dramatically faster overall.
+
     Returns one frame with A's columns and B's columns suffixed _b,
-    plus ``tbk`` (A's bucket; the column is preserved for parity, not
-    used downstream).
+    plus ``tbk`` (A's bucket; preserved for parity, not used downstream).
     """
     a_with_keys = batch.select(
         *(pl.col(c) for c in _A_COLS_TWO_LEG),
@@ -701,10 +798,6 @@ def _self_join_two_leg(
         how="inner",
     )
     if adj.height > 0:
-        # B's tbk column was consumed by the join (right_on); A's tbk is
-        # still present. ridx_b > ridx_a is implied by chronological sort
-        # + tbk_b > tbk_a, but enforce explicitly for safety at bucket
-        # boundaries.
         adj = adj.filter(pl.col("ridx_b") > pl.col("ridx")).drop("_tbk_next")
 
     frames = [f for f in (same, adj) if f.height > 0]
@@ -713,19 +806,30 @@ def _self_join_two_leg(
     return pl.concat(frames, how="vertical_relaxed")
 
 
-def _cross_join_two_leg_union(union: pl.DataFrame) -> pl.DataFrame:
-    """Cross-type self-join over a unified (calls ∪ puts) batch.
+def _cross_join_two_leg(
+    *, a: pl.DataFrame, b: pl.DataFrame, size_tolerance: float
+) -> pl.DataFrame:
+    """Cross-type join: a × b on tbk (same bucket) OR a.tbk + 1 = b.tbk
+    (adjacent). Same post-join ``size_tolerance`` treatment as
+    ``_self_join_two_leg`` — the bare equi-join emits every pair the
+    bucket-bounded version would have, and the size constraint is applied
+    later via ``_size_err``.
 
-    Output keeps only pairs with ``option_type != option_type_b`` and
-    ``ridx_b > ridx_a``. Single pass — half the work of running
-    calls-as-A and puts-as-A separately.
+    ``a`` and ``b`` must share ``expiry``. Caller does the per-expiry
+    grouping. ridx_b > ridx_a deduplicates within one pass.
     """
-    a_with_opttype = union.select(
+    # size_tolerance is intentionally ignored at the join layer — see the
+    # docstring on _self_join_two_leg. Keeping it in the signature so the
+    # two helpers share an interface and a future bucket-bounded join can
+    # be re-introduced behind the same call sites without churn.
+    _ = size_tolerance
+
+    a_with_opttype = a.select(
         *(pl.col(c) for c in _A_COLS_TWO_LEG),
         pl.col("option_type"),
         pl.col("tbk"),
     )
-    b_with_opttype = union.select(
+    b_with_opttype = b.select(
         pl.col("ridx").alias("ridx_b"),
         pl.col("sid").alias("sid_b"),
         pl.col("executed_at").alias("executed_at_b"),
@@ -737,15 +841,10 @@ def _cross_join_two_leg_union(union: pl.DataFrame) -> pl.DataFrame:
         pl.col("tbk"),
     )
 
-    # Same-bucket join on tbk.
     same = a_with_opttype.join(b_with_opttype, on="tbk", how="inner")
     if same.height > 0:
-        same = same.filter(
-            (pl.col("ridx_b") > pl.col("ridx"))
-            & (pl.col("option_type") != pl.col("option_type_b"))
-        )
+        same = same.filter(pl.col("ridx_b") > pl.col("ridx"))
 
-    # Adjacent-bucket join.
     a_adj = a_with_opttype.with_columns(
         (pl.col("tbk") + 1).alias("_tbk_next")
     )
@@ -753,10 +852,7 @@ def _cross_join_two_leg_union(union: pl.DataFrame) -> pl.DataFrame:
         b_with_opttype, left_on="_tbk_next", right_on="tbk", how="inner"
     )
     if adj.height > 0:
-        adj = adj.filter(
-            (pl.col("ridx_b") > pl.col("ridx"))
-            & (pl.col("option_type") != pl.col("option_type_b"))
-        ).drop("_tbk_next")
+        adj = adj.filter(pl.col("ridx_b") > pl.col("ridx")).drop("_tbk_next")
 
     frames = [f for f in (same, adj) if f.height > 0]
     if not frames:
@@ -813,6 +909,22 @@ def _dir_same_expr() -> pl.Expr:
     side_a = pl.col("side")
     side_b = pl.col("side_b")
     return (side_a == "mid") | (side_b == "mid") | (side_a == side_b)
+
+
+def _dir_expr_for(pattern: PatternSpec) -> pl.Expr:
+    """Return the vectorized direction filter expression for a 2-leg pattern.
+
+    Maps ``pattern.direction_rule`` ∈ {'opposite', 'same'} to the equivalent
+    polars expression used by the matcher. 'mid' is compatible with either
+    side (matches ``_dirs_compatible`` in ``multileg_patterns``).
+    """
+    if pattern.direction_rule == "opposite":
+        return _dir_opposite_expr()
+    if pattern.direction_rule == "same":
+        return _dir_same_expr()
+    raise ValueError(
+        f"unsupported 2-leg direction_rule: {pattern.direction_rule!r}"
+    )
 
 
 def _score_two_leg(
@@ -1231,8 +1343,6 @@ def _greedy_assign(
     set), but pulling per-row data via numpy bulk-arrays is 50–100x
     faster than ``iter_rows(named=True)`` on millions of candidates.
     """
-    import numpy as np  # local import keeps top-level deps minimal
-
     # ── Materialize 2-leg candidates into bulk arrays ────────────────────
     if two_leg.height > 0:
         # Dedup identical (pattern, ridx_a, ridx_b) — bucketed joins can
