@@ -84,6 +84,11 @@ ml/.ruff_cache/
 ml/htmlcov/
 ml/.coverage
 
+# Parquet data outputs (binary, often >20MB). Regenerable from the
+# experiment scripts; the committed JSON summaries are the durable
+# artifacts. Specific dirs that need a parquet tracked can git add -f.
+**/*.parquet
+
 # Python bytecode caches — single pattern covers all current + future subdirs
 **/__pycache__/
 
