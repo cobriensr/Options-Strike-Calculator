@@ -7,10 +7,9 @@ import type { SnapshotsLatestRow } from '../hooks/useGexbotData';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
-  const actual =
-    await vi.importActual<typeof import('../hooks/useGexbotData')>(
-      '../hooks/useGexbotData',
-    );
+  const actual = await vi.importActual<typeof import('../hooks/useGexbotData')>(
+    '../hooks/useGexbotData',
+  );
   return {
     ...actual,
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
@@ -93,9 +92,22 @@ describe('<CrossAssetSkewDashboard>', () => {
     });
     render(<CrossAssetSkewDashboard marketOpen />);
     const tickers = [
-      'SPX', 'ES_SPX', 'NDX', 'NQ_NDX', 'RUT', 'VIX',
-      'SPY', 'QQQ', 'IWM', 'TLT', 'GLD', 'USO',
-      'TQQQ', 'UVXY', 'HYG', 'SLV',
+      'SPX',
+      'ES_SPX',
+      'NDX',
+      'NQ_NDX',
+      'RUT',
+      'VIX',
+      'SPY',
+      'QQQ',
+      'IWM',
+      'TLT',
+      'GLD',
+      'USO',
+      'TQQQ',
+      'UVXY',
+      'HYG',
+      'SLV',
     ];
     for (const t of tickers) {
       expect(screen.getByTestId(`skew-bar-${t}`)).toBeInTheDocument();
@@ -146,8 +158,37 @@ describe('<CrossAssetSkewDashboard>', () => {
     expect(spxBar).not.toBeNull();
     expect(vixBar).not.toBeNull();
     // VIX magnitude is 2x SPX, so its bar height should be larger.
-    const spxHeight = parseFloat(spxBar!.style.height);
-    const vixHeight = parseFloat(vixBar!.style.height);
+    const spxHeight = Number.parseFloat(spxBar!.style.height);
+    const vixHeight = Number.parseFloat(vixBar!.style.height);
     expect(vixHeight).toBeGreaterThan(spxHeight);
+  });
+
+  it('forwards marketOpen=false to the data hook', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', deltaRiskReversal: 0.05 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    render(<CrossAssetSkewDashboard marketOpen={false} />);
+    const lastCall = mockUseGexbotData.mock.calls.at(-1);
+    expect(lastCall?.[1]).toBe(false);
+  });
+
+  it('distinguishes "no data" from "RR exactly 0" via aria-label', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({ ticker: 'SPX', deltaRiskReversal: 0 }),
+        // VIX intentionally absent from rows
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    render(<CrossAssetSkewDashboard marketOpen />);
+    const spxBar = screen.getByTestId('skew-bar-SPX');
+    const vixBar = screen.getByTestId('skew-bar-VIX');
+    expect(spxBar.getAttribute('aria-label')).toMatch(/SPX risk reversal/);
+    expect(vixBar.getAttribute('aria-label')).toMatch(/VIX no data/);
   });
 });

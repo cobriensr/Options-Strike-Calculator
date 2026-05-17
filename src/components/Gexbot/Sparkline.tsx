@@ -10,9 +10,14 @@ export interface SparklineProps {
   values: number[];
   width?: number;
   height?: number;
-  /** Stroke color (Tailwind class names won't work in SVG attrs). */
+  /**
+   * Tailwind class names applied to the `<svg>`. Combine with the
+   * default `strokeColor="currentColor"` to tint the path via
+   * `text-emerald-300` etc. — Tailwind controls `color`, SVG picks it
+   * up via the `currentColor` keyword in the `stroke` attr.
+   */
   strokeClass?: string;
-  /** Used to space the path; defaults to `currentColor` for inherited tint. */
+  /** SVG stroke value; defaults to `currentColor` so consumers tint via `strokeClass`. */
   strokeColor?: string;
 }
 

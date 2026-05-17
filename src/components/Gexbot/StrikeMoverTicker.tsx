@@ -1,11 +1,17 @@
 /**
- * StrikeMoverTicker — horizontal scrolling marquee of the biggest
- * 5-minute strike-change winners across all (ticker, category) pairs.
+ * StrikeMoverTicker — flex-wrap chip array of the biggest 5-minute
+ * strike-change winners across all (ticker, category) pairs.
  *
  * Pulls from gexbot_api_capture via the `maxchange-winners` view,
  * extracts the 5-min window per row, and surfaces the top movers
- * sorted by |change| desc. Auto-scrolls via a CSS marquee; pauses
- * on hover so the user can read.
+ * sorted by |change| desc with a stable ticker+category tiebreaker.
+ *
+ * NOTE: spec originally described a Bloomberg-style scrolling marquee
+ * with pause-on-hover and click-to-deep-dive. Shipped as a static
+ * flex-wrap chip array — readable without animation, easier to scan,
+ * and avoids the accessibility issues a marquee creates (motion
+ * sickness, screen-reader skipping). The marquee + click-to-deep-dive
+ * are deferred until we have a concrete deep-dive surface to link to.
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  */
@@ -41,24 +47,38 @@ function formatChange(value: number): string {
   return `${sign}${abs.toFixed(2)}`;
 }
 
+const CATEGORY_LABEL_MAP: Record<string, string> = {
+  gex_zero: 'GEX-0DTE',
+  gex_one: 'GEX-1DTE',
+  gex_full: 'GEX-all',
+  gamma_zero: 'γ-0DTE',
+  gamma_one: 'γ-1DTE',
+  delta_zero: 'Δ-0DTE',
+  delta_one: 'Δ-1DTE',
+  vanna_zero: 'V-0DTE',
+  vanna_one: 'V-1DTE',
+  charm_zero: 'CH-0DTE',
+  charm_one: 'CH-1DTE',
+};
+
+// One-time-per-session console.warn for unknown categories. Prevents
+// log spam if GEXBot adds a new category — we get a single signal that
+// `CATEGORY_LABEL_MAP` needs an update without flooding the console.
+const warnedCategories = new Set<string>();
+
 function shortCategory(category: string): string {
-  // Strip the `/maxchange` suffix and lowercase the leading prefix
-  // (e.g. `gamma_zero/maxchange` → `γ-0DTE`).
+  // Strip the `/maxchange` suffix and translate via the map.
   const base = category.replace(/\/maxchange$/, '');
-  const map: Record<string, string> = {
-    gex_zero: 'GEX-0DTE',
-    gex_one: 'GEX-1DTE',
-    gex_full: 'GEX-all',
-    gamma_zero: 'γ-0DTE',
-    gamma_one: 'γ-1DTE',
-    delta_zero: 'Δ-0DTE',
-    delta_one: 'Δ-1DTE',
-    vanna_zero: 'V-0DTE',
-    vanna_one: 'V-1DTE',
-    charm_zero: 'CH-0DTE',
-    charm_one: 'CH-1DTE',
-  };
-  return map[base] ?? base;
+  const label = CATEGORY_LABEL_MAP[base];
+  if (label) return label;
+  if (!warnedCategories.has(base)) {
+    warnedCategories.add(base);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `StrikeMoverTicker: unknown GEXBot category "${base}" — add to CATEGORY_LABEL_MAP`,
+    );
+  }
+  return base;
 }
 
 function StrikeMoverTickerInner({ marketOpen }: StrikeMoverTickerProps) {
@@ -78,9 +98,18 @@ function StrikeMoverTickerInner({ marketOpen }: StrikeMoverTickerProps) {
         change,
       });
     }
-    return collected
-      .sort((a, b) => Math.abs(b.change) - Math.abs(a.change))
-      .slice(0, MAX_CHIPS);
+    // Sort on a fresh copy (avoids mutating the freshly-allocated
+    // `collected` — defensive against future readers caching it).
+    // Stable tiebreaker on ticker+category so chips don't visually
+    // jitter at the cap boundary when two rows share an identical
+    // |change|.
+    const sorted = [...collected].sort(
+      (a, b) =>
+        Math.abs(b.change) - Math.abs(a.change) ||
+        a.ticker.localeCompare(b.ticker) ||
+        a.category.localeCompare(b.category),
+    );
+    return sorted.slice(0, MAX_CHIPS);
   }, [rows]);
 
   if (loading) {
@@ -127,7 +156,7 @@ function StrikeMoverTickerInner({ marketOpen }: StrikeMoverTickerProps) {
       data-testid="strike-mover"
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
-      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] uppercase tracking-wide">
+      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
         Strike Movers — 5-minute biggest |Δ| across all categories
       </div>
       <div className="flex flex-wrap gap-1.5 px-3 py-2">
@@ -141,7 +170,7 @@ function StrikeMoverTickerInner({ marketOpen }: StrikeMoverTickerProps) {
               key={chip.key}
               data-testid={`strike-mover-chip-${chip.key}`}
               className={`inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[11px] tabular-nums ${cls}`}
-              title={`${chip.ticker} ${shortCategory(chip.category)} strike ${chip.strike} change ${chip.change}`}
+              title={`${chip.ticker} ${shortCategory(chip.category)} strike ${chip.strike} change ${formatChange(chip.change)} (raw: ${chip.change})`}
             >
               <span className="font-semibold">{chip.ticker}</span>
               <span className="opacity-70">{shortCategory(chip.category)}</span>

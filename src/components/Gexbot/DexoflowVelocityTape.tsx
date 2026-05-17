@@ -19,7 +19,10 @@
 
 import { memo, useMemo } from 'react';
 
-import { useGexbotData, type SnapshotsLatestRow } from '../../hooks/useGexbotData';
+import {
+  useGexbotData,
+  type SnapshotsLatestRow,
+} from '../../hooks/useGexbotData';
 
 interface DexoflowVelocityTapeProps {
   marketOpen: boolean;
@@ -52,7 +55,10 @@ function formatScalar(value: number | null): string {
 }
 
 function magnitude(value: number | null): number {
-  return value == null ? 0 : Math.abs(value);
+  // Defensive against NaN: Math.abs(NaN) === NaN, and NaN comparisons
+  // return false, which makes Array.prototype.sort non-deterministic.
+  if (value == null || Number.isNaN(value)) return 0;
+  return Math.abs(value);
 }
 
 function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
@@ -70,12 +76,23 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         gexoflow: r.gexoflow,
         cvroflow: r.cvroflow,
       }))
-      .sort(
-        (a, b) =>
+      .sort((a, b) => {
+        // Combined velocity magnitude across all three flow scalars.
+        // CVR included so a row where only cvroflow fires doesn't sink
+        // to the bottom — convexity acceleration is the marquee signal
+        // per the JSDoc.
+        const aMag =
+          magnitude(a.dexoflow) +
+          magnitude(a.gexoflow) +
+          magnitude(a.cvroflow);
+        const bMag =
           magnitude(b.dexoflow) +
-          magnitude(b.gexoflow) -
-          (magnitude(a.dexoflow) + magnitude(a.gexoflow)),
-      );
+          magnitude(b.gexoflow) +
+          magnitude(b.cvroflow);
+        // Stable tiebreaker on ticker so render order is deterministic
+        // when magnitudes match.
+        return bMag - aMag || a.ticker.localeCompare(b.ticker);
+      });
   }, [rows]);
 
   if (loading) {
@@ -122,11 +139,11 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
       data-testid="dexoflow-tape"
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
-      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] uppercase tracking-wide">
+      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
         Dexoflow Velocity — 0DTE flow-rate scalars
       </div>
       <table className="w-full text-left text-xs">
-        <thead className="text-tertiary text-[10px] uppercase tracking-wide">
+        <thead className="text-tertiary text-[10px] tracking-wide uppercase">
           <tr>
             <th className="px-3 py-1.5 font-medium">Ticker</th>
             <th className="px-3 py-1.5 text-right font-medium">DEX flow</th>
@@ -151,9 +168,18 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
 
 function Cell({ value }: { value: number | null }) {
   const { glyph, cls } = arrow(value);
+  const verdict =
+    value == null
+      ? 'no data'
+      : value > 0
+        ? 'positive'
+        : value < 0
+          ? 'negative'
+          : 'flat';
+  const ariaLabel = `${verdict} ${formatScalar(value)}`;
   return (
     <td className="px-3 py-1.5 text-right tabular-nums">
-      <span className={cls}>
+      <span className={cls} aria-label={ariaLabel}>
         <span className="mr-1.5" aria-hidden>
           {glyph}
         </span>

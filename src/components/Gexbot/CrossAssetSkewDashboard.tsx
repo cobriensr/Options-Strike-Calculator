@@ -12,7 +12,11 @@
 
 import { memo, useMemo } from 'react';
 
-import { useGexbotData, type SnapshotsLatestRow } from '../../hooks/useGexbotData';
+import {
+  useGexbotData,
+  type SnapshotsLatestRow,
+} from '../../hooks/useGexbotData';
+import { GEXBOT_TICKER_ORDER } from './ticker-order';
 
 interface CrossAssetSkewDashboardProps {
   marketOpen: boolean;
@@ -20,34 +24,39 @@ interface CrossAssetSkewDashboardProps {
 
 interface SkewBar {
   ticker: string;
-  value: number;
+  /** null = no GEXBot data for this ticker yet (renders neutral tick).
+   *  0    = ticker has data but RR is exactly 0 (rare; renders normally). */
+  value: number | null;
 }
 
 const SPEC = { view: 'snapshots-latest' as const };
-const TICKER_ORDER = [
-  'SPX', 'ES_SPX', 'NDX', 'NQ_NDX', 'RUT', 'VIX',
-  'SPY', 'QQQ', 'IWM', 'TLT', 'GLD', 'USO',
-  'TQQQ', 'UVXY', 'HYG', 'SLV',
-] as const;
 
 const CHART_HEIGHT = 96;
 const ZERO_PADDING = 6;
 
-function CrossAssetSkewDashboardInner({ marketOpen }: CrossAssetSkewDashboardProps) {
+function CrossAssetSkewDashboardInner({
+  marketOpen,
+}: CrossAssetSkewDashboardProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
 
   const bars = useMemo<SkewBar[]>(() => {
     const byTicker = new Map(
       rows.map((r: SnapshotsLatestRow) => [r.ticker, r] as const),
     );
-    return TICKER_ORDER.map((ticker) => ({
+    return GEXBOT_TICKER_ORDER.map((ticker) => ({
       ticker,
-      value: byTicker.get(ticker)?.deltaRiskReversal ?? 0,
+      value: byTicker.get(ticker)?.deltaRiskReversal ?? null,
     }));
   }, [rows]);
 
-  const hasData = bars.some((b) => b.value !== 0);
-  const maxAbs = Math.max(...bars.map((b) => Math.abs(b.value)), 0.0001);
+  // hasData = at least one ticker has any value (including 0, which is
+  // a valid — if rare — RR). Distinguishing "no row" from "RR exactly 0"
+  // matters here so the empty-state doesn't suppress legit data.
+  const hasData = bars.some((b) => b.value != null);
+  const maxAbs = Math.max(
+    ...bars.map((b) => Math.abs(b.value ?? 0)),
+    0.0001,
+  );
 
   if (loading) {
     return (
@@ -93,24 +102,41 @@ function CrossAssetSkewDashboardInner({ marketOpen }: CrossAssetSkewDashboardPro
       data-testid="skew-dashboard"
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
-      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] uppercase tracking-wide">
-        Cross-Asset Delta Risk Reversal — green = call-skewed (greed), red = put-skewed (fear)
+      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
+        Cross-Asset Delta Risk Reversal — green = call-skewed (greed), red =
+        put-skewed (fear)
       </div>
       <div className="px-3 py-2">
-        <div className="flex items-end gap-1.5" style={{ height: CHART_HEIGHT }}>
+        <div
+          className="flex items-end gap-1.5"
+          style={{ height: CHART_HEIGHT }}
+        >
           {bars.map((bar) => {
-            const heightPct =
-              (Math.abs(bar.value) / maxAbs) * (CHART_HEIGHT / 2 - ZERO_PADDING);
-            const isPositive = bar.value > 0;
-            const isZero = bar.value === 0;
-            const barClass = isZero
+            const value = bar.value;
+            const hasValue = value != null;
+            const heightPct = hasValue
+              ? (Math.abs(value) / maxAbs) * (CHART_HEIGHT / 2 - ZERO_PADDING)
+              : 0;
+            const isPositive = hasValue && value > 0;
+            const isZero = hasValue && value === 0;
+            const barClass = !hasValue
               ? 'bg-white/10'
-              : isPositive
-                ? 'bg-emerald-400/70'
-                : 'bg-rose-400/70';
+              : isZero
+                ? 'bg-white/20'
+                : isPositive
+                  ? 'bg-emerald-400/70'
+                  : 'bg-rose-400/70';
+            const ariaLabel = hasValue
+              ? `${bar.ticker} risk reversal ${value.toFixed(4)}`
+              : `${bar.ticker} no data`;
+            const tooltip = hasValue
+              ? `${bar.ticker}: ${value.toFixed(4)}`
+              : `${bar.ticker}: no data`;
             return (
               <div
                 key={bar.ticker}
+                role="img"
+                aria-label={ariaLabel}
                 data-testid={`skew-bar-${bar.ticker}`}
                 className="flex flex-1 flex-col items-center"
                 style={{ height: CHART_HEIGHT }}
@@ -123,7 +149,7 @@ function CrossAssetSkewDashboardInner({ marketOpen }: CrossAssetSkewDashboardPro
                     <div
                       className={`w-full rounded-t-sm ${barClass}`}
                       style={{ height: Math.max(1, heightPct) }}
-                      title={`${bar.ticker}: ${bar.value.toFixed(4)}`}
+                      title={tooltip}
                     />
                   )}
                 </div>
@@ -132,11 +158,18 @@ function CrossAssetSkewDashboardInner({ marketOpen }: CrossAssetSkewDashboardPro
                   className="flex w-full flex-col items-center"
                   style={{ height: CHART_HEIGHT / 2 }}
                 >
-                  {!isPositive && !isZero && (
+                  {hasValue && !isPositive && !isZero && (
                     <div
                       className={`w-full rounded-b-sm ${barClass}`}
                       style={{ height: Math.max(1, heightPct) }}
-                      title={`${bar.ticker}: ${bar.value.toFixed(4)}`}
+                      title={tooltip}
+                    />
+                  )}
+                  {(!hasValue || isZero) && (
+                    <div
+                      className={`w-full ${barClass}`}
+                      style={{ height: 1 }}
+                      title={tooltip}
                     />
                   )}
                 </div>

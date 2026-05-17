@@ -13,8 +13,12 @@
 
 import { memo, useMemo } from 'react';
 
-import { useGexbotData, type ConvexityTrendRow } from '../../hooks/useGexbotData';
+import {
+  useGexbotData,
+  type ConvexityTrendRow,
+} from '../../hooks/useGexbotData';
 import { Sparkline } from './Sparkline';
+import { GEXBOT_TICKER_ORDER } from './ticker-order';
 
 interface ConvexityMatrixProps {
   marketOpen: boolean;
@@ -28,31 +32,19 @@ interface CellData {
 }
 
 const SPEC = { view: 'convexity-trend' as const };
-const TICKER_ORDER = [
-  // Indexes
-  'SPX',
-  'ES_SPX',
-  'NDX',
-  'NQ_NDX',
-  'RUT',
-  'VIX',
-  // ETFs
-  'SPY',
-  'QQQ',
-  'IWM',
-  'TLT',
-  'GLD',
-  'USO',
-  'TQQQ',
-  'UVXY',
-  'HYG',
-  'SLV',
-] as const;
+
+/**
+ * Heat-map thresholds — v0 (naive bands). Spec's Risk Notes section
+ * calls out recalibration to observed quantiles after the first week
+ * of live data; this is the single edit site when that happens.
+ */
+const ZCVR_CALL_HEAVY = 1.2;
+const ZCVR_PUT_HEAVY = 0.8;
 
 function classifyTone(latest: number | null): CellData['tone'] {
   if (latest == null) return 'neutral';
-  if (latest >= 1.2) return 'call';
-  if (latest <= 0.8) return 'put';
+  if (latest >= ZCVR_CALL_HEAVY) return 'call';
+  if (latest <= ZCVR_PUT_HEAVY) return 'put';
   return 'neutral';
 }
 
@@ -93,7 +85,7 @@ function ConvexityMatrixInner({ marketOpen }: ConvexityMatrixProps) {
     const byTicker = new Map(
       rows.map((r: ConvexityTrendRow) => [r.ticker, r] as const),
     );
-    return TICKER_ORDER.map((ticker) => {
+    return GEXBOT_TICKER_ORDER.map((ticker) => {
       const row = byTicker.get(ticker);
       const values = row?.series.map(([, v]) => v) ?? [];
       const latest = values.at(-1) ?? null;
@@ -147,7 +139,7 @@ function ConvexityMatrixInner({ marketOpen }: ConvexityMatrixProps) {
       data-testid="convexity-matrix"
       className="rounded-md border border-white/5 bg-white/[0.02]"
     >
-      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] uppercase tracking-wide">
+      <div className="text-tertiary border-b border-white/5 px-3 py-2 text-[10px] tracking-wide uppercase">
         Cross-Asset Convexity (0DTE zcvr, 60-min trend) — green = call-heavy,
         red = put-heavy
       </div>
