@@ -1,10 +1,7 @@
 {
   "setup_n": 8,
   "setup_name": "mega-cap-earnings-fade",
-  "test_window": [
-    "2026-01-01",
-    "2026-04-17"
-  ],
+  "test_window": ["2026-01-01", "2026-04-17"],
   "generated_at": "2026-05-16T21:35:24Z",
   "metrics": {
     "n_signals": 0,

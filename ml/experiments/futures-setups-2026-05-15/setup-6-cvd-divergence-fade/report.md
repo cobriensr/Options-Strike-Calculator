@@ -17,21 +17,21 @@
 
 ## Hit rate by time-of-day
 
-| Bucket (UTC)  | N | Win rate | Expectancy ($) |
-| ------------- | - | -------- | -------------- |
-| 13:30-13:45 | 0 | — | — |
-| 13:45-14:00 | 0 | — | — |
-| 14:00-14:30 | 114 | 28.9% | -$44.88 |
-| 14:30-15:30 | 309 | 22.3% | -$49.08 |
-| 15:30-16:30 | 143 | 17.5% | -$25.54 |
-| 16:30-17:30 | 92 | 17.4% | -$14.92 |
-| 17:30-18:00 | 48 | 12.5% | $7.82 |
-| 18:00-19:00 | 66 | 9.1% | -$95.35 |
-| 19:00-20:00 | 84 | 21.4% | -$51.16 |
+| Bucket (UTC) | N   | Win rate | Expectancy ($) |
+| ------------ | --- | -------- | -------------- |
+| 13:30-13:45  | 0   | —        | —              |
+| 13:45-14:00  | 0   | —        | —              |
+| 14:00-14:30  | 114 | 28.9%    | -$44.88        |
+| 14:30-15:30  | 309 | 22.3%    | -$49.08        |
+| 15:30-16:30  | 143 | 17.5%    | -$25.54        |
+| 16:30-17:30  | 92  | 17.4%    | -$14.92        |
+| 17:30-18:00  | 48  | 12.5%    | $7.82          |
+| 18:00-19:00  | 66  | 9.1%     | -$95.35        |
+| 19:00-20:00  | 84  | 21.4%    | -$51.16        |
 
 ## Caveats
 
-- **Sharpe is signal-day-only** — non-signal days are dropped, not zero-filled. A low-frequency setup with a few large wins will look better here than in deployment. Compare *expectancy × signal frequency* across setups for a deployment-grade view.
+- **Sharpe is signal-day-only** — non-signal days are dropped, not zero-filled. A low-frequency setup with a few large wins will look better here than in deployment. Compare _expectancy × signal frequency_ across setups for a deployment-grade view.
 - **Slippage = 1.5 ticks per side** plus **$1.25/side commission**. Net of cost. Conservative for liquid midday, tight for the open and around news.
 - **R-multiple denominator uses pre-slippage entry** (chart risk), numerator is net P&L — slippage flows only into the numerator.
 

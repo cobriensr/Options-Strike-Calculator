@@ -17,6 +17,7 @@ flags if applicable.
 **Run-time observation: regime shift between train and test.** Training (2025-04-20 → 2025-12-31, 182 days) daily-max |OFI| distribution: median 0.045, p90 0.067, p95 0.0784, max 0.133. Test (2026-01-01 → 2026-04-17, 75 days) daily-max |OFI| distribution: median 0.049, p90 0.066, **MAX 0.0760** — the test window's single biggest daily |OFI| reading didn't even reach the training-window p95 threshold of 0.0784. So 0 signals fired.
 
 **What this means**: the threshold derived from training is too high for the test regime by ~0.003. Two interpretations:
+
 1. Regime shift — Q1 2026 was structurally quieter in OFI than 2025. A daily-aggregate rule frozen from 2025 won't fire in this regime. The frozen-rule discipline is keeping us out of a potentially-overfit setup; this is a feature, not a bug.
 2. The threshold from training is at the very edge of normal — with only 75 test days, it's plausible we just missed by sampling luck. A longer test window would tell us.
 

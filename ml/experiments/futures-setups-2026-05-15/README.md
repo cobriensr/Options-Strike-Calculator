@@ -9,18 +9,19 @@
 
 ## Headline Results
 
-| # | Setup | N | WR | Avg R | Expectancy | Cum P&L | PF | Max DD | Sharpe | Verdict |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | `nq-ofi-extreme` | 156 | **71.8%** | 0.13 | **+$117.93** | **+$18,397** | 1.37 | -$13,103 (-71.8%) | 2.89 | **CAUTIOUSLY PROMISING** |
-| 2 | `nq-leads-es-catchup` | 0 | — | — | — | — | — | — | — | Threshold incompatible with per-minute OFI regime |
-| 3 | `overnight-extreme-sweep` | 7 | 42.9% | — | +$135.00 | +$945 | 1.33 | -$2,345 | 1.97 | Insufficient sample (N<20) |
-| 4 | `basis-stress-fade` | 0 | — | — | — | — | — | — | — | data_unavailable (no SPX/dealer-γ feed) |
-| 5 | `zero-gamma-magnet` | 0 | — | — | — | — | — | — | — | data_unavailable (no ZG/dealer-γ feed) |
-| 6 | `cvd-divergence-fade` | 856 | 20.2% | — | **-$41.50** | **-$35,521** | 0.73 | -$37,372 | -5.18 | **NEGATIVE EDGE — DO NOT BUILD** |
-| 7 | `flight-to-safety-continuation` | 0 | — | — | — | — | — | — | — | data_unavailable (no ZN/GC feed) |
-| 8 | `mega-cap-earnings-fade` | 0 | — | — | — | — | — | — | — | data_unavailable (no earnings calendar) |
+| #   | Setup                           | N   | WR        | Avg R | Expectancy   | Cum P&L      | PF   | Max DD            | Sharpe | Verdict                                           |
+| --- | ------------------------------- | --- | --------- | ----- | ------------ | ------------ | ---- | ----------------- | ------ | ------------------------------------------------- |
+| 1   | `nq-ofi-extreme`                | 156 | **71.8%** | 0.13  | **+$117.93** | **+$18,397** | 1.37 | -$13,103 (-71.8%) | 2.89   | **CAUTIOUSLY PROMISING**                          |
+| 2   | `nq-leads-es-catchup`           | 0   | —         | —     | —            | —            | —    | —                 | —      | Threshold incompatible with per-minute OFI regime |
+| 3   | `overnight-extreme-sweep`       | 7   | 42.9%     | —     | +$135.00     | +$945        | 1.33 | -$2,345           | 1.97   | Insufficient sample (N<20)                        |
+| 4   | `basis-stress-fade`             | 0   | —         | —     | —            | —            | —    | —                 | —      | data_unavailable (no SPX/dealer-γ feed)           |
+| 5   | `zero-gamma-magnet`             | 0   | —         | —     | —            | —            | —    | —                 | —      | data_unavailable (no ZG/dealer-γ feed)            |
+| 6   | `cvd-divergence-fade`           | 856 | 20.2%     | —     | **-$41.50**  | **-$35,521** | 0.73 | -$37,372          | -5.18  | **NEGATIVE EDGE — DO NOT BUILD**                  |
+| 7   | `flight-to-safety-continuation` | 0   | —         | —     | —            | —            | —    | —                 | —      | data_unavailable (no ZN/GC feed)                  |
+| 8   | `mega-cap-earnings-fade`        | 0   | —         | —     | —            | —            | —    | —                 | —      | data_unavailable (no earnings calendar)           |
 
 **Spec go/no-go thresholds:**
+
 - N signals ≥ 20: only Setup 1 (156) and Setup 6 (856) clear this. Setup 3 has 7 (under sample threshold).
 - Expectancy > 0: Setup 1 (+$117.93), Setup 3 (+$135.00).
 - Profit factor > 1.3: Setup 1 (1.37), Setup 3 (1.33). Setup 6 fails badly (0.73).
@@ -84,6 +85,7 @@ Each evaluator's implementation is complete and unit-tested. With `DATABASE_URL`
 ### 2. Run Setups 4, 5, 7 with `DATABASE_URL`
 
 These are the most promising of the unran setups because the rules are well-defined and the data dependencies are concrete:
+
 - **Setup 4** (basis stress) — should fire on days when ES dislocates from SPX by 5+ pts during positive-γ regimes. Rare but high-edge when fired.
 - **Setup 5** (ZG magnet) — high-frequency intraday pattern; expect many signals.
 - **Setup 7** (flight-to-safety) — low-frequency, high-conviction macro setup.
@@ -106,16 +108,16 @@ The CVD divergence idea is sound. The implementation isn't. Build `setup-6b-cvd-
 
 ## Cost / data-availability matrix
 
-| Setup | Needs Neon | Needs cross-asset | Needs ZG/γ | Needs earnings | Current status |
-|---|---|---|---|---|---|
-| 1 | optional (CL only) | optional | no | no | ✓ ran |
-| 2 | no | no | no | no | ✓ ran (0 signals) |
-| 3 | no | no | no | no | ✓ ran |
-| 4 | **yes** | SPX, VIX | **yes** | no | data_unavailable |
-| 5 | **yes** | no | **yes** | no | data_unavailable |
-| 6 | no | no | no | no | ✓ ran (broken impl) |
-| 7 | **yes** | ZN, GC | no | no | data_unavailable |
-| 8 | optional | no | no | **yes** | data_unavailable |
+| Setup | Needs Neon         | Needs cross-asset | Needs ZG/γ | Needs earnings | Current status      |
+| ----- | ------------------ | ----------------- | ---------- | -------------- | ------------------- |
+| 1     | optional (CL only) | optional          | no         | no             | ✓ ran               |
+| 2     | no                 | no                | no         | no             | ✓ ran (0 signals)   |
+| 3     | no                 | no                | no         | no             | ✓ ran               |
+| 4     | **yes**            | SPX, VIX          | **yes**    | no             | data_unavailable    |
+| 5     | **yes**            | no                | **yes**    | no             | data_unavailable    |
+| 6     | no                 | no                | no         | no             | ✓ ran (broken impl) |
+| 7     | **yes**            | ZN, GC            | no         | no             | data_unavailable    |
+| 8     | optional           | no                | no         | **yes**        | data_unavailable    |
 
 The cheapest unlock for the most signals is `vercel env pull .env.local`.
 
@@ -124,12 +126,13 @@ The cheapest unlock for the most signals is `vercel env pull .env.local`.
 ## Methodology integrity notes
 
 The spec's anti-tuning rule was honored throughout:
+
 - No threshold was retuned mid-flight based on observed test results.
 - Setup 1's per-minute vs daily-aggregate threshold issue is reported, not "fixed" by switching.
 - Setup 6's broken divergence detector is documented, not patched.
 - Setup 2's stricter threshold isn't softened.
 
-Per spec, "if a rule fails as written, it fails" — and the report honors that. Setup 1 cleared, Setup 6 broke loudly, Setups 2/3 didn't fire enough, Setups 4/5/7/8 lacked data. **One clean win out of eight is consistent with how setup research actually shakes out**; the most important output of this run is *which experiments to invest more in next* — not "we found 6 winning setups today."
+Per spec, "if a rule fails as written, it fails" — and the report honors that. Setup 1 cleared, Setup 6 broke loudly, Setups 2/3 didn't fire enough, Setups 4/5/7/8 lacked data. **One clean win out of eight is consistent with how setup research actually shakes out**; the most important output of this run is _which experiments to invest more in next_ — not "we found 6 winning setups today."
 
 ---
 

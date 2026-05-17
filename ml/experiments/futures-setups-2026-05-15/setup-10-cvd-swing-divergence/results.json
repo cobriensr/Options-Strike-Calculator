@@ -1,10 +1,7 @@
 {
   "setup_n": 10,
   "setup_name": "cvd-swing-divergence",
-  "test_window": [
-    "2026-01-01",
-    "2026-04-17"
-  ],
+  "test_window": ["2026-01-01", "2026-04-17"],
   "generated_at": "2026-05-16T22:57:57Z",
   "metrics": {
     "n_signals": 445,

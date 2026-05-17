@@ -1,10 +1,7 @@
 {
   "setup_n": 6,
   "setup_name": "cvd-divergence-fade",
-  "test_window": [
-    "2026-01-01",
-    "2026-04-17"
-  ],
+  "test_window": ["2026-01-01", "2026-04-17"],
   "generated_at": "2026-05-16T20:39:18Z",
   "metrics": {
     "n_signals": 856,

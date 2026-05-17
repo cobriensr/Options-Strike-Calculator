@@ -1,10 +1,7 @@
 {
   "setup_n": 1,
   "setup_name": "nq-ofi-extreme",
-  "test_window": [
-    "2026-01-01",
-    "2026-04-17"
-  ],
+  "test_window": ["2026-01-01", "2026-04-17"],
   "generated_at": "2026-05-16T06:35:25Z",
   "metrics": {
     "n_signals": 156,

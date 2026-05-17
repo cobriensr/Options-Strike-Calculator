@@ -14,6 +14,6 @@ flags if applicable.
 
 **Status: data_unavailable.** Per spec open question #1 default, an earnings calendar (UW endpoint or manual seed) is needed to identify mega-cap earnings days. No feed was wired in this pass, so 0 signals fire even when NQ gaps occur — we can't verify the earnings filter.
 
-**Mega-cap universe**: AAPL, MSFT, NVDA, GOOG/GOOGL, META, AMZN, TSLA. Reporting *after* market close (post-3:00 PM CT) qualifies as 'overnight' for the NEXT day's RTH open.
+**Mega-cap universe**: AAPL, MSFT, NVDA, GOOG/GOOGL, META, AMZN, TSLA. Reporting _after_ market close (post-3:00 PM CT) qualifies as 'overnight' for the NEXT day's RTH open.
 
-**Implementation present**: prepare() loads ``earnings_dates`` from an optional CSV path (none committed). The evaluator fires correctly when given a synthetic earnings flag in unit tests; production needs either (a) UW earnings-calendar pull, (b) one-shot CSV seed of historical earnings dates, or (c) Polygon/Benzinga API.
+**Implementation present**: prepare() loads `earnings_dates` from an optional CSV path (none committed). The evaluator fires correctly when given a synthetic earnings flag in unit tests; production needs either (a) UW earnings-calendar pull, (b) one-shot CSV seed of historical earnings dates, or (c) Polygon/Benzinga API.

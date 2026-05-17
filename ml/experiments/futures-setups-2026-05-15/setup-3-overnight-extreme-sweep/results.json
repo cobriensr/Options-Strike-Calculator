@@ -1,10 +1,7 @@
 {
   "setup_n": 3,
   "setup_name": "overnight-extreme-sweep",
-  "test_window": [
-    "2025-04-20",
-    "2026-04-17"
-  ],
+  "test_window": ["2025-04-20", "2026-04-17"],
   "generated_at": "2026-05-16T22:18:51Z",
   "metrics": {
     "n_signals": 31,
