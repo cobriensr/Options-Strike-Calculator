@@ -118,6 +118,18 @@ _TOPK_PER_TRADE: Final = 8
 # trades fall through.
 _SIZE_BUCKET_CAP: Final = 30
 
+# Minimum partner-batch size for engaging the bucket-bounded join. Below
+# this row count the cartesian product (~N²) of a bare equi-join on
+# (tbk + key_extra) is already small and cheap, while the bucket
+# explosion's constant overhead (band computation, int_ranges,
+# explode, extra hash key, two join paths) dominates. Empirically at
+# AMZN scale (~100K rows / ~1K rows-per-batch) the bucket path adds
+# ~2x wall-clock vs. the bare join. At NVDA/QQQ scale (~1K-10K
+# rows-per-batch) the explosion's selectivity wins decisively. Crossover
+# is around batch.height ~ 500-1000; we pick 500 to keep AMZN-shaped
+# tickers on the fast path.
+_BUCKET_BATCH_MIN_ROWS: Final = 500
+
 # Per-batch prune threshold. When a single batch emits more than this
 # many candidates we run the top-K-per-trade prune inline so the
 # per-cell accumulator stays bounded. Without it, a dense hot-cell
@@ -819,6 +831,38 @@ def _split_b_for_bucket_join(
     return in_band, overflow
 
 
+def _self_join_no_size_key(
+    a_proj: pl.DataFrame,
+    b_proj: pl.DataFrame,
+    *,
+    key_extra: list[str],
+) -> list[pl.DataFrame]:
+    """Same-type join (same bucket + adjacent) WITHOUT a size key.
+
+    Returns the list of non-empty result frames (caller concats). Used by
+    the small-batch fast path and as the overflow fallback for large-size
+    rows that can't be bucket-exploded without OOM.
+    """
+    out: list[pl.DataFrame] = []
+    same = a_proj.join(b_proj, on=list(key_extra) + ["tbk"], how="inner")
+    if same.height > 0:
+        same = same.filter(pl.col("ridx_b") > pl.col("ridx"))
+        if same.height > 0:
+            out.append(same)
+    a_adj = a_proj.with_columns((pl.col("tbk") + 1).alias("_tbk_next"))
+    adj = a_adj.join(
+        b_proj,
+        left_on=list(key_extra) + ["_tbk_next"],
+        right_on=list(key_extra) + ["tbk"],
+        how="inner",
+    )
+    if adj.height > 0:
+        adj = adj.filter(pl.col("ridx_b") > pl.col("ridx")).drop("_tbk_next")
+        if adj.height > 0:
+            out.append(adj)
+    return out
+
+
 def _self_join_two_leg(
     batch: pl.DataFrame, *, key_extra: list[str], size_tolerance: float
 ) -> pl.DataFrame:
@@ -837,19 +881,52 @@ def _self_join_two_leg(
     would have admitted (within band approximation; ``_size_err`` is
     still computed downstream so the size penalty fires unchanged).
 
+    Small-batch fast path
+    ---------------------
+    Below ``_BUCKET_BATCH_MIN_ROWS`` partner-side rows, the bucket
+    explosion's constant overhead exceeds the cartesian-product cost of
+    a bare equi-join. We skip the explosion entirely and use the legacy
+    no-size-key join, letting the post-join ``_size_err <= tol`` filter
+    do the size gating. Empirically critical for AMZN-shaped tickers
+    where most cells are small.
+
     Pathological-size protection
     ----------------------------
     Band width grows linearly with size (size=1000 → 201 buckets at
     tol=0.1). To prevent OOM/stall on mega-tickers, B rows with band
     width > ``_SIZE_BUCKET_CAP`` are NOT exploded — they're peeled off
-    and run through a legacy no-size-key join (the prior implementation,
-    bounded only by ``ridx_b > ridx_a`` + post-join filter). On real
-    data the overflow slice is small (size>~150 prints are rare), so the
-    O(N²) cost there is bounded.
+    and run through the same legacy no-size-key join used by the
+    fast path. On real data the overflow slice is small (size>~150
+    prints are rare), so the O(N²) cost there is bounded.
 
     Returns one frame with A's columns and B's columns suffixed _b,
     plus ``tbk`` (A's bucket; preserved for parity, not used downstream).
     """
+    # ── Small-batch fast path: skip the bucket explosion entirely. ────
+    if batch.height < _BUCKET_BATCH_MIN_ROWS:
+        a_proj = batch.select(
+            *(pl.col(c) for c in _A_COLS_TWO_LEG),
+            pl.col("tbk"),
+            *(pl.col(k) for k in key_extra),
+        )
+        b_proj = batch.select(
+            pl.col("ridx").alias("ridx_b"),
+            pl.col("sid").alias("sid_b"),
+            pl.col("executed_at").alias("executed_at_b"),
+            pl.col("strike").alias("strike_b"),
+            pl.col("size").alias("size_b"),
+            pl.col("side").alias("side_b"),
+            pl.col("_is_anchor").alias("_is_anchor_b"),
+            pl.col("tbk"),
+            *(pl.col(k) for k in key_extra),
+        )
+        frames = _self_join_no_size_key(
+            a_proj, b_proj, key_extra=key_extra
+        )
+        if not frames:
+            return _empty_two_leg_pairs(with_keys=key_extra)
+        return pl.concat(frames, how="vertical_relaxed")
+
     # ── A side: one row per anchor, integer size key for the join. ────
     a_size_int = pl.col("size").round(0).cast(pl.Int64).alias("_size_a_key")
     a_with_keys = batch.select(
@@ -936,31 +1013,39 @@ def _self_join_two_leg(
     # ── Fallback path: large-size B rows, no size key in join. ────────
     if b_overflow_proj.height > 0:
         a_fallback = a_with_keys.drop("_size_a_key")
-        same_f = a_fallback.join(
-            b_overflow_proj, on=list(key_extra) + ["tbk"], how="inner"
-        )
-        if same_f.height > 0:
-            same_f = same_f.filter(pl.col("ridx_b") > pl.col("ridx"))
-        a_adj_f = a_fallback.with_columns(
-            (pl.col("tbk") + 1).alias("_tbk_next")
-        )
-        adj_f = a_adj_f.join(
-            b_overflow_proj,
-            left_on=list(key_extra) + ["_tbk_next"],
-            right_on=list(key_extra) + ["tbk"],
-            how="inner",
-        )
-        if adj_f.height > 0:
-            adj_f = adj_f.filter(pl.col("ridx_b") > pl.col("ridx")).drop(
-                "_tbk_next"
+        frames.extend(
+            _self_join_no_size_key(
+                a_fallback, b_overflow_proj, key_extra=key_extra
             )
-        for f in (same_f, adj_f):
-            if f.height > 0:
-                frames.append(f)
+        )
 
     if not frames:
         return _empty_two_leg_pairs(with_keys=key_extra)
     return pl.concat(frames, how="vertical_relaxed")
+
+
+def _cross_join_no_size_key(
+    a_proj: pl.DataFrame, b_proj: pl.DataFrame
+) -> list[pl.DataFrame]:
+    """Cross-type join (calls × puts, same bucket + adjacent) without
+    a size key. Used by the small-batch fast path and as the overflow
+    fallback for large-size rows.
+    """
+    out: list[pl.DataFrame] = []
+    same = a_proj.join(b_proj, on="tbk", how="inner")
+    if same.height > 0:
+        same = same.filter(pl.col("ridx_b") > pl.col("ridx"))
+        if same.height > 0:
+            out.append(same)
+    a_adj = a_proj.with_columns((pl.col("tbk") + 1).alias("_tbk_next"))
+    adj = a_adj.join(
+        b_proj, left_on="_tbk_next", right_on="tbk", how="inner"
+    )
+    if adj.height > 0:
+        adj = adj.filter(pl.col("ridx_b") > pl.col("ridx")).drop("_tbk_next")
+        if adj.height > 0:
+            out.append(adj)
+    return out
 
 
 def _cross_join_two_leg(
@@ -973,12 +1058,39 @@ def _cross_join_two_leg(
     B._size_bucket`` plus tbk. Pathological-size rows (band >
     ``_SIZE_BUCKET_CAP``) fall through to a no-size-key fallback path.
 
+    Below ``_BUCKET_BATCH_MIN_ROWS`` (measured on the partner side ``b``)
+    we skip the bucket explosion entirely — at that scale the bucket
+    overhead dominates the cartesian join cost it would have saved.
+
     ``a`` and ``b`` must share ``expiry``. Caller does the per-expiry
     grouping. ridx_b > ridx_a deduplicates within one pass. Unlike the
     self-join, the two sides are DIFFERENT (calls vs. puts) — so we do
     NOT need a second orientation: the caller invokes this helper twice
     (a=calls,b=puts AND a=puts,b=calls) to cover both directions.
     """
+    # ── Small-batch fast path: bare cross-type join, no size key. ────
+    if b.height < _BUCKET_BATCH_MIN_ROWS:
+        a_proj = a.select(
+            *(pl.col(c) for c in _A_COLS_TWO_LEG),
+            pl.col("option_type"),
+            pl.col("tbk"),
+        )
+        b_proj_no_key = b.select(
+            pl.col("ridx").alias("ridx_b"),
+            pl.col("sid").alias("sid_b"),
+            pl.col("executed_at").alias("executed_at_b"),
+            pl.col("strike").alias("strike_b"),
+            pl.col("size").alias("size_b"),
+            pl.col("side").alias("side_b"),
+            pl.col("_is_anchor").alias("_is_anchor_b"),
+            pl.col("option_type").alias("option_type_b"),
+            pl.col("tbk"),
+        )
+        frames = _cross_join_no_size_key(a_proj, b_proj_no_key)
+        if not frames:
+            return _empty_two_leg_pairs(with_keys=["option_type"])
+        return pl.concat(frames, how="vertical_relaxed")
+
     a_size_int = pl.col("size").round(0).cast(pl.Int64).alias("_size_a_key")
     a_with_opttype = a.select(
         *(pl.col(c) for c in _A_COLS_TWO_LEG),
@@ -1059,25 +1171,9 @@ def _cross_join_two_leg(
 
     if b_overflow_proj.height > 0:
         a_fallback = a_with_opttype.drop("_size_a_key")
-        same_f = a_fallback.join(b_overflow_proj, on="tbk", how="inner")
-        if same_f.height > 0:
-            same_f = same_f.filter(pl.col("ridx_b") > pl.col("ridx"))
-        a_adj_f = a_fallback.with_columns(
-            (pl.col("tbk") + 1).alias("_tbk_next")
+        frames.extend(
+            _cross_join_no_size_key(a_fallback, b_overflow_proj)
         )
-        adj_f = a_adj_f.join(
-            b_overflow_proj,
-            left_on="_tbk_next",
-            right_on="tbk",
-            how="inner",
-        )
-        if adj_f.height > 0:
-            adj_f = adj_f.filter(pl.col("ridx_b") > pl.col("ridx")).drop(
-                "_tbk_next"
-            )
-        for f in (same_f, adj_f):
-            if f.height > 0:
-                frames.append(f)
 
     if not frames:
         return _empty_two_leg_pairs(with_keys=["option_type"])
