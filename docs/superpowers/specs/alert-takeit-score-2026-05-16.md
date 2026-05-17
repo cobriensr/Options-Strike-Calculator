@@ -98,18 +98,18 @@ sequential / co-fire / burst-storm derivatives. Several features in the v1 table
 above require external joins or fulltape aggregation and are deferred to Phase 1.5
 so Phase 2 can start training on the simpler feature set first:
 
-| Feature                          | Status      | Notes                                                                       |
-| -------------------------------- | ----------- | --------------------------------------------------------------------------- |
-| `dealer_gamma_sign`              | ✅ Phase 1  | Derived from `spx_spot_gamma_oi` already on the alert row.                  |
-| `zero_gamma_distance_pts`        | ⏸ Phase 1.5 | Requires join to `zero_gamma_levels` at fire_time.                          |
-| `vix_close`, `vix_regime`        | ⏸ Phase 1.5 | Requires daily VIX join.                                                    |
-| `earnings_this_week`             | ⏸ Phase 1.5 | Join to `economic_events` or derive from fulltape `tags`.                   |
-| `flow_inversion_eta_min`         | ⏸ Phase 1.5 | Static 108-min median initially; per-ticker median possible.                |
-| `est_premium_dollars` (lottery)  | ⏸ Phase 1.5 | Computable from `entry_price` + window prints.                              |
-| `buy_premium_pct` (silent boom)  | ⏸ Phase 1.5 | Bucket aggregate; fulltape per-print delta required (cumulative-vol trap).  |
-| `bucket_gamma_shares`            | ⏸ Phase 1.5 | Same.                                                                       |
-| `max_print_premium`              | ⏸ Phase 1.5 | Same.                                                                       |
-| `ask_print_share`                | ⏸ Phase 1.5 | Same.                                                                       |
+| Feature                         | Status      | Notes                                                                      |
+| ------------------------------- | ----------- | -------------------------------------------------------------------------- |
+| `dealer_gamma_sign`             | ✅ Phase 1  | Derived from `spx_spot_gamma_oi` already on the alert row.                 |
+| `zero_gamma_distance_pts`       | ⏸ Phase 1.5 | Requires join to `zero_gamma_levels` at fire_time.                         |
+| `vix_close`, `vix_regime`       | ⏸ Phase 1.5 | Requires daily VIX join.                                                   |
+| `earnings_this_week`            | ⏸ Phase 1.5 | Join to `economic_events` or derive from fulltape `tags`.                  |
+| `flow_inversion_eta_min`        | ⏸ Phase 1.5 | Static 108-min median initially; per-ticker median possible.               |
+| `est_premium_dollars` (lottery) | ⏸ Phase 1.5 | Computable from `entry_price` + window prints.                             |
+| `buy_premium_pct` (silent boom) | ⏸ Phase 1.5 | Bucket aggregate; fulltape per-print delta required (cumulative-vol trap). |
+| `bucket_gamma_shares`           | ⏸ Phase 1.5 | Same.                                                                      |
+| `max_print_premium`             | ⏸ Phase 1.5 | Same.                                                                      |
+| `ask_print_share`               | ⏸ Phase 1.5 | Same.                                                                      |
 
 Phase 1.5 is its own slim sub-phase between Phase 1 and Phase 2, gated on Phase 2
 delivering an honest AUC baseline first — if Phase 1 features alone beat the
@@ -183,6 +183,53 @@ Files:
 - `docs/tmp/takeit-vs-heuristic-2026-05-XX.md` — first-month side-by-side: P(win) bucket × heuristic-tier bucket → realized win rate.
 
 Verify: Sentry receives metrics for two consecutive Mondays; one-month report shows takeit-prob is monotonic in realized win rate (better than tier alone).
+
+### Phase 6 — Cross-chain co-fire feature
+
+The existing co-fire flag (`silent_boom_cofire_within_5min` on lottery rows, `lottery_cofire_within_5min` on silent-boom rows) matches strictly on `option_chain_id` — i.e. _exact same contract_ (ticker + strike + expiry + C/P). That captures concentrated conviction on one chain but misses ticker-wide directional pressure where the cross-detector fire lands on a sibling strike/expiry. Phase 6 adds a parallel "sibling-chain" co-fire flag so the model gets both signals as independent features and the UI can display both badges simultaneously for confluence.
+
+**Design decisions (locked during scoping):**
+
+1. **Not mutually exclusive.** Same-chain firing does not zero out diff-chain. Both flags evaluate independently — the two features carry distinct information (concentrated-contract vs. ticker-wide-direction) and the model learns the interaction. Mutually-exclusive logic would force a structural correlation that hurts SHAP interpretability.
+2. **Direction-locked.** C↔C and P↔P only. Match key is `${underlying_symbol}|${option_type}`. A SPY 450C cofiring with a SPY 455P does not trip the diff-chain flag.
+3. **Window starts at 5 min, symmetric with same-chain.** Be willing to widen if the empirical fire rate at 5 min is too thin to train on (review during Phase 6 backfill, before retrain ships).
+4. **Diff-chain excludes the same chain.** `option_chain_id !== row.option_chain_id` is part of the diff-chain predicate. The only overlap between the two features is the temporal window itself.
+
+**New features:**
+
+| Feature                                     | On rows     | Why                                                                                                                                                       |
+| ------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `silent_boom_cofire_diff_chain_within_5min` | Lottery     | Silent-boom hit a sibling chain on same ticker + direction within 5 min prior — ticker-wide bearish/bullish pressure even if not the exact same contract. |
+| `lottery_cofire_diff_chain_within_5min`     | Silent boom | Mirror: lottery fire on sibling chain confirms direction-wide flow into the ticker.                                                                       |
+
+Existing same-chain flags stay as-is; nothing renames.
+
+**Files:**
+
+- `api/_lib/takeit-features.ts`:
+  - Extend `SequentialContext` with `recentOtherTypeByTickerDir: ReadonlyMap<string, RecentCofireRow[]>` keyed on `${underlying}|${option_type}` (rows carry `option_chain_id` so the predicate can exclude same-chain hits at derive time).
+  - Add `deriveCofireDiffChainFlag(fireTime, optionChainId, underlying, optionType, recentOtherByTickerDir)` returning 1 iff a strictly-prior fire exists within `COFIRE_WINDOW_MIN` AND its `option_chain_id !== optionChainId`.
+  - Wire two new feature keys into `featuresForLottery` / `featuresForSilentBoom`.
+- `api/cron/detect-lottery-fires.ts` + `detect-silent-boom.ts`:
+  - Expand the existing `fetchRecentOtherTypeByChain` query to also `SELECT underlying_symbol, option_type`. One round-trip feeds both maps (chain-keyed and ticker-dir-keyed); no second query.
+- `src/components/TakeItScore/TakeItScore.tsx`:
+  - Add SHAP labels: `silent_boom_cofire_diff_chain_within_5min → "Silent Boom co-fire (sibling chain)"`, `lottery_cofire_diff_chain_within_5min → "Lottery co-fire (sibling chain)"`. Keep the existing same-chain labels.
+- `api/__tests__/takeit-features.test.ts`:
+  - Coverage for: (a) sibling-chain prior fire trips diff flag but not same flag, (b) same-chain prior fire trips same flag but not diff flag, (c) both fire independently when both a same-chain and sibling-chain prior fire exist, (d) opposite `option_type` on the same ticker does not trip diff flag, (e) prior fire outside the 5-min window does not trip either flag.
+- `scripts/upload_takeit_bundles.mjs` (or equivalent bundle versioner):
+  - Bump bundle version because the feature schema changes. Backfill the diff-chain feature on the existing training parquet via a one-shot rerun of the feature builder against historical detector tables. Next weekly retrain (`retrain-takeit` cron) picks up the new columns automatically.
+
+**Verify:**
+
+- Unit tests pass with the 5 case-table above covered.
+- Backfilled training parquet shows non-zero diff-chain fire rate; if `<1%` of rows, widen `COFIRE_WINDOW_MIN` or split it into a per-flag constant before retrain ships.
+- Calibration drift monitor (`api/cron/audit-takeit-calibration.ts`) does not regress after schema bump; model loader rejects mismatched feature schemas at cold start rather than silently dropping unknown columns.
+- In dev, render a known historical fire that had a sibling-chain cofire and confirm both badges display simultaneously without overwriting.
+
+**Risks:**
+
+- If diff-chain fire rate is too sparse at 5 min, the feature contributes near-zero SHAP and is wasted column space. Empirical check during backfill is the gate before retrain.
+- Bundle version mismatch on stale Vercel function instances — ensure the loader fails loudly on unknown/missing feature columns instead of imputing zeros.
 
 ## Resolved Decisions
 

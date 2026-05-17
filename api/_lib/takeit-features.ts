@@ -128,12 +128,37 @@ export interface SequentialContext {
    * (when building lottery features) or lottery_cofire_within_5min
    * (when building silent-boom features).
    */
-  recentOtherTypeByChain: ReadonlyMap<string, ReadonlyArray<{ fire_time: Date }>>;
+  recentOtherTypeByChain: ReadonlyMap<
+    string,
+    ReadonlyArray<{ fire_time: Date }>
+  >;
+  /**
+   * Recent fires of the OTHER alert type indexed by `${underlying}|${option_type}`.
+   * Carries the source chain id so the diff-chain derivation can exclude
+   * same-chain hits. Used for the sibling-chain cofire features
+   * (silent_boom_cofire_diff_chain_within_5min / lottery_cofire_diff_chain_within_5min).
+   */
+  recentOtherTypeByTickerDir: ReadonlyMap<
+    string,
+    ReadonlyArray<{ fire_time: Date; option_chain_id: string }>
+  >;
   /**
    * Per-ticker expanding mean of daily win rates using only fires from
    * strictly EARLIER dates (PIT-correct). NaN entries mean no prior history.
    */
   priorSessionWinRateByTicker: ReadonlyMap<string, number | null>;
+}
+
+/**
+ * Build the composite key for `recentOtherTypeByTickerDir`. Keeps the
+ * `${underlying}|${option_type}` convention in one place so call sites can
+ * derive it from a row without typoing the separator.
+ */
+export function tickerDirKey(
+  underlying: string,
+  optionType: 'C' | 'P',
+): string {
+  return `${underlying}|${optionType}`;
 }
 
 /* ────────────────────────── Constants (must mirror Phase 1) ─────────────────────── */
@@ -210,7 +235,9 @@ export function deriveOtmDistancePct(
 }
 
 /** dealer_gamma_sign: +1 / -1 / null (0 maps to null — neutral). */
-export function deriveDealerGammaSign(spxSpotGammaOi: number | null): number | null {
+export function deriveDealerGammaSign(
+  spxSpotGammaOi: number | null,
+): number | null {
   if (spxSpotGammaOi === null) return null;
   if (spxSpotGammaOi > 0) return 1;
   if (spxSpotGammaOi < 0) return -1;
@@ -218,7 +245,9 @@ export function deriveDealerGammaSign(spxSpotGammaOi: number | null): number | n
 }
 
 /** aggressive_premium_flag: 1 iff ask-side share >= threshold. NaN-safe. */
-export function deriveAggressivePremiumFlag(askPct: number | null): number | null {
+export function deriveAggressivePremiumFlag(
+  askPct: number | null,
+): number | null {
   if (askPct === null) return null;
   return askPct >= AGGRESSIVE_ASK_PCT_THRESHOLD ? 1 : 0;
 }
@@ -271,6 +300,38 @@ export function deriveCofireFlag(
 }
 
 /**
+ * Sibling-chain cofire flag: 1 iff the OTHER detector fired on the SAME
+ * `underlying + option_type` (Call↔Call, Put↔Put) but a DIFFERENT
+ * `option_chain_id`, within COFIRE_WINDOW_MIN strictly prior to `fireTime`.
+ *
+ * Designed to coexist with `deriveCofireFlag` — the two are NOT mutually
+ * exclusive. Same-chain fires concentrate on one contract (one trader/algo);
+ * sibling-chain fires capture ticker-wide directional pressure across the
+ * strike ladder. Both can be 1 simultaneously; the model learns the
+ * interaction.
+ */
+export function deriveCofireDiffChainFlag(
+  fireTime: Date,
+  optionChainId: string,
+  underlying: string,
+  optionType: 'C' | 'P',
+  recentOtherByTickerDir: SequentialContext['recentOtherTypeByTickerDir'],
+): number {
+  const candidates = recentOtherByTickerDir.get(
+    tickerDirKey(underlying, optionType),
+  );
+  if (!candidates || candidates.length === 0) return 0;
+  const window = COFIRE_WINDOW_MIN * 60_000;
+  const t = fireTime.getTime();
+  for (const c of candidates) {
+    if (c.option_chain_id === optionChainId) continue;
+    const delta = t - c.fire_time.getTime();
+    if (delta >= 0 && delta <= window) return 1;
+  }
+  return 0;
+}
+
+/**
  * n_same_dir_fires_last_30min: count of strictly-prior fires with the SAME
  * underlying + option_type within a 30-min lookback.
  */
@@ -285,7 +346,12 @@ export function deriveNSameDirFiresLast30Min(
   let count = 0;
   for (const r of recentSameType) {
     const ft = r.fire_time.getTime();
-    if (ft >= cutoff && ft < t && r.underlying_symbol === underlying && r.option_type === optionType) {
+    if (
+      ft >= cutoff &&
+      ft < t &&
+      r.underlying_symbol === underlying &&
+      r.option_type === optionType
+    ) {
       count++;
     }
   }
@@ -330,7 +396,9 @@ function nullableNumberToFeature(v: number | null | undefined): number | null {
   return v;
 }
 
-function nullableBooleanToFeature(v: boolean | null | undefined): number | null {
+function nullableBooleanToFeature(
+  v: boolean | null | undefined,
+): number | null {
   if (v === null || v === undefined) return null;
   return v ? 1 : 0;
 }
@@ -347,13 +415,35 @@ export function featuresForLottery(
 ): Record<string, number | null> {
   const { minute_of_day_ct, day_of_week } = ctMinuteAndDow(row.fire_time);
   const sessionPhase = sessionPhaseFromMinuteCt(minute_of_day_ct);
-  const isItm = deriveIsItmAtFire(row.option_type, row.spot_at_first, row.strike);
-  const otm = deriveOtmDistancePct(row.option_type, row.spot_at_first, row.strike);
+  const isItm = deriveIsItmAtFire(
+    row.option_type,
+    row.spot_at_first,
+    row.strike,
+  );
+  const otm = deriveOtmDistancePct(
+    row.option_type,
+    row.spot_at_first,
+    row.strike,
+  );
   const gammaSign = deriveDealerGammaSign(row.spx_spot_gamma_oi);
   const aggressive = deriveAggressivePremiumFlag(row.trigger_ask_pct);
-  const burstCount = deriveBurstStormDistinctCount(row.fire_time, ctx.recentSameTypeFires);
+  const burstCount = deriveBurstStormDistinctCount(
+    row.fire_time,
+    ctx.recentSameTypeFires,
+  );
   const burstBadge = deriveBurstStormBadge(burstCount);
-  const sbCofire = deriveCofireFlag(row.fire_time, row.option_chain_id, ctx.recentOtherTypeByChain);
+  const sbCofire = deriveCofireFlag(
+    row.fire_time,
+    row.option_chain_id,
+    ctx.recentOtherTypeByChain,
+  );
+  const sbCofireDiffChain = deriveCofireDiffChainFlag(
+    row.fire_time,
+    row.option_chain_id,
+    row.underlying_symbol,
+    row.option_type,
+    ctx.recentOtherTypeByTickerDir,
+  );
   const nSameDir = deriveNSameDirFiresLast30Min(
     row.fire_time,
     row.underlying_symbol,
@@ -365,7 +455,9 @@ export function featuresForLottery(
   const base: Record<string, number | null> = {
     // raw numerics carried straight through
     dte: row.dte,
-    trigger_vol_to_oi_window: nullableNumberToFeature(row.trigger_vol_to_oi_window),
+    trigger_vol_to_oi_window: nullableNumberToFeature(
+      row.trigger_vol_to_oi_window,
+    ),
     trigger_vol_to_oi_cum: nullableNumberToFeature(row.trigger_vol_to_oi_cum),
     trigger_iv: nullableNumberToFeature(row.trigger_iv),
     trigger_delta: nullableNumberToFeature(row.trigger_delta),
@@ -376,7 +468,9 @@ export function featuresForLottery(
     open_interest: nullableNumberToFeature(row.open_interest),
     spot_at_first: nullableNumberToFeature(row.spot_at_first),
     alert_seq: nullableNumberToFeature(row.alert_seq),
-    minutes_since_prev_fire: nullableNumberToFeature(row.minutes_since_prev_fire),
+    minutes_since_prev_fire: nullableNumberToFeature(
+      row.minutes_since_prev_fire,
+    ),
     reload_tagged: nullableBooleanToFeature(row.reload_tagged),
     cheap_call_pm_tagged: nullableBooleanToFeature(row.cheap_call_pm_tagged),
     burst_ratio_vs_prev: nullableNumberToFeature(row.burst_ratio_vs_prev),
@@ -393,9 +487,15 @@ export function featuresForLottery(
     spx_spot_gamma_vol: nullableNumberToFeature(row.spx_spot_gamma_vol),
     spx_spot_charm_oi: nullableNumberToFeature(row.spx_spot_charm_oi),
     spx_spot_vanna_oi: nullableNumberToFeature(row.spx_spot_vanna_oi),
-    gex_strike_call_minus_put: nullableNumberToFeature(row.gex_strike_call_minus_put),
-    gex_strike_call_ask_minus_bid: nullableNumberToFeature(row.gex_strike_call_ask_minus_bid),
-    gex_strike_put_ask_minus_bid: nullableNumberToFeature(row.gex_strike_put_ask_minus_bid),
+    gex_strike_call_minus_put: nullableNumberToFeature(
+      row.gex_strike_call_minus_put,
+    ),
+    gex_strike_call_ask_minus_bid: nullableNumberToFeature(
+      row.gex_strike_call_ask_minus_bid,
+    ),
+    gex_strike_put_ask_minus_bid: nullableNumberToFeature(
+      row.gex_strike_put_ask_minus_bid,
+    ),
     score: nullableNumberToFeature(row.score),
     direction_gated: nullableBooleanToFeature(row.direction_gated),
     // derived
@@ -409,8 +509,10 @@ export function featuresForLottery(
     burst_storm_distinct_count: burstCount,
     burst_storm_badge: burstBadge,
     silent_boom_cofire_within_5min: sbCofire,
+    silent_boom_cofire_diff_chain_within_5min: sbCofireDiffChain,
     n_same_dir_fires_last_30min: nSameDir,
-    prior_session_win_rate_same_ticker: priorWin === undefined ? null : priorWin,
+    prior_session_win_rate_same_ticker:
+      priorWin === undefined ? null : priorWin,
   };
 
   // One-hot categoricals.
@@ -451,12 +553,22 @@ export function featuresForSilentBoom(
   );
   const gammaSign = deriveDealerGammaSign(row.spx_spot_gamma_oi);
   const aggressive = deriveAggressivePremiumFlag(row.ask_pct);
-  const burstCount = deriveBurstStormDistinctCount(row.fire_time, ctx.recentSameTypeFires);
+  const burstCount = deriveBurstStormDistinctCount(
+    row.fire_time,
+    ctx.recentSameTypeFires,
+  );
   const burstBadge = deriveBurstStormBadge(burstCount);
   const lotteryCofire = deriveCofireFlag(
     row.fire_time,
     row.option_chain_id,
     ctx.recentOtherTypeByChain,
+  );
+  const lotteryCofireDiffChain = deriveCofireDiffChainFlag(
+    row.fire_time,
+    row.option_chain_id,
+    row.underlying_symbol,
+    row.option_type,
+    ctx.recentOtherTypeByTickerDir,
   );
   const nSameDir = deriveNSameDirFiresLast30Min(
     row.fire_time,
@@ -480,7 +592,9 @@ export function featuresForSilentBoom(
     zero_dte_diff: nullableNumberToFeature(row.zero_dte_diff),
     spx_spot_gamma_oi: nullableNumberToFeature(row.spx_spot_gamma_oi),
     multi_leg_share: nullableNumberToFeature(row.multi_leg_share),
-    underlying_price_at_spike: nullableNumberToFeature(row.underlying_price_at_spike),
+    underlying_price_at_spike: nullableNumberToFeature(
+      row.underlying_price_at_spike,
+    ),
     score: nullableNumberToFeature(row.score),
     direction_gated: nullableBooleanToFeature(row.direction_gated),
     // derived
@@ -494,8 +608,10 @@ export function featuresForSilentBoom(
     burst_storm_distinct_count: burstCount,
     burst_storm_badge: burstBadge,
     lottery_cofire_within_5min: lotteryCofire,
+    lottery_cofire_diff_chain_within_5min: lotteryCofireDiffChain,
     n_same_dir_fires_last_30min: nSameDir,
-    prior_session_win_rate_same_ticker: priorWin === undefined ? null : priorWin,
+    prior_session_win_rate_same_ticker:
+      priorWin === undefined ? null : priorWin,
   };
 
   // One-hot categoricals.

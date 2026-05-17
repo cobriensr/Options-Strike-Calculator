@@ -18,7 +18,10 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
-console.log('Running pending migrations against', process.env.DATABASE_URL.split('@')[1]?.split('/')[0] ?? '(unknown host)');
+console.log(
+  'Running pending migrations against',
+  process.env.DATABASE_URL.split('@')[1]?.split('/')[0] ?? '(unknown host)',
+);
 
 const applied = await migrateDb();
 

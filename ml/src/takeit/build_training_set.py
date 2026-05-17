@@ -274,6 +274,51 @@ def add_cofire_flag(
     return out
 
 
+def add_cofire_diff_chain_flag(
+    target: pd.DataFrame, other: pd.DataFrame, flag_name: str
+) -> pd.DataFrame:
+    """For each row in `target`, set flag_name = 1 iff `other` has a row with
+    the SAME underlying + option_type but a DIFFERENT option_chain_id whose
+    fire_time is at or before the target's fire_time AND within
+    COFIRE_WINDOW_MIN of it.
+
+    Sibling-chain cofire — coexists with `add_cofire_flag` and is NOT mutually
+    exclusive. Same-chain cofires concentrate on one contract; sibling-chain
+    cofires capture ticker-wide directional pressure across the strike ladder.
+    Direction-locked (Call↔Call, Put↔Put).
+    """
+    out = target.copy()
+    if other.empty:
+        out[flag_name] = pd.Series(0, index=out.index, dtype="Int8")
+        return out
+    window = pd.Timedelta(minutes=COFIRE_WINDOW_MIN)
+    flag = pd.Series(0, index=out.index, dtype="Int8")
+    other_sorted = other[
+        ["option_chain_id", "underlying_symbol", "option_type", "fire_time"]
+    ].copy()
+    other_sorted["fire_time"] = pd.to_datetime(other_sorted["fire_time"], utc=True)
+    other_sorted = other_sorted.sort_values("fire_time")
+    # Group by (underlying, option_type) → list of (fire_time, chain_id).
+    by_dir: dict[tuple[str, str], list[tuple[pd.Timestamp, str]]] = {}
+    for _, r in other_sorted.iterrows():
+        key = (r["underlying_symbol"], r["option_type"])
+        by_dir.setdefault(key, []).append((r["fire_time"], r["option_chain_id"]))
+    for i, row in out.iterrows():
+        key = (row["underlying_symbol"], row["option_type"])
+        candidates = by_dir.get(key, [])
+        t = row["fire_time"]
+        target_chain = row["option_chain_id"]
+        for c_time, c_chain in candidates:
+            if c_chain == target_chain:
+                continue
+            delta = t - c_time
+            if pd.Timedelta(0) <= delta <= window:
+                flag.at[i] = 1
+                break
+    out[flag_name] = flag
+    return out
+
+
 def add_sequential_features(df: pd.DataFrame) -> pd.DataFrame:
     """n_same_dir_fires_last_30min and prior_session_win_rate_same_ticker.
 
@@ -415,6 +460,9 @@ def build_lottery_from_raw(
     )
     feat = add_burst_storm(feat)
     feat = add_cofire_flag(feat, sb_raw, "silent_boom_cofire_within_5min")
+    feat = add_cofire_diff_chain_flag(
+        feat, sb_raw, "silent_boom_cofire_diff_chain_within_5min"
+    )
     feat = add_sequential_features(feat)
     return add_label(feat, threshold_pct)
 
@@ -428,6 +476,9 @@ def build_silentboom_from_raw(
     )
     feat = add_burst_storm(feat)
     feat = add_cofire_flag(feat, lot_raw, "lottery_cofire_within_5min")
+    feat = add_cofire_diff_chain_flag(
+        feat, lot_raw, "lottery_cofire_diff_chain_within_5min"
+    )
     feat = add_sequential_features(feat)
     return add_label(feat, threshold_pct)
 

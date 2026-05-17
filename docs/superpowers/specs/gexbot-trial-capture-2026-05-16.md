@@ -55,25 +55,47 @@ transcript (parsed from `github.com/nfa-llc/gexbot-openapi`,
 | 3   | `/state/delta_zero`           | Per-strike 0DTE delta                    |
 | 4   | `/state/vanna_zero`           | Per-strike 0DTE vanna                    |
 | 5   | `/state/charm_zero`           | Per-strike 0DTE charm                    |
-| 6   | `/state/gamma_one`            | Per-strike 1DTE gamma                    |
-| 7   | `/state/delta_one`            | Per-strike 1DTE delta                    |
-| 8   | `/state/vanna_one`            | Per-strike 1DTE vanna                    |
-| 9   | `/state/charm_one`            | Per-strike 1DTE charm                    |
-| 10  | `/classic/gex_zero/maxchange` | 0DTE strike-change winners (6 windows)   |
-| 11  | `/classic/gex_full/maxchange` | Full-DTE strike-change winners           |
+| 6   | `/state/gamma_one`            | Per-strike 1DTE+ gamma                   |
+| 7   | `/state/delta_one`            | Per-strike 1DTE+ delta                   |
+| 8   | `/state/vanna_one`            | Per-strike 1DTE+ vanna                   |
+| 9   | `/state/charm_one`            | Per-strike 1DTE+ charm                   |
+| 10  | `/classic/gex_zero/maxchange` | 0DTE GEX strike-change (6 windows)       |
+| 11  | `/classic/gex_one/maxchange`  | 1DTE+ GEX strike-change                  |
+| 12  | `/classic/gex_full/maxchange` | Full-DTE GEX strike-change               |
+| 13  | `/state/gamma_zero/maxchange` | 0DTE gamma strike-change (per-window)    |
+| 14  | `/state/delta_zero/maxchange` | 0DTE delta strike-change                 |
+| 15  | `/state/vanna_zero/maxchange` | 0DTE vanna strike-change                 |
+| 16  | `/state/charm_zero/maxchange` | 0DTE charm strike-change                 |
+| 17  | `/state/gamma_one/maxchange`  | 1DTE+ gamma strike-change                |
+| 18  | `/state/delta_one/maxchange`  | 1DTE+ delta strike-change                |
+| 19  | `/state/vanna_one/maxchange`  | 1DTE+ vanna strike-change                |
+| 20  | `/state/charm_one/maxchange`  | 1DTE+ charm strike-change                |
 
-**Total: 11 endpoints × 16 tickers = 176 calls/min** ≈ 2.9/sec.
+**Total: 20 endpoints × 16 tickers = 320 calls/min** ≈ 5.3/sec.
 Well under GEXBot's 1/sec per (ticker, metric) — each (ticker, endpoint)
 pair is polled 1/min, not 1/sec.
+
+**Cron split:**
+
+- **`fetch-gexbot-fast`** (192/min): orderflow + 3 classic-maxchange + 8
+  state-maxchange. All small-payload responses.
+- **`fetch-gexbot-strikes`** (128/min): 8 state per-strike endpoints
+  (~30 KB JSONB per row). Isolated so its wall-time budget doesn't
+  share a function with the small-payload calls.
 
 **Deliberately skipped:**
 
 - **`/{*}/majors`** — `zero_gamma`, `major_pos_*`, `major_neg_*` already
-  in the orderflow + state `/{category}` responses
+  in the orderflow + state `/{category}` responses (field-for-field
+  redundant)
 - **`/state/{gamma,delta,vanna,charm}` (no `_zero`/`_one` suffix)** —
-  all-DTE per-strike Greeks; derivable from `_zero` + `_one` rows
+  all-DTE per-strike Greeks; nearly derivable from `_zero` + `_one`
+  rows (misses 2DTE+ but that's marginal for a 0DTE-primary trader)
 - **`/{*}/{*}/majors` for state** — same key-levels redundancy as above
 - **`/tickers`** — static; one-off fetch only if needed (not crons)
+- **`/{ticker}/classic/{category}` (base, no sub-route)** — the
+  orderflow response carries the same `basic_response` superset
+  (spot/zero_gamma/strikes/sum_gex/etc.)
 
 **Tickers (from user's GEXBot UI screenshots):**
 
@@ -224,7 +246,7 @@ cron cadence keeps us well under GEXBot's 1/sec/ticker limit).
 To keep each cron's wall time and failure blast radius small, split into
 **two crons that both fire every minute**:
 
-**Cron A: `api/cron/fetch-gexbot-fast.ts`** (48 calls/min)
+**Cron A: `api/cron/fetch-gexbot-fast.ts`** (192 calls/min)
 
 - 16 × `/orderflow/orderflow` → `gexbot_snapshots` (extract scalars +
   store raw)
@@ -253,9 +275,10 @@ Files to create:
 - `api/__tests__/fetch-gexbot-fast.test.ts` — tests:
   1. Rejects without CRON_SECRET → 401
   2. Skips outside market hours
-  3. Happy path: 48 successful fetches → 16 orderflow rows + 32 capture rows
+  3. Happy path: 192 successful fetches → 16 orderflow rows + 176
+     batched capture rows (48 classic-maxchange + 128 state-maxchange)
   4. Partial failure: one ticker errors on orderflow → 15 orderflow rows,
-     32 capture rows, Sentry called once
+     full 176 captures, Sentry called once
 - `api/__tests__/fetch-gexbot-strikes.test.ts` — tests:
   1. Rejects without CRON_SECRET → 401
   2. Skips outside market hours
@@ -432,14 +455,14 @@ value_2, [5 priors]]` array turns out to matter, we add a child table
 | Ticker list          | 16 (above)                                                   | exported const `GEXBOT_TICKERS` in client    |
 | State categories     | 8 (`{gamma,delta,vanna,charm}_{zero,one}`)                   | exported const `STATE_CATEGORIES`            |
 | Maxchange categories | 2 (`gex_zero`, `gex_full`)                                   | hard-coded in fast cron                      |
-| Total calls/min      | 176 (16 orderflow + 128 state + 32 maxchange)                | —                                            |
+| Total calls/min      | 320 (192 fast + 128 strikes)                                 | —                                            |
 | Migration id         | 156                                                          | next available after #155                    |
 | Parquet compression  | Snappy, 50k-row row groups                                   | `archive_gexbot_daily.py`                    |
 | Blob key format      | `gexbot/{table}/{yyyy-mm-dd}.parquet`                        | `archive_gexbot_daily.py`                    |
 
 ## Risk notes
 
-- **176 calls/min across two fetch crons** — GEXBot rate limit is per
+- **320 calls/min across two fetch crons** — GEXBot rate limit is per
   (ticker, metric), not global. `Promise.allSettled` across distinct
   (ticker, endpoint) pairs is compliant: each pair is polled 1/min, well
   under the 1/sec/(ticker, metric) cap.

@@ -8,6 +8,7 @@ import {
   deriveAggressivePremiumFlag,
   deriveBurstStormBadge,
   deriveBurstStormDistinctCount,
+  deriveCofireDiffChainFlag,
   deriveCofireFlag,
   deriveDealerGammaSign,
   deriveIsItmAtFire,
@@ -17,12 +18,14 @@ import {
   featuresForLottery,
   featuresForSilentBoom,
   sessionPhaseFromMinuteCt,
+  tickerDirKey,
 } from '../_lib/takeit-features.js';
 import type { TakeitBundle } from '../_lib/takeit-score.js';
 
 const EMPTY_CTX: SequentialContext = {
   recentSameTypeFires: [],
   recentOtherTypeByChain: new Map(),
+  recentOtherTypeByTickerDir: new Map(),
   priorSessionWinRateByTicker: new Map(),
 };
 
@@ -141,13 +144,33 @@ describe('deriveBurstStormDistinctCount', () => {
     const t = new Date('2026-04-01T14:30:00Z');
     const ctx = [
       // Same underlying twice → distinct count counts once.
-      { fire_time: new Date(t.getTime() - 10 * 60_000), underlying_symbol: 'AAA', option_type: 'C' as const },
-      { fire_time: new Date(t.getTime() - 5 * 60_000), underlying_symbol: 'AAA', option_type: 'P' as const },
+      {
+        fire_time: new Date(t.getTime() - 10 * 60_000),
+        underlying_symbol: 'AAA',
+        option_type: 'C' as const,
+      },
+      {
+        fire_time: new Date(t.getTime() - 5 * 60_000),
+        underlying_symbol: 'AAA',
+        option_type: 'P' as const,
+      },
       // Different underlyings.
-      { fire_time: new Date(t.getTime() - 8 * 60_000), underlying_symbol: 'BBB', option_type: 'C' as const },
-      { fire_time: new Date(t.getTime() - 3 * 60_000), underlying_symbol: 'CCC', option_type: 'C' as const },
+      {
+        fire_time: new Date(t.getTime() - 8 * 60_000),
+        underlying_symbol: 'BBB',
+        option_type: 'C' as const,
+      },
+      {
+        fire_time: new Date(t.getTime() - 3 * 60_000),
+        underlying_symbol: 'CCC',
+        option_type: 'C' as const,
+      },
       // Outside window (45min before).
-      { fire_time: new Date(t.getTime() - 45 * 60_000), underlying_symbol: 'DDD', option_type: 'C' as const },
+      {
+        fire_time: new Date(t.getTime() - 45 * 60_000),
+        underlying_symbol: 'DDD',
+        option_type: 'C' as const,
+      },
     ];
     expect(deriveBurstStormDistinctCount(t, ctx)).toBe(3); // AAA, BBB, CCC
   });
@@ -202,15 +225,139 @@ describe('deriveCofireFlag', () => {
   });
 });
 
+describe('deriveCofireDiffChainFlag', () => {
+  const chain = 'SPY_500_C';
+  const sibling = 'SPY_505_C';
+  const t = new Date('2026-04-01T14:30:00Z');
+
+  it('flags a sibling-chain prior fire on same ticker+direction', () => {
+    const ctx = new Map([
+      [
+        tickerDirKey('SPY', 'C'),
+        [
+          {
+            fire_time: new Date(t.getTime() - 2 * 60_000),
+            option_chain_id: sibling,
+          },
+        ],
+      ],
+    ]);
+    expect(deriveCofireDiffChainFlag(t, chain, 'SPY', 'C', ctx)).toBe(1);
+  });
+
+  it('does NOT flag when only the same chain has a prior fire (excluded)', () => {
+    const ctx = new Map([
+      [
+        tickerDirKey('SPY', 'C'),
+        [
+          {
+            fire_time: new Date(t.getTime() - 2 * 60_000),
+            option_chain_id: chain,
+          },
+        ],
+      ],
+    ]);
+    expect(deriveCofireDiffChainFlag(t, chain, 'SPY', 'C', ctx)).toBe(0);
+  });
+
+  it('does NOT flag opposite option_type (C vs P) on same ticker', () => {
+    // Bucket keyed on SPY|P; this fire is SPY|C — different bucket, no match.
+    const ctx = new Map([
+      [
+        tickerDirKey('SPY', 'P'),
+        [
+          {
+            fire_time: new Date(t.getTime() - 2 * 60_000),
+            option_chain_id: sibling,
+          },
+        ],
+      ],
+    ]);
+    expect(deriveCofireDiffChainFlag(t, chain, 'SPY', 'C', ctx)).toBe(0);
+  });
+
+  it('does NOT flag a sibling fire outside the 5-min window', () => {
+    const ctx = new Map([
+      [
+        tickerDirKey('SPY', 'C'),
+        [
+          {
+            fire_time: new Date(t.getTime() - 6 * 60_000),
+            option_chain_id: sibling,
+          },
+        ],
+      ],
+    ]);
+    expect(deriveCofireDiffChainFlag(t, chain, 'SPY', 'C', ctx)).toBe(0);
+  });
+
+  it('does NOT flag a future sibling fire (PIT-correct)', () => {
+    const ctx = new Map([
+      [
+        tickerDirKey('SPY', 'C'),
+        [
+          {
+            fire_time: new Date(t.getTime() + 2 * 60_000),
+            option_chain_id: sibling,
+          },
+        ],
+      ],
+    ]);
+    expect(deriveCofireDiffChainFlag(t, chain, 'SPY', 'C', ctx)).toBe(0);
+  });
+
+  it('co-fires INDEPENDENTLY of same-chain when both prior fires exist', () => {
+    // Two prior fires in bucket SPY|C: one on same chain, one on sibling.
+    // diff-chain flag flips because the sibling exists; same-chain helper
+    // would also flip (tested separately). Confirms NOT mutually exclusive.
+    const ctx = new Map([
+      [
+        tickerDirKey('SPY', 'C'),
+        [
+          {
+            fire_time: new Date(t.getTime() - 2 * 60_000),
+            option_chain_id: chain,
+          },
+          {
+            fire_time: new Date(t.getTime() - 3 * 60_000),
+            option_chain_id: sibling,
+          },
+        ],
+      ],
+    ]);
+    expect(deriveCofireDiffChainFlag(t, chain, 'SPY', 'C', ctx)).toBe(1);
+  });
+});
+
 describe('deriveNSameDirFiresLast30Min', () => {
   it('counts strictly prior same-ticker + same-option_type within 30 min', () => {
     const t = new Date('2026-04-01T14:30:00Z');
     const ctx = [
-      { fire_time: new Date(t.getTime() - 10 * 60_000), underlying_symbol: 'SPY', option_type: 'C' as const }, // ✓
-      { fire_time: new Date(t.getTime() - 5 * 60_000), underlying_symbol: 'SPY', option_type: 'P' as const }, // wrong type
-      { fire_time: new Date(t.getTime() - 2 * 60_000), underlying_symbol: 'QQQ', option_type: 'C' as const }, // wrong ticker
-      { fire_time: new Date(t.getTime() - 35 * 60_000), underlying_symbol: 'SPY', option_type: 'C' as const }, // outside window
-      { fire_time: new Date(t.getTime() - 1 * 60_000), underlying_symbol: 'SPY', option_type: 'C' as const }, // ✓
+      {
+        fire_time: new Date(t.getTime() - 10 * 60_000),
+        underlying_symbol: 'SPY',
+        option_type: 'C' as const,
+      }, // ✓
+      {
+        fire_time: new Date(t.getTime() - 5 * 60_000),
+        underlying_symbol: 'SPY',
+        option_type: 'P' as const,
+      }, // wrong type
+      {
+        fire_time: new Date(t.getTime() - 2 * 60_000),
+        underlying_symbol: 'QQQ',
+        option_type: 'C' as const,
+      }, // wrong ticker
+      {
+        fire_time: new Date(t.getTime() - 35 * 60_000),
+        underlying_symbol: 'SPY',
+        option_type: 'C' as const,
+      }, // outside window
+      {
+        fire_time: new Date(t.getTime() - 1 * 60_000),
+        underlying_symbol: 'SPY',
+        option_type: 'C' as const,
+      }, // ✓
     ];
     expect(deriveNSameDirFiresLast30Min(t, 'SPY', 'C', ctx)).toBe(2);
   });
@@ -362,16 +509,60 @@ describe('featuresForLottery', () => {
     const t = new Date('2026-04-01T14:30:00Z');
     const ctx: SequentialContext = {
       recentSameTypeFires: [
-        { fire_time: new Date(t.getTime() - 5 * 60_000), underlying_symbol: 'AAA', option_type: 'C' },
-        { fire_time: new Date(t.getTime() - 4 * 60_000), underlying_symbol: 'BBB', option_type: 'C' },
-        { fire_time: new Date(t.getTime() - 3 * 60_000), underlying_symbol: 'CCC', option_type: 'C' },
-        { fire_time: new Date(t.getTime() - 2 * 60_000), underlying_symbol: 'DDD', option_type: 'C' },
-        { fire_time: new Date(t.getTime() - 1 * 60_000), underlying_symbol: 'EEE', option_type: 'C' },
+        {
+          fire_time: new Date(t.getTime() - 5 * 60_000),
+          underlying_symbol: 'AAA',
+          option_type: 'C',
+        },
+        {
+          fire_time: new Date(t.getTime() - 4 * 60_000),
+          underlying_symbol: 'BBB',
+          option_type: 'C',
+        },
+        {
+          fire_time: new Date(t.getTime() - 3 * 60_000),
+          underlying_symbol: 'CCC',
+          option_type: 'C',
+        },
+        {
+          fire_time: new Date(t.getTime() - 2 * 60_000),
+          underlying_symbol: 'DDD',
+          option_type: 'C',
+        },
+        {
+          fire_time: new Date(t.getTime() - 1 * 60_000),
+          underlying_symbol: 'EEE',
+          option_type: 'C',
+        },
         // SPY same-dir prior
-        { fire_time: new Date(t.getTime() - 6 * 60_000), underlying_symbol: 'SPY', option_type: 'C' },
+        {
+          fire_time: new Date(t.getTime() - 6 * 60_000),
+          underlying_symbol: 'SPY',
+          option_type: 'C',
+        },
       ],
       recentOtherTypeByChain: new Map([
-        ['SPY_500_C_2026-04-01', [{ fire_time: new Date(t.getTime() - 2 * 60_000) }]],
+        [
+          'SPY_500_C_2026-04-01',
+          [{ fire_time: new Date(t.getTime() - 2 * 60_000) }],
+        ],
+      ]),
+      recentOtherTypeByTickerDir: new Map([
+        [
+          tickerDirKey('SPY', 'C'),
+          [
+            {
+              // Same chain — should NOT trip diff-chain flag.
+              fire_time: new Date(t.getTime() - 2 * 60_000),
+              option_chain_id: 'SPY_500_C_2026-04-01',
+            },
+            {
+              // Sibling chain — should trip diff-chain flag.
+              fire_time: new Date(t.getTime() - 3 * 60_000),
+              option_chain_id: 'SPY_505_C_2026-04-01',
+            },
+          ],
+        ],
       ]),
       priorSessionWinRateByTicker: new Map([['SPY', 0.65]]),
     };
@@ -379,6 +570,7 @@ describe('featuresForLottery', () => {
       'burst_storm_distinct_count',
       'burst_storm_badge',
       'silent_boom_cofire_within_5min',
+      'silent_boom_cofire_diff_chain_within_5min',
       'n_same_dir_fires_last_30min',
       'prior_session_win_rate_same_ticker',
     ]);
@@ -387,6 +579,7 @@ describe('featuresForLottery', () => {
     expect(out.burst_storm_distinct_count).toBe(6); // 5 distinct + SPY
     expect(out.burst_storm_badge).toBe(1);
     expect(out.silent_boom_cofire_within_5min).toBe(1);
+    expect(out.silent_boom_cofire_diff_chain_within_5min).toBe(1);
     expect(out.n_same_dir_fires_last_30min).toBe(1); // only SPY/C prior
     expect(out.prior_session_win_rate_same_ticker).toBe(0.65);
   });
@@ -394,7 +587,9 @@ describe('featuresForLottery', () => {
 
 /* ───────────────────────── featuresForSilentBoom smoke ─────────────── */
 
-function silentBoomRow(overrides: Partial<SilentBoomAlertRow> = {}): SilentBoomAlertRow {
+function silentBoomRow(
+  overrides: Partial<SilentBoomAlertRow> = {},
+): SilentBoomAlertRow {
   return {
     fire_time: new Date('2026-04-01T14:30:00Z'),
     date: new Date('2026-04-01'),

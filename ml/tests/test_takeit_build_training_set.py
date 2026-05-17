@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 from ml.src.takeit.build_training_set import (
     add_burst_storm,
+    add_cofire_diff_chain_flag,
     add_cofire_flag,
     add_label,
     add_sequential_features,
@@ -383,6 +384,153 @@ def test_cofire_flag_empty_other_yields_zeros() -> None:
     assert out["silent_boom_cofire_within_5min"].iloc[0] == 0
 
 
+# ── add_cofire_diff_chain_flag ───────────────────────────────────────────────
+
+
+def test_diff_chain_cofire_sibling_within_window() -> None:
+    """Sibling chain (same ticker + option_type, different chain id) fires
+    within window strictly prior → flag = 1."""
+    base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
+    target = pd.DataFrame([
+        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ])
+    target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
+    other = pd.DataFrame([
+        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_505C", underlying="SPY", option_type="C",
+                strike=505, spot=500),
+    ])
+    other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
+    out = add_cofire_diff_chain_flag(
+        target, other, "silent_boom_cofire_diff_chain_within_5min"
+    )
+    assert out["silent_boom_cofire_diff_chain_within_5min"].iloc[0] == 1
+
+
+def test_diff_chain_cofire_same_chain_excluded() -> None:
+    """Same chain id only → flag = 0 (same-chain hits belong to the regular
+    cofire flag, not the diff-chain flag)."""
+    base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
+    target = pd.DataFrame([
+        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ])
+    target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
+    other = pd.DataFrame([
+        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_500C", underlying="SPY", option_type="C",
+                strike=500, spot=500),
+    ])
+    other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
+    out = add_cofire_diff_chain_flag(
+        target, other, "silent_boom_cofire_diff_chain_within_5min"
+    )
+    assert out["silent_boom_cofire_diff_chain_within_5min"].iloc[0] == 0
+
+
+def test_diff_chain_cofire_opposite_option_type_excluded() -> None:
+    """Same ticker, OPPOSITE option_type → flag = 0 (direction-locked)."""
+    base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
+    target = pd.DataFrame([
+        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ])
+    target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
+    other = pd.DataFrame([
+        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_500P", underlying="SPY", option_type="P",
+                strike=500, spot=500),
+    ])
+    other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
+    out = add_cofire_diff_chain_flag(
+        target, other, "silent_boom_cofire_diff_chain_within_5min"
+    )
+    assert out["silent_boom_cofire_diff_chain_within_5min"].iloc[0] == 0
+
+
+def test_diff_chain_cofire_outside_window_excluded() -> None:
+    """Sibling chain fire outside COFIRE_WINDOW_MIN → flag = 0."""
+    base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
+    target = pd.DataFrame([
+        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ])
+    target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
+    other = pd.DataFrame([
+        _sb_row(id_=10,
+                fire_time=(base - pd.Timedelta(minutes=COFIRE_WINDOW_MIN + 1)).isoformat(),
+                chain="SPY_505C", underlying="SPY", option_type="C",
+                strike=505, spot=500),
+    ])
+    other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
+    out = add_cofire_diff_chain_flag(
+        target, other, "silent_boom_cofire_diff_chain_within_5min"
+    )
+    assert out["silent_boom_cofire_diff_chain_within_5min"].iloc[0] == 0
+
+
+def test_diff_chain_cofire_future_excluded_pit_correct() -> None:
+    """Sibling chain fire in the FUTURE → flag = 0 (PIT-correct)."""
+    base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
+    target = pd.DataFrame([
+        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ])
+    target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
+    other = pd.DataFrame([
+        _sb_row(id_=10, fire_time=(base + pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_505C", underlying="SPY", option_type="C",
+                strike=505, spot=500),
+    ])
+    other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
+    out = add_cofire_diff_chain_flag(
+        target, other, "silent_boom_cofire_diff_chain_within_5min"
+    )
+    assert out["silent_boom_cofire_diff_chain_within_5min"].iloc[0] == 0
+
+
+def test_diff_chain_cofire_independent_of_same_chain() -> None:
+    """Two prior fires — one on the SAME chain, one on a SIBLING chain — both
+    within window. Diff-chain flag must flip because the sibling exists. This
+    is the not-mutually-exclusive contract from the Phase 6 spec."""
+    base = pd.to_datetime("2026-04-01 14:30:00+00:00", utc=True)
+    target = pd.DataFrame([
+        _lot_row(id_=1, fire_time=base.isoformat(), chain="SPY_500C",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ])
+    target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
+    other = pd.DataFrame([
+        _sb_row(id_=10, fire_time=(base - pd.Timedelta(minutes=2)).isoformat(),
+                chain="SPY_500C", underlying="SPY", option_type="C",
+                strike=500, spot=500),
+        _sb_row(id_=11, fire_time=(base - pd.Timedelta(minutes=3)).isoformat(),
+                chain="SPY_505C", underlying="SPY", option_type="C",
+                strike=505, spot=500),
+    ])
+    other = derive_common_features(other, "underlying_price_at_spike", "ask_pct")
+    out = add_cofire_diff_chain_flag(
+        target, other, "silent_boom_cofire_diff_chain_within_5min"
+    )
+    assert out["silent_boom_cofire_diff_chain_within_5min"].iloc[0] == 1
+
+
+def test_diff_chain_cofire_empty_other_yields_zeros() -> None:
+    base = "2026-04-01 14:30:00+00:00"
+    target = pd.DataFrame([
+        _lot_row(id_=1, fire_time=base, chain="SPY_500C",
+                 underlying="SPY", option_type="C", strike=500, spot=500),
+    ])
+    target = derive_common_features(target, "spot_at_first", "trigger_ask_pct")
+    other = pd.DataFrame(
+        columns=["option_chain_id", "underlying_symbol", "option_type", "fire_time"]
+    )
+    out = add_cofire_diff_chain_flag(
+        target, other, "silent_boom_cofire_diff_chain_within_5min"
+    )
+    assert out["silent_boom_cofire_diff_chain_within_5min"].iloc[0] == 0
+
+
 # ── add_sequential_features ──────────────────────────────────────────────────
 
 
@@ -498,6 +646,7 @@ def test_build_lottery_from_raw_produces_expected_columns() -> None:
         "burst_storm_badge",
         "burst_storm_distinct_count",
         "silent_boom_cofire_within_5min",
+        "silent_boom_cofire_diff_chain_within_5min",
         "n_same_dir_fires_last_30min",
         "prior_session_win_rate_same_ticker",
     ]:
@@ -507,6 +656,9 @@ def test_build_lottery_from_raw_produces_expected_columns() -> None:
     qqq_row = out[out["option_chain_id"] == "QQQ_400C"].iloc[0]
     assert spy_row["silent_boom_cofire_within_5min"] == 1
     assert qqq_row["silent_boom_cofire_within_5min"] == 0
+    # Diff-chain cofire: SB is on the SAME chain (SPY_500C), no sibling fire — flag stays 0.
+    assert spy_row["silent_boom_cofire_diff_chain_within_5min"] == 0
+    assert qqq_row["silent_boom_cofire_diff_chain_within_5min"] == 0
     # Labels.
     assert spy_row["win"] == 1
     assert qqq_row["win"] == 0
@@ -524,7 +676,10 @@ def test_build_silentboom_from_raw_produces_expected_columns() -> None:
     ])
     out = build_silentboom_from_raw(sb_raw, lot_raw, WIN_LABEL_THRESHOLD_PCT)
     assert "lottery_cofire_within_5min" in out.columns
+    assert "lottery_cofire_diff_chain_within_5min" in out.columns
     assert out["lottery_cofire_within_5min"].iloc[0] == 1
+    # Lottery fire is on the SAME chain (SPY_500C), no sibling — diff-chain flag = 0.
+    assert out["lottery_cofire_diff_chain_within_5min"].iloc[0] == 0
     assert out["win"].iloc[0] == 1
 
 

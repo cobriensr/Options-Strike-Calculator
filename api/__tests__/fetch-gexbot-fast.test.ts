@@ -30,14 +30,23 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 import handler from '../cron/fetch-gexbot-fast.js';
-import { GEXBOT_TICKERS, MAXCHANGE_CATEGORIES } from '../_lib/gexbot-client.js';
+import {
+  GEXBOT_TICKERS,
+  MAXCHANGE_CATEGORIES,
+  STATE_MAXCHANGE_CATEGORIES,
+} from '../_lib/gexbot-client.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET (14:00 UTC during DST)
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 // Fixed weekend date: Saturday
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 
-const TOTAL_TASKS = GEXBOT_TICKERS.length * (1 + MAXCHANGE_CATEGORIES.length); // 48
+const CLASSIC_MAXCHANGE_COUNT =
+  GEXBOT_TICKERS.length * MAXCHANGE_CATEGORIES.length;
+const STATE_MAXCHANGE_COUNT =
+  GEXBOT_TICKERS.length * STATE_MAXCHANGE_CATEGORIES.length;
+const CAPTURE_COUNT = CLASSIC_MAXCHANGE_COUNT + STATE_MAXCHANGE_COUNT;
+const TOTAL_TASKS = GEXBOT_TICKERS.length + CAPTURE_COUNT;
 
 function makeOrderflowBody(ticker: string) {
   return {
@@ -160,7 +169,7 @@ describe('fetch-gexbot-fast handler', () => {
 
   // ── Happy path ────────────────────────────────────────────
 
-  it('stores 16 orderflow snapshots + 32 maxchange captures', async () => {
+  it('stores orderflow snapshots + classic-maxchange + state-maxchange captures', async () => {
     stubFetchHappyPath();
     const req = mockRequest({
       method: 'GET',
@@ -174,7 +183,7 @@ describe('fetch-gexbot-fast handler', () => {
       status: 'success',
       rows: TOTAL_TASKS,
       snapshots: GEXBOT_TICKERS.length,
-      captures: GEXBOT_TICKERS.length * MAXCHANGE_CATEGORIES.length,
+      captures: CAPTURE_COUNT,
       failed: 0,
     });
     // 16 per-row snapshot INSERTs + 1 batched UNNEST captures INSERT = 17

@@ -4,13 +4,16 @@
  * Fast-cron half of the GEXBot Orderflow-tier capture pipeline. Polls
  * the small-payload endpoints once per minute for all 16 tickers:
  *
- *   - 16 × /{ticker}/orderflow/orderflow       → gexbot_snapshots
- *   - 16 × /{ticker}/classic/gex_zero/maxchange → gexbot_api_capture
- *   - 16 × /{ticker}/classic/gex_full/maxchange → gexbot_api_capture
+ *   - 16 × /{ticker}/orderflow/orderflow         → gexbot_snapshots
+ *   - 48 × /{ticker}/classic/{gex_zero|gex_one|gex_full}/maxchange
+ *                                                  → gexbot_api_capture
+ *   - 128 × /{ticker}/state/{gamma|delta|vanna|charm}_{zero|one}/maxchange
+ *                                                  → gexbot_api_capture
  *
- * Total: 48 HTTP calls per invocation. State per-strike (128 calls) is
- * a sibling cron (`fetch-gexbot-strikes`) so neither cron tips over the
- * Hobby-plan 10-second timeout if GEXBot is briefly slow.
+ * Total: 192 HTTP calls per invocation, all small payloads. State
+ * per-strike (heavy ~30 KB rows, 128 calls) lives in the sibling
+ * `fetch-gexbot-strikes` cron so the two payload classes don't share
+ * a wall-time budget.
  *
  * See: docs/superpowers/specs/gexbot-trial-capture-2026-05-16.md
  *
@@ -25,11 +28,14 @@ import {
 import {
   fetchOrderflow,
   fetchMaxchange,
+  fetchStateMaxchange,
   GEXBOT_TICKERS,
   MAXCHANGE_CATEGORIES,
+  STATE_MAXCHANGE_CATEGORIES,
   type GexbotResponse,
   type GexbotTicker,
   type MaxchangeCategory,
+  type StateCategory,
 } from '../_lib/gexbot-client.js';
 import { insertCaptureRows, type CaptureRow } from '../_lib/gexbot-store.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -109,20 +115,33 @@ export default withCronInstrumentation(
       throw new Error('GEXBOT_API_KEY is not configured');
     }
 
-    // Build the full work list: 16 orderflow + 32 maxchange = 48 calls.
+    // Full work list: 16 orderflow + (16 × 3) classic maxchange +
+    // (16 × 8) state maxchange = 192 calls.
     type Task =
       | { kind: 'orderflow'; ticker: GexbotTicker }
       | {
-          kind: 'maxchange';
+          kind: 'classic-maxchange';
           ticker: GexbotTicker;
           category: MaxchangeCategory;
+        }
+      | {
+          kind: 'state-maxchange';
+          ticker: GexbotTicker;
+          category: StateCategory;
         };
 
     const tasks: Task[] = [
       ...GEXBOT_TICKERS.map<Task>((ticker) => ({ kind: 'orderflow', ticker })),
       ...GEXBOT_TICKERS.flatMap<Task>((ticker) =>
         MAXCHANGE_CATEGORIES.map<Task>((category) => ({
-          kind: 'maxchange',
+          kind: 'classic-maxchange',
+          ticker,
+          category,
+        })),
+      ),
+      ...GEXBOT_TICKERS.flatMap<Task>((ticker) =>
+        STATE_MAXCHANGE_CATEGORIES.map<Task>((category) => ({
+          kind: 'state-maxchange',
           ticker,
           category,
         })),
@@ -134,10 +153,22 @@ export default withCronInstrumentation(
     const results = await Promise.all(
       tasks.map(async (task) => {
         try {
-          const body =
-            task.kind === 'orderflow'
-              ? await fetchOrderflow(apiKey, task.ticker)
-              : await fetchMaxchange(apiKey, task.ticker, task.category);
+          let body: GexbotResponse;
+          switch (task.kind) {
+            case 'orderflow':
+              body = await fetchOrderflow(apiKey, task.ticker);
+              break;
+            case 'classic-maxchange':
+              body = await fetchMaxchange(apiKey, task.ticker, task.category);
+              break;
+            case 'state-maxchange':
+              body = await fetchStateMaxchange(
+                apiKey,
+                task.ticker,
+                task.category,
+              );
+              break;
+          }
           return { ok: true as const, task, body };
         } catch (err) {
           return { ok: false as const, task, err };
@@ -167,10 +198,18 @@ export default withCronInstrumentation(
       const { task, body } = result;
       if (task.kind === 'orderflow') {
         snapshots.push({ ticker: task.ticker, body });
-      } else {
+      } else if (task.kind === 'classic-maxchange') {
         captures.push({
           ticker: task.ticker,
           endpoint: 'classic',
+          category: `${task.category}/maxchange`,
+          sourceTimestamp: i(body.timestamp),
+          rawJson: JSON.stringify(body),
+        });
+      } else {
+        captures.push({
+          ticker: task.ticker,
+          endpoint: 'state',
           category: `${task.category}/maxchange`,
           sourceTimestamp: i(body.timestamp),
           rawJson: JSON.stringify(body),

@@ -70,7 +70,10 @@ function featureLabel(rawName: string): string {
     burst_storm_badge: 'Burst storm',
     burst_storm_distinct_count: 'Burst-storm count',
     silent_boom_cofire_within_5min: 'Silent Boom co-fire',
+    silent_boom_cofire_diff_chain_within_5min:
+      'Silent Boom co-fire (sibling chain)',
     lottery_cofire_within_5min: 'Lottery co-fire',
+    lottery_cofire_diff_chain_within_5min: 'Lottery co-fire (sibling chain)',
     n_same_dir_fires_last_30min: 'Same-dir recent fires',
     prior_session_win_rate_same_ticker: 'Ticker prior win rate',
     score: 'Heuristic score',
@@ -132,10 +135,7 @@ function FlagChips({
   variant: 'positive' | 'negative';
 }) {
   if (contributions.length === 0) return null;
-  const dotCls =
-    variant === 'positive'
-      ? 'bg-emerald-400'
-      : 'bg-rose-400';
+  const dotCls = variant === 'positive' ? 'bg-emerald-400' : 'bg-rose-400';
   return (
     <div className="flex flex-wrap items-center gap-1">
       {contributions.slice(0, 3).map((c) => (
@@ -144,10 +144,7 @@ function FlagChips({
           className="inline-flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900/60 px-1.5 py-0.5 text-[10px] text-neutral-200"
           title={`SHAP ${c.shap_value.toFixed(3)} · value ${String(c.feature_value)}`}
         >
-          <span
-            aria-hidden
-            className={`h-1.5 w-1.5 rounded-full ${dotCls}`}
-          />
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${dotCls}`} />
           {featureLabel(c.name)}
         </span>
       ))}
@@ -173,8 +170,12 @@ function TakeItScoreInner(props: TakeItScoreProps) {
       data-testid="takeit-score-tile"
     >
       <span
-        className={`inline-flex items-center gap-1 rounded border ${cls} ${padding} text-[10px] font-semibold uppercase tracking-wide`}
-        title={prob == null ? 'No score (bundle missing at detect time)' : 'Calibrated P(peak ≥ +20%) from XGBoost'}
+        className={`inline-flex items-center gap-1 rounded border ${cls} ${padding} text-[10px] font-semibold tracking-wide uppercase`}
+        title={
+          prob == null
+            ? 'No score (bundle missing at detect time)'
+            : 'Calibrated P(peak ≥ +20%) from XGBoost'
+        }
         data-testid="takeit-score-chip"
       >
         <span className="opacity-70">{labelPrefix}</span>

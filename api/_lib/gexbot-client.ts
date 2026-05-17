@@ -84,13 +84,26 @@ export type StateCategory = (typeof STATE_CATEGORIES)[number];
 /**
  * Classic-tier maxchange categories we capture. Each returns the
  * top-mover strike across 6 lookback windows (`current` / `one` /
- * `five` / `ten` / `fifteen` / `thirty`). The state-tier maxchange
- * routes are deliberately skipped — same windows, different metric,
- * and derivable from per-strike state polls.
+ * `five` / `ten` / `fifteen` / `thirty`). All three DTE buckets:
+ * 0DTE (`gex_zero`), 1DTE+ (`gex_one`), and full-DTE (`gex_full`).
  */
-export const MAXCHANGE_CATEGORIES = ['gex_zero', 'gex_full'] as const;
+export const MAXCHANGE_CATEGORIES = [
+  'gex_zero',
+  'gex_one',
+  'gex_full',
+] as const;
 
 export type MaxchangeCategory = (typeof MAXCHANGE_CATEGORIES)[number];
+
+/**
+ * State-tier maxchange categories. Same 8 (Greek × DTE) categories
+ * as `STATE_CATEGORIES`, but the `/maxchange` sub-route returns
+ * the strike whose value moved most over each lookback window —
+ * useful for "which strike's vanna repriced fastest in the last
+ * 5 minutes" type signals that aren't derivable cheaply from
+ * minute-cadence per-strike state polls.
+ */
+export const STATE_MAXCHANGE_CATEGORIES = STATE_CATEGORIES;
 
 /**
  * Generic JSON object returned by GEXBot. Each endpoint has its own
@@ -191,4 +204,19 @@ export function fetchMaxchange(
   category: MaxchangeCategory,
 ): Promise<GexbotResponse> {
   return gexbotFetch(apiKey, `/${ticker}/classic/${category}/maxchange`);
+}
+
+/**
+ * GET /{ticker}/state/{category}/maxchange — biggest-mover strike
+ * over the 6 lookback windows for a specific Greek/DTE pair (e.g.
+ * `gamma_zero`, `charm_one`). Distinct from `fetchMaxchange` which
+ * is keyed on GEX dollar change; this one is keyed on raw Greek
+ * value change at the strike.
+ */
+export function fetchStateMaxchange(
+  apiKey: string,
+  ticker: GexbotTicker,
+  category: StateCategory,
+): Promise<GexbotResponse> {
+  return gexbotFetch(apiKey, `/${ticker}/state/${category}/maxchange`);
 }
