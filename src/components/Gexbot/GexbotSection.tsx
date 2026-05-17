@@ -21,6 +21,7 @@ import { ConvexityMatrix } from './ConvexityMatrix';
 import { CrossAssetSkewDashboard } from './CrossAssetSkewDashboard';
 import { DexoflowVelocityTape } from './DexoflowVelocityTape';
 import { GammaCompass } from './GammaCompass';
+import { StrikeMoverTicker } from './StrikeMoverTicker';
 import { VixDealerStateBadge } from './VixDealerStateBadge';
 
 interface GexbotSectionProps {
@@ -31,6 +32,7 @@ function GexbotSectionInner({ marketOpen }: GexbotSectionProps) {
   return (
     <SectionBox label="GEXBot Dealer State" collapsible>
       <div className="flex flex-col gap-3">
+        <StrikeMoverTicker marketOpen={marketOpen} />
         <VixDealerStateBadge marketOpen={marketOpen} />
         <CharmClock marketOpen={marketOpen} />
         <GammaCompass marketOpen={marketOpen} />
