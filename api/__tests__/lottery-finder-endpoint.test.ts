@@ -99,12 +99,16 @@ const ROW = {
   // enriched, mirroring the other realized_* columns above.
   realized_flow_inversion_pct: null,
   // fire_count comes from the chain-day dedup CTE's window function.
-  // 5 lands in the neutral fireCountScoreAdjustment bucket (4-7 fires
-  // → 0 adjustment), so existing tests that pin a specific score
-  // outcome stay correct under the burst-count adjustment introduced
-  // 2026-05-17. Tests exercising single-fire (-3) or 8+ (+1/+2)
-  // adjustments override locally.
+  // 5 lands in the neutral fire_count_score_adjustment bucket (4-7
+  // fires → 0 adjustment), so existing tests that pin a specific
+  // score outcome stay correct under the burst-count adjustment.
+  // Tests exercising single-fire (-3) or 8+ (+1/+2) adjustments
+  // override both columns locally.
   fire_count: 5,
+  // Post-#167 the adjustment is a stored DB column — explicit 0 here
+  // documents the neutral bucket and matches what the trigger would
+  // populate for a 4-7 fire chain-day.
+  fire_count_score_adjustment: 0,
   first_fire_time_ct: '2026-05-01T18:55:00Z',
   // Ticker net flow snapshot at trigger_time_ct (LATERAL on
   // ws_net_flow_per_ticker + history). Used by Flow Match / Flow
@@ -895,9 +899,16 @@ describe('lottery-finder endpoint', () => {
   // ============================================================
 
   it('applies -3 score adjustment + surfaces fireCountScoreAdjustment for single-fire chains', async () => {
-    // Single-fire chains carry -3 from fireCountScoreAdjustment.
+    // Single-fire chains carry -3 from fire_count_score_adjustment.
     // rawScore=20, so the displayed score drops to 17 → tier2.
-    const ROW_SINGLE = { ...ROW, fire_count: 1 };
+    // Post-#167 the adjustment is a stored DB column maintained by
+    // the lottery_finder_fires_fc_adj_trg trigger, so tests mock the
+    // column directly.
+    const ROW_SINGLE = {
+      ...ROW,
+      fire_count: 1,
+      fire_count_score_adjustment: -3,
+    };
     mockSql
       .mockResolvedValueOnce([ROW_SINGLE])
       .mockResolvedValueOnce([{ total: 1 }]);
@@ -924,6 +935,7 @@ describe('lottery-finder endpoint', () => {
     const ROW_2_FIRES = {
       ...ROW,
       fire_count: 3,
+      fire_count_score_adjustment: -1,
       first_fire_time_ct: '2026-05-01T18:00:00Z',
     };
     mockSql
@@ -952,6 +964,7 @@ describe('lottery-finder endpoint', () => {
     const ROW_8_FIRES = {
       ...ROW,
       fire_count: 10,
+      fire_count_score_adjustment: 1,
       first_fire_time_ct: '2026-05-01T14:00:00Z',
     };
     mockSql
@@ -981,6 +994,7 @@ describe('lottery-finder endpoint', () => {
     const ROW_BURST = {
       ...ROW,
       fire_count: 21, // matches the QQQ 708P 2026-05-15 anchor
+      fire_count_score_adjustment: 2,
       first_fire_time_ct: '2026-05-01T13:30:00Z',
     };
     mockSql
@@ -1107,6 +1121,7 @@ describe('lottery-finder endpoint', () => {
     const ROW_STACKED = {
       ...ROW,
       fire_count: 10,
+      fire_count_score_adjustment: 1,
       first_fire_time_ct: '2026-05-01T14:00:00Z',
       round_trip_score_deduct: -2,
     };

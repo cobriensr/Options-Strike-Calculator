@@ -4725,4 +4725,108 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS group_order JSONB NOT NULL DEFAULT '[]'::jsonb`,
     ],
   },
+  {
+    id: 167,
+    description:
+      'Promote fire_count_score_adjustment from a read-time TS computation to a stored DB column on lottery_finder_fires, then redefine combined_score (the STORED generated column used by the score-sort ORDER BY index) to include it. Closes the displayed-vs-sort divergence documented in commit 254c94ed: previously the score-sort branch would order by combined_score = score + round_trip_score_deduct (excluding the fire_count adjustment), so a 1-fire row with rawScore=20 (combined_score=20, displayed=17) could rank above an 8-fire row with rawScore=18 (combined_score=18, displayed=19). After this migration the displayed score and the sort key are the same expression. Empirical basis: docs/tmp/burst-profitability-findings-2026-05-17.md. The trigger maintains the new column on every INSERT — bucket-boundary detection keeps the work bounded to O(1) on non-crossing inserts (set just the new row) and O(N-per-chain-day) on the 4 rare boundary crossings (1→2, 3→4, 7→8, 15→16). After-INSERT-only trigger does not recurse via its own UPDATE.',
+    statements: (sql) => [
+      // Step 1: add the new column with the bucket-default 0 for the
+      // neutral 4-7 fire range. Backfill in step 2 will correct it.
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS fire_count_score_adjustment SMALLINT NOT NULL DEFAULT 0`,
+      // Step 2: backfill existing rows from chain-day fire counts.
+      // The CASE ladder mirrors the TS fireCountScoreAdjustment helper.
+      sql`WITH chain_day_counts AS (
+            SELECT date, option_chain_id, COUNT(*)::int AS fc
+              FROM lottery_finder_fires
+             GROUP BY date, option_chain_id
+          )
+          UPDATE lottery_finder_fires lf
+             SET fire_count_score_adjustment = CASE
+               WHEN cdc.fc = 1 THEN -3
+               WHEN cdc.fc <= 3 THEN -1
+               WHEN cdc.fc <= 7 THEN 0
+               WHEN cdc.fc <= 15 THEN 1
+               ELSE 2
+             END
+            FROM chain_day_counts cdc
+           WHERE lf.date = cdc.date
+             AND lf.option_chain_id = cdc.option_chain_id`,
+      // Step 3: drop the existing STORED combined_score column so we
+      // can redefine its GENERATED expression to include the new
+      // adjustment. The combined_score index (created in migration
+      // #159) is dropped automatically when its column drops.
+      sql`ALTER TABLE lottery_finder_fires DROP COLUMN IF EXISTS combined_score`,
+      // Step 4: recreate combined_score including the new adjustment.
+      // GREATEST(0, ...) preserves the historical no-negative-score
+      // floor. NULL-COALESCE on every component matches the existing
+      // TS computation semantics (rt_deduct null → 0).
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN combined_score INT GENERATED ALWAYS AS (
+              GREATEST(
+                0,
+                COALESCE(score, 0)
+                + COALESCE(round_trip_score_deduct, 0)
+                + COALESCE(fire_count_score_adjustment, 0)
+              )
+            ) STORED`,
+      // Step 5: recreate the index used by the score-sort ORDER BY
+      // (migration #159's indexed-LIMIT path). Without this, score-sort
+      // queries fall back to a full scan.
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_combined_score_idx
+            ON lottery_finder_fires (date DESC, combined_score DESC NULLS LAST)`,
+      // Step 6: trigger function. On every INSERT, recount the chain-
+      // day, recompute the bucket adjustment, and either (a) update
+      // ONLY the just-inserted row (no boundary crossing — the new
+      // row inherits the existing bucket's adjustment), or (b) update
+      // ALL rows for the chain-day (boundary crossing — every row's
+      // bucket changed in lockstep). The boundary count is fixed at
+      // 4 (1→2, 3→4, 7→8, 15→16), so the heavy O(N-per-chain-day)
+      // path runs at most 4 times per chain over its full session.
+      sql`CREATE OR REPLACE FUNCTION update_lottery_fire_count_score_adj()
+          RETURNS TRIGGER AS $$
+          -- Concurrency note: COUNT(*) below could race under concurrent
+          -- INSERTs into the same chain-day. The final state still
+          -- converges (all rows end at the same bucket adjustment) but
+          -- the boundary branch could fire redundantly. The
+          -- detect-lottery-fires cron is single-process so this won't
+          -- materialize in practice.
+          DECLARE
+            new_count INT;
+            new_adj   SMALLINT;
+          BEGIN
+            SELECT COUNT(*)::int INTO new_count
+              FROM lottery_finder_fires
+             WHERE date = NEW.date AND option_chain_id = NEW.option_chain_id;
+
+            new_adj := CASE
+              WHEN new_count = 1 THEN -3
+              WHEN new_count <= 3 THEN -1
+              WHEN new_count <= 7 THEN 0
+              WHEN new_count <= 15 THEN 1
+              ELSE 2
+            END;
+
+            IF new_count IN (1, 2, 4, 8, 16) THEN
+              UPDATE lottery_finder_fires
+                 SET fire_count_score_adjustment = new_adj
+               WHERE date = NEW.date
+                 AND option_chain_id = NEW.option_chain_id;
+            ELSE
+              UPDATE lottery_finder_fires
+                 SET fire_count_score_adjustment = new_adj
+               WHERE id = NEW.id;
+            END IF;
+
+            RETURN NULL;
+          END;
+          $$ LANGUAGE plpgsql`,
+      sql`DROP TRIGGER IF EXISTS lottery_finder_fires_fc_adj_trg
+            ON lottery_finder_fires`,
+      sql`CREATE TRIGGER lottery_finder_fires_fc_adj_trg
+            AFTER INSERT ON lottery_finder_fires
+            FOR EACH ROW
+            EXECUTE FUNCTION update_lottery_fire_count_score_adj()`,
+    ],
+  },
 ];
