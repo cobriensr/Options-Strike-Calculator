@@ -104,6 +104,11 @@ const ROW = {
   // rows; multi-fire tests override with the burst-start time.
   fire_count: 1,
   first_fire_time_ct: '2026-05-01T19:00:00Z',
+  // Ticker net flow snapshot at trigger_time_ct (LATERAL on
+  // ws_net_flow_per_ticker + history). Used by Flow Match / Flow
+  // Inverted badges. Null is the cold-start default.
+  fire_time_cum_ncp: '4250.50',
+  fire_time_cum_npp: '-1800.75',
 };
 
 describe('lottery-finder endpoint', () => {
@@ -168,6 +173,40 @@ describe('lottery-finder endpoint', () => {
         openInterest: 1000,
         alertSeq: 2,
       },
+    });
+    // Ticker net flow snapshot at fire time — LATERAL on
+    // ws_net_flow_per_ticker + history. Verified separately because the
+    // shape lives under .macro alongside the SPY-wide mktTide fields.
+    expect(body.fires[0]!.macro).toMatchObject({
+      tickerCumNcpAtFire: 4250.5,
+      tickerCumNppAtFire: -1800.75,
+    });
+  });
+
+  it('falls through to null tickerCumNcp/Npp at fire when LATERAL has no rows', async () => {
+    // Older fires + tickers not yet in the WS subscription list will
+    // produce nulls from the LATERAL aggregate. Mapper must coerce
+    // cleanly to null (not NaN).
+    const ROW_NO_FLOW = {
+      ...ROW,
+      fire_time_cum_ncp: null,
+      fire_time_cum_npp: null,
+    };
+    mockSql
+      .mockResolvedValueOnce([ROW_NO_FLOW])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      fires: Array<{ macro: Record<string, unknown> }>;
+    };
+    expect(body.fires[0]!.macro).toMatchObject({
+      tickerCumNcpAtFire: null,
+      tickerCumNppAtFire: null,
     });
   });
 
@@ -277,6 +316,27 @@ describe('lottery-finder endpoint', () => {
     const countCall = mockSql.mock.calls[1] as unknown[];
     expect(rowsCall.slice(1)).toContain(18);
     expect(countCall.slice(1)).toContain(18);
+  });
+
+  it('rows query joins LATERAL ticker net flow at trigger time', async () => {
+    // Pin the LATERAL shape that snapshots fire-time NCP / NPP so a
+    // future query rewrite doesn't silently drop it. Both source
+    // tables must appear and the column aliases must be present.
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const sqlText = (
+      mockSql.mock.calls[0]![0] as TemplateStringsArray
+    ).join(' ');
+    expect(sqlText).toContain('fire_time_cum_ncp');
+    expect(sqlText).toContain('fire_time_cum_npp');
+    expect(sqlText).toContain('LEFT JOIN LATERAL');
+    expect(sqlText).toContain('ws_net_flow_per_ticker');
+    expect(sqlText).toContain('net_flow_per_ticker_history');
+    expect(sqlText).toContain('DISTINCT ON');
   });
 
   it('rejects sort outside the {chronological|score|peak} enum', async () => {

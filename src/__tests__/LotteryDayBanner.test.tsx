@@ -16,6 +16,8 @@ function makeMacro(
     mktTideNpp: null,
     mktTideDiff: null,
     mktTideOtmDiff: null,
+    tickerCumNcpAtFire: null,
+    tickerCumNppAtFire: null,
     spxFlowDiff: null,
     spyEtfDiff: null,
     qqqEtfDiff: null,

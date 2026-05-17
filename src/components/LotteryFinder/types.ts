@@ -76,6 +76,19 @@ export interface LotteryFireMacro {
   mktTideNpp: number | null;
   mktTideDiff: number | null;
   mktTideOtmDiff: number | null;
+  /**
+   * Ticker-level cumulative net call premium at trigger_time_ct,
+   * snapshotted by the lottery-finder LATERAL join against
+   * ws_net_flow_per_ticker + net_flow_per_ticker_history. Distinct
+   * from mktTideNcp (which is SPY-wide). Null when the ws/REST
+   * tables held no rows for the ticker before the fire.
+   */
+  tickerCumNcpAtFire: number | null;
+  /**
+   * Ticker-level cumulative net put premium at trigger_time_ct.
+   * Mirrors `tickerCumNcpAtFire` semantics for puts.
+   */
+  tickerCumNppAtFire: number | null;
   spxFlowDiff: number | null;
   spyEtfDiff: number | null;
   qqqEtfDiff: number | null;
