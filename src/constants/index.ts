@@ -370,6 +370,12 @@ export const POLL_INTERVALS = {
    *  10-min slots, but we poll at 60s so a fresh slot lands in the UI
    *  within ≤1 min of the scraper inserting it. */
   PERISCOPE: 60_000,
+  /** Batch ticker net-flow snapshot (useTickerNetFlowBatch). 60s is
+   *  twice the endpoint's 30s cache TTL so each poll either hits cache
+   *  or pulls one fresh row per ticker — bounds origin load while
+   *  keeping the Flow Match / Inverted badges within one bucket of
+   *  live truth. */
+  TICKER_NET_FLOW: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */
