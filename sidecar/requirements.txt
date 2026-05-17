@@ -23,7 +23,7 @@ ruff>=0.11
 # Railway redeploys pull these regardless. Routes live on the existing
 # health server (port 8080), so Flask is NOT a dep — http.server handles
 # the wire format.
-joblib>=1.3.0
+joblib>=1.5.3
 numpy>=1.26.0
 pandas>=2.1.0
 scikit-learn>=1.4.0
