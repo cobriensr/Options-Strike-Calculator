@@ -61,11 +61,42 @@ reads parquet is a separate task.
 Motivating analysis:
     docs/tmp/fulltape-tag-stratification-and-multileg-2026-05-07.md
     — 76% of $1M+ "whale" trades are spread legs.
+
+Known limitation — SPY / SPXW on full-day workloads
+---------------------------------------------------
+On full-day Eod-Full-Tape workloads, SPY (~1.27M rows/day) is borderline
+tractable (~6 min wall-clock) and SPXW (~1.33M rows/day, with ~1.09M
+concentrated in a single 0DTE expiry) exceeds the 600s budget and trends
+toward OOM on 8GB hardware. The bottleneck is the per-expiry cross-type
+(calls × puts) join on the 0DTE expiry, where each side has ~540K rows.
+Bucket-bounded size keys reduce but do not eliminate the join's
+intermediate frame size.
+
+Per-ticker guard: any ticker whose largest single ``(expiry,
+option_type)`` cell exceeds ``_MAX_CELL_ROWS_PER_CLASSIFY`` is skipped —
+its trades remain unclassified (null structure columns) and the matcher
+emits a warning instead of crashing. This is best-effort behavior:
+production callers (Lottery / Silent Boom detect crons) already treat a
+null matcher result as a no-op.
+
+Follow-ups that would unlock SPY/SPXW, in order of complexity:
+  1. Streaming top-K-per-trade heap (Python-loop overhead, moderate;
+     unlikely to help — bottleneck is join output size, not accumulator)
+  2. Per-expiry sub-batching that drives ``_CELL_BATCH_BUCKETS`` down to
+     1 on dense cells (smaller intermediate, more passes)
+  3. Cython/Rust hot loop for the per-batch cross-join
+  4. Different algorithm (bipartite matching / approximation)
+
+For the Lottery / Silent Boom production use case this limitation is
+acceptable — those detectors' ticker universe does not include
+SPX/SPXW, and their per-alert windows (±45s) are far below the cell
+density threshold.
 """
 
 from __future__ import annotations
 
 import hashlib
+import warnings
 from collections.abc import Iterable
 from typing import Final
 
@@ -152,6 +183,23 @@ _PER_BATCH_PRUNE_THRESHOLD: Final = 50_000
 _BUTTERFLY_CELL_LIMIT: Final = 30_000
 
 
+# Ticker overload threshold. Any ticker whose largest single
+# (expiry, option_type) cell exceeds this row count is skipped entirely
+# (trades remain unclassified with null structure columns and a warning
+# is logged). The cross-type (calls × puts) join on the densest cell
+# dominates per-ticker wall-clock and peak memory; past this threshold
+# the cell + its mirror push the matcher past the 600s budget on 8GB
+# hardware. Empirically (full-day 2026-05-15 Eod-Full-Tape, 8GB MBP):
+#   - NVDA densest cell  ≈ 168K rows → ~70s total  (tractable)
+#   - QQQ  densest cell  ≈ 293K rows → ~170s total (tractable)
+#   - SPY  densest cell  ≈ 432K rows → ~354s total (marginal but OK)
+#   - SPXW densest cell  ≈ 548K rows → timeout / OOM
+# 500K leaves SPY tractable while ruling out SPXW. Lottery / Silent
+# Boom detect crons send per-alert windows (±45s, single ticker, single
+# chain) well below this density, so production use is unaffected.
+_MAX_CELL_ROWS_PER_CLASSIFY: Final = 500_000
+
+
 # Pattern dispatch: the 2-leg patterns drive the per-cell + per-expiry
 # matching loops. ``PATTERNS`` (from ``multileg_patterns``) is the single
 # source of truth; adding a new 2-leg pattern there will pick it up here
@@ -205,6 +253,11 @@ def classify_trades(
     indexed = indexed.with_columns(pl.col("id").cast(pl.Utf8).alias("_sid"))
 
     assignments: dict[str, _Assignment] = {}
+    # Trades belonging to a ticker that was skipped by the overload guard
+    # receive null structure columns (best-effort matcher semantics) —
+    # distinct from "tested, no match found" (isolated_leg). Track the
+    # sid set per skipped ticker so we can null those rows on output.
+    skipped_sids: set[str] = set()
 
     # Process per ticker in sorted order for determinism.
     tickers: list[str] = sorted(
@@ -216,20 +269,31 @@ def classify_trades(
         ).sort(["executed_at", "_sid"])
         if ticker_df.height < 2:
             continue
-        _classify_ticker(
+        classified = _classify_ticker(
             ticker_df,
             window_seconds=window_seconds,
             strike_tolerance=strike_tolerance,
             size_tolerance=size_tolerance,
             assignments=assignments,
         )
+        if not classified:
+            skipped_sids.update(ticker_df.get_column("_sid").to_list())
 
-    # Build the output columns in original input order.
+    # Build the output columns in original input order. Skipped-ticker
+    # rows emit null structure columns; everything else falls through
+    # the normal assigned-or-isolated path.
     ids_in_order = indexed.sort("_orig_idx").get_column("_sid").to_list()
-    structures: list[str] = []
-    confidences: list[float] = []
-    group_ids: list[str] = []
+    structures: list[str | None] = []
+    confidences: list[float | None] = []
+    group_ids: list[str | None] = []
+    is_isolated: list[bool | None] = []
     for tid in ids_in_order:
+        if tid in skipped_sids:
+            structures.append(None)
+            confidences.append(None)
+            group_ids.append(None)
+            is_isolated.append(None)
+            continue
         a = assignments.get(tid)
         if a is None:
             a = _Assignment(
@@ -240,8 +304,7 @@ def classify_trades(
         structures.append(a.structure)
         confidences.append(a.confidence)
         group_ids.append(a.group_id)
-
-    is_isolated = [c < _MIN_ACCEPT_CONFIDENCE for c in confidences]
+        is_isolated.append(a.confidence < _MIN_ACCEPT_CONFIDENCE)
 
     return trades.with_columns(
         [
@@ -316,12 +379,19 @@ def _classify_ticker(
     strike_tolerance: float,
     size_tolerance: float,
     assignments: dict[str, _Assignment],
-) -> None:
+) -> bool:
     """Greedy non-overlapping match within one ticker.
 
     Trades are processed per (expiry, option_type) cell, with each cell
     iterated in fixed-size time-batches so the per-call join frame is
     bounded regardless of ticker size.
+
+    Returns ``True`` if the ticker was classified (assignments populated
+    or empty result), ``False`` if the ticker was skipped due to an
+    overload guard (e.g. a single cell exceeding
+    ``_MAX_CELL_ROWS_PER_CLASSIFY``). Skipped tickers have no entries in
+    ``assignments`` — the caller is responsible for emitting null
+    structure columns for those rows (best-effort matcher semantics).
     """
     # Slim, sorted, indexed leg frame.
     legs = ticker_df.with_row_index(name="ridx").select(
@@ -355,6 +425,28 @@ def _classify_ticker(
     cells = legs.partition_by(
         ["expiry", "option_type"], as_dict=True, include_key=True
     )
+
+    # Overload guard: any cell exceeding the per-classify density ceiling
+    # would push the cross-type / size-bucket joins past the 600s budget
+    # on 8GB hardware. Skip the ticker entirely so the matcher returns
+    # best-effort null structure columns for these rows instead of
+    # hanging or OOM'ing. See the module docstring's "Known limitation"
+    # section for the SPY/SPXW context that motivated this guard.
+    max_cell_rows = max(
+        (c.height for c in cells.values()), default=0
+    )
+    if max_cell_rows > _MAX_CELL_ROWS_PER_CLASSIFY:
+        ticker_name = ticker_df.get_column("underlying_symbol")[0]
+        warnings.warn(
+            f"multileg matcher: skipping ticker {ticker_name!r} — "
+            f"densest cell has {max_cell_rows:,} rows (> "
+            f"{_MAX_CELL_ROWS_PER_CLASSIFY:,} threshold). Trades will "
+            f"have null structure columns.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return False
+
     cell_keys = sorted(cells.keys(), key=lambda k: (str(k[0]), str(k[1])))
 
     # For cross-type (strangle, risk_reversal) we need to pair calls vs.
@@ -503,6 +595,7 @@ def _classify_ticker(
     two_leg, three_leg = _prune_top_k_per_trade(two_leg, three_leg)
 
     _greedy_assign(two_leg, three_leg, assignments=assignments)
+    return True
 
 
 # ── Batch iteration ───────────────────────────────────────────────────────
