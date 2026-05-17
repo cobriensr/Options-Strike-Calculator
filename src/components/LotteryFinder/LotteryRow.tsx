@@ -2,6 +2,7 @@ import { memo, useCallback, useMemo, useState } from 'react';
 import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
+import { TakeItScore } from '../TakeItScore/TakeItScore.js';
 import { ContractTapeChart } from './ContractTapeChart.js';
 import { TickerNetFlowChart } from './TickerNetFlowChart.js';
 import type {
@@ -406,6 +407,16 @@ export const LotteryRow = memo(function LotteryRow({
             {gated.label}
           </span>
         )}
+        {/* Take-It score tile (Phase 4 of takeit-phase3-production-scoring-
+            2026-05-16.md). Calibrated XGBoost prob + SHAP top-K flags. Sits
+            after the gated pill so it reads as part of the conviction
+            cluster. Hides itself when fire.takeitProb is null (rare; means
+            the bundle was unreachable at detect time). */}
+        <TakeItScore
+          prob={fire.takeitProb}
+          topFeatures={fire.takeitTopFeatures}
+          expanded
+        />
         {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
             winners for this (tier, ticker) cohort. Tells the user "if
             this fire is going to work, expect it to peak around this

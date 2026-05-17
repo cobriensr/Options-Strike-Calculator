@@ -4,6 +4,7 @@ import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from '../LotteryFinder/ContractTapeChart.js';
 import { TickerNetFlowChart } from '../LotteryFinder/TickerNetFlowChart.js';
+import { TakeItScore } from '../TakeItScore/TakeItScore.js';
 import {
   SILENT_BOOM_EXIT_POLICY_LABELS,
   SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
@@ -375,6 +376,15 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             {gated.label}
           </span>
         )}
+        {/* Take-It score tile (Phase 4 of takeit-phase3-production-scoring-
+            2026-05-16.md). Calibrated XGBoost prob + SHAP top-K flags.
+            Sits after the gated pill so it reads as part of the conviction
+            cluster, before the spread-confirmed and spike badges. */}
+        <TakeItScore
+          prob={alert.takeitProb}
+          topFeatures={alert.takeitTopFeatures}
+          expanded
+        />
         {/* Spread-Confirmed badge — surfaces alerts in the 10-50%
             multi-leg share sweet spot (2.08×/2.73× lift per the
             2026-05-15 cross-section EDA). Display-only; no score
