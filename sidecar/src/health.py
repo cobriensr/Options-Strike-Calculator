@@ -222,7 +222,15 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         try:
             checks["db"] = self.is_db_healthy()
-        except Exception:
+        except Exception as exc:
+            # Surface DB-health probe failures so an outage shows up in
+            # Sentry before it manifests as a sustained 503 from /health.
+            from sentry_setup import capture_exception
+
+            capture_exception(
+                exc,
+                tags={"component": "health", "check": "db"},
+            )
             checks["db"] = False
 
         theta_block = self._build_theta_block()

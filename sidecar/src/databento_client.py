@@ -344,6 +344,13 @@ class DatabentoClient:
             self._last_bar_ts = time.time()
             log.debug("Bar: %s %s C=%.2f", symbol, ts.isoformat(), close)
         except Exception as exc:
+            from sentry_setup import capture_exception
+
+            capture_exception(
+                exc,
+                tags={"component": "databento_client", "stage": "upsert_bar"},
+                context={"symbol": symbol, "ts": ts.isoformat()},
+            )
             log.error("Failed to upsert bar for %s: %s", symbol, exc)
 
     def _subscribe_es_options_streams(self) -> None:
@@ -465,6 +472,12 @@ class DatabentoClient:
                 self._handle_system(record)
             # Ignore other record types (heartbeats, etc.)
         except Exception as exc:
+            from sentry_setup import capture_exception
+
+            capture_exception(
+                exc,
+                tags={"component": "databento_client", "stage": "record_dispatch"},
+            )
             log.error("Error processing record: %s", exc)
 
     def _on_error(self, exc: Exception) -> None:
@@ -653,6 +666,13 @@ class DatabentoClient:
                 volume,
             )
         except Exception as exc:
+            from sentry_setup import capture_exception
+
+            capture_exception(
+                exc,
+                tags={"component": "databento_client", "stage": "upsert_bar_es"},
+                context={"symbol": symbol, "ts": ts.isoformat()},
+            )
             log.error("Failed to upsert bar for %s: %s", symbol, exc)
 
         # Set the initial ATM window on the first ES bar. Subscriptions
@@ -797,6 +817,12 @@ class DatabentoClient:
             try:
                 self._client.stop()
             except Exception as exc:
+                from sentry_setup import capture_exception
+
+                capture_exception(
+                    exc,
+                    tags={"component": "databento_client", "stage": "client_stop"},
+                )
                 log.error("Error stopping CME client: %s", exc)
         self._client = None
         # stop() both drains the background flush thread (if running)
