@@ -2,3 +2,13 @@ dist
 node_modules
 coverage
 .scannerwork
+**/.venv
+sidecar
+uw-stream
+daemon
+periscope-scraper
+playwright-report
+.claude/skills
+.claude/worktrees
+.agents/skills
+.clone
