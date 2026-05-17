@@ -248,9 +248,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         );
         analysis = parsed as AnalysisResponse;
       }
-    } catch {
+    } catch (parseErr) {
+      metrics.increment('analyze.json_parse_failed');
+      Sentry.captureException(parseErr, {
+        tags: { context: 'analyze_json_parse' },
+        extra: { rawSnippet: text.slice(0, 500), stopReason: callResult.stopReason },
+      });
       logger.error(
-        { raw: text.slice(0, 500), stopReason: callResult.stopReason },
+        { err: parseErr, raw: text.slice(0, 500), stopReason: callResult.stopReason },
         'Analysis response JSON parse failed',
       );
     }
@@ -316,6 +321,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 clusters: darkPoolClusters,
               });
             } catch (error_) {
+              Sentry.captureException(error_, {
+                tags: { context: 'dark_pool_save' },
+              });
               logger.error({ err: error_ }, 'dark pool snapshot save failed');
             }
           }
@@ -342,6 +350,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               await saveAnalysisEmbedding(date, entryTime, mode, embedding);
             }
           } catch (error_) {
+            Sentry.captureException(error_, {
+              tags: { context: 'analysis_embedding' },
+            });
             logger.error(
               { err: error_ },
               'analysis embedding generation failed',
