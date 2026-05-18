@@ -26,12 +26,13 @@ import {
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates.js';
 import {
-  CHIP_ACTIVE,
   CHIP_BASE,
   CHIP_INACTIVE,
   SECTION_LABEL,
   TOOLBAR_DIVIDER,
+  type FilterChipColor,
 } from '../ui/filter-toolbar-tokens.js';
+import { FilterChip } from '../ui/FilterChip.js';
 
 const PAGE_SIZE = 50;
 /** localStorage keys for persisting user preferences. */
@@ -854,21 +855,19 @@ export function LotteryFinderSection({
               />
             </label>
             <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className={`${CHIP_BASE} ${
-                  minute == null ? CHIP_ACTIVE.green : CHIP_INACTIVE
-                }`}
+              <FilterChip
+                active={minute == null}
+                activeColor="green"
                 onClick={() => setMinute(null)}
                 title={
                   isLive
                     ? 'Live: showing today (most recent first), polls every 30s'
                     : 'Show every fire on the selected day'
                 }
-                aria-pressed={minute == null}
+                ariaPressed={minute == null}
               >
                 {date === todayCt() ? 'Live' : 'All day'}
-              </button>
+              </FilterChip>
               {/* Per-minute controls. Lo = 08:30 CT, hi = 15:00 CT
                 (regular session). For today, hi is further capped at
                 the current CT minute (floored) so the user can't
@@ -903,16 +902,14 @@ export function LotteryFinderSection({
                 }
                 return (
                   <>
-                    <button
-                      type="button"
+                    <FilterChip
                       onClick={() => step(-60_000)}
                       disabled={atMin}
-                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:text-neutral-300`}
-                      aria-label="Step back one minute"
+                      ariaLabel="Step back one minute"
                       title="Step back one minute (−1m)"
                     >
                       ◀ −1m
-                    </button>
+                    </FilterChip>
                     <select
                       value={minute ?? ''}
                       onChange={(e) => {
@@ -935,12 +932,10 @@ export function LotteryFinderSection({
                         </option>
                       ))}
                     </select>
-                    <button
-                      type="button"
+                    <FilterChip
                       onClick={() => step(60_000)}
                       disabled={atMax}
-                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:text-neutral-300`}
-                      aria-label="Step forward one minute"
+                      ariaLabel="Step forward one minute"
                       title={
                         isToday && cur != null && cur >= effectiveHi
                           ? 'Cannot step past the current minute'
@@ -948,7 +943,7 @@ export function LotteryFinderSection({
                       }
                     >
                       +1m ▶
-                    </button>
+                    </FilterChip>
                   </>
                 );
               })()}
@@ -1010,18 +1005,16 @@ export function LotteryFinderSection({
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>sort</span>
             {SORT_OPTIONS.map((s) => (
-              <button
+              <FilterChip
                 key={s.value}
-                type="button"
+                active={sortMode === s.value}
+                activeColor="sky"
                 onClick={() => setSortMode(s.value)}
-                className={`${CHIP_BASE} ${
-                  sortMode === s.value ? CHIP_ACTIVE.sky : CHIP_INACTIVE
-                }`}
                 title={s.tooltip}
-                aria-pressed={sortMode === s.value}
+                ariaPressed={sortMode === s.value}
               >
                 {s.label}
-              </button>
+              </FilterChip>
             ))}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>conviction</span>
@@ -1030,25 +1023,23 @@ export function LotteryFinderSection({
               // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
               // emerald. The active style tracks the floor so the user
               // can read the filter at a glance.
-              const activeColor: keyof typeof CHIP_ACTIVE =
+              const activeColor: FilterChipColor =
                 c.value === 'tier1'
                   ? 'rose'
                   : c.value === 'tier2'
                     ? 'amber'
                     : 'emerald';
               return (
-                <button
+                <FilterChip
                   key={c.value}
-                  type="button"
+                  active={active}
+                  activeColor={activeColor}
                   onClick={() => setConvictionFloor(c.value)}
-                  className={`${CHIP_BASE} ${
-                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
-                  }`}
                   title={c.tooltip}
-                  aria-pressed={active}
+                  ariaPressed={active}
                 >
                   {c.label}
-                </button>
+                </FilterChip>
               );
             })}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
@@ -1058,7 +1049,7 @@ export function LotteryFinderSection({
               // Tighter floor → deeper orange. Matches the row's ×N
               // badge + the REIGNITION pinned section palette so the
               // visual hierarchy stays consistent.
-              const activeColor: keyof typeof CHIP_ACTIVE =
+              const activeColor: FilterChipColor =
                 c.value === 'gte16'
                   ? 'rose'
                   : c.value === 'gte8'
@@ -1067,19 +1058,17 @@ export function LotteryFinderSection({
                       ? 'amber'
                       : 'emerald';
               return (
-                <button
+                <FilterChip
                   key={c.value}
-                  type="button"
+                  active={active}
+                  activeColor={activeColor}
                   onClick={() => setMinFireCount(c.value)}
-                  className={`${CHIP_BASE} ${
-                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
-                  }`}
                   title={c.tooltip}
-                  aria-pressed={active}
-                  data-testid={`burst-filter-${c.value}`}
+                  ariaPressed={active}
+                  testId={`burst-filter-${c.value}`}
                 >
                   {c.label}
-                </button>
+                </FilterChip>
               );
             })}
           </div>
@@ -1090,43 +1079,37 @@ export function LotteryFinderSection({
             radio set. */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>mode</span>
-            <button
-              type="button"
+            <FilterChip
+              active={reloadOnly}
+              activeColor="amber"
               onClick={() => setReloadOnly(!reloadOnly)}
-              className={`${CHIP_BASE} ${
-                reloadOnly ? CHIP_ACTIVE.amber : CHIP_INACTIVE
-              }`}
               title="Show only fires tagged RE-LOAD (burst ≥2× prior AND entry dropped ≥30%)."
-              aria-pressed={reloadOnly}
+              ariaPressed={reloadOnly}
             >
               RE-LOAD only{' '}
               <span className="text-[10px] opacity-70">{reloadCount}</span>
-            </button>
-            <button
-              type="button"
+            </FilterChip>
+            <FilterChip
+              active={cheapCallPmOnly}
+              activeColor="fuchsia"
               onClick={() => setCheapCallPmOnly(!cheapCallPmOnly)}
-              className={`${CHIP_BASE} ${
-                cheapCallPmOnly ? CHIP_ACTIVE.fuchsia : CHIP_INACTIVE
-              }`}
               title="Show only fires tagged cheap-call-PM (call + PM session + entry < $1). The Phase 1 selection rule."
-              aria-pressed={cheapCallPmOnly}
+              ariaPressed={cheapCallPmOnly}
             >
               Cheap-call-PM only{' '}
               <span className="text-[10px] opacity-70">{cheapPmCount}</span>
-            </button>
+            </FilterChip>
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             {MODE_FILTERS.map((m) => (
-              <button
+              <FilterChip
                 key={m.label}
-                type="button"
+                active={modeFilter === m.value}
+                activeColor="blue"
                 onClick={() => setModeFilter(m.value)}
-                className={`${CHIP_BASE} ${
-                  modeFilter === m.value ? CHIP_ACTIVE.blue : CHIP_INACTIVE
-                }`}
-                aria-pressed={modeFilter === m.value}
+                ariaPressed={modeFilter === m.value}
               >
                 {m.label}
-              </button>
+              </FilterChip>
             ))}
           </div>
 
@@ -1142,41 +1125,37 @@ export function LotteryFinderSection({
               { value: 'P' as OptionType, label: 'puts' },
             ].map((o) => {
               const active = optionTypeFilter === o.value;
-              const activeColor: keyof typeof CHIP_ACTIVE =
+              const activeColor: FilterChipColor =
                 o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
               return (
-                <button
+                <FilterChip
                   key={o.label}
-                  type="button"
+                  active={active}
+                  activeColor={activeColor}
                   onClick={() => setOptionTypeFilter(o.value)}
-                  className={`${CHIP_BASE} ${
-                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
-                  }`}
-                  aria-pressed={active}
+                  ariaPressed={active}
                 >
                   {o.label}
-                </button>
+                </FilterChip>
               );
             })}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>moneyness</span>
             {MONEYNESS_FILTERS.map((m) => {
               const active = moneynessMode === m.value;
-              const activeColor: keyof typeof CHIP_ACTIVE =
+              const activeColor: FilterChipColor =
                 m.value === 'otm'
                   ? 'emerald'
                   : m.value === 'itm'
                     ? 'amber'
                     : 'neutral';
               return (
-                <button
+                <FilterChip
                   key={m.value}
-                  type="button"
-                  data-testid={`lottery-moneyness-${m.value}-chip`}
+                  active={active}
+                  activeColor={activeColor}
+                  testId={`lottery-moneyness-${m.value}-chip`}
                   onClick={() => setMoneynessMode(m.value)}
-                  className={`${CHIP_BASE} ${
-                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
-                  }`}
                   title={
                     m.value === 'otm'
                       ? 'Show only out-of-the-money fires (calls: strike > spotAtFirst, puts: strike < spotAtFirst). Client-side filter.'
@@ -1184,36 +1163,32 @@ export function LotteryFinderSection({
                         ? 'Show only in-the-money fires (calls: strike ≤ spotAtFirst, puts: strike ≥ spotAtFirst). Client-side filter.'
                         : 'Show fires regardless of moneyness.'
                   }
-                  aria-pressed={active}
+                  ariaPressed={active}
                 >
                   {m.label}
-                </button>
+                </FilterChip>
               );
             })}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>tod</span>
             {TOD_FILTERS.map((t) => (
-              <button
+              <FilterChip
                 key={t.label}
-                type="button"
+                active={todFilter === t.value}
+                activeColor="orange"
                 onClick={() => setTodFilter(t.value)}
-                className={`${CHIP_BASE} ${
-                  todFilter === t.value ? CHIP_ACTIVE.orange : CHIP_INACTIVE
-                }`}
-                aria-pressed={todFilter === t.value}
+                ariaPressed={todFilter === t.value}
               >
                 {t.label}
-              </button>
+              </FilterChip>
             ))}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <button
-              type="button"
+            <FilterChip
+              active={hideLatePm}
+              activeColor="purple"
               onClick={() => setHideLatePm(!hideLatePm)}
-              className={`${CHIP_BASE} ${
-                hideLatePm ? CHIP_ACTIVE.purple : CHIP_INACTIVE
-              }`}
               title="Hide fires triggered after 14:30 CT. Late-PM fires often lack enough remaining session for the flow_inversion signal to develop, so they devolve into theta-decay coin flips. Client-side filter — toolbar counts and pagination still reflect the full DB result."
-              aria-pressed={hideLatePm}
+              ariaPressed={hideLatePm}
             >
               hide post-14:30
               {hideLatePm && hiddenLatePmCount > 0 && (
@@ -1221,16 +1196,14 @@ export function LotteryFinderSection({
                   −{hiddenLatePmCount}
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              data-testid="lottery-hide-gated-chip"
+            </FilterChip>
+            <FilterChip
+              active={hideGated}
+              activeColor="amber"
+              testId="lottery-hide-gated-chip"
               onClick={() => setHideGated(!hideGated)}
-              className={`${CHIP_BASE} ${
-                hideGated ? CHIP_ACTIVE.amber : CHIP_INACTIVE
-              }`}
               title="Hide counter-trend fires demoted to tier3 by the Phase 4 direction gate (T=±150M on mkt_tide_otm_diff). Puts when otm_diff > +150M, calls when otm_diff < -150M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
-              aria-pressed={hideGated}
+              ariaPressed={hideGated}
             >
               hide counter-trend
               {hideGated && hiddenGatedCount > 0 && (
@@ -1238,16 +1211,14 @@ export function LotteryFinderSection({
                   −{hiddenGatedCount}
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              data-testid="lottery-hide-round-tripped-chip"
+            </FilterChip>
+            <FilterChip
+              active={hideRoundTripped}
+              activeColor="amber"
+              testId="lottery-hide-round-tripped-chip"
               onClick={() => setHideRoundTripped(!hideRoundTripped)}
-              className={`${CHIP_BASE} ${
-                hideRoundTripped ? CHIP_ACTIVE.amber : CHIP_INACTIVE
-              }`}
               title="Hide round-tripped fires — alerts where (ask−bid)/total flow in the 60-min window after the alert was net bid-dominated (round_trip_score_deduct < 0). Phase 1 EDA on 641K alerts × 92 days: AUC 0.59 for predicting loss, concentrated in 0–7 DTE. Score deduct stays on the row; this chip hides the demoted fires entirely. Client-side filter."
-              aria-pressed={hideRoundTripped}
+              ariaPressed={hideRoundTripped}
             >
               hide round-tripped
               {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
@@ -1255,19 +1226,17 @@ export function LotteryFinderSection({
                   −{hiddenRoundTrippedCount}
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              data-testid="lottery-aggressive-premium-chip"
+            </FilterChip>
+            <FilterChip
+              active={aggressivePremium}
+              activeColor="sky"
+              testId="lottery-aggressive-premium-chip"
               onClick={() => setAggressivePremium(!aggressivePremium)}
-              className={`${CHIP_BASE} ${
-                aggressivePremium ? CHIP_ACTIVE.sky : CHIP_INACTIVE
-              }`}
               title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs spotAtFirst). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
-              aria-pressed={aggressivePremium}
+              ariaPressed={aggressivePremium}
             >
               💎 aggressive premium
-            </button>
+            </FilterChip>
           </div>
 
           {/* Row 5 (conditional): Ticker chips — top tickers in the
@@ -1277,41 +1246,37 @@ export function LotteryFinderSection({
           {(topTickers.length > 0 || tickerFilter) && (
             <div className="flex flex-wrap items-center gap-1.5">
               <span className={SECTION_LABEL}>ticker</span>
-              <button
-                type="button"
+              <FilterChip
+                active={tickerFilter == null}
+                activeColor="emerald"
                 onClick={() => setTickerFilter(null)}
-                className={`${CHIP_BASE} ${
-                  tickerFilter == null ? CHIP_ACTIVE.emerald : CHIP_INACTIVE
-                }`}
-                aria-pressed={tickerFilter == null}
+                ariaPressed={tickerFilter == null}
               >
                 all
-              </button>
+              </FilterChip>
               {topTickers.map(([t, n]) => (
-                <button
+                <FilterChip
                   key={t}
-                  type="button"
+                  active={tickerFilter === t}
+                  activeColor="emerald"
                   onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
-                  className={`${CHIP_BASE} ${
-                    tickerFilter === t ? CHIP_ACTIVE.emerald : CHIP_INACTIVE
-                  }`}
                   title={`Filter to ${t} only (${n} fire${n === 1 ? '' : 's'} today)`}
-                  aria-pressed={tickerFilter === t}
+                  ariaPressed={tickerFilter === t}
                 >
                   {t} <span className="text-[10px] opacity-70">{n}</span>
-                </button>
+                </FilterChip>
               ))}
               {tickerFilter &&
                 !topTickers.some(([t]) => t === tickerFilter) && (
-                  <button
-                    type="button"
+                  <FilterChip
+                    active
+                    activeColor="emerald"
                     onClick={() => setTickerFilter(null)}
-                    className={`${CHIP_BASE} ${CHIP_ACTIVE.emerald}`}
                     title="Filter active but no fires for this ticker in the current view — click to clear"
                   >
                     {tickerFilter}{' '}
                     <span className="text-[10px] opacity-70">0</span>
-                  </button>
+                  </FilterChip>
                 )}
             </div>
           )}
@@ -1321,18 +1286,16 @@ export function LotteryFinderSection({
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>realized exit</span>
             {EXIT_POLICIES.map((p) => (
-              <button
+              <FilterChip
                 key={p}
-                type="button"
+                active={exitPolicy === p}
+                activeColor="purple"
                 onClick={() => setExitPolicy(p)}
-                className={`${CHIP_BASE} ${
-                  exitPolicy === p ? CHIP_ACTIVE.purple : CHIP_INACTIVE
-                }`}
                 title={EXIT_POLICY_TOOLTIPS[p]}
-                aria-pressed={exitPolicy === p}
+                ariaPressed={exitPolicy === p}
               >
                 {EXIT_POLICY_LABELS[p]}
-              </button>
+              </FilterChip>
             ))}
           </div>
         </div>

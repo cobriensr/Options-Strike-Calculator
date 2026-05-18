@@ -27,12 +27,13 @@ import {
   type SilentBoomTod,
 } from './types.js';
 import {
-  CHIP_ACTIVE,
   CHIP_BASE,
   CHIP_INACTIVE,
   SECTION_LABEL,
   TOOLBAR_DIVIDER,
+  type FilterChipColor,
 } from '../ui/filter-toolbar-tokens.js';
+import { FilterChip } from '../ui/FilterChip.js';
 
 const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'silentBoom.sortMode';
@@ -193,7 +194,7 @@ const ASK_PCT_BAND_FILTERS: Array<{
 const BURST_FILTERS: Array<{
   value: SilentBoomBurstColor | null;
   label: string;
-  cls: keyof typeof CHIP_ACTIVE | null;
+  cls: FilterChipColor | null;
   tooltip: string;
 }> = [
   {
@@ -949,21 +950,19 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               />
             </label>
             <div className="flex items-center gap-1">
-              <button
-                type="button"
-                className={`${CHIP_BASE} ${
-                  bucketIso == null ? CHIP_ACTIVE.green : CHIP_INACTIVE
-                }`}
+              <FilterChip
+                active={bucketIso == null}
+                activeColor="green"
                 onClick={() => setBucketIso(null)}
                 title={
                   isLive
                     ? 'Live: showing today (most recent first), polls every 30s'
                     : 'Show every alert on the selected day'
                 }
-                aria-pressed={bucketIso == null}
+                ariaPressed={bucketIso == null}
               >
                 {date === todayCt() ? 'Live' : 'All day'}
-              </button>
+              </FilterChip>
               {(() => {
                 const lo = Date.parse(scrubBounds.min);
                 const hi = Date.parse(scrubBounds.max);
@@ -991,16 +990,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 }
                 return (
                   <>
-                    <button
-                      type="button"
+                    <FilterChip
                       onClick={() => step(-300_000)}
                       disabled={atMin}
-                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:text-neutral-300`}
-                      aria-label="Step back one 5-min bucket"
+                      ariaLabel="Step back one 5-min bucket"
                       title="Step back one bucket (−5m)"
                     >
                       ◀ −5m
-                    </button>
+                    </FilterChip>
                     <select
                       value={bucketIso ?? ''}
                       onChange={(e) => {
@@ -1023,12 +1020,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                         </option>
                       ))}
                     </select>
-                    <button
-                      type="button"
+                    <FilterChip
                       onClick={() => step(300_000)}
                       disabled={atMax}
-                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:text-neutral-300`}
-                      aria-label="Step forward one 5-min bucket"
+                      ariaLabel="Step forward one 5-min bucket"
                       title={
                         isToday && cur != null && cur >= effectiveHi
                           ? 'Cannot step past the current bucket'
@@ -1036,7 +1031,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                       }
                     >
                       +5m ▶
-                    </button>
+                    </FilterChip>
                   </>
                 );
               })()}
@@ -1092,25 +1087,23 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             <span className={SECTION_LABEL}>conviction</span>
             {CONVICTION_OPTIONS.map((c) => {
               const active = convictionFloor === c.value;
-              const activeColor: keyof typeof CHIP_ACTIVE =
+              const activeColor: FilterChipColor =
                 c.value === 'tier1'
                   ? 'rose'
                   : c.value === 'tier2'
                     ? 'amber'
                     : 'emerald';
               return (
-                <button
+                <FilterChip
                   key={c.value}
-                  type="button"
+                  active={active}
+                  activeColor={activeColor}
                   onClick={() => setConvictionFloor(c.value)}
-                  className={`${CHIP_BASE} ${
-                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
-                  }`}
                   title={c.tooltip}
-                  aria-pressed={active}
+                  ariaPressed={active}
                 >
                   {c.label}
-                </button>
+                </FilterChip>
               );
             })}
           </div>
@@ -1171,49 +1164,46 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
                 }}
                 aria-label="Minimum premium in thousands of dollars"
-                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs tabular-nums text-neutral-100 focus:border-blue-500 focus:outline-none"
+                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
               />
             </label>
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>burst</span>
-            {BURST_FILTERS.map((b) => (
-              <button
-                key={b.label}
-                type="button"
-                onClick={() => setBurstFilter(b.value)}
-                className={`${CHIP_BASE} ${
-                  burstFilter === b.value && b.cls
-                    ? CHIP_ACTIVE[b.cls]
-                    : burstFilter === b.value
-                      ? CHIP_ACTIVE.emerald
-                      : CHIP_INACTIVE
-                }`}
-                title={b.tooltip}
-                aria-pressed={burstFilter === b.value}
-              >
-                {b.label}
-              </button>
-            ))}
+            {BURST_FILTERS.map((b) => {
+              const active = burstFilter === b.value;
+              const activeColor: FilterChipColor = b.cls ?? 'emerald';
+              return (
+                <FilterChip
+                  key={b.label}
+                  active={active}
+                  activeColor={activeColor}
+                  onClick={() => setBurstFilter(b.value)}
+                  title={b.tooltip}
+                  ariaPressed={active}
+                >
+                  {b.label}
+                </FilterChip>
+              );
+            })}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>ask %</span>
-            {ASK_PCT_BAND_FILTERS.map((b) => (
-              <button
-                key={b.label}
-                type="button"
-                onClick={() => setAskPctBand(b.value)}
-                className={`${CHIP_BASE} ${
-                  askPctBand === b.value
-                    ? b.value === '100'
-                      ? CHIP_ACTIVE.rose
-                      : CHIP_ACTIVE.purple
-                    : CHIP_INACTIVE
-                }`}
-                title={b.tooltip}
-                aria-pressed={askPctBand === b.value}
-              >
-                {b.label}
-              </button>
-            ))}
+            {ASK_PCT_BAND_FILTERS.map((b) => {
+              const active = askPctBand === b.value;
+              const activeColor: FilterChipColor =
+                b.value === '100' ? 'rose' : 'purple';
+              return (
+                <FilterChip
+                  key={b.label}
+                  active={active}
+                  activeColor={activeColor}
+                  onClick={() => setAskPctBand(b.value)}
+                  title={b.tooltip}
+                  ariaPressed={active}
+                >
+                  {b.label}
+                </FilterChip>
+              );
+            })}
           </div>
 
           {/* Row 2.6: realized-exit policy. Whichever chip is active
@@ -1228,18 +1218,16 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               exit
             </span>
             {EXIT_POLICIES.map((p) => (
-              <button
+              <FilterChip
                 key={p}
-                type="button"
+                active={exitPolicy === p}
+                activeColor="purple"
                 onClick={() => setExitPolicy(p)}
-                className={`${CHIP_BASE} ${
-                  exitPolicy === p ? CHIP_ACTIVE.purple : CHIP_INACTIVE
-                }`}
                 title={SILENT_BOOM_EXIT_POLICY_TOOLTIPS[p]}
-                aria-pressed={exitPolicy === p}
+                ariaPressed={exitPolicy === p}
               >
                 {SILENT_BOOM_EXIT_POLICY_LABELS[p]}
-              </button>
+              </FilterChip>
             ))}
           </div>
 
@@ -1247,34 +1235,30 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>sort</span>
             {SORT_OPTIONS.map((s) => (
-              <button
+              <FilterChip
                 key={s.value}
-                type="button"
+                active={sortMode === s.value}
+                activeColor="sky"
                 onClick={() => setSortMode(s.value)}
-                className={`${CHIP_BASE} ${
-                  sortMode === s.value ? CHIP_ACTIVE.sky : CHIP_INACTIVE
-                }`}
                 title={s.tooltip}
-                aria-pressed={sortMode === s.value}
+                ariaPressed={sortMode === s.value}
               >
                 {s.label}
-              </button>
+              </FilterChip>
             ))}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>vol/OI</span>
             {VOL_OI_FLOORS.map((f) => (
-              <button
+              <FilterChip
                 key={f.label}
-                type="button"
+                active={minVolOi === f.value}
+                activeColor="amber"
                 onClick={() => setMinVolOi(f.value)}
-                className={`${CHIP_BASE} ${
-                  minVolOi === f.value ? CHIP_ACTIVE.amber : CHIP_INACTIVE
-                }`}
                 title={f.tooltip}
-                aria-pressed={minVolOi === f.value}
+                ariaPressed={minVolOi === f.value}
               >
                 {f.label}
-              </button>
+              </FilterChip>
             ))}
           </div>
 
@@ -1287,27 +1271,25 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               { value: 'P' as OptionType, label: 'puts' },
             ].map((o) => {
               const active = optionTypeFilter === o.value;
-              const activeColor: keyof typeof CHIP_ACTIVE =
+              const activeColor: FilterChipColor =
                 o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
               return (
-                <button
+                <FilterChip
                   key={o.label}
-                  type="button"
+                  active={active}
+                  activeColor={activeColor}
                   onClick={() => setOptionTypeFilter(o.value)}
-                  className={`${CHIP_BASE} ${
-                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
-                  }`}
-                  aria-pressed={active}
+                  ariaPressed={active}
                 >
                   {o.label}
-                </button>
+                </FilterChip>
               );
             })}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>moneyness</span>
             {MONEYNESS_FILTERS.map((m) => {
               const active = moneynessMode === m.value;
-              const activeColor: keyof typeof CHIP_ACTIVE =
+              const activeColor: FilterChipColor =
                 m.value === 'otm'
                   ? 'emerald'
                   : m.value === 'itm'
@@ -1316,14 +1298,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               const showHiddenCount =
                 active && m.value !== 'all' && hiddenNoSpotCount > 0;
               return (
-                <button
+                <FilterChip
                   key={m.value}
-                  type="button"
-                  data-testid={`silent-boom-moneyness-${m.value}-chip`}
+                  active={active}
+                  activeColor={activeColor}
+                  testId={`silent-boom-moneyness-${m.value}-chip`}
                   onClick={() => setMoneynessMode(m.value)}
-                  className={`${CHIP_BASE} ${
-                    active ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE
-                  }`}
                   title={
                     m.value === 'otm'
                       ? 'Show only out-of-the-money alerts (calls: strike > spot, puts: strike < spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
@@ -1331,7 +1311,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                         ? 'Show only in-the-money alerts (calls: strike ≤ spot, puts: strike ≥ spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
                         : 'Show alerts regardless of moneyness.'
                   }
-                  aria-pressed={active}
+                  ariaPressed={active}
                 >
                   {m.label}
                   {showHiddenCount && (
@@ -1339,19 +1319,17 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                       −{hiddenNoSpotCount}
                     </span>
                   )}
-                </button>
+                </FilterChip>
               );
             })}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>tod</span>
             {TOD_FILTERS.map((t) => (
-              <button
+              <FilterChip
                 key={t.label}
-                type="button"
+                active={todFilter === t.value}
+                activeColor="orange"
                 onClick={() => setTodFilter(t.value)}
-                className={`${CHIP_BASE} ${
-                  todFilter === t.value ? CHIP_ACTIVE.orange : CHIP_INACTIVE
-                }`}
                 title={
                   t.value === 'AM_open'
                     ? 'Filter to AM_open (08:30–10:00 CT). Audit lift: 1.65× — strongest TOD bucket.'
@@ -1363,31 +1341,27 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                           ? 'Filter to PM (13:00–15:00 CT). Audit lift: 0.50× — weakest TOD bucket.'
                           : 'Show all time-of-day buckets.'
                 }
-                aria-pressed={todFilter === t.value}
+                ariaPressed={todFilter === t.value}
               >
                 {t.label}
-              </button>
+              </FilterChip>
             ))}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <button
-              type="button"
+            <FilterChip
+              active={hideLatePm}
+              activeColor="purple"
               onClick={() => setHideLatePm(!hideLatePm)}
-              className={`${CHIP_BASE} ${
-                hideLatePm ? CHIP_ACTIVE.purple : CHIP_INACTIVE
-              }`}
               title="Hide alerts whose 5-min bucket is at or after 14:30 CT. Audit shows the PM stratum lift is 0.50× and post-14:30 fires are the worst slice — discretionary exit windows close fast enough that the move can't develop. Server-side filter — pagination + ticker counts reflect the post-filter count."
-              aria-pressed={hideLatePm}
+              ariaPressed={hideLatePm}
             >
               hide post-14:30
-            </button>
-            <button
-              type="button"
+            </FilterChip>
+            <FilterChip
+              active={hideGhosts}
+              activeColor="red"
               onClick={() => setHideGhosts(!hideGhosts)}
-              className={`${CHIP_BASE} ${
-                hideGhosts ? CHIP_ACTIVE.red : CHIP_INACTIVE
-              }`}
               title={`Hide "ghost prints" — alerts where baseline_volume ≤ ${GHOST_PRINT_BASELINE_MAX} AND spike_ratio ≥ ${GHOST_PRINT_SPIKE_RATIO_MIN}×. Pattern: a single block hits an effectively-dormant chain, producing a visually extreme ratio (red badge) but no follow-through volume. Audit lift on this cohort is ~0.6× — historically the worst combo. Client-side filter.`}
-              aria-pressed={hideGhosts}
+              ariaPressed={hideGhosts}
             >
               hide ghosts
               {hideGhosts && hiddenGhostsCount > 0 && (
@@ -1395,16 +1369,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   −{hiddenGhostsCount}
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              data-testid="silent-boom-hide-gated-chip"
+            </FilterChip>
+            <FilterChip
+              active={hideGated}
+              activeColor="amber"
+              testId="silent-boom-hide-gated-chip"
               onClick={() => setHideGated(!hideGated)}
-              className={`${CHIP_BASE} ${
-                hideGated ? CHIP_ACTIVE.amber : CHIP_INACTIVE
-              }`}
               title="Hide counter-trend alerts demoted to tier3 by the Phase 4 direction gate (T=±100M on mkt_tide_diff). Puts when mkt_tide_diff > +100M, calls when mkt_tide_diff < -100M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
-              aria-pressed={hideGated}
+              ariaPressed={hideGated}
             >
               hide counter-trend
               {hideGated && hiddenGatedCount > 0 && (
@@ -1412,16 +1384,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   −{hiddenGatedCount}
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              data-testid="silent-boom-hide-round-tripped-chip"
+            </FilterChip>
+            <FilterChip
+              active={hideRoundTripped}
+              activeColor="amber"
+              testId="silent-boom-hide-round-tripped-chip"
               onClick={() => setHideRoundTripped(!hideRoundTripped)}
-              className={`${CHIP_BASE} ${
-                hideRoundTripped ? CHIP_ACTIVE.amber : CHIP_INACTIVE
-              }`}
               title="Hide round-tripped alerts — fires where (ask−bid)/total flow in the 60-min window after the alert was net bid-dominated (round_trip_score_deduct < 0). Phase 1 EDA on 641K alerts × 92 days: AUC 0.59 for predicting loss, concentrated in 0–7 DTE. Score deduct stays on the row; this chip hides the demoted alerts entirely. Client-side filter."
-              aria-pressed={hideRoundTripped}
+              ariaPressed={hideRoundTripped}
             >
               hide round-tripped
               {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
@@ -1429,18 +1399,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   −{hiddenRoundTrippedCount}
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              data-testid="silent-boom-hide-round-tripped-any-dte-chip"
-              onClick={() =>
-                setHideRoundTrippedAnyDte(!hideRoundTrippedAnyDte)
-              }
-              className={`${CHIP_BASE} ${
-                hideRoundTrippedAnyDte ? CHIP_ACTIVE.amber : CHIP_INACTIVE
-              }`}
+            </FilterChip>
+            <FilterChip
+              active={hideRoundTrippedAnyDte}
+              activeColor="amber"
+              testId="silent-boom-hide-round-tripped-any-dte-chip"
+              onClick={() => setHideRoundTrippedAnyDte(!hideRoundTrippedAnyDte)}
               title={`Hide round-tripped (any DTE) — structural filter. Hides alerts where post-fire flow in the 60-min window had net_pct < ${ROUND_TRIPPED_ANY_DTE_CUTOFF.toFixed(2)} (heavy bid-side, contract clearly reversed). Distinct from "hide round-tripped" which gates on the score deduct (≤7 DTE only, outcome-predictive). This one applies at ALL DTEs — catches the visually-obvious in/out pattern even when the predictive signal is weak (8+ DTE, AUC 0.528). Client-side filter on round_trip_net_pct populated by the evaluate-round-trip cron 60-75 min after fire.`}
-              aria-pressed={hideRoundTrippedAnyDte}
+              ariaPressed={hideRoundTrippedAnyDte}
             >
               hide round-tripped (any DTE)
               {hideRoundTrippedAnyDte && hiddenRoundTrippedAnyDteCount > 0 && (
@@ -1448,60 +1414,54 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   −{hiddenRoundTrippedAnyDteCount}
                 </span>
               )}
-            </button>
-            <button
-              type="button"
-              data-testid="silent-boom-aggressive-premium-chip"
+            </FilterChip>
+            <FilterChip
+              active={aggressivePremium}
+              activeColor="sky"
+              testId="silent-boom-aggressive-premium-chip"
               onClick={() => setAggressivePremium(!aggressivePremium)}
-              className={`${CHIP_BASE} ${
-                aggressivePremium ? CHIP_ACTIVE.sky : CHIP_INACTIVE
-              }`}
               title="Aggressive Premium: surface only alerts with premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg (multi_leg_share < 10%), and OTM (calls strike > spot, puts strike < spot). Mirrors the trader's UW filter. Server-side enforced via #152 underlying_price_at_spike — alerts with no spot snapshot are excluded from the OTM check."
-              aria-pressed={aggressivePremium}
+              ariaPressed={aggressivePremium}
             >
               💎 aggressive premium
-            </button>
+            </FilterChip>
           </div>
 
           {/* Row 4 (conditional): ticker chips */}
           {(topTickers.length > 0 || tickerFilter) && (
             <div className="flex flex-wrap items-center gap-1.5">
               <span className={SECTION_LABEL}>ticker</span>
-              <button
-                type="button"
+              <FilterChip
+                active={tickerFilter == null}
+                activeColor="emerald"
                 onClick={() => setTickerFilter(null)}
-                className={`${CHIP_BASE} ${
-                  tickerFilter == null ? CHIP_ACTIVE.emerald : CHIP_INACTIVE
-                }`}
-                aria-pressed={tickerFilter == null}
+                ariaPressed={tickerFilter == null}
               >
                 all
-              </button>
+              </FilterChip>
               {topTickers.map(([t, n]) => (
-                <button
+                <FilterChip
                   key={t}
-                  type="button"
+                  active={tickerFilter === t}
+                  activeColor="emerald"
                   onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
-                  className={`${CHIP_BASE} ${
-                    tickerFilter === t ? CHIP_ACTIVE.emerald : CHIP_INACTIVE
-                  }`}
                   title={`Filter to ${t} only (${n} alert${n === 1 ? '' : 's'} today)`}
-                  aria-pressed={tickerFilter === t}
+                  ariaPressed={tickerFilter === t}
                 >
                   {t} <span className="text-[10px] opacity-70">{n}</span>
-                </button>
+                </FilterChip>
               ))}
               {tickerFilter &&
                 !topTickers.some(([t]) => t === tickerFilter) && (
-                  <button
-                    type="button"
+                  <FilterChip
+                    active
+                    activeColor="emerald"
                     onClick={() => setTickerFilter(null)}
-                    className={`${CHIP_BASE} ${CHIP_ACTIVE.emerald}`}
                     title="Filter active but no alerts for this ticker in the current view — click to clear"
                   >
                     {tickerFilter}{' '}
                     <span className="text-[10px] opacity-70">0</span>
-                  </button>
+                  </FilterChip>
                 )}
             </div>
           )}
