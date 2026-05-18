@@ -1633,6 +1633,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                     ({hiddenGatedCount} counter-trend hidden)
                   </span>
                 )}
+                {hideCounterFlow && hiddenCounterFlowCount > 0 && (
+                  <span className="ml-2 text-amber-300/80">
+                    ({hiddenCounterFlowCount} counter-flow hidden)
+                  </span>
+                )}
                 {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     ({hiddenRoundTrippedCount} round-tripped hidden)
