@@ -14,6 +14,7 @@ import {
   type SilentBoomScoreTier,
 } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
+import { tideBadge } from '../../utils/macro-badges.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import { computeExitNow } from '../../utils/exit-now.js';
@@ -116,30 +117,6 @@ const rowContainerClass = (t: 'C' | 'P'): string =>
   t === 'C'
     ? 'border-green-900/40 bg-green-950/20'
     : 'border-red-900/40 bg-red-950/20';
-
-/**
- * Market Tide badge — display-only macro context. Same shape as
- * lottery's tideBadge: arrow + sign on the NCP - NPP value snapshotted
- * at the spike-bucket time. Per lottery's spec Appendix A this is
- * informational regime context, never a selection signal.
- */
-const tideBadge = (
-  diff: number | null,
-): { label: string; cls: string; tooltip: string } | null => {
-  if (diff == null) return null;
-  const arrow = diff > 0 ? '⬆' : diff < 0 ? '⬇' : '→';
-  const cls =
-    diff > 0
-      ? 'border-green-500/40 bg-green-950/30 text-green-200'
-      : diff < 0
-        ? 'border-red-500/40 bg-red-950/30 text-red-200'
-        : 'border-neutral-700 bg-neutral-900 text-neutral-300';
-  return {
-    label: `Tide ${arrow}`,
-    cls,
-    tooltip: `Market Tide NCP - NPP at the spike-bucket time = ${diff.toFixed(0)}. Display-only macro context, not a selection signal.`,
-  };
-};
 
 /**
  * Tier badge — fire-emoji conviction signal mirroring LotteryRow's
