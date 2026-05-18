@@ -1,0 +1,156 @@
+/Users/charlesobrien/Documents/Workspace/strike-calculator/docs/tmp/sb-now-vs-future-2026-05-18.py:57: UserWarning: pandas only supports SQLAlchemy connectable (engine/connection) or database string URI or sqlite3 DBAPI2 connection. Other DBAPI2 objects are not tested. Please consider using SQLAlchemy.
+  return pd.read_sql(
+Loading SB alerts…
+  63,846 alerts
+  baseline peak ≥50% = 16.2%
+
+Recomputing FUTURE score with post-Phase-D-1 weights…
+
+========================================================================
+Tier distribution: NOW vs FUTURE
+========================================================================
+tier            NOW    NOW %     FUTURE    FUT %  Δ
+tier1         2,621     4.1%      3,863     6.1%  +1.9pp
+tier2         8,506    13.3%      9,517    14.9%  +1.6pp
+tier3        52,719    82.6%     50,466    79.0%  -3.5pp
+
+------------------------------------------------------------------------
+Transition matrix (rows = tier NOW, cols = tier FUTURE):
+------------------------------------------------------------------------
+tier_future  tier1  tier2  tier3
+tier_now                        
+tier1         2536     85      0
+tier2         1002   6878    626
+tier3          325   2554  49840
+
+========================================================================
+Peak ≥50% (and ≥100%) hit rate by tier — NOW vs FUTURE
+========================================================================
+tier         NOW n    NOW≥50   NOW≥100      FUT n    FUT≥50   FUT≥100
+tier1        2,621     56.4%     36.8%      3,863     54.9%     35.1%
+tier2        8,506     38.3%     19.3%      9,517     36.0%     17.3%
+tier3       52,719     10.6%      4.3%     50,466      9.5%      3.7%
+
+========================================================================
+Score distribution histogram
+========================================================================
+
+NOW    — score: mean=-11.1  std=19.9  min=-50  p50=-8  p95=20  p99=27  max=33
+      [-30, -25)    3,881 ( 6.1%)  ███
+      [-25, -20)    2,712 ( 4.2%)  ██
+      [-20, -15)    2,847 ( 4.5%)  ██
+      [-15, -10)    4,176 ( 6.5%)  ███
+       [-10, -5)    6,524 (10.2%)  █████
+         [-5, 0)    6,749 (10.6%)  █████
+          [0, 5)    6,093 ( 9.5%)  ████
+         [5, 10)    5,498 ( 8.6%)  ████
+        [10, 15)    4,225 ( 6.6%)  ███
+        [15, 20)    2,641 ( 4.1%)  ██
+        [20, 25)    1,984 ( 3.1%)  █
+        [25, 30)    1,133 ( 1.8%)  
+        [30, 35)      194 ( 0.3%)  
+        [35, 40)        0 ( 0.0%)  
+        [40, 45)        0 ( 0.0%)  
+
+FUTURE — score: mean=-12.5  std=22.8  min=-65  p50=-8  p95=22  p99=30  max=38
+      [-30, -25)    2,739 ( 4.3%)  ██
+      [-25, -20)    2,189 ( 3.4%)  █
+      [-20, -15)    2,482 ( 3.9%)  █
+      [-15, -10)    3,708 ( 5.8%)  ██
+       [-10, -5)    5,420 ( 8.5%)  ████
+         [-5, 0)    6,220 ( 9.7%)  ████
+          [0, 5)    6,040 ( 9.5%)  ████
+         [5, 10)    5,302 ( 8.3%)  ████
+        [10, 15)    4,324 ( 6.8%)  ███
+        [15, 20)    2,811 ( 4.4%)  ██
+        [20, 25)    2,088 ( 3.3%)  █
+        [25, 30)    1,396 ( 2.2%)  █
+        [30, 35)      694 ( 1.1%)  
+        [35, 40)      101 ( 0.2%)  
+        [40, 45)        0 ( 0.0%)  
+
+========================================================================
+FUTURE peak ≥50% by feature bucket (post Phase D-1 cohort audit)
+========================================================================
+These lifts drive Phase D-2 recalibration decisions. If a
+bucket's empirical lift no longer matches its assumed weight,
+the weight needs to move.
+
+[DTE]  baseline=16.2%
+_dte_bucket     n  peak_ge_50_pct  median_peak  lift_pp
+       0DTE  7539            49.0         49.8     32.8
+       1-3D 16362            23.1         16.7      6.9
+       4-7D 10702            14.1         11.5     -2.1
+      8-30D 18003             6.5          7.5     -9.7
+       30D+ 11240             1.6          3.4    -14.6
+
+[baseline_volume]  baseline=16.2%
+_baseline_bucket     n  peak_ge_50_pct  median_peak  lift_pp
+             <50 49417            12.2          7.9     -4.0
+          50-200 10596            27.3         20.0     11.1
+         200-500  3833            36.1         28.1     19.9
+
+[spike_ratio]  baseline=16.2%
+_spike_bucket     n  peak_ge_50_pct  median_peak  lift_pp
+        5-10x  4516            34.8         27.2     18.6
+       10-25x  6466            29.0         21.0     12.8
+       25-50x  5516            22.6         16.1      6.4
+      50-100x  6763            18.5         13.0      2.3
+        100x+ 40585            10.8          7.0     -5.4
+
+[entry_price]  baseline=16.2%
+_price_bucket     n  peak_ge_50_pct  median_peak  lift_pp
+       <$0.50 25969            25.6         16.7      9.4
+      $0.50-1  9122            14.0         10.7     -2.2
+         $1-5 18902            10.6          8.8     -5.6
+          $5+  9853             4.0          3.8    -12.2
+
+[tod]  baseline=16.2%
+   _tod     n  peak_ge_50_pct  median_peak  lift_pp
+AM_open 13799            26.5         20.8     10.3
+    MID 17844            19.0         14.2      2.8
+  LUNCH  7986            15.7         10.9     -0.5
+     PM 23165             8.4          4.4     -7.8
+   LATE  1052             7.4          1.0     -8.8
+
+[ask_pct]  baseline=16.2%
+_ask_bucket     n  peak_ge_50_pct  median_peak  lift_pp
+      <0.85  7856            23.3         16.1      7.1
+  0.85-0.95  8415            20.6         14.9      4.4
+  0.95-<1.0 23388            18.2         13.2      2.0
+       =1.0 24187            10.4          4.2     -5.8
+
+[dow × option_type]  baseline=16.2%
+    _dow_type    n  peak_ge_50_pct  median_peak  lift_pp
+   Friday × C 8565            17.8         10.3      1.6
+   Friday × P 7166            19.4         10.4      3.2
+   Monday × C 5655            16.8         11.8      0.6
+   Monday × P 5011            12.4          7.7     -3.8
+ Thursday × C 7005            14.9         10.0     -1.3
+ Thursday × P 6526            14.5          6.7     -1.7
+  Tuesday × C 6335            16.7         11.8      0.5
+  Tuesday × P 5126            15.0          9.1     -1.2
+Wednesday × C 6930            16.4         11.8      0.2
+Wednesday × P 5527            16.2         10.0      0.0
+
+[pre_trade_count]  baseline=16.2%
+_ptc_bucket     n  peak_ge_50_pct  median_peak  lift_pp
+          0 63846            16.2         10.0      0.0
+
+[adj_cofire]  baseline=16.2%
+ _cofire     n  peak_ge_50_pct  median_peak  lift_pp
+   False 63846            16.2         10.0      0.0
+
+[first_min_share]  baseline=16.2%
+           _fms_bucket     n  peak_ge_50_pct  median_peak  lift_pp
+    <25% (distributed) 49986            16.2         10.0      0.0
+                25-50%  2212            21.0         14.4      4.8
+                50-75%  1319            24.9         15.6      8.7
+75-100% (single-block) 10328            14.0          8.7     -2.2
+
+[spread_in_bucket]  baseline=16.2%
+  _spread_bucket     n  peak_ge_50_pct  median_peak  lift_pp
+      Q0 <0.0181 12346            10.1          8.4     -6.1
+Q1 0.0181-0.0441 13486            12.7          9.3     -3.5
+Q2 0.0441-0.1122 16048            14.6          9.9     -1.6
+      Q3 ≥0.1122 20228            21.8         13.4      5.6
