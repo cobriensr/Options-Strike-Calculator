@@ -62,6 +62,10 @@
       "schedule": "0 12 * * 1-5"
     },
     {
+      "path": "/api/cron/rollup-ws-gex-strike-expiry",
+      "schedule": "30 22 * * 1-5"
+    },
+    {
       "path": "/api/cron/cleanup-ws-option-trades",
       "schedule": "5 12 * * 1-5"
     },
@@ -272,6 +276,7 @@
     "api/cron/audit-takeit-calibration.ts": { "maxDuration": 60 },
     "api/cron/enrich-lottery-outcomes.ts": { "maxDuration": 300 },
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
+    "api/cron/rollup-ws-gex-strike-expiry.ts": { "maxDuration": 120 },
     "api/cron/fetch-gexbot-strikes.ts": { "maxDuration": 60 },
     "api/cron/archive-gexbot.ts": { "maxDuration": 300 },
     "api/periscope-auto-playbook.ts": {
