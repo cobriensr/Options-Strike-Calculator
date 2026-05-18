@@ -50,18 +50,11 @@ import {
   type MultilegClassifyCache,
 } from '../_lib/multileg-classify-batch.js';
 
-// TEMPORARY 2026-05-18: bumped 35 → 80 to backfill the morning gap
-// caused by Sentry SENTRY-EMERALD-DESERT-8G (empty-string gamma in
-// raw_payload broke every detect tick from 13:30 UTC to 14:40 UTC).
-// SQL aggregation means the widened window doesn't blow the Neon
-// HTTP cap. ON CONFLICT (option_chain_id, bucket_ct) keeps re-runs
-// idempotent. REVERT to 35 after one successful tick fires.
-// Baseline rationale (still applies after revert):
 // 35-min scan window — needs at least baselineBuckets+1 buckets of
 // history (4+1 = 5 buckets = 25 min) plus 10 min slack for cron jitter
 // + late first ticks landing mid-bucket. Tight 30-min windows can drop
 // chains whose first trade arrives ≥6 min into the window.
-const SCAN_WINDOW_MIN = 80;
+const SCAN_WINDOW_MIN = 35;
 
 // Cooldown lookback for the per-chain priorLastFireMs seed. Detector
 // cooldown is 60 min (12 buckets × 5min); we look back 70 min to
