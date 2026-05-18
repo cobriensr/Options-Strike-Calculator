@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
@@ -337,7 +337,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       reignitedRows,
     ] = (await Promise.all([
       sort === 'score'
-        ? db`
+        ? withDbRetry(
+            () => db`
         WITH filtered AS (
           SELECT
             f.*,
@@ -405,9 +406,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ORDER BY f.combined_score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
-      `
+      `,
+            2,
+            10000,
+          )
         : sort === 'peak'
-          ? db`
+          ? withDbRetry(
+              () => db`
         WITH filtered AS (
           SELECT
             f.*,
@@ -475,8 +480,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
-      `
-          : db`
+      `,
+              2,
+              10000,
+            )
+          : withDbRetry(
+              () => db`
         WITH filtered AS (
           SELECT
             f.*,
@@ -545,10 +554,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LIMIT ${limit}
         OFFSET ${offset}
       `,
+              2,
+              10000,
+            ),
       // Total counts the collapsed shape (one row per chain per day:
       // ticker × strike × option_type × expiry) so pagination math
       // matches the dedup'd CTE above.
-      db`
+      withDbRetry(
+        () => db`
         SELECT COUNT(*)::int AS total
         FROM (
           SELECT 1
@@ -567,6 +580,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           GROUP BY underlying_symbol, strike, option_type, expiry
         ) collapsed
       `,
+        2,
+        10000,
+      ),
       // Chain-extras query (Phase 1 of lottery-reignition-ui-2026-05-17):
       // returns per-chain fire history (jsonb array of all fires today,
       // ordered chronologically) + the REIGNITION top-N flag. Joined to
@@ -580,7 +596,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // stable semantics across filter views — a chain that's #3 of
       // the day stays #3 whether the user is filtered to QQQ-only or
       // showing all tickers.
-      db`
+      withDbRetry(
+        () => db`
         WITH ordered AS (
           SELECT
             underlying_symbol, strike, option_type, expiry,
@@ -646,6 +663,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN qualified q USING (underlying_symbol, strike, option_type, expiry)
         WHERE pc.fire_count > 1
       `,
+        2,
+        10000,
+      ),
       // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
       // badge. Truncates trigger_time_ct to the 1-min bucket and
       // counts unique tickers per bucket across the date. Filtered
@@ -653,7 +673,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // count reflects the WHOLE market's minute concentration, not
       // a filtered subset — same stable-semantics decision as the
       // chainExtras reignition flag.
-      db`
+      withDbRetry(
+        () => db`
         SELECT
           date_trunc('minute', trigger_time_ct) AS minute_bucket_ct,
           COUNT(DISTINCT underlying_symbol)::int AS distinct_tickers
@@ -664,6 +685,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         GROUP BY date_trunc('minute', trigger_time_ct)
         HAVING COUNT(DISTINCT underlying_symbol) >= ${MEGA_CLUSTER_MIN_DISTINCT_TICKERS}
       `,
+        2,
+        10000,
+      ),
       // Silent Boom chain-IDs for the date — drives the DUAL FLAG
       // badge. When the same chain-day appears in BOTH
       // lottery_finder_fires AND silent_boom_alerts, the cohort is
@@ -675,11 +699,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // wrapped in try/catch at execution because silent_boom_alerts
       // started 2026-04-13; for older dates the table may have no
       // matching rows but the query is still cheap.
-      db`
+      withDbRetry(
+        () => db`
         SELECT DISTINCT option_chain_id
         FROM silent_boom_alerts
         WHERE date = ${targetDate}::date
       `,
+        2,
+        10000,
+      ),
       // Pinned "Hot Right Now" rows — full row payload (same SELECT
       // shape as the main fires query) for the day's top-N reignited
       // chains, surfaced INDEPENDENT of pagination. Lets the UI keep
@@ -697,7 +725,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       //
       // Spec: docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md
       // Phase 3 ("REIGNITED section is always visible on every page").
-      db`
+      withDbRetry(
+        () => db`
         WITH ordered AS (
           SELECT
             underlying_symbol, strike, option_type, expiry,
@@ -810,6 +839,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
         ORDER BY f.trigger_time_ct DESC, f.id DESC
       `,
+        2,
+        10000,
+      ),
     ])) as [
       FireRow[],
       { total: number }[],
@@ -910,7 +942,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         Math.max(...triggerTimes.map((d) => d.getTime())),
       );
       const windowEnd = new Date(maxTrigger.getTime() + 7 * 24 * 3600 * 1000);
-      const eventRows = (await db`
+      const eventRows = (await withDbRetry(
+        () => db`
         SELECT event_time
         FROM economic_events
         WHERE event_type IN ('FOMC', 'CPI', 'PCE', 'JOBS')
@@ -918,7 +951,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND event_time >= ${minTrigger.toISOString()}::timestamptz
           AND event_time <= ${windowEnd.toISOString()}::timestamptz
         ORDER BY event_time ASC
-      `) as { event_time: string | Date }[];
+      `,
+        2,
+        10000,
+      )) as { event_time: string | Date }[];
       return eventRows.map((r) =>
         r.event_time instanceof Date ? r.event_time : new Date(r.event_time),
       );

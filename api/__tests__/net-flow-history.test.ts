@@ -6,6 +6,9 @@ import { mockRequest, mockResponse } from './helpers';
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
+  // Identity passthrough — tests assert on the underlying SQL result,
+  // not retry/timeout behavior (that's covered in db.test.ts).
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({

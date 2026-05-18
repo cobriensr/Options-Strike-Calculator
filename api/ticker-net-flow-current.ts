@@ -19,7 +19,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
@@ -71,7 +71,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // row per ticker. The DISTINCT ON inside `unified` is keyed by
     // (ticker, ts) so each ticker independently dedupes minute
     // collisions across the two sources.
-    const rows = (await db`
+    //
+    // withDbRetry covers transient Neon HTTP failures (fetch failed,
+    // ECONNRESET, socket hang up) — at 60s client polling cadence one
+    // unretried blip surfaces as a fan-out of SENTRY-EMERALD-DESERT-90
+    // events. 10s per-attempt timeout shields against hung connections.
+    const rows = (await withDbRetry(
+      () => db`
       WITH unified AS (
         SELECT DISTINCT ON (ticker, ts)
           ticker, ts, net_call_prem, net_put_prem
@@ -103,7 +109,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ticker, ts, cum_ncp, cum_npp
       FROM running
       ORDER BY ticker, ts DESC
-    `) as CurrentRow[];
+    `,
+      2,
+      10000,
+    )) as CurrentRow[];
 
     const snapshots = rows.map((r) => ({
       ticker: r.ticker,

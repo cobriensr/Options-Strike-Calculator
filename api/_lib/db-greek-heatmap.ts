@@ -25,7 +25,7 @@
  * See docs/superpowers/specs/per-ticker-greek-heatmap-2026-05-15.md.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 
 export type GreekHeatmapTopStrike = {
   strike: number;
@@ -120,8 +120,15 @@ export async function getGreekHeatmapSnapshot(
   // SPX is ever added to the universe, also apply the SPX→SPXW
   // alias from `db-gex-strike-expiry.ts::resolveStoredTicker` here,
   // or queries will silently return zero rows.
-  const rows = isToday
-    ? ((await db`
+  // withDbRetry covers transient Neon HTTP failures (fetch failed,
+  // ECONNRESET, socket hang up). The frontend polls this endpoint
+  // every 30s; one unretried blip cascades into Sentry as
+  // SENTRY-EMERALD-DESERT-8X. 10s per-attempt timeout shields against
+  // hung connections without exceeding the function's 300s budget.
+  const rows = (await withDbRetry(
+    () =>
+      isToday
+        ? db`
         SELECT DISTINCT ON (strike)
           strike,
           ts_minute,
@@ -138,8 +145,8 @@ export async function getGreekHeatmapSnapshot(
           AND (${atCutoff}::timestamptz IS NULL
                OR ts_minute <= ${atCutoff}::timestamptz)
         ORDER BY strike, ts_minute DESC
-      `) as GexRow[])
-    : ((await db`
+      `
+        : db`
           SELECT DISTINCT ON (strike)
             strike,
             timestamp AS ts_minute,
@@ -156,14 +163,19 @@ export async function getGreekHeatmapSnapshot(
             AND (${atCutoff}::timestamptz IS NULL
                  OR timestamp <= ${atCutoff}::timestamptz)
           ORDER BY strike, timestamp DESC
-        `) as GexRow[]);
+        `,
+    2,
+    10000,
+  )) as GexRow[];
 
   // Intraday coverage probe — separate query so it's not gated by
   // `at` (the scrubber needs to know the full available range, not
   // just up to where it currently is). One row per distinct ts_minute,
   // collapsed to min/max/count.
-  const rangeRows = isToday
-    ? ((await db`
+  const rangeRows = (await withDbRetry(
+    () =>
+      isToday
+        ? db`
         SELECT
           MIN(ts_minute)::text AS first,
           MAX(ts_minute)::text AS last,
@@ -171,12 +183,8 @@ export async function getGreekHeatmapSnapshot(
         FROM ws_gex_strike_expiry
         WHERE ticker = ${ticker}
           AND expiry = ${expiry}::date
-      `) as {
-        first: string | null;
-        last: string | null;
-        distinct_count: number;
-      }[])
-    : ((await db`
+      `
+        : db`
           SELECT
             MIN(timestamp)::text AS first,
             MAX(timestamp)::text AS last,
@@ -184,11 +192,14 @@ export async function getGreekHeatmapSnapshot(
           FROM strike_exposures
           WHERE ticker = ${ticker}
             AND expiry = ${expiry}::date
-        `) as {
-        first: string | null;
-        last: string | null;
-        distinct_count: number;
-      }[]);
+        `,
+    2,
+    10000,
+  )) as {
+    first: string | null;
+    last: string | null;
+    distinct_count: number;
+  }[];
   const intradayRange = buildIntradayRange(rangeRows[0]);
 
   if (rows.length === 0) {
@@ -316,8 +327,11 @@ export async function getGreekHeatmapNetFlow(
   const db = getDb();
   const isToday = date === today;
 
-  const rows = isToday
-    ? ((await db`
+  // withDbRetry — same rationale as getGreekHeatmapSnapshot above.
+  const rows = (await withDbRetry(
+    () =>
+      isToday
+        ? db`
         SELECT
           ts,
           SUM(net_call_prem) OVER w AS cum_call_prem,
@@ -330,8 +344,8 @@ export async function getGreekHeatmapNetFlow(
         WINDOW w AS (PARTITION BY ticker, date(ts) ORDER BY ts)
         ORDER BY ts DESC
         LIMIT 1
-      `) as NetFlowRow[])
-    : ((await db`
+      `
+        : db`
         SELECT
           ts,
           SUM(net_call_prem) OVER w AS cum_call_prem,
@@ -345,7 +359,10 @@ export async function getGreekHeatmapNetFlow(
         WINDOW w AS (PARTITION BY ticker, date(ts) ORDER BY ts)
         ORDER BY ts DESC
         LIMIT 1
-      `) as NetFlowRow[]);
+      `,
+    2,
+    10000,
+  )) as NetFlowRow[];
 
   if (rows.length === 0) return null;
 

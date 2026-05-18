@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
@@ -364,7 +364,8 @@ export default async function handler(
     const tickerUpper = q.ticker?.toUpperCase();
 
     // Total count for pagination.
-    const totalRow = (await db`
+    const totalRow = (await withDbRetry(
+      () => db`
       SELECT COUNT(*)::int AS n
       FROM silent_boom_alerts
       WHERE date = ${date}::date
@@ -407,7 +408,10 @@ export default async function handler(
             )
           )
         )
-    `) as { n: number }[];
+    `,
+      2,
+      10000,
+    )) as { n: number }[];
     const total = totalRow[0]?.n ?? 0;
 
     // Sort clause — neon tagged-template doesn't support unsafe()
@@ -415,7 +419,8 @@ export default async function handler(
     // validated enum.
     let rows: AlertRow[];
     if (q.sort === 'spike_ratio') {
-      rows = (await db`
+      rows = (await withDbRetry(
+        () => db`
         SELECT
           s.*,
           s.cum_ncp_at_fire AS fire_time_cum_ncp,
@@ -463,9 +468,13 @@ export default async function handler(
           )
         ORDER BY spike_ratio DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
-      `) as AlertRow[];
+      `,
+        2,
+        10000,
+      )) as AlertRow[];
     } else if (q.sort === 'vol_oi') {
-      rows = (await db`
+      rows = (await withDbRetry(
+        () => db`
         SELECT
           s.*,
           s.cum_ncp_at_fire AS fire_time_cum_ncp,
@@ -513,9 +522,13 @@ export default async function handler(
           )
         ORDER BY vol_oi DESC, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
-      `) as AlertRow[];
+      `,
+        2,
+        10000,
+      )) as AlertRow[];
     } else if (q.sort === 'peak') {
-      rows = (await db`
+      rows = (await withDbRetry(
+        () => db`
         SELECT
           s.*,
           s.cum_ncp_at_fire AS fire_time_cum_ncp,
@@ -563,10 +576,14 @@ export default async function handler(
           )
         ORDER BY peak_ceiling_pct DESC NULLS LAST, bucket_ct DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
-      `) as AlertRow[];
+      `,
+        2,
+        10000,
+      )) as AlertRow[];
     } else {
       // 'newest' — default
-      rows = (await db`
+      rows = (await withDbRetry(
+        () => db`
         SELECT
           s.*,
           s.cum_ncp_at_fire AS fire_time_cum_ncp,
@@ -614,7 +631,10 @@ export default async function handler(
           )
         ORDER BY bucket_ct DESC, id DESC
         LIMIT ${q.limit} OFFSET ${q.offset}
-      `) as AlertRow[];
+      `,
+        2,
+        10000,
+      )) as AlertRow[];
     }
 
     const alerts: SilentBoomAlertResponse[] = rows.map((r) => {

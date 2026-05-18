@@ -23,7 +23,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
@@ -104,7 +104,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Union both sources; DISTINCT ON (ts) with priority=1 for WS keeps
     // the live row whenever both tables hold the same minute. REST fills
     // gaps for historical fires that pre-date the WS daemon.
-    const rows = (await db`
+    //
+    // withDbRetry covers transient Neon HTTP failures. The chart polls
+    // on a 60s cadence so unretried blips fan out into Sentry rapidly
+    // (see SENTRY-EMERALD-DESERT-8Z). 10s per-attempt timeout shields
+    // against hung connections.
+    const rows = (await withDbRetry(
+      () => db`
       WITH unified AS (
         SELECT DISTINCT ON (ts)
           ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol
@@ -133,7 +139,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         SUM(net_put_vol) OVER (ORDER BY ts) AS cum_npv
       FROM unified
       ORDER BY ts ASC
-    `) as NetFlowRow[];
+    `,
+      2,
+      10000,
+    )) as NetFlowRow[];
 
     const series = rows.map((r) => ({
       ts: toIso(r.ts),
