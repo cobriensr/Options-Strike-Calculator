@@ -173,6 +173,8 @@ function LotteryFinderTickerGroupBase({
           directionGated: f.directionGated,
           triggeredAt: f.triggerTimeCt,
           strike: f.strike,
+          // Placeholder — Task 4 replaces with `deltaFromAtFire(f.tickerCumNcpAtFire, f.tickerCumNppAtFire)`.
+          tickerNetFlowAtFire: null,
           // Trigger-window premium spent on this chain — the size×price
           // signature the alert pipeline saw when it fired. windowSize
           // is total contracts in the burst window; ×100 lifts contract

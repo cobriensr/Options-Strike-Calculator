@@ -19,6 +19,12 @@ export interface RollupAlertSummary {
   triggeredAt: string;
   strike: number;
   /**
+   * Per-ticker cumulative NCP − NPP at trigger time. Null when the
+   * feed lacks the fire-time snapshot (pre-#158 rows or outside-WS-
+   * universe tickers). Sign-only — no deadband.
+   */
+  tickerNetFlowAtFire: number | null;
+  /**
    * Trigger-window premium in dollars (entry price × contracts × 100).
    * Optional so older callers / shapes without size data still compile;
    * null/undefined rows simply don't contribute to `totalPremium`.
@@ -65,6 +71,8 @@ export interface RollupAggregates {
    * (spike-ratio vs fire-count etc.) is panel-specific.
    */
   maxIntensity: number | null;
+  /** Per-ticker net flow direction aggregation. Same shape as `tide`. */
+  flow: TideAggregate;
 }
 
 export function computeRollupAggregates(
@@ -74,6 +82,7 @@ export function computeRollupAggregates(
     return {
       bias: null,
       tide: { dir: 'unknown', align: 'unknown' },
+      flow: { dir: 'unknown', align: 'unknown' },
       spreadMinutes: null,
       gatedCount: 0,
       strikeRange: null,
@@ -84,6 +93,7 @@ export function computeRollupAggregates(
 
   const bias = computeBias(rows);
   const tide = computeTide(rows, bias);
+  const flow = computeFlow(rows, bias);
   const spreadMinutes = computeSpreadMinutes(rows);
   const gatedCount = rows.reduce((n, r) => n + (r.directionGated ? 1 : 0), 0);
   const strikeRange = computeStrikeRange(rows);
@@ -93,6 +103,7 @@ export function computeRollupAggregates(
   return {
     bias,
     tide,
+    flow,
     spreadMinutes,
     gatedCount,
     strikeRange,
@@ -139,18 +150,20 @@ function computeBias(rows: readonly RollupAlertSummary[]): Bias {
   return 'mixed';
 }
 
-function computeTide(
+function computeDirAlignment(
   rows: readonly RollupAlertSummary[],
   bias: Bias,
+  selector: (r: RollupAlertSummary) => number | null,
 ): TideAggregate {
   let pos = 0;
   let neg = 0;
   let nonNull = 0;
   for (const r of rows) {
-    if (r.mktTideDiff == null) continue;
+    const v = selector(r);
+    if (v == null) continue;
     nonNull += 1;
-    if (r.mktTideDiff > 0) pos += 1;
-    else if (r.mktTideDiff < 0) neg += 1;
+    if (v > 0) pos += 1;
+    else if (v < 0) neg += 1;
   }
   if (nonNull === 0) return { dir: 'unknown', align: 'unknown' };
 
@@ -165,6 +178,20 @@ function computeTide(
   const aligned =
     (bias === 'bull' && dir === 'up') || (bias === 'bear' && dir === 'down');
   return { dir, align: aligned ? 'aligned' : 'counter' };
+}
+
+function computeTide(
+  rows: readonly RollupAlertSummary[],
+  bias: Bias,
+): TideAggregate {
+  return computeDirAlignment(rows, bias, (r) => r.mktTideDiff);
+}
+
+function computeFlow(
+  rows: readonly RollupAlertSummary[],
+  bias: Bias,
+): TideAggregate {
+  return computeDirAlignment(rows, bias, (r) => r.tickerNetFlowAtFire);
 }
 
 function computeSpreadMinutes(
@@ -219,6 +246,14 @@ export function formatTideLabel(tide: TideAggregate): string {
   if (tide.dir === 'mixed') return 'tide mixed';
   const arrow = tide.dir === 'up' ? '↑' : '↓';
   return `tide ${arrow} ${tide.align}`;
+}
+
+/** Render flow chip text. Mirror of `formatTideLabel`. */
+export function formatFlowLabel(flow: TideAggregate): string {
+  if (flow.dir === 'unknown') return 'flow —';
+  if (flow.dir === 'mixed') return 'flow mixed';
+  const arrow = flow.dir === 'up' ? '↑' : '↓';
+  return `flow ${arrow} ${flow.align}`;
 }
 
 /**

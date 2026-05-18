@@ -144,6 +144,8 @@ function SilentBoomTickerGroupBase({
           directionGated: a.directionGated,
           triggeredAt: a.bucketCt,
           strike: a.strike,
+          // Placeholder — Task 4 replaces with `deltaFromAtFire(a.tickerCumNcpAtFire, a.tickerCumNppAtFire)`.
+          tickerNetFlowAtFire: null,
           // Spike-bucket premium spent — what the detector saw fire.
           // spikeVolume is contracts in the burst minute; ×100 lifts
           // to share-equivalents for $ display.

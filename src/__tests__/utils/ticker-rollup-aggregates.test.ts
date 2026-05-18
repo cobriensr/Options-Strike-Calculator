@@ -4,6 +4,7 @@ import {
   BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
   formatBiasLabel,
+  formatFlowLabel,
   formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
@@ -22,6 +23,7 @@ function makeRow(
     directionGated: false,
     triggeredAt: '2026-05-15T13:30:00Z',
     strike: 100,
+    tickerNetFlowAtFire: null,
     ...overrides,
   };
 }
@@ -674,6 +676,83 @@ describe('formatTideLabel', () => {
     );
     expect(formatTideLabel({ dir: 'down', align: 'counter' })).toBe(
       'tide ↓ counter',
+    );
+  });
+});
+
+describe('computeRollupAggregates — flow aggregation', () => {
+  it('returns flow: aligned when bull bias and all flows positive', () => {
+    const agg = computeRollupAggregates([
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: 5_000_000 }),
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: 3_000_000 }),
+    ]);
+    expect(agg.flow).toEqual({ dir: 'up', align: 'aligned' });
+  });
+
+  it('returns flow: aligned when bear bias and all flows negative', () => {
+    const agg = computeRollupAggregates([
+      makeRow({ optionType: 'P', tickerNetFlowAtFire: -5_000_000 }),
+      makeRow({ optionType: 'P', tickerNetFlowAtFire: -2_000_000 }),
+    ]);
+    expect(agg.flow).toEqual({ dir: 'down', align: 'aligned' });
+  });
+
+  it('returns flow: counter when bull bias but flows negative', () => {
+    const agg = computeRollupAggregates([
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: -1_000_000 }),
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: -2_000_000 }),
+    ]);
+    expect(agg.flow).toEqual({ dir: 'down', align: 'counter' });
+  });
+
+  it('returns flow: mixed when group has both call and put alerts', () => {
+    const agg = computeRollupAggregates([
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: 1_000_000 }),
+      makeRow({ optionType: 'P', tickerNetFlowAtFire: 1_000_000 }),
+    ]);
+    expect(agg.flow.dir).toBe('mixed');
+    expect(agg.flow.align).toBe('mixed');
+  });
+
+  it('returns flow: mixed when single-bias group has split flow signs', () => {
+    const agg = computeRollupAggregates([
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: 3_000_000 }),
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: -2_000_000 }),
+    ]);
+    expect(agg.flow.dir).toBe('mixed');
+  });
+
+  it('returns flow: unknown when every row has null tickerNetFlowAtFire', () => {
+    const agg = computeRollupAggregates([
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: null }),
+      makeRow({ optionType: 'C', tickerNetFlowAtFire: null }),
+    ]);
+    expect(agg.flow).toEqual({ dir: 'unknown', align: 'unknown' });
+  });
+});
+
+describe('formatFlowLabel', () => {
+  it('renders "flow ↑ aligned"', () => {
+    expect(formatFlowLabel({ dir: 'up', align: 'aligned' })).toBe(
+      'flow ↑ aligned',
+    );
+  });
+
+  it('renders "flow ↓ counter"', () => {
+    expect(formatFlowLabel({ dir: 'down', align: 'counter' })).toBe(
+      'flow ↓ counter',
+    );
+  });
+
+  it('renders "flow mixed"', () => {
+    expect(formatFlowLabel({ dir: 'mixed', align: 'mixed' })).toBe(
+      'flow mixed',
+    );
+  });
+
+  it('renders "flow —" for unknown', () => {
+    expect(formatFlowLabel({ dir: 'unknown', align: 'unknown' })).toBe(
+      'flow —',
     );
   });
 });

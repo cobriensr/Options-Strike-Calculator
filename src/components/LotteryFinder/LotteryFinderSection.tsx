@@ -693,6 +693,8 @@ export function LotteryFinderSection({
             directionGated: f.directionGated,
             triggeredAt: f.triggerTimeCt,
             strike: f.strike,
+            // Placeholder — Task 4 replaces with `deltaFromAtFire(f.tickerCumNcpAtFire, f.tickerCumNppAtFire)`.
+            tickerNetFlowAtFire: null,
             premium: f.entry.price * f.trigger.windowSize * 100,
             intensity: f.fireCount,
           })),

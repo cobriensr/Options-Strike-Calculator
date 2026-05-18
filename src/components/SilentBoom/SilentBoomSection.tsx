@@ -799,6 +799,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             directionGated: a.directionGated,
             triggeredAt: a.bucketCt,
             strike: a.strike,
+            // Placeholder — Task 4 replaces with `deltaFromAtFire(a.tickerCumNcpAtFire, a.tickerCumNppAtFire)`.
+            tickerNetFlowAtFire: null,
             premium: a.entryPrice * a.spikeVolume * 100,
             intensity: a.spikeRatio,
           })),
