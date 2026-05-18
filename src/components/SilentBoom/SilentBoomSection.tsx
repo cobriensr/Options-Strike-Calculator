@@ -1082,8 +1082,24 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             </div>
           </div>
 
-          {/* Row 2: conviction tier */}
+          {/* Row 2: Sort + Conviction + Burst — score-driven controls
+              that gate the alert set. Mirrors LotteryFinder Row 2
+              layout so muscle memory carries between panels. */}
           <div className="flex flex-wrap items-center gap-1.5">
+            <span className={SECTION_LABEL}>sort</span>
+            {SORT_OPTIONS.map((s) => (
+              <FilterChip
+                key={s.value}
+                active={sortMode === s.value}
+                activeColor="sky"
+                onClick={() => setSortMode(s.value)}
+                title={s.tooltip}
+                ariaPressed={sortMode === s.value}
+              >
+                {s.label}
+              </FilterChip>
+            ))}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>conviction</span>
             {CONVICTION_OPTIONS.map((c) => {
               const active = convictionFloor === c.value;
@@ -1106,13 +1122,32 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </FilterChip>
               );
             })}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>burst</span>
+            {BURST_FILTERS.map((b) => {
+              const active = burstFilter === b.value;
+              const activeColor: FilterChipColor = b.cls ?? 'emerald';
+              return (
+                <FilterChip
+                  key={b.label}
+                  active={active}
+                  activeColor={activeColor}
+                  onClick={() => setBurstFilter(b.value)}
+                  title={b.tooltip}
+                  ariaPressed={active}
+                >
+                  {b.label}
+                </FilterChip>
+              );
+            })}
           </div>
 
-          {/* Row 2.5: min DTE + min premium numeric inputs + Burst color.
-              DTE input replaced the 0DTE / 1-3D / 4D+ chip buckets so
-              the user can scope to any custom floor (e.g. "1+" to span
-              1-3D and 4D+ together — the bucket form couldn't express
-              that). Min premium is a new server-side filter that gates
+          {/* Row 3: panel-specific numeric + flow filters — min DTE,
+              min premium $K, ask %, vol/OI. DTE input replaced the
+              0DTE / 1-3D / 4D+ chip buckets so the user can scope to
+              any custom floor (e.g. "1+" to span 1-3D and 4D+
+              together — the bucket form couldn't express that). Min
+              premium is a server-side filter that gates
               entry_price * spike_volume * 100 ≥ N dollars. */}
           <div className="flex flex-wrap items-center gap-1.5">
             <label
@@ -1168,24 +1203,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               />
             </label>
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>burst</span>
-            {BURST_FILTERS.map((b) => {
-              const active = burstFilter === b.value;
-              const activeColor: FilterChipColor = b.cls ?? 'emerald';
-              return (
-                <FilterChip
-                  key={b.label}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setBurstFilter(b.value)}
-                  title={b.tooltip}
-                  ariaPressed={active}
-                >
-                  {b.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>ask %</span>
             {ASK_PCT_BAND_FILTERS.map((b) => {
               const active = askPctBand === b.value;
@@ -1204,48 +1221,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </FilterChip>
               );
             })}
-          </div>
-
-          {/* Row 2.6: realized-exit policy. Whichever chip is active
-              becomes the primary % shown on every row. Mirrors the
-              LotteryFinder pattern. Default 60m (least disruptive
-              switch from the row's prior emphasized column). */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span
-              className={SECTION_LABEL}
-              title="Choose which realized exit % is shown as the primary number on every alert. Peak is a look-ahead reference; the 30m / 60m / 120m / EOD options are tradeable horizons from the spike bucket start."
-            >
-              exit
-            </span>
-            {EXIT_POLICIES.map((p) => (
-              <FilterChip
-                key={p}
-                active={exitPolicy === p}
-                activeColor="purple"
-                onClick={() => setExitPolicy(p)}
-                title={SILENT_BOOM_EXIT_POLICY_TOOLTIPS[p]}
-                ariaPressed={exitPolicy === p}
-              >
-                {SILENT_BOOM_EXIT_POLICY_LABELS[p]}
-              </FilterChip>
-            ))}
-          </div>
-
-          {/* Row 3: sort + vol/OI floor */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>sort</span>
-            {SORT_OPTIONS.map((s) => (
-              <FilterChip
-                key={s.value}
-                active={sortMode === s.value}
-                activeColor="sky"
-                onClick={() => setSortMode(s.value)}
-                title={s.tooltip}
-                ariaPressed={sortMode === s.value}
-              >
-                {s.label}
-              </FilterChip>
-            ))}
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>vol/OI</span>
             {VOL_OI_FLOORS.map((f) => (
@@ -1262,7 +1237,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             ))}
           </div>
 
-          {/* Row 4: option type + hide-late-PM */}
+          {/* Row 4: Type (calls/puts) + Moneyness + Time-of-day. Three
+              orthogonal slicers — mirrors LotteryFinder Row 4. */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>type</span>
             {[
@@ -1346,7 +1322,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {t.label}
               </FilterChip>
             ))}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+          </div>
+
+          {/* Row 5: Hide-toggles + aggressive premium. Independent
+              boolean filters — collected in one row to mirror
+              LotteryFinder's Row 5. */}
+          <div className="flex flex-wrap items-center gap-1.5">
             <FilterChip
               active={hideLatePm}
               activeColor="purple"
@@ -1427,7 +1408,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             </FilterChip>
           </div>
 
-          {/* Row 4 (conditional): ticker chips */}
+          {/* Row 6 (conditional): ticker chips */}
           {(topTickers.length > 0 || tickerFilter) && (
             <div className="flex flex-wrap items-center gap-1.5">
               <span className={SECTION_LABEL}>ticker</span>
@@ -1465,6 +1446,31 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 )}
             </div>
           )}
+
+          {/* Row 7: realized-exit policy. Whichever chip is active
+              becomes the primary % shown on every row. Mirrors the
+              LotteryFinder pattern: exit selector lives at the bottom
+              of the toolbar so muscle memory carries between panels. */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span
+              className={SECTION_LABEL}
+              title="Choose which realized exit % is shown as the primary number on every alert. Peak is a look-ahead reference; the 30m / 60m / 120m / EOD options are tradeable horizons from the spike bucket start."
+            >
+              exit
+            </span>
+            {EXIT_POLICIES.map((p) => (
+              <FilterChip
+                key={p}
+                active={exitPolicy === p}
+                activeColor="purple"
+                onClick={() => setExitPolicy(p)}
+                title={SILENT_BOOM_EXIT_POLICY_TOOLTIPS[p]}
+                ariaPressed={exitPolicy === p}
+              >
+                {SILENT_BOOM_EXIT_POLICY_LABELS[p]}
+              </FilterChip>
+            ))}
+          </div>
         </div>
 
         {/* Body */}

@@ -256,7 +256,6 @@ const MODE_FILTERS: Array<{ value: LotteryMode | null; label: string }> = [
   { value: 'B_multi_day_DTE1_3', label: 'Mode B (DTE 1-3)' },
 ];
 
-
 const todayCt = (): string => {
   const fmt = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Chicago',
@@ -1113,10 +1112,10 @@ export function LotteryFinderSection({
             ))}
           </div>
 
-          {/* Row 4: Type (calls/puts) + Time-of-day. Two single-select
-            groups merged into one row with a divider — both are
-            narrow-cardinality option-type filters and read more
-            cleanly side-by-side than as separate rows. */}
+          {/* Row 4: Type (calls/puts) + Moneyness + Time-of-day. Three
+            single-select option-type groups merged into one row with
+            dividers — narrow-cardinality filters that read cleanly
+            side-by-side. */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>type</span>
             {[
@@ -1182,7 +1181,13 @@ export function LotteryFinderSection({
                 {t.label}
               </FilterChip>
             ))}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+          </div>
+
+          {/* Row 5: Hide-toggles + aggressive premium. Independent
+            boolean filters that prune the displayed result set without
+            affecting the underlying DB query. Grouped here so the
+            muscle-memory position matches SilentBoom. */}
+          <div className="flex flex-wrap items-center gap-1.5">
             <FilterChip
               active={hideLatePm}
               activeColor="purple"
@@ -1239,7 +1244,7 @@ export function LotteryFinderSection({
             </FilterChip>
           </div>
 
-          {/* Row 5 (conditional): Ticker chips — top tickers in the
+          {/* Row 6 (conditional): Ticker chips — top tickers in the
             current result set, click to scope to one ticker. Universe
             is ~50 tickers; we show only those actually present so the
             user can spot the dominant tickers of the day at a glance. */}
@@ -1281,7 +1286,7 @@ export function LotteryFinderSection({
             </div>
           )}
 
-          {/* Row 6: Exit policy selector — single-select set governing
+          {/* Row 7: Exit policy selector — single-select set governing
             which realized-exit metric drives the row badges below. */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className={SECTION_LABEL}>realized exit</span>
