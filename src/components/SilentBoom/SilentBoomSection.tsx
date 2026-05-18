@@ -711,6 +711,17 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (hideGated) {
       out = out.filter((a) => !a.directionGated);
     }
+    if (hideCounterFlow) {
+      out = out.filter((a) => {
+        const ncp = a.tickerCumNcpAtFire;
+        const npp = a.tickerCumNppAtFire;
+        if (ncp == null || npp == null) return true;
+        const delta = ncp - npp;
+        if (delta === 0) return true;
+        if (a.optionType === 'C') return delta > 0;
+        return delta < 0;
+      });
+    }
     if (hideRoundTripped) {
       out = out.filter((a) => (a.roundTripScoreDeduct ?? 0) >= 0);
     }
@@ -723,17 +734,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
           a.roundTripNetPct == null ||
           a.roundTripNetPct >= ROUND_TRIPPED_ANY_DTE_CUTOFF,
       );
-    }
-    if (hideCounterFlow) {
-      out = out.filter((a) => {
-        const ncp = a.tickerCumNcpAtFire;
-        const npp = a.tickerCumNppAtFire;
-        if (ncp == null || npp == null) return true;
-        const delta = ncp - npp;
-        if (delta === 0) return true;
-        if (a.optionType === 'C') return delta > 0;
-        return delta < 0;
-      });
     }
     if (moneynessMode !== 'all') {
       out = out.filter((a) => {
