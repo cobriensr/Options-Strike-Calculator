@@ -506,6 +506,19 @@ export const LotteryRow = memo(function LotteryRow({
             {gated.label}
           </span>
         )}
+        {/* Per-ticker flow at fire time — frozen snapshot. Sits
+            immediately before the live Flow Match badge so the
+            fire-time and live per-ticker signals read together. */}
+        {flow && (
+          <span
+            data-testid="lottery-row-flow-chip"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
+            title={flow.tooltip}
+            aria-label={flow.tooltip}
+          >
+            {flow.label}
+          </span>
+        )}
         {/* Flow Match / Mismatch — does the ticker's live cum NCP/NPP
             delta agree with this alert's option type? Green when the
             tape is on the bet's side, red when fighting it. */}
@@ -775,19 +788,6 @@ export const LotteryRow = memo(function LotteryRow({
             title={tide.tooltip}
           >
             {tide.label}
-          </span>
-        )}
-        {/* Per-ticker flow at fire time — frozen snapshot. Sits between
-            the market-wide Tide chip and the live Flow Match badge so
-            the row reads macro → fire-time micro → live micro. */}
-        {flow && (
-          <span
-            data-testid="lottery-row-flow-chip"
-            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
-            title={flow.tooltip}
-            aria-label={flow.tooltip}
-          >
-            {flow.label}
           </span>
         )}
 
