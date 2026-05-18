@@ -139,20 +139,19 @@ describe('computeSilentBoomScore', () => {
     // 0.999 stays in the high-penalty band (cliff is at exactly 1.0).
     expect(computeSilentBoomScore({ ...ZERO_BASE, askPct: 0.999 })).toBe(-1);
     // ask = 1.0 — saturation penalty forces tier3. Penalty
-    // escalated −30 → −32 in Phase B and again −32 → −36 in Phase
-    // D-1 to keep the invariant intact against the cumulative new
-    // bonuses (pre_trade_count, adj_cofire, cadence, spread).
-    expect(computeSilentBoomScore({ ...ZERO_BASE, askPct: 1.0 })).toBe(-36);
+    // escalated −30 → −32 (Phase B) → −36 (Phase D-1) → −38
+    // (Phase D-2, 2026-05-18) to keep the invariant intact as new
+    // bonus dimensions stacked (pre_trade_count, adj_cofire,
+    // cadence, spread, mid-band cadence peak +3).
+    expect(computeSilentBoomScore({ ...ZERO_BASE, askPct: 1.0 })).toBe(-38);
   });
 
   it('saturation: best-possible inputs at ask=1.0 still land below tier2', () => {
-    // Same components as the "strongest possible alert" case, but
-    // with ask_pct = 1.0 instead of 0.75. Post-#171 top non-DOW
-    // non-bonus score is +34, drops to -4 after −36 saturation
-    // penalty (loses the +2 ask reward and applies -36). Even with
-    // ALL non-ask bonuses stacked (Friday × CALL + pre_trade ≥501 +
-    // adj_cofire + distributed cadence + Q3 spread → +10 of bonus),
-    // the result is still below tier2 floor of 8 → tier3.
+    // Post-#171 top non-DOW non-bonus = +34. Phase D-2 ask
+    // saturation -38: 34 - 2 (lost ask reward) - 38 = -6. Even
+    // stacking ALL non-ask bonuses (Friday × CALL + pre_trade ≥501
+    // + adj_cofire + mid-band cadence + Q3 spread → +12 of bonus)
+    // lands at +6 — still below tier2 floor of 8 → tier3.
     const saturated: SilentBoomScoreInput = {
       dte: 0,
       baselineVolume: 400,
@@ -168,19 +167,19 @@ describe('computeSilentBoomScore', () => {
       spreadInBucket: null, // no spread weight
     };
     const score = computeSilentBoomScore(saturated);
-    expect(score).toBe(-4);
+    expect(score).toBe(-6);
     expect(score).toBeLessThan(SILENT_BOOM_TIER_THRESHOLDS.tier2MinScore);
     expect(silentBoomScoreTier(score)).toBe('tier3');
 
-    // Stack ALL non-ask bonuses (Friday × CALL + pre_trade ≥501 +
-    // adj_cofire + distributed cadence + Q3 spread) and confirm we
-    // *still* fall short of tier2.
+    // Stack ALL non-ask bonuses — Phase D-2's max cadence bonus is
+    // the +3 mid-band (50-75%), not the (now-zero-weight) <25%
+    // distributed band.
     const saturatedMaxBonus = computeSilentBoomScore({
       ...saturated,
       tradingDay: '2026-05-15', // Friday → +1 Fri-CALL bonus
       preTradeCount: 1000, // ≥501 → +4 heavy bonus
       adjCofire: true, // adj_cofire → +2 bonus
-      firstMinShare: 0.1, // distributed → +1 bonus
+      firstMinShare: 0.6, // 0.5-0.75 mid band → +3 bonus
       spreadInBucket: 0.15, // Q3 wide → +2 bonus
     });
     expect(saturatedMaxBonus).toBe(6);
@@ -196,20 +195,40 @@ describe('computeSilentBoomScore', () => {
     );
   });
 
-  it('pre_trade_count: heavy-activity 501+ adds +4, anything below is 0', () => {
+  it('pre_trade_count (Phase D-2 step function): 0 neutral, 1-25 -2, 26-100 -1, 101-500 0, 501+ +4', () => {
+    // 0 (dead silent) → 0 (no weight).
+    expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 0 })).toBe(-1);
+    // 1-25 bucket — worst cohort, -2 penalty.
+    expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 1 })).toBe(
+      -1 + -2,
+    );
+    expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 25 })).toBe(
+      -1 + -2,
+    );
+    // 26-100 bucket — -1 mild drag.
+    expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 26 })).toBe(
+      -1 + -1,
+    );
+    expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 100 })).toBe(
+      -1 + -1,
+    );
+    // 101-500 bucket — ~baseline, 0 weight.
+    expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 101 })).toBe(
+      -1,
+    );
     expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 500 })).toBe(
       -1,
-    ); // Below threshold → no bonus.
+    );
+    // 501+ — heavy-activity +4 bonus (Phase A, unchanged).
     expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 501 })).toBe(
       -1 + 4,
-    ); // At threshold → bonus fires.
+    );
     expect(
       computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 10_000 }),
-    ).toBe(-1 + 4); // Far above → still +4 (one bucket only).
-    expect(computeSilentBoomScore({ ...ZERO_BASE, preTradeCount: 0 })).toBe(-1); // Explicit dead-silent baseline.
+    ).toBe(-1 + 4);
   });
 
-  it('strongest possible alert post-#171 stacks every bonus to +44', () => {
+  it('strongest possible alert Phase D-2 stacks every bonus to +46', () => {
     // Wednesday baseline — no DOW bonus, no heavy-activity bonus,
     // no cadence weight, no spread weight.
     // 0DTE + baseline 200–500 + ratio 5–10× + price <$0.50 +
@@ -254,36 +273,37 @@ describe('computeSilentBoomScore', () => {
       }),
     ).toBe(41);
 
-    // Stack: + first_min_share distributed (+1) → +42
+    // Stack: + first_min_share 50-75% (+3, Phase D-2 mid-band peak) → +44
     expect(
       computeSilentBoomScore({
         ...topNoBonus,
         tradingDay: '2026-05-15',
         preTradeCount: 1_000,
         adjCofire: true,
-        firstMinShare: 0.1, // <0.25 → distributed
-      }),
-    ).toBe(42);
-
-    // Stack: + spread Q3 wide (+2) → +44 (post-#171 absolute ceiling)
-    expect(
-      computeSilentBoomScore({
-        ...topNoBonus,
-        tradingDay: '2026-05-15',
-        preTradeCount: 1_000,
-        adjCofire: true,
-        firstMinShare: 0.1,
-        spreadInBucket: 0.15, // ≥0.1122 → Q3 wide
+        firstMinShare: 0.6, // 0.5-0.75 → +3 (the Phase D-2 max cadence bonus)
       }),
     ).toBe(44);
+
+    // Stack: + spread Q3 wide (+2) → +46 (Phase D-2 absolute ceiling)
+    expect(
+      computeSilentBoomScore({
+        ...topNoBonus,
+        tradingDay: '2026-05-15',
+        preTradeCount: 1_000,
+        adjCofire: true,
+        firstMinShare: 0.6,
+        spreadInBucket: 0.15, // ≥0.1122 → Q3 wide
+      }),
+    ).toBe(46);
   });
 
-  it('worst possible alert post-#171 lands at -31 (cadence + spread can subtract too)', () => {
+  it('worst possible alert Phase D-2 lands at -31 (cadence softened to -1; pre_trade adds -2)', () => {
     // 30D+ + baseline <50 + ratio 100×+ + price $5+ + LATE + ask% ≥0.95
-    // + put + Monday-PUT bonus + single-block cadence + Q0 spread →
-    // -8 -1 -3 -5 -5 -1 + 0 + (-2) + (-3) + (-3) = -31.
-    // pre_trade_count and adj_cofire never add penalties; cadence and
-    // spread now CAN — this is the new floor.
+    // + put + Monday-PUT bonus + pre_trade 1-25 + single-block cadence
+    // + Q0 spread → -8 -1 -3 -5 -5 -1 + 0 + (-2) + (-2) + (-1) + (-3)
+    // = -31. The single-block cadence penalty softened from -3 to -1
+    // and pre_trade_count 1-25 added -2 — exactly offsetting, so the
+    // floor is unchanged from Phase D-1.
     const worst: SilentBoomScoreInput = {
       dte: 60,
       baselineVolume: 30,
@@ -293,9 +313,9 @@ describe('computeSilentBoomScore', () => {
       tod: 'LATE',
       optionType: 'P',
       tradingDay: '2026-05-11', // Monday — Mon × PUT = -2
-      preTradeCount: 0,
+      preTradeCount: 10, // 1-25 bucket → -2 (Phase D-2 NEW)
       adjCofire: false,
-      firstMinShare: 0.9, // >0.75 → single-block penalty -3
+      firstMinShare: 0.9, // >0.75 → single-block penalty -1 (softened)
       spreadInBucket: 0.01, // <0.0181 → Q0 tight penalty -3
     };
     expect(computeSilentBoomScore(worst)).toBe(-31);
@@ -308,34 +328,35 @@ describe('computeSilentBoomScore', () => {
     );
   });
 
-  it('first_min_share (H2): distributed <25% +1, single-block >75% -3, mid bands 0, null 0', () => {
+  it('first_min_share (H2 Phase D-2): <25% 0, 25-50% +2, 50-75% +3, ≥75% -1, null 0', () => {
     // Null → no weight applied (baseline -1 from ZERO_BASE ask=0.95).
     expect(computeSilentBoomScore({ ...ZERO_BASE, firstMinShare: null })).toBe(
       -1,
     );
-    // Distributed cadence: <25% in first 60s → +1.
+    // <25% distributed band — no edge on full cohort, 0 weight.
     expect(computeSilentBoomScore({ ...ZERO_BASE, firstMinShare: 0.1 })).toBe(
-      -1 + 1,
+      -1,
     );
-    // Right at the 0.25 boundary — strict <, so 0.25 is NOT distributed.
+    // Right at the 0.25 boundary — inclusive lower for the 25-50%
+    // band (Phase D-2 refit). 0.25 IS the 25-50% band.
     expect(computeSilentBoomScore({ ...ZERO_BASE, firstMinShare: 0.25 })).toBe(
-      -1,
+      -1 + 2,
     );
-    // Moderate (25–50%) — no weight.
+    // 25-50% mid-band — +2 (Phase D-2 NEW).
     expect(computeSilentBoomScore({ ...ZERO_BASE, firstMinShare: 0.4 })).toBe(
-      -1,
+      -1 + 2,
     );
-    // Concentrated (50–75%) — no weight.
+    // 50-75% mid-band peak — +3 (Phase D-2 NEW max cadence bonus).
     expect(computeSilentBoomScore({ ...ZERO_BASE, firstMinShare: 0.6 })).toBe(
-      -1,
+      -1 + 3,
     );
-    // Right at the 0.75 boundary — strict >, so 0.75 is NOT single-block.
+    // Right at the 0.75 boundary — inclusive lower for the ≥75% band.
     expect(computeSilentBoomScore({ ...ZERO_BASE, firstMinShare: 0.75 })).toBe(
-      -1,
+      -1 + -1,
     );
-    // Single-block: >75% in first 60s → -3.
+    // ≥75% single-block — softened from -3 to -1 (Phase D-2).
     expect(computeSilentBoomScore({ ...ZERO_BASE, firstMinShare: 0.9 })).toBe(
-      -1 + -3,
+      -1 + -1,
     );
   });
 

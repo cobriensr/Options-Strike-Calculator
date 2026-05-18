@@ -250,8 +250,17 @@ _DOW_TYPE_BONUS = {
     (0, 'P'): -2,  # Monday × PUT  (-3.8pp lift, n=5,011)
 }
 
-_PRE_TRADE_COUNT_HEAVY_THRESHOLD = 501
-_PRE_TRADE_COUNT_HEAVY_BONUS = 4
+# Phase D-2 pre_trade_count step function — replaces the original
+# Phase A "only-501+-bonus" rule after the full-64k recalibration
+# (docs/tmp/sb-now-vs-future-v2-output.txt) showed clean monotonic
+# signal across all activity bands.
+_PRE_TRADE_COUNT_WEIGHTS = [
+    (0, 0),     # 0 → 0 (no trades yet — neutral)
+    (25, -2),   # 1-25 → -2 (worst cohort)
+    (100, -1),  # 26-100 → -1 (mild drag)
+    (500, 0),   # 101-500 → 0 (~baseline)
+]
+_PRE_TRADE_COUNT_HEAVY_BONUS = 4  # 501+ → +4 (Phase A, unchanged)
 
 # Phase B adj_cofire bonus — TRUE when another SB fire exists at the
 # adjacent strike (±$1 default, ±$5 for cash-index roots) on the
@@ -260,12 +269,16 @@ _PRE_TRADE_COUNT_HEAVY_BONUS = 4
 # 16.0% non-cofire (+5.8pp lift).
 _ADJ_COFIRE_BONUS = 2
 
-# Phase D-1 H2 first_min_share cadence — distributed (<25% in min1)
-# +1, single-block (>75%) -3. Mid bands are 0.
-_FIRST_MIN_SHARE_DISTRIBUTED_MAX = 0.25
-_FIRST_MIN_SHARE_SINGLE_BLOCK_MIN = 0.75
-_FIRST_MIN_SHARE_DISTRIBUTED_BONUS = 1
-_FIRST_MIN_SHARE_SINGLE_BLOCK_PENALTY = -3
+# Phase D-2 H2 first_min_share — refit against full 64k cohort
+# (docs/tmp/sb-now-vs-future-v2-output.txt). Pass B's distributed-
+# cadence-wins signal was a sub-sample bias; full cohort puts the
+# edge in the mid bands.
+_FIRST_MIN_SHARE_WEIGHTS = [
+    (0.25, 0),  # <0.25 distributed → 0 (no edge on full cohort)
+    (0.5, 2),   # 0.25-0.5 → +2 (lift +4.8pp)
+    (0.75, 3),  # 0.5-0.75 → +3 (lift +8.7pp, mid-band peak)
+]
+_FIRST_MIN_SHARE_SINGLE_BLOCK_PENALTY = -1  # ≥0.75 → -1 (softened)
 
 # Phase D-1 H5 spread_in_bucket — Q0 (<0.0181) tight spreads -3,
 # Q3 (>=0.1122) wide spreads +2. Mid bands are 0.
@@ -331,29 +344,39 @@ def compute_silent_boom_score(
     s += _TOD_WEIGHTS[tod]
     # Ask% — saturation cliff at ask_pct = 1.0 forces tier3 (spec:
     # docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md).
-    # Penalty escalated -30 → -32 in Phase B then -32 → -36 in
-    # Phase D-1 (2026-05-17) to preserve the tier3 invariant against
-    # the cumulative bonuses (max +44 with cadence + spread).
+    # Penalty escalated -30 → -32 (Phase B) → -36 (Phase D-1) → -38
+    # (Phase D-2) to preserve the tier3 invariant against the +46
+    # max ceiling.
     if   ask_pct < 0.85: s += 2
     elif ask_pct < 0.95: s += 1
     elif ask_pct < 1.0:  s += -1
-    else:                s += -36
+    else:                s += -38
     # Call bonus
     if option_type == 'C':
         s += 1
     # DOW × option_type bonus
     s += _dow_type_bonus(trading_day, option_type)
-    # Pre-trade-count heavy-activity bonus (≥501 trades pre-spike).
-    if pre_trade_count >= _PRE_TRADE_COUNT_HEAVY_THRESHOLD:
+    # Pre-trade-count step function (Phase D-2 refit).
+    ptc_scored = False
+    for max_count, points in _PRE_TRADE_COUNT_WEIGHTS:
+        if pre_trade_count <= max_count:
+            s += points
+            ptc_scored = True
+            break
+    if not ptc_scored:
         s += _PRE_TRADE_COUNT_HEAVY_BONUS
     # Adjacent-strike co-fire bonus (Phase B).
     if adj_cofire:
         s += _ADJ_COFIRE_BONUS
-    # Phase D-1 H2 cadence bonus/penalty.
+    # Phase D-2 H2 cadence step function.
     if first_min_share is not None:
-        if first_min_share < _FIRST_MIN_SHARE_DISTRIBUTED_MAX:
-            s += _FIRST_MIN_SHARE_DISTRIBUTED_BONUS
-        elif first_min_share > _FIRST_MIN_SHARE_SINGLE_BLOCK_MIN:
+        fms_scored = False
+        for max_share, points in _FIRST_MIN_SHARE_WEIGHTS:
+            if first_min_share < max_share:
+                s += points
+                fms_scored = True
+                break
+        if not fms_scored:
             s += _FIRST_MIN_SHARE_SINGLE_BLOCK_PENALTY
     # Phase D-1 H5 in-bucket spread bonus/penalty.
     if spread_in_bucket is not None:
