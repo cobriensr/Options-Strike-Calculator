@@ -165,6 +165,7 @@ export function parseOccSymbol(occ: string): OccParsed {
  *
  *   TSLA261016C00800000 @ 4.30 x 5 long
  *   https://unusualwhales.com/option-chain/TSLA261016C00800000 @ 4.30 x 5
+ *   https://unusualwhales.com/flow/option_chains?chain=NFLX260522P00091000 @ 4 x 1
  *
  * Order is: optional `long|short` prefix, then EITHER a natural-language
  * `ticker strike+side date` OR an OCC symbol / Unusual Whales option-chain
@@ -424,11 +425,12 @@ function parseUsDate(s: string): Date {
 }
 
 // OCC fast-path helpers — match either a bare OCC symbol (with or
-// without root padding) or an Unusual Whales option-chain URL of the
-// form `[https://[www.]]unusualwhales.com/option-chain/<OCC>`. Body
-// shape: <root 1–6><YYMMDD 6 digits><C|P><strike 8 digits>.
-const UW_URL_RE =
-  /^(?:https?:\/\/)?(?:www\.)?unusualwhales\.com\/option-chain\/([A-Z][A-Z0-9.-]{0,5}\d{6}[CP]\d{8})$/i;
+// without root padding) or an Unusual Whales URL carrying a full OCC
+// body, in either of two shapes:
+//   1. `[https://[www.]]unusualwhales.com/option-chain/<OCC>` (path-style)
+//   2. `[https://[www.]]unusualwhales.com/flow/option_chains?chain=<OCC>`
+// Body shape: <root 1–6><YYMMDD 6 digits><C|P><strike 8 digits>.
+const OCC_BODY_RE = /^[A-Z][A-Z0-9.-]{0,5}\d{6}[CP]\d{8}$/;
 // Root may include trailing spaces (OCC's 6-char padding) — match a
 // flexible internal whitespace and normalize after.
 const BARE_OCC_RE = /^([A-Z][A-Z0-9.-]{0,5}\s{0,5}\d{6}[CP]\d{8})$/i;
@@ -442,8 +444,39 @@ const BARE_OCC_RE = /^([A-Z][A-Z0-9.-]{0,5}\s{0,5}\d{6}[CP]\d{8})$/i;
  */
 function extractOccToken(input: string): string | null {
   const trimmed = input.trim();
-  const urlMatch = UW_URL_RE.exec(trimmed);
-  if (urlMatch) return urlMatch[1]!.toUpperCase();
+
+  // URL path: try parsing as a UW URL (either shape) before falling
+  // back to bare-OCC. The `URL` constructor needs a protocol, so
+  // prepend `https://` for protocol-less inputs like
+  // `unusualwhales.com/option-chain/<OCC>`.
+  if (/^(?:https?:\/\/)?(?:www\.)?unusualwhales\.com\//i.test(trimmed)) {
+    const withProto = /^https?:\/\//i.test(trimmed)
+      ? trimmed
+      : `https://${trimmed}`;
+    try {
+      const url = new URL(withProto);
+      const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+      if (host === 'unusualwhales.com') {
+        const pathMatch = /^\/option-chain\/([A-Za-z0-9.-]+)$/.exec(
+          url.pathname,
+        );
+        if (pathMatch) {
+          const body = pathMatch[1]!.toUpperCase();
+          if (OCC_BODY_RE.test(body)) return body;
+        }
+        if (url.pathname === '/flow/option_chains') {
+          const chain = url.searchParams.get('chain');
+          if (chain != null) {
+            const upper = chain.toUpperCase();
+            if (OCC_BODY_RE.test(upper)) return upper;
+          }
+        }
+      }
+    } catch {
+      // Malformed URL — fall through to bare-OCC attempt.
+    }
+  }
+
   const bareMatch = BARE_OCC_RE.exec(trimmed);
   if (bareMatch) return bareMatch[1]!.toUpperCase();
   return null;

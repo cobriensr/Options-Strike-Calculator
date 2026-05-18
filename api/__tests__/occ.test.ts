@@ -523,6 +523,34 @@ describe('parseFreeText — OCC symbol + Unusual Whales URL paths', () => {
     ).toThrow();
   });
 
+  it('parses a UW flow URL with chain=<OCC>', () => {
+    const r = parseFreeText(
+      'https://unusualwhales.com/flow/option_chains?chain=NFLX260522P00091000 @ 4.30 x 5 long',
+    );
+    expect(r.ticker).toBe('NFLX');
+    expect(r.side).toBe('P');
+    expect(r.strike).toBe(91);
+    expect(r.expiry.toISOString().slice(0, 10)).toBe('2026-05-22');
+    expect(r.direction).toBe('long');
+  });
+
+  it('parses a UW flow URL with extra query params alongside chain=<OCC>', () => {
+    const r = parseFreeText(
+      'https://unusualwhales.com/flow/option_chains?tab=live&chain=AMZN260619C00150000&sort=premium @ 2.10 x 3',
+    );
+    expect(r.ticker).toBe('AMZN');
+    expect(r.side).toBe('C');
+    expect(r.strike).toBe(150);
+  });
+
+  it('throws on a UW flow URL with ticker-only chain (no full contract)', () => {
+    expect(() =>
+      parseFreeText(
+        'https://unusualwhales.com/flow/option_chains?chain=NFLX @ 1 x 1',
+      ),
+    ).toThrow();
+  });
+
   it("throws on garbage that almost-but-doesn't match either shape", () => {
     expect(() => parseFreeText('TSLA chain @ 1 x 1')).toThrow();
   });
