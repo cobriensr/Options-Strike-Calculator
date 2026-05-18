@@ -3,7 +3,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   computeLotteryScore,
-  fireCountScoreAdjustment,
   gammaScoreAdjustment,
   lotteryScoreTier,
   LOTTERY_TICKER_WEIGHTS,
@@ -118,41 +117,14 @@ describe('lotteryScoreTier', () => {
 });
 
 // ============================================================
-// fireCountScoreAdjustment — read-time burst-count modifier
-// (basis: docs/tmp/burst-profitability-findings-2026-05-17.md)
+// fireCountScoreAdjustment was retired in commit 16fd1655. The
+// adjustment is now a stored DB column (`fire_count_score_adjustment`,
+// migration #167) read directly by api/lottery-finder.ts:1005, so
+// the read-time TS helper is no longer needed and the test was
+// deleted with it. Bucket boundaries (−3/−1/0/+1/+2) are now owned
+// by the migration SQL — see api/_lib/db-migrations.ts:#167 if you
+// need to verify them.
 // ============================================================
-
-describe('fireCountScoreAdjustment', () => {
-  it('penalises single-fire chains by -3 (mean R = -5.8%, 45% win rate)', () => {
-    expect(fireCountScoreAdjustment(1)).toBe(-3);
-  });
-
-  it('penalises 2-3 fire chains by -1', () => {
-    expect(fireCountScoreAdjustment(2)).toBe(-1);
-    expect(fireCountScoreAdjustment(3)).toBe(-1);
-  });
-
-  it('returns 0 (neutral) for the 4-7 fire baseline bucket', () => {
-    expect(fireCountScoreAdjustment(4)).toBe(0);
-    expect(fireCountScoreAdjustment(7)).toBe(0);
-  });
-
-  it('awards +1 to the 8-15 fire bucket (knee of the burst curve)', () => {
-    expect(fireCountScoreAdjustment(8)).toBe(1);
-    expect(fireCountScoreAdjustment(15)).toBe(1);
-  });
-
-  it('awards +2 to chains with ≥16 fires (highest-edge cohort)', () => {
-    expect(fireCountScoreAdjustment(16)).toBe(2);
-    expect(fireCountScoreAdjustment(100)).toBe(2);
-    expect(fireCountScoreAdjustment(359)).toBe(2); // max observed across 93 days
-  });
-
-  it('defensive: 0 and negative fire_count return 0 (never observed in production)', () => {
-    expect(fireCountScoreAdjustment(0)).toBe(0);
-    expect(fireCountScoreAdjustment(-1)).toBe(0);
-  });
-});
 
 // ============================================================
 // gammaScoreAdjustment — outside-the-box winner-feature bonus
