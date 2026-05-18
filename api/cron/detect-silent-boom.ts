@@ -210,10 +210,16 @@ export default withCronInstrumentation(
         -- columns; gamma stays in the JSONB envelope. NULL when the
         -- bucket has zero non-null gamma weight. Migration #168
         -- added gamma_at_trigger as the storage column on
-        -- silent_boom_alerts.
-        SUM((raw_payload->>'gamma')::numeric * size)
-          FILTER (WHERE raw_payload->>'gamma' IS NOT NULL)
-          / NULLIF(SUM(size) FILTER (WHERE raw_payload->>'gamma' IS NOT NULL), 0)
+        -- silent_boom_alerts. The NULLIF coerces UW's occasional
+        -- literal empty string (~0.3% of rows) to SQL NULL so the
+        -- ::numeric cast never sees "" — and so the FILTER predicate
+        -- excludes those rows from both numerator and denominator.
+        SUM(NULLIF(raw_payload->>'gamma', '')::numeric * size)
+          FILTER (WHERE NULLIF(raw_payload->>'gamma', '') IS NOT NULL)
+          / NULLIF(
+              SUM(size) FILTER (WHERE NULLIF(raw_payload->>'gamma', '') IS NOT NULL),
+              0
+            )
           AS bucket_gamma,
         -- H2 in-bucket cadence: fraction of size landing in the first
         -- 60s of the bucket. Migration #171 added first_min_share as

@@ -45,8 +45,8 @@ describe('gexbot-client', () => {
       }
     });
 
-    it('STATE_MAXCHANGE_CATEGORIES mirrors STATE_CATEGORIES exactly', () => {
-      expect(STATE_MAXCHANGE_CATEGORIES).toBe(STATE_CATEGORIES);
+    it('STATE_MAXCHANGE_CATEGORIES mirrors MAXCHANGE_CATEGORIES (state/maxchange only accepts the 3 DTE buckets, not Greek×DTE)', () => {
+      expect(STATE_MAXCHANGE_CATEGORIES).toBe(MAXCHANGE_CATEGORIES);
     });
 
     it('MAXCHANGE_CATEGORIES covers all 3 DTE buckets', () => {
@@ -140,10 +140,10 @@ describe('gexbot-client', () => {
     });
 
     it('fetchStateMaxchange hits /{ticker}/state/{category}/maxchange', async () => {
-      await fetchStateMaxchange('s', 'SPX', 'charm_zero');
+      await fetchStateMaxchange('s', 'SPX', 'gex_zero');
       const url = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0] as string;
-      expect(url).toBe('https://api.gex.bot/v2/SPX/state/charm_zero/maxchange');
+      expect(url).toBe('https://api.gex.bot/v2/SPX/state/gex_zero/maxchange');
     });
   });
 

@@ -238,7 +238,7 @@ describe('fetch-gexbot-fast handler', () => {
     // Verifies fetch is called with at least one URL from each of:
     //   /orderflow/orderflow
     //   /classic/{gex_zero|gex_one|gex_full}/maxchange
-    //   /state/{gamma|delta|vanna|charm}_{zero|one}/maxchange
+    //   /state/{gex_zero|gex_one|gex_full}/maxchange
     // Regression guard for the wave-3c expansion where state-maxchange
     // routes were added and could be silently dropped.
     stubFetchHappyPath();
@@ -257,7 +257,7 @@ describe('fetch-gexbot-fast handler', () => {
       /\/classic\/(gex_zero|gex_one|gex_full)\/maxchange/.test(u),
     );
     const hasStateMax = urls.some((u) =>
-      /\/state\/(gamma|delta|vanna|charm)_(zero|one)\/maxchange/.test(u),
+      /\/state\/(gex_zero|gex_one|gex_full)\/maxchange/.test(u),
     );
     expect(hasOrderflow).toBe(true);
     expect(hasClassicMax).toBe(true);
@@ -265,7 +265,7 @@ describe('fetch-gexbot-fast handler', () => {
   });
 
   it('tags Sentry with full per-failure context (ticker + endpoint + category)', async () => {
-    // When SPX/state/gamma_zero/maxchange fails, the captured Sentry
+    // When SPX/state/gex_zero/maxchange fails, the captured Sentry
     // event must carry tags identifying which ticker + endpoint +
     // category exploded — needed for "is this a GEXBot-wide outage or
     // a single-symbol issue" triage during the trial.
@@ -273,7 +273,7 @@ describe('fetch-gexbot-fast handler', () => {
       'fetch',
       vi.fn(async (input: string) => {
         const url = String(input);
-        if (url.endsWith('/SPX/state/gamma_zero/maxchange')) {
+        if (url.endsWith('/SPX/state/gex_zero/maxchange')) {
           return {
             ok: false,
             status: 503,
@@ -302,6 +302,6 @@ describe('fetch-gexbot-fast handler', () => {
     expect(opts.tags['gexbot.cron']).toBe('fast');
     expect(opts.tags['gexbot.ticker']).toBe('SPX');
     expect(opts.tags['gexbot.endpoint']).toBe('state-maxchange');
-    expect(opts.tags['gexbot.category']).toBe('gamma_zero');
+    expect(opts.tags['gexbot.category']).toBe('gex_zero');
   });
 });

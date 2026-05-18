@@ -35,7 +35,6 @@ import {
   type GexbotResponse,
   type GexbotTicker,
   type MaxchangeCategory,
-  type StateCategory,
 } from '../_lib/gexbot-client.js';
 import { insertCaptureRows, type CaptureRow } from '../_lib/gexbot-store.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -162,7 +161,7 @@ export default withCronInstrumentation(
       | {
           kind: 'state-maxchange';
           ticker: GexbotTicker;
-          category: StateCategory;
+          category: MaxchangeCategory;
         };
 
     const tasks: Task[] = [

@@ -202,8 +202,11 @@ export default withCronInstrumentation(
         -- delta in the payload; the uw-stream daemon currently only
         -- promotes delta to a typed column, so we pull gamma from the
         -- JSONB envelope here. NULL when the payload lacks the field
-        -- (older rows from before UW's wire format included it).
-        (raw_payload->>'gamma')::numeric AS gamma,
+        -- (older rows from before UW's wire format included it) OR
+        -- when UW sends the literal empty string (~0.3% of recent
+        -- rows) — NULLIF coerces both to SQL NULL so the ::numeric
+        -- cast never sees "".
+        NULLIF(raw_payload->>'gamma', '')::numeric AS gamma,
         open_interest
       FROM ws_option_trades
       WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
