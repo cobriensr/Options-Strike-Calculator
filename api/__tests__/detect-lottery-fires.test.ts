@@ -278,16 +278,19 @@ describe('detect-lottery-fires handler', () => {
     //   inferred_structure=-7, cum_npp_at_fire=-8, cum_ncp_at_fire=-9,
     //   range_pos_at_trigger=-10, direction_gated=-11, score=-12.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const takeitFeatures = insertCall.at(-1);
-    const takeitVersion = insertCall.at(-2);
-    const takeitProb = insertCall.at(-3);
-    const patternGroupId = insertCall.at(-4);
-    const matchConfidence = insertCall.at(-5);
-    const isIsolatedLeg = insertCall.at(-6);
-    const inferredStructure = insertCall.at(-7);
-    const rangePos = insertCall.at(-10);
-    const directionGated = insertCall.at(-11);
-    const score = insertCall.at(-12);
+    // Migration #168 appended gamma_at_trigger to the INSERT tail, so
+    // every prior positional index shifted by −1 (more negative).
+    const gammaAtTrigger = insertCall.at(-1);
+    const takeitFeatures = insertCall.at(-2);
+    const takeitVersion = insertCall.at(-3);
+    const takeitProb = insertCall.at(-4);
+    const patternGroupId = insertCall.at(-5);
+    const matchConfidence = insertCall.at(-6);
+    const isIsolatedLeg = insertCall.at(-7);
+    const inferredStructure = insertCall.at(-8);
+    const rangePos = insertCall.at(-11);
+    const directionGated = insertCall.at(-12);
+    const score = insertCall.at(-13);
     expect(score).toBe(25);
     // SNDK call with no OTM tide tick → ungated.
     expect(directionGated).toBe(false);
@@ -303,6 +306,8 @@ describe('detect-lottery-fires handler', () => {
     expect(isIsolatedLeg).toBeNull();
     expect(matchConfidence).toBeNull();
     expect(patternGroupId).toBeNull();
+    // lottery-fires fixture doesn't set trigger_gamma → null at the tail.
+    expect(gammaAtTrigger).toBeNull();
   });
 
   it('computes range_pos_at_trigger from UW stock candles for display use', async () => {
@@ -344,10 +349,10 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Post-#160 multileg insert: rangePos at(-10), score at(-12).
+    // Post-#168 gamma tail-append: rangePos at(-11), score at(-13).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-10);
-    const score = insertCall.at(-12);
+    const rangePos = insertCall.at(-11);
+    const score = insertCall.at(-13);
     // Spot 1170 between low 1150 and high 1200 → 0.4
     expect(rangePos).toBeCloseTo(0.4, 5);
     // No penalty applied; base 25 unchanged.
@@ -390,10 +395,10 @@ describe('detect-lottery-fires handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // Post-#160 multileg insert: rangePos at(-10), score at(-12).
+    // Post-#168 gamma tail-append: rangePos at(-11), score at(-13).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-10);
-    const score = insertCall.at(-12);
+    const rangePos = insertCall.at(-11);
+    const score = insertCall.at(-13);
     expect(rangePos).toBe(0);
     // No penalty applied — Range Kill retired. Base 25 unchanged.
     expect(score).toBe(25);
@@ -424,7 +429,7 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // INSERT bind order (post-#160 multileg tail-insert):
+    // INSERT bind order (post-#168 gamma tail-append):
     //   ... mkt_tide_diff, mkt_tide_otm_diff, spx_flow_diff,
     //   spy_etf_diff, qqq_etf_diff, zero_dte_diff,
     //   spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi,
@@ -433,16 +438,16 @@ describe('detect-lottery-fires handler', () => {
     //   gex_strike_actual_strike, score, direction_gated, range_pos_at_trigger,
     //   cum_ncp_at_fire, cum_npp_at_fire,
     //   inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
-    //   takeit_prob, takeit_model_version, takeit_features
-    // → mkt_tide_otm_diff is now the 25th-from-last bind position; the
-    //   four multileg columns shifted everything by -4 from prior layout.
+    //   takeit_prob, takeit_model_version, takeit_features, gamma_at_trigger
+    // → mkt_tide_otm_diff is the 26th-from-last bind position; #160
+    //   shifted by -4 and #168 added another -1.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-25)).toBe(3000); // 4000 - 1000
+    expect(insertCall.at(-26)).toBe(3000); // 4000 - 1000
     // Sanity: mkt_tide_diff (no 'market_tide' source in the mock) is null
-    expect(insertCall.at(-26)).toBeNull();
+    expect(insertCall.at(-27)).toBeNull();
     // SNDK call with otm_diff = +3000 (well below the ±150M gate) → ungated.
-    // direction_gated at -11 after the multileg tail-insert.
-    expect(insertCall.at(-11)).toBe(false);
+    // direction_gated at -12 after the gamma tail-append.
+    expect(insertCall.at(-12)).toBe(false);
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
@@ -464,13 +469,12 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Bind positions shifted by -4 from the prior layout for the
-    // four migration #160 multileg tail-insert columns:
-    //   inferred_structure, is_isolated_leg, match_confidence, pattern_group_id.
+    // Bind positions shifted by -4 (#160 multileg tail-insert) plus an
+    // additional -1 from migration #168's gamma_at_trigger tail-append.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-26)).toBe(200); // mkt_tide_diff = 500 - 300
-    expect(insertCall.at(-25)).toBeNull(); // mkt_tide_otm_diff absent
-    expect(insertCall.at(-11)).toBe(false); // otm null → ungated
+    expect(insertCall.at(-27)).toBe(200); // mkt_tide_diff = 500 - 300
+    expect(insertCall.at(-26)).toBeNull(); // mkt_tide_otm_diff absent
+    expect(insertCall.at(-12)).toBe(false); // otm null → ungated
   });
 
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
@@ -696,18 +700,19 @@ describe('detect-lottery-fires handler', () => {
       inserted: 1,
     });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Post-#160 multileg tail-insert, tail (12 args) is:
-    //   score(-12), direction_gated(-11), range_pos(-10),
-    //   cum_ncp_at_fire(-9), cum_npp_at_fire(-8),
-    //   inferred_structure(-7), is_isolated_leg(-6),
-    //   match_confidence(-5), pattern_group_id(-4),
-    //   takeit_prob(-3), takeit_model_version(-2), takeit_features(-1).
+    // Post-#168 gamma tail-append, tail (13 args) is:
+    //   score(-13), direction_gated(-12), range_pos(-11),
+    //   cum_ncp_at_fire(-10), cum_npp_at_fire(-9),
+    //   inferred_structure(-8), is_isolated_leg(-7),
+    //   match_confidence(-6), pattern_group_id(-5),
+    //   takeit_prob(-4), takeit_model_version(-3), takeit_features(-2),
+    //   gamma_at_trigger(-1).
     // The direction gate must NOT mutate the score value — only the
     // boolean column flips.
-    expect(insertCall.at(-11)).toBe(true);
+    expect(insertCall.at(-12)).toBe(true);
     // Score remains the computed value (not zeroed / not demoted).
-    expect(typeof insertCall.at(-12)).toBe('number');
-    expect(insertCall.at(-12) as number).toBeGreaterThan(0);
+    expect(typeof insertCall.at(-13)).toBe('number');
+    expect(insertCall.at(-13) as number).toBeGreaterThan(0);
   });
 
   it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
@@ -738,12 +743,14 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Tail layout: ..., inferred_structure(-7), is_isolated_leg(-6),
-    //              match_confidence(-5), pattern_group_id(-4), takeit_*(-3..-1).
-    expect(insertCall.at(-7)).toBe('vertical');
-    expect(insertCall.at(-6)).toBe(false);
-    expect(insertCall.at(-5)).toBe(0.83);
-    expect(insertCall.at(-4)).toBe('pg-abc-123');
+    // Post-#168 tail layout: ..., inferred_structure(-8),
+    //              is_isolated_leg(-7), match_confidence(-6),
+    //              pattern_group_id(-5), takeit_*(-4..-2),
+    //              gamma_at_trigger(-1).
+    expect(insertCall.at(-8)).toBe('vertical');
+    expect(insertCall.at(-7)).toBe(false);
+    expect(insertCall.at(-6)).toBe(0.83);
+    expect(insertCall.at(-5)).toBe('pg-abc-123');
     // Helper was called once with the alert's anchor coordinates.
     expect(mockClassifyAlertMultileg).toHaveBeenCalledTimes(1);
     const [, , ticker, optionChain] = mockClassifyAlertMultileg.mock.calls[0]!;
