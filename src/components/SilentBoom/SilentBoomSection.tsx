@@ -36,6 +36,8 @@ const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
 const HIDE_GATED_LS_KEY = 'silentBoom.hideGated';
 const HIDE_ROUND_TRIPPED_LS_KEY = 'silentBoom.hideRoundTripped';
 const HIDE_ROUND_TRIPPED_ANY_DTE_LS_KEY = 'silentBoom.hideRoundTrippedAnyDte';
+const MIN_DTE_LS_KEY = 'silentBoom.minDte';
+const MIN_PREMIUM_K_LS_KEY = 'silentBoom.minPremiumK';
 /** Structural round-trip cutoff: net_pct < this → contract clearly
  *  reversed in the 60-min post-fire window. Not outcome-predictive at
  *  8+ DTE (AUC 0.528) — pure structural filter. */
@@ -122,32 +124,6 @@ const TOD_FILTERS: Array<{ value: SilentBoomTod | null; label: string }> = [
   { value: 'MID', label: 'MID' },
   { value: 'LUNCH', label: 'LUNCH' },
   { value: 'PM', label: 'PM' },
-];
-
-const DTE_FILTERS: Array<{
-  value: SilentBoomDteBucket | null;
-  label: string;
-  tooltip: string;
-}> = [
-  { value: null, label: 'all DTE', tooltip: 'Show alerts at every DTE.' },
-  {
-    value: '0',
-    label: '0DTE',
-    tooltip:
-      '0DTE only — same-day expiry. Audit lift 3.03× (48.2% peak ≥ 50%); the strongest single segmenter.',
-  },
-  {
-    value: '1-3',
-    label: '1-3D',
-    tooltip:
-      '1-3 days to expiry. Audit lift 1.47× (23.5% peak ≥ 50%) — second-best DTE bucket.',
-  },
-  {
-    value: '4+',
-    label: '4D+',
-    tooltip:
-      '4+ days to expiry. Audit lift drops to 0.88× (4-7D) and below; weakest DTE buckets.',
-  },
 ];
 
 /**
@@ -412,7 +388,27 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     null,
   );
   const [todFilter, setTodFilter] = useState<SilentBoomTod | null>(null);
-  const [dteFilter, setDteFilter] = useState<SilentBoomDteBucket | null>(null);
+  // Numeric DTE floor — 0 means all DTEs. Replaces the legacy enum
+  // chip group (0DTE / 1-3D / 4D+) so the user can scope to e.g. "1+"
+  // (= 1-DTE and beyond) which the bucket form couldn't express.
+  const [minDte, setMinDte] = useState<number>(() => {
+    if (typeof window === 'undefined') return 0;
+    const stored = window.localStorage.getItem(MIN_DTE_LS_KEY);
+    const n = stored == null ? 0 : Number.parseInt(stored, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  });
+  // Min premium floor in $K. Server-side filter so pagination reflects
+  // the post-filter count. 0 means no floor.
+  const [minPremiumK, setMinPremiumK] = useState<number>(() => {
+    if (typeof window === 'undefined') return 0;
+    const stored = window.localStorage.getItem(MIN_PREMIUM_K_LS_KEY);
+    const n = stored == null ? 0 : Number.parseInt(stored, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  });
+  // Legacy bucket state retained for type compatibility with the hook's
+  // `dte` field. Now hard-wired to null; the numeric `minDte` controls
+  // the filter exclusively from this component.
+  const dteFilter: SilentBoomDteBucket | null = null;
   const [burstFilter, setBurstFilter] = useState<SilentBoomBurstColor | null>(
     null,
   );
@@ -569,6 +565,16 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   }, [hideRoundTrippedAnyDte]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      window.localStorage.setItem(MIN_DTE_LS_KEY, String(minDte));
+    }
+  }, [minDte]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(MIN_PREMIUM_K_LS_KEY, String(minPremiumK));
+    }
+  }, [minPremiumK]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
       window.localStorage.setItem(
         AGGRESSIVE_PREMIUM_LS_KEY,
         aggressivePremium ? '1' : '0',
@@ -609,6 +615,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     optionTypeFilter,
     todFilter,
     dteFilter,
+    minDte,
+    minPremiumK,
     burstFilter,
     askPctBand,
     sortMode,
@@ -633,6 +641,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       optionType: optionTypeFilter,
       tod: todFilter,
       dte: dteFilter,
+      minDte,
+      minPremium: minPremiumK * 1000,
       burst: burstFilter,
       askPctBand,
       aggressivePremium,
@@ -654,6 +664,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     optionType: optionTypeFilter,
     tod: todFilter,
     dte: dteFilter,
+    minDte,
+    minPremium: minPremiumK * 1000,
     burst: burstFilter,
     askPctBand,
     minVolOi,
@@ -1148,26 +1160,65 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             })}
           </div>
 
-          {/* Row 2.5: DTE bucket + Burst color. DTE buckets the strongest
-              empirical segmenter so it gets prime real estate; burst is
-              visual-intensity only with a tooltip warning that smaller
-              ratios actually score better historically. */}
+          {/* Row 2.5: min DTE + min premium numeric inputs + Burst color.
+              DTE input replaced the 0DTE / 1-3D / 4D+ chip buckets so
+              the user can scope to any custom floor (e.g. "1+" to span
+              1-3D and 4D+ together — the bucket form couldn't express
+              that). Min premium is a new server-side filter that gates
+              entry_price * spike_volume * 100 ≥ N dollars. */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>dte</span>
-            {DTE_FILTERS.map((d) => (
-              <button
-                key={d.label}
-                type="button"
-                onClick={() => setDteFilter(d.value)}
-                className={`${CHIP_BASE} ${
-                  dteFilter === d.value ? CHIP_ACTIVE.blue : CHIP_INACTIVE
-                }`}
-                title={d.tooltip}
-                aria-pressed={dteFilter === d.value}
-              >
-                {d.label}
-              </button>
-            ))}
+            <label
+              className="flex items-center gap-1.5"
+              title="Minimum days-to-expiry floor. 0 shows all DTEs; N restricts to alerts with dte >= N. Server-side filter — pagination + ticker counts reflect the post-filter result."
+            >
+              <span className={SECTION_LABEL}>min dte</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={365}
+                step={1}
+                value={minDte === 0 ? '' : minDte}
+                placeholder="0"
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '') {
+                    setMinDte(0);
+                    return;
+                  }
+                  const n = Number.parseInt(raw, 10);
+                  if (Number.isFinite(n) && n >= 0) setMinDte(n);
+                }}
+                aria-label="Minimum DTE"
+                className="w-14 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs tabular-nums text-neutral-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label
+              className="flex items-center gap-1.5"
+              title="Minimum premium floor (entry_price × spike_volume × 100), in $K. 0 = no floor. Server-side filter."
+            >
+              <span className={SECTION_LABEL}>min prem $K</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={100_000}
+                step={10}
+                value={minPremiumK === 0 ? '' : minPremiumK}
+                placeholder="0"
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '') {
+                    setMinPremiumK(0);
+                    return;
+                  }
+                  const n = Number.parseInt(raw, 10);
+                  if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
+                }}
+                aria-label="Minimum premium in thousands of dollars"
+                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs tabular-nums text-neutral-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             <span className={SECTION_LABEL}>burst</span>
             {BURST_FILTERS.map((b) => (

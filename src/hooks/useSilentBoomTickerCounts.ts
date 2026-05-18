@@ -36,6 +36,10 @@ interface UseSilentBoomTickerCountsArgs {
   minScore?: number | null;
   tod?: SilentBoomTod | null;
   dte?: SilentBoomDteBucket | null;
+  /** Numeric DTE floor — 0 = all, N = only dte >= N. */
+  minDte?: number;
+  /** Numeric premium floor in dollars. */
+  minPremium?: number;
   burst?: SilentBoomBurstColor | null;
   askPctBand?: SilentBoomAskPctBand | null;
 }
@@ -68,6 +72,8 @@ export function useSilentBoomTickerCounts({
   minScore = null,
   tod = null,
   dte = null,
+  minDte = 0,
+  minPremium = 0,
   burst = null,
   askPctBand = null,
 }: UseSilentBoomTickerCountsArgs): State & { refetch: () => void } {
@@ -89,6 +95,8 @@ export function useSilentBoomTickerCounts({
       if (minScore != null) params.set('minScore', String(minScore));
       if (tod) params.set('tod', tod);
       if (dte) params.set('dte', dte);
+      if (minDte > 0) params.set('minDte', String(minDte));
+      if (minPremium > 0) params.set('minPremium', String(minPremium));
       if (burst) params.set('burst', burst);
       if (askPctBand) params.set('askPctBand', askPctBand);
       const res = await fetch(
@@ -121,6 +129,8 @@ export function useSilentBoomTickerCounts({
     minScore,
     tod,
     dte,
+    minDte,
+    minPremium,
     burst,
     askPctBand,
   ]);

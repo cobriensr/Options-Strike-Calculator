@@ -35,8 +35,16 @@ interface UseSilentBoomFeedArgs {
   minScore?: number | null;
   /** Time-of-day filter — null = all phases. */
   tod?: SilentBoomTod | null;
-  /** DTE bucket filter — null = all DTEs. */
+  /**
+   * DTE bucket filter — null = all DTEs. Legacy; new callers should
+   * use `minDte` instead. Kept for back-compat with any cached query
+   * strings. Server honors `minDte` over this when both are set.
+   */
   dte?: SilentBoomDteBucket | null;
+  /** Numeric DTE floor — 0 = all DTEs, N = only alerts with dte >= N. */
+  minDte?: number;
+  /** Numeric premium floor in dollars (entry_price × spike_volume × 100). */
+  minPremium?: number;
   /** Burst-color category filter — null = all colors. */
   burst?: SilentBoomBurstColor | null;
   /** Ask% band filter — null = all bands. */
@@ -86,6 +94,8 @@ export function useSilentBoomFeed({
   minScore = null,
   tod = null,
   dte = null,
+  minDte = 0,
+  minPremium = 0,
   burst = null,
   askPctBand = null,
   aggressivePremium = false,
@@ -115,6 +125,8 @@ export function useSilentBoomFeed({
       if (minScore != null) params.set('minScore', String(minScore));
       if (tod) params.set('tod', tod);
       if (dte) params.set('dte', dte);
+      if (minDte > 0) params.set('minDte', String(minDte));
+      if (minPremium > 0) params.set('minPremium', String(minPremium));
       if (burst) params.set('burst', burst);
       if (askPctBand) params.set('askPctBand', askPctBand);
       if (aggressivePremium) params.set('aggressivePremium', 'true');
@@ -153,6 +165,8 @@ export function useSilentBoomFeed({
     minScore,
     tod,
     dte,
+    minDte,
+    minPremium,
     burst,
     askPctBand,
     aggressivePremium,

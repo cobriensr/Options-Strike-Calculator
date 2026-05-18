@@ -119,11 +119,18 @@ export const silentBoomFeedQuerySchema = z.object({
   // server-side via CT minute-of-day boundaries that mirror
   // silentBoomTodFromMinuteCt() in api/_lib/silent-boom-score.ts.
   tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM', 'LATE']).optional(),
-  // Days-to-expiry bucket — '0' = 0DTE only, '1-3' = 1-3 days,
-  // '4+' = anything 4 or more. Audit shows 0DTE has the strongest
-  // lift (3.03×) by a wide margin; this filter lets the user scope
-  // straight to the cohort they actually trade.
+  // Days-to-expiry bucket — legacy enum kept for back-compat with any
+  // saved query strings. New UI sends `minDte` (numeric floor) instead.
+  // If both are present, `minDte` wins.
   dte: z.enum(['0', '1-3', '4+']).optional(),
+  // Numeric DTE floor — 0 = all DTEs, N = only alerts with dte >= N.
+  // Replaces the enum bucket so the user can sweep a custom range
+  // (e.g. "1+" to include 1-3D and 4D+ together).
+  minDte: z.coerce.number().int().min(0).max(10_000).optional(),
+  // Numeric premium floor in DOLLARS (entry_price * spike_volume * 100).
+  // 0 = no floor. Server-side filter so pagination reflects the
+  // post-filter count.
+  minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
   // Burst color category — matches the spike-ratio badge in
   // SilentBoomRow: 'red' = ≥50×, 'yellow' = 20-50×, 'grey' = <20×.
   // Visual-intensity ordering (NOT empirical-lift ordering — see
@@ -290,6 +297,8 @@ export const silentBoomTickerCountsQuerySchema = z.object({
   minScore: z.coerce.number().int().min(-100).max(100).optional(),
   tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM', 'LATE']).optional(),
   dte: z.enum(['0', '1-3', '4+']).optional(),
+  minDte: z.coerce.number().int().min(0).max(10_000).optional(),
+  minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
   burst: z.enum(['red', 'yellow', 'grey']).optional(),
   askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
 });

@@ -213,6 +213,8 @@ interface SilentBoomFeedResponse {
     minScore: number | null;
     tod: SilentBoomTodEnum | null;
     dte: SilentBoomDteBucket | null;
+    minDte: number | null;
+    minPremium: number | null;
     burst: SilentBoomBurstColor | null;
     askPctBand: SilentBoomAskPctBand | null;
     sort: 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
@@ -290,14 +292,14 @@ export default async function handler(
   const todLo = todRange?.lo ?? null;
   const todHi = todRange?.hi ?? null;
 
-  // DTE bucket → numeric range. '0' is exact; '1-3' is BETWEEN; '4+'
-  // is >= 4. Bind boundaries as nullable ints so the gate evaluates
-  // to TRUE when no filter is set.
-  // DTE bucket → numeric range. '0' is exact; '1-3' is BETWEEN; '4+'
-  // is >= 4. Postgres has no IS NULL OR shortcut on BETWEEN, so we
-  // encode the "no upper bound" case via a sentinel (100k — larger
-  // than any real DTE).
+  // DTE filter: numeric `minDte` takes precedence over the legacy
+  // enum bucket. When both are present we ignore the bucket. The SQL
+  // uses BETWEEN with a 100k upper-bound sentinel so the same template
+  // serves all three modes (none, bucket, min-only).
   const dteRange = (() => {
+    if (q.minDte != null && q.minDte > 0) {
+      return { lo: q.minDte, hi: 100_000 };
+    }
     if (q.dte === '0') return { lo: 0, hi: 0 };
     if (q.dte === '1-3') return { lo: 1, hi: 3 };
     if (q.dte === '4+') return { lo: 4, hi: 100_000 };
@@ -305,6 +307,10 @@ export default async function handler(
   })();
   const dteLo = dteRange?.lo ?? null;
   const dteHiBound = dteRange?.hi ?? 100_000;
+  // Premium floor — entry_price * spike_volume * 100, in dollars.
+  // null = no floor. Filtered server-side so pagination reflects the
+  // post-filter count.
+  const minPremium = q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
 
   // Burst color category → spike_ratio range. Mirrors the
   // SilentBoomRow spike badge: red >= 50×, yellow 20-50×, grey < 20×.
@@ -372,6 +378,7 @@ export default async function handler(
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+        AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
         AND (
           ${aggressivePremium}::boolean IS NOT TRUE
           OR (
@@ -418,6 +425,7 @@ export default async function handler(
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
           AND (
             ${aggressivePremium}::boolean IS NOT TRUE
             OR (
@@ -460,6 +468,7 @@ export default async function handler(
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
           AND (
             ${aggressivePremium}::boolean IS NOT TRUE
             OR (
@@ -502,6 +511,7 @@ export default async function handler(
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
           AND (
             ${aggressivePremium}::boolean IS NOT TRUE
             OR (
@@ -545,6 +555,7 @@ export default async function handler(
           AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
           AND (
             ${aggressivePremium}::boolean IS NOT TRUE
             OR (
@@ -650,6 +661,8 @@ export default async function handler(
         minScore: q.minScore ?? null,
         tod: q.tod ?? null,
         dte: q.dte ?? null,
+        minDte: q.minDte ?? null,
+        minPremium: q.minPremium ?? null,
         burst: q.burst ?? null,
         askPctBand: q.askPctBand ?? null,
         sort: q.sort,

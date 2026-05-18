@@ -96,7 +96,12 @@ export default async function handler(
   const todLo = todRange?.lo ?? null;
   const todHi = todRange?.hi ?? null;
 
+  // Numeric `minDte` wins over the legacy bucket enum when both are
+  // present — same semantics as silent-boom-feed.ts.
   const dteRange = (() => {
+    if (q.minDte != null && q.minDte > 0) {
+      return { lo: q.minDte, hi: 100_000 };
+    }
     if (q.dte === '0') return { lo: 0, hi: 0 };
     if (q.dte === '1-3') return { lo: 1, hi: 3 };
     if (q.dte === '4+') return { lo: 4, hi: 100_000 };
@@ -104,6 +109,8 @@ export default async function handler(
   })();
   const dteLo = dteRange?.lo ?? null;
   const dteHiBound = dteRange?.hi ?? 100_000;
+  const minPremium =
+    q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
 
   const burstRange = (() => {
     if (q.burst === 'red') return { lo: 50, hi: 1_000_000 };
@@ -151,6 +158,7 @@ export default async function handler(
         AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
+        AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
       GROUP BY underlying_symbol
       ORDER BY count DESC, latest_bucket_ct DESC, underlying_symbol ASC
     `) as CountRow[];
