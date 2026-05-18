@@ -87,6 +87,8 @@ def load_buckets_for_date_fulltape(date_str: str) -> pd.DataFrame:
             'executed_at', 'underlying_symbol', 'option_chain_id',
             'option_type', 'strike', 'expiry', 'price', 'size',
             'open_interest', 'canceled', 'tags',
+            # H5 spread (Phase D-1, migration #171).
+            'nbbo_bid', 'nbbo_ask',
         ],
     )
     if df['canceled'].dtype == bool:
@@ -126,6 +128,30 @@ def load_buckets_for_date_fulltape(date_str: str) -> pd.DataFrame:
     df['ask_size'] = np.where(df['side'] == 'ask', df['size'], 0)
     df['bid_size'] = np.where(df['side'] == 'bid', df['size'], 0)
     df['notional'] = df['size'] * df['price']
+    # H2 cadence helper — flag prints landing in the first 60s of
+    # their 5-min bucket. SUM(first_min_size)/SUM(size) → cadence.
+    df['first_min_size'] = np.where(
+        df['executed_at'] < df['bucket'] + pd.Timedelta(minutes=1),
+        df['size'],
+        0,
+    )
+    # H5 in-bucket spread helper — size-weighted relative spread per
+    # trade. Full-tape parquet carries nbbo_bid / nbbo_ask. Cast to
+    # float (Decimal arithmetic with numpy is brittle).
+    if 'nbbo_bid' in df.columns and 'nbbo_ask' in df.columns:
+        nbbo_bid = pd.to_numeric(df['nbbo_bid'], errors='coerce')
+        nbbo_ask = pd.to_numeric(df['nbbo_ask'], errors='coerce')
+        mid = (nbbo_bid + nbbo_ask) / 2
+        df['rel_spread'] = np.where(
+            (nbbo_bid > 0) & (nbbo_ask > 0) & (mid > 0),
+            (nbbo_ask - nbbo_bid) / mid,
+            np.nan,
+        )
+        df['spread_numerator'] = df['rel_spread'] * df['size']
+        df['spread_denom'] = np.where(df['rel_spread'].notna(), df['size'], 0)
+    else:
+        df['spread_numerator'] = np.nan
+        df['spread_denom'] = 0
 
     agg = df.groupby(['option_chain_id', 'bucket'], sort=True).agg(
         ticker=('underlying_symbol', 'first'),
@@ -142,8 +168,21 @@ def load_buckets_for_date_fulltape(date_str: str) -> pd.DataFrame:
         # Per-bucket trade count for the pre_trade_count feature
         # (migration #169). Summed across prior buckets at fire time.
         n_trades=('price', 'count'),
+        # Phase D-1 H2 cadence — first-60s size share numerator.
+        first_min_size=('first_min_size', 'sum'),
+        # Phase D-1 H5 spread — size-weighted relative spread.
+        spread_numerator_sum=('spread_numerator', 'sum'),
+        spread_denom_sum=('spread_denom', 'sum'),
     ).reset_index()
     agg['vwap'] = agg['vwap_num'] / agg['vwap_den']
+    agg['first_min_share'] = np.where(
+        agg['size'] > 0, agg['first_min_size'] / agg['size'], np.nan
+    )
+    agg['spread_in_bucket'] = np.where(
+        agg['spread_denom_sum'] > 0,
+        agg['spread_numerator_sum'] / agg['spread_denom_sum'],
+        np.nan,
+    )
     return agg
 
 
@@ -305,6 +344,20 @@ def main() -> None:
                 f"{ticker}|{opt_type}|{bucket_ts_iso}|{strike - cofire_step}"
                 in cofire_keyset
             )
+            # Phase D-1 — H2 cadence + H5 spread from the agg.
+            bucket_row = sub.loc[sub['bucket'] == bucket_ts]
+            if len(bucket_row) > 0:
+                fms_val = bucket_row['first_min_share'].iloc[0]
+                first_min_share = (
+                    float(fms_val) if pd.notna(fms_val) else None
+                )
+                sib_val = bucket_row['spread_in_bucket'].iloc[0]
+                spread_in_bucket = (
+                    float(sib_val) if pd.notna(sib_val) else None
+                )
+            else:
+                first_min_share = None
+                spread_in_bucket = None
             score = sb_backfill.compute_silent_boom_score(
                 dte=dte,
                 baseline_volume=f['baseline_volume'],
@@ -316,6 +369,8 @@ def main() -> None:
                 trading_day=date_str,
                 pre_trade_count=pre_trade_count,
                 adj_cofire=adj_cofire,
+                first_min_share=first_min_share,
+                spread_in_bucket=spread_in_bucket,
             )
             tier = sb_backfill.silent_boom_tier(score)
             rows_to_insert.append((
@@ -341,6 +396,8 @@ def main() -> None:
                 spx_gamma,
                 pre_trade_count,
                 adj_cofire,
+                first_min_share,
+                spread_in_bucket,
             ))
             fires_today += 1
 

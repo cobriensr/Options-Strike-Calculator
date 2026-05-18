@@ -81,7 +81,9 @@ def fetch_rows(
             f"""
             SELECT id, dte, baseline_volume, spike_ratio, entry_price,
                    ask_pct, option_type, bucket_ct, date,
-                   pre_trade_count, adj_cofire, score, score_tier
+                   pre_trade_count, adj_cofire,
+                   first_min_share, spread_in_bucket,
+                   score, score_tier
             FROM silent_boom_alerts
             WHERE {where}
             ORDER BY id
@@ -101,7 +103,9 @@ def recompute(
         (
             alert_id, dte, baseline_volume, spike_ratio, entry_price,
             ask_pct, option_type, bucket_ct, alert_date,
-            pre_trade_count, adj_cofire, prior_score, prior_tier,
+            pre_trade_count, adj_cofire,
+            first_min_share, spread_in_bucket,
+            prior_score, prior_tier,
         ) = r
         tod = silent_boom_tod_from_minute_ct(ct_minute_of_day(bucket_ct))
         score = compute_silent_boom_score(
@@ -119,6 +123,17 @@ def recompute(
             # NULL for legacy rows predating migration #170 — defaults
             # to False so no bonus fires.
             adj_cofire=bool(adj_cofire),
+            # NULL for legacy rows predating migration #171 — pass
+            # None so the score function skips the cadence/spread
+            # weights cleanly.
+            first_min_share=(
+                float(first_min_share) if first_min_share is not None else None
+            ),
+            spread_in_bucket=(
+                float(spread_in_bucket)
+                if spread_in_bucket is not None
+                else None
+            ),
         )
         tier = silent_boom_tier(score)
         if prior_score == score and prior_tier == tier:

@@ -127,6 +127,25 @@ export interface ChainBucket {
    * migration #168.
    */
   bucketGamma?: number | null;
+  /**
+   * H2 in-bucket cadence — fraction (0..1) of bucket size landing in
+   * the first 60 seconds of the 5-min bucket. Null when bucket size
+   * is 0 or no usable cadence signal. Stored as first_min_share on
+   * silent_boom_alerts by migration #171. Empirical basis: 93-day
+   * Pass B peak revisit (docs/tmp/sb-93d-pass-b-peak-output.txt) —
+   * distributed (<25%) +3.2pp, single-block (>75%) -6.4pp lift.
+   */
+  firstMinShare?: number | null;
+  /**
+   * H5 in-bucket NBBO spread — size-weighted relative spread
+   * ((ask-bid)/mid) across the bucket. Null when no print in the
+   * bucket had a usable NBBO. Stored as spread_in_bucket on
+   * silent_boom_alerts by migration #171. Counter-intuitive: WIDER
+   * in-bucket spreads correlate with better peak outcomes (likely
+   * "breakout before MM recalibration"). Q3 (>0.1122) +5.5pp lift,
+   * Q0 (<0.0181) -7.6pp lift.
+   */
+  spreadInBucket?: number | null;
 }
 
 /** One silent-boom alert emitted by the detector. */
@@ -160,6 +179,18 @@ export interface SilentBoomFire {
    * straight to silent_boom_alerts.gamma_at_trigger (migration #168).
    */
   gammaAtSpike: number | null;
+  /**
+   * H2 cadence on the spike bucket. Fed straight to
+   * silent_boom_alerts.first_min_share (migration #171). NULL when
+   * the bucket has no usable cadence signal.
+   */
+  firstMinShareAtSpike: number | null;
+  /**
+   * H5 NBBO spread on the spike bucket. Fed straight to
+   * silent_boom_alerts.spread_in_bucket (migration #171). NULL when
+   * no print in the bucket had usable NBBO.
+   */
+  spreadInBucketAtSpike: number | null;
 }
 
 // ============================================================
@@ -258,6 +289,14 @@ export function detectSilentBoomFires(
       gammaAtSpike:
         cur.bucketGamma != null && Number.isFinite(cur.bucketGamma)
           ? cur.bucketGamma
+          : null,
+      firstMinShareAtSpike:
+        cur.firstMinShare != null && Number.isFinite(cur.firstMinShare)
+          ? cur.firstMinShare
+          : null,
+      spreadInBucketAtSpike:
+        cur.spreadInBucket != null && Number.isFinite(cur.spreadInBucket)
+          ? cur.spreadInBucket
           : null,
     });
     lastFireMs = tsMs;

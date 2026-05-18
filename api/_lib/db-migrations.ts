@@ -4904,4 +4904,15 @@ export const MIGRATIONS: Migration[] = [
          WHERE adj_cofire = TRUE`,
     ],
   },
+  {
+    id: 171,
+    description:
+      "Add first_min_share NUMERIC(5,4) + spread_in_bucket NUMERIC columns to silent_boom_alerts. first_min_share = SUM(size in first 60s of bucket) / SUM(size in bucket) — captures the H2 cadence finding from docs/tmp/sb-93d-pass-b-peak-output.txt: distributed-cadence spikes (<25% in min1) outperform single-block spikes (>75%) by 9.6pp on peak ≥50%. spread_in_bucket = size-weighted relative NBBO spread within the bucket — captures the H5 finding: in-bucket spread Q3 (>0.1122) hits 21.7% peak ≥50% vs Q0 (<0.0181) at 7.9% — a 13.8pp gap. Both populated by detect-silent-boom cron (NBBO comes from raw_payload->>'nbbo_*' since the uw-stream daemon doesn't promote those fields to typed columns). Score weights: distributed +1, single-block -3, Q3 +2, Q0 -3. Older rows stay NULL until backfilled via scripts/backfill_silent_boom_cadence_spread.py.",
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS first_min_share NUMERIC(5,4)`,
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS spread_in_bucket NUMERIC`,
+    ],
+  },
 ];

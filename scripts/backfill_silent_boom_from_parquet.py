@@ -109,6 +109,13 @@ def load_buckets_for_date(date_str: str) -> pd.DataFrame:
     df['ask_size'] = np.where(df['side'] == 'ask', df['size'], 0)
     df['bid_size'] = np.where(df['side'] == 'bid', df['size'], 0)
     df['notional'] = df['size'] * df['price']
+    # H2 cadence helper — flag prints landing in the first 60s of
+    # their 5-min bucket. SUM(first_min_size)/SUM(size) → cadence.
+    df['first_min_size'] = np.where(
+        df['executed_at'] < df['bucket'] + pd.Timedelta(minutes=1),
+        df['size'],
+        0,
+    )
 
     agg = df.groupby(['option_chain_id', 'bucket'], sort=True).agg(
         ticker=('underlying_symbol', 'first'),
@@ -125,8 +132,17 @@ def load_buckets_for_date(date_str: str) -> pd.DataFrame:
         # Per-bucket trade count for the pre_trade_count feature
         # (migration #169). Summed across prior buckets at fire time.
         n_trades=('price', 'count'),
+        # Phase D-1 H2 cadence — first-60s size share.
+        first_min_size=('first_min_size', 'sum'),
     ).reset_index()
     agg['vwap'] = agg['vwap_num'] / agg['vwap_den']
+    agg['first_min_share'] = np.where(
+        agg['size'] > 0, agg['first_min_size'] / agg['size'], np.nan
+    )
+    # Bot-Eod parquet doesn't carry NBBO → spread_in_bucket stays
+    # NaN here. The fulltape backfill (#171 spread feature) populates
+    # it; this loader leaves the column absent so the downstream
+    # fire-loop reads None.
     return agg
 
 
@@ -244,6 +260,20 @@ _PRE_TRADE_COUNT_HEAVY_BONUS = 4
 # 16.0% non-cofire (+5.8pp lift).
 _ADJ_COFIRE_BONUS = 2
 
+# Phase D-1 H2 first_min_share cadence — distributed (<25% in min1)
+# +1, single-block (>75%) -3. Mid bands are 0.
+_FIRST_MIN_SHARE_DISTRIBUTED_MAX = 0.25
+_FIRST_MIN_SHARE_SINGLE_BLOCK_MIN = 0.75
+_FIRST_MIN_SHARE_DISTRIBUTED_BONUS = 1
+_FIRST_MIN_SHARE_SINGLE_BLOCK_PENALTY = -3
+
+# Phase D-1 H5 spread_in_bucket — Q0 (<0.0181) tight spreads -3,
+# Q3 (>=0.1122) wide spreads +2. Mid bands are 0.
+_SPREAD_IN_BUCKET_Q0_MAX = 0.0181
+_SPREAD_IN_BUCKET_Q3_MIN = 0.1122
+_SPREAD_IN_BUCKET_TIGHT_PENALTY = -3
+_SPREAD_IN_BUCKET_WIDE_BONUS = 2
+
 # Cash-index roots that trade on $5 strike steps (rest = $1).
 _INDEX_COFIRE_ROOTS = frozenset(
     {'SPXW', 'SPX', 'NDXP', 'NDX', 'RUTW', 'RUT'}
@@ -272,6 +302,8 @@ def compute_silent_boom_score(
     trading_day: str,
     pre_trade_count: int = 0,
     adj_cofire: bool = False,
+    first_min_share: float | None = None,
+    spread_in_bucket: float | None = None,
 ) -> int:
     s = 0
     # DTE
@@ -299,13 +331,13 @@ def compute_silent_boom_score(
     s += _TOD_WEIGHTS[tod]
     # Ask% — saturation cliff at ask_pct = 1.0 forces tier3 (spec:
     # docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md).
-    # Penalty escalated -30 → -32 in Phase B (2026-05-17) to preserve
-    # the tier3 invariant against the new pre_trade_count + adj_cofire
-    # bonuses (max +41).
+    # Penalty escalated -30 → -32 in Phase B then -32 → -36 in
+    # Phase D-1 (2026-05-17) to preserve the tier3 invariant against
+    # the cumulative bonuses (max +44 with cadence + spread).
     if   ask_pct < 0.85: s += 2
     elif ask_pct < 0.95: s += 1
     elif ask_pct < 1.0:  s += -1
-    else:                s += -32
+    else:                s += -36
     # Call bonus
     if option_type == 'C':
         s += 1
@@ -317,6 +349,18 @@ def compute_silent_boom_score(
     # Adjacent-strike co-fire bonus (Phase B).
     if adj_cofire:
         s += _ADJ_COFIRE_BONUS
+    # Phase D-1 H2 cadence bonus/penalty.
+    if first_min_share is not None:
+        if first_min_share < _FIRST_MIN_SHARE_DISTRIBUTED_MAX:
+            s += _FIRST_MIN_SHARE_DISTRIBUTED_BONUS
+        elif first_min_share > _FIRST_MIN_SHARE_SINGLE_BLOCK_MIN:
+            s += _FIRST_MIN_SHARE_SINGLE_BLOCK_PENALTY
+    # Phase D-1 H5 in-bucket spread bonus/penalty.
+    if spread_in_bucket is not None:
+        if spread_in_bucket < _SPREAD_IN_BUCKET_Q0_MAX:
+            s += _SPREAD_IN_BUCKET_TIGHT_PENALTY
+        elif spread_in_bucket >= _SPREAD_IN_BUCKET_Q3_MIN:
+            s += _SPREAD_IN_BUCKET_WIDE_BONUS
     return s
 
 
@@ -404,7 +448,8 @@ def insert_fires(conn, rows: list[tuple]) -> int:
           ask_pct, vol_oi, entry_price, open_interest,
           score, score_tier,
           mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi,
-          pre_trade_count, adj_cofire
+          pre_trade_count, adj_cofire,
+          first_min_share, spread_in_bucket
         )
         VALUES %s
         ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
@@ -415,7 +460,7 @@ def insert_fires(conn, rows: list[tuple]) -> int:
             '(%s::date, %s::timestamptz, %s, %s, %s, %s::numeric, '
             '%s::date, %s, %s, %s::numeric, %s::numeric, %s::numeric, '
             '%s::numeric, %s::numeric, %s, %s::smallint, %s, '
-            '%s, %s, %s, %s, %s)'
+            '%s, %s, %s, %s, %s, %s::numeric, %s::numeric)'
         ),
         page_size=500,
         fetch=True,
@@ -593,6 +638,18 @@ def main() -> None:
                 f"{ticker}|{opt_type}|{bucket_ts_iso}|{strike - cofire_step}"
                 in cofire_keyset
             )
+            # Phase D-1 — H2 cadence (from the agg) + H5 spread (Bot-
+            # Eod parquet doesn't carry NBBO so always None here; the
+            # fulltape backfill populates spread).
+            bucket_row = sub.loc[sub['bucket'] == bucket_ts]
+            if len(bucket_row) > 0 and 'first_min_share' in bucket_row.columns:
+                fms_val = bucket_row['first_min_share'].iloc[0]
+                first_min_share = (
+                    float(fms_val) if pd.notna(fms_val) else None
+                )
+            else:
+                first_min_share = None
+            spread_in_bucket = None
             score = compute_silent_boom_score(
                 dte=dte,
                 baseline_volume=f['baseline_volume'],
@@ -604,6 +661,8 @@ def main() -> None:
                 trading_day=date_str,
                 pre_trade_count=pre_trade_count,
                 adj_cofire=adj_cofire,
+                first_min_share=first_min_share,
+                spread_in_bucket=spread_in_bucket,
             )
             tier = silent_boom_tier(score)
             tide_diff = lookup_tide_diff(bucket_ts)
@@ -620,6 +679,7 @@ def main() -> None:
                 score, tier,
                 tide_diff, zero_dte_diff, spx_spot_gamma,
                 pre_trade_count, adj_cofire,
+                first_min_share, spread_in_bucket,
             ))
             fires_today += 1
         inserted = insert_fires(conn, rows_to_insert)

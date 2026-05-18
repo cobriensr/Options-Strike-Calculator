@@ -90,6 +90,15 @@ interface BucketRow {
    *  the bucket. NULL when no tick carried a gamma value. Stored as
    *  silent_boom_alerts.gamma_at_trigger by migration #168. */
   bucket_gamma: DbNumeric | null;
+  /** H2 in-bucket cadence: fraction of size landing in the first 60s
+   *  of the 5-min bucket. NULL when bucket size is 0 (defensive).
+   *  Stored as silent_boom_alerts.first_min_share by migration #171. */
+  first_min_share: DbNullableNumeric;
+  /** H5 in-bucket NBBO spread: size-weighted relative spread
+   *  ((ask-bid)/mid) across the bucket. NULL when no print in the
+   *  bucket had a usable NBBO. Stored as
+   *  silent_boom_alerts.spread_in_bucket by migration #171. */
+  spread_in_bucket: DbNullableNumeric;
 }
 
 /** OPRA-standard multi-leg sale condition codes — drop buckets whose
@@ -205,7 +214,46 @@ export default withCronInstrumentation(
         SUM((raw_payload->>'gamma')::numeric * size)
           FILTER (WHERE raw_payload->>'gamma' IS NOT NULL)
           / NULLIF(SUM(size) FILTER (WHERE raw_payload->>'gamma' IS NOT NULL), 0)
-          AS bucket_gamma
+          AS bucket_gamma,
+        -- H2 in-bucket cadence: fraction of size landing in the first
+        -- 60s of the bucket. Migration #171 added first_min_share as
+        -- the storage column. The bucket start aligns with date_bin's
+        -- 5-min grid (2000-01-01 origin), so "first 60s" is
+        -- executed_at < bucket_ts + INTERVAL '1 minute'.
+        SUM(size) FILTER (
+          WHERE executed_at <
+            date_bin(
+              INTERVAL '5 minutes',
+              executed_at,
+              TIMESTAMPTZ '2000-01-01 00:00:00+00'
+            ) + INTERVAL '1 minute'
+        )::numeric / NULLIF(SUM(size), 0) AS first_min_share,
+        -- H5 in-bucket NBBO spread: size-weighted relative spread
+        -- ((ask-bid)/mid) across the bucket. UW WS payload carries
+        -- NBBO inside raw_payload (the uw-stream daemon doesn't
+        -- promote those fields to typed columns). NULL when no print
+        -- in the bucket has a usable NBBO. Migration #171 added
+        -- spread_in_bucket as the storage column.
+        SUM(
+          (
+            ((raw_payload->>'nbbo_ask')::numeric - (raw_payload->>'nbbo_bid')::numeric)
+            / NULLIF(((raw_payload->>'nbbo_ask')::numeric + (raw_payload->>'nbbo_bid')::numeric) / 2, 0)
+          ) * size
+        ) FILTER (
+          WHERE raw_payload->>'nbbo_ask' IS NOT NULL
+            AND raw_payload->>'nbbo_bid' IS NOT NULL
+            AND (raw_payload->>'nbbo_ask')::numeric > 0
+            AND (raw_payload->>'nbbo_bid')::numeric > 0
+        )
+        / NULLIF(
+          SUM(size) FILTER (
+            WHERE raw_payload->>'nbbo_ask' IS NOT NULL
+              AND raw_payload->>'nbbo_bid' IS NOT NULL
+              AND (raw_payload->>'nbbo_ask')::numeric > 0
+              AND (raw_payload->>'nbbo_bid')::numeric > 0
+          ),
+          0
+        ) AS spread_in_bucket
       FROM ws_option_trades
       WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
         AND canceled = FALSE
@@ -266,6 +314,10 @@ export default withCronInstrumentation(
             ? underlyingNotional / size
             : null,
         bucketGamma: r.bucket_gamma != null ? Number(r.bucket_gamma) : null,
+        firstMinShare:
+          r.first_min_share != null ? Number(r.first_min_share) : null,
+        spreadInBucket:
+          r.spread_in_bucket != null ? Number(r.spread_in_bucket) : null,
       });
       if (r.bucket_max_oi != null && r.bucket_max_oi > g.oi) {
         g.oi = r.bucket_max_oi;
@@ -568,6 +620,8 @@ export default withCronInstrumentation(
         tradingDay: ctx.today,
         preTradeCount,
         adjCofire,
+        firstMinShare: f.firstMinShareAtSpike,
+        spreadInBucket: f.spreadInBucketAtSpike,
       });
       const tier = silentBoomScoreTier(score);
 
@@ -678,7 +732,8 @@ export default withCronInstrumentation(
             cum_ncp_at_fire, cum_npp_at_fire,
             inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
             takeit_prob, takeit_model_version, takeit_features,
-            gamma_at_trigger, pre_trade_count, adj_cofire
+            gamma_at_trigger, pre_trade_count, adj_cofire,
+            first_min_share, spread_in_bucket
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
@@ -691,7 +746,8 @@ export default withCronInstrumentation(
             ${cumNcpAtFire}, ${cumNppAtFire},
             ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
-            ${f.gammaAtSpike}, ${preTradeCount}, ${adjCofire}
+            ${f.gammaAtSpike}, ${preTradeCount}, ${adjCofire},
+            ${f.firstMinShareAtSpike}, ${f.spreadInBucketAtSpike}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id

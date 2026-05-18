@@ -113,19 +113,21 @@ const ASK_PCT_HIGH_PENALTY = -1;
 
 /** ask_pct = 1.0 exactly — structural-illiquidity floor. Set heavy
  * enough that any otherwise-perfect score lands below the tier2 floor
- * of 8: max positive components after 2026-05-17 Phase B sum to +41
- * (10+5+5+5+6+2+1+1+4+2 — trailing +2 is adj_cofire, +4 before that
- * is pre_trade_count ≥501, +1 before that is Friday × CALL). The
- * −32 penalty caps any saturated-ask fire at +7 (+41 − 2 ask reward
- * lost − 32 penalty applied) → tier3. Penalty escalated from −30 →
- * −32 in Phase B because the new pre_trade_count + adj_cofire bonuses
- * would have pushed the worst-case saturated alert to +9, breaking
- * the tier3 invariant. Empirical basis (full 15k-fire sample,
+ * of 8: max positive components after 2026-05-17 Phase D-1 sum to
+ * +44 (10+5+5+5+6+2+1+1+4+2+1+2 — trailing +2 is in-bucket spread Q3,
+ * +1 before that is first_min_share distributed, +2 before that is
+ * adj_cofire, +4 before that is pre_trade_count ≥501, +1 before
+ * that is Friday × CALL). The −36 penalty caps any saturated-ask
+ * fire at +6 (+44 − 2 ask reward lost − 36 penalty applied) →
+ * tier3. Penalty escalated −32 → −36 in Phase D-1 because the new
+ * cadence + spread bonuses would have pushed the worst-case
+ * saturated alert to +10, breaking the tier3 invariant. Empirical
+ * basis (full 15k-fire sample,
  * scripts/analyze_silent_boom_vol_oi.py 2026-05-12): ask=1.0 fires
  * win > 0% at 77.0% vs ≥99% in every other ask band; the cliff
  * replicates inside every score_tier. Spec:
  * docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md */
-const ASK_PCT_SATURATED_PENALTY = -32;
+const ASK_PCT_SATURATED_PENALTY = -36;
 
 /** Option type — small but consistent C edge (1.06× vs 0.93×). */
 const CALL_BONUS = 1;
@@ -164,6 +166,36 @@ const PRE_TRADE_COUNT_HEAVY_BONUS = 4;
  * Spec:
  *   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md */
 const ADJ_COFIRE_BONUS = 2;
+
+/** In-bucket cadence (H2). Fraction of spike-bucket size that landed
+ * in the first 60 seconds. Validated against the 93-day Pass B
+ * re-run (docs/tmp/sb-93d-pass-b-peak-output.txt, n=7,368, baseline
+ * 15.5% peak ≥50%):
+ *   distributed (<25% in min1)  18.7% (n=3,946, lift +3.2pp) → +1
+ *   moderate    (25–50%)        13.9% (n=1,271, lift -1.6pp) →  0
+ *   concentrated (50–75%)       14.8% (n=  586, lift -0.7pp) →  0
+ *   single-block (>75%)          9.1% (n=1,565, lift -6.4pp) → -3
+ * Real interest builds; a single block in min1 usually goes nowhere.
+ * Spec: docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md */
+const FIRST_MIN_SHARE_DISTRIBUTED_MAX = 0.25;
+const FIRST_MIN_SHARE_SINGLE_BLOCK_MIN = 0.75;
+const FIRST_MIN_SHARE_DISTRIBUTED_BONUS = 1;
+const FIRST_MIN_SHARE_SINGLE_BLOCK_PENALTY = -3;
+
+/** In-bucket NBBO spread (H5). Size-weighted relative spread
+ * (ask-bid)/mid within the spike bucket. Quartile cutoffs FROZEN
+ * from the 93-day Pass B fit (n=9,110, baseline 14.2% peak ≥50%):
+ *   Q0  spread < 0.0181 →  7.9% peak ≥50% (lift -7.6pp) → -3
+ *   Q1  0.0181..0.0441  → 12.6%           (lift -2.9pp) →  0
+ *   Q2  0.0441..0.1122  → 14.5%           (lift -0.7pp) →  0
+ *   Q3  spread ≥ 0.1122 → 21.7%           (lift +5.5pp) → +2
+ * Counter-intuitive: WIDER in-bucket spreads → better outcomes.
+ * Likely "breakout before MM recalibration" — when MMs widen quotes
+ * during the spike, the move hasn't priced in yet. */
+const SPREAD_IN_BUCKET_Q0_MAX = 0.0181;
+const SPREAD_IN_BUCKET_Q3_MIN = 0.1122;
+const SPREAD_IN_BUCKET_TIGHT_PENALTY = -3;
+const SPREAD_IN_BUCKET_WIDE_BONUS = 2;
 
 /** Day-of-week × option_type bonus. Retuned 2026-05-17 against the
  * 93-day peak dataset (n=63,846; baseline peak ≥50% = 16.2%). Three
@@ -241,7 +273,12 @@ export function silentBoomDowTypeBonus(
  *
  * 2026-05-17 Phase B — adj_cofire bonus (+2) added; ask saturation
  * penalty escalated −30 → −32 to preserve the tier3 invariant. New
- * range: −25 to +41. Spec:
+ * range: −25 to +41.
+ *
+ * 2026-05-17 Phase D-1 — first_min_share H2 weights (distributed +1,
+ * single-block -3) + spread_in_bucket H5 weights (Q0 -3, Q3 +2)
+ * added. Ask saturation penalty escalated −32 → −36 to preserve the
+ * tier3 invariant. New range: −31 to +44. Spec:
  *   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
  */
 export const SILENT_BOOM_TIER_THRESHOLDS = Object.freeze({
@@ -292,6 +329,17 @@ export interface SilentBoomScoreInput {
    * computes via intra-cron set lookup. Pass false when unknown
    * (legacy callers, backfill from pre-#170 data). */
   adjCofire: boolean;
+  /** Fraction of bucket size that landed in the first 60 seconds
+   * (NUMERIC(5,4) in Postgres, 0..1 here). Used for the H2 cadence
+   * weights: distributed (<25%) +1, single-block (>75%) -3. Pass
+   * `null` when unknown — historical rows predating migration #171
+   * fall in this bucket and contribute no points either way. */
+  firstMinShare: number | null;
+  /** Size-weighted relative NBBO spread within the spike bucket
+   * ((ask-bid)/mid weighted by trade size). Used for the H5 weights:
+   * Q0 (<0.0181) -3, Q3 (≥0.1122) +2. Pass `null` when unknown —
+   * NBBO may be missing from the raw_payload for some prints. */
+  spreadInBucket: number | null;
 }
 
 /**
@@ -393,6 +441,24 @@ export function computeSilentBoomScore(args: SilentBoomScoreInput): number {
 
   // Adjacent-strike co-fire bonus (intra-cron detection)
   if (args.adjCofire) score += ADJ_COFIRE_BONUS;
+
+  // H2 in-bucket cadence (first-60s size share)
+  if (args.firstMinShare != null) {
+    if (args.firstMinShare < FIRST_MIN_SHARE_DISTRIBUTED_MAX) {
+      score += FIRST_MIN_SHARE_DISTRIBUTED_BONUS;
+    } else if (args.firstMinShare > FIRST_MIN_SHARE_SINGLE_BLOCK_MIN) {
+      score += FIRST_MIN_SHARE_SINGLE_BLOCK_PENALTY;
+    }
+  }
+
+  // H5 in-bucket NBBO spread (size-weighted relative spread)
+  if (args.spreadInBucket != null) {
+    if (args.spreadInBucket < SPREAD_IN_BUCKET_Q0_MAX) {
+      score += SPREAD_IN_BUCKET_TIGHT_PENALTY;
+    } else if (args.spreadInBucket >= SPREAD_IN_BUCKET_Q3_MIN) {
+      score += SPREAD_IN_BUCKET_WIDE_BONUS;
+    }
+  }
 
   return score;
 }
