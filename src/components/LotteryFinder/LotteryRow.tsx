@@ -721,20 +721,19 @@ export const LotteryRow = memo(function LotteryRow({
             on top-decile gamma. Gated by gammaScoreAdjustment so the
             tooltip is in lock-step with the actual +1 bonus folded
             into `score`. */}
-        {fire.gammaScoreAdjustment != null &&
-          fire.gammaScoreAdjustment > 0 && (
-            <span
-              className="inline-flex items-center gap-1 rounded border border-violet-400/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-100 uppercase"
-              title={
-                fire.gammaAtTrigger != null
-                  ? `HIGH-Γ bonus +1: trigger-window gamma = ${fire.gammaAtTrigger.toFixed(4)} ≥ 0.025 threshold. Empirical lift: +4.8pp (LF) / +10.7pp (SB) on trail30/10 winrate. SPY + USO are excluded because the signal reverses on those tickers.`
-                  : 'HIGH-Γ bonus +1: gamma at trigger ≥ 0.025 (non-excluded ticker).'
-              }
-            >
-              <span aria-hidden="true">Γ↑</span>
-              HIGH-Γ
-            </span>
-          )}
+        {fire.gammaScoreAdjustment != null && fire.gammaScoreAdjustment > 0 && (
+          <span
+            className="inline-flex items-center gap-1 rounded border border-violet-400/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-100 uppercase"
+            title={
+              fire.gammaAtTrigger != null
+                ? `HIGH-Γ bonus +1: trigger-window gamma = ${fire.gammaAtTrigger.toFixed(4)} ≥ 0.025 threshold. Empirical lift: +4.8pp (LF) / +10.7pp (SB) on trail30/10 winrate. SPY + USO are excluded because the signal reverses on those tickers.`
+                : 'HIGH-Γ bonus +1: gamma at trigger ≥ 0.025 (non-excluded ticker).'
+            }
+          >
+            <span aria-hidden="true">Γ↑</span>
+            HIGH-Γ
+          </span>
+        )}
         {/* "Still hot" indicator — only when market is open and the
             latest fire is within the last 10 minutes. Polling refresh
             (~30s) keeps this honest without per-row timers. */}

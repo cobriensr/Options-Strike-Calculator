@@ -1173,7 +1173,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   if (Number.isFinite(n) && n >= 0) setMinDte(n);
                 }}
                 aria-label="Minimum DTE"
-                className="w-14 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs tabular-nums text-neutral-100 focus:border-blue-500 focus:outline-none"
+                className="w-14 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
               />
             </label>
             <label

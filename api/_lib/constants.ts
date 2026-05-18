@@ -531,10 +531,7 @@ export const GAMMA_HIGH_BONUS_THRESHOLD = 0.025;
 /** Tickers excluded from the gamma bonus because their per-ticker
  *  data shows the signal REVERSES (negative lift). SPY: index-
  *  rebalancing flow proxy. USO: commodity-driven gamma dynamics. */
-export const GAMMA_BONUS_EXCLUDED_TICKERS: readonly string[] = [
-  'SPY',
-  'USO',
-];
+export const GAMMA_BONUS_EXCLUDED_TICKERS: readonly string[] = ['SPY', 'USO'];
 
 /** Score points added when a fire qualifies for the gamma bonus.
  *  Matches the magnitude of the existing fire_count_score_adjustment

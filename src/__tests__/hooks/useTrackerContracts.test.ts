@@ -69,9 +69,7 @@ describe('useTrackerContracts — initial fetch + state', () => {
 
   it('fetches /api/tracker/contracts?status=active on mount and populates data', async () => {
     const c = makeContract();
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({ contracts: [c], count: 1 }),
-    );
+    fetchMock.mockResolvedValueOnce(jsonResponse({ contracts: [c], count: 1 }));
 
     const { result } = renderHook(() =>
       useTrackerContracts({ status: 'active' }),

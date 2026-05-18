@@ -30,10 +30,7 @@ import {
   scoreSilentBoom,
 } from '../_lib/takeit-detect.js';
 import { getBundle } from '../_lib/takeit-bundle-loader.js';
-import {
-  featuresFromRow,
-  predictTakeitScore,
-} from '../_lib/takeit-score.js';
+import { featuresFromRow, predictTakeitScore } from '../_lib/takeit-score.js';
 import {
   featuresForLottery,
   featuresForSilentBoom,
@@ -121,7 +118,9 @@ describe('loadTakeitDetectContext', () => {
     expect(ctx).not.toBeNull();
     expect(ctx?.bundle).toBe(FAKE_BUNDLE);
     expect(ctx?.ctx.recentSameTypeFires).toHaveLength(1);
-    expect(ctx?.ctx.recentOtherTypeByChain.get('NVDA  260522P00225000')).toHaveLength(2);
+    expect(
+      ctx?.ctx.recentOtherTypeByChain.get('NVDA  260522P00225000'),
+    ).toHaveLength(2);
     expect(ctx?.ctx.recentOtherTypeByTickerDir.get('NVDA|P')).toHaveLength(3);
     expect(ctx?.ctx.priorSessionWinRateByTicker.get('NVDA')).toBe(0.62);
     expect(ctx?.ctx.priorSessionWinRateByTicker.get('TSLA')).toBeNull();

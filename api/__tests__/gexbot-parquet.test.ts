@@ -134,7 +134,11 @@ describe('writeRowsToParquet', () => {
       },
     ];
     const fileName = `gexbot-rt-${String(Date.now())}-${String(Math.random()).slice(2, 8)}.parquet`;
-    const result = await writeRowsToParquet(schema, yieldRows(inputs), fileName);
+    const result = await writeRowsToParquet(
+      schema,
+      yieldRows(inputs),
+      fileName,
+    );
 
     // Drop the round-trip file under tmp/ to read back
     const tmpPath = join(tmpdir(), 'gexbot-rt-readback.parquet');
