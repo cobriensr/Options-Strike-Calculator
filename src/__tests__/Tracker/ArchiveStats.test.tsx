@@ -9,7 +9,9 @@ import type {
 } from '../../components/Tracker/types';
 
 let nextId = 1;
-function makeContract(overrides: Partial<TrackerContract> = {}): TrackerContract {
+function makeContract(
+  overrides: Partial<TrackerContract> = {},
+): TrackerContract {
   return {
     id: nextId++,
     occ_symbol: 'NVDA  260522P00225000',

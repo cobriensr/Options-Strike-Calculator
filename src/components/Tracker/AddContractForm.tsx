@@ -168,33 +168,27 @@ export const AddContractForm = memo(function AddContractForm({
   // Memoize parse so the success indicator can render without
   // re-running the regex on every keystroke (cheap, but stable
   // identity also lets future memoized children opt in).
-  const pasteResult = useMemo(
-    () => tryParseOccChain(pasteInput),
-    [pasteInput],
-  );
+  const pasteResult = useMemo(() => tryParseOccChain(pasteInput), [pasteInput]);
 
-  const handlePasteChange = useCallback(
-    (e: ChangeEvent<HTMLInputElement>) => {
-      const value = e.target.value;
-      setPasteInput(value);
-      const parsed = tryParseOccChain(value);
-      if (parsed) {
-        // Populate the four structural fields and leave
-        // direction / entry_price / quantity / notes for the user to
-        // edit. setStructured uses the functional form so a fast
-        // paste while the user is mid-type elsewhere doesn't clobber
-        // their typed entry price or quantity.
-        setStructured((s) => ({
-          ...s,
-          ticker: parsed.ticker,
-          expiry: parsed.expiry,
-          strike: String(parsed.strike),
-          side: parsed.side,
-        }));
-      }
-    },
-    [],
-  );
+  const handlePasteChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setPasteInput(value);
+    const parsed = tryParseOccChain(value);
+    if (parsed) {
+      // Populate the four structural fields and leave
+      // direction / entry_price / quantity / notes for the user to
+      // edit. setStructured uses the functional form so a fast
+      // paste while the user is mid-type elsewhere doesn't clobber
+      // their typed entry price or quantity.
+      setStructured((s) => ({
+        ...s,
+        ticker: parsed.ticker,
+        expiry: parsed.expiry,
+        strike: String(parsed.strike),
+        side: parsed.side,
+      }));
+    }
+  }, []);
 
   const handleFreeTextSubmit = useCallback(
     async (e: FormEvent) => {

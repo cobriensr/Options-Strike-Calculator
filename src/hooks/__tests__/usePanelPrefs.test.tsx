@@ -209,9 +209,9 @@ describe('usePanelPrefs — owner', () => {
     expect(
       (puts[0]?.[1] as RequestInit & { keepalive?: boolean }).keepalive,
     ).toBe(true);
-    const body = JSON.parse(
-      (puts[0]?.[1] as RequestInit).body as string,
-    ) as { hiddenPanels: string[] };
+    const body = JSON.parse((puts[0]?.[1] as RequestInit).body as string) as {
+      hiddenPanels: string[];
+    };
     expect(body.hiddenPanels).toEqual(['sec-darkpool']);
   });
 
@@ -245,9 +245,9 @@ describe('usePanelPrefs — owner', () => {
     expect(
       (puts[0]?.[1] as RequestInit & { keepalive?: boolean }).keepalive,
     ).toBe(true);
-    const body = JSON.parse(
-      (puts[0]?.[1] as RequestInit).body as string,
-    ) as { panelOrder: string[] };
+    const body = JSON.parse((puts[0]?.[1] as RequestInit).body as string) as {
+      panelOrder: string[];
+    };
     expect(body.panelOrder).toEqual(['sec-spot-price', 'sec-datetime']);
   });
 
@@ -272,9 +272,9 @@ describe('usePanelPrefs — owner', () => {
 
     puts = fetchMock.mock.calls.filter((c) => c[1]?.method === 'PUT');
     expect(puts).toHaveLength(1);
-    const body = JSON.parse(
-      (puts[0]?.[1] as RequestInit).body as string,
-    ) as { groupOrder: string[] };
+    const body = JSON.parse((puts[0]?.[1] as RequestInit).body as string) as {
+      groupOrder: string[];
+    };
     expect(body.groupOrder).toEqual(['Trading', 'Inputs']);
   });
 

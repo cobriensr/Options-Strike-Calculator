@@ -78,11 +78,7 @@ describe('SpotAlertsEditor', () => {
   it('silently rejects non-numeric level input on submit', () => {
     const onChange = vi.fn();
     render(
-      <SpotAlertsEditor
-        ticker="SPY"
-        spotAlerts={null}
-        onChange={onChange}
-      />,
+      <SpotAlertsEditor ticker="SPY" spotAlerts={null} onChange={onChange} />,
     );
     const level = screen.getByRole('textbox', { name: 'Spot alert level' });
     fireEvent.change(level, { target: { value: 'not-a-number' } });
@@ -97,11 +93,7 @@ describe('SpotAlertsEditor', () => {
       { op: '<', level: 580 },
     ];
     render(
-      <SpotAlertsEditor
-        ticker="SPY"
-        spotAlerts={alerts}
-        onChange={onChange}
-      />,
+      <SpotAlertsEditor ticker="SPY" spotAlerts={alerts} onChange={onChange} />,
     );
     fireEvent.click(
       screen.getByRole('button', { name: 'Remove SPY >= 595 alert' }),

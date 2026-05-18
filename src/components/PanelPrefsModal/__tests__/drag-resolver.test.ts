@@ -20,8 +20,7 @@ const entriesByGroup = new Map<string, PanelRegistryEntry[]>([
 ]);
 
 const isGroupId = (id: string) => GROUPS.includes(id);
-const groupForPanel = (id: string) =>
-  REGISTRY.find((e) => e.id === id)?.group;
+const groupForPanel = (id: string) => REGISTRY.find((e) => e.id === id)?.group;
 
 function baseInput() {
   return {

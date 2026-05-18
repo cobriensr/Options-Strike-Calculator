@@ -17,7 +17,9 @@ describe('ThresholdsEditor', () => {
     );
     for (const v of DEFAULT_UP_THRESHOLDS) {
       expect(
-        screen.getByRole('button', { name: `Remove up threshold ${String(v)}%` }),
+        screen.getByRole('button', {
+          name: `Remove up threshold ${String(v)}%`,
+        }),
       ).toBeInTheDocument();
     }
     // Defaults hint appears next to "Up thresholds" but NOT down (down is explicit).

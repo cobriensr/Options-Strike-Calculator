@@ -12,7 +12,11 @@ const counts: Record<TrackerTab, number> = {
 describe('TrackerTabs', () => {
   it('renders three tabs with their labels and counts', () => {
     render(
-      <TrackerTabs current="active" onChange={() => undefined} counts={counts} />,
+      <TrackerTabs
+        current="active"
+        onChange={() => undefined}
+        counts={counts}
+      />,
     );
     expect(screen.getByRole('tab', { name: /Active/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Watchlist/ })).toBeInTheDocument();
@@ -34,9 +38,10 @@ describe('TrackerTabs', () => {
         counts={counts}
       />,
     );
-    expect(
-      screen.getByRole('tab', { name: /Watchlist/ }),
-    ).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: /Watchlist/ })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
     expect(screen.getByRole('tab', { name: /Active/ })).toHaveAttribute(
       'aria-selected',
       'false',
@@ -58,7 +63,11 @@ describe('TrackerTabs', () => {
 
   it('exposes tablist semantics for assistive tech', () => {
     render(
-      <TrackerTabs current="active" onChange={() => undefined} counts={counts} />,
+      <TrackerTabs
+        current="active"
+        onChange={() => undefined}
+        counts={counts}
+      />,
     );
     expect(
       screen.getByRole('tablist', { name: 'Tracker tabs' }),
@@ -77,7 +86,11 @@ describe('TrackerTabs', () => {
       archive: 0,
     };
     render(
-      <TrackerTabs current="active" onChange={() => undefined} counts={zeros} />,
+      <TrackerTabs
+        current="active"
+        onChange={() => undefined}
+        counts={zeros}
+      />,
     );
     const tabs = screen.getAllByRole('tab');
     expect(tabs).toHaveLength(3);

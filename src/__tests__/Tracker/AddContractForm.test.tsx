@@ -124,7 +124,9 @@ describe('AddContractForm', () => {
       /Paste OCC symbol or Unusual Whales/,
     );
     fireEvent.change(pasteField, { target: { value: 'not an occ body' } });
-    expect(screen.getByText(/Doesn't look like an OCC body/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Doesn't look like an OCC body/),
+    ).toBeInTheDocument();
     // Structured ticker stays empty
     expect(screen.getByLabelText(/Ticker/i)).toHaveValue('');
   });

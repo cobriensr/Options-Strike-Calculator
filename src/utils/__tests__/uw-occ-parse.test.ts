@@ -96,7 +96,9 @@ describe('tryParseOccChain', () => {
 
   it('returns null on a UW URL with malformed OCC body', () => {
     expect(
-      tryParseOccChain('https://unusualwhales.com/option-chain/TSLA261016C0080'),
+      tryParseOccChain(
+        'https://unusualwhales.com/option-chain/TSLA261016C0080',
+      ),
     ).toBeNull();
   });
 

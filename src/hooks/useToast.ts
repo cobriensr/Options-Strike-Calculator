@@ -17,11 +17,7 @@ export interface ToastShowOptions {
 }
 
 export interface ToastContextValue {
-  show: (
-    message: string,
-    type?: ToastType,
-    opts?: ToastShowOptions,
-  ) => void;
+  show: (message: string, type?: ToastType, opts?: ToastShowOptions) => void;
 }
 
 export const ToastContext = createContext<ToastContextValue | null>(null);

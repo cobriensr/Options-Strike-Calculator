@@ -32,7 +32,9 @@ import type {
 } from '../../components/Tracker/types';
 
 let nextId = 1;
-function makeContract(overrides: Partial<TrackerContract> = {}): TrackerContract {
+function makeContract(
+  overrides: Partial<TrackerContract> = {},
+): TrackerContract {
   return {
     id: nextId++,
     occ_symbol: 'X',
@@ -91,9 +93,10 @@ describe('ContractTable', () => {
     expect(
       screen.getByRole('radiogroup', { name: 'Group rows by' }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('radio', { name: 'expiration' }),
-    ).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: 'expiration' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
     expect(screen.getByRole('radio', { name: 'ticker' })).toHaveAttribute(
       'aria-checked',
       'false',

@@ -1,8 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  getPanelRegistry,
-  PANEL_GROUP_ORDER,
-} from '../panel-registry';
+import { getPanelRegistry, PANEL_GROUP_ORDER } from '../panel-registry';
 
 describe('getPanelRegistry', () => {
   it('returns only Inputs + base panels for a public visitor (no auth, no data)', () => {

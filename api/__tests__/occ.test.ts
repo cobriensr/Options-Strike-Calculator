@@ -523,7 +523,7 @@ describe('parseFreeText — OCC symbol + Unusual Whales URL paths', () => {
     ).toThrow();
   });
 
-  it('throws on garbage that almost-but-doesn\'t match either shape', () => {
+  it("throws on garbage that almost-but-doesn't match either shape", () => {
     expect(() => parseFreeText('TSLA chain @ 1 x 1')).toThrow();
   });
 });
