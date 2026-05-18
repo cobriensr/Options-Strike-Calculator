@@ -45,6 +45,8 @@ interface UseSilentBoomFeedArgs {
   minDte?: number;
   /** Numeric premium floor in dollars (entry_price × spike_volume × 100). */
   minPremium?: number;
+  /** Hide alerts after 14:30 CT — server-side so pagination is accurate. */
+  hideLatePm?: boolean;
   /** Burst-color category filter — null = all colors. */
   burst?: SilentBoomBurstColor | null;
   /** Ask% band filter — null = all bands. */
@@ -96,6 +98,7 @@ export function useSilentBoomFeed({
   dte = null,
   minDte = 0,
   minPremium = 0,
+  hideLatePm = false,
   burst = null,
   askPctBand = null,
   aggressivePremium = false,
@@ -127,6 +130,7 @@ export function useSilentBoomFeed({
       if (dte) params.set('dte', dte);
       if (minDte > 0) params.set('minDte', String(minDte));
       if (minPremium > 0) params.set('minPremium', String(minPremium));
+      if (hideLatePm) params.set('hideLatePm', 'true');
       if (burst) params.set('burst', burst);
       if (askPctBand) params.set('askPctBand', askPctBand);
       if (aggressivePremium) params.set('aggressivePremium', 'true');
@@ -167,6 +171,7 @@ export function useSilentBoomFeed({
     dte,
     minDte,
     minPremium,
+    hideLatePm,
     burst,
     askPctBand,
     aggressivePremium,

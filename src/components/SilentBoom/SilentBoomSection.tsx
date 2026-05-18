@@ -84,11 +84,13 @@ const GHOST_PRINT_SPIKE_RATIO_MIN = 100;
  * min before the regular-session close — chosen because by that
  * point the silent-boom audit's PM stratum lift is 0.50× and
  * post-14:30 fires are the worst slice; the user's discretionary
- * exit windows close fast enough that the move can't develop. The
- * filter is client-side so toolbar counts and pagination still
- * reflect the full DB result.
+ * exit windows close fast enough that the move can't develop. Now
+ * a server-side filter (`hideLatePm=true` query param) so pagination
+ * accurately reflects the post-filter count — was previously
+ * client-side which left empty pages when the entire 50-item slice
+ * fell after the cutoff. Cutoff (14:30 CT → minute-of-day 870) lives
+ * in api/silent-boom-feed.ts and api/silent-boom-ticker-counts.ts.
  */
-const LATE_PM_CUTOFF_MIN_OF_DAY = 14 * 60 + 30;
 
 /** Tier floors — must match SILENT_BOOM_TIER_THRESHOLDS in
  *  api/_lib/silent-boom-score.ts. */
@@ -607,6 +609,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   }, [date]);
 
   // Reset page on any filter change so we don't land on an empty page.
+  // hideLatePm is server-side (Phase 4); a flip changes the server's
+  // total + pagination so the page must reset.
   useEffect(() => {
     setPage(0);
   }, [
@@ -643,6 +647,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       dte: dteFilter,
       minDte,
       minPremium: minPremiumK * 1000,
+      hideLatePm,
       burst: burstFilter,
       askPctBand,
       aggressivePremium,
@@ -666,6 +671,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     dte: dteFilter,
     minDte,
     minPremium: minPremiumK * 1000,
+    hideLatePm,
     burst: burstFilter,
     askPctBand,
     minVolOi,
@@ -690,30 +696,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     return () => clearInterval(id);
   }, []);
 
-  // CT minute-of-day extractor for the late-PM filter. DOM-Intl based
-  // so DST transitions are handled transparently.
-  const ctMinuteOfDay = useMemo(() => {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/Chicago',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: false,
-    });
-    return (iso: string): number => {
-      const parts = fmt.formatToParts(new Date(iso));
-      const h = Number.parseInt(
-        parts.find((p) => p.type === 'hour')?.value ?? '0',
-        10,
-      );
-      const m = Number.parseInt(
-        parts.find((p) => p.type === 'minute')?.value ?? '0',
-        10,
-      );
-      const hh = h === 24 ? 0 : h;
-      return hh * 60 + m;
-    };
-  }, []);
-
   // Apply the client-side filters (bucket scrub + late-PM hide) to the
   // server-paginated list. Server `total` and pagination remain tied to
   // the unfiltered DB result so the page chips stay accurate; the
@@ -726,11 +708,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (bucketIso != null) {
       out = out.filter((a) => a.bucketCt === bucketIso);
     }
-    if (hideLatePm) {
-      out = out.filter(
-        (a) => ctMinuteOfDay(a.bucketCt) < LATE_PM_CUTOFF_MIN_OF_DAY,
-      );
-    }
+    // hideLatePm is server-side (api/silent-boom-feed.ts) — pagination
+    // reflects the post-filter count and we don't double-filter here.
     if (hideGhosts) {
       out = out.filter((a) => !isGhostPrint(a));
     }
@@ -762,23 +741,17 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   }, [
     alerts,
     bucketIso,
-    hideLatePm,
     hideGhosts,
     hideGated,
     hideRoundTripped,
     hideRoundTrippedAnyDte,
     moneynessMode,
-    ctMinuteOfDay,
   ]);
   // Per-filter hidden counts — computed against the unfiltered set
   // so each chip's "−N" count reflects what THAT filter is hiding,
-  // independent of any other active filter.
-  const hiddenLatePmCount =
-    bucketIso == null && hideLatePm
-      ? alerts.filter(
-          (a) => ctMinuteOfDay(a.bucketCt) >= LATE_PM_CUTOFF_MIN_OF_DAY,
-        ).length
-      : 0;
+  // independent of any other active filter. (hideLatePm moved
+  // server-side so its count isn't shown anymore — pagination
+  // accurately reflects the filtered total instead.)
   const hiddenGhostsCount =
     bucketIso == null && hideGhosts
       ? alerts.filter((a) => isGhostPrint(a)).length
@@ -1413,15 +1386,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               className={`${CHIP_BASE} ${
                 hideLatePm ? CHIP_ACTIVE.purple : CHIP_INACTIVE
               }`}
-              title="Hide alerts whose 5-min bucket is at or after 14:30 CT. Audit shows the PM stratum lift is 0.50× and post-14:30 fires are the worst slice — discretionary exit windows close fast enough that the move can't develop. Client-side filter; toolbar counts and pagination still reflect the full DB result."
+              title="Hide alerts whose 5-min bucket is at or after 14:30 CT. Audit shows the PM stratum lift is 0.50× and post-14:30 fires are the worst slice — discretionary exit windows close fast enough that the move can't develop. Server-side filter — pagination + ticker counts reflect the post-filter count."
               aria-pressed={hideLatePm}
             >
               hide post-14:30
-              {hideLatePm && hiddenLatePmCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenLatePmCount}
-                </span>
-              )}
             </button>
             <button
               type="button"
@@ -1636,11 +1604,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                     }`}
                   >
                     {burstFilter} burst only
-                  </span>
-                )}
-                {hideLatePm && hiddenLatePmCount > 0 && (
-                  <span className="ml-2 text-purple-300/80">
-                    ({hiddenLatePmCount} hidden after 14:30 CT)
                   </span>
                 )}
                 {hideGhosts && hiddenGhostsCount > 0 && (

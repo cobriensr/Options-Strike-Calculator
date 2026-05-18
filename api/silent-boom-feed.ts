@@ -310,7 +310,14 @@ export default async function handler(
   // Premium floor — entry_price * spike_volume * 100, in dollars.
   // null = no floor. Filtered server-side so pagination reflects the
   // post-filter count.
-  const minPremium = q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
+  const minPremium =
+    q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
+  // Hide alerts whose bucket_ct (in CT) is at or after 14:30. When
+  // active, this is a server-side filter so pagination accurately
+  // reflects the visible count — was previously client-side which
+  // emptied pages whose entire 50-item slice fell after the cutoff.
+  // Encoded as the CT minute-of-day boundary 14*60 + 30 = 870.
+  const hideLatePm = q.hideLatePm === true;
 
   // Burst color category → spike_ratio range. Mirrors the
   // SilentBoomRow spike badge: red >= 50×, yellow 20-50×, grey < 20×.
@@ -380,6 +387,13 @@ export default async function handler(
         AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
         AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
         AND (
+          ${hideLatePm}::boolean IS NOT TRUE
+          OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < 870
+        )
+        AND (
           ${aggressivePremium}::boolean IS NOT TRUE
           OR (
             entry_price * spike_volume * 100 >= 100000
@@ -426,6 +440,13 @@ export default async function handler(
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (
+          ${hideLatePm}::boolean IS NOT TRUE
+          OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < 870
+        )
           AND (
             ${aggressivePremium}::boolean IS NOT TRUE
             OR (
@@ -469,6 +490,13 @@ export default async function handler(
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (
+          ${hideLatePm}::boolean IS NOT TRUE
+          OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < 870
+        )
           AND (
             ${aggressivePremium}::boolean IS NOT TRUE
             OR (
@@ -512,6 +540,13 @@ export default async function handler(
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (
+          ${hideLatePm}::boolean IS NOT TRUE
+          OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < 870
+        )
           AND (
             ${aggressivePremium}::boolean IS NOT TRUE
             OR (
@@ -556,6 +591,13 @@ export default async function handler(
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (
+          ${hideLatePm}::boolean IS NOT TRUE
+          OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < 870
+        )
           AND (
             ${aggressivePremium}::boolean IS NOT TRUE
             OR (

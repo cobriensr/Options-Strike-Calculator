@@ -131,6 +131,12 @@ export const silentBoomFeedQuerySchema = z.object({
   // 0 = no floor. Server-side filter so pagination reflects the
   // post-filter count.
   minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  // Hide alerts whose 5-min bucket is at or after 14:30 CT. Server-side
+  // so pagination reflects the post-filter count (the client-side
+  // version emptied pages when every alert on the current page fell
+  // after the cutoff). 14:30 cutoff matches the trader's discretionary
+  // exit window — moves can't develop in <30 min before close.
+  hideLatePm: z.coerce.boolean().optional(),
   // Burst color category — matches the spike-ratio badge in
   // SilentBoomRow: 'red' = ≥50×, 'yellow' = 20-50×, 'grey' = <20×.
   // Visual-intensity ordering (NOT empirical-lift ordering — see
@@ -299,6 +305,7 @@ export const silentBoomTickerCountsQuerySchema = z.object({
   dte: z.enum(['0', '1-3', '4+']).optional(),
   minDte: z.coerce.number().int().min(0).max(10_000).optional(),
   minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  hideLatePm: z.coerce.boolean().optional(),
   burst: z.enum(['red', 'yellow', 'grey']).optional(),
   askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
 });

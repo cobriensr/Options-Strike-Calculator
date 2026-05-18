@@ -111,6 +111,7 @@ export default async function handler(
   const dteHiBound = dteRange?.hi ?? 100_000;
   const minPremium =
     q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
+  const hideLatePm = q.hideLatePm === true;
 
   const burstRange = (() => {
     if (q.burst === 'red') return { lo: 50, hi: 1_000_000 };
@@ -159,6 +160,13 @@ export default async function handler(
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (
+          ${hideLatePm}::boolean IS NOT TRUE
+          OR (
+            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
+            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
+          ) < 870
+        )
       GROUP BY underlying_symbol
       ORDER BY count DESC, latest_bucket_ct DESC, underlying_symbol ASC
     `) as CountRow[];

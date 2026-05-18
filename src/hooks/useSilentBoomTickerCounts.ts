@@ -40,6 +40,8 @@ interface UseSilentBoomTickerCountsArgs {
   minDte?: number;
   /** Numeric premium floor in dollars. */
   minPremium?: number;
+  /** Hide alerts after 14:30 CT — server-side. */
+  hideLatePm?: boolean;
   burst?: SilentBoomBurstColor | null;
   askPctBand?: SilentBoomAskPctBand | null;
 }
@@ -74,6 +76,7 @@ export function useSilentBoomTickerCounts({
   dte = null,
   minDte = 0,
   minPremium = 0,
+  hideLatePm = false,
   burst = null,
   askPctBand = null,
 }: UseSilentBoomTickerCountsArgs): State & { refetch: () => void } {
@@ -97,6 +100,7 @@ export function useSilentBoomTickerCounts({
       if (dte) params.set('dte', dte);
       if (minDte > 0) params.set('minDte', String(minDte));
       if (minPremium > 0) params.set('minPremium', String(minPremium));
+      if (hideLatePm) params.set('hideLatePm', 'true');
       if (burst) params.set('burst', burst);
       if (askPctBand) params.set('askPctBand', askPctBand);
       const res = await fetch(
@@ -131,6 +135,7 @@ export function useSilentBoomTickerCounts({
     dte,
     minDte,
     minPremium,
+    hideLatePm,
     burst,
     askPctBand,
   ]);
