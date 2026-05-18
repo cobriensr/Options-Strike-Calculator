@@ -19,11 +19,6 @@
  */
 
 import type { LotteryMode, TimeOfDay } from './lottery-finder.js';
-import {
-  GAMMA_BONUS_EXCLUDED_TICKERS,
-  GAMMA_HIGH_BONUS_POINTS,
-  GAMMA_HIGH_BONUS_THRESHOLD,
-} from './constants.js';
 
 export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
   RKLB: 10,
@@ -46,10 +41,7 @@ export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
 /** ($ entry price ≤ threshold → points). Evaluated in order; first match wins. */
 export const LOTTERY_PRICE_THRESHOLDS: ReadonlyArray<
   readonly [number, number]
-> = [
-  [0.5, 5],
-  [1.0, 3],
-];
+> = [[0.5, 5], [1.0, 3]];
 
 const MODE_WEIGHTS: Readonly<Record<LotteryMode, number>> = {
   A_intraday_0DTE: 5,
@@ -77,62 +69,6 @@ export function lotteryScoreTier(score: number | null): LotteryScoreTier {
   if (score >= LOTTERY_TIER_THRESHOLDS.tier1MinScore) return 'tier1';
   if (score >= LOTTERY_TIER_THRESHOLDS.tier2MinScore) return 'tier2';
   return 'tier3';
-}
-
-/**
- * Read-time score adjustment based on the chain's same-day fire_count.
- *
- * Empirical basis: 93-day burst-profitability analysis on 626k fires
- * (docs/tmp/burst-profitability-findings-2026-05-17.md). Single-fire
- * chains are negative-expectancy (mean R = -5.8%, 45% win rate); the
- * realized-outcome curve lifts monotonically through every fire_count
- * bucket with the knee at fire_count >= 8 (mean R = -1.6%, 94% win on
- * the chain's best fire). 16+ fires has 64% median win rate on the
- * median fire.
- *
- * The adjustment is applied at the API serialization layer alongside
- * `round_trip_score_deduct` so the displayed score, tier, and rank
- * all reflect the burst lift without needing a re-detect or backfill.
- *
- * Magnitudes mirror the round-trip deduct range (-3 to +2):
- *   fire_count == 1 → -3 (severe; worst-observed cohort)
- *   2-3              → -1
- *   4-7              →  0 (neutral baseline)
- *   8-15             → +1
- *   >= 16            → +2
- */
-export function fireCountScoreAdjustment(fireCount: number): number {
-  if (fireCount <= 0) return 0; // defensive — never happens in practice
-  if (fireCount === 1) return -3;
-  if (fireCount <= 3) return -1;
-  if (fireCount <= 7) return 0;
-  if (fireCount <= 15) return 1;
-  return 2;
-}
-
-/**
- * Gamma-at-trigger score bonus. Mirrors the SQL CASE expression baked
- * into `combined_score` by migration #168 — TS helper used for
- * tooltips + tests so the per-fire bonus reason is computable in JS
- * without re-fetching combined_score.
- *
- * Returns GAMMA_HIGH_BONUS_POINTS (=1) when:
- *   - gamma is non-null AND >= GAMMA_HIGH_BONUS_THRESHOLD (0.025)
- *   - ticker is NOT in GAMMA_BONUS_EXCLUDED_TICKERS (SPY, USO)
- *
- * Empirical basis: docs/tmp/gamma-deep-dive-findings-2026-05-17.md.
- * The threshold is the LF decile-5 inflection point. Excluded
- * tickers SPY and USO show -7pp / -16pp lift reversal in the data.
- */
-export function gammaScoreAdjustment(
-  gamma: number | null,
-  ticker: string,
-): number {
-  if (gamma == null) return 0;
-  if (!Number.isFinite(gamma)) return 0;
-  if (GAMMA_BONUS_EXCLUDED_TICKERS.includes(ticker)) return 0;
-  if (gamma < GAMMA_HIGH_BONUS_THRESHOLD) return 0;
-  return GAMMA_HIGH_BONUS_POINTS;
 }
 
 /**
