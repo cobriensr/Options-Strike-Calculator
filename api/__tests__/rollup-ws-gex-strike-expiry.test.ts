@@ -125,6 +125,12 @@ describe('rollup-ws-gex-strike-expiry handler', () => {
     // WS payload doesn't carry delta — rolled-up rows must NULL it.
     expect(sqlText).toContain('NULL::numeric AS call_delta_oi');
     expect(sqlText).toContain('NULL::numeric AS put_delta_oi');
+    // SPX → SPXW remap on copy so strike_exposures is uniformly
+    // SPXW-labeled for the 0DTE chain (the heatmap dropdown only
+    // allows SPXW; UW pushes the chain data under ticker='SPX').
+    expect(sqlText).toContain(
+      "CASE WHEN ticker = 'SPX' THEN 'SPXW' ELSE ticker END",
+    );
     expect(params).toEqual(['2026-05-18']);
   });
 

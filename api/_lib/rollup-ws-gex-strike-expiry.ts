@@ -18,6 +18,15 @@
  * Delta: WS payload has no `call_delta_oi` / `put_delta_oi`, so
  * rolled-up rows have NULL delta. REST-backfilled rows retain delta;
  * the heatmap does not read delta.
+ *
+ * SPX → SPXW remap: UW pushes 0DTE chain data with `ticker='SPX'` on
+ * both `gex_strike_expiry:SPX` and `gex_strike_expiry:SPXW`
+ * subscriptions (the chains have been unified since 2022 — all
+ * dailies, including 0DTE, live on the SPXW symbol). The Greek
+ * Heatmap dropdown only allows SPXW, and the lottery REST backfill
+ * writes SPXW. We remap on copy so `strike_exposures` is uniformly
+ * SPXW-labeled and the heatmap query path doesn't need a read-side
+ * alias. Mirrors `resolveStoredTicker` in `db-gex-strike-expiry.ts`.
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
@@ -40,7 +49,7 @@ const INSERT_SELECT_SQL = `
   SELECT
     (ts_minute AT TIME ZONE 'America/New_York')::date AS date,
     ts_minute AS timestamp,
-    ticker,
+    CASE WHEN ticker = 'SPX' THEN 'SPXW' ELSE ticker END AS ticker,
     expiry,
     strike,
     price,

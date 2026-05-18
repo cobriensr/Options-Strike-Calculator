@@ -49,7 +49,7 @@ const INSERT_SELECT_SQL = `
   SELECT
     (ts_minute AT TIME ZONE 'America/New_York')::date AS date,
     ts_minute AS timestamp,
-    ticker,
+    CASE WHEN ticker = 'SPX' THEN 'SPXW' ELSE ticker END AS ticker,
     expiry,
     strike,
     price,
