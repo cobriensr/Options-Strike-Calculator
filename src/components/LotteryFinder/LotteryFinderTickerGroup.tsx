@@ -15,6 +15,7 @@ import {
   BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
   formatBiasLabel,
+  formatFlowLabel,
   formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
@@ -25,6 +26,7 @@ import {
   type RollupAlertSummary,
   type TideAggregate,
 } from '../../utils/ticker-rollup-aggregates.js';
+import { deltaFromAtFire } from '../../utils/macro-badges.js';
 
 /**
  * Macro Window badge — fires whose triggerTimeCt is in this hours-to-
@@ -86,7 +88,7 @@ function biasChipClass(bias: Bias): string {
   return 'bg-neutral-800 text-neutral-300';
 }
 
-function tideChipClass(align: TideAggregate['align']): string {
+function alignChipClass(align: TideAggregate['align']): string {
   if (align === 'aligned') return 'bg-emerald-950/40 text-emerald-400';
   if (align === 'counter') return 'bg-red-950/40 text-red-400';
   if (align === 'unknown') return 'bg-neutral-900 text-neutral-500';
@@ -173,8 +175,10 @@ function LotteryFinderTickerGroupBase({
           directionGated: f.directionGated,
           triggeredAt: f.triggerTimeCt,
           strike: f.strike,
-          // Placeholder — Task 4 replaces with `deltaFromAtFire(f.tickerCumNcpAtFire, f.tickerCumNppAtFire)`.
-          tickerNetFlowAtFire: null,
+          tickerNetFlowAtFire: deltaFromAtFire(
+            f.macro.tickerCumNcpAtFire,
+            f.macro.tickerCumNppAtFire,
+          ),
           // Trigger-window premium spent on this chain — the size×price
           // signature the alert pipeline saw when it fired. windowSize
           // is total contracts in the burst window; ×100 lifts contract
@@ -265,11 +269,18 @@ function LotteryFinderTickerGroupBase({
             </span>
           )}
           <span
-            className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${tideChipClass(agg.tide.align)}`}
+            className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${alignChipClass(agg.tide.align)}`}
             title="Does Market Tide (NCP − NPP) direction agree with this ticker's bias? aligned = same direction (tape is on the bet's side), counter = opposite (tape fighting), mixed = inconsistent across alerts, unknown = no tide data."
             data-testid={`lottery-ticker-tide-${ticker}`}
           >
             {formatTideLabel(agg.tide)}
+          </span>
+          <span
+            className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${alignChipClass(agg.flow.align)}`}
+            title="Does per-ticker net flow (cumNcpAtFire − cumNppAtFire) direction agree with this ticker's bias? aligned = same direction; counter = opposite (tape fighting the bet); mixed = inconsistent across alerts; unknown = no fire-time snapshot."
+            data-testid={`lottery-ticker-flow-${ticker}`}
+          >
+            {formatFlowLabel(agg.flow)}
           </span>
           {agg.spreadMinutes != null && (
             <span

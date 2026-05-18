@@ -25,6 +25,7 @@ import {
   isHighConviction,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates.js';
+import { deltaFromAtFire } from '../../utils/macro-badges.js';
 import {
   CHIP_BASE,
   CHIP_INACTIVE,
@@ -693,8 +694,10 @@ export function LotteryFinderSection({
             directionGated: f.directionGated,
             triggeredAt: f.triggerTimeCt,
             strike: f.strike,
-            // Placeholder — Task 4 replaces with `deltaFromAtFire(f.tickerCumNcpAtFire, f.tickerCumNppAtFire)`.
-            tickerNetFlowAtFire: null,
+            tickerNetFlowAtFire: deltaFromAtFire(
+              f.macro.tickerCumNcpAtFire,
+              f.macro.tickerCumNppAtFire,
+            ),
             premium: f.entry.price * f.trigger.windowSize * 100,
             intensity: f.fireCount,
           })),

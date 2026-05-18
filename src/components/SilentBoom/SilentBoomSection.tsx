@@ -14,6 +14,7 @@ import {
   isHighConviction,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates.js';
+import { deltaFromAtFire } from '../../utils/macro-badges.js';
 import {
   SILENT_BOOM_EXIT_POLICY_LABELS,
   SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
@@ -799,8 +800,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             directionGated: a.directionGated,
             triggeredAt: a.bucketCt,
             strike: a.strike,
-            // Placeholder — Task 4 replaces with `deltaFromAtFire(a.tickerCumNcpAtFire, a.tickerCumNppAtFire)`.
-            tickerNetFlowAtFire: null,
+            tickerNetFlowAtFire: deltaFromAtFire(
+              a.tickerCumNcpAtFire,
+              a.tickerCumNppAtFire,
+            ),
             premium: a.entryPrice * a.spikeVolume * 100,
             intensity: a.spikeRatio,
           })),

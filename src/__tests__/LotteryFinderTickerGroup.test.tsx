@@ -861,4 +861,93 @@ describe('LotteryFinderTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
   });
+
+  describe('flow rollup chip', () => {
+    function makeFireWithFlow(
+      tickerCumNcpAtFire: number | null,
+      tickerCumNppAtFire: number | null,
+      overrides: Partial<LotteryFire> = {},
+    ): LotteryFire {
+      const base = makeFire(overrides);
+      return {
+        ...base,
+        macro: { ...base.macro, tickerCumNcpAtFire, tickerCumNppAtFire },
+      };
+    }
+
+    it('renders "flow ↑ aligned" when bull bias and all positive ticker flow', () => {
+      const fires = [
+        makeFireWithFlow(5_000_000, 1_000_000, {
+          optionChainId: 'MSFT260515C00400000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+        }),
+        makeFireWithFlow(3_000_000, 2_000_000, {
+          optionChainId: 'MSFT260515C00410000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+          strike: 410,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="MSFT"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('lottery-ticker-flow-MSFT')).toHaveTextContent(
+        'flow ↑ aligned',
+      );
+    });
+
+    it('renders "flow ↓ counter" when bull bias but ticker flow negative', () => {
+      const fires = [
+        makeFireWithFlow(1_000_000, 5_000_000, {
+          optionChainId: 'MSFT260515C00400000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="MSFT"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('lottery-ticker-flow-MSFT')).toHaveTextContent(
+        'flow ↓ counter',
+      );
+    });
+
+    it('renders "flow —" when no rows have a fire-time snapshot', () => {
+      const fires = [
+        makeFireWithFlow(null, null, {
+          optionChainId: 'MSFT260515C00400000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="MSFT"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('lottery-ticker-flow-MSFT')).toHaveTextContent(
+        'flow —',
+      );
+    });
+  });
 });

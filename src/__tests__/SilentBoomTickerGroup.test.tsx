@@ -676,6 +676,91 @@ describe('SilentBoomTickerGroup', () => {
     });
   });
 
+  describe('flow rollup chip', () => {
+    it('renders "flow ↑ aligned" when bull bias and all positive ticker flow', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'MSFT260515C00400000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+          tickerCumNcpAtFire: 5_000_000,
+          tickerCumNppAtFire: 1_000_000,
+        }),
+        makeAlert({
+          optionChainId: 'MSFT260515C00410000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+          strike: 410,
+          tickerCumNcpAtFire: 3_000_000,
+          tickerCumNppAtFire: 2_000_000,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="MSFT"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-flow-MSFT'),
+      ).toHaveTextContent('flow ↑ aligned');
+    });
+
+    it('renders "flow ↓ counter" when bull bias but ticker flow negative', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'MSFT260515C00400000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+          tickerCumNcpAtFire: 1_000_000,
+          tickerCumNppAtFire: 5_000_000,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="MSFT"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-flow-MSFT'),
+      ).toHaveTextContent('flow ↓ counter');
+    });
+
+    it('renders "flow —" when no rows have a fire-time snapshot', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'MSFT260515C00400000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+          tickerCumNcpAtFire: null,
+          tickerCumNppAtFire: null,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="MSFT"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-flow-MSFT'),
+      ).toHaveTextContent('flow —');
+    });
+  });
+
   it('renders an em-dash when every alert has a null peak', () => {
     const alerts = [
       makeAlert({

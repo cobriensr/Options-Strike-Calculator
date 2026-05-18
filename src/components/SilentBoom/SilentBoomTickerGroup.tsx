@@ -16,6 +16,7 @@ import {
   BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
   formatBiasLabel,
+  formatFlowLabel,
   formatPremiumAmount,
   formatSpreadDuration,
   formatTideLabel,
@@ -26,6 +27,7 @@ import {
   type RollupAlertSummary,
   type TideAggregate,
 } from '../../utils/ticker-rollup-aggregates.js';
+import { deltaFromAtFire } from '../../utils/macro-badges.js';
 
 interface SilentBoomTickerGroupProps {
   ticker: string;
@@ -56,7 +58,7 @@ function biasChipClass(bias: Bias): string {
   return 'bg-neutral-800 text-neutral-300';
 }
 
-function tideChipClass(align: TideAggregate['align']): string {
+function alignChipClass(align: TideAggregate['align']): string {
   if (align === 'aligned') return 'bg-emerald-950/40 text-emerald-400';
   if (align === 'counter') return 'bg-red-950/40 text-red-400';
   if (align === 'unknown') return 'bg-neutral-900 text-neutral-500';
@@ -144,8 +146,10 @@ function SilentBoomTickerGroupBase({
           directionGated: a.directionGated,
           triggeredAt: a.bucketCt,
           strike: a.strike,
-          // Placeholder — Task 4 replaces with `deltaFromAtFire(a.tickerCumNcpAtFire, a.tickerCumNppAtFire)`.
-          tickerNetFlowAtFire: null,
+          tickerNetFlowAtFire: deltaFromAtFire(
+            a.tickerCumNcpAtFire,
+            a.tickerCumNppAtFire,
+          ),
           // Spike-bucket premium spent — what the detector saw fire.
           // spikeVolume is contracts in the burst minute; ×100 lifts
           // to share-equivalents for $ display.
@@ -234,11 +238,18 @@ function SilentBoomTickerGroupBase({
             </span>
           )}
           <span
-            className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${tideChipClass(agg.tide.align)}`}
+            className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${alignChipClass(agg.tide.align)}`}
             title="Does Market Tide (NCP − NPP) direction agree with this ticker's bias? aligned = same direction (tape is on the bet's side), counter = opposite (tape fighting), mixed = inconsistent across alerts, unknown = no tide data."
             data-testid={`silent-boom-ticker-tide-${ticker}`}
           >
             {formatTideLabel(agg.tide)}
+          </span>
+          <span
+            className={`rounded px-1.5 py-0.5 font-mono text-[11px] font-semibold ${alignChipClass(agg.flow.align)}`}
+            title="Does per-ticker net flow (cumNcpAtFire − cumNppAtFire) direction agree with this ticker's bias? aligned = same direction; counter = opposite (tape fighting the bet); mixed = inconsistent across alerts; unknown = no fire-time snapshot."
+            data-testid={`silent-boom-ticker-flow-${ticker}`}
+          >
+            {formatFlowLabel(agg.flow)}
           </span>
           {agg.spreadMinutes != null && (
             <span
