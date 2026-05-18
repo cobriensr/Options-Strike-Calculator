@@ -20,6 +20,11 @@ export interface MacroBadgeView {
   tooltip: string;
 }
 
+// Intentionally dimmer than `src/components/ui/filter-toolbar-tokens.ts`
+// CHIP_ACTIVE palette (which uses /70 border + /40 bg). Tide and Flow
+// chips are informational display-only context, not interactive
+// filter chips — the lower opacity keeps them visually subordinate
+// so the eye lands on score/tier/filter chips first.
 const GREEN_CLS = 'border-green-500/40 bg-green-950/30 text-green-200';
 const RED_CLS = 'border-red-500/40 bg-red-950/30 text-red-200';
 const NEUTRAL_CLS = 'border-neutral-700 bg-neutral-900 text-neutral-300';
