@@ -14,7 +14,11 @@ import {
   type SilentBoomScoreTier,
 } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
-import { tideBadge } from '../../utils/macro-badges.js';
+import {
+  deltaFromAtFire,
+  flowBadge,
+  tideBadge,
+} from '../../utils/macro-badges.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import { computeExitNow } from '../../utils/exit-now.js';
@@ -343,6 +347,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const spike = spikeBadge(alert.spikeRatio);
   const tier = tierBadge(alert.scoreTier, alert.score);
   const tide = tideBadge(alert.mktTideDiff);
+  const flow = flowBadge(
+    deltaFromAtFire(alert.tickerCumNcpAtFire, alert.tickerCumNppAtFire),
+  );
   const gated = alert.directionGated ? gatedPill() : null;
   const spreadConfirmed = spreadConfirmedBadge(alert.multiLegShare);
   const flowMatch = flowMatchBadge(alert.optionType, liveFlowSnapshot ?? null);
@@ -626,6 +633,19 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             title={tide.tooltip}
           >
             {tide.label}
+          </span>
+        )}
+        {/* Per-ticker flow at fire time — frozen snapshot. Sits between
+            the market-wide Tide chip and the live Flow Match badge so
+            the row reads macro → fire-time micro → live micro. */}
+        {flow && (
+          <span
+            data-testid="silent-boom-row-flow-chip"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
+            title={flow.tooltip}
+            aria-label={flow.tooltip}
+          >
+            {flow.label}
           </span>
         )}
 

@@ -14,7 +14,11 @@ import type {
 } from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
-import { tideBadge } from '../../utils/macro-badges.js';
+import {
+  deltaFromAtFire,
+  flowBadge,
+  tideBadge,
+} from '../../utils/macro-badges.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import { computeExitNow } from '../../utils/exit-now.js';
@@ -314,6 +318,12 @@ export const LotteryRow = memo(function LotteryRow({
     eodFallback != null &&
     exitPolicy !== ('realizedEodPct' as ExitPolicy);
   const tide = tideBadge(fire.macro.mktTideDiff);
+  const flow = flowBadge(
+    deltaFromAtFire(
+      fire.macro.tickerCumNcpAtFire,
+      fire.macro.tickerCumNppAtFire,
+    ),
+  );
   const tier = tierBadge(fire.scoreTier, fire.score);
   const ci = ciIndicator(fire.tickerStats, fire.underlyingSymbol);
   const gated = fire.directionGated ? gatedPill() : null;
@@ -765,6 +775,19 @@ export const LotteryRow = memo(function LotteryRow({
             title={tide.tooltip}
           >
             {tide.label}
+          </span>
+        )}
+        {/* Per-ticker flow at fire time — frozen snapshot. Sits between
+            the market-wide Tide chip and the live Flow Match badge so
+            the row reads macro → fire-time micro → live micro. */}
+        {flow && (
+          <span
+            data-testid="lottery-row-flow-chip"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
+            title={flow.tooltip}
+            aria-label={flow.tooltip}
+          >
+            {flow.label}
           </span>
         )}
 

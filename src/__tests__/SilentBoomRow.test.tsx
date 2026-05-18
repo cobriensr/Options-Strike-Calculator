@@ -679,6 +679,42 @@ describe('SilentBoomRow: flow-inverted badge', () => {
   });
 });
 
+describe('SilentBoomRow: Flow chip', () => {
+  it('renders Flow ⬆ when ticker NCP > NPP at fire', () => {
+    renderRow(
+      makeAlert({
+        tickerCumNcpAtFire: 5_000_000,
+        tickerCumNppAtFire: 2_000_000,
+      }),
+    );
+    expect(screen.getByTestId('silent-boom-row-flow-chip')).toHaveTextContent(
+      'Flow ⬆',
+    );
+  });
+
+  it('renders Flow ⬇ when ticker NCP < NPP at fire', () => {
+    renderRow(
+      makeAlert({
+        tickerCumNcpAtFire: 1_000_000,
+        tickerCumNppAtFire: 4_000_000,
+      }),
+    );
+    expect(screen.getByTestId('silent-boom-row-flow-chip')).toHaveTextContent(
+      'Flow ⬇',
+    );
+  });
+
+  it('does not render Flow chip when either field is null', () => {
+    renderRow(
+      makeAlert({
+        tickerCumNcpAtFire: null,
+        tickerCumNppAtFire: 2_000_000,
+      }),
+    );
+    expect(screen.queryByTestId('silent-boom-row-flow-chip')).toBeNull();
+  });
+});
+
 describe('SilentBoomRow: EXIT badge', () => {
   beforeEach(() => {
     vi.useFakeTimers();

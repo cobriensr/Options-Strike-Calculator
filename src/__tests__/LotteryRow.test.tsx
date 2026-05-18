@@ -999,6 +999,67 @@ describe('LotteryRow: DUAL-FLAG chip', () => {
 });
 
 // ============================================================
+// Flow chip (net-flow-chip-and-filter-design-2026-05-18)
+// ============================================================
+
+describe('LotteryRow: Flow chip', () => {
+  it('renders Flow ⬆ when ticker NCP > NPP at fire', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          macro: makeMacro({
+            mktTideDiff: 1500,
+            tickerCumNcpAtFire: 5_000_000,
+            tickerCumNppAtFire: 2_000_000,
+          }),
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByTestId('lottery-row-flow-chip')).toHaveTextContent(
+      'Flow ⬆',
+    );
+  });
+
+  it('renders Flow ⬇ when ticker NCP < NPP at fire', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          macro: makeMacro({
+            mktTideDiff: 1500,
+            tickerCumNcpAtFire: 1_000_000,
+            tickerCumNppAtFire: 4_000_000,
+          }),
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByTestId('lottery-row-flow-chip')).toHaveTextContent(
+      'Flow ⬇',
+    );
+  });
+
+  it('does not render Flow chip when either field is null', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          macro: makeMacro({
+            mktTideDiff: 1500,
+            tickerCumNcpAtFire: null,
+            tickerCumNppAtFire: 2_000_000,
+          }),
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByTestId('lottery-row-flow-chip')).toBeNull();
+  });
+});
+
+// ============================================================
 // HIGH-Γ chip (gamma-deep-dive-findings-2026-05-17.md)
 // ============================================================
 
