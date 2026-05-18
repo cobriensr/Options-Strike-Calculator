@@ -4832,7 +4832,7 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 168,
     description:
-      'Add gamma_at_trigger NUMERIC column to lottery_finder_fires AND silent_boom_alerts. Stored greek snapshot at fire-detection time, populated by the detect crons via raw_payload->>\'gamma\' extraction from ws_option_trades. Empirical basis: docs/tmp/gamma-deep-dive-findings-2026-05-17.md — high gamma carries +4.8pp (LF) to +10.7pp (SB) winrate lift on the trail30/10 exit, but the lift is ticker-conditional (SPY and USO REVERSE the signal; -7pp and -16pp drag respectively). The lift is also exit-conditional (hold-EoD reverses because high gamma = theta-burn at 0DTE). Combined_score is dropped and recreated to include the gamma bonus as a row-local CASE expression: +1 when ticker NOT IN (\'SPY\',\'USO\') AND gamma_at_trigger >= 0.025, else 0. Unlike fire_count_score_adjustment (#167), gamma_at_trigger is row-local so it lives directly in the GENERATED expression — no trigger needed. silent_boom_alerts gets the column for UI/analysis only (no combined_score on that table). Older rows remain NULL; only new fires inserted after this migration carry a populated value.',
+      "Add gamma_at_trigger NUMERIC column to lottery_finder_fires AND silent_boom_alerts. Stored greek snapshot at fire-detection time, populated by the detect crons via raw_payload->>'gamma' extraction from ws_option_trades. Empirical basis: docs/tmp/gamma-deep-dive-findings-2026-05-17.md — high gamma carries +4.8pp (LF) to +10.7pp (SB) winrate lift on the trail30/10 exit, but the lift is ticker-conditional (SPY and USO REVERSE the signal; -7pp and -16pp drag respectively). The lift is also exit-conditional (hold-EoD reverses because high gamma = theta-burn at 0DTE). Combined_score is dropped and recreated to include the gamma bonus as a row-local CASE expression: +1 when ticker NOT IN ('SPY','USO') AND gamma_at_trigger >= 0.025, else 0. Unlike fire_count_score_adjustment (#167), gamma_at_trigger is row-local so it lives directly in the GENERATED expression — no trigger needed. silent_boom_alerts gets the column for UI/analysis only (no combined_score on that table). Older rows remain NULL; only new fires inserted after this migration carry a populated value.",
     statements: (sql) => [
       // Step 1: add the new column to both tables. Nullable — older
       // rows have no value, only fires inserted after this migration
@@ -4872,6 +4872,21 @@ export const MIGRATIONS: Migration[] = [
       // #159 added and #167 already rebuilt once.
       sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_combined_score_idx
             ON lottery_finder_fires (date DESC, combined_score DESC NULLS LAST)`,
+    ],
+  },
+  {
+    id: 169,
+    description:
+      'Add pre_trade_count INTEGER column to silent_boom_alerts. Stores the count of non-canceled trades on the same option_chain_id from session open (08:30 CT) to bucket_ct at fire-detection time. Empirical basis: docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md — within every elapsed-time bucket on the 93-day peak dataset (n=63,846), the 501+ pre-trade-count cohort outperforms the dead-silent baseline by +15-25pp on peak ≥50%. Lift is independent of TOD (which already controls for elapsed time). Score bonus +4 fires when pre_trade_count >= 501. Older rows stay NULL until backfilled.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS pre_trade_count INTEGER`,
+      // Partial index — query path is "WHERE pre_trade_count >= 501"
+      // for cohort analysis; full-table index would be wasteful since
+      // ~97% of rows fall below the threshold.
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_pre_trade_count_high_idx
+            ON silent_boom_alerts (date DESC, pre_trade_count)
+         WHERE pre_trade_count >= 501`,
     ],
   },
 ];

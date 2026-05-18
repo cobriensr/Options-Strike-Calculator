@@ -80,7 +80,8 @@ def fetch_rows(
         cur.execute(
             f"""
             SELECT id, dte, baseline_volume, spike_ratio, entry_price,
-                   ask_pct, option_type, bucket_ct, date, score, score_tier
+                   ask_pct, option_type, bucket_ct, date,
+                   pre_trade_count, score, score_tier
             FROM silent_boom_alerts
             WHERE {where}
             ORDER BY id
@@ -100,7 +101,7 @@ def recompute(
         (
             alert_id, dte, baseline_volume, spike_ratio, entry_price,
             ask_pct, option_type, bucket_ct, alert_date,
-            prior_score, prior_tier,
+            pre_trade_count, prior_score, prior_tier,
         ) = r
         tod = silent_boom_tod_from_minute_ct(ct_minute_of_day(bucket_ct))
         score = compute_silent_boom_score(
@@ -112,6 +113,9 @@ def recompute(
             tod=tod,
             option_type=option_type,
             trading_day=alert_date.isoformat(),
+            # NULL for legacy rows predating migration #169 — defaults
+            # to 0 in compute_silent_boom_score, so no bonus fires.
+            pre_trade_count=int(pre_trade_count or 0),
         )
         tier = silent_boom_tier(score)
         if prior_score == score and prior_tier == tier:

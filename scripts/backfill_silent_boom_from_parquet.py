@@ -122,6 +122,9 @@ def load_buckets_for_date(date_str: str) -> pd.DataFrame:
         last_price=('price', 'last'),
         vwap_num=('notional', 'sum'),
         vwap_den=('size', 'sum'),
+        # Per-bucket trade count for the pre_trade_count feature
+        # (migration #169). Summed across prior buckets at fire time.
+        n_trades=('price', 'count'),
     ).reset_index()
     agg['vwap'] = agg['vwap_num'] / agg['vwap_den']
     return agg
@@ -219,6 +222,8 @@ def silent_boom_tod_from_minute_ct(minute_of_day: int) -> str:
 # Every bucket weight is justified in docs/tmp/silent-boom-feature-audit-2026-05-08.md.
 # TOD weights + DOW×type bonus retuned 2026-05-17 against the 93-day,
 # 63,846-alert peak dataset (docs/tmp/sb-93d-peak-revisit-2026-05-17.py).
+# pre_trade_count heavy-activity bonus (≥501 trades) added 2026-05-17
+# Phase A — spec: docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
 _TOD_WEIGHTS = {'AM_open': 6, 'MID': 3, 'LUNCH': 0, 'PM': -4, 'LATE': -5}
 
 # (day-of-week, option_type) → points. dow uses Python's
@@ -228,6 +233,9 @@ _DOW_TYPE_BONUS = {
     (4, 'C'): 1,   # Friday × CALL (+1.6pp lift, n=8,565)
     (0, 'P'): -2,  # Monday × PUT  (-3.8pp lift, n=5,011)
 }
+
+_PRE_TRADE_COUNT_HEAVY_THRESHOLD = 501
+_PRE_TRADE_COUNT_HEAVY_BONUS = 4
 
 
 def _dow_type_bonus(trading_day: str, option_type: str) -> int:
@@ -246,6 +254,7 @@ def compute_silent_boom_score(
     tod: str,
     option_type: str,
     trading_day: str,
+    pre_trade_count: int = 0,
 ) -> int:
     s = 0
     # DTE
@@ -282,6 +291,9 @@ def compute_silent_boom_score(
         s += 1
     # DOW × option_type bonus
     s += _dow_type_bonus(trading_day, option_type)
+    # Pre-trade-count heavy-activity bonus (≥501 trades pre-spike).
+    if pre_trade_count >= _PRE_TRADE_COUNT_HEAVY_THRESHOLD:
+        s += _PRE_TRADE_COUNT_HEAVY_BONUS
     return s
 
 
@@ -368,7 +380,8 @@ def insert_fires(conn, rows: list[tuple]) -> int:
           spike_volume, baseline_volume, spike_ratio,
           ask_pct, vol_oi, entry_price, open_interest,
           score, score_tier,
-          mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi
+          mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi,
+          pre_trade_count
         )
         VALUES %s
         ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
@@ -379,7 +392,7 @@ def insert_fires(conn, rows: list[tuple]) -> int:
             '(%s::date, %s::timestamptz, %s, %s, %s, %s::numeric, '
             '%s::date, %s, %s, %s::numeric, %s::numeric, %s::numeric, '
             '%s::numeric, %s::numeric, %s, %s::smallint, %s, '
-            '%s, %s, %s)'
+            '%s, %s, %s, %s)'
         ),
         page_size=500,
         fetch=True,
@@ -499,6 +512,17 @@ def main() -> None:
                 bucket_ct = bucket_ts.tz_convert('America/Chicago')
                 ct_min_of_day = bucket_ct.hour * 60 + bucket_ct.minute
                 tod = silent_boom_tod_from_minute_ct(ct_min_of_day)
+                # Pre-trade-count: sum n_trades across this chain's
+                # buckets *before* the spike's bucket. The cron uses a
+                # session-open boundary; in the parquet path we use
+                # "all prior buckets" since options day-trade in
+                # regular session only — overnight/extended-hours
+                # ticks for SB universe chains are rare enough that
+                # the few extras land far below the 501-trade
+                # threshold and don't change scoring.
+                pre_trade_count = int(
+                    sub.loc[sub['bucket'] < bucket_ts, 'n_trades'].sum()
+                )
                 score = compute_silent_boom_score(
                     dte=dte,
                     baseline_volume=f['baseline_volume'],
@@ -508,6 +532,7 @@ def main() -> None:
                     tod=tod,
                     option_type=opt_type,
                     trading_day=date_str,
+                    pre_trade_count=pre_trade_count,
                 )
                 tier = silent_boom_tier(score)
                 bucket_ts = f['bucket']
@@ -526,6 +551,7 @@ def main() -> None:
                     f['open_interest'],
                     score, tier,
                     tide_diff, zero_dte_diff, spx_spot_gamma,
+                    pre_trade_count,
                 ))
                 fires_today += 1
         inserted = insert_fires(conn, rows_to_insert)

@@ -250,8 +250,7 @@ export default withCronInstrumentation(
           underlyingNotional != null && size > 0
             ? underlyingNotional / size
             : null,
-        bucketGamma:
-          r.bucket_gamma != null ? Number(r.bucket_gamma) : null,
+        bucketGamma: r.bucket_gamma != null ? Number(r.bucket_gamma) : null,
       });
       if (r.bucket_max_oi != null && r.bucket_max_oi > g.oi) {
         g.oi = r.bucket_max_oi;
@@ -478,6 +477,29 @@ export default withCronInstrumentation(
         // backfill / re-pass).
         const ctMinuteOfDay = ctMinuteFromUtcMs(f.bucketTs.getTime());
         const tod = silentBoomTodFromMinuteCt(ctMinuteOfDay);
+
+        // Pre-trade-count: non-canceled trades on this chain from
+        // session open (08:30 CT) to the spike's bucket_ct. Fed into
+        // the score for the +4 heavy-activity bonus (≥501 trades).
+        // Spec:
+        //   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
+        // Postgres handles the CT-to-UTC conversion via AT TIME ZONE so
+        // DST works without explicit math. Migration #169 added the
+        // storage column.
+        const preTradeCountRows = (await db`
+          SELECT COUNT(*)::int AS cnt
+            FROM ws_option_trades
+           WHERE option_chain = ${g.optionChain}
+             AND canceled = FALSE
+             AND price > 0
+             AND executed_at >= (
+               (${ctx.today}::date + INTERVAL '8 hours 30 minutes')
+                 AT TIME ZONE 'America/Chicago'
+             )
+             AND executed_at < ${f.bucketTs.toISOString()}::timestamptz
+        `) as { cnt: number }[];
+        const preTradeCount = preTradeCountRows[0]?.cnt ?? 0;
+
         const score = computeSilentBoomScore({
           dte,
           baselineVolume: f.baselineVolume,
@@ -487,6 +509,7 @@ export default withCronInstrumentation(
           tod,
           optionType: g.optionType,
           tradingDay: ctx.today,
+          preTradeCount,
         });
         const tier = silentBoomScoreTier(score);
 
@@ -597,7 +620,7 @@ export default withCronInstrumentation(
             cum_ncp_at_fire, cum_npp_at_fire,
             inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
             takeit_prob, takeit_model_version, takeit_features,
-            gamma_at_trigger
+            gamma_at_trigger, pre_trade_count
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
@@ -610,7 +633,7 @@ export default withCronInstrumentation(
             ${cumNcpAtFire}, ${cumNppAtFire},
             ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
-            ${f.gammaAtSpike}
+            ${f.gammaAtSpike}, ${preTradeCount}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id

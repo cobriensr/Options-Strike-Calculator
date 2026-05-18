@@ -139,6 +139,9 @@ def load_buckets_for_date_fulltape(date_str: str) -> pd.DataFrame:
         last_price=('price', 'last'),
         vwap_num=('notional', 'sum'),
         vwap_den=('size', 'sum'),
+        # Per-bucket trade count for the pre_trade_count feature
+        # (migration #169). Summed across prior buckets at fire time.
+        n_trades=('price', 'count'),
     ).reset_index()
     agg['vwap'] = agg['vwap_num'] / agg['vwap_den']
     return agg
@@ -253,6 +256,14 @@ def main() -> None:
                 tod = sb_backfill.silent_boom_tod_from_minute_ct(
                     minute_of_day
                 )
+                # Pre-trade-count: sum prior buckets' n_trades on this
+                # chain. Same approximation as the Bot-Eod backfill —
+                # options day-trade in regular session only, so "all
+                # prior buckets" ≈ "since session open" for the SB
+                # universe.
+                pre_trade_count = int(
+                    sub.loc[sub['bucket'] < bucket_ts, 'n_trades'].sum()
+                )
                 score = sb_backfill.compute_silent_boom_score(
                     dte=dte,
                     baseline_volume=f['baseline_volume'],
@@ -262,6 +273,7 @@ def main() -> None:
                     tod=tod,
                     option_type=opt_type,
                     trading_day=date_str,
+                    pre_trade_count=pre_trade_count,
                 )
                 tier = sb_backfill.silent_boom_tier(score)
                 rows_to_insert.append((
@@ -285,6 +297,7 @@ def main() -> None:
                     tide_diff,
                     zero_dte_diff,
                     spx_gamma,
+                    pre_trade_count,
                 ))
                 fires_today += 1
 

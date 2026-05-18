@@ -113,17 +113,40 @@ const ASK_PCT_HIGH_PENALTY = -1;
 
 /** ask_pct = 1.0 exactly — structural-illiquidity floor. Set heavy
  * enough that any otherwise-perfect score lands below the tier2 floor
- * of 8: max positive components after 2026-05-17 retune sum to +35
- * (10+5+5+5+6+2+1+1 — last 1 is Friday × CALL bonus), so −30 caps any
- * saturated-ask fire at +3 → tier3. Empirical basis (full 15k-fire
- * sample, scripts/analyze_silent_boom_vol_oi.py 2026-05-12): ask=1.0
- * fires win > 0% at 77.0% vs ≥99% in every other ask band; the cliff
+ * of 8: max positive components after 2026-05-17 retune sum to +39
+ * (10+5+5+5+6+2+1+1+4 — last 4 is pre_trade_count ≥501 bonus, the
+ * +1 before is Friday × CALL), so −30 caps any saturated-ask fire at
+ * +7 → tier3. Empirical basis (full 15k-fire sample,
+ * scripts/analyze_silent_boom_vol_oi.py 2026-05-12): ask=1.0 fires
+ * win > 0% at 77.0% vs ≥99% in every other ask band; the cliff
  * replicates inside every score_tier. Spec:
  * docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md */
 const ASK_PCT_SATURATED_PENALTY = -30;
 
 /** Option type — small but consistent C edge (1.06× vs 0.93×). */
 const CALL_BONUS = 1;
+
+/** Pre-trade-count bonus. Counts non-canceled trades on the same
+ * option_chain_id from session open (08:30 CT) up to bucket_ct.
+ * Chains that have already traded heavily (501+) outperform the
+ * dead-silent baseline by +15-25pp on peak ≥50% *inside every
+ * elapsed-time bucket* — i.e. the lift is independent of TOD.
+ *
+ * Validated against the 93-day, 63,846-alert peak dataset:
+ *   0 (silent)   18.0% (n=48,511, lift +1.8pp)  → 0 (baseline)
+ *   1-5           3.2% (n=3,088,  lift -13.0pp) → 0 (TOD absorbs)
+ *   6-25          5.5% (n=3,775,  lift -10.7pp) → 0 (TOD absorbs)
+ *   26-100        9.6% (n=3,433,  lift  -6.6pp) → 0 (TOD absorbs)
+ *   101-500      13.3% (n=3,161,  lift  -2.9pp) → 0 (small)
+ *   501+         28.2% (n=1,878,  lift +12.0pp) → +4 BONUS
+ *
+ * Only 501+ carries clean TOD-independent lift. The negative-lift
+ * mid buckets (1-500) concentrate at 300+ min elapsed, where LATE/PM
+ * TOD weights already penalize — scoring them again would
+ * double-count. Spec:
+ *   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md */
+const PRE_TRADE_COUNT_HEAVY_THRESHOLD = 501;
+const PRE_TRADE_COUNT_HEAVY_BONUS = 4;
 
 /** Day-of-week × option_type bonus. Retuned 2026-05-17 against the
  * 93-day peak dataset (n=63,846; baseline peak ≥50% = 16.2%). Three
@@ -190,11 +213,15 @@ export function silentBoomDowTypeBonus(
  * 2026-05-17 retune (against 93-day, 63,846-alert peak dataset):
  * TOD weights bumped (AM_open +5→+6, MID +1→+3, PM −3→−4, LATE −3→−5)
  * and DOW × type bonus added (Fri-PUT +2, Fri-CALL +1, Mon-PUT −2).
- * New range: −25 to +35. Thresholds intentionally held at 21/8 so
- * more 0DTE + AM_open alerts (which now hit +20+ before baseline/ask
- * components) flow into tier1/tier2 — that's the explicit goal of
- * the retune. Tier distribution will shift; retune is logged in
- * docs/tmp/sb-93d-peak-revisit-2026-05-17.py.
+ * Range after retune: −25 to +35. Thresholds intentionally held at
+ * 21/8 so more 0DTE + AM_open alerts (which now hit +20+ before
+ * baseline/ask components) flow into tier1/tier2 — that's the
+ * explicit goal of the retune. Tier distribution will shift; retune
+ * is logged in docs/tmp/sb-93d-peak-revisit-2026-05-17.py.
+ *
+ * 2026-05-17 Phase A — pre_trade_count ≥501 bonus (+4) added. New
+ * range: −25 to +39. Spec:
+ *   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
  */
 export const SILENT_BOOM_TIER_THRESHOLDS = Object.freeze({
   tier1MinScore: 21,
@@ -232,6 +259,12 @@ export interface SilentBoomScoreInput {
    * for the DOW × type bonus (Friday × PUT, Friday × CALL, Monday ×
    * PUT). */
   tradingDay: string;
+  /** Count of non-canceled trades on this option_chain_id between
+   * session open (08:30 CT) and bucket_ct. Used for the heavy-prior-
+   * activity bonus (+4 when ≥ 501). Pass 0 when unknown so the score
+   * lands without the bonus rather than throwing — historical rows
+   * predating migration #169 fall in this bucket. */
+  preTradeCount: number;
 }
 
 /**
@@ -325,6 +358,11 @@ export function computeSilentBoomScore(args: SilentBoomScoreInput): number {
 
   // Day-of-week × option_type bonus (Fri-PUT/Fri-CALL/Mon-PUT)
   score += silentBoomDowTypeBonus(args.tradingDay, args.optionType);
+
+  // Pre-trade-count heavy-activity bonus (501+ trades pre-spike)
+  if (args.preTradeCount >= PRE_TRADE_COUNT_HEAVY_THRESHOLD) {
+    score += PRE_TRADE_COUNT_HEAVY_BONUS;
+  }
 
   return score;
 }
