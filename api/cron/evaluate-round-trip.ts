@@ -44,8 +44,15 @@ const LOOKBACK_MIN_FLOOR = 60;
  *  the SELECT cost so we don't scan all-time on every tick. */
 const CATCHUP_FLOOR_HOURS = 24;
 
-/** Max DTE for which the signal is meaningful — see spec Decisions §6. */
-const DTE_MAX = 7;
+/**
+ * Max DTE for which the SCORE-PENALTY signal is outcome-predictive — see
+ * Phase 1 EDA in `ml/experiments/round-trip-suppression-eda/`: AUC against
+ * realized_trail30_10_pct loss is 0.59+ at 0-7 DTE and collapses to 0.528
+ * at 8-30 DTE. So score_deduct is gated to ≤7. We STILL compute net_pct
+ * for all DTEs (no DTE filter on the SELECT) so the front-end "Hide
+ * round-tripped (any DTE)" structural filter can read it.
+ */
+const SCORE_DEDUCT_DTE_MAX = 7;
 
 /** Stepped bracket — keep in sync with scripts/backfill_round_trip_score.py
  *  and the migration #154 description. Order matters: most-negative first. */
@@ -67,11 +74,13 @@ interface EligibleAlert {
   id: number;
   option_chain_id: string;
   fire_time: Date;
+  dte: number;
 }
 
 interface AggRow {
   id: number;
   source: 'lottery' | 'silent_boom';
+  dte: number;
   ask_size: number;
   bid_size: number;
   total_size: number;
@@ -99,17 +108,15 @@ export default withCronInstrumentation(
     // the literal as raw text (silent failure). Same pattern as
     // detect-silent-boom.ts:248 and detect-lottery-fires.ts:179.
     const eligible = (await db`
-      SELECT 'lottery'::text AS source, id, option_chain_id, trigger_time_ct AS fire_time
+      SELECT 'lottery'::text AS source, id, option_chain_id, trigger_time_ct AS fire_time, dte
         FROM lottery_finder_fires
        WHERE round_trip_net_pct IS NULL
-         AND dte <= ${DTE_MAX}
          AND trigger_time_ct <= NOW() - (${LOOKBACK_MIN_FLOOR}::int * INTERVAL '1 minute')
          AND trigger_time_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
       UNION ALL
-      SELECT 'silent_boom'::text AS source, id, option_chain_id, bucket_ct AS fire_time
+      SELECT 'silent_boom'::text AS source, id, option_chain_id, bucket_ct AS fire_time, dte
         FROM silent_boom_alerts
        WHERE round_trip_net_pct IS NULL
-         AND dte <= ${DTE_MAX}
          AND bucket_ct <= NOW() - (${LOOKBACK_MIN_FLOOR}::int * INTERVAL '1 minute')
          AND bucket_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
     `) as EligibleAlert[];
@@ -132,9 +139,10 @@ export default withCronInstrumentation(
         ? a.fire_time.toISOString()
         : new Date(a.fire_time).toISOString(),
     );
+    const dtes = eligible.map((a) => a.dte);
 
     const aggRows = (await db`
-      SELECT t.id, t.source,
+      SELECT t.id, t.source, t.dte::int AS dte,
              COALESCE(f.ask_size, 0)::int   AS ask_size,
              COALESCE(f.bid_size, 0)::int   AS bid_size,
              COALESCE(f.total_size, 0)::int AS total_size
@@ -142,8 +150,9 @@ export default withCronInstrumentation(
                ${ids}::int[],
                ${sources}::text[],
                ${chains}::text[],
-               ${fires}::timestamptz[]
-             ) AS t(id, source, chain, fire_time)
+               ${fires}::timestamptz[],
+               ${dtes}::int[]
+             ) AS t(id, source, chain, fire_time, dte)
    LEFT JOIN LATERAL (
                SELECT
                  SUM(size) FILTER (WHERE side = 'ask') AS ask_size,
@@ -174,7 +183,12 @@ export default withCronInstrumentation(
       const netPct = isNoFlow
         ? 0
         : (row.ask_size - row.bid_size) / row.total_size;
-      const deduct = isNoFlow ? 0 : computeDeduct(netPct);
+      // Deduct is gated to 0-7 DTE per the Phase 1 EDA (outcome-predictive
+      // window). At 8+ DTE we still write net_pct so the front-end "Hide
+      // round-tripped (any DTE)" structural filter can read it, but we
+      // skip the score penalty (AUC 0.528 there — not ship-worthy).
+      const deduct =
+        isNoFlow || row.dte > SCORE_DEDUCT_DTE_MAX ? 0 : computeDeduct(netPct);
       if (isNoFlow) {
         noFlow += 1;
       } else {

@@ -35,6 +35,11 @@ const HIDE_LATE_PM_LS_KEY = 'silentBoom.hideLatePm';
 const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
 const HIDE_GATED_LS_KEY = 'silentBoom.hideGated';
 const HIDE_ROUND_TRIPPED_LS_KEY = 'silentBoom.hideRoundTripped';
+const HIDE_ROUND_TRIPPED_ANY_DTE_LS_KEY = 'silentBoom.hideRoundTrippedAnyDte';
+/** Structural round-trip cutoff: net_pct < this → contract clearly
+ *  reversed in the 60-min post-fire window. Not outcome-predictive at
+ *  8+ DTE (AUC 0.528) — pure structural filter. */
+const ROUND_TRIPPED_ANY_DTE_CUTOFF = -0.5;
 const AGGRESSIVE_PREMIUM_LS_KEY = 'silentBoom.aggressivePremium';
 const MONEYNESS_LS_KEY = 'silentBoom.moneynessMode';
 const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
@@ -480,6 +485,20 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     const stored = window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY);
     return stored == null ? true : stored === '1';
   });
+  // "Hide round-tripped (any DTE)" — structural filter on
+  // round_trip_net_pct < ROUND_TRIPPED_ANY_DTE_CUTOFF. Independent of the
+  // outcome-gated `hideRoundTripped` chip (which is ≤7 DTE only via the
+  // cron's score_deduct). This one catches visually-obvious in/outs at
+  // any DTE — e.g. MSTR 11-DTE puts that fire on a big ask print and get
+  // sold back on a similar-size bid print in the next 60min.
+  const [hideRoundTrippedAnyDte, setHideRoundTrippedAnyDte] = useState<boolean>(
+    () => {
+      if (typeof window === 'undefined') return false;
+      return (
+        window.localStorage.getItem(HIDE_ROUND_TRIPPED_ANY_DTE_LS_KEY) === '1'
+      );
+    },
+  );
   // Aggressive Premium chip — single toggle that ANDs together the
   // trader's 5-criterion UW filter: premium ≥ $100K, DTE ≤ 8,
   // vol/OI > 1, single-leg, OTM. See server-side enforcement in
@@ -540,6 +559,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       );
     }
   }, [hideRoundTripped]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        HIDE_ROUND_TRIPPED_ANY_DTE_LS_KEY,
+        hideRoundTrippedAnyDte ? '1' : '0',
+      );
+    }
+  }, [hideRoundTrippedAnyDte]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(
@@ -701,6 +728,16 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     if (hideRoundTripped) {
       out = out.filter((a) => (a.roundTripScoreDeduct ?? 0) >= 0);
     }
+    if (hideRoundTrippedAnyDte) {
+      // Structural read — applies at all DTEs. Cron writes net_pct for
+      // every alert with post-fire flow; null means not yet evaluated
+      // (alert younger than the 60-min lookback floor) so we let it pass.
+      out = out.filter(
+        (a) =>
+          a.roundTripNetPct == null ||
+          a.roundTripNetPct >= ROUND_TRIPPED_ANY_DTE_CUTOFF,
+      );
+    }
     if (moneynessMode !== 'all') {
       out = out.filter((a) => {
         const spot = a.underlyingPriceAtSpike;
@@ -717,6 +754,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     hideGhosts,
     hideGated,
     hideRoundTripped,
+    hideRoundTrippedAnyDte,
     moneynessMode,
     ctMinuteOfDay,
   ]);
@@ -740,6 +778,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const hiddenRoundTrippedCount =
     bucketIso == null && hideRoundTripped
       ? alerts.filter((a) => (a.roundTripScoreDeduct ?? 0) < 0).length
+      : 0;
+  const hiddenRoundTrippedAnyDteCount =
+    bucketIso == null && hideRoundTrippedAnyDte
+      ? alerts.filter(
+          (a) =>
+            a.roundTripNetPct != null &&
+            a.roundTripNetPct < ROUND_TRIPPED_ANY_DTE_CUTOFF,
+        ).length
       : 0;
 
   // All tickers with at least one alert today, from the dedicated
@@ -1373,6 +1419,25 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
                 <span className="text-[10px] opacity-70">
                   −{hiddenRoundTrippedCount}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              data-testid="silent-boom-hide-round-tripped-any-dte-chip"
+              onClick={() =>
+                setHideRoundTrippedAnyDte(!hideRoundTrippedAnyDte)
+              }
+              className={`${CHIP_BASE} ${
+                hideRoundTrippedAnyDte ? CHIP_ACTIVE.amber : CHIP_INACTIVE
+              }`}
+              title={`Hide round-tripped (any DTE) — structural filter. Hides alerts where post-fire flow in the 60-min window had net_pct < ${ROUND_TRIPPED_ANY_DTE_CUTOFF.toFixed(2)} (heavy bid-side, contract clearly reversed). Distinct from "hide round-tripped" which gates on the score deduct (≤7 DTE only, outcome-predictive). This one applies at ALL DTEs — catches the visually-obvious in/out pattern even when the predictive signal is weak (8+ DTE, AUC 0.528). Client-side filter on round_trip_net_pct populated by the evaluate-round-trip cron 60-75 min after fire.`}
+              aria-pressed={hideRoundTrippedAnyDte}
+            >
+              hide round-tripped (any DTE)
+              {hideRoundTrippedAnyDte && hiddenRoundTrippedAnyDteCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenRoundTrippedAnyDteCount}
                 </span>
               )}
             </button>

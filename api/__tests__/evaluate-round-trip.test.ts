@@ -81,6 +81,7 @@ describe('evaluate-round-trip handler', () => {
         id: 42,
         option_chain_id: 'NVDA260620C00200000',
         fire_time: new Date('2026-05-19T16:50:00.000Z'),
+        dte: 3,
       },
     ]);
     // Batched aggregation returns one row keyed by id+source —
@@ -89,6 +90,7 @@ describe('evaluate-round-trip handler', () => {
       {
         id: 42,
         source: 'lottery',
+        dte: 3,
         ask_size: 10,
         bid_size: 90,
         total_size: 100,
@@ -120,11 +122,19 @@ describe('evaluate-round-trip handler', () => {
         id: 7,
         option_chain_id: 'SPY260620P00500000',
         fire_time: new Date('2026-05-19T16:50:00.000Z'),
+        dte: 5,
       },
     ]);
     // net_pct = (30 - 70) / 100 = -0.40 → deduct -2
     mockSql.mockResolvedValueOnce([
-      { id: 7, source: 'lottery', ask_size: 30, bid_size: 70, total_size: 100 },
+      {
+        id: 7,
+        source: 'lottery',
+        dte: 5,
+        ask_size: 30,
+        bid_size: 70,
+        total_size: 100,
+      },
     ]);
     mockSql.mockResolvedValueOnce([]);
 
@@ -143,6 +153,7 @@ describe('evaluate-round-trip handler', () => {
         id: 11,
         option_chain_id: 'TSLA260620P00300000',
         fire_time: new Date('2026-05-19T16:50:00.000Z'),
+        dte: 0,
       },
     ]);
     // net_pct = (40 - 60) / 100 = -0.20 → deduct -1
@@ -150,6 +161,7 @@ describe('evaluate-round-trip handler', () => {
       {
         id: 11,
         source: 'silent_boom',
+        dte: 0,
         ask_size: 40,
         bid_size: 60,
         total_size: 100,
@@ -172,6 +184,7 @@ describe('evaluate-round-trip handler', () => {
         id: 99,
         option_chain_id: 'QQQ260620C00650000',
         fire_time: new Date('2026-05-19T16:50:00.000Z'),
+        dte: 1,
       },
     ]);
     // net_pct = (50 - 50) / 100 = 0.0 → deduct 0
@@ -179,6 +192,7 @@ describe('evaluate-round-trip handler', () => {
       {
         id: 99,
         source: 'lottery',
+        dte: 1,
         ask_size: 50,
         bid_size: 50,
         total_size: 100,
@@ -194,6 +208,44 @@ describe('evaluate-round-trip handler', () => {
     });
   });
 
+  it('writes net_pct but skips deduct when dte > 7 (any-DTE structural read)', async () => {
+    // Phase 1 EDA: AUC collapses to 0.528 at 8-30 DTE, so the score
+    // penalty is gated to ≤7. The cron still computes net_pct so the
+    // front-end "Hide round-tripped (any DTE)" filter can read it.
+    mockSql.mockResolvedValueOnce([
+      {
+        source: 'silent_boom',
+        id: 200,
+        option_chain_id: 'MSTR260529P00180000',
+        fire_time: new Date('2026-05-15T18:45:00.000Z'),
+        dte: 14,
+      },
+    ]);
+    // net_pct = (10 - 90) / 100 = -0.80 — would be -3 if dte≤7.
+    mockSql.mockResolvedValueOnce([
+      {
+        id: 200,
+        source: 'silent_boom',
+        dte: 14,
+        ask_size: 10,
+        bid_size: 90,
+        total_size: 100,
+      },
+    ]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+    // evaluated counts the row (flow was non-zero), but deducted is 0
+    // because dte > SCORE_DEDUCT_DTE_MAX.
+    expect(res._json).toMatchObject({
+      eligible: 1,
+      evaluated: 1,
+      deducted: 0,
+      noFlow: 0,
+    });
+  });
+
   it('handles no-flow case by writing 0 and counting noFlow', async () => {
     mockSql.mockResolvedValueOnce([
       {
@@ -201,11 +253,19 @@ describe('evaluate-round-trip handler', () => {
         id: 1,
         option_chain_id: 'ILLIQUID',
         fire_time: new Date('2026-05-19T16:50:00.000Z'),
+        dte: 2,
       },
     ]);
     // No post-fire trades at all.
     mockSql.mockResolvedValueOnce([
-      { id: 1, source: 'lottery', ask_size: 0, bid_size: 0, total_size: 0 },
+      {
+        id: 1,
+        source: 'lottery',
+        dte: 2,
+        ask_size: 0,
+        bid_size: 0,
+        total_size: 0,
+      },
     ]);
     // Batched UPDATE still fires (with deduct=0, net_pct=0).
     mockSql.mockResolvedValueOnce([]);
@@ -227,21 +287,31 @@ describe('evaluate-round-trip handler', () => {
         id: 1,
         option_chain_id: 'A',
         fire_time: new Date('2026-05-19T16:50:00.000Z'),
+        dte: 0,
       },
       {
         source: 'silent_boom',
         id: 2,
         option_chain_id: 'B',
         fire_time: new Date('2026-05-19T16:51:00.000Z'),
+        dte: 4,
       },
     ]);
     // One batched aggregation returns BOTH rows — id+source preserved
     // from the unnest input.
     mockSql.mockResolvedValueOnce([
-      { id: 1, source: 'lottery', ask_size: 5, bid_size: 95, total_size: 100 },
+      {
+        id: 1,
+        source: 'lottery',
+        dte: 0,
+        ask_size: 5,
+        bid_size: 95,
+        total_size: 100,
+      },
       {
         id: 2,
         source: 'silent_boom',
+        dte: 4,
         ask_size: 80,
         bid_size: 20,
         total_size: 100,
@@ -270,12 +340,14 @@ describe('evaluate-round-trip handler', () => {
         id: 42,
         option_chain_id: 'AAPL260620C00200000',
         fire_time: new Date('2026-05-19T16:50:00.000Z'),
+        dte: 6,
       },
     ]);
     mockSql.mockResolvedValueOnce([
       {
         id: 42,
         source: 'silent_boom',
+        dte: 6,
         ask_size: 0,
         bid_size: 0,
         total_size: 0,
@@ -295,19 +367,21 @@ describe('evaluate-round-trip handler', () => {
     expect(updateSql).toContain('unnest');
   });
 
-  it('eligibility SELECT enforces dte <= 7 and uses safe INTERVAL pattern', async () => {
-    // The DTE constraint and INTERVAL syntax are spec-load-bearing (signal collapses
-    // above DTE 7 per the per-DTE AUC slice; `INTERVAL '${N} minutes'` would parse
-    // the placeholder as raw text and silently break). Both are in the SQL string
-    // only — fully-mocked tests don't execute the query, so we assert on the
-    // template fragments directly.
+  it('eligibility SELECT pulls dte but no longer filters on it', async () => {
+    // The DTE filter on the SELECT was removed so net_pct is computed for
+    // ALL DTEs (the 8+ rows feed the front-end "Hide round-tripped (any
+    // DTE)" structural filter). Score deduct is gated in-code by
+    // SCORE_DEDUCT_DTE_MAX = 7 instead. INTERVAL syntax remains the
+    // safe `(N::int * INTERVAL '1 minute')` pattern.
     mockSql.mockResolvedValueOnce([]);
     const res = mockResponse();
     await handler(authedReq(), res);
     expect(res._status).toBe(200);
     const selectCall = mockSql.mock.calls[0];
     const selectSql = (selectCall?.[0] as readonly string[]).join('');
-    expect(selectSql).toContain('dte <=');
+    // dte is now in the SELECT projection, not in the WHERE clause.
+    expect(selectSql).toContain('fire_time, dte');
+    expect(selectSql).not.toMatch(/dte\s*<=/);
     // Unsafe pattern that would silently break — must not appear.
     expect(selectSql).not.toMatch(/INTERVAL\s+'\s*minutes/);
     expect(selectSql).not.toMatch(/INTERVAL\s+'\s*hour/);
