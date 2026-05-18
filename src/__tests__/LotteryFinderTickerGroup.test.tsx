@@ -949,5 +949,33 @@ describe('LotteryFinderTickerGroup', () => {
         'flow —',
       );
     });
+
+    it('renders "flow mixed" when single-bias group has split flow signs', () => {
+      const fires = [
+        makeFireWithFlow(5_000_000, 1_000_000, {
+          optionChainId: 'MSFT260515C00400000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+        }),
+        makeFireWithFlow(1_000_000, 4_000_000, {
+          optionChainId: 'MSFT260515C00405000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="MSFT"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(screen.getByTestId('lottery-ticker-flow-MSFT')).toHaveTextContent(
+        'flow mixed',
+      );
+    });
   });
 });

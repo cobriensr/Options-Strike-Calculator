@@ -759,6 +759,38 @@ describe('SilentBoomTickerGroup', () => {
         screen.getByTestId('silent-boom-ticker-flow-MSFT'),
       ).toHaveTextContent('flow —');
     });
+
+    it('renders "flow mixed" when single-bias group has split flow signs', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'MSFT260515C00400000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+          tickerCumNcpAtFire: 5_000_000,
+          tickerCumNppAtFire: 1_000_000,
+        }),
+        makeAlert({
+          optionChainId: 'MSFT260515C00405000',
+          underlyingSymbol: 'MSFT',
+          optionType: 'C',
+          tickerCumNcpAtFire: 1_000_000,
+          tickerCumNppAtFire: 4_000_000,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="MSFT"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-flow-MSFT'),
+      ).toHaveTextContent('flow mixed');
+    });
   });
 
   it('renders an em-dash when every alert has a null peak', () => {
