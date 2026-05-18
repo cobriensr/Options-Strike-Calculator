@@ -34,17 +34,21 @@ interface GreekHeatmapTableProps {
 
 /**
  * Build the inline `backgroundColor` + the matching text class for a
- * heatmap cell as a single unit. Alpha scales with `|value| / max`
- * (green for positive, rose for negative; floor 0.08 so non-zero
- * cells stay visibly tinted even when far below the column max).
+ * heatmap cell as a single unit. Intensity uses sqrt scaling so a
+ * single outlier (e.g. one strike at +122.8M while others are 0–few-M)
+ * doesn't wash out every other cell. The floor of 0.12 keeps non-zero
+ * cells visibly tinted; alpha range tops out near 0.85 for peaks.
  *
- * Text color flips to near-black above alpha ≈ 0.45 to keep WCAG-AA
+ * Why sqrt: linear normalization makes the heatmap look binary —
+ * one bright cell and a sea of barely-visible faint ones. Log compresses
+ * too aggressively for columns where values span only a single order
+ * of magnitude. Sqrt is the middle ground: outliers still saturate
+ * at max, but mid-range values rise to a visible color tier.
+ *
+ * Text color flips to near-black above alpha ≈ 0.55 to keep WCAG-AA
  * contrast (4.5:1+) — the saturated emerald/rose at high alpha
  * washes out white text on a neutral-900 surface. Below the
  * crossover, the dark surface dominates and white reads cleanly.
- *
- * Combined into one helper so the crossover and the alpha formula
- * can't drift out of sync if either is edited.
  */
 function cellStyle(
   value: number,
@@ -53,13 +57,13 @@ function cellStyle(
   if (max === 0 || value === 0) {
     return { bg: undefined, textClass: 'text-neutral-100' };
   }
-  const intensity = Math.min(1, Math.abs(value) / max);
-  const alpha = 0.08 + intensity * 0.7;
+  const intensity = Math.min(1, Math.sqrt(Math.abs(value) / max));
+  const alpha = 0.12 + intensity * 0.73;
   const bg =
     value > 0
       ? `rgba(34, 197, 94, ${alpha.toFixed(3)})` // emerald-500
       : `rgba(244, 63, 94, ${alpha.toFixed(3)})`; // rose-500
-  const textClass = alpha > 0.45 ? 'text-neutral-950' : 'text-neutral-100';
+  const textClass = alpha > 0.55 ? 'text-neutral-950' : 'text-neutral-100';
   return { bg, textClass };
 }
 

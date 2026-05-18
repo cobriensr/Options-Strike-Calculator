@@ -44,6 +44,17 @@ const SELECT_CLASS =
 const DATE_INPUT_CLASS =
   'rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none';
 
+// -1 sentinel = "All" (no slicing). Other values mean "N strikes each
+// side of ATM" — index-based, not strike-dollar-based, because the
+// chain's strike spacing varies by ticker (0.5, 1, 2.5, 5).
+const STRIKE_RANGE_ALL = -1;
+const STRIKE_RANGE_OPTIONS: readonly { value: number; label: string }[] = [
+  { value: 10, label: 'ATM ± 10' },
+  { value: 20, label: 'ATM ± 20' },
+  { value: 50, label: 'ATM ± 50' },
+  { value: STRIKE_RANGE_ALL, label: 'All' },
+];
+
 interface GreekHeatmapSectionProps {
   marketOpen: boolean;
 }
@@ -64,6 +75,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
   // ISO 8601 UTC of the scrubbed minute, or null = LIVE (latest).
   // Default LIVE; the MinuteScrubber flips it when the user drags.
   const [scrubbedAt, setScrubbedAt] = useState<string | null>(null);
+  const [strikeRange, setStrikeRange] = useState<number>(10);
   const [highlightedStrike, setHighlightedStrike] = useState<number | null>(
     null,
   );
@@ -123,6 +135,23 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
     // fetch once and stop — the data they show doesn't change.
     enabled: marketOpen && isViewingToday && isLiveTip,
   });
+
+  // Slice chainStrikes around ATM. Index-based (not strike-dollar
+  // based) so ticker-specific strike spacing doesn't change the row
+  // count. ATM not found → return full chain so the user still sees
+  // something rather than an empty table.
+  const visibleStrikes = useMemo(() => {
+    if (data === null) return [];
+    if (strikeRange === STRIKE_RANGE_ALL) return data.chainStrikes;
+    if (data.atmStrike === null) return data.chainStrikes;
+    const atmIdx = data.chainStrikes.findIndex(
+      (s) => s.strike === data.atmStrike,
+    );
+    if (atmIdx === -1) return data.chainStrikes;
+    const start = Math.max(0, atmIdx - strikeRange);
+    const end = Math.min(data.chainStrikes.length, atmIdx + strikeRange + 1);
+    return data.chainStrikes.slice(start, end);
+  }, [data, strikeRange]);
 
   const onJumpToStrike = useCallback((strike: number) => {
     // ID must match the row id pattern in GreekHeatmapTable
@@ -186,6 +215,21 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
             aria-label="Heatmap expiry date"
           />
         </label>
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-neutral-400">
+          Strikes
+          <select
+            className={SELECT_CLASS}
+            value={strikeRange}
+            onChange={(e) => setStrikeRange(Number(e.target.value))}
+            aria-label="Visible strike range around ATM"
+          >
+            {STRIKE_RANGE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <PriceChip ticker={ticker} price={data?.underlyingPrice ?? null} />
         <RegimeChip
           regime={data?.regime ?? null}
@@ -238,7 +282,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
           <NetFlowRow netFlow={data.netFlow} />
           <div className="max-h-[60vh] overflow-y-auto">
             <GreekHeatmapTable
-              chainStrikes={data.chainStrikes}
+              chainStrikes={visibleStrikes}
               atmStrike={data.atmStrike}
               highlightedStrike={highlightedStrike}
             />
