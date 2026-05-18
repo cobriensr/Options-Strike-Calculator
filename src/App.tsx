@@ -847,7 +847,11 @@ export default function StrikeCalculator() {
                 {(() => {
                   const panelRenderers: Record<string, () => ReactNode> = {
                     'sec-datetime': () => (
-                      <div id="sec-datetime" className="scroll-mt-28">
+                      <>
+                        <span
+                          id="sec-datetime"
+                          className="block scroll-mt-28"
+                        />
                         <DateTimeSection
                           chevronUrl={chevronUrl}
                           selectedDate={vix.selectedDate}
@@ -865,10 +869,14 @@ export default function StrikeCalculator() {
                           onResumeLive={handleResumeLive}
                           errors={errors}
                         />
-                      </div>
+                      </>
                     ),
                     'sec-spot-price': () => (
-                      <div id="sec-spot-price" className="scroll-mt-28">
+                      <>
+                        <span
+                          id="sec-spot-price"
+                          className="block scroll-mt-28"
+                        />
                         <SpotPriceSection
                           spotPrice={spotPrice}
                           onSpotChange={handleSpotChange}
@@ -884,11 +892,15 @@ export default function StrikeCalculator() {
                           }
                           errors={errors}
                         />
-                      </div>
+                      </>
                     ),
                     'sec-premarket': () => (
-                      <div id="sec-premarket" className="scroll-mt-28">
-                        <SectionBox label="Pre-Market Signals">
+                      <>
+                        <span
+                          id="sec-premarket"
+                          className="block scroll-mt-28"
+                        />
+                        <SectionBox label="Pre-Market Signals" collapsible>
                           <OpeningFlowSignal />
                           <hr className="border-edge my-4" />
                           <PinSetupTile
@@ -902,10 +914,14 @@ export default function StrikeCalculator() {
                             prevClose={market.data.yesterday?.yesterday?.close}
                           />
                         )}
-                      </div>
+                      </>
                     ),
                     'sec-advanced': () => (
-                      <div id="sec-advanced" className="scroll-mt-28">
+                      <>
+                        <span
+                          id="sec-advanced"
+                          className="block scroll-mt-28"
+                        />
                         <AdvancedSection
                           skewPct={skewPct}
                           onSkewChange={setSkewPct}
@@ -929,10 +945,11 @@ export default function StrikeCalculator() {
                           selectedDate={vix.selectedDate}
                           defaultCollapsed
                         />
-                      </div>
+                      </>
                     ),
                     'sec-iv': () => (
-                      <div id="sec-iv" className="scroll-mt-28">
+                      <>
+                        <span id="sec-iv" className="block scroll-mt-28" />
                         <IVInputSection
                           ivMode={ivMode}
                           onIvModeChange={setIvMode}
@@ -952,7 +969,7 @@ export default function StrikeCalculator() {
                           termShapeAdvice={signals.vixTermShapeAdvice}
                           defaultCollapsed
                         />
-                      </div>
+                      </>
                     ),
                     'sec-risk': () => (
                       <>
