@@ -784,8 +784,9 @@ export const LotteryRow = memo(function LotteryRow({
         {/* Macro context: only Market Tide today (compact). */}
         {tide && (
           <span
-            className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${tide.cls}`}
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${tide.cls}`}
             title={tide.tooltip}
+            aria-label={tide.tooltip}
           >
             {tide.label}
           </span>

@@ -704,6 +704,18 @@ describe('SilentBoomRow: Flow chip', () => {
     );
   });
 
+  it('renders Flow → when ticker NCP === NPP at fire (flat)', () => {
+    renderRow(
+      makeAlert({
+        tickerCumNcpAtFire: 3_000_000,
+        tickerCumNppAtFire: 3_000_000,
+      }),
+    );
+    expect(screen.getByTestId('silent-boom-row-flow-chip')).toHaveTextContent(
+      'Flow →',
+    );
+  });
+
   it('does not render Flow chip when either field is null', () => {
     renderRow(
       makeAlert({

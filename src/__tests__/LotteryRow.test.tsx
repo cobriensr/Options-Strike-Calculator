@@ -1041,6 +1041,25 @@ describe('LotteryRow: Flow chip', () => {
     );
   });
 
+  it('renders Flow → when ticker NCP === NPP at fire (flat)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          macro: makeMacro({
+            mktTideDiff: 1500,
+            tickerCumNcpAtFire: 3_000_000,
+            tickerCumNppAtFire: 3_000_000,
+          }),
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByTestId('lottery-row-flow-chip')).toHaveTextContent(
+      'Flow →',
+    );
+  });
+
   it('does not render Flow chip when either field is null', () => {
     render(
       <LotteryRow
