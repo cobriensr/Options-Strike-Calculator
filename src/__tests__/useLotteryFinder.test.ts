@@ -133,6 +133,36 @@ describe('useLotteryFinder', () => {
     expect(result.current.fetchedAt).not.toBeNull();
   });
 
+  it('surfaces reignitedFires from the response, with [] fallback when absent', async () => {
+    // Reignited rows ride alongside `fires` independent of pagination —
+    // the hook must pass them through verbatim, and default to [] for
+    // back-compat with server builds that haven't shipped the field.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        emptyFinder({
+          reignitedFires: [
+            { id: 999 } as unknown as LotteryFinderResponse['fires'][number],
+          ],
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.reignitedFires).toHaveLength(1);
+    expect(result.current.reignitedFires[0]!.id).toBe(999);
+  });
+
+  it('defaults reignitedFires to [] when the response omits the field', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    const { result } = renderHook(() =>
+      useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.reignitedFires).toEqual([]);
+  });
+
   it('exposes error on non-2xx response', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500));
     const { result } = renderHook(() =>

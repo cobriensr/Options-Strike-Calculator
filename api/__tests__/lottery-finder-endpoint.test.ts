@@ -746,14 +746,16 @@ describe('lottery-finder endpoint', () => {
     await handler(req, res);
 
     // The rows CTE + count subquery + chainExtras + mega-cluster
-    // query all bind 0.1 as the entry-price floor parameter. Neon's
-    // tagged-template invocation packs interpolated values as call
-    // args after the strings array. The mega-cluster query (added
-    // 2026-05-17) raised the count from 3 → 4.
+    // query + reignited-rows query all bind 0.1 as the entry-price
+    // floor parameter. Neon's tagged-template invocation packs
+    // interpolated values as call args after the strings array. The
+    // mega-cluster query (added 2026-05-17) raised the count from
+    // 3 → 4; the dedicated reignited-rows query (added with this fix
+    // so the pinned section survives pagination) raised it to 5.
     const callsWithFloor = mockSql.mock.calls.filter((args) =>
       args.slice(1).some((v) => v === 0.1),
     );
-    expect(callsWithFloor.length).toBe(4);
+    expect(callsWithFloor.length).toBe(5);
   });
 
   // ============================================================
@@ -867,6 +869,66 @@ describe('lottery-finder endpoint', () => {
     expect(body.fires[0]!.historicalFires).toEqual([
       { triggerTimeCt: '2026-05-01T14:00:00Z', entryPrice: 0.4 },
     ]);
+  });
+
+  it('surfaces reignitedFires from the dedicated parallel query, independent of pagination', async () => {
+    // Bug fix for the "Hot Right Now" section: the pinned reignited
+    // rows must ride alongside the page slice — when a reignited chain
+    // sorts into page 2, the box still has to render on page 1. Tests
+    // the 6th parallel query (reignitedRows) by feeding a payload
+    // through it while the main rows + chainExtras stay empty. Mock
+    // order: rows, total, chainExtras, clusterByMinute, sbChains,
+    // reignitedRows.
+    const REIGNITED_ROW = {
+      ...ROW,
+      id: 999,
+      underlying_symbol: 'SNDK',
+      strike: '1410',
+      trigger_time_ct: '2026-05-15T15:38:00Z',
+      fire_count: 15,
+    };
+    mockSql
+      .mockResolvedValueOnce([]) // rows (page slice, empty)
+      .mockResolvedValueOnce([{ total: 0 }]) // total
+      .mockResolvedValueOnce([]) // chainExtras
+      .mockResolvedValueOnce([]) // clusterByMinute
+      .mockResolvedValueOnce([]) // sbChains
+      .mockResolvedValueOnce([REIGNITED_ROW]); // reignitedRows
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-15' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      fires: unknown[];
+      reignitedFires: Array<{
+        id: number;
+        underlyingSymbol: string;
+        strike: number;
+      }>;
+    };
+    expect(body.fires).toEqual([]);
+    expect(body.reignitedFires).toHaveLength(1);
+    expect(body.reignitedFires[0]).toMatchObject({
+      id: 999,
+      underlyingSymbol: 'SNDK',
+      strike: 1410,
+    });
+  });
+
+  it('defaults reignitedFires to [] when the parallel query returns no rows', async () => {
+    // Empty reignited result must still serialise as [] in the
+    // response, never undefined — the client hook coalesces but the
+    // contract is explicit on the server.
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { reignitedFires: unknown[] };
+    expect(body.reignitedFires).toEqual([]);
   });
 
   it('chainExtras SQL binds the REIGNITION threshold constants (3, 30, 2, 5)', async () => {
@@ -1146,7 +1208,7 @@ describe('lottery-finder endpoint', () => {
     const ROW_SPY = {
       ...ROW,
       underlying_symbol: 'SPY',
-      gamma_at_trigger: 0.10, // high gamma, but SPY excluded
+      gamma_at_trigger: 0.1, // high gamma, but SPY excluded
     };
     mockSql
       .mockResolvedValueOnce([ROW_SPY])

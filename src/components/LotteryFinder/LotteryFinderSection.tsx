@@ -487,22 +487,30 @@ export function LotteryFinderSection({
     moneynessMode,
   ]);
 
-  const { fires, loading, error, fetchedAt, total, offset, hasMore } =
-    useLotteryFinder({
-      date,
-      minute,
-      marketOpen,
-      ticker: tickerFilter,
-      reload: reloadOnly ? true : null,
-      cheapCallPm: cheapCallPmOnly ? true : null,
-      mode: modeFilter,
-      optionType: optionTypeFilter,
-      tod: todFilter,
-      sort: sortMode,
-      minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
-      page,
-      pageSize: PAGE_SIZE,
-    });
+  const {
+    fires,
+    reignitedFires: rawReignitedFires,
+    loading,
+    error,
+    fetchedAt,
+    total,
+    offset,
+    hasMore,
+  } = useLotteryFinder({
+    date,
+    minute,
+    marketOpen,
+    ticker: tickerFilter,
+    reload: reloadOnly ? true : null,
+    cheapCallPm: cheapCallPmOnly ? true : null,
+    mode: modeFilter,
+    optionType: optionTypeFilter,
+    tod: todFilter,
+    sort: sortMode,
+    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    page,
+    pageSize: PAGE_SIZE,
+  });
 
   // All-day ticker counts for the chip strip — chain-day deduped on
   // the server so counts match what the user sees in the list.
@@ -584,43 +592,52 @@ export function LotteryFinderSection({
       return hh * 60 + m;
     };
   }, []);
-  const displayedFires = useMemo(() => {
-    let out = fires;
-    if (hideLatePm) {
-      out = out.filter(
-        (f) => ctMinuteOfDay(f.triggerTimeCt) < LATE_PM_CUTOFF_MIN_OF_DAY,
-      );
-    }
-    if (hideGated) {
-      out = out.filter((f) => !f.directionGated);
-    }
-    if (hideRoundTripped) {
-      out = out.filter((f) => (f.roundTripScoreDeduct ?? 0) >= 0);
-    }
-    if (aggressivePremium) {
-      out = out.filter(isFireAggressivePremium);
-    }
-    if (moneynessMode !== 'all') {
-      out = out.filter((f) => {
-        const otm = isFireOtm(f);
-        return moneynessMode === 'otm' ? otm : !otm;
-      });
-    }
-    const floor = MIN_FIRE_COUNT_TO_FLOOR[minFireCount];
-    if (floor > 1) {
-      out = out.filter((f) => f.fireCount >= floor);
-    }
-    return out;
-  }, [
-    fires,
-    hideLatePm,
-    hideGated,
-    hideRoundTripped,
-    aggressivePremium,
-    moneynessMode,
-    minFireCount,
-    ctMinuteOfDay,
-  ]);
+  // Client-side filter chain applied to BOTH the page slice (drives the
+  // ticker-grouped feed below) and the pinned reignited rows (kept in
+  // sync so the chip filters affect both surfaces the same way).
+  const applyClientFilters = useCallback(
+    (input: LotteryFire[]) => {
+      let out = input;
+      if (hideLatePm) {
+        out = out.filter(
+          (f) => ctMinuteOfDay(f.triggerTimeCt) < LATE_PM_CUTOFF_MIN_OF_DAY,
+        );
+      }
+      if (hideGated) {
+        out = out.filter((f) => !f.directionGated);
+      }
+      if (hideRoundTripped) {
+        out = out.filter((f) => (f.roundTripScoreDeduct ?? 0) >= 0);
+      }
+      if (aggressivePremium) {
+        out = out.filter(isFireAggressivePremium);
+      }
+      if (moneynessMode !== 'all') {
+        out = out.filter((f) => {
+          const otm = isFireOtm(f);
+          return moneynessMode === 'otm' ? otm : !otm;
+        });
+      }
+      const floor = MIN_FIRE_COUNT_TO_FLOOR[minFireCount];
+      if (floor > 1) {
+        out = out.filter((f) => f.fireCount >= floor);
+      }
+      return out;
+    },
+    [
+      hideLatePm,
+      hideGated,
+      hideRoundTripped,
+      aggressivePremium,
+      moneynessMode,
+      minFireCount,
+      ctMinuteOfDay,
+    ],
+  );
+  const displayedFires = useMemo(
+    () => applyClientFilters(fires),
+    [fires, applyClientFilters],
+  );
   // Per-filter hidden counts — computed against the unfiltered set so
   // each chip's "−N" reflects only what THAT filter is hiding.
   const hiddenLatePmCount = hideLatePm
@@ -651,24 +668,27 @@ export function LotteryFinderSection({
   // chains into a pinned "Hot Right Now" section above the ticker
   // groups. The `reignited` flag is computed globally per-day in
   // api/lottery-finder.ts (top 5/day by post_gap_fires DESC, fire_count
-  // DESC) so the badge stays stable across filter views. Each fire
-  // renders in EXACTLY ONE place (reignited list OR ticker group),
-  // never both — split below.
+  // DESC) so the badge stays stable across filter views. The pinned
+  // payload (`rawReignitedFires`) is delivered alongside `fires` by the
+  // hook but served INDEPENDENT of pagination, so the section stays
+  // visible on every page even when the qualifying chains naturally
+  // sort onto a later page slice. We re-apply the same client-side
+  // filter chain that `displayedFires` uses so chip filters affect both
+  // surfaces consistently. Each fire renders in EXACTLY ONE place
+  // (reignited list OR ticker group) — `tickerGroupFires` drops any
+  // reignited rows that happen to live in the page slice, preventing
+  // a duplicate render on pages where they would have grouped.
   const reignitedFires = useMemo(
     () =>
-      [...displayedFires]
-        .filter((f) => f.reignited === true)
-        .sort((a, b) => {
-          // Guard against malformed triggerTimeCt — Date.parse returns
-          // NaN on invalid input, and NaN comparators yield unspecified
-          // sort order. Production data is always ISO; defensive only.
-          const at = Date.parse(a.triggerTimeCt);
-          const bt = Date.parse(b.triggerTimeCt);
-          return (
-            (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0)
-          );
-        }),
-    [displayedFires],
+      [...applyClientFilters(rawReignitedFires)].sort((a, b) => {
+        // Guard against malformed triggerTimeCt — Date.parse returns
+        // NaN on invalid input, and NaN comparators yield unspecified
+        // sort order. Production data is always ISO; defensive only.
+        const at = Date.parse(a.triggerTimeCt);
+        const bt = Date.parse(b.triggerTimeCt);
+        return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
+      }),
+    [rawReignitedFires, applyClientFilters],
   );
   // Fires that don't qualify for the pinned section feed the regular
   // ticker grouping below — keeps the per-ticker rollup counts honest.

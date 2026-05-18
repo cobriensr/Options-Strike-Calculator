@@ -135,6 +135,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
 
 const defaultHookResult = {
   fires: [] as LotteryFire[],
+  reignitedFires: [] as LotteryFire[],
   loading: false,
   error: null as string | null,
   fetchedAt: null as number | null,

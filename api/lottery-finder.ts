@@ -328,10 +328,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // previously these were computed via a LEFT JOIN LATERAL that
     // dominated wall time at ~30s/page (spec:
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md).
-    const [rows, totalRows, chainExtras, clusterByMinute, sbChains] =
-      (await Promise.all([
-        sort === 'score'
-          ? db`
+    const [
+      rows,
+      totalRows,
+      chainExtras,
+      clusterByMinute,
+      sbChains,
+      reignitedRows,
+    ] = (await Promise.all([
+      sort === 'score'
+        ? db`
         WITH filtered AS (
           SELECT
             f.*,
@@ -400,8 +406,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LIMIT ${limit}
         OFFSET ${offset}
       `
-          : sort === 'peak'
-            ? db`
+        : sort === 'peak'
+          ? db`
         WITH filtered AS (
           SELECT
             f.*,
@@ -470,7 +476,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LIMIT ${limit}
         OFFSET ${offset}
       `
-            : db`
+          : db`
         WITH filtered AS (
           SELECT
             f.*,
@@ -539,10 +545,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LIMIT ${limit}
         OFFSET ${offset}
       `,
-        // Total counts the collapsed shape (one row per chain per day:
-        // ticker × strike × option_type × expiry) so pagination math
-        // matches the dedup'd CTE above.
-        db`
+      // Total counts the collapsed shape (one row per chain per day:
+      // ticker × strike × option_type × expiry) so pagination math
+      // matches the dedup'd CTE above.
+      db`
         SELECT COUNT(*)::int AS total
         FROM (
           SELECT 1
@@ -561,20 +567,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           GROUP BY underlying_symbol, strike, option_type, expiry
         ) collapsed
       `,
-        // Chain-extras query (Phase 1 of lottery-reignition-ui-2026-05-17):
-        // returns per-chain fire history (jsonb array of all fires today,
-        // ordered chronologically) + the REIGNITION top-N flag. Joined to
-        // the row payload below by (ticker × strike × option_type × expiry).
-        //
-        // Reignition criteria — gap math uses trigger_time_ct differences
-        // directly, NOT the broken `minutes_since_prev_fire` column (NULL/0
-        // on the QQQ 708P 2026-05-15 anchor despite 21 distinct fires).
-        // The per-day rank is computed GLOBALLY (ignoring user filters
-        // beyond date + system-level entry_price floor) so the badge has
-        // stable semantics across filter views — a chain that's #3 of
-        // the day stays #3 whether the user is filtered to QQQ-only or
-        // showing all tickers.
-        db`
+      // Chain-extras query (Phase 1 of lottery-reignition-ui-2026-05-17):
+      // returns per-chain fire history (jsonb array of all fires today,
+      // ordered chronologically) + the REIGNITION top-N flag. Joined to
+      // the row payload below by (ticker × strike × option_type × expiry).
+      //
+      // Reignition criteria — gap math uses trigger_time_ct differences
+      // directly, NOT the broken `minutes_since_prev_fire` column (NULL/0
+      // on the QQQ 708P 2026-05-15 anchor despite 21 distinct fires).
+      // The per-day rank is computed GLOBALLY (ignoring user filters
+      // beyond date + system-level entry_price floor) so the badge has
+      // stable semantics across filter views — a chain that's #3 of
+      // the day stays #3 whether the user is filtered to QQQ-only or
+      // showing all tickers.
+      db`
         WITH ordered AS (
           SELECT
             underlying_symbol, strike, option_type, expiry,
@@ -640,14 +646,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN qualified q USING (underlying_symbol, strike, option_type, expiry)
         WHERE pc.fire_count > 1
       `,
-        // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
-        // badge. Truncates trigger_time_ct to the 1-min bucket and
-        // counts unique tickers per bucket across the date. Filtered
-        // by date + entry_price floor only (NOT user filters) so the
-        // count reflects the WHOLE market's minute concentration, not
-        // a filtered subset — same stable-semantics decision as the
-        // chainExtras reignition flag.
-        db`
+      // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
+      // badge. Truncates trigger_time_ct to the 1-min bucket and
+      // counts unique tickers per bucket across the date. Filtered
+      // by date + entry_price floor only (NOT user filters) so the
+      // count reflects the WHOLE market's minute concentration, not
+      // a filtered subset — same stable-semantics decision as the
+      // chainExtras reignition flag.
+      db`
         SELECT
           date_trunc('minute', trigger_time_ct) AS minute_bucket_ct,
           COUNT(DISTINCT underlying_symbol)::int AS distinct_tickers
@@ -658,29 +664,160 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         GROUP BY date_trunc('minute', trigger_time_ct)
         HAVING COUNT(DISTINCT underlying_symbol) >= ${MEGA_CLUSTER_MIN_DISTINCT_TICKERS}
       `,
-        // Silent Boom chain-IDs for the date — drives the DUAL FLAG
-        // badge. When the same chain-day appears in BOTH
-        // lottery_finder_fires AND silent_boom_alerts, the cohort is
-        // the highest-conviction surface in the alert stack — 81% win
-        // rate on best fire / median best peak 64% (vs 72% / 35% for
-        // LF-only). Empirical basis:
-        // docs/tmp/lf-vs-sb-backtest-findings-2026-05-17.md (25-day
-        // window, 981 BOTH chain-days, ~39/day). Cross-table check
-        // wrapped in try/catch at execution because silent_boom_alerts
-        // started 2026-04-13; for older dates the table may have no
-        // matching rows but the query is still cheap.
-        db`
+      // Silent Boom chain-IDs for the date — drives the DUAL FLAG
+      // badge. When the same chain-day appears in BOTH
+      // lottery_finder_fires AND silent_boom_alerts, the cohort is
+      // the highest-conviction surface in the alert stack — 81% win
+      // rate on best fire / median best peak 64% (vs 72% / 35% for
+      // LF-only). Empirical basis:
+      // docs/tmp/lf-vs-sb-backtest-findings-2026-05-17.md (25-day
+      // window, 981 BOTH chain-days, ~39/day). Cross-table check
+      // wrapped in try/catch at execution because silent_boom_alerts
+      // started 2026-04-13; for older dates the table may have no
+      // matching rows but the query is still cheap.
+      db`
         SELECT DISTINCT option_chain_id
         FROM silent_boom_alerts
         WHERE date = ${targetDate}::date
       `,
-      ])) as [
-        FireRow[],
-        { total: number }[],
-        ChainExtrasRow[],
-        ClusterByMinuteRow[],
-        { option_chain_id: string }[],
-      ];
+      // Pinned "Hot Right Now" rows — full row payload (same SELECT
+      // shape as the main fires query) for the day's top-N reignited
+      // chains, surfaced INDEPENDENT of pagination. Lets the UI keep
+      // the pinned section visible on every page even when the
+      // qualifying chains naturally sort onto a later page slice.
+      //
+      // Ranking math mirrors the chainExtras CTEs above (post_gap_fires
+      // DESC, fire_count DESC, top-N) and runs unfiltered — a chain's
+      // #N rank is global per day. The row payload SELECT applies the
+      // same user filters the main query uses so the pinned section
+      // honours the user's filter view; chains that qualify but don't
+      // match filters drop out at the payload step (the rank itself
+      // stays stable). Returns ≤ REIGNITION_TOP_N_PER_DAY rows; usually
+      // 0–5 — no LIMIT/OFFSET needed.
+      //
+      // Spec: docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md
+      // Phase 3 ("REIGNITED section is always visible on every page").
+      db`
+        WITH ordered AS (
+          SELECT
+            underlying_symbol, strike, option_type, expiry,
+            trigger_time_ct,
+            EXTRACT(EPOCH FROM trigger_time_ct - LAG(trigger_time_ct) OVER w) / 60.0 AS gap_min,
+            ROW_NUMBER() OVER w AS fire_seq,
+            COUNT(*) OVER w_total AS fire_count
+          FROM lottery_finder_fires
+          WHERE date = ${targetDate}::date
+            AND trigger_time_ct < ${reignitionWindowEnd}::timestamptz
+            AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+          WINDOW
+            w AS (PARTITION BY underlying_symbol, strike, option_type, expiry ORDER BY trigger_time_ct ASC),
+            w_total AS (PARTITION BY underlying_symbol, strike, option_type, expiry)
+        ),
+        max_gap_by_chain AS (
+          SELECT DISTINCT ON (underlying_symbol, strike, option_type, expiry)
+            underlying_symbol, strike, option_type, expiry,
+            gap_min AS max_gap_min,
+            fire_seq AS post_gap_start_seq
+          FROM ordered
+          WHERE gap_min IS NOT NULL
+          ORDER BY underlying_symbol, strike, option_type, expiry, gap_min DESC
+        ),
+        per_chain AS (
+          SELECT
+            o.underlying_symbol,
+            o.strike,
+            o.option_type,
+            o.expiry,
+            MAX(o.fire_count)::int AS chain_fire_count,
+            COALESCE(MAX(g.max_gap_min), 0)::numeric AS max_gap_min,
+            COALESCE(MAX(o.fire_count) - (MAX(g.post_gap_start_seq) - 1), 0)::int AS post_gap_fires
+          FROM ordered o
+          LEFT JOIN max_gap_by_chain g USING (underlying_symbol, strike, option_type, expiry)
+          GROUP BY o.underlying_symbol, o.strike, o.option_type, o.expiry
+        ),
+        top_reignited AS (
+          SELECT underlying_symbol, strike, option_type, expiry
+          FROM per_chain
+          WHERE chain_fire_count >= ${REIGNITION_MIN_FIRES}
+            AND max_gap_min >= ${REIGNITION_MIN_GAP_MIN}::numeric
+            AND post_gap_fires >= ${REIGNITION_MIN_POST_GAP_FIRES}
+          ORDER BY post_gap_fires DESC, chain_fire_count DESC
+          LIMIT ${REIGNITION_TOP_N_PER_DAY}
+        ),
+        filtered AS (
+          SELECT
+            f.*,
+            COUNT(*) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            )::int AS fire_count,
+            MIN(f.trigger_time_ct) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            ) AS first_fire_time_ct,
+            ROW_NUMBER() OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+              ORDER BY f.trigger_time_ct DESC, f.id DESC
+            ) AS rn
+          FROM lottery_finder_fires f
+          INNER JOIN top_reignited t USING (underlying_symbol, strike, option_type, expiry)
+          WHERE f.date = ${targetDate}::date
+            AND f.trigger_time_ct < ${reignitionWindowEnd}::timestamptz
+            AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
+            AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
+            AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
+            AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
+            AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
+            AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
+            AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+            AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+        )
+        SELECT
+          f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
+          f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
+          f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
+          f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
+          f.trigger_window_size, f.trigger_window_prints,
+          f.entry_price, f.open_interest, f.spot_at_first,
+          f.alert_seq, f.minutes_since_prev_fire,
+          f.flow_quad, f.tod, f.mode,
+          f.reload_tagged, f.cheap_call_pm_tagged,
+          f.burst_ratio_vs_prev, f.entry_drop_pct_vs_prev,
+          f.mkt_tide_ncp, f.mkt_tide_npp, f.mkt_tide_diff, f.mkt_tide_otm_diff,
+          f.spx_flow_diff, f.spy_etf_diff, f.qqq_etf_diff, f.zero_dte_diff,
+          f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
+          f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
+          f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
+          f.realized_trail30_10_pct, f.realized_hard30m_pct,
+          f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
+          f.realized_eod_pct,
+          f.peak_ceiling_pct, f.minutes_to_peak,
+          f.inserted_at, f.enriched_at,
+          f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.round_trip_net_pct, f.round_trip_score_deduct,
+          f.fire_count_score_adjustment,
+          f.gamma_at_trigger,
+          f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
+          f.fire_count, f.first_fire_time_ct,
+          s.n_fires AS ticker_n_fires,
+          s.high_peak_rate AS ticker_high_peak_rate,
+          s.ci_lower AS ticker_ci_lower,
+          s.ci_upper AS ticker_ci_upper,
+          s.ci_width AS ticker_ci_width,
+          s.tier AS ticker_tier,
+          f.cum_ncp_at_fire AS fire_time_cum_ncp,
+          f.cum_npp_at_fire AS fire_time_cum_npp
+        FROM filtered f
+        LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
+        WHERE f.rn = 1
+        ORDER BY f.trigger_time_ct DESC, f.id DESC
+      `,
+    ])) as [
+      FireRow[],
+      { total: number }[],
+      ChainExtrasRow[],
+      ClusterByMinuteRow[],
+      { option_chain_id: string }[],
+      FireRow[],
+    ];
 
     const total = totalRows[0]?.total ?? 0;
 
@@ -755,8 +892,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // (~1 row/day) and the EDA found 1.32× win50 / 1.56× win100 lift
     // for fires 24-72h before a high-impact event.
     const macroEventTimes: Date[] = await (async () => {
-      if (rows.length === 0) return [];
-      const triggerTimes = rows.map((r) =>
+      // Compute the lookup window from the UNION of (page slice + pinned
+      // reignited rows) — pinned rows can carry trigger_time_ct outside
+      // the page slice's range, and we still need their macro-window
+      // badges to render. Empty when BOTH sources are empty.
+      const macroSources = [...rows, ...reignitedRows];
+      if (macroSources.length === 0) return [];
+      const triggerTimes = macroSources.map((r) =>
         r.trigger_time_ct instanceof Date
           ? r.trigger_time_ct
           : new Date(r.trigger_time_ct),
@@ -798,7 +940,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return null;
     }
 
-    const fires = rows.map((r) => {
+    // Shared FireRow → API payload mapper. Closes over the lookup maps
+    // (chainExtraByKey, megaClusterByMinute, sbChainSet) and the
+    // hoursToNextMacroEvent helper, so the same logic powers both the
+    // paginated page slice (`fires`) and the pinned reignited rows
+    // (`reignitedFires`). Keeping a single mapper guarantees the two
+    // surfaces never drift.
+    const toLotteryFire = (r: FireRow) => {
       const rawScore = r.score == null ? null : Number(r.score);
       // Round-trip score deduct (migration #154 / Phase 2C of
       // round-trip-score-deduct-production-2026-05-16.md). Read-time
@@ -1034,7 +1182,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         insertedAt: toIso(r.inserted_at),
       };
-    });
+    };
+
+    const fires = rows.map(toLotteryFire);
+    // Pinned reignited rows ride alongside the page slice, independent
+    // of pagination. The SQL already orders by trigger_time_ct DESC, so
+    // the array is freshest-first ready for ReignitionSection.
+    const reignitedFires = reignitedRows.map(toLotteryFire);
 
     // No CDN cache — the feed is an alert surface and the UI polls
     // every 30s. Caching at the edge means most polls land on a stale
@@ -1064,6 +1218,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       offset,
       hasMore: offset + fires.length < total,
       fires,
+      // Pinned "Hot Right Now" payload — full LotteryFire rows for the
+      // day's top-N reignited chains, independent of pagination so the
+      // section stays visible on every page. Honours the same user
+      // filters as `fires`; can be empty when no chains qualify.
+      reignitedFires,
     });
   } catch (err) {
     Sentry.captureException(err);

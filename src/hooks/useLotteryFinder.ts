@@ -53,6 +53,13 @@ interface UseLotteryFinderArgs {
 
 interface State {
   fires: LotteryFire[];
+  /**
+   * Pinned "Hot Right Now" rows — top-N reignited chains for the day,
+   * served independent of pagination so the section stays visible on
+   * every page. Always populated from the server when present;
+   * back-compat default is `[]`.
+   */
+  reignitedFires: LotteryFire[];
   loading: boolean;
   error: string | null;
   fetchedAt: number | null;
@@ -68,6 +75,7 @@ interface State {
 
 const INITIAL_STATE: State = {
   fires: [],
+  reignitedFires: [],
   loading: true,
   error: null,
   fetchedAt: null,
@@ -129,6 +137,7 @@ export function useLotteryFinder({
       if (ctrl.signal.aborted) return;
       setState({
         fires: json.fires,
+        reignitedFires: json.reignitedFires ?? [],
         loading: false,
         error: null,
         fetchedAt: Date.now(),

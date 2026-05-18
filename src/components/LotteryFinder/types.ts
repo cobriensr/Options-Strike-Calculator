@@ -368,6 +368,14 @@ export interface LotteryFinderResponse {
   /** True when offset + count < total — surfaces the Next button. */
   hasMore: boolean;
   fires: LotteryFire[];
+  /**
+   * Top-N reignited chains for the day, returned independent of
+   * pagination so the pinned "Hot Right Now" section stays visible on
+   * every page. Honours the same server-side filters as `fires`; can be
+   * empty when no chains qualify. Optional for back-compat with older
+   * server builds that haven't shipped the field yet.
+   */
+  reignitedFires?: LotteryFire[];
 }
 
 // ============================================================
