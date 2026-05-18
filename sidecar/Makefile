@@ -3,7 +3,7 @@
 
 PYTHON ?= .venv/bin/python
 
-.PHONY: lint format test test-cov test-html review clean help
+.PHONY: lint format test test-cov test-html review clean help sync-ml
 
 lint: ## Check and auto-fix code quality (ruff lint + format)
 	$(PYTHON) -m ruff check --fix src/ tests/
@@ -24,6 +24,11 @@ test-cov: ## Run tests with coverage report
 test-html: ## Run tests with HTML coverage report
 	$(PYTHON) -m pytest tests/ --cov=src --cov-report=html --cov-report=term-missing -v
 	@echo "Open sidecar/htmlcov/index.html to view report"
+
+sync-ml: ## Re-vendor ml/src multileg modules into _vendored_ml/
+	cp ../ml/src/multileg_assembler.py _vendored_ml/multileg_assembler.py
+	cp ../ml/src/multileg_patterns.py _vendored_ml/multileg_patterns.py
+	@echo "Synced. Commit both ml/src/ and sidecar/_vendored_ml/."
 
 clean: ## Remove generated artifacts
 	rm -rf htmlcov/ .pytest_cache/ .ruff_cache/

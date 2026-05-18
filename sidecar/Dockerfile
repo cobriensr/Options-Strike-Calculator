@@ -34,6 +34,11 @@ WORKDIR /app
 
 COPY --from=builder /install /usr/local
 COPY --chown=sidecar:sidecar src/ ./src/
+# Vendored copies of ml/src modules consumed by multileg_routes.py.
+# Railway build context is sidecar/, so we cannot COPY ../ml/src.
+# See sidecar/_vendored_ml/README.md and the byte-equality test at
+# tests/test_vendored_ml_sync.py.
+COPY --chown=sidecar:sidecar _vendored_ml/ ./_vendored_ml/
 COPY --chown=sidecar:sidecar ThetaTerminalv3.jar ./
 
 # Pre-create the working dir the Theta jar writes into (creds.txt, logs,

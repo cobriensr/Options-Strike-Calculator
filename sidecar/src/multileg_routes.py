@@ -41,21 +41,29 @@ logger = logging.getLogger(__name__)
 
 # ── Path setup ─────────────────────────────────────────────────────────────
 #
-# The matcher lives in ``ml/src/multileg_assembler.py``. The sidecar shares
-# a Python venv with ml/ in CI / Railway (polars is the same install).
-# Local dev: add ml/src/ to sys.path the same way ml's conftest.py does for
-# its own tests, so the import resolves without restructuring either tree.
+# The matcher lives in ``ml/src/multileg_assembler.py``. Two layouts are
+# resolved in priority order so the same module works on Railway and in
+# local dev / pytest:
+#   1. ``sidecar/_vendored_ml/`` — byte-identical copies that ship inside
+#      the Railway image. Required because Railway's build context is
+#      ``sidecar/``, so the Dockerfile cannot COPY ``../ml/src``.
+#      Byte-equality with ml/src/ is enforced by
+#      ``sidecar/tests/test_vendored_ml_sync.py``.
+#   2. ``ml/src/`` — single source of truth for editing; reachable from
+#      a local checkout via ``../../ml/src``.
 # Idempotent — re-running this module is a no-op.
 def _ensure_ml_src_on_path() -> None:
-    """Prepend ml/src/ to sys.path if not already present.
-
-    Resolves relative to this file: sidecar/src/multileg_routes.py
-    → ../../ml/src.
-    """
+    """Prepend the first matching ml-source layout to sys.path."""
     here = os.path.dirname(os.path.abspath(__file__))
-    ml_src = os.path.abspath(os.path.join(here, "..", "..", "ml", "src"))
-    if ml_src not in sys.path and os.path.isdir(ml_src):
-        sys.path.insert(0, ml_src)
+    candidates = [
+        os.path.abspath(os.path.join(here, "..", "_vendored_ml")),
+        os.path.abspath(os.path.join(here, "..", "..", "ml", "src")),
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            if path not in sys.path:
+                sys.path.insert(0, path)
+            return
 
 
 _ensure_ml_src_on_path()

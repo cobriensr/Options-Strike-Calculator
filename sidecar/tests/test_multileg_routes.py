@@ -284,14 +284,24 @@ def test_unexpected_matcher_error_returns_500() -> None:
 
 
 def test_module_adds_ml_src_to_path() -> None:
-    """Defensive: importing multileg_routes must place ml/src/ on sys.path
-    so the matcher import inside the handler resolves regardless of how
-    the sidecar was launched."""
+    """Defensive: importing multileg_routes must place a directory
+    containing ``multileg_assembler.py`` on sys.path so the matcher
+    import inside the handler resolves regardless of how the sidecar
+    was launched.
+
+    Two layouts are accepted (see ``_ensure_ml_src_on_path``):
+      1. ``sidecar/_vendored_ml/`` — shipped inside the Railway image
+      2. ``ml/src/`` — local checkout fallback
+    """
     # Reload to exercise the path-mutation on a fresh import without
     # disturbing the rest of the test session.
     importlib.reload(multileg_routes)
-    ml_src = (
-        Path(__file__).resolve().parents[2] / "ml" / "src"
+    sidecar_root = Path(__file__).resolve().parents[1]
+    repo_root = sidecar_root.parent
+    vendored = sidecar_root / "_vendored_ml"
+    ml_src = repo_root / "ml" / "src"
+    on_path = {str(vendored), str(ml_src)} & set(sys.path)
+    assert on_path, (
+        "expected _vendored_ml/ or ml/src/ on sys.path after importing "
+        "multileg_routes"
     )
-    if ml_src.is_dir():
-        assert str(ml_src) in sys.path
