@@ -746,6 +746,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             a.roundTripNetPct < ROUND_TRIPPED_ANY_DTE_CUTOFF,
         ).length
       : 0;
+  // Count of alerts hidden by the OTM/ITM filter because they lack the
+  // post-#152 spot snapshot. Legacy / pre-cron-capture rows fall into
+  // this bucket — without it the filter would silently zero out the
+  // page on backfill-pending dates.
+  const hiddenNoSpotCount =
+    bucketIso == null && moneynessMode !== 'all'
+      ? alerts.filter((a) => a.underlyingPriceAtSpike == null).length
+      : 0;
 
   // All tickers with at least one alert today, from the dedicated
   // counts endpoint — independent of pagination. The list was
@@ -1305,6 +1313,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   : m.value === 'itm'
                     ? 'amber'
                     : 'neutral';
+              const showHiddenCount =
+                active && m.value !== 'all' && hiddenNoSpotCount > 0;
               return (
                 <button
                   key={m.value}
@@ -1316,14 +1326,19 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   }`}
                   title={
                     m.value === 'otm'
-                      ? 'Show only out-of-the-money alerts (calls: strike > spot, puts: strike < spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden.'
+                      ? 'Show only out-of-the-money alerts (calls: strike > spot, puts: strike < spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
                       : m.value === 'itm'
-                        ? 'Show only in-the-money alerts (calls: strike ≤ spot, puts: strike ≥ spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden.'
+                        ? 'Show only in-the-money alerts (calls: strike ≤ spot, puts: strike ≥ spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
                         : 'Show alerts regardless of moneyness.'
                   }
                   aria-pressed={active}
                 >
                   {m.label}
+                  {showHiddenCount && (
+                    <span className="text-[10px] opacity-70">
+                      −{hiddenNoSpotCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
