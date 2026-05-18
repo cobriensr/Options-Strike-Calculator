@@ -184,4 +184,23 @@ describe('sendPushToOwner', () => {
     // setVapidDetails should fire ONCE across two calls.
     expect(mockSetVapidDetails).toHaveBeenCalledTimes(1);
   });
+
+  it('normalizes VAPID keys before passing to the SDK (strips trailing =, swaps +/ → -_, trims whitespace)', async () => {
+    // Common operator footgun: env var pasted with trailing `=` padding
+    // (from `openssl base64`) or the standard-alphabet `+`/`/` instead
+    // of URL-safe `-`/`_`. The web-push SDK rejects either with
+    // `Vapid public key must be a URL safe Base 64 (without "=")`
+    // (SENTRY-EMERALD-DESERT-7W).
+    process.env.VAPID_PUBLIC_KEY = '  pub+key/sample==  ';
+    process.env.VAPID_PRIVATE_KEY = 'priv/key+raw==';
+    mockSql.mockResolvedValue([]);
+
+    await sendPushToOwner({ title: 'x', body: 'y' });
+
+    expect(mockSetVapidDetails).toHaveBeenCalledWith(
+      VAPID_ENV.VAPID_SUBJECT,
+      'pub-key_sample',
+      'priv_key-raw',
+    );
+  });
 });

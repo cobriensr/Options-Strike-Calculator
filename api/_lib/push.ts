@@ -53,6 +53,26 @@ interface SubscriptionRow {
 let vapidConfigured = false;
 
 /**
+ * Normalize a VAPID key for the web-push SDK.
+ *
+ * Web Push (RFC 8292) requires URL-safe base64 *without* padding. Common
+ * operator footguns this fixes idempotently:
+ *   - Trailing `=` padding (the web-push SDK rejects it with
+ *     `Vapid public key must be a URL safe Base 64 (without "=")` —
+ *     SENTRY-EMERALD-DESERT-7W, 9 events).
+ *   - Standard-alphabet `+` / `/` from `openssl base64` instead of
+ *     URL-safe `-` / `_`.
+ *   - Surrounding whitespace from a copy-paste.
+ *
+ * The transformation is information-preserving, so re-running
+ * `npx web-push generate-vapid-keys` (which already emits the canonical
+ * form) keeps working identically.
+ */
+function normalizeVapidKey(key: string): string {
+  return key.trim().replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+/**
  * Configure web-push with VAPID credentials. Idempotent — runs once per
  * Vercel function cold start. Throws if any required env var is missing
  * so the caller surfaces a 500 rather than silently no-op'ing.
@@ -67,7 +87,11 @@ function ensureVapidConfigured(): void {
       'web-push not configured: set VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY',
     );
   }
-  webpush.setVapidDetails(subject, publicKey, privateKey);
+  webpush.setVapidDetails(
+    subject,
+    normalizeVapidKey(publicKey),
+    normalizeVapidKey(privateKey),
+  );
   vapidConfigured = true;
 }
 
