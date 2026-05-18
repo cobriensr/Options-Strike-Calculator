@@ -4889,4 +4889,19 @@ export const MIGRATIONS: Migration[] = [
          WHERE pre_trade_count >= 501`,
     ],
   },
+  {
+    id: 170,
+    description:
+      'Add adj_cofire BOOLEAN column to silent_boom_alerts. TRUE when another SB fire exists at the same (ticker, option_type, bucket_ct) on the adjacent strike (±$1 default, ±$5 for SPX/NDX/RUT cash-index roots). Empirical basis: docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md — on the 93-day, 63,846-alert peak dataset only 1,911 alerts (3.0%) cofire, but those alerts hit 22.0% peak ≥50% vs 16.0% non-cofire (+5.8pp lift). Score bonus +2 fires when adj_cofire=TRUE. Detector populates via intra-cron lookup (build a Set<key> of all this-cron fires, check strike±step membership). Older rows stay NULL until backfilled.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS adj_cofire BOOLEAN`,
+      // Partial index — cofire is rare (~3% of alerts) so a partial
+      // index on the TRUE rows keeps the index small and fast for
+      // the cohort-analysis query path.
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_adj_cofire_idx
+            ON silent_boom_alerts (date DESC, adj_cofire)
+         WHERE adj_cofire = TRUE`,
+    ],
+  },
 ];

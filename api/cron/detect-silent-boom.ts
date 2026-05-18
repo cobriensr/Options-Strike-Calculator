@@ -115,6 +115,21 @@ interface ChainGroupBuilder {
   oi: number;
 }
 
+/** Cash-index roots that trade on $5 strike increments. All other
+ *  tickers use the $1 default. Matches the adjacent-strike co-fire
+ *  detection in docs/tmp/sb-93d-peak-revisit-2026-05-17.py. */
+const INDEX_COFIRE_ROOTS = new Set([
+  'SPXW',
+  'SPX',
+  'NDXP',
+  'NDX',
+  'RUTW',
+  'RUT',
+]);
+function adjCofireStrikeStep(ticker: string): number {
+  return INDEX_COFIRE_ROOTS.has(ticker) ? 5.0 : 1.0;
+}
+
 /**
  * Minute-of-day (Central Time) for the silent-boom score's TOD bucket.
  * Intl-based so DST transitions are handled correctly without an
@@ -454,6 +469,19 @@ export default withCronInstrumentation(
     // POST /takeit/multileg-classify (commit ced5ff10).
     const multilegCache: MultilegClassifyCache = new Map();
 
+    // Pre-pass: detect fires across all groups + apply gate counters.
+    // Splitting detection from scoring lets the score loop see ALL
+    // fires in this cron-tick, which is required for intra-cron
+    // adj_cofire detection (migration #170 / Phase B): two adjacent-
+    // strike fires in the same bucket_ct each get their adj_cofire
+    // flag flipped TRUE. Single-pass would not see the other side of
+    // the pair yet.
+    type FireRecord = {
+      g: ChainGroupBuilder;
+      f: ReturnType<typeof detectSilentBoomFires>[number];
+      dte: number;
+    };
+    const allFires: FireRecord[] = [];
     for (const g of groups.values()) {
       if (g.buckets.length < SILENT_BOOM_SPEC_V1.baselineBuckets + 1) {
         skippedShort += 1;
@@ -470,23 +498,52 @@ export default withCronInstrumentation(
       totalFires += fires.length;
 
       const dte = daysBetween(ctx.today, g.expiry);
+      for (const f of fires) allFires.push({ g, f, dte });
+    }
 
-      for (const f of fires) {
-        // Score is deterministic from the fire payload + day context.
-        // Computed inline so the row lands fully scored (no lazy
-        // backfill / re-pass).
-        const ctMinuteOfDay = ctMinuteFromUtcMs(f.bucketTs.getTime());
-        const tod = silentBoomTodFromMinuteCt(ctMinuteOfDay);
+    // Build the cofire keyset from ALL fires in this tick. Key
+    // shape `${ticker}|${optionType}|${bucket_ts ISO}|${strike}`
+    // matches the adjacent-strike lookup pattern used by the
+    // 93-day peak-revisit analysis. Set is rebuilt every cron
+    // invocation; intra-cron coverage is sufficient — adjacent-
+    // strike fires almost always share the same bucket_ct and
+    // therefore the same 5-min cron window.
+    const cofireKeyset = new Set<string>();
+    for (const { g, f } of allFires) {
+      const k = `${g.ticker}|${g.optionType}|${f.bucketTs.toISOString()}|${g.strike}`;
+      cofireKeyset.add(k);
+    }
 
-        // Pre-trade-count: non-canceled trades on this chain from
-        // session open (08:30 CT) to the spike's bucket_ct. Fed into
-        // the score for the +4 heavy-activity bonus (≥501 trades).
-        // Spec:
-        //   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
-        // Postgres handles the CT-to-UTC conversion via AT TIME ZONE so
-        // DST works without explicit math. Migration #169 added the
-        // storage column.
-        const preTradeCountRows = (await db`
+    for (const { g, f, dte } of allFires) {
+      // Score is deterministic from the fire payload + day context.
+      // Computed inline so the row lands fully scored (no lazy
+      // backfill / re-pass).
+      const ctMinuteOfDay = ctMinuteFromUtcMs(f.bucketTs.getTime());
+      const tod = silentBoomTodFromMinuteCt(ctMinuteOfDay);
+
+      // Adjacent-strike co-fire (Phase B). +2 score bonus when an
+      // SB alert exists at strike ± step on the same
+      // (ticker, optionType, bucket_ct). Step = $5 for cash-index
+      // roots (SPX/NDX/RUT), $1 otherwise.
+      const cofireStep = adjCofireStrikeStep(g.ticker);
+      const cofireTs = f.bucketTs.toISOString();
+      const adjCofire =
+        cofireKeyset.has(
+          `${g.ticker}|${g.optionType}|${cofireTs}|${g.strike + cofireStep}`,
+        ) ||
+        cofireKeyset.has(
+          `${g.ticker}|${g.optionType}|${cofireTs}|${g.strike - cofireStep}`,
+        );
+
+      // Pre-trade-count: non-canceled trades on this chain from
+      // session open (08:30 CT) to the spike's bucket_ct. Fed into
+      // the score for the +4 heavy-activity bonus (≥501 trades).
+      // Spec:
+      //   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
+      // Postgres handles the CT-to-UTC conversion via AT TIME ZONE so
+      // DST works without explicit math. Migration #169 added the
+      // storage column.
+      const preTradeCountRows = (await db`
           SELECT COUNT(*)::int AS cnt
             FROM ws_option_trades
            WHERE option_chain = ${g.optionChain}
@@ -498,117 +555,118 @@ export default withCronInstrumentation(
              )
              AND executed_at < ${f.bucketTs.toISOString()}::timestamptz
         `) as { cnt: number }[];
-        const preTradeCount = preTradeCountRows[0]?.cnt ?? 0;
+      const preTradeCount = preTradeCountRows[0]?.cnt ?? 0;
 
-        const score = computeSilentBoomScore({
-          dte,
-          baselineVolume: f.baselineVolume,
-          spikeRatio: f.spikeRatio,
-          entryPrice: f.entryPrice,
-          askPct: f.askPct,
-          tod,
-          optionType: g.optionType,
-          tradingDay: ctx.today,
-          preTradeCount,
-        });
-        const tier = silentBoomScoreTier(score);
+      const score = computeSilentBoomScore({
+        dte,
+        baselineVolume: f.baselineVolume,
+        spikeRatio: f.spikeRatio,
+        entryPrice: f.entryPrice,
+        askPct: f.askPct,
+        tod,
+        optionType: g.optionType,
+        tradingDay: ctx.today,
+        preTradeCount,
+        adjCofire,
+      });
+      const tier = silentBoomScoreTier(score);
 
-        const targetMs = f.bucketTs.getTime();
-        const mktTideDiff = tideDiffAt(targetMs);
-        const mktTideOtmDiff = tideOtmDiffAt(targetMs);
-        const zeroDteDiff = zeroDteDiffAt(targetMs);
-        const spxSpotGammaOi = spxGammaAt(targetMs);
+      const targetMs = f.bucketTs.getTime();
+      const mktTideDiff = tideDiffAt(targetMs);
+      const mktTideOtmDiff = tideOtmDiffAt(targetMs);
+      const zeroDteDiff = zeroDteDiffAt(targetMs);
+      const spxSpotGammaOi = spxGammaAt(targetMs);
 
-        // Snapshot ticker cumulative net call/put premium at spike-bucket
-        // time. Replaces the per-row LATERAL the feed used to run
-        // (caused ~30s page loads). Cached per (ticker, date).
-        const flowCacheKey = `${g.ticker}_${ctx.today}`;
-        let flowSeries = tickerFlowCache.get(flowCacheKey);
-        if (flowSeries == null) {
-          flowSeries = await fetchTickerFlowSeries(db, g.ticker, ctx.today);
-          tickerFlowCache.set(flowCacheKey, flowSeries);
+      // Snapshot ticker cumulative net call/put premium at spike-bucket
+      // time. Replaces the per-row LATERAL the feed used to run
+      // (caused ~30s page loads). Cached per (ticker, date).
+      const flowCacheKey = `${g.ticker}_${ctx.today}`;
+      let flowSeries = tickerFlowCache.get(flowCacheKey);
+      if (flowSeries == null) {
+        flowSeries = await fetchTickerFlowSeries(db, g.ticker, ctx.today);
+        tickerFlowCache.set(flowCacheKey, flowSeries);
+      }
+      const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
+        flowSeries,
+        f.bucketTs,
+      );
+
+      // Phase 2 multileg classification (spec: migration #160; sidecar
+      // POST /takeit/multileg-classify, commit ced5ff10). Fail-open —
+      // the helper returns null on sidecar errors, missing anchor
+      // trade, or oversized windows, and the four columns stay NULL
+      // on the row. Take-It feature pipeline already treats these as
+      // optional (`?: T | null`).
+      const multilegResult = await classifyAlertMultileg(
+        db,
+        multilegCache,
+        g.ticker,
+        g.optionChain,
+        f.bucketTs,
+      );
+      const inferredStructure = multilegResult?.inferredStructure ?? null;
+      const isIsolatedLeg = multilegResult?.isIsolatedLeg ?? null;
+      const matchConfidence = multilegResult?.matchConfidence ?? null;
+      const patternGroupId = multilegResult?.patternGroupId ?? null;
+
+      // Phase 4 direction gate (spec:
+      // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
+      // Counter-trend fires get demoted to tier3 and flagged with
+      // direction_gated=TRUE so the UI can render a "Gated" pill and
+      // the user can filter them out. Threshold is the all-in
+      // mkt_tide_diff (NCP - NPP across the whole tape) at fire time.
+      // STRICT > / < per spec — exactly ±T is NOT gated.
+      const DIRECTION_GATE_T = 100_000_000;
+      const directionGated = (() => {
+        if (mktTideDiff == null) return false;
+        if (g.optionType === 'P' && mktTideDiff > DIRECTION_GATE_T) {
+          return true;
         }
-        const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
-          flowSeries,
-          f.bucketTs,
-        );
+        if (g.optionType === 'C' && mktTideDiff < -DIRECTION_GATE_T) {
+          return true;
+        }
+        return false;
+      })();
+      const effectiveTier = directionGated ? 'tier3' : tier;
 
-        // Phase 2 multileg classification (spec: migration #160; sidecar
-        // POST /takeit/multileg-classify, commit ced5ff10). Fail-open —
-        // the helper returns null on sidecar errors, missing anchor
-        // trade, or oversized windows, and the four columns stay NULL
-        // on the row. Take-It feature pipeline already treats these as
-        // optional (`?: T | null`).
-        const multilegResult = await classifyAlertMultileg(
-          db,
-          multilegCache,
-          g.ticker,
-          g.optionChain,
-          f.bucketTs,
-        );
-        const inferredStructure = multilegResult?.inferredStructure ?? null;
-        const isIsolatedLeg = multilegResult?.isIsolatedLeg ?? null;
-        const matchConfidence = multilegResult?.matchConfidence ?? null;
-        const patternGroupId = multilegResult?.patternGroupId ?? null;
+      // Take-It probability (Phase 3c). Mirrors the lottery cron pattern.
+      const takeitRow: SilentBoomAlertRow = {
+        fire_time: f.bucketTs,
+        date: new Date(`${ctx.today}T00:00:00Z`),
+        option_chain_id: g.optionChain,
+        underlying_symbol: g.ticker,
+        option_type: g.optionType,
+        strike: g.strike,
+        dte,
+        spike_volume: f.spikeVolume,
+        baseline_volume: f.baselineVolume,
+        spike_ratio: f.spikeRatio,
+        ask_pct: f.askPct,
+        vol_oi: f.volOi,
+        entry_price: f.entryPrice,
+        open_interest: f.openInterest,
+        mkt_tide_diff: mktTideDiff,
+        mkt_tide_otm_diff: mktTideOtmDiff,
+        zero_dte_diff: zeroDteDiff,
+        spx_spot_gamma_oi: spxSpotGammaOi,
+        multi_leg_share: f.multiLegShare,
+        underlying_price_at_spike: f.underlyingPriceAtSpike,
+        score,
+        score_tier: effectiveTier,
+        direction_gated: directionGated,
+      };
+      const {
+        prob: takeitProb,
+        version: takeitVersion,
+        features: takeitFeatures,
+      } = scoreSilentBoom(takeitCtx, takeitRow);
+      // Persist the bundle-shaped feature dict so the SHAP fill cron can
+      // hand it straight to the sidecar — no re-derivation in TS, no
+      // raw-row passthrough that would miss one-hots + derived features.
+      const takeitFeaturesJson =
+        takeitFeatures === null ? null : JSON.stringify(takeitFeatures);
 
-        // Phase 4 direction gate (spec:
-        // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
-        // Counter-trend fires get demoted to tier3 and flagged with
-        // direction_gated=TRUE so the UI can render a "Gated" pill and
-        // the user can filter them out. Threshold is the all-in
-        // mkt_tide_diff (NCP - NPP across the whole tape) at fire time.
-        // STRICT > / < per spec — exactly ±T is NOT gated.
-        const DIRECTION_GATE_T = 100_000_000;
-        const directionGated = (() => {
-          if (mktTideDiff == null) return false;
-          if (g.optionType === 'P' && mktTideDiff > DIRECTION_GATE_T) {
-            return true;
-          }
-          if (g.optionType === 'C' && mktTideDiff < -DIRECTION_GATE_T) {
-            return true;
-          }
-          return false;
-        })();
-        const effectiveTier = directionGated ? 'tier3' : tier;
-
-        // Take-It probability (Phase 3c). Mirrors the lottery cron pattern.
-        const takeitRow: SilentBoomAlertRow = {
-          fire_time: f.bucketTs,
-          date: new Date(`${ctx.today}T00:00:00Z`),
-          option_chain_id: g.optionChain,
-          underlying_symbol: g.ticker,
-          option_type: g.optionType,
-          strike: g.strike,
-          dte,
-          spike_volume: f.spikeVolume,
-          baseline_volume: f.baselineVolume,
-          spike_ratio: f.spikeRatio,
-          ask_pct: f.askPct,
-          vol_oi: f.volOi,
-          entry_price: f.entryPrice,
-          open_interest: f.openInterest,
-          mkt_tide_diff: mktTideDiff,
-          mkt_tide_otm_diff: mktTideOtmDiff,
-          zero_dte_diff: zeroDteDiff,
-          spx_spot_gamma_oi: spxSpotGammaOi,
-          multi_leg_share: f.multiLegShare,
-          underlying_price_at_spike: f.underlyingPriceAtSpike,
-          score,
-          score_tier: effectiveTier,
-          direction_gated: directionGated,
-        };
-        const {
-          prob: takeitProb,
-          version: takeitVersion,
-          features: takeitFeatures,
-        } = scoreSilentBoom(takeitCtx, takeitRow);
-        // Persist the bundle-shaped feature dict so the SHAP fill cron can
-        // hand it straight to the sidecar — no re-derivation in TS, no
-        // raw-row passthrough that would miss one-hots + derived features.
-        const takeitFeaturesJson =
-          takeitFeatures === null ? null : JSON.stringify(takeitFeatures);
-
-        const result = (await db`
+      const result = (await db`
           INSERT INTO silent_boom_alerts (
             date, bucket_ct, option_chain_id, underlying_symbol,
             option_type, strike, expiry, dte,
@@ -620,7 +678,7 @@ export default withCronInstrumentation(
             cum_ncp_at_fire, cum_npp_at_fire,
             inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
             takeit_prob, takeit_model_version, takeit_features,
-            gamma_at_trigger, pre_trade_count
+            gamma_at_trigger, pre_trade_count, adj_cofire
           ) VALUES (
             ${ctx.today}::date, ${f.bucketTs.toISOString()},
             ${g.optionChain}, ${g.ticker},
@@ -633,13 +691,12 @@ export default withCronInstrumentation(
             ${cumNcpAtFire}, ${cumNppAtFire},
             ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
-            ${f.gammaAtSpike}, ${preTradeCount}
+            ${f.gammaAtSpike}, ${preTradeCount}, ${adjCofire}
           )
           ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
           RETURNING id
         `) as { id: number }[];
-        if (result.length > 0) inserted += 1;
-      }
+      if (result.length > 0) inserted += 1;
     }
 
     ctx.logger.info(

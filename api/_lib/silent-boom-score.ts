@@ -113,15 +113,19 @@ const ASK_PCT_HIGH_PENALTY = -1;
 
 /** ask_pct = 1.0 exactly — structural-illiquidity floor. Set heavy
  * enough that any otherwise-perfect score lands below the tier2 floor
- * of 8: max positive components after 2026-05-17 retune sum to +39
- * (10+5+5+5+6+2+1+1+4 — last 4 is pre_trade_count ≥501 bonus, the
- * +1 before is Friday × CALL), so −30 caps any saturated-ask fire at
- * +7 → tier3. Empirical basis (full 15k-fire sample,
+ * of 8: max positive components after 2026-05-17 Phase B sum to +41
+ * (10+5+5+5+6+2+1+1+4+2 — trailing +2 is adj_cofire, +4 before that
+ * is pre_trade_count ≥501, +1 before that is Friday × CALL). The
+ * −32 penalty caps any saturated-ask fire at +7 (+41 − 2 ask reward
+ * lost − 32 penalty applied) → tier3. Penalty escalated from −30 →
+ * −32 in Phase B because the new pre_trade_count + adj_cofire bonuses
+ * would have pushed the worst-case saturated alert to +9, breaking
+ * the tier3 invariant. Empirical basis (full 15k-fire sample,
  * scripts/analyze_silent_boom_vol_oi.py 2026-05-12): ask=1.0 fires
  * win > 0% at 77.0% vs ≥99% in every other ask band; the cliff
  * replicates inside every score_tier. Spec:
  * docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md */
-const ASK_PCT_SATURATED_PENALTY = -30;
+const ASK_PCT_SATURATED_PENALTY = -32;
 
 /** Option type — small but consistent C edge (1.06× vs 0.93×). */
 const CALL_BONUS = 1;
@@ -147,6 +151,19 @@ const CALL_BONUS = 1;
  *   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md */
 const PRE_TRADE_COUNT_HEAVY_THRESHOLD = 501;
 const PRE_TRADE_COUNT_HEAVY_BONUS = 4;
+
+/** Adjacent-strike co-fire bonus. Validated against the 93-day,
+ * 63,846-alert peak dataset:
+ *   adj_cofire=FALSE → 16.0% peak ≥50% (n=61,935, lift -0.2pp)
+ *   adj_cofire=TRUE  → 22.0% peak ≥50% (n=1,911,  lift +5.8pp)
+ * Clean binary signal on a small cohort (3.0% of alerts). Intuition:
+ * a real underlying move is more likely to trigger two adjacent
+ * strikes simultaneously than ghost-print noise.
+ *
+ * Adjacent step: $1 default, $5 for SPX/NDX/RUT cash-index roots.
+ * Spec:
+ *   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md */
+const ADJ_COFIRE_BONUS = 2;
 
 /** Day-of-week × option_type bonus. Retuned 2026-05-17 against the
  * 93-day peak dataset (n=63,846; baseline peak ≥50% = 16.2%). Three
@@ -220,7 +237,11 @@ export function silentBoomDowTypeBonus(
  * is logged in docs/tmp/sb-93d-peak-revisit-2026-05-17.py.
  *
  * 2026-05-17 Phase A — pre_trade_count ≥501 bonus (+4) added. New
- * range: −25 to +39. Spec:
+ * range: −25 to +39.
+ *
+ * 2026-05-17 Phase B — adj_cofire bonus (+2) added; ask saturation
+ * penalty escalated −30 → −32 to preserve the tier3 invariant. New
+ * range: −25 to +41. Spec:
  *   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
  */
 export const SILENT_BOOM_TIER_THRESHOLDS = Object.freeze({
@@ -265,6 +286,12 @@ export interface SilentBoomScoreInput {
    * lands without the bonus rather than throwing — historical rows
    * predating migration #169 fall in this bucket. */
   preTradeCount: number;
+  /** TRUE when another SB alert exists on the same (ticker,
+   * option_type, bucket_ct) at the adjacent strike (±$1 default, ±$5
+   * for SPX/NDX/RUT roots). Adds +2 to the score when TRUE. Detector
+   * computes via intra-cron set lookup. Pass false when unknown
+   * (legacy callers, backfill from pre-#170 data). */
+  adjCofire: boolean;
 }
 
 /**
@@ -363,6 +390,9 @@ export function computeSilentBoomScore(args: SilentBoomScoreInput): number {
   if (args.preTradeCount >= PRE_TRADE_COUNT_HEAVY_THRESHOLD) {
     score += PRE_TRADE_COUNT_HEAVY_BONUS;
   }
+
+  // Adjacent-strike co-fire bonus (intra-cron detection)
+  if (args.adjCofire) score += ADJ_COFIRE_BONUS;
 
   return score;
 }

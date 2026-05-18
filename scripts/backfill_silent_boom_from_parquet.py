@@ -237,6 +237,22 @@ _DOW_TYPE_BONUS = {
 _PRE_TRADE_COUNT_HEAVY_THRESHOLD = 501
 _PRE_TRADE_COUNT_HEAVY_BONUS = 4
 
+# Phase B adj_cofire bonus — TRUE when another SB fire exists at the
+# adjacent strike (±$1 default, ±$5 for cash-index roots) on the
+# same (ticker, optionType, bucket_ct). Validated against the 93-day
+# peak dataset: 1,911 cofire alerts (3.0%) hit 22.0% peak ≥50% vs
+# 16.0% non-cofire (+5.8pp lift).
+_ADJ_COFIRE_BONUS = 2
+
+# Cash-index roots that trade on $5 strike steps (rest = $1).
+_INDEX_COFIRE_ROOTS = frozenset(
+    {'SPXW', 'SPX', 'NDXP', 'NDX', 'RUTW', 'RUT'}
+)
+
+
+def _adj_cofire_strike_step(ticker: str) -> float:
+    return 5.0 if ticker in _INDEX_COFIRE_ROOTS else 1.0
+
 
 def _dow_type_bonus(trading_day: str, option_type: str) -> int:
     """Day-of-week × option_type bonus. trading_day = 'YYYY-MM-DD'."""
@@ -255,6 +271,7 @@ def compute_silent_boom_score(
     option_type: str,
     trading_day: str,
     pre_trade_count: int = 0,
+    adj_cofire: bool = False,
 ) -> int:
     s = 0
     # DTE
@@ -282,10 +299,13 @@ def compute_silent_boom_score(
     s += _TOD_WEIGHTS[tod]
     # Ask% — saturation cliff at ask_pct = 1.0 forces tier3 (spec:
     # docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md).
+    # Penalty escalated -30 → -32 in Phase B (2026-05-17) to preserve
+    # the tier3 invariant against the new pre_trade_count + adj_cofire
+    # bonuses (max +41).
     if   ask_pct < 0.85: s += 2
     elif ask_pct < 0.95: s += 1
     elif ask_pct < 1.0:  s += -1
-    else:                s += -30
+    else:                s += -32
     # Call bonus
     if option_type == 'C':
         s += 1
@@ -294,6 +314,9 @@ def compute_silent_boom_score(
     # Pre-trade-count heavy-activity bonus (≥501 trades pre-spike).
     if pre_trade_count >= _PRE_TRADE_COUNT_HEAVY_THRESHOLD:
         s += _PRE_TRADE_COUNT_HEAVY_BONUS
+    # Adjacent-strike co-fire bonus (Phase B).
+    if adj_cofire:
+        s += _ADJ_COFIRE_BONUS
     return s
 
 
@@ -381,7 +404,7 @@ def insert_fires(conn, rows: list[tuple]) -> int:
           ask_pct, vol_oi, entry_price, open_interest,
           score, score_tier,
           mkt_tide_diff, zero_dte_diff, spx_spot_gamma_oi,
-          pre_trade_count
+          pre_trade_count, adj_cofire
         )
         VALUES %s
         ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
@@ -392,7 +415,7 @@ def insert_fires(conn, rows: list[tuple]) -> int:
             '(%s::date, %s::timestamptz, %s, %s, %s, %s::numeric, '
             '%s::date, %s, %s, %s::numeric, %s::numeric, %s::numeric, '
             '%s::numeric, %s::numeric, %s, %s::smallint, %s, '
-            '%s, %s, %s, %s)'
+            '%s, %s, %s, %s, %s)'
         ),
         page_size=500,
         fetch=True,
@@ -471,8 +494,12 @@ def main() -> None:
         def lookup_spx_gamma(bucket_ts: pd.Timestamp) -> float | None:
             return _lookup_latest(spx_gamma_df, 'gamma_oi', bucket_ts)
 
+        # Phase B: split detection from scoring so the cofire keyset
+        # can see ALL fires on the day before any one fire is scored.
         rows_to_insert: list[tuple] = []
         fires_today = 0
+        # Pre-pass: detect fires per chain, collect into a flat list.
+        detected: list[dict] = []
         for chain_id, sub in bucketed.groupby('option_chain_id', sort=False):
             if sub['max_oi'].max() < MIN_OI:
                 continue
@@ -504,56 +531,97 @@ def main() -> None:
             )
             dte = days_between(date_str, exp_str)
             for f in fires:
-                # Score every row at insert time so the table lands
-                # fully populated (mirrors the cron path).
-                bucket_ts: pd.Timestamp = f['bucket']
-                if bucket_ts.tz is None:
-                    bucket_ts = bucket_ts.tz_localize('UTC')
-                bucket_ct = bucket_ts.tz_convert('America/Chicago')
-                ct_min_of_day = bucket_ct.hour * 60 + bucket_ct.minute
-                tod = silent_boom_tod_from_minute_ct(ct_min_of_day)
-                # Pre-trade-count: sum n_trades across this chain's
-                # buckets *before* the spike's bucket. The cron uses a
-                # session-open boundary; in the parquet path we use
-                # "all prior buckets" since options day-trade in
-                # regular session only — overnight/extended-hours
-                # ticks for SB universe chains are rare enough that
-                # the few extras land far below the 501-trade
-                # threshold and don't change scoring.
-                pre_trade_count = int(
-                    sub.loc[sub['bucket'] < bucket_ts, 'n_trades'].sum()
-                )
-                score = compute_silent_boom_score(
-                    dte=dte,
-                    baseline_volume=f['baseline_volume'],
-                    spike_ratio=f['spike_ratio'],
-                    entry_price=f['entry_price'],
-                    ask_pct=f['ask_pct'],
-                    tod=tod,
-                    option_type=opt_type,
-                    trading_day=date_str,
-                    pre_trade_count=pre_trade_count,
-                )
-                tier = silent_boom_tier(score)
-                bucket_ts = f['bucket']
-                if bucket_ts.tz is None:
-                    bucket_ts = bucket_ts.tz_localize('UTC')
-                tide_diff = lookup_tide_diff(bucket_ts)
-                zero_dte_diff = lookup_zero_dte_diff(bucket_ts)
-                spx_spot_gamma = lookup_spx_gamma(bucket_ts)
-                rows_to_insert.append((
-                    date_str,
-                    f['bucket'].isoformat(),
-                    chain_id, ticker,
-                    opt_type, strike, exp_str, dte,
-                    f['spike_volume'], f['baseline_volume'], f['spike_ratio'],
-                    f['ask_pct'], f['vol_oi'], f['entry_price'],
-                    f['open_interest'],
-                    score, tier,
-                    tide_diff, zero_dte_diff, spx_spot_gamma,
-                    pre_trade_count,
-                ))
-                fires_today += 1
+                detected.append({
+                    'chain_id': chain_id,
+                    'sub': sub,
+                    'ticker': ticker,
+                    'opt_type': opt_type,
+                    'strike': strike,
+                    'exp_str': exp_str,
+                    'dte': dte,
+                    'f': f,
+                })
+
+        # Build the cofire keyset from ALL detected fires on this day.
+        # Key matches the live cron's `${ticker}|${opt_type}|${ts}|${strike}`
+        # shape. The parquet backfill processes one day at a time, so
+        # "all detected on this day" === "all cofire candidates".
+        cofire_keyset: set[str] = set()
+        for d in detected:
+            bucket_ts_iso = d['f']['bucket'].isoformat()
+            cofire_keyset.add(
+                f"{d['ticker']}|{d['opt_type']}|{bucket_ts_iso}|"
+                f"{d['strike']}"
+            )
+
+        # Main pass: score + collect each fire.
+        for d in detected:
+            chain_id = d['chain_id']
+            sub = d['sub']
+            ticker = d['ticker']
+            opt_type = d['opt_type']
+            strike = d['strike']
+            exp_str = d['exp_str']
+            dte = d['dte']
+            f = d['f']
+            bucket_ts: pd.Timestamp = f['bucket']
+            if bucket_ts.tz is None:
+                bucket_ts = bucket_ts.tz_localize('UTC')
+            bucket_ct = bucket_ts.tz_convert('America/Chicago')
+            ct_min_of_day = bucket_ct.hour * 60 + bucket_ct.minute
+            tod = silent_boom_tod_from_minute_ct(ct_min_of_day)
+            # Pre-trade-count: sum n_trades across this chain's
+            # buckets *before* the spike's bucket. The cron uses a
+            # session-open boundary; in the parquet path we use
+            # "all prior buckets" since options day-trade in
+            # regular session only — overnight/extended-hours
+            # ticks for SB universe chains are rare enough that
+            # the few extras land far below the 501-trade
+            # threshold and don't change scoring.
+            pre_trade_count = int(
+                sub.loc[sub['bucket'] < bucket_ts, 'n_trades'].sum()
+            )
+            # Adjacent-strike co-fire (Phase B). Step = $5 for index
+            # roots, $1 otherwise. Same lookup logic as the cron's
+            # cofire keyset.
+            cofire_step = _adj_cofire_strike_step(ticker)
+            bucket_ts_iso = f['bucket'].isoformat()
+            adj_cofire = (
+                f"{ticker}|{opt_type}|{bucket_ts_iso}|{strike + cofire_step}"
+                in cofire_keyset
+                or
+                f"{ticker}|{opt_type}|{bucket_ts_iso}|{strike - cofire_step}"
+                in cofire_keyset
+            )
+            score = compute_silent_boom_score(
+                dte=dte,
+                baseline_volume=f['baseline_volume'],
+                spike_ratio=f['spike_ratio'],
+                entry_price=f['entry_price'],
+                ask_pct=f['ask_pct'],
+                tod=tod,
+                option_type=opt_type,
+                trading_day=date_str,
+                pre_trade_count=pre_trade_count,
+                adj_cofire=adj_cofire,
+            )
+            tier = silent_boom_tier(score)
+            tide_diff = lookup_tide_diff(bucket_ts)
+            zero_dte_diff = lookup_zero_dte_diff(bucket_ts)
+            spx_spot_gamma = lookup_spx_gamma(bucket_ts)
+            rows_to_insert.append((
+                date_str,
+                f['bucket'].isoformat(),
+                chain_id, ticker,
+                opt_type, strike, exp_str, dte,
+                f['spike_volume'], f['baseline_volume'], f['spike_ratio'],
+                f['ask_pct'], f['vol_oi'], f['entry_price'],
+                f['open_interest'],
+                score, tier,
+                tide_diff, zero_dte_diff, spx_spot_gamma,
+                pre_trade_count, adj_cofire,
+            ))
+            fires_today += 1
         inserted = insert_fires(conn, rows_to_insert)
         grand_fires += fires_today
         grand_inserted += inserted

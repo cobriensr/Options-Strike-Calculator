@@ -209,8 +209,11 @@ def main() -> None:
                 return None
             return float(df.loc[tick_idx, col])
 
+        # Phase B: split detection from scoring so the cofire keyset
+        # can see ALL fires on the day before any one fire is scored.
         rows_to_insert: list[tuple] = []
         fires_today = 0
+        detected: list[dict] = []
         for chain_id, sub in bucketed.groupby('option_chain_id', sort=False):
             if sub['max_oi'].max() < sb_backfill.MIN_OI:
                 continue
@@ -237,69 +240,109 @@ def main() -> None:
                 else str(exp_raw)[:10]
             )
             dte = sb_backfill.days_between(date_str, exp_str)
-
             for f in fires:
-                bucket_ts = f['bucket']
-                tide_diff = _lookup_latest(tide_df, 'diff', bucket_ts)
-                zero_dte_diff = _lookup_latest(
-                    zero_dte_df, 'diff', bucket_ts
-                )
-                spx_gamma = _lookup_latest(
-                    spx_gamma_df, 'gamma_oi', bucket_ts
-                )
-                # CT minute-of-day for the tod gate (the parquet's
-                # executed_at is UTC; bucket is also UTC; CT = UTC-5
-                # CDT / UTC-6 CST; the Apr/May window straddles CDT).
-                # We re-use the Bot-Eod helper to derive tod.
-                ct_ts = bucket_ts.tz_convert('America/Chicago')
-                minute_of_day = ct_ts.hour * 60 + ct_ts.minute
-                tod = sb_backfill.silent_boom_tod_from_minute_ct(
-                    minute_of_day
-                )
-                # Pre-trade-count: sum prior buckets' n_trades on this
-                # chain. Same approximation as the Bot-Eod backfill —
-                # options day-trade in regular session only, so "all
-                # prior buckets" ≈ "since session open" for the SB
-                # universe.
-                pre_trade_count = int(
-                    sub.loc[sub['bucket'] < bucket_ts, 'n_trades'].sum()
-                )
-                score = sb_backfill.compute_silent_boom_score(
-                    dte=dte,
-                    baseline_volume=f['baseline_volume'],
-                    spike_ratio=f['spike_ratio'],
-                    entry_price=f['entry_price'],
-                    ask_pct=f['ask_pct'],
-                    tod=tod,
-                    option_type=opt_type,
-                    trading_day=date_str,
-                    pre_trade_count=pre_trade_count,
-                )
-                tier = sb_backfill.silent_boom_tier(score)
-                rows_to_insert.append((
-                    date_str,
-                    bucket_ts.to_pydatetime(),
-                    chain_id,
-                    ticker,
-                    opt_type,
-                    strike,
-                    exp_str,
-                    dte,
-                    int(f['spike_volume']),
-                    float(f['baseline_volume']),
-                    float(f['spike_ratio']),
-                    float(f['ask_pct']),
-                    float(f['vol_oi']),
-                    float(f['entry_price']),
-                    int(f['open_interest']),
-                    int(score),
-                    tier,
-                    tide_diff,
-                    zero_dte_diff,
-                    spx_gamma,
-                    pre_trade_count,
-                ))
-                fires_today += 1
+                detected.append({
+                    'chain_id': chain_id,
+                    'sub': sub,
+                    'ticker': ticker,
+                    'opt_type': opt_type,
+                    'strike': strike,
+                    'exp_str': exp_str,
+                    'dte': dte,
+                    'f': f,
+                })
+
+        # Build cofire keyset from ALL detected fires on this day.
+        cofire_keyset: set[str] = set()
+        for d in detected:
+            bucket_ts_iso = d['f']['bucket'].isoformat()
+            cofire_keyset.add(
+                f"{d['ticker']}|{d['opt_type']}|{bucket_ts_iso}|"
+                f"{d['strike']}"
+            )
+
+        for d in detected:
+            chain_id = d['chain_id']
+            sub = d['sub']
+            ticker = d['ticker']
+            opt_type = d['opt_type']
+            strike = d['strike']
+            exp_str = d['exp_str']
+            dte = d['dte']
+            f = d['f']
+            bucket_ts = f['bucket']
+            tide_diff = _lookup_latest(tide_df, 'diff', bucket_ts)
+            zero_dte_diff = _lookup_latest(
+                zero_dte_df, 'diff', bucket_ts
+            )
+            spx_gamma = _lookup_latest(
+                spx_gamma_df, 'gamma_oi', bucket_ts
+            )
+            # CT minute-of-day for the tod gate (the parquet's
+            # executed_at is UTC; bucket is also UTC; CT = UTC-5
+            # CDT / UTC-6 CST; the Apr/May window straddles CDT).
+            # We re-use the Bot-Eod helper to derive tod.
+            ct_ts = bucket_ts.tz_convert('America/Chicago')
+            minute_of_day = ct_ts.hour * 60 + ct_ts.minute
+            tod = sb_backfill.silent_boom_tod_from_minute_ct(
+                minute_of_day
+            )
+            # Pre-trade-count: sum prior buckets' n_trades on this
+            # chain. Same approximation as the Bot-Eod backfill —
+            # options day-trade in regular session only, so "all
+            # prior buckets" ≈ "since session open" for the SB
+            # universe.
+            pre_trade_count = int(
+                sub.loc[sub['bucket'] < bucket_ts, 'n_trades'].sum()
+            )
+            # Adjacent-strike co-fire (Phase B).
+            cofire_step = sb_backfill._adj_cofire_strike_step(ticker)
+            bucket_ts_iso = bucket_ts.isoformat()
+            adj_cofire = (
+                f"{ticker}|{opt_type}|{bucket_ts_iso}|{strike + cofire_step}"
+                in cofire_keyset
+                or
+                f"{ticker}|{opt_type}|{bucket_ts_iso}|{strike - cofire_step}"
+                in cofire_keyset
+            )
+            score = sb_backfill.compute_silent_boom_score(
+                dte=dte,
+                baseline_volume=f['baseline_volume'],
+                spike_ratio=f['spike_ratio'],
+                entry_price=f['entry_price'],
+                ask_pct=f['ask_pct'],
+                tod=tod,
+                option_type=opt_type,
+                trading_day=date_str,
+                pre_trade_count=pre_trade_count,
+                adj_cofire=adj_cofire,
+            )
+            tier = sb_backfill.silent_boom_tier(score)
+            rows_to_insert.append((
+                date_str,
+                bucket_ts.to_pydatetime(),
+                chain_id,
+                ticker,
+                opt_type,
+                strike,
+                exp_str,
+                dte,
+                int(f['spike_volume']),
+                float(f['baseline_volume']),
+                float(f['spike_ratio']),
+                float(f['ask_pct']),
+                float(f['vol_oi']),
+                float(f['entry_price']),
+                int(f['open_interest']),
+                int(score),
+                tier,
+                tide_diff,
+                zero_dte_diff,
+                spx_gamma,
+                pre_trade_count,
+                adj_cofire,
+            ))
+            fires_today += 1
 
         inserted = (
             sb_backfill.insert_fires(conn, rows_to_insert)
