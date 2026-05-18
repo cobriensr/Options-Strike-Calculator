@@ -204,6 +204,13 @@ def backfill_table(
                 for r in result.itertuples()
             ]
             with pg_conn.cursor() as cur:
+                # execute_values default page_size=100 only reports
+                # the LAST batch's rowcount. Bump page_size beyond the
+                # likely per-day row count so the whole UPDATE runs in
+                # a single statement and cur.rowcount is honest. 10000
+                # comfortably covers TSLA-class chains' max fire-count
+                # days; if a date ever exceeds that, the per-page
+                # rowcount-loss is back to the prior (cosmetic) bug.
                 execute_values(
                     cur,
                     f"""
@@ -214,6 +221,7 @@ def backfill_table(
                        AND t.gamma_at_trigger IS NULL
                     """,
                     tuples,
+                    page_size=10000,
                 )
                 updated_this_date = cur.rowcount
             pg_conn.commit()
