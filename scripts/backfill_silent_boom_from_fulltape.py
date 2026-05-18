@@ -261,6 +261,7 @@ def main() -> None:
                     ask_pct=f['ask_pct'],
                     tod=tod,
                     option_type=opt_type,
+                    trading_day=date_str,
                 )
                 tier = sb_backfill.silent_boom_tier(score)
                 rows_to_insert.append((

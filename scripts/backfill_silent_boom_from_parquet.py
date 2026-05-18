@@ -217,7 +217,23 @@ def silent_boom_tod_from_minute_ct(minute_of_day: int) -> str:
 
 # Mirror of computeSilentBoomScore in api/_lib/silent-boom-score.ts.
 # Every bucket weight is justified in docs/tmp/silent-boom-feature-audit-2026-05-08.md.
-_TOD_WEIGHTS = {'AM_open': 5, 'MID': 1, 'LUNCH': 0, 'PM': -3, 'LATE': -3}
+# TOD weights + DOW×type bonus retuned 2026-05-17 against the 93-day,
+# 63,846-alert peak dataset (docs/tmp/sb-93d-peak-revisit-2026-05-17.py).
+_TOD_WEIGHTS = {'AM_open': 6, 'MID': 3, 'LUNCH': 0, 'PM': -4, 'LATE': -5}
+
+# (day-of-week, option_type) → points. dow uses Python's
+# datetime.weekday() convention (Mon=0 … Sun=6).
+_DOW_TYPE_BONUS = {
+    (4, 'P'): 2,   # Friday × PUT  (+3.2pp lift, n=7,166)
+    (4, 'C'): 1,   # Friday × CALL (+1.6pp lift, n=8,565)
+    (0, 'P'): -2,  # Monday × PUT  (-3.8pp lift, n=5,011)
+}
+
+
+def _dow_type_bonus(trading_day: str, option_type: str) -> int:
+    """Day-of-week × option_type bonus. trading_day = 'YYYY-MM-DD'."""
+    dow = datetime.fromisoformat(f'{trading_day}T00:00:00+00:00').weekday()
+    return _DOW_TYPE_BONUS.get((dow, option_type), 0)
 
 
 def compute_silent_boom_score(
@@ -229,6 +245,7 @@ def compute_silent_boom_score(
     ask_pct: float,
     tod: str,
     option_type: str,
+    trading_day: str,
 ) -> int:
     s = 0
     # DTE
@@ -263,6 +280,8 @@ def compute_silent_boom_score(
     # Call bonus
     if option_type == 'C':
         s += 1
+    # DOW × option_type bonus
+    s += _dow_type_bonus(trading_day, option_type)
     return s
 
 
@@ -488,6 +507,7 @@ def main() -> None:
                     ask_pct=f['ask_pct'],
                     tod=tod,
                     option_type=opt_type,
+                    trading_day=date_str,
                 )
                 tier = silent_boom_tier(score)
                 bucket_ts = f['bucket']

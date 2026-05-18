@@ -486,6 +486,7 @@ export default withCronInstrumentation(
           askPct: f.askPct,
           tod,
           optionType: g.optionType,
+          tradingDay: ctx.today,
         });
         const tier = silentBoomScoreTier(score);
 

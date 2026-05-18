@@ -4,13 +4,19 @@ import { describe, it, expect } from 'vitest';
 import {
   SILENT_BOOM_TIER_THRESHOLDS,
   computeSilentBoomScore,
+  silentBoomDowTypeBonus,
   silentBoomScoreTier,
   silentBoomTodFromMinuteCt,
   type SilentBoomScoreInput,
 } from '../_lib/silent-boom-score';
 
 /** Build a baseline input that scores 0 (no positive or negative
- * weighted bucket) — perturbations from this isolate one feature. */
+ * weighted bucket) — perturbations from this isolate one feature.
+ *
+ * Wednesday × PUT is the DOW × type combination that scores 0 (every
+ * other day-of-week/option_type combo either gets a Friday bonus, a
+ * Monday-PUT penalty, or the +1 call bonus); 2026-05-13 is a
+ * Wednesday — stable scoring anchor for the rest of the test suite. */
 const ZERO_BASE: SilentBoomScoreInput = {
   dte: 5, // 4–7D bucket → 0
   baselineVolume: 600, // > 500 → 0 (defensive default)
@@ -19,6 +25,7 @@ const ZERO_BASE: SilentBoomScoreInput = {
   askPct: 0.95, // 0.95+ → -1
   tod: 'LUNCH', // 0
   optionType: 'P', // 0
+  tradingDay: '2026-05-13', // Wednesday × PUT → 0 (no DOW bonus)
 };
 
 describe('computeSilentBoomScore', () => {
@@ -73,13 +80,51 @@ describe('computeSilentBoomScore', () => {
     );
   });
 
-  it('TOD: rewards AM_open, penalizes PM/LATE', () => {
+  it('TOD: rewards AM_open + MID, penalizes PM/LATE (2026-05-17 retune)', () => {
     expect(computeSilentBoomScore({ ...ZERO_BASE, tod: 'AM_open' })).toBe(
-      -1 + 5,
+      -1 + 6,
     );
-    expect(computeSilentBoomScore({ ...ZERO_BASE, tod: 'MID' })).toBe(-1 + 1);
-    expect(computeSilentBoomScore({ ...ZERO_BASE, tod: 'PM' })).toBe(-1 + -3);
-    expect(computeSilentBoomScore({ ...ZERO_BASE, tod: 'LATE' })).toBe(-1 + -3);
+    expect(computeSilentBoomScore({ ...ZERO_BASE, tod: 'MID' })).toBe(-1 + 3);
+    expect(computeSilentBoomScore({ ...ZERO_BASE, tod: 'PM' })).toBe(-1 + -4);
+    expect(computeSilentBoomScore({ ...ZERO_BASE, tod: 'LATE' })).toBe(-1 + -5);
+  });
+
+  it('DOW × type bonus: Friday-PUT +2, Friday-CALL +1, Monday-PUT -2', () => {
+    // 2026-05-15 = Friday, 2026-05-11 = Monday (verified by getUTCDay).
+    expect(
+      computeSilentBoomScore({
+        ...ZERO_BASE,
+        tradingDay: '2026-05-15', // Friday × PUT
+      }),
+    ).toBe(-1 + 2);
+    expect(
+      computeSilentBoomScore({
+        ...ZERO_BASE,
+        tradingDay: '2026-05-15', // Friday × CALL
+        optionType: 'C',
+      }),
+    ).toBe(-1 + 1 /* call */ + 1 /* fri-call */);
+    expect(
+      computeSilentBoomScore({
+        ...ZERO_BASE,
+        tradingDay: '2026-05-11', // Monday × PUT
+      }),
+    ).toBe(-1 + -2);
+    // Monday × CALL — only call bonus, no DOW penalty.
+    expect(
+      computeSilentBoomScore({
+        ...ZERO_BASE,
+        tradingDay: '2026-05-11',
+        optionType: 'C',
+      }),
+    ).toBe(-1 + 1);
+    // Tuesday × either — no DOW adjustment (only call bonus survives).
+    expect(
+      computeSilentBoomScore({
+        ...ZERO_BASE,
+        tradingDay: '2026-05-12', // Tuesday × PUT
+      }),
+    ).toBe(-1);
   });
 
   it('ask%: rewards 0.70–0.85, penalizes 0.95+, saturates at 1.0', () => {
@@ -94,10 +139,11 @@ describe('computeSilentBoomScore', () => {
   });
 
   it('saturation: best-possible inputs at ask=1.0 still land below tier2', () => {
-    // Same components as the "strongest possible alert" case, but with
-    // ask_pct = 1.0 instead of 0.75. 33-point top score drops to +1
-    // (32-point delta: −2 lost ask reward + 30 saturation penalty
-    // applied). +1 is well below tier2 floor of 8 → tier3.
+    // Same components as the "strongest possible alert" case, but
+    // with ask_pct = 1.0 instead of 0.75. Post-retune top non-DOW
+    // score is +34, drops to +2 after saturation penalty (32-point
+    // delta: −2 lost ask reward + 30 saturation penalty applied). +2
+    // is well below tier2 floor of 8 → tier3.
     const saturated: SilentBoomScoreInput = {
       dte: 0,
       baselineVolume: 400,
@@ -106,9 +152,10 @@ describe('computeSilentBoomScore', () => {
       askPct: 1.0,
       tod: 'AM_open',
       optionType: 'C',
+      tradingDay: '2026-05-13', // Wednesday — no DOW bonus
     };
     const score = computeSilentBoomScore(saturated);
-    expect(score).toBe(1);
+    expect(score).toBe(2);
     expect(score).toBeLessThan(SILENT_BOOM_TIER_THRESHOLDS.tier2MinScore);
     expect(silentBoomScoreTier(score)).toBe('tier3');
   });
@@ -119,10 +166,11 @@ describe('computeSilentBoomScore', () => {
     );
   });
 
-  it('strongest possible alert lands near the empirical p99 (≈ +27)', () => {
+  it('strongest possible alert post-retune lands at +34 (no DOW) or +35 (with Fri bonus)', () => {
+    // Wednesday baseline — no DOW bonus.
     // 0DTE + baseline 200–500 + ratio 5–10× + price <$0.50 +
-    // AM_open + ask% < 0.85 + call → 10 + 5 + 5 + 5 + 5 + 2 + 1 = 33.
-    const top: SilentBoomScoreInput = {
+    // AM_open + ask% < 0.85 + call → 10 + 5 + 5 + 5 + 6 + 2 + 1 = 34.
+    const topNoDow: SilentBoomScoreInput = {
       dte: 0,
       baselineVolume: 400,
       spikeRatio: 7,
@@ -130,13 +178,28 @@ describe('computeSilentBoomScore', () => {
       askPct: 0.75,
       tod: 'AM_open',
       optionType: 'C',
+      tradingDay: '2026-05-13', // Wednesday
     };
-    expect(computeSilentBoomScore(top)).toBe(33);
+    expect(computeSilentBoomScore(topNoDow)).toBe(34);
+
+    // Friday × CALL adds +1 → +35.
+    expect(
+      computeSilentBoomScore({ ...topNoDow, tradingDay: '2026-05-15' }),
+    ).toBe(35);
+
+    // Friday × PUT is +2 but loses the +1 call bonus → still +35.
+    expect(
+      computeSilentBoomScore({
+        ...topNoDow,
+        tradingDay: '2026-05-15',
+        optionType: 'P',
+      }),
+    ).toBe(35);
   });
 
-  it('worst possible alert lands near the empirical min (≈ -21)', () => {
-    // 30D+ + baseline <50 + ratio 100×+ + price $5+ + LATE +
-    // ask% 0.95+ + put → -8 + -1 + -3 + -5 + -3 + -1 + 0 = -21.
+  it('worst possible alert post-retune lands at -25 (Mon × PUT compounds LATE)', () => {
+    // 30D+ + baseline <50 + ratio 100×+ + price $5+ + LATE + ask% ≥0.95
+    // + put + Monday-PUT bonus → -8 -1 -3 -5 -5 -1 + 0 + (-2) = -25.
     const worst: SilentBoomScoreInput = {
       dte: 60,
       baselineVolume: 30,
@@ -145,8 +208,27 @@ describe('computeSilentBoomScore', () => {
       askPct: 0.99,
       tod: 'LATE',
       optionType: 'P',
+      tradingDay: '2026-05-11', // Monday — Mon × PUT = -2
     };
-    expect(computeSilentBoomScore(worst)).toBe(-21);
+    expect(computeSilentBoomScore(worst)).toBe(-25);
+  });
+});
+
+describe('silentBoomDowTypeBonus', () => {
+  it('returns +2 for Friday × PUT, +1 for Friday × CALL', () => {
+    expect(silentBoomDowTypeBonus('2026-05-15', 'P')).toBe(2);
+    expect(silentBoomDowTypeBonus('2026-05-15', 'C')).toBe(1);
+  });
+
+  it('returns -2 for Monday × PUT, 0 for Monday × CALL', () => {
+    expect(silentBoomDowTypeBonus('2026-05-11', 'P')).toBe(-2);
+    expect(silentBoomDowTypeBonus('2026-05-11', 'C')).toBe(0);
+  });
+
+  it('returns 0 for unscored weekdays', () => {
+    expect(silentBoomDowTypeBonus('2026-05-12', 'P')).toBe(0); // Tue
+    expect(silentBoomDowTypeBonus('2026-05-13', 'C')).toBe(0); // Wed
+    expect(silentBoomDowTypeBonus('2026-05-14', 'P')).toBe(0); // Thu
   });
 });
 

@@ -76,15 +76,27 @@ const PRICE_WEIGHTS: ReadonlyArray<
 /** $5+ entry — penalty (4.0% high-peak, lift 0.25×). */
 const PRICE_EXPENSIVE_PENALTY = -5;
 
-/** Time of day, CT minute-of-day boundaries. AM_open dominates. */
+/** Time of day, CT minute-of-day boundaries. AM_open dominates.
+ *
+ * Retuned 2026-05-17 against the 93-day, 63,846-alert peak dataset
+ * (docs/tmp/sb-93d-peak-revisit-2026-05-17.py). Win metric is now
+ * peak_ceiling_pct ≥ 50% (baseline 16.2%) rather than trail30/10 > 0.
+ * Per-elapsed-bucket lift over baseline (in pp):
+ *   ≤30 min:   +14.0    30–60:  +10.1    60–120: +6.5
+ *   120–180:    +2.1    180–240: +0.9
+ *   240–300:   -3.3     300–360: -7.4     360+: -10.8
+ * AM_open straddles ≤30/30-60/60-120 → mean lift ~+10 → +6.
+ * MID straddles 60-120/120-180 → mean lift ~+4 → +3.
+ * PM straddles 240-300/300-360 → mean lift ~-5 → -4.
+ * LATE is 360+ → lift -10.8 → -5. */
 export type SilentBoomTod = 'AM_open' | 'MID' | 'LUNCH' | 'PM' | 'LATE';
 
 const TOD_WEIGHTS: Readonly<Record<SilentBoomTod, number>> = {
-  AM_open: 5, // 08:30–10:00 → 26.3% high-peak, lift 1.65×
-  MID: 1, // 10:00–12:00 → 17.3%, lift 1.09×
-  LUNCH: 0, // 12:00–13:00 → 15.7%, lift 0.99×
-  PM: -3, // 13:00–15:00 → 7.9%, lift 0.50×
-  LATE: -3, // 15:00+      → 8.1%, lift 0.51×
+  AM_open: 6, // 08:30–10:00 → mean lift +10pp on peak-≥50% metric
+  MID: 3, //    10:00–12:00 → mean lift +4pp
+  LUNCH: 0, //  12:00–13:00 → ~baseline
+  PM: -4, //    13:00–15:00 → mean lift -5pp
+  LATE: -5, //  15:00+      → lift -11pp (n=8,525)
 } as const;
 
 /** Ask% — modest segmenter; lower ask% (0.70–0.85) actually beats
@@ -101,20 +113,67 @@ const ASK_PCT_HIGH_PENALTY = -1;
 
 /** ask_pct = 1.0 exactly — structural-illiquidity floor. Set heavy
  * enough that any otherwise-perfect score lands below the tier2 floor
- * of 8: max positive components sum to +33 (10+5+5+5+5+2+1), so −30
- * caps any saturated-ask fire at +3 → tier3. Empirical basis (full
- * 15k-fire sample, scripts/analyze_silent_boom_vol_oi.py 2026-05-12):
- * ask=1.0 fires win > 0% at 77.0% vs ≥99% in every other ask band;
- * the cliff replicates inside every score_tier. Spec:
+ * of 8: max positive components after 2026-05-17 retune sum to +35
+ * (10+5+5+5+6+2+1+1 — last 1 is Friday × CALL bonus), so −30 caps any
+ * saturated-ask fire at +3 → tier3. Empirical basis (full 15k-fire
+ * sample, scripts/analyze_silent_boom_vol_oi.py 2026-05-12): ask=1.0
+ * fires win > 0% at 77.0% vs ≥99% in every other ask band; the cliff
+ * replicates inside every score_tier. Spec:
  * docs/superpowers/specs/silent-boom-ask-100-demote-2026-05-12.md */
 const ASK_PCT_SATURATED_PENALTY = -30;
 
 /** Option type — small but consistent C edge (1.06× vs 0.93×). */
 const CALL_BONUS = 1;
 
+/** Day-of-week × option_type bonus. Retuned 2026-05-17 against the
+ * 93-day peak dataset (n=63,846; baseline peak ≥50% = 16.2%). Three
+ * cells deviate enough from baseline to score:
+ *   Friday × PUT  → 19.4% (lift +3.2pp, n=7,166)  → +2
+ *   Friday × CALL → 17.8% (lift +1.6pp, n=8,565)  → +1
+ *   Monday × PUT  → 12.4% (lift -3.8pp, n=5,011)  → -2
+ * Other combos sit within ±1.7pp of baseline and aren't scored to
+ * avoid over-fitting. Friday/Monday weekend-anchor edges are
+ * intuitive: Friday PMs pin into theta decay (puts capture pin-risk
+ * directional moves); Monday weekend-gap-fade puts get crushed by
+ * Sunday-night cold opens.
+ *
+ * Spec: not yet written — surgical retune on top of the original
+ * scoring spec docs/superpowers/specs/silent-boom-scoring-2026-05-08.md
+ */
+const DOW_TYPE_BONUS: ReadonlyArray<{
+  /** 0=Sun, 1=Mon, …, 5=Fri, 6=Sat (matches Date#getUTCDay output
+   * when the input string is parsed as midnight UTC). */
+  readonly dow: number;
+  readonly optionType: 'C' | 'P';
+  readonly points: number;
+}> = [
+  { dow: 5, optionType: 'P', points: 2 }, //   Friday × PUT
+  { dow: 5, optionType: 'C', points: 1 }, //   Friday × CALL
+  { dow: 1, optionType: 'P', points: -2 }, //  Monday × PUT
+] as const;
+
 /**
- * Tier thresholds. Calibrated against the 14,100-row historical
- * sample (2026-04-13 → 2026-05-07):
+ * Look up the DOW × option_type bonus for a trading-day date string
+ * ('YYYY-MM-DD'). The string is parsed as midnight UTC, which makes
+ * `getUTCDay()` return the day-of-week of the date itself (no
+ * timezone math needed — for any US-market-hours alert ET and CT
+ * always agree on the calendar day). Returns 0 for unscored
+ * combinations.
+ */
+export function silentBoomDowTypeBonus(
+  tradingDay: string,
+  optionType: 'C' | 'P',
+): number {
+  const dow = new Date(`${tradingDay}T00:00:00Z`).getUTCDay();
+  for (const row of DOW_TYPE_BONUS) {
+    if (row.dow === dow && row.optionType === optionType) return row.points;
+  }
+  return 0;
+}
+
+/**
+ * Tier thresholds. Originally calibrated against the 14,100-row
+ * historical sample (2026-04-13 → 2026-05-07):
  *
  *   tier1 (score ≥ 21): 5.1% of fires, 55.7% high-peak, lift 3.50×,
  *                       mean peak +186.3%
@@ -123,10 +182,19 @@ const CALL_BONUS = 1;
  *   tier3 (score <  8): 76.2% of fires,  8.1% high-peak, lift 0.51×,
  *                       mean peak  +17.6%
  *
- * Scoring range observed: −21 to +33; mean 0.0; p95 21; p99 27.
- * The empirical calibration lives in scripts/silent_boom_feature_audit.py
- * (Phase 0). A score of +21 typically requires DTE ≤ 3 + AM_open
+ * Old scoring range: −21 to +33; mean 0.0; p95 21; p99 27. The
+ * empirical calibration lives in scripts/silent_boom_feature_audit.py
+ * (Phase 0). A score of +21 typically required DTE ≤ 3 + AM_open
  * + entry < $0.50 + a moderate spike ratio.
+ *
+ * 2026-05-17 retune (against 93-day, 63,846-alert peak dataset):
+ * TOD weights bumped (AM_open +5→+6, MID +1→+3, PM −3→−4, LATE −3→−5)
+ * and DOW × type bonus added (Fri-PUT +2, Fri-CALL +1, Mon-PUT −2).
+ * New range: −25 to +35. Thresholds intentionally held at 21/8 so
+ * more 0DTE + AM_open alerts (which now hit +20+ before baseline/ask
+ * components) flow into tier1/tier2 — that's the explicit goal of
+ * the retune. Tier distribution will shift; retune is logged in
+ * docs/tmp/sb-93d-peak-revisit-2026-05-17.py.
  */
 export const SILENT_BOOM_TIER_THRESHOLDS = Object.freeze({
   tier1MinScore: 21,
@@ -159,6 +227,11 @@ export interface SilentBoomScoreInput {
   tod: SilentBoomTod;
   /** Option type. */
   optionType: 'C' | 'P';
+  /** Trading-day date 'YYYY-MM-DD' (CronContext.today is ET, which
+   * agrees with CT on the calendar day during US market hours). Used
+   * for the DOW × type bonus (Friday × PUT, Friday × CALL, Monday ×
+   * PUT). */
+  tradingDay: string;
 }
 
 /**
@@ -249,6 +322,9 @@ export function computeSilentBoomScore(args: SilentBoomScoreInput): number {
 
   // Call bonus
   if (args.optionType === 'C') score += CALL_BONUS;
+
+  // Day-of-week × option_type bonus (Fri-PUT/Fri-CALL/Mon-PUT)
+  score += silentBoomDowTypeBonus(args.tradingDay, args.optionType);
 
   return score;
 }

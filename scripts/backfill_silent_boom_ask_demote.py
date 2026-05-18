@@ -80,7 +80,7 @@ def fetch_rows(
         cur.execute(
             f"""
             SELECT id, dte, baseline_volume, spike_ratio, entry_price,
-                   ask_pct, option_type, bucket_ct, score, score_tier
+                   ask_pct, option_type, bucket_ct, date, score, score_tier
             FROM silent_boom_alerts
             WHERE {where}
             ORDER BY id
@@ -99,7 +99,8 @@ def recompute(
     for r in rows:
         (
             alert_id, dte, baseline_volume, spike_ratio, entry_price,
-            ask_pct, option_type, bucket_ct, prior_score, prior_tier,
+            ask_pct, option_type, bucket_ct, alert_date,
+            prior_score, prior_tier,
         ) = r
         tod = silent_boom_tod_from_minute_ct(ct_minute_of_day(bucket_ct))
         score = compute_silent_boom_score(
@@ -110,6 +111,7 @@ def recompute(
             ask_pct=float(ask_pct),
             tod=tod,
             option_type=option_type,
+            trading_day=alert_date.isoformat(),
         )
         tier = silent_boom_tier(score)
         if prior_score == score and prior_tier == tier:
