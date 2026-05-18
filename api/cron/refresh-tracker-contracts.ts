@@ -7,8 +7,11 @@
  *   1. Auto-expire any row whose expiry is in the past (status='expired',
  *      closed_at=NOW(), closed_price=last known tick or entry_price fallback).
  *   2. Fetch spot for each unique ticker via UW `/stock/{ticker}/stock-state`.
- *   3. Fetch the latest option contract snapshot via UW
- *      `/option-contract/{occ_symbol}` (best-effort per row).
+ *   3. Fetch latest option contract snapshots via UW
+ *      `/stock/{ticker}/option-contracts?option_symbol[]=...` — one call per
+ *      ticker, filtered to that ticker's tracked OCC symbols. (The previous
+ *      `/option-contract/{occ_symbol}` path returns 404; this endpoint
+ *      replaces it, see SENTRY-EMERALD-DESERT-8T.)
  *   4. Insert a fresh row into `tracker_contract_ticks` (batched 500/insert).
  *   5. Evaluate threshold alerts:
  *        - up_pct  / down_pct (% return vs entry)
@@ -78,10 +81,17 @@ interface UwStockState {
 }
 
 interface UwOptionContract {
+  // Identifier we match against the tracker's OCC symbol. UW returns
+  // the un-padded ISO form (e.g. "NVDA260522P00225000"); we normalize
+  // both sides before lookup.
+  option_symbol?: string;
+  // `/stock/{ticker}/option-contracts` returns `last_price`, `nbbo_bid`,
+  // `nbbo_ask`, `volume`, `open_interest`. We also accept the shorter
+  // field names just in case the live envelope drifts from the spec.
   last_price?: UwNum;
   last?: UwNum;
-  // Some UW envelopes return nested structures — we read what's there
-  // and skip the row if no price-like field is available.
+  nbbo_bid?: UwNum;
+  nbbo_ask?: UwNum;
   bid?: UwNum;
   ask?: UwNum;
   volume?: UwNum;
@@ -234,24 +244,51 @@ async function fetchStockState(
   );
 }
 
-async function fetchOptionContract(
+/**
+ * OCC symbols come from the DB space-padded (`'NVDA  260522P00225000'`).
+ * UW's response uses the un-padded ISO form. Normalize before comparing.
+ */
+function normalizeOcc(symbol: string): string {
+  return symbol.replace(/\s+/g, '').toUpperCase();
+}
+
+/**
+ * Fetch the latest option-contract snapshots for one ticker, scoped to
+ * the OCC symbols the tracker holds. One UW call replaces N per-contract
+ * calls and uses an endpoint that actually exists (see
+ * SENTRY-EMERALD-DESERT-8T for the previous 404 path).
+ *
+ * Returns a Map keyed by the normalized OCC symbol so callers can look
+ * up each tracked contract regardless of whether the DB row was
+ * space-padded.
+ */
+async function fetchOptionContractsForTicker(
   apiKey: string,
-  occSymbol: string,
-): Promise<UwOptionContract | null> {
-  // Trim space-padded OCC symbols (e.g. "NVDA  260522P00225000") before
-  // URL-encoding so the path stays canonical.
-  const sym = occSymbol.trim();
+  ticker: string,
+  occSymbols: readonly string[],
+): Promise<Map<string, UwOptionContract>> {
+  if (occSymbols.length === 0) return new Map();
+  // option_symbol[] is a PHP/Rails-style array param. URL-encode the
+  // brackets so they survive both the wrapper's URL parser and any
+  // intermediate proxies.
+  const qs = occSymbols
+    .map(
+      (s) =>
+        `option_symbol%5B%5D=${encodeURIComponent(normalizeOcc(s))}`,
+    )
+    .join('&');
   const rows = await uwFetch<UwOptionContract>(
     apiKey,
-    `/option-contract/${encodeURIComponent(sym)}`,
-    (body) => {
-      const data = (body as { data?: unknown }).data;
-      if (Array.isArray(data)) return data as UwOptionContract[];
-      if (data && typeof data === 'object') return [data as UwOptionContract];
-      return [];
-    },
+    `/stock/${encodeURIComponent(ticker)}/option-contracts?${qs}`,
   );
-  return rows[0] ?? null;
+
+  const out = new Map<string, UwOptionContract>();
+  for (const row of rows) {
+    if (row?.option_symbol) {
+      out.set(normalizeOcc(row.option_symbol), row);
+    }
+  }
+  return out;
 }
 
 // ── Auto-expiry ────────────────────────────────────────────────────
@@ -523,57 +560,89 @@ async function fetchContractTicks(
   if (contracts.length === 0) return [];
   const fetchedAt = new Date().toISOString();
 
+  // Group contracts by ticker so we can issue one UW call per ticker
+  // (`/stock/{ticker}/option-contracts?option_symbol[]=…`) instead of
+  // one per contract. Order is preserved so the per-ticker Sentry tag
+  // on failure remains accurate.
+  const byTicker = new Map<string, NormalizedContract[]>();
+  for (const c of contracts) {
+    const bucket = byTicker.get(c.ticker);
+    if (bucket) {
+      bucket.push(c);
+    } else {
+      byTicker.set(c.ticker, [c]);
+    }
+  }
+
+  const tickers = Array.from(byTicker.keys());
   const settled = await Promise.allSettled(
-    contracts.map((c) =>
-      withRetry(() => fetchOptionContract(apiKey, c.occ_symbol)),
+    tickers.map((t) =>
+      withRetry(() =>
+        fetchOptionContractsForTicker(
+          apiKey,
+          t,
+          byTicker.get(t)!.map((c) => c.occ_symbol),
+        ),
+      ),
     ),
   );
 
   const out: FetchedTick[] = [];
   settled.forEach((res, idx) => {
-    const contract = contracts[idx]!;
+    const ticker = tickers[idx]!;
+    const bucket = byTicker.get(ticker)!;
+
     if (res.status !== 'fulfilled') {
+      // The whole ticker batch failed — capture one Sentry event per
+      // contract in the batch so per-contract triage tags survive.
       const err = res.reason;
-      log.warn(
-        { err, contract_id: contract.id, occ_symbol: contract.occ_symbol },
-        'tracker contract fetch failed',
-      );
-      Sentry.captureException(err, {
-        tags: {
-          cron: 'refresh-tracker-contracts',
-          contract_id: String(contract.id),
-          occ_symbol: contract.occ_symbol,
-          ticker: contract.ticker,
-        },
-      });
+      for (const contract of bucket) {
+        log.warn(
+          { err, contract_id: contract.id, occ_symbol: contract.occ_symbol },
+          'tracker contract fetch failed',
+        );
+        Sentry.captureException(err, {
+          tags: {
+            cron: 'refresh-tracker-contracts',
+            contract_id: String(contract.id),
+            occ_symbol: contract.occ_symbol,
+            ticker: contract.ticker,
+          },
+        });
+      }
       return;
     }
-    const data = res.value;
-    if (!data) {
-      // Empty UW envelope (e.g. contract not found / expired). Skip
-      // silently — next cron run retries.
-      return;
+
+    const lookup = res.value;
+    for (const contract of bucket) {
+      const data = lookup.get(normalizeOcc(contract.occ_symbol));
+      if (!data) {
+        // Contract not present in UW's response (delisted, mid-roll, or
+        // simply not in this minute's chain snapshot). Skip silently —
+        // next cron run retries.
+        continue;
+      }
+      // Prefer per-contract underlying if UW returned one; fall back to
+      // the per-ticker spot snapshot so spot-level alerts still trigger.
+      const contractUnderlying = parseNum(data.underlying_price);
+      const tickerSpot = spotMap.get(contract.ticker) ?? null;
+      const underlying = contractUnderlying ?? tickerSpot;
+
+      const last = parseNum(data.last_price) ?? parseNum(data.last);
+
+      const tick: ContractTick = {
+        contract_id: contract.id,
+        fetched_at: fetchedAt,
+        last,
+        bid: parseNum(data.nbbo_bid) ?? parseNum(data.bid),
+        ask: parseNum(data.nbbo_ask) ?? parseNum(data.ask),
+        volume: asInt(data.volume),
+        open_int:
+          asInt(data.open_interest) ?? asInt(data.open_int) ?? asInt(data.oi),
+        underlying,
+      };
+      out.push({ contract, tick });
     }
-    // Prefer per-contract underlying if UW returned one; fall back to
-    // the per-ticker spot snapshot so spot-level alerts still trigger.
-    const contractUnderlying = parseNum(data.underlying_price);
-    const tickerSpot = spotMap.get(contract.ticker) ?? null;
-    const underlying = contractUnderlying ?? tickerSpot;
-
-    const last = parseNum(data.last_price) ?? parseNum(data.last);
-
-    const tick: ContractTick = {
-      contract_id: contract.id,
-      fetched_at: fetchedAt,
-      last,
-      bid: parseNum(data.bid),
-      ask: parseNum(data.ask),
-      volume: asInt(data.volume),
-      open_int:
-        asInt(data.open_interest) ?? asInt(data.open_int) ?? asInt(data.oi),
-      underlying,
-    };
-    out.push({ contract, tick });
   });
 
   return out;

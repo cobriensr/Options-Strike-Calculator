@@ -149,9 +149,14 @@ function row(opts: RowOpts): Record<string, unknown> {
 /**
  * Queue a programmed sequence of `uwFetch` responses. The handler issues:
  *   - one call per unique ticker  (stock-state)
- *   - one call per live contract  (option-contract)
+ *   - one call per unique ticker  (/stock/{ticker}/option-contracts —
+ *     batched across all OCC symbols held for that ticker)
  * in that order, both via Promise.allSettled. Each entry of `seq` is
- * either an object (resolved value) or a thrown Error (rejected).
+ * either an array (resolved value) or a thrown Error (rejected).
+ *
+ * Option-contract responses use the live UW shape:
+ *   [{ option_symbol, last_price, nbbo_bid, nbbo_ask, volume,
+ *      open_interest }, …]
  *
  * uwFetch is mocked to always return an array (since the extract
  * callback shape is exercised by the production extract function — we
@@ -167,6 +172,34 @@ function programUwFetch(seq: FetchEntry[]): void {
       mockUwFetch.mockResolvedValueOnce(entry);
     }
   }
+}
+
+/**
+ * Build an option-contract response row in the live UW shape. Helper
+ * keeps the test fixtures readable when only a few fields matter.
+ *
+ * `occSymbol` is normalized (space-stripped, uppercase) to match the
+ * `option_symbol` field UW returns and the lookup key the handler
+ * uses internally.
+ */
+function contractRow(
+  occSymbol: string,
+  fields: {
+    last: number;
+    bid: number;
+    ask: number;
+    volume: number;
+    openInterest: number;
+  },
+): Record<string, unknown> {
+  return {
+    option_symbol: occSymbol.replace(/\s+/g, '').toUpperCase(),
+    last_price: fields.last,
+    nbbo_bid: fields.bid,
+    nbbo_ask: fields.ask,
+    volume: fields.volume,
+    open_interest: fields.openInterest,
+  };
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
@@ -252,21 +285,29 @@ describe('refresh-tracker-contracts handler', () => {
     mockSql.mockResolvedValueOnce(rows);
     mockSql.mockResolvedValueOnce([]); // tick insert
 
-    // UW sequence: 2 stock-state (NVDA, AMD) then 2 option-contract.
-    // Last prices held near entry → no alerts fire.
+    // UW sequence: 2 stock-state (NVDA, AMD) then 2 ticker-batched
+    // option-contracts calls. Last prices held near entry → no alerts.
     programUwFetch([
       [{ close: 142.5 }], // NVDA stock-state
       [{ close: 158.4 }], // AMD stock-state
       [
-        {
-          last_price: 4.4,
+        contractRow('NVDA  260522P00225000', {
+          last: 4.4,
           bid: 4.3,
           ask: 4.5,
           volume: 100,
-          open_interest: 800,
-        },
-      ], // NVDA contract
-      [{ last_price: 2.1, bid: 2.0, ask: 2.2, volume: 50, open_interest: 400 }], // AMD contract
+          openInterest: 800,
+        }),
+      ],
+      [
+        contractRow('AMD   260605C00150000', {
+          last: 2.1,
+          bid: 2.0,
+          ask: 2.2,
+          volume: 50,
+          openInterest: 400,
+        }),
+      ],
     ]);
 
     const res = mockResponse();
@@ -315,13 +356,13 @@ describe('refresh-tracker-contracts handler', () => {
     programUwFetch([
       [{ close: 145.0 }], // NVDA spot
       [
-        {
-          last_price: 6.54,
+        contractRow('NVDA  260522P00225000', {
+          last: 6.54,
           bid: 6.4,
           ask: 6.7,
           volume: 200,
-          open_interest: 900,
-        },
+          openInterest: 900,
+        }),
       ],
     ]);
 
@@ -358,13 +399,13 @@ describe('refresh-tracker-contracts handler', () => {
     programUwFetch([
       [{ close: 145.0 }],
       [
-        {
-          last_price: 6.54,
+        contractRow('NVDA  260522P00225000', {
+          last: 6.54,
           bid: 6.4,
           ask: 6.7,
           volume: 200,
-          open_interest: 900,
-        },
+          openInterest: 900,
+        }),
       ],
     ]);
 
@@ -395,7 +436,15 @@ describe('refresh-tracker-contracts handler', () => {
 
     programUwFetch([
       [{ close: 596.2 }], // SPY breaches 595
-      [{ last_price: 1.6, bid: 1.5, ask: 1.7, volume: 1, open_interest: 50 }],
+      [
+        contractRow('SPY   260522C00600000', {
+          last: 1.6,
+          bid: 1.5,
+          ask: 1.7,
+          volume: 1,
+          openInterest: 50,
+        }),
+      ],
     ]);
 
     const res = mockResponse();
@@ -426,13 +475,13 @@ describe('refresh-tracker-contracts handler', () => {
     programUwFetch([
       [{ close: 198.0 }],
       [
-        {
-          last_price: 1.9,
+        contractRow('AAPL  260526C00200000', {
+          last: 1.9,
           bid: 1.85,
           ask: 1.95,
           volume: 5,
-          open_interest: 200,
-        },
+          openInterest: 200,
+        }),
       ],
     ]);
 
@@ -475,23 +524,33 @@ describe('refresh-tracker-contracts handler', () => {
     mockSql.mockResolvedValueOnce(rows);
     mockSql.mockResolvedValueOnce([]); // tick insert for 2 survivors
 
-    // 3 stock-state calls then 3 option-contract; middle option-contract
-    // rejects.
+    // 3 stock-state calls then 3 ticker-batched option-contracts calls
+    // (one per unique ticker). Each contract here is on its own ticker,
+    // so the AMD batch rejecting matches the contract-level failure
+    // assertion below.
     programUwFetch([
       [{ close: 142.5 }],
       [{ close: 158.4 }],
       [{ close: 275.0 }],
       [
-        {
-          last_price: 4.4,
+        contractRow('NVDA  260522P00225000', {
+          last: 4.4,
           bid: 4.3,
           ask: 4.5,
           volume: 100,
-          open_interest: 800,
-        },
+          openInterest: 800,
+        }),
       ],
       new Error('UW API 503: upstream down'),
-      [{ last_price: 3.1, bid: 3.0, ask: 3.2, volume: 60, open_interest: 300 }],
+      [
+        contractRow('TSLA  260605C00280000', {
+          last: 3.1,
+          bid: 3.0,
+          ask: 3.2,
+          volume: 60,
+          openInterest: 300,
+        }),
+      ],
     ]);
 
     const res = mockResponse();
@@ -544,11 +603,19 @@ describe('refresh-tracker-contracts handler', () => {
     mockSql.mockResolvedValueOnce([]); // UPDATE expired row → 1 update
     mockSql.mockResolvedValueOnce([]); // tick insert for surviving contract
 
-    // Only 1 stock-state + 1 option-contract are issued (the expired
-    // contract is skipped before any UW call).
+    // Only 1 stock-state + 1 option-contracts batch are issued (the
+    // expired contract is skipped before any UW call).
     programUwFetch([
       [{ close: 158.4 }], // AMD spot
-      [{ last_price: 2.1, bid: 2.0, ask: 2.2, volume: 30, open_interest: 200 }],
+      [
+        contractRow('AMD   260605C00150000', {
+          last: 2.1,
+          bid: 2.0,
+          ask: 2.2,
+          volume: 30,
+          openInterest: 200,
+        }),
+      ],
     ]);
 
     const res = mockResponse();
@@ -559,6 +626,73 @@ describe('refresh-tracker-contracts handler', () => {
     expect(body.expired).toBe(1);
     expect(body.processed).toBe(1);
     // UW called only for the live contract: 1 stock-state + 1 contract.
+    expect(mockUwFetch).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Multiple contracts per ticker → one batched UW call ──────
+
+  it('batches multiple contracts on the same ticker into one UW option-contracts call', async () => {
+    // Two NVDA contracts share a ticker — the handler must issue only
+    // one `/stock/NVDA/option-contracts?option_symbol[]=…&option_symbol[]=…`
+    // call and look up each row in the returned Map by OCC.
+    const rows = [
+      row({
+        id: 41,
+        occ_symbol: 'NVDA  260522P00225000',
+        ticker: 'NVDA',
+        expiry: '2026-05-22',
+        entry_price: 4.3,
+      }),
+      row({
+        id: 42,
+        occ_symbol: 'NVDA  260605C00150000',
+        ticker: 'NVDA',
+        expiry: '2026-06-05',
+        entry_price: 2.5,
+      }),
+    ];
+
+    mockSql.mockResolvedValueOnce(rows); // SELECT active
+    mockSql.mockResolvedValueOnce([]); // tick insert (1 batched INSERT)
+
+    // 1 stock-state (NVDA) + 1 option-contracts (NVDA, two OCCs in
+    // the response) = 2 UW calls total — proves the batching.
+    programUwFetch([
+      [{ close: 142.5 }],
+      [
+        contractRow('NVDA  260522P00225000', {
+          last: 4.4,
+          bid: 4.3,
+          ask: 4.5,
+          volume: 100,
+          openInterest: 800,
+        }),
+        contractRow('NVDA  260605C00150000', {
+          last: 2.6,
+          bid: 2.5,
+          ask: 2.7,
+          volume: 50,
+          openInterest: 600,
+        }),
+      ],
+    ]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      processed: number;
+      ticks_inserted: number;
+      alerts_fired: number;
+    };
+    expect(body).toMatchObject({
+      processed: 2,
+      ticks_inserted: 2,
+      alerts_fired: 0,
+    });
+    // Only 2 UW calls — the batching is what fixed the per-contract
+    // 429 risk that originally motivated the endpoint swap.
     expect(mockUwFetch).toHaveBeenCalledTimes(2);
   });
 
