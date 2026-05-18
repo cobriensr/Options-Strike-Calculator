@@ -118,6 +118,42 @@ describe('AddContractForm', () => {
     expect(screen.getByLabelText(/Ticker/i)).toHaveValue('NVDA');
   });
 
+  it('pasting a UW flow URL with chain=<OCC> auto-fills all four fields', async () => {
+    setup();
+    const pasteField = screen.getByLabelText(
+      /Paste OCC symbol or Unusual Whales/,
+    );
+    fireEvent.change(pasteField, {
+      target: {
+        value:
+          'https://unusualwhales.com/flow/option_chains?chain=NFLX260522P00091000',
+      },
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Parsed: NFLX 2026-05-22/)).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText(/Ticker/i)).toHaveValue('NFLX');
+    expect(screen.getByLabelText(/Expiry/i)).toHaveValue('2026-05-22');
+    expect(screen.getByLabelText(/Strike/i)).toHaveValue(91);
+  });
+
+  it('pasting a UW flow URL with ticker-only chain prefills just the Ticker field', async () => {
+    setup();
+    const pasteField = screen.getByLabelText(
+      /Paste OCC symbol or Unusual Whales/,
+    );
+    fireEvent.change(pasteField, {
+      target: { value: 'https://unusualwhales.com/flow/option_chains?chain=NFLX' },
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/NFLX detected/)).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText(/Ticker/i)).toHaveValue('NFLX');
+    // Other fields stay empty — user still has to fill them in.
+    expect(screen.getByLabelText(/Expiry/i)).toHaveValue('');
+    expect(screen.getByLabelText(/Strike/i)).toHaveValue(null);
+  });
+
   it('paste field shows hint when input is non-empty but unparseable, leaves form alone', () => {
     setup();
     const pasteField = screen.getByLabelText(

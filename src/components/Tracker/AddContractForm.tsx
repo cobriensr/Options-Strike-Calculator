@@ -31,7 +31,10 @@ import type {
   OptionSide,
 } from './types.js';
 import { getErrorMessage } from '../../utils/error.js';
-import { tryParseOccChain } from '../../utils/uw-occ-parse.js';
+import {
+  tryParseOccChain,
+  tryParseUwTicker,
+} from '../../utils/uw-occ-parse.js';
 
 type Mode = 'structured' | 'free-text';
 
@@ -169,6 +172,10 @@ export const AddContractForm = memo(function AddContractForm({
   // re-running the regex on every keystroke (cheap, but stable
   // identity also lets future memoized children opt in).
   const pasteResult = useMemo(() => tryParseOccChain(pasteInput), [pasteInput]);
+  const pasteTickerOnly = useMemo(
+    () => (pasteResult ? null : tryParseUwTicker(pasteInput)),
+    [pasteInput, pasteResult],
+  );
 
   const handlePasteChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -187,6 +194,14 @@ export const AddContractForm = memo(function AddContractForm({
         strike: String(parsed.strike),
         side: parsed.side,
       }));
+      return;
+    }
+    // Softer fallback: UW flow URLs without an OCC body (e.g.
+    // `?chain=NFLX`) at least carry a ticker. Prefill that one
+    // field and let the user fill in expiry/strike/side manually.
+    const ticker = tryParseUwTicker(value);
+    if (ticker) {
+      setStructured((s) => ({ ...s, ticker }));
     }
   }, []);
 
@@ -318,12 +333,19 @@ export const AddContractForm = memo(function AddContractForm({
                   {pasteResult.side}
                 </span>
               )}
-              {pasteInput.trim().length > 0 && !pasteResult && (
-                <span className="text-tertiary font-sans text-[11px] italic">
-                  Doesn't look like an OCC body or UW URL — fields below
-                  unchanged.
+              {!pasteResult && pasteTickerOnly && (
+                <span className="text-success font-sans text-[11px]">
+                  ✓ {pasteTickerOnly} detected — complete the form below.
                 </span>
               )}
+              {pasteInput.trim().length > 0 &&
+                !pasteResult &&
+                !pasteTickerOnly && (
+                  <span className="text-tertiary font-sans text-[11px] italic">
+                    Doesn't look like an OCC body or UW URL — fields below
+                    unchanged.
+                  </span>
+                )}
             </label>
             <div className="grid grid-cols-2 gap-2">
               <label className="flex flex-col gap-1">
