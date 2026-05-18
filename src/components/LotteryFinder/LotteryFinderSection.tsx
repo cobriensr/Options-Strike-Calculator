@@ -635,14 +635,15 @@ export function LotteryFinderSection({
     ? fires.filter((f) => (f.roundTripScoreDeduct ?? 0) < 0).length
     : 0;
 
-  // Top tickers from the dedicated all-day counts endpoint —
-  // independent of pagination + the minute scrubber so tickers that
-  // fired off the current page slice still appear in the strip.
+  // All tickers with at least one fire today, from the dedicated
+  // all-day counts endpoint — independent of pagination + the minute
+  // scrubber so tickers that fired off the current page slice still
+  // appear in the strip. Previously capped to 12 (hid the long tail of
+  // low-count tickers like XOM/MSFT/WDC/UNH on busy days); now uncapped
+  // because the API already sorts count desc and `flex flex-wrap`
+  // handles the row growing vertically. Mirrors the Silent Boom fix.
   const topTickers = useMemo(
-    () =>
-      tickerCounts.tickers
-        .slice(0, 12)
-        .map((t) => [t.ticker, t.count] as const),
+    () => tickerCounts.tickers.map((t) => [t.ticker, t.count] as const),
     [tickerCounts.tickers],
   );
 
