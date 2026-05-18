@@ -742,15 +742,16 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       ? alerts.filter((a) => (a.roundTripScoreDeduct ?? 0) < 0).length
       : 0;
 
-  // Top tickers across the WHOLE day from the dedicated counts
-  // endpoint — independent of pagination. The list was previously
-  // built from the 50-item page slice, which hid tickers that fired
-  // on later pages.
+  // All tickers with at least one alert today, from the dedicated
+  // counts endpoint — independent of pagination. The list was
+  // previously built from the 50-item page slice (hid tickers that
+  // fired on later pages) and then capped to 12 (hid the long tail
+  // of low-count tickers entirely). Now uncapped: the API already
+  // sorts count desc, and `flex flex-wrap` lets the chip strip grow
+  // vertically on heavy days. Lets the user filter to TLT/CRWV/AMD-style
+  // singleton-alert tickers without typing.
   const topTickers = useMemo(
-    () =>
-      tickerCounts.tickers
-        .slice(0, 12)
-        .map((t) => [t.ticker, t.count] as const),
+    () => tickerCounts.tickers.map((t) => [t.ticker, t.count] as const),
     [tickerCounts.tickers],
   );
 
