@@ -1,0 +1,86 @@
+/Users/charlesobrien/Documents/Workspace/strike-calculator/docs/tmp/sb-93d-pass-b-peak-2026-05-17.py:54: UserWarning: pandas only supports SQLAlchemy connectable (engine/connection) or database string URI or sqlite3 DBAPI2 connection. Other DBAPI2 objects are not tested. Please consider using SQLAlchemy.
+  return pd.read_sql(
+Loading SB alerts with peak data...
+  63,846 alerts across 93 dates
+  Baseline peak ≥ 25%: 29.8%
+  Baseline peak ≥ 50%: 16.2%
+  Baseline peak ≥ 100%: 7.6%
+
+Scanning 93 parquet days...
+  [5/93] 2026-01-08  cumulative=2,956
+  [10/93] 2026-01-15  cumulative=6,283
+  [15/93] 2026-01-23  cumulative=10,141
+  [20/93] 2026-01-30  cumulative=13,824
+  [25/93] 2026-02-06  cumulative=18,243
+  [30/93] 2026-02-13  cumulative=21,684
+  [35/93] 2026-02-23  cumulative=24,968
+  [40/93] 2026-03-02  cumulative=28,645
+  [45/93] 2026-03-09  cumulative=32,461
+  [50/93] 2026-03-16  cumulative=35,672
+  [55/93] 2026-03-23  cumulative=39,313
+  [60/93] 2026-03-30  cumulative=42,852
+  [65/93] 2026-04-07  cumulative=46,131
+  [70/93] 2026-04-14  cumulative=49,900
+  [75/93] 2026-04-21  cumulative=54,035
+  [80/93] 2026-04-28  cumulative=57,385
+  [85/93] 2026-05-05  cumulative=60,933
+  [90/93] 2026-05-12  cumulative=63,404
+  [93/93] 2026-05-15  cumulative=63,846
+
+Merged: 63,846 rows with features + peak outcomes
+
+================================================================
+H2 — Block arrival cadence (first-60s share of bucket size)
+================================================================
+
+[block_cadence]  baselines: ≥25%=28.0%  ≥50%=15.5%  ≥100%=7.7%  (n=7,368)
+            cadence_bucket    n  peak_ge_25_pct  peak_ge_50_pct  peak_ge_100_pct  median_peak  lift50_pp
+distributed (<25% in min1) 3946            32.5            18.7              9.3         11.9        3.2
+         moderate (25-50%) 1271            24.7            13.9              7.4          8.5       -1.6
+     concentrated (50-75%)  586            25.8            14.8              9.0          9.5       -0.7
+       single-block (>75%) 1565            20.1             9.1              3.5          5.3       -6.4
+
+================================================================
+H4 — Was this the chain's first trade of the day?
+================================================================
+
+[first_trade_of_session]  baselines: ≥25%=21.9%  ≥50%=11.5%  ≥100%=5.5%  (n=13,670)
+ is_first_trade     n  peak_ge_25_pct  peak_ge_50_pct  peak_ge_100_pct  median_peak  lift50_pp
+          False 12420            22.0            11.7              5.7          6.2        0.2
+           True  1250            20.6             9.2              3.6          5.0       -2.3
+
+================================================================
+H5 — NBBO spread evolution (pre vs in-bucket)
+================================================================
+
+[spread_widened (>+20%)]  baselines: ≥25%=26.2%  ≥50%=14.2%  ≥100%=7.0%  (n=9,110)
+ spread_widened    n  peak_ge_25_pct  peak_ge_50_pct  peak_ge_100_pct  median_peak  lift50_pp
+          False 6998            27.2            15.0              7.6          9.1        0.8
+           True 2112            22.9            11.4              5.2          7.6       -2.8
+
+By in-bucket spread quartile (peak ≥50%):
+                    n  peak_ge_50_pct  spread_lo  spread_hi
+spread_quartile                                            
+0                2278             7.9    -0.5329     0.0181
+1                2277            12.6     0.0181     0.0441
+2                2277            14.5     0.0442     0.1122
+3                2278            21.7     0.1122     2.0000
+
+================================================================
+H6 — Underlying drift confirmation (T+15min in predicted dir)
+================================================================
+
+[underlying_15m_confirm]  baselines: ≥25%=24.5%  ≥50%=13.2%  ≥100%=6.4%  (n=10,808)
+ confirmed    n  peak_ge_25_pct  peak_ge_50_pct  peak_ge_100_pct  median_peak  lift50_pp
+     False 5398            21.2            11.0              5.1          6.3       -2.2
+      True 5410            27.8            15.3              7.7          9.3        2.1
+
+By pct_move magnitude (signed, in predicted direction):
+
+[signed_move_bucket]  baselines: ≥25%=24.5%  ≥50%=13.2%  ≥100%=6.4%  (n=10,808)
+  move_bucket    n  peak_ge_25_pct  peak_ge_50_pct  peak_ge_100_pct  median_peak  lift50_pp
+       <-0.5% 1393            17.3             8.4              3.4          5.5       -4.8
+-0.5 to -0.1% 2443            21.5            11.3              5.5          6.3       -1.9
+         flat 3010            25.5            13.8              6.9          8.1        0.6
++0.1 to +0.5% 2449            28.9            16.7              8.5          9.5        3.5
+       >+0.5% 1513            27.3            13.8              6.1          9.7        0.6
