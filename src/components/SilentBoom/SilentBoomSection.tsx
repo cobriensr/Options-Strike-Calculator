@@ -335,7 +335,7 @@ interface SilentBoomSectionProps {
 const CHIP_BASE =
   'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors';
 const CHIP_INACTIVE =
-  'border-neutral-800 bg-neutral-900/60 text-neutral-400 hover:border-neutral-700 hover:text-neutral-100';
+  'border-neutral-700 bg-neutral-800/60 text-neutral-300 hover:border-neutral-600 hover:text-neutral-100';
 const CHIP_ACTIVE: Record<
   | 'sky'
   | 'rose'
@@ -362,7 +362,7 @@ const CHIP_ACTIVE: Record<
 };
 
 const SECTION_LABEL =
-  'text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase';
+  'text-[10px] font-semibold tracking-[0.08em] text-neutral-400 uppercase';
 const TOOLBAR_DIVIDER = 'mx-1 hidden h-4 w-px bg-neutral-800 sm:block';
 
 const todayCt = (): string => {
@@ -1013,7 +1013,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                       type="button"
                       onClick={() => step(-300_000)}
                       disabled={atMin}
-                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400`}
+                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:text-neutral-300`}
                       aria-label="Step back one 5-min bucket"
                       title="Step back one bucket (−5m)"
                     >
@@ -1045,7 +1045,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                       type="button"
                       onClick={() => step(300_000)}
                       disabled={atMax}
-                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400`}
+                      className={`${CHIP_BASE} ${CHIP_INACTIVE} disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:text-neutral-300`}
                       aria-label="Step forward one 5-min bucket"
                       title={
                         isToday && cur != null && cur >= effectiveHi
