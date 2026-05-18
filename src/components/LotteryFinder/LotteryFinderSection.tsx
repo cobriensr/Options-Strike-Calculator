@@ -41,6 +41,7 @@ const SORT_LS_KEY = 'lottery.sortMode';
 const CONVICTION_LS_KEY = 'lottery.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'lottery.hideLatePm';
 const HIDE_GATED_LS_KEY = 'lottery.hideGated';
+const HIDE_COUNTER_FLOW_LS_KEY = 'lottery.hideCounterFlow';
 const HIDE_ROUND_TRIPPED_LS_KEY = 'lottery.hideRoundTripped';
 const AGGRESSIVE_PREMIUM_LS_KEY = 'lottery.aggressivePremium';
 const MONEYNESS_LS_KEY = 'lottery.moneynessMode';
@@ -362,6 +363,10 @@ export function LotteryFinderSection({
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
   });
+  const [hideCounterFlow, setHideCounterFlow] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_COUNTER_FLOW_LS_KEY) === '1';
+  });
   // Phase 2D — "Hide round-tripped" — filters out fires where the
   // evaluate-round-trip cron applied a non-zero score deduct. Defaults
   // ON (Phase 3 default-on shipped post-2E soak — deducted alerts had
@@ -412,6 +417,14 @@ export function LotteryFinderSection({
       window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
     }
   }, [hideGated]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        HIDE_COUNTER_FLOW_LS_KEY,
+        hideCounterFlow ? '1' : '0',
+      );
+    }
+  }, [hideCounterFlow]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(
@@ -574,6 +587,17 @@ export function LotteryFinderSection({
       if (hideGated) {
         out = out.filter((f) => !f.directionGated);
       }
+      if (hideCounterFlow) {
+        out = out.filter((f) => {
+          const ncp = f.macro.tickerCumNcpAtFire;
+          const npp = f.macro.tickerCumNppAtFire;
+          if (ncp == null || npp == null) return true;
+          const delta = ncp - npp;
+          if (delta === 0) return true;
+          if (f.optionType === 'C') return delta > 0;
+          return delta < 0;
+        });
+      }
       if (hideRoundTripped) {
         out = out.filter((f) => (f.roundTripScoreDeduct ?? 0) >= 0);
       }
@@ -595,6 +619,7 @@ export function LotteryFinderSection({
     [
       hideLatePm,
       hideGated,
+      hideCounterFlow,
       hideRoundTripped,
       aggressivePremium,
       moneynessMode,
@@ -615,6 +640,16 @@ export function LotteryFinderSection({
     : 0;
   const hiddenGatedCount = hideGated
     ? fires.filter((f) => f.directionGated).length
+    : 0;
+  const hiddenCounterFlowCount = hideCounterFlow
+    ? fires.filter((f) => {
+        const ncp = f.macro.tickerCumNcpAtFire;
+        const npp = f.macro.tickerCumNppAtFire;
+        if (ncp == null || npp == null) return false;
+        const delta = ncp - npp;
+        if (delta === 0) return false;
+        return f.optionType === 'C' ? delta < 0 : delta > 0;
+      }).length
     : 0;
   const hiddenRoundTrippedCount = hideRoundTripped
     ? fires.filter((f) => (f.roundTripScoreDeduct ?? 0) < 0).length
@@ -1223,6 +1258,21 @@ export function LotteryFinderSection({
               )}
             </FilterChip>
             <FilterChip
+              active={hideCounterFlow}
+              activeColor="amber"
+              testId="lottery-hide-counter-flow-chip"
+              onClick={() => setHideCounterFlow(!hideCounterFlow)}
+              title="Hide counter-flow alerts — rows where the per-ticker net flow (cumNcpAtFire − cumNppAtFire) at fire time contradicts the option type. Calls hidden when NCP < NPP; puts hidden when NCP > NPP. Rows with no fire-time snapshot are never hidden. Client-side filter — does not affect score or tier."
+              ariaPressed={hideCounterFlow}
+            >
+              hide counter-flow
+              {hideCounterFlow && hiddenCounterFlowCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenCounterFlowCount}
+                </span>
+              )}
+            </FilterChip>
+            <FilterChip
               active={hideRoundTripped}
               activeColor="amber"
               testId="lottery-hide-round-tripped-chip"
@@ -1382,6 +1432,11 @@ export function LotteryFinderSection({
                 {hideGated && hiddenGatedCount > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     ({hiddenGatedCount} counter-trend hidden)
+                  </span>
+                )}
+                {hideCounterFlow && hiddenCounterFlowCount > 0 && (
+                  <span className="ml-2 text-amber-300/80">
+                    ({hiddenCounterFlowCount} counter-flow hidden)
                   </span>
                 )}
                 {hideRoundTripped && hiddenRoundTrippedCount > 0 && (

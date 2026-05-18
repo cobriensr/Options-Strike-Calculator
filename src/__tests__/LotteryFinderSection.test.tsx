@@ -783,3 +783,246 @@ describe("LotteryFinderSection: sortMode === 'peak' two-tier ordering", () => {
     ]);
   });
 });
+
+// ============================================================
+// HIDE COUNTER-FLOW FILTER
+// ============================================================
+
+describe('LotteryFinderSection: hide-counter-flow filter', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('flips aria-pressed and persists to localStorage', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    const chip = screen.getByTestId('lottery-hide-counter-flow-chip');
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('lottery.hideCounterFlow')).toBe('1');
+  });
+
+  it('drops call fires when ticker NCP < NPP at fire (bearish flow)', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        optionType: 'C',
+        macro: {
+          mktTideNcp: null,
+          mktTideNpp: null,
+          mktTideDiff: null,
+          mktTideOtmDiff: null,
+          tickerCumNcpAtFire: 100,
+          tickerCumNppAtFire: 200,
+          spxFlowDiff: null,
+          spyEtfDiff: null,
+          qqqEtfDiff: null,
+          zeroDteDiff: null,
+          spxSpotGammaOi: null,
+          spxSpotGammaVol: null,
+          spxSpotCharmOi: null,
+          spxSpotVannaOi: null,
+          gexStrikeCallMinusPut: null,
+          gexStrikeCallAskMinusBid: null,
+          gexStrikePutAskMinusBid: null,
+          gexStrikeActualStrike: null,
+        },
+      }),
+      makeFire({
+        id: 2,
+        optionChainId: 'SPY260508C00500000',
+        underlyingSymbol: 'SPY',
+        optionType: 'C',
+        strike: 500,
+        macro: {
+          mktTideNcp: null,
+          mktTideNpp: null,
+          mktTideDiff: null,
+          mktTideOtmDiff: null,
+          tickerCumNcpAtFire: 300,
+          tickerCumNppAtFire: 100,
+          spxFlowDiff: null,
+          spyEtfDiff: null,
+          qqqEtfDiff: null,
+          zeroDteDiff: null,
+          spxSpotGammaOi: null,
+          spxSpotGammaVol: null,
+          spxSpotCharmOi: null,
+          spxSpotVannaOi: null,
+          gexStrikeCallMinusPut: null,
+          gexStrikeCallAskMinusBid: null,
+          gexStrikePutAskMinusBid: null,
+          gexStrikeActualStrike: null,
+        },
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: 2,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    // Both visible before toggling.
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-SPY260508C00500000'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('lottery-hide-counter-flow-chip'));
+
+    // AAPL call (NCP 100 < NPP 200 → bearish flow, counter-flow for call) hidden.
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+    // SPY call (NCP 300 > NPP 100 → bullish flow, aligned for call) kept.
+    expect(
+      screen.getByTestId('lottery-row-SPY260508C00500000'),
+    ).toBeInTheDocument();
+  });
+
+  it('drops put fires when ticker NCP > NPP at fire (bullish flow)', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'AAPL260508P00190000',
+        optionType: 'P',
+        strike: 190,
+        macro: {
+          mktTideNcp: null,
+          mktTideNpp: null,
+          mktTideDiff: null,
+          mktTideOtmDiff: null,
+          tickerCumNcpAtFire: 250,
+          tickerCumNppAtFire: 50,
+          spxFlowDiff: null,
+          spyEtfDiff: null,
+          qqqEtfDiff: null,
+          zeroDteDiff: null,
+          spxSpotGammaOi: null,
+          spxSpotGammaVol: null,
+          spxSpotCharmOi: null,
+          spxSpotVannaOi: null,
+          gexStrikeCallMinusPut: null,
+          gexStrikeCallAskMinusBid: null,
+          gexStrikePutAskMinusBid: null,
+          gexStrikeActualStrike: null,
+        },
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: 1,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508P00190000'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('lottery-hide-counter-flow-chip'));
+
+    // Put with NCP 250 > NPP 50 (bullish flow) is counter-flow → hidden.
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508P00190000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('NEVER drops fires with null fire-time snapshot', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        optionType: 'C',
+        // macro defaults from makeFire: tickerCumNcpAtFire: null, tickerCumNppAtFire: null
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: 1,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('lottery-hide-counter-flow-chip'));
+
+    // Null snapshot → no data to determine counter-flow → always kept.
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows hidden-count suffix when filter active and rows hidden', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        optionType: 'C',
+        macro: {
+          mktTideNcp: null,
+          mktTideNpp: null,
+          mktTideDiff: null,
+          mktTideOtmDiff: null,
+          tickerCumNcpAtFire: 50,
+          tickerCumNppAtFire: 200,
+          spxFlowDiff: null,
+          spyEtfDiff: null,
+          qqqEtfDiff: null,
+          zeroDteDiff: null,
+          spxSpotGammaOi: null,
+          spxSpotGammaVol: null,
+          spxSpotCharmOi: null,
+          spxSpotVannaOi: null,
+          gexStrikeCallMinusPut: null,
+          gexStrikeCallAskMinusBid: null,
+          gexStrikePutAskMinusBid: null,
+          gexStrikeActualStrike: null,
+        },
+      }),
+      makeFire({
+        id: 2,
+        optionChainId: 'SPY260508C00500000',
+        underlyingSymbol: 'SPY',
+        optionType: 'C',
+        strike: 500,
+        macro: {
+          mktTideNcp: null,
+          mktTideNpp: null,
+          mktTideDiff: null,
+          mktTideOtmDiff: null,
+          tickerCumNcpAtFire: 30,
+          tickerCumNppAtFire: 150,
+          spxFlowDiff: null,
+          spyEtfDiff: null,
+          qqqEtfDiff: null,
+          zeroDteDiff: null,
+          spxSpotGammaOi: null,
+          spxSpotGammaVol: null,
+          spxSpotCharmOi: null,
+          spxSpotVannaOi: null,
+          gexStrikeCallMinusPut: null,
+          gexStrikeCallAskMinusBid: null,
+          gexStrikePutAskMinusBid: null,
+          gexStrikeActualStrike: null,
+        },
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue({
+      ...defaultHookResult,
+      fires,
+      total: 2,
+    });
+
+    render(<LotteryFinderSection marketOpen={false} />);
+    const chip = screen.getByTestId('lottery-hide-counter-flow-chip');
+    fireEvent.click(chip);
+
+    // Both are counter-flow calls → chip should show −2 suffix.
+    expect(chip).toHaveTextContent('−2');
+  });
+});
