@@ -22,6 +22,7 @@
  * Environment: GEXBOT_API_KEY, CRON_SECRET
  */
 
+import { mapWithConcurrency } from '../_lib/uw-fetch.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -40,6 +41,21 @@ import { Sentry } from '../_lib/sentry.js';
 
 export const config = { maxDuration: 60 };
 
+/**
+ * Concurrency cap for the 128-way fetch fan-out. Matches the
+ * fetch-gexbot-fast cap (32) — before the cap, a single slow GEXBot
+ * minute produced 128 simultaneous TimeoutErrors (SENTRY-EMERALD-
+ * DESERT-8F, 144 events; SENTRY-EMERALD-DESERT-76, 19 events).
+ */
+const FETCH_CONCURRENCY = 32;
+
+/**
+ * Max Sentry events per tick. Beyond this we emit one summary
+ * captureMessage and drop the remaining stack traces — keeps
+ * triage signal during a GEXBot outage. Mirrors fetch-gexbot-fast.
+ */
+const SENTRY_CAPTURE_CAP = 10;
+
 export default withCronInstrumentation(
   'fetch-gexbot-strikes',
   async (ctx): Promise<CronResult> => {
@@ -54,33 +70,40 @@ export default withCronInstrumentation(
         STATE_CATEGORIES.map((category) => ({ ticker, category })),
       );
 
-    // Wrap each fetch so the rejection carries task context for
-    // Sentry tagging — Promise.allSettled only exposes `reason`.
-    const results = await Promise.all(
-      tasks.map(async ({ ticker, category }) => {
+    // Concurrency-capped (FETCH_CONCURRENCY) to avoid a 128-way burst
+    // on every cron tick. Wrap each fetch so the rejection carries
+    // task context for Sentry tagging.
+    const results = await mapWithConcurrency(
+      tasks,
+      FETCH_CONCURRENCY,
+      async ({ ticker, category }) => {
         try {
           const body = await fetchStatePerStrike(apiKey, ticker, category);
           return { ok: true as const, ticker, category, body };
         } catch (err) {
           return { ok: false as const, ticker, category, err };
         }
-      }),
+      },
     );
 
     const captures: CaptureRow[] = [];
     let failed = 0;
+    let sentryCaptured = 0;
 
     for (const result of results) {
       if (!result.ok) {
         failed += 1;
-        Sentry.captureException(result.err, {
-          tags: {
-            'gexbot.cron': 'strikes',
-            'gexbot.ticker': result.ticker,
-            'gexbot.endpoint': 'state',
-            'gexbot.category': result.category,
-          },
-        });
+        if (sentryCaptured < SENTRY_CAPTURE_CAP) {
+          Sentry.captureException(result.err, {
+            tags: {
+              'gexbot.cron': 'strikes',
+              'gexbot.ticker': result.ticker,
+              'gexbot.endpoint': 'state',
+              'gexbot.category': result.category,
+            },
+          });
+          sentryCaptured += 1;
+        }
         continue;
       }
       const { ticker, category, body } = result;
@@ -95,6 +118,19 @@ export default withCronInstrumentation(
         sourceTimestamp: sourceTs,
         rawJson: JSON.stringify(body),
       });
+    }
+
+    if (failed > SENTRY_CAPTURE_CAP) {
+      Sentry.captureMessage(
+        `fetch-gexbot-strikes: ${failed - SENTRY_CAPTURE_CAP} additional failures suppressed (cap=${SENTRY_CAPTURE_CAP})`,
+        {
+          level: 'warning',
+          tags: {
+            'gexbot.cron': 'strikes',
+            'gexbot.summary': 'true',
+          },
+        },
+      );
     }
 
     await insertCaptureRows(captures);

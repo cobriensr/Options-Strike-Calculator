@@ -21,6 +21,7 @@
  */
 
 import { getDb } from '../_lib/db.js';
+import { mapWithConcurrency } from '../_lib/uw-fetch.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -60,8 +61,8 @@ function i(v: unknown): number | null {
 /**
  * Concurrency cap for the per-tick fetch fan-out. Sized to keep wall time
  * tight while preventing all 192 calls from launching simultaneously — a
- * 192-way burst paired with a 1s timeout can produce 192 Sentry events in
- * a single tick if GEXBot has a slow minute.
+ * 192-way burst paired with the per-call HTTP timeout can produce 192
+ * Sentry events in a single tick if GEXBot has a slow minute.
  */
 const FETCH_CONCURRENCY = 32;
 
@@ -71,26 +72,6 @@ const FETCH_CONCURRENCY = 32;
  * than 100+ identical TimeoutError reports during a GEXBot outage.
  */
 const SENTRY_CAPTURE_CAP = 10;
-
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, () =>
-    (async () => {
-      while (true) {
-        const idx = cursor++;
-        if (idx >= items.length) return;
-        results[idx] = await fn(items[idx]!);
-      }
-    })(),
-  );
-  await Promise.all(workers);
-  return results;
-}
 
 interface SnapshotRow {
   ticker: GexbotTicker;

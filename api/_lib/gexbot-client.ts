@@ -16,13 +16,20 @@
  *    not exceed one request per second per ticker per metric."
  * The fetch crons hit each (ticker, endpoint) pair once per minute
  * (well under the cap). No client-side rate limiter — Vercel cron
- * cadence is the budget.
+ * cadence is the budget. Note: that contract bounds REQUEST RATE, not
+ * the per-request HTTP timeout; GEXBot occasionally responds in
+ * 1–2 s under load.
  */
 
 const GEXBOT_BASE = 'https://api.gex.bot/v2';
 
-/** Per-call HTTP timeout. AGENTS.md requires ≤ 1 s. */
-const GEXBOT_TIMEOUT_MS = 1_000;
+/**
+ * Per-call HTTP timeout. Bumped 1 s → 2.5 s after
+ * SENTRY-EMERALD-DESERT-8F/76 showed 163 TimeoutError events when
+ * GEXBot returned in 1–2 s during slow minutes. The cron's
+ * maxDuration is 60 s so even a 32-way burst at 2.5 s each fits.
+ */
+const GEXBOT_TIMEOUT_MS = 2_500;
 
 /**
  * GEXBot bearer-token prefix (literal). The README requires the
