@@ -49,6 +49,8 @@ import {
   classifyAlertMultileg,
   type MultilegClassifyCache,
 } from '../_lib/multileg-classify-batch.js';
+import { withRetry } from '../_lib/uw-fetch.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // 35-min scan window — needs at least baselineBuckets+1 buckets of
 // history (4+1 = 5 buckets = 25 min) plus 10 min slack for cron jitter
@@ -183,7 +185,12 @@ export default withCronInstrumentation(
     // bucketing exactly. ARRAY_AGG(... ORDER BY executed_at DESC)[1]
     // preserves the prior `lastPrice = final tick under ASC sort`
     // semantics.
-    const bucketRows = (await db`
+    // withRetry covers transient Neon HTTP failures (ECONNRESET / fetch
+    // failed / socket hang up) — see SENTRY-EMERALD-DESERT-8X (2026-05-18,
+    // 2h Neon connectivity blip that silently zeroed out detect output
+    // for hours 18-20 UTC).
+    const bucketRows = (await withRetry(
+      () => db`
       SELECT
         ticker,
         option_chain,
@@ -272,9 +279,27 @@ export default withCronInstrumentation(
           TIMESTAMPTZ '2000-01-01 00:00:00+00'
         )
       ORDER BY option_chain, bucket_ts ASC
-    `) as BucketRow[];
+    `,
+    )) as BucketRow[];
 
     if (bucketRows.length === 0) {
+      // We're inside the market-hours-gated handler, so an empty bucket
+      // window is anomalous — ws_option_trades fills continuously during
+      // open hours. Most likely cause: a Neon read failure that withRetry
+      // exhausted, or upstream ws-stream daemon stalling. Capture as a
+      // warning so the silent-skip pattern from 2026-05-18 (where hours
+      // 18-20 UTC showed zero alerts with no Sentry event) can't recur
+      // without surfacing.
+      Sentry.captureMessage(
+        'detect-silent-boom: empty bucket scan during market hours',
+        {
+          level: 'warning',
+          tags: {
+            'cron.job': 'detect-silent-boom',
+            'cron.anomaly': 'empty-window',
+          },
+        },
+      );
       return {
         status: 'skipped',
         message: 'no ticks in scan window',

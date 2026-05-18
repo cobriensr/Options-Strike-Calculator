@@ -9,8 +9,13 @@ vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
 }));
 
+const mockSentryCaptureMessage = vi.hoisted(() => vi.fn());
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: mockSentryCaptureMessage,
+    setTag: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -187,6 +192,7 @@ describe('detect-lottery-fires handler', () => {
   it('returns skipped when no ticks are in the scan window', async () => {
     // Single SQL call: the SELECT returns []. The handler short-circuits
     // and never reaches macro / insert queries.
+    mockSentryCaptureMessage.mockClear();
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -203,6 +209,21 @@ describe('detect-lottery-fires handler', () => {
     });
     // Only the initial SELECT — no macro lookups, no inserts.
     expect(mockSql).toHaveBeenCalledTimes(1);
+    // Empty trade window during market hours is anomalous (the cron-
+    // instrumentation gate guarantees we're inside open hours) — emit
+    // a Sentry warning so silent stalls like the 2026-05-18 Neon blip
+    // surface as alerts instead of zero-row DB hours.
+    expect(mockSentryCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('empty trade scan during market hours'),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          'cron.job': 'detect-lottery-fires',
+          'cron.anomaly': 'empty-window',
+        }),
+      }),
+    );
   });
 
   it('inserts a fire when the v4 detector matches a chain', async () => {

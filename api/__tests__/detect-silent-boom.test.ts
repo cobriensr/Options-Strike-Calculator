@@ -9,8 +9,13 @@ vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
 }));
 
+const mockSentryCaptureMessage = vi.hoisted(() => vi.fn());
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: mockSentryCaptureMessage,
+    setTag: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -154,6 +159,7 @@ describe('detect-silent-boom handler', () => {
   });
 
   it('returns skipped when no ticks are in the scan window', async () => {
+    mockSentryCaptureMessage.mockClear();
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -169,6 +175,21 @@ describe('detect-silent-boom handler', () => {
       message: 'no ticks in scan window',
     });
     expect(mockSql).toHaveBeenCalledTimes(1);
+    // Empty bucket window during market hours is anomalous (the cron-
+    // instrumentation gate guarantees we're inside open hours) — emit
+    // a Sentry warning so silent stalls like the 2026-05-18 Neon blip
+    // surface as alerts instead of zero-row DB hours.
+    expect(mockSentryCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('empty bucket scan during market hours'),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          'cron.job': 'detect-silent-boom',
+          'cron.anomaly': 'empty-window',
+        }),
+      }),
+    );
   });
 
   it('inserts an alert when the silent-boom pattern matches', async () => {

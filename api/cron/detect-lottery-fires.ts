@@ -53,6 +53,8 @@ import {
   classifyAlertMultileg,
   type MultilegClassifyCache,
 } from '../_lib/multileg-classify-batch.js';
+import { withRetry } from '../_lib/uw-fetch.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
 // tick can't drop a trigger that landed at the start of its window.
@@ -192,7 +194,12 @@ export default withCronInstrumentation(
     // expiry is cast to ::text so the wire value is a stable YYYY-MM-DD
     // string — bypasses any driver-side Date<->TZ round-trip that could
     // shift the date by an offset.
-    const rows = (await db`
+    // withRetry covers transient Neon HTTP failures (ECONNRESET / fetch
+    // failed / socket hang up) — see SENTRY-EMERALD-DESERT-8X (2026-05-18,
+    // 2h Neon connectivity blip that silently zeroed out detect output
+    // for hours 18-20 UTC).
+    const rows = (await withRetry(
+      () => db`
       SELECT
         ticker, option_chain, option_type, strike, expiry::text AS expiry,
         executed_at, price, size, underlying_price, side,
@@ -213,9 +220,27 @@ export default withCronInstrumentation(
         AND canceled = FALSE
         AND price > 0
       ORDER BY option_chain, executed_at ASC
-    `) as TickRow[];
+    `,
+    )) as TickRow[];
 
     if (rows.length === 0) {
+      // We're inside the market-hours-gated handler, so an empty trade
+      // window is anomalous — ws_option_trades fills continuously during
+      // open hours. Most likely cause: a Neon read failure that withRetry
+      // exhausted, or upstream ws-stream daemon stalling. Capture as a
+      // warning so the silent-skip pattern from 2026-05-18 (where hours
+      // 18-20 UTC showed zero fires with no Sentry event) can't recur
+      // without surfacing.
+      Sentry.captureMessage(
+        'detect-lottery-fires: empty trade scan during market hours',
+        {
+          level: 'warning',
+          tags: {
+            'cron.job': 'detect-lottery-fires',
+            'cron.anomaly': 'empty-window',
+          },
+        },
+      );
       return {
         status: 'skipped',
         message: 'no ticks in scan window',
