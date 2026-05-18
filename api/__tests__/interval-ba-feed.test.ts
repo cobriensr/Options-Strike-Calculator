@@ -380,6 +380,19 @@ describe('GET /api/interval-ba-feed', () => {
   });
 });
 
+describe('shapeRow', () => {
+  it('coerces BIGSERIAL id string to number', () => {
+    // Neon's serverless driver returns BIGINT as a string to preserve
+    // precision. The FeedAlert contract types id as number, so the
+    // shape function must coerce — otherwise downstream code that
+    // round-trips the id (e.g. a future bulk-ack POST) would ship a
+    // quoted string and trip Zod number checks.
+    const shaped = _internal.shapeRow({ ...RAW_ROW, id: '12345' });
+    expect(shaped.id).toBe(12345);
+    expect(typeof shaped.id).toBe('number');
+  });
+});
+
 describe('summary derivation', () => {
   it('counts by severity bucket', () => {
     const make = (tp: number) =>

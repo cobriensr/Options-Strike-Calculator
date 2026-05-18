@@ -32,10 +32,13 @@ import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
 // Single raw row matching the migration #144 column shape — NUMERIC
-// columns arrive from Neon as strings, dates as Date instances. The
-// endpoint coerces both into JS-native values before responding.
+// and BIGINT columns arrive from Neon as strings, dates as Date
+// instances. The endpoint coerces all of them into JS-native values
+// before responding. `id` is BIGSERIAL so it ships as a string; the
+// response must convert it to a number so the frontend can round-trip
+// it back to /api/interval-ba-alerts-ack (Zod schema rejects strings).
 const RAW_ROW = {
-  id: 42,
+  id: '42',
   option_chain: 'SPXW260512C07360000',
   ticker: 'SPXW',
   option_type: 'C',
@@ -108,6 +111,9 @@ describe('GET /api/interval-ba-alerts', () => {
     const body = res._json as { alerts: Record<string, unknown>[] };
     expect(body.alerts).toHaveLength(1);
     const alert = body.alerts[0]!;
+    // BIGSERIAL id coerced from string to JS number so the frontend
+    // can JSON.stringify it back to the ack endpoint.
+    expect(alert.id).toBe(42);
     // NUMERIC columns coerced to JS numbers.
     expect(alert.strike).toBe(7360);
     expect(alert.ratio_pct).toBe(71.23);

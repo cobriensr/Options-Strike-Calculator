@@ -137,7 +137,10 @@ function parseTimeToMinutes(time: string): number {
 }
 
 interface RawRow {
-  id: number;
+  // BIGSERIAL — Neon returns BIGINT as string. Coerced to number in
+  // shapeRow so the API contract matches the FeedAlert.id: number type
+  // and stays consistent with /api/interval-ba-alerts.
+  id: string | number;
   option_chain: string;
   ticker: string;
   option_type: string;
@@ -164,7 +167,7 @@ interface RawRow {
 function shapeRow(r: RawRow): FeedAlert {
   const total_premium = toNumber(r.total_premium);
   return {
-    id: r.id,
+    id: toNumber(r.id),
     option_chain: r.option_chain,
     ticker: r.ticker,
     option_type: r.option_type,

@@ -112,7 +112,14 @@ function toIso(v: unknown): string {
 }
 
 interface RawRow {
-  id: number;
+  // BIGSERIAL — Neon's @neondatabase/serverless returns BIGINT as string
+  // to preserve precision. shapeRow coerces to JS number for the API
+  // response so the frontend (which types `id: number`) can round-trip
+  // it through JSON.stringify to /api/interval-ba-alerts-ack without
+  // tripping the Zod number-not-string check. Safe coercion: alert IDs
+  // won't exceed Number.MAX_SAFE_INTEGER for centuries at any realistic
+  // fire rate.
+  id: string | number;
   option_chain: string;
   ticker: string;
   option_type: string;
@@ -138,7 +145,7 @@ interface RawRow {
 function shapeRow(r: RawRow): IntervalBAAlertRow {
   const total_premium = toNumber(r.total_premium);
   return {
-    id: r.id,
+    id: toNumber(r.id),
     option_chain: r.option_chain,
     ticker: r.ticker,
     option_type: r.option_type,
