@@ -45,6 +45,7 @@ const HIDE_GHOSTS_LS_KEY = 'silentBoom.hideGhosts';
 const HIDE_GATED_LS_KEY = 'silentBoom.hideGated';
 const HIDE_ROUND_TRIPPED_LS_KEY = 'silentBoom.hideRoundTripped';
 const HIDE_ROUND_TRIPPED_ANY_DTE_LS_KEY = 'silentBoom.hideRoundTrippedAnyDte';
+const HIDE_COUNTER_FLOW_LS_KEY = 'silentBoom.hideCounterFlow';
 const MIN_DTE_LS_KEY = 'silentBoom.minDte';
 const MIN_PREMIUM_K_LS_KEY = 'silentBoom.minPremiumK';
 /** Structural round-trip cutoff: net_pct < this → contract clearly
@@ -473,6 +474,15 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       );
     },
   );
+  // "Hide counter-flow" — hides alerts where the per-ticker net flow
+  // direction at fire time contradicts the option type. Calls hidden when
+  // cumNcpAtFire < cumNppAtFire; puts hidden when cumNcpAtFire > cumNppAtFire.
+  // Rows with null fire-time snapshots are never hidden (outside-WS-universe
+  // tickers + pre-#158 historical rows). Client-side filter; persists locally.
+  const [hideCounterFlow, setHideCounterFlow] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(HIDE_COUNTER_FLOW_LS_KEY) === '1';
+  });
   // Aggressive Premium chip — single toggle that ANDs together the
   // trader's 5-criterion UW filter: premium ≥ $100K, DTE ≤ 8,
   // vol/OI > 1, single-leg, OTM. See server-side enforcement in
@@ -543,6 +553,14 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   }, [hideRoundTrippedAnyDte]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        HIDE_COUNTER_FLOW_LS_KEY,
+        hideCounterFlow ? '1' : '0',
+      );
+    }
+  }, [hideCounterFlow]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
       window.localStorage.setItem(MIN_DTE_LS_KEY, String(minDte));
     }
   }, [minDte]);
@@ -606,6 +624,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     hideLatePm,
     hideGhosts,
     hideGated,
+    hideCounterFlow,
     moneynessMode,
   ]);
 
@@ -705,6 +724,17 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
           a.roundTripNetPct >= ROUND_TRIPPED_ANY_DTE_CUTOFF,
       );
     }
+    if (hideCounterFlow) {
+      out = out.filter((a) => {
+        const ncp = a.tickerCumNcpAtFire;
+        const npp = a.tickerCumNppAtFire;
+        if (ncp == null || npp == null) return true;
+        const delta = ncp - npp;
+        if (delta === 0) return true;
+        if (a.optionType === 'C') return delta > 0;
+        return delta < 0;
+      });
+    }
     if (moneynessMode !== 'all') {
       out = out.filter((a) => {
         const spot = a.underlyingPriceAtSpike;
@@ -721,6 +751,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     hideGated,
     hideRoundTripped,
     hideRoundTrippedAnyDte,
+    hideCounterFlow,
     moneynessMode,
   ]);
   // Per-filter hidden counts — computed against the unfiltered set
@@ -747,6 +778,17 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             a.roundTripNetPct != null &&
             a.roundTripNetPct < ROUND_TRIPPED_ANY_DTE_CUTOFF,
         ).length
+      : 0;
+  const hiddenCounterFlowCount =
+    bucketIso == null && hideCounterFlow
+      ? alerts.filter((a) => {
+          const ncp = a.tickerCumNcpAtFire;
+          const npp = a.tickerCumNppAtFire;
+          if (ncp == null || npp == null) return false;
+          const delta = ncp - npp;
+          if (delta === 0) return false;
+          return a.optionType === 'C' ? delta < 0 : delta > 0;
+        }).length
       : 0;
   // Count of alerts hidden by the OTM/ITM filter because they lack the
   // post-#152 spot snapshot. Legacy / pre-cron-capture rows fall into
@@ -1368,6 +1410,21 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               {hideGated && hiddenGatedCount > 0 && (
                 <span className="text-[10px] opacity-70">
                   −{hiddenGatedCount}
+                </span>
+              )}
+            </FilterChip>
+            <FilterChip
+              active={hideCounterFlow}
+              activeColor="amber"
+              testId="silent-boom-hide-counter-flow-chip"
+              onClick={() => setHideCounterFlow(!hideCounterFlow)}
+              title="Hide counter-flow alerts — rows where the per-ticker net flow (cumNcpAtFire − cumNppAtFire) at fire time contradicts the option type. Calls hidden when NCP < NPP; puts hidden when NCP > NPP. Rows with no fire-time snapshot are never hidden. Client-side filter — does not affect score or tier."
+              ariaPressed={hideCounterFlow}
+            >
+              hide counter-flow
+              {hideCounterFlow && hiddenCounterFlowCount > 0 && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenCounterFlowCount}
                 </span>
               )}
             </FilterChip>

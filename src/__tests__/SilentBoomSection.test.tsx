@@ -650,3 +650,136 @@ describe("SilentBoomSection: sortMode === 'peak' two-tier ordering", () => {
     ]);
   });
 });
+
+// ============================================================
+// HIDE-COUNTER-FLOW FILTER
+// ============================================================
+
+describe('hide-counter-flow filter', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('flips aria-pressed and persists to localStorage', () => {
+    mockUseSilentBoomFeed.mockReturnValue(defaultHookResult);
+    render(<SilentBoomSection marketOpen={false} />);
+    const chip = screen.getByTestId('silent-boom-hide-counter-flow-chip');
+    expect(chip).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem('silentBoom.hideCounterFlow')).toBe('1');
+  });
+
+  it('drops call rows when ticker NCP < NPP at fire', () => {
+    const alerts = [
+      makeAlert({
+        underlyingSymbol: 'MSFT',
+        optionType: 'C',
+        strike: 100,
+        tickerCumNcpAtFire: 1_000_000,
+        tickerCumNppAtFire: 5_000_000,
+        bucketCt: '2026-05-15T13:30:00.000Z',
+        optionChainId: 'MSFT|2026-05-15|100|C',
+      }),
+      makeAlert({
+        underlyingSymbol: 'MSFT',
+        optionType: 'C',
+        strike: 105,
+        tickerCumNcpAtFire: 5_000_000,
+        tickerCumNppAtFire: 1_000_000,
+        bucketCt: '2026-05-15T14:30:00.000Z',
+        optionChainId: 'MSFT|2026-05-15|105|C',
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 2,
+    });
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('silent-boom-hide-counter-flow-chip'));
+    // Counter-flow call (NCP < NPP) is dropped; aligned call survives.
+    expect(
+      screen.queryByTestId('silent-boom-row-MSFT|2026-05-15|100|C'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-MSFT|2026-05-15|105|C'),
+    ).toBeInTheDocument();
+  });
+
+  it('drops put rows when ticker NCP > NPP at fire', () => {
+    const alerts = [
+      makeAlert({
+        underlyingSymbol: 'AAPL',
+        optionType: 'P',
+        strike: 150,
+        tickerCumNcpAtFire: 5_000_000,
+        tickerCumNppAtFire: 1_000_000,
+        bucketCt: '2026-05-15T13:30:00.000Z',
+        optionChainId: 'AAPL|2026-05-15|150|P',
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 1,
+    });
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('silent-boom-hide-counter-flow-chip'));
+    // Counter-flow put (NCP > NPP) is dropped.
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL|2026-05-15|150|P'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('NEVER drops rows with null fire-time snapshot', () => {
+    const alerts = [
+      makeAlert({
+        underlyingSymbol: 'TLT',
+        optionType: 'C',
+        strike: 95,
+        tickerCumNcpAtFire: null,
+        tickerCumNppAtFire: null,
+        bucketCt: '2026-05-15T13:30:00.000Z',
+        optionChainId: 'TLT|2026-05-15|95|C',
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 1,
+    });
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('silent-boom-hide-counter-flow-chip'));
+    // Null snapshot → always kept.
+    expect(
+      screen.getByTestId('silent-boom-row-TLT|2026-05-15|95|C'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows hidden-count suffix when filter active and rows hidden', () => {
+    const alerts = [
+      makeAlert({
+        optionType: 'C',
+        tickerCumNcpAtFire: 1_000_000,
+        tickerCumNppAtFire: 5_000_000,
+        optionChainId: 'AAPL260508C00200000',
+      }),
+      makeAlert({
+        optionType: 'C',
+        tickerCumNcpAtFire: 2_000_000,
+        tickerCumNppAtFire: 5_000_000,
+        optionChainId: 'AAPL260508C00210000',
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue({
+      ...defaultHookResult,
+      alerts,
+      total: 2,
+    });
+    render(<SilentBoomSection marketOpen={false} />);
+    const chip = screen.getByTestId('silent-boom-hide-counter-flow-chip');
+    fireEvent.click(chip);
+    expect(chip).toHaveTextContent('−2');
+  });
+});
