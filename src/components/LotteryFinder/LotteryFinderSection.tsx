@@ -25,6 +25,13 @@ import {
   isHighConviction,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates.js';
+import {
+  CHIP_ACTIVE,
+  CHIP_BASE,
+  CHIP_INACTIVE,
+  SECTION_LABEL,
+  TOOLBAR_DIVIDER,
+} from '../ui/filter-toolbar-tokens.js';
 
 const PAGE_SIZE = 50;
 /** localStorage keys for persisting user preferences. */
@@ -248,46 +255,6 @@ const MODE_FILTERS: Array<{ value: LotteryMode | null; label: string }> = [
   { value: 'B_multi_day_DTE1_3', label: 'Mode B (DTE 1-3)' },
 ];
 
-/**
- * Shared chip styling. Every filter pill in the toolbar uses these so
- * padding, radius, and weight stay consistent across groups. Active
- * variants are looked up by accent name (Tailwind JIT can't synthesize
- * `border-${color}-500` from a runtime string).
- */
-const CHIP_BASE =
-  'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors';
-const CHIP_INACTIVE =
-  'border-neutral-700 bg-neutral-800/60 text-neutral-300 hover:border-neutral-600 hover:text-neutral-100';
-const CHIP_ACTIVE: Record<
-  | 'sky'
-  | 'rose'
-  | 'amber'
-  | 'emerald'
-  | 'green'
-  | 'red'
-  | 'blue'
-  | 'fuchsia'
-  | 'orange'
-  | 'purple'
-  | 'neutral',
-  string
-> = {
-  sky: 'border-sky-500/70 bg-sky-950/40 text-sky-200',
-  rose: 'border-rose-500/70 bg-rose-950/40 text-rose-200',
-  amber: 'border-amber-500/70 bg-amber-950/40 text-amber-200',
-  emerald: 'border-emerald-500/70 bg-emerald-950/40 text-emerald-200',
-  green: 'border-green-500/70 bg-green-950/40 text-green-200',
-  red: 'border-red-500/70 bg-red-950/40 text-red-200',
-  blue: 'border-blue-500/70 bg-blue-950/40 text-blue-200',
-  fuchsia: 'border-fuchsia-500/70 bg-fuchsia-950/40 text-fuchsia-200',
-  orange: 'border-orange-500/70 bg-orange-950/40 text-orange-200',
-  purple: 'border-purple-500/70 bg-purple-950/40 text-purple-200',
-  neutral: 'border-neutral-500 bg-neutral-800 text-neutral-200',
-};
-
-const SECTION_LABEL =
-  'text-[10px] font-semibold tracking-[0.08em] text-neutral-400 uppercase';
-const TOOLBAR_DIVIDER = 'mx-1 hidden h-4 w-px bg-neutral-800 sm:block';
 
 const todayCt = (): string => {
   const fmt = new Intl.DateTimeFormat('en-CA', {
