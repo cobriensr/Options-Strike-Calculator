@@ -16,7 +16,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
@@ -97,7 +97,8 @@ export default async function handler(
     // The outer SELECT then groups the deduped rows by ticker. Peak
     // is taken across the chain's lifetime (MAX over partition); the
     // latest trigger time is the freshest fire within the chain.
-    const rows = (await db`
+    const rows = (await withDbRetry(
+      () => db`
       WITH chain_day AS (
         SELECT
           underlying_symbol,
@@ -128,7 +129,10 @@ export default async function handler(
       FROM chain_day
       GROUP BY underlying_symbol
       ORDER BY count DESC, latest_trigger_time_ct DESC, underlying_symbol ASC
-    `) as CountRow[];
+    `,
+      2,
+      10_000,
+    )) as CountRow[];
 
     const response: LotteryFinderTickerCountsResponse = {
       date,

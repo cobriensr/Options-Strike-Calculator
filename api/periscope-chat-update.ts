@@ -28,7 +28,7 @@ import {
   rejectIfRateLimited,
   respondIfInvalid,
 } from './_lib/api-helpers.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import {
@@ -106,7 +106,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Neon's tagged template doesn't support fragment composition,
     // so we encode the clear flag as a boolean parameter and let
     // PG's CASE pick the branch.
-    const rows = await sql`
+    const rows = await withDbRetry(
+      () => sql`
       UPDATE periscope_analyses
       SET
         calibration_quality = CASE
@@ -125,7 +126,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         END
       WHERE id = ${id}
       RETURNING id, calibration_quality, regime_tag
-    `;
+    `,
+      2,
+      10_000,
+    );
 
     if (rows.length === 0) {
       done({ status: 404 });

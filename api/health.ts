@@ -8,7 +8,7 @@
  * Returns 200 with service status or 503 if any service is unhealthy.
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { redis, getAccessToken } from './_lib/schwab.js';
 
 interface ServiceStatus {
@@ -53,7 +53,7 @@ export default async function handler(
   const [postgres, redisStatus, schwab] = await Promise.all([
     checkService(async () => {
       const sql = getDb();
-      await sql`SELECT 1`;
+      await withDbRetry(() => sql`SELECT 1`, 2, 10_000);
     }),
     checkService(async () => {
       await redis.ping();

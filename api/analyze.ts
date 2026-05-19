@@ -23,7 +23,12 @@ import {
   guardOwnerEndpoint,
   respondIfInvalid,
 } from './_lib/api-helpers.js';
-import { saveAnalysis, saveDarkPoolSnapshot, getDb } from './_lib/db.js';
+import {
+  saveAnalysis,
+  saveDarkPoolSnapshot,
+  getDb,
+  withDbRetry,
+} from './_lib/db.js';
 import {
   analyzeBodySchema,
   analysisResponseSchema,
@@ -305,9 +310,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             getETDateStr(new Date());
           const entryTime =
             (context.entryTime as string | undefined) ?? 'unknown';
-          const rows = await db`
+          const rows = await withDbRetry(
+            () => db`
             SELECT id FROM market_snapshots WHERE date = ${date} AND entry_time = ${entryTime}
-          `;
+          `,
+            2,
+            10_000,
+          );
           const snapshotId = rows.length > 0 ? (rows[0]!.id as number) : null;
           await saveAnalysis(
             context,

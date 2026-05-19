@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
@@ -38,7 +38,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const today = getETDateStr(new Date());
 
       const alerts = since
-        ? await sql`
+        ? await withDbRetry(
+            () => sql`
             SELECT id, date, timestamp, type, severity, direction,
                    title, body, current_values, delta_values,
                    acknowledged, created_at
@@ -46,8 +47,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             WHERE created_at > ${since}
             ORDER BY created_at DESC
             LIMIT 20
-          `
-        : await sql`
+          `,
+            2,
+            10_000,
+          )
+        : await withDbRetry(
+            () => sql`
             SELECT id, date, timestamp, type, severity, direction,
                    title, body, current_values, delta_values,
                    acknowledged, created_at
@@ -55,7 +60,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             WHERE date = ${today} AND NOT acknowledged
             ORDER BY created_at DESC
             LIMIT 20
-          `;
+          `,
+            2,
+            10_000,
+          );
 
       res.setHeader('Cache-Control', 'no-store');
       done({ status: 200 });

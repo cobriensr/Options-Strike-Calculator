@@ -36,7 +36,7 @@ import {
   rejectIfRateLimited,
   respondIfInvalid,
 } from './_lib/api-helpers.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { periscopeLessonsUpdateBodySchema } from './_lib/validation.js';
@@ -93,9 +93,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // illegal transition silently no-op (the WHERE-clause guard form
     // would return zero affected rows + a 404, which is misleading
     // when the row is actually present but in the wrong state).
-    const existing = await sql`
+    const existing = await withDbRetry(
+      () => sql`
       SELECT id, status FROM periscope_lessons WHERE id = ${id} LIMIT 1
-    `;
+    `,
+      2,
+      10_000,
+    );
     const current = existing[0];
     if (current == null) {
       done({ status: 404 });
@@ -124,31 +128,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // caller gets the post-update row in a single round-trip.
     let rows: Record<string, unknown>[];
     if (action === 'promote') {
-      rows = await sql`
+      rows = await withDbRetry(
+        () => sql`
         UPDATE periscope_lessons
         SET status = 'active', promoted_at = NOW()
         WHERE id = ${id}
         RETURNING id, lesson_text, source_ids, status, citation_count,
                   created_at, promoted_at, archived_at
-      `;
+      `,
+        2,
+        10_000,
+      );
     } else if (action === 'archive') {
-      rows = await sql`
+      rows = await withDbRetry(
+        () => sql`
         UPDATE periscope_lessons
         SET status = 'archived', archived_at = NOW()
         WHERE id = ${id}
         RETURNING id, lesson_text, source_ids, status, citation_count,
                   created_at, promoted_at, archived_at
-      `;
+      `,
+        2,
+        10_000,
+      );
     } else {
       // unarchive — clear BOTH lifecycle timestamps so a re-promote
       // later doesn't carry a stale promoted_at across the demotion.
-      rows = await sql`
+      rows = await withDbRetry(
+        () => sql`
         UPDATE periscope_lessons
         SET status = 'proposed', promoted_at = NULL, archived_at = NULL
         WHERE id = ${id}
         RETURNING id, lesson_text, source_ids, status, citation_count,
                   created_at, promoted_at, archived_at
-      `;
+      `,
+        2,
+        10_000,
+      );
     }
 
     const row = rows[0];

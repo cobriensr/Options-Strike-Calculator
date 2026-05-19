@@ -19,7 +19,7 @@ import {
   rejectIfRateLimited,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
 
 function parseRow(r: Record<string, unknown>) {
@@ -66,12 +66,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── Single analysis by ID ──────────────────────────────
     if (id) {
-      const rows = await sql`
+      const rows = await withDbRetry(
+        () => sql`
         SELECT id, TO_CHAR(date, 'YYYY-MM-DD') AS date, entry_time, mode,
                structure, confidence, suggested_delta, spx, vix, vix1d, hedge,
                full_response, created_at
         FROM analyses WHERE id = ${String(id)} LIMIT 1
-      `;
+      `,
+        2,
+        10_000,
+      );
       if (rows.length === 0) {
         done({ status: 404 });
         return res.status(404).json({ error: 'Analysis not found' });
@@ -82,7 +86,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── List dates ─────────────────────────────────────────
     if (dates === 'true') {
-      const rows = await sql`
+      const rows = await withDbRetry(
+        () => sql`
         SELECT
           TO_CHAR(date, 'YYYY-MM-DD') AS date,
           COUNT(*) AS total,
@@ -91,7 +96,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           COUNT(*) FILTER (WHERE mode = 'review') AS reviews
         FROM analyses
         GROUP BY date ORDER BY date DESC
-      `;
+      `,
+        2,
+        10_000,
+      );
       done({ status: 200 });
       return res.status(200).json({
         dates: rows.map((r) => ({
@@ -110,14 +118,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Specific analysis by date + entryTime + mode
       if (entryTime && mode) {
-        const rows = await sql`
+        const rows = await withDbRetry(
+          () => sql`
           SELECT id, TO_CHAR(date, 'YYYY-MM-DD') AS date, entry_time, mode,
                  structure, confidence, suggested_delta, spx, vix, vix1d, hedge,
                  full_response, created_at
           FROM analyses
           WHERE date = ${dateStr} AND entry_time = ${String(entryTime)} AND mode = ${String(mode)}
           ORDER BY created_at DESC LIMIT 1
-        `;
+        `,
+          2,
+          10_000,
+        );
         if (rows.length === 0) {
           done({ status: 404 });
           return res.status(404).json({ error: 'Analysis not found' });
@@ -127,12 +139,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // All analyses for the date
-      const rows = await sql`
+      const rows = await withDbRetry(
+        () => sql`
         SELECT id, TO_CHAR(date, 'YYYY-MM-DD') AS date, entry_time, mode,
                structure, confidence, suggested_delta, spx, vix, vix1d, hedge,
                full_response, created_at
         FROM analyses WHERE date = ${dateStr} ORDER BY created_at ASC
-      `;
+      `,
+        2,
+        10_000,
+      );
       done({ status: 200 });
       return res.status(200).json({
         date: dateStr,

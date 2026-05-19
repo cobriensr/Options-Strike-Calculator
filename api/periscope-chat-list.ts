@@ -31,7 +31,7 @@ import {
   respondIfInvalid,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { periscopeChatListQuerySchema } from './_lib/validation.js';
@@ -138,7 +138,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       const sql = getDb();
       setCacheHeaders(res, 30, 60);
-      const rows = await sql`
+      const rows = await withDbRetry(
+        () => sql`
         SELECT
           TO_CHAR(trading_date, 'YYYY-MM-DD') AS date,
           COUNT(*) AS total,
@@ -148,7 +149,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM periscope_analyses
         GROUP BY trading_date
         ORDER BY trading_date DESC
-      `;
+      `,
+        2,
+        10_000,
+      );
       done({ status: 200 });
       return res.status(200).json({
         dates: rows.map((r) => ({
@@ -185,7 +189,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // BIGSERIAL id is the cheapest stable cursor — newer rows always
     // have larger ids regardless of trading_date / captured_at.
     const rows = date
-      ? await sql`
+      ? await withDbRetry(
+          () => sql`
           SELECT id, trading_date, captured_at, mode, parent_id,
                  spot, long_trigger, short_trigger, regime_tag,
                  calibration_quality, prose_text, duration_ms
@@ -193,9 +198,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           WHERE trading_date = ${date}
           ORDER BY id DESC
           LIMIT ${limit}
-        `
+        `,
+          2,
+          10_000,
+        )
       : before
-        ? await sql`
+        ? await withDbRetry(
+            () => sql`
           SELECT id, trading_date, captured_at, mode, parent_id,
                  spot, long_trigger, short_trigger, regime_tag,
                  calibration_quality, prose_text, duration_ms
@@ -203,15 +212,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           WHERE id < ${before}
           ORDER BY id DESC
           LIMIT ${limit}
-        `
-        : await sql`
+        `,
+            2,
+            10_000,
+          )
+        : await withDbRetry(
+            () => sql`
           SELECT id, trading_date, captured_at, mode, parent_id,
                  spot, long_trigger, short_trigger, regime_tag,
                  calibration_quality, prose_text, duration_ms
           FROM periscope_analyses
           ORDER BY id DESC
           LIMIT ${limit}
-        `;
+        `,
+            2,
+            10_000,
+          );
 
     const items = rows.map(parseSummaryRow);
     const nextBefore =

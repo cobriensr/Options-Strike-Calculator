@@ -29,7 +29,7 @@
  * Owner-or-guest — Greek exposure derives from UW API (OPRA compliance).
  */
 
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { withRequestScope } from './_lib/request-scope.js';
@@ -258,11 +258,15 @@ export default withRequestScope(
         const sql = getDb();
 
         // ── 1. availableDates: every distinct trading date with rows ──
-        const datesRows = (await sql`
+        const datesRows = (await withDbRetry(
+          () => sql`
           SELECT DISTINCT date
           FROM gex_target_features
           ORDER BY date ASC
-        `) as Array<{ date: string | Date }>;
+        `,
+          2,
+          10_000,
+        )) as Array<{ date: string | Date }>;
 
         const availableDates = datesRows
           .map((r) => toDateString(r.date))
@@ -292,12 +296,16 @@ export default withRequestScope(
         const date = dateParam ?? availableDates.at(-1)!;
 
         // ── 3. List timestamps for the resolved date ───────────────
-        const timestampRows = (await sql`
+        const timestampRows = (await withDbRetry(
+          () => sql`
           SELECT DISTINCT timestamp
           FROM gex_target_features
           WHERE date = ${date}
           ORDER BY timestamp ASC
-        `) as Array<{ timestamp: string | Date }>;
+        `,
+          2,
+          10_000,
+        )) as Array<{ timestamp: string | Date }>;
 
         const timestamps = timestampRows
           .map((r) => toIso(r.timestamp))

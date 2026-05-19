@@ -21,7 +21,7 @@ import {
   respondIfInvalid,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { periscopeChatDetailQuerySchema } from './_lib/validation.js';
@@ -211,7 +211,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sql = getDb();
     setCacheHeaders(res, 60, 120);
 
-    const rows = await sql`
+    const rows = await withDbRetry(
+      () => sql`
       SELECT id, trading_date, captured_at, read_time, spot_at_read_time,
              spot_source, mode, parent_id,
              user_context, prose_text, spot, cone_lower, cone_upper,
@@ -225,7 +226,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       FROM periscope_analyses
       WHERE id = ${id}
       LIMIT 1
-    `;
+    `,
+      2,
+      10_000,
+    );
 
     if (rows.length === 0) {
       done({ status: 404 });

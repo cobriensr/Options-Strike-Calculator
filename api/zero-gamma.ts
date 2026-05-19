@@ -20,7 +20,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
@@ -124,7 +124,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // over (e.g. 21:00 ET = 01:00 UTC next day) would silently land on
       // the wrong calendar bucket.
       const rows = date
-        ? ((await sql`
+        ? ((await withDbRetry(
+            () => sql`
             SELECT ticker, spot, zero_gamma, confidence,
                    net_gamma_at_spot, gamma_curve, ts
             FROM zero_gamma_levels
@@ -132,15 +133,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND (ts AT TIME ZONE 'America/New_York')::date = ${date}::date
             ORDER BY ts ASC
             LIMIT ${HISTORY_LIMIT}
-          `) as RawRow[])
-        : ((await sql`
+          `,
+            2,
+            10_000,
+          )) as RawRow[])
+        : ((await withDbRetry(
+            () => sql`
             SELECT ticker, spot, zero_gamma, confidence,
                    net_gamma_at_spot, gamma_curve, ts
             FROM zero_gamma_levels
             WHERE ticker = ${ticker}
             ORDER BY ts DESC
             LIMIT ${HISTORY_LIMIT}
-          `) as RawRow[]);
+          `,
+            2,
+            10_000,
+          )) as RawRow[]);
 
       const history = rows.map(mapRow);
       // For the date query (ASC order) `latest` is the last row of the day;

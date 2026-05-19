@@ -27,7 +27,7 @@ import {
   rejectIfRateLimited,
   respondIfInvalid,
 } from './_lib/api-helpers.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { periscopeChatImageQuerySchema } from './_lib/validation.js';
@@ -85,12 +85,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const sql = getDb();
-    const rows = await sql`
+    const rows = await withDbRetry(
+      () => sql`
       SELECT image_urls
       FROM periscope_analyses
       WHERE id = ${idStr}
       LIMIT 1
-    `;
+    `,
+      2,
+      10_000,
+    );
 
     if (rows.length === 0) {
       done({ status: 404 });

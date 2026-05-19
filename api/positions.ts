@@ -25,7 +25,12 @@ import {
   schwabTraderFetch,
   guardOwnerEndpoint,
 } from './_lib/api-helpers.js';
-import { savePositions, getDb, type PositionLeg } from './_lib/db.js';
+import {
+  savePositions,
+  getDb,
+  withDbRetry,
+  type PositionLeg,
+} from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { parseFullCSV, buildFullSummary } from './_lib/csv-parser.js';
 import {
@@ -124,9 +129,13 @@ async function persistPositions(args: {
   const { date, fetchTime, accountHash, spxPrice, summary, legs, response } =
     args;
   const db = getDb();
-  const snapRows = await db`
+  const snapRows = await withDbRetry(
+    () => db`
     SELECT id FROM market_snapshots WHERE date = ${date} ORDER BY created_at DESC LIMIT 1
-  `;
+  `,
+    2,
+    10_000,
+  );
   const snapshotId =
     snapRows.length > 0 ? ((snapRows[0]?.id as number) ?? null) : null;
 

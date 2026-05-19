@@ -7,6 +7,7 @@ import { mockRequest, mockResponse } from './helpers';
 const mockDbFn = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockDbFn),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 const mockPing = vi.fn();

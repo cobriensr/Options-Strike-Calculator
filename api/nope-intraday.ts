@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
@@ -73,12 +73,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Distinct ET dates that have any rows. Drives both date resolution
       // and a small client-side date picker if you ever add one.
-      const dateRows = (await sql`
+      const dateRows = (await withDbRetry(
+        () => sql`
         SELECT DISTINCT (timestamp AT TIME ZONE 'America/New_York')::date AS d
         FROM nope_ticks
         WHERE ticker = ${TICKER}
         ORDER BY d ASC
-      `) as Array<{ d: string | Date }>;
+      `,
+        2,
+        10_000,
+      )) as Array<{ d: string | Date }>;
 
       const availableDates = dateRows
         .map((r) => toDateString(r.d))
@@ -98,13 +102,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const date = dateParam ?? availableDates.at(-1)!;
 
-      const pointRows = (await sql`
+      const pointRows = (await withDbRetry(
+        () => sql`
         SELECT timestamp, nope, nope_fill
         FROM nope_ticks
         WHERE ticker = ${TICKER}
           AND (timestamp AT TIME ZONE 'America/New_York')::date = ${date}
         ORDER BY timestamp ASC
-      `) as Array<{
+      `,
+        2,
+        10_000,
+      )) as Array<{
         timestamp: string | Date;
         nope: string | number;
         nope_fill: string | number;

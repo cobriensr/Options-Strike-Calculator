@@ -38,7 +38,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
@@ -199,7 +199,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // subquery short-circuits on non-SPXW tickers via the inner
       // `a.ticker = 'SPXW'` guard, so SPY/QQQ rows pay no JOIN cost.
       const rawRows = since
-        ? await sql`
+        ? await withDbRetry(
+            () => sql`
             SELECT a.id, a.option_chain, a.ticker, a.option_type, a.strike,
                    a.expiry, a.bucket_start, a.bucket_end, a.fired_at,
                    a.ratio_pct, a.ask_premium, a.total_premium, a.trade_count,
@@ -222,8 +223,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             WHERE a.fired_at > ${since}
             ORDER BY a.fired_at DESC
             LIMIT 20
-          `
-        : await sql`
+          `,
+            2,
+            10_000,
+          )
+        : await withDbRetry(
+            () => sql`
             SELECT a.id, a.option_chain, a.ticker, a.option_type, a.strike,
                    a.expiry, a.bucket_start, a.bucket_end, a.fired_at,
                    a.ratio_pct, a.ask_premium, a.total_premium, a.trade_count,
@@ -246,7 +251,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             WHERE a.expiry = ${today} AND NOT a.acknowledged
             ORDER BY a.fired_at DESC
             LIMIT 20
-          `;
+          `,
+            2,
+            10_000,
+          );
       const rows = rawRows as unknown as RawRow[];
 
       const alerts = rows.map(shapeRow);

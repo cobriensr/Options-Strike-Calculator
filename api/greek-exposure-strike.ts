@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
@@ -90,7 +90,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? expiryParam
           : date;
 
-      const rows = await sql`
+      const rows = await withDbRetry(
+        () => sql`
         SELECT
           strike, dte,
           call_gex, put_gex,
@@ -102,7 +103,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM greek_exposure_strike
         WHERE date = ${date} AND expiry = ${expiry}
         ORDER BY strike ASC
-      `;
+      `,
+        2,
+        10_000,
+      );
 
       const strikes: StrikeGreekExposure[] = rows.map((r) => ({
         strike: Number(r.strike),

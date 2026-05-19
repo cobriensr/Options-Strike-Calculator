@@ -10,7 +10,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { metrics } from './_lib/sentry.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { getDarkPoolLastUpdated } from './_lib/dark-pool-query.js';
 import { redis, getAccessToken } from './_lib/schwab.js';
 
@@ -80,7 +80,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Service connectivity (parallel)
   const [postgres, redisStatus, schwab] = await Promise.all([
     checkService(async () => {
-      await sql`SELECT 1`;
+      await withDbRetry(() => sql`SELECT 1`, 2, 10_000);
     }),
     checkService(async () => {
       await redis.ping();
@@ -102,13 +102,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // per-print freshness is sub-second so this is generous either way.
     const [flow, spot, strike, darkpoolTs, features, outcomes, findings] =
       await Promise.all([
-        sql`SELECT MAX(timestamp) AS ts FROM flow_data`,
-        sql`SELECT MAX(timestamp) AS ts FROM spot_exposures`,
-        sql`SELECT MAX(timestamp) AS ts FROM strike_exposures`,
+        withDbRetry(
+          () => sql`SELECT MAX(timestamp) AS ts FROM flow_data`,
+          2,
+          10_000,
+        ),
+        withDbRetry(
+          () => sql`SELECT MAX(timestamp) AS ts FROM spot_exposures`,
+          2,
+          10_000,
+        ),
+        withDbRetry(
+          () => sql`SELECT MAX(timestamp) AS ts FROM strike_exposures`,
+          2,
+          10_000,
+        ),
         getDarkPoolLastUpdated(),
-        sql`SELECT MAX(created_at) AS ts FROM training_features`,
-        sql`SELECT MAX(created_at) AS ts FROM outcomes`,
-        sql`SELECT updated_at AS ts FROM ml_findings WHERE id = 1 LIMIT 1`,
+        withDbRetry(
+          () => sql`SELECT MAX(created_at) AS ts FROM training_features`,
+          2,
+          10_000,
+        ),
+        withDbRetry(
+          () => sql`SELECT MAX(created_at) AS ts FROM outcomes`,
+          2,
+          10_000,
+        ),
+        withDbRetry(
+          () =>
+            sql`SELECT updated_at AS ts FROM ml_findings WHERE id = 1 LIMIT 1`,
+          2,
+          10_000,
+        ),
       ]);
 
     freshness = [

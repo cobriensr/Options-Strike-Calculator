@@ -20,7 +20,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
@@ -109,7 +109,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const sql = getDb();
       const rows = (
         q.strike != null && q.side != null
-          ? await sql`
+          ? await withDbRetry(
+              () => sql`
             SELECT ticker, strike, side, ts,
                    bid_side_vol, ask_side_vol, mid_vol, total_vol
             FROM strike_trade_volume
@@ -118,15 +119,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND side = ${q.side}
               AND ts >= ${q.since}
             ORDER BY ts ASC
-          `
-          : await sql`
+          `,
+              2,
+              10_000,
+            )
+          : await withDbRetry(
+              () => sql`
             SELECT ticker, strike, side, ts,
                    bid_side_vol, ask_side_vol, mid_vol, total_vol
             FROM strike_trade_volume
             WHERE ticker = ${q.ticker}
               AND ts >= ${q.since}
             ORDER BY strike ASC, side ASC, ts ASC
-          `
+          `,
+              2,
+              10_000,
+            )
       ) as RawVolumeRow[];
 
       // Group by (strike, side) → series

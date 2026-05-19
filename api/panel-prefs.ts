@@ -29,7 +29,7 @@ import {
   respondIfInvalid,
 } from './_lib/api-helpers.js';
 import { GUEST_COOKIE, guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
 import { panelPrefsBodySchema } from './_lib/validation.js';
 
@@ -65,10 +65,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method === 'GET') {
     try {
-      const rows = await db`
+      const rows = await withDbRetry(
+        () => db`
         SELECT hidden_panels, panel_order, group_order
           FROM panel_prefs WHERE identity = ${identity}
-      `;
+      `,
+        2,
+        10_000,
+      );
       const row = rows[0];
       done({ status: 200 });
       return res.status(200).json({
@@ -89,16 +93,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const { hiddenPanels, panelOrder, groupOrder } = parsed.data;
 
   try {
-    const existing = await db`
+    const existing = await withDbRetry(
+      () => db`
       SELECT hidden_panels, panel_order, group_order
         FROM panel_prefs WHERE identity = ${identity}
-    `;
+    `,
+      2,
+      10_000,
+    );
     const prior = existing[0];
     const mergedHidden = hiddenPanels ?? asStringArray(prior?.hidden_panels);
     const mergedPanelOrder = panelOrder ?? asStringArray(prior?.panel_order);
     const mergedGroupOrder = groupOrder ?? asStringArray(prior?.group_order);
 
-    await db`
+    await withDbRetry(
+      () => db`
       INSERT INTO panel_prefs
         (identity, hidden_panels, panel_order, group_order, updated_at)
       VALUES (
@@ -113,7 +122,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         panel_order   = EXCLUDED.panel_order,
         group_order   = EXCLUDED.group_order,
         updated_at    = NOW()
-    `;
+    `,
+      2,
+      10_000,
+    );
     done({ status: 200 });
     return res.status(200).json({
       hiddenPanels: mergedHidden,

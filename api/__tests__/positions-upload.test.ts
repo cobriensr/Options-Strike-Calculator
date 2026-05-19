@@ -17,6 +17,7 @@ vi.mock('../_lib/db.js', () => ({
     fn.call = fn;
     return fn;
   }),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/logger.js', () => ({

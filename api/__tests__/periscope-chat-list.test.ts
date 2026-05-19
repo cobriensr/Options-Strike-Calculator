@@ -16,6 +16,7 @@ import { mockRequest, mockResponse } from './helpers';
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
