@@ -127,20 +127,32 @@ inputs unchanged; no lint disables remain in App.tsx for this path.
 in-flight requests still complete on rapid filter changes — bandwidth
 waste, server load.
 
-**Files (≤5 per phase):**
+**Scope adjusted 2026-05-18 (during Phase 1C execution):** the
+original audit listed 5 hooks needing AbortController, but a grep
+verification before starting showed 4 of them were already fully
+compliant (declare `abortRef`, abort previous on rerun, signal to
+fetch, supersede-check after parse, AbortError catch, unmount
+cleanup):
 
-- `src/hooks/useLotteryFinder.ts`
-- `src/hooks/useSilentBoomFeed.ts`
-- `src/hooks/useTickerCandles.ts`
-- `src/hooks/useNetFlowHistory.ts`
-- `src/hooks/useTickerNetFlowBatch.ts`
+- ✅ `src/hooks/useLotteryFinder.ts` — already compliant (lines 104, 109-111, 130, 137, 150, 187)
+- ✅ `src/hooks/useSilentBoomFeed.ts` — already compliant (lines 110, 113-115, 139, 192)
+- ✅ `src/hooks/useTickerCandles.ts` — already compliant (lines 65, 69-71, 79, 112)
+- ✅ `src/hooks/useNetFlowHistory.ts` — already compliant (lines 64, 68-70, 80, 113)
+- ❌ `src/hooks/useTickerNetFlowBatch.ts` — **the one actual gap**
+
+Phase 1C therefore reduces to a single-file change (plus tests).
 
 **Change:** Add `AbortController` per fetch, store ref, abort on
-rerun and unmount. Pass `signal` to `fetchJson`/`fetch` calls.
+rerun and unmount. Pass `signal` to `fetch` calls. `finally`-block
+clears `loading` only when `abortRef.current === ctrl` so an
+aborted fetch can't clobber loading state of the superseding fetch.
 
-**Tests:** Extend the 3 hooks with existing tests
-(`useLotteryFinder`, `useSilentBoomFeed`, `useTickerNetFlowBatch`)
-to assert abort-on-rerun.
+**Tests:** Extend `src/__tests__/useTickerNetFlowBatch.test.ts`
+with three new tests:
+
+- abort-on-rerun (AbortError catch path)
+- bail-after-resolve when superseded (`ctrl.signal.aborted` post-parse check)
+- abort-on-unmount (unmount cleanup effect fires)
 
 ### Phase 1D — AbortController on polling fetchers (Pt 2)
 
