@@ -237,10 +237,16 @@ describe('OpeningFlowSignal', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('clears stale (yesterday) cache on mount', () => {
-    getCTTimeMock.mockReturnValue({ hour: 12, minute: 0 });
-    getCTDateStrMock.mockReturnValue('2026-05-14'); // today
-    const cached: OpeningFlowResponse = makeResponse({ date: '2026-05-13' }); // yesterday
+  it('preserves cross-day cache on mount (last-good semantics)', () => {
+    // Pin the bug Wonce reported: at 12:32 AM CT Tuesday, the panel
+    // was showing the empty "Outside the signal window" state because
+    // the prior eviction rule wiped the cache the moment CT date
+    // rolled over. New rule: the cache survives across CT dates and
+    // only gets overwritten when a fresh fetch lands. Revisiting the
+    // panel after midnight still shows the previous session's tickets
+    // until the next morning's slice-1 data arrives.
+    getCTTimeMock.mockReturnValue({ hour: 0, minute: 32 });
+    const cached: OpeningFlowResponse = makeResponse({ date: '2026-05-13' });
     localStorage.setItem(
       'openingFlowSignal.lastGood',
       JSON.stringify({
@@ -252,9 +258,13 @@ describe('OpeningFlowSignal', () => {
 
     render(<OpeningFlowSignal />);
 
-    // Stale entry should be cleared from storage and not displayed.
-    expect(localStorage.getItem('openingFlowSignal.lastGood')).toBeNull();
-    expect(screen.getByText(/outside the signal window/i)).toBeInTheDocument();
+    // Cache must NOT be wiped — the row data is the user's only
+    // record of the previous session's signal until the next fetch.
+    expect(localStorage.getItem('openingFlowSignal.lastGood')).not.toBeNull();
+    // Tickets render from cache; empty-state message must NOT appear.
+    expect(
+      screen.queryByText(/outside the signal window/i),
+    ).not.toBeInTheDocument();
   });
 
   it('renders call ticket with emerald chip and a UW anchor with correct OCC', async () => {

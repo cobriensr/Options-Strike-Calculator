@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
-import { getCTTime, getCTDateStr } from '../utils/timezone.js';
+import { getCTTime } from '../utils/timezone.js';
 import { getErrorMessage } from '../utils/error.js';
 
 export type WindowStatus =
@@ -139,29 +139,27 @@ function safeWriteCache(entry: CachedEntry): void {
   }
 }
 
-function safeClearCache(): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // swallow
-  }
-}
-
 /**
- * Read the cached payload on mount, but only if its `date` matches
- * today's CT calendar date. Stale entries (different date) are
- * cleared so yesterday's tickets never bleed into today's open.
+ * Read the cached payload on mount.
+ *
+ * Last-good semantics: the cache survives across CT-date rollovers
+ * and only gets overwritten when a fresh successful fetch lands.
+ * This means revisiting the panel at 12:30 AM CT Tuesday still shows
+ * Monday's tickets — the original "leave it visibly displayed so I
+ * can go back during the day" UX extends naturally into the next
+ * morning's pre-market read until the next slice-1 fetch overwrites
+ * with new data. (The previous version evicted on `cached.date !==
+ * today CT date`, which silently wiped the cache at midnight CT and
+ * left the panel empty until 08:25 CT when fresh polling began.)
+ *
+ * No TTL: if the panel is left dormant for days (weekend / holiday),
+ * the cache stays. Worst case the user sees Friday's tickets on
+ * Monday morning before the new window opens, which is a non-issue —
+ * the date label on each card makes the source day explicit.
  */
-function loadFreshCache(): OpeningFlowResponse | null {
+function loadCache(): OpeningFlowResponse | null {
   const cached = safeReadCache();
-  if (cached == null) return null;
-  const ctToday = getCTDateStr(new Date());
-  if (cached.date !== ctToday) {
-    safeClearCache();
-    return null;
-  }
-  return cached.data;
+  return cached?.data ?? null;
 }
 
 /**
@@ -185,7 +183,7 @@ export function useOpeningFlowSignal(): State & {
 } {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const [cachedData, setCachedData] = useState<OpeningFlowResponse | null>(() =>
-    loadFreshCache(),
+    loadCache(),
   );
   const [isWindowOpen, setIsWindowOpen] = useState<boolean>(() =>
     inPollingWindow(new Date()),
