@@ -16,6 +16,7 @@
 import { memo, useMemo } from 'react';
 import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
+import { getETDateStr } from '../utils/timezone';
 import {
   usePinSetupStatus,
   type PinSetupStatus,
@@ -148,6 +149,9 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
     marketOpen,
   });
 
+  // Today (ET) — used to (a) seed the picker so it never reads "blank"
+  // and (b) clamp `max` so future dates can't be picked.
+  const today = useMemo(() => getETDateStr(new Date()), []);
   const stateColor = data ? STATE_COLOR[data.state] : theme.textMuted;
 
   const isStale = useMemo(() => {
@@ -321,8 +325,18 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
               <input
                 id="pin-setup-date"
                 type="date"
-                value={date ?? ''}
-                onChange={(e) => setDate(e.target.value || null)}
+                // Default-display today so the picker never reads as
+                // empty / "mm/dd/yyyy" — `date` stays null in live mode.
+                value={date ?? today}
+                max={today}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  // Empty (user cleared) OR today's date both mean
+                  // "go live" — only past dates flip into historical
+                  // mode. Without this, picking today would issue a
+                  // historical-mode request to the server.
+                  setDate(!v || v === today ? null : v);
+                }}
                 className="rounded border px-1.5 py-0.5 font-mono text-[10px]"
                 style={{
                   backgroundColor: theme.inputBg,

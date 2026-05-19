@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const mockUsePinSetupStatus = vi.fn();
@@ -232,13 +232,46 @@ describe('PinSetupTile', () => {
 
   // ── Date picker interactions ───────────────────────────────
 
-  it('invokes setDate when the user picks a date', async () => {
+  it('invokes setDate when the user picks a past date', () => {
     mockHook(makeStatus());
     render(<PinSetupTile marketOpen={false} />);
     const input = screen.getByLabelText(/^Date$/i) as HTMLInputElement;
-    await userEvent.type(input, '2026-05-14');
-    // userEvent.type fires per-char; the final call should be the full string
-    expect(SETDATE).toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: '2026-05-14' } });
+    expect(SETDATE).toHaveBeenCalledWith('2026-05-14');
+  });
+
+  it('defaults the picker to today (ET) and clamps max=today', () => {
+    // Today (ET) is computed inside the component; we don't fix the
+    // clock, we just assert that the picker is non-empty and that
+    // max === the rendered value (i.e. today).
+    mockHook(makeStatus(), { date: null });
+    render(<PinSetupTile marketOpen={true} />);
+    const input = screen.getByLabelText(/^Date$/i) as HTMLInputElement;
+    expect(input.value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(input.max).toBe(input.value);
+    // …and the Live button is NOT visible because we're still in live
+    // mode (hook date is null even though the picker shows today).
+    expect(screen.queryByRole('button', { name: /^Live$/i })).toBeNull();
+  });
+
+  it('returns to live mode (setDate(null)) when the user re-picks today from a historical view', () => {
+    // Start in a historical view so the picker is showing a past
+    // date — then change it back to today. The component should call
+    // setDate(null) so the server treats it as live, not historical.
+    mockHook(makeStatus({ mode: 'historical', date: '2026-05-14' }), {
+      date: '2026-05-14',
+    });
+    render(<PinSetupTile marketOpen={true} />);
+    const input = screen.getByLabelText(/^Date$/i) as HTMLInputElement;
+    // The component computes today from getETDateStr(new Date()); we
+    // pluck it from a freshly-rendered live picker via a sibling
+    // render. Cleaner alternative: render a second instance with
+    // date=null and read its value.
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    fireEvent.change(input, { target: { value: today } });
+    expect(SETDATE).toHaveBeenCalledWith(null);
   });
 
   it('invokes setDate(null) when Live button is clicked', async () => {
