@@ -40,6 +40,7 @@ import {
   evaluateOpeningFlow,
   InvalidTradingDateError,
 } from './_lib/opening-flow-evaluator.js';
+import { readOpeningFlowSnapshot } from './_lib/opening-flow-store.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guarded = await guardOwnerOrGuestEndpoint(req, res, () => undefined);
@@ -60,10 +61,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const requestedDate = parsed.data.date;
     const now = new Date();
-    const targetDate = requestedDate ?? getETDateStr(now);
+    const today = getETDateStr(now);
+    const targetDate = requestedDate ?? today;
+    const isLive = !requestedDate || requestedDate === today;
 
     try {
-      const payload = await evaluateOpeningFlow(targetDate, { now });
+      // Today / live → re-compute from raw trades so partial slice
+      // progress and just-arrived prints are reflected. Historical →
+      // read the cron-captured snapshot; fall back to live compute
+      // only if the row is missing (date predates the capture cron
+      // or a transient cron miss). The fallback may return an empty
+      // payload once `ws_option_trades` has aged out past T+2, which
+      // is the documented limit of the data path.
+      let payload;
+      if (isLive) {
+        payload = await evaluateOpeningFlow(targetDate, { now });
+      } else {
+        const stored = await readOpeningFlowSnapshot(targetDate);
+        payload = stored ?? (await evaluateOpeningFlow(targetDate, { now }));
+      }
       // 15s CDN cache. Live data is fast-moving but the endpoint is
       // hot during the polling window — brief reuse keeps cost down.
       setCacheHeaders(res, 15, 15);

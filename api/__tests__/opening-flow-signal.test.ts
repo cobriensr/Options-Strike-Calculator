@@ -297,6 +297,9 @@ describe('opening-flow-signal endpoint', () => {
   });
 
   it('fires SPY signal for a historical date when DB returns winning trades', async () => {
+    // First call is `readOpeningFlowSnapshot` — return [] so the
+    // endpoint falls back to live-compute (the legacy path under test).
+    mockSql.mockResolvedValueOnce([]);
     mockSql.mockImplementation(async () => {
       // Both slice1 and slice2 queries get this — simplified: 745C dominant for both
       return [
@@ -371,6 +374,148 @@ describe('opening-flow-signal endpoint', () => {
     expect(res._status).toBe(400);
     const body = res._json as { error: string };
     expect(body.error).toBe('invalid query');
+  });
+
+  it('reads from opening_flow_signals table for a historical date when a snapshot exists', async () => {
+    // Single SQL call expected — the store's table SELECT. Evaluator
+    // SQL (slice1 + slice2 ws_option_trades queries) MUST NOT run.
+    const SAMPLE_SPY = {
+      ticker: 'SPY',
+      window_status: 'closed',
+      slice1: {
+        tickets: [],
+        callPremium: 1_000_000,
+        putPremium: 500_000,
+        biasSide: 'call',
+        biasRatio: 2,
+        top3SameSide: true,
+      },
+      slice2: {
+        totalPremium: 1_500_000,
+        biasPremium: 1_100_000,
+        biasShare: 0.733,
+        confirms: true,
+      },
+      signal: {
+        fired: true,
+        side: 'call',
+        contract: {
+          strike: 745,
+          side: 'call',
+          premium: 1_000_000,
+          volume: 24_000,
+          avgFill: 1.36,
+        },
+        entryPrice: 1.36,
+      },
+      as_of_utc: '2026-05-13T13:50:00Z',
+      // Neon NUMERIC binds back as string — verify the store coerces.
+      stop_pct: '0.3',
+      exit_minutes_from_entry: 60,
+    };
+    const SAMPLE_QQQ = {
+      ticker: 'QQQ',
+      window_status: 'closed',
+      slice1: null,
+      slice2: null,
+      signal: { fired: false, reason: 'no_tickets' },
+      as_of_utc: '2026-05-13T13:50:00Z',
+      stop_pct: '0.3',
+      exit_minutes_from_entry: 60,
+    };
+    mockSql.mockResolvedValueOnce([SAMPLE_SPY, SAMPLE_QQQ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-13' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      windowStatus: string;
+      asOfUtc: string;
+      stopPct: number;
+      exitMinutesFromEntry: number;
+      tickers: Record<
+        string,
+        {
+          slice1: unknown;
+          slice2: { biasShare: number; confirms: boolean } | null;
+          signal: { fired: boolean; side?: string };
+        }
+      >;
+    };
+    expect(body.windowStatus).toBe('closed');
+    expect(body.asOfUtc).toBe('2026-05-13T13:50:00Z');
+    // NUMERIC string '0.3' must coerce to number 0.3.
+    expect(body.stopPct).toBe(0.3);
+    expect(typeof body.stopPct).toBe('number');
+    expect(body.exitMinutesFromEntry).toBe(60);
+    expect(body.tickers.SPY?.signal.fired).toBe(true);
+    expect(body.tickers.SPY?.signal.side).toBe('call');
+    expect(body.tickers.SPY?.slice2?.biasShare).toBe(0.733);
+    expect(body.tickers.QQQ?.signal.fired).toBe(false);
+    expect(body.tickers.QQQ?.slice1).toBeNull();
+
+    // Exactly ONE SQL call — the store's SELECT. The evaluator's
+    // ws_option_trades queries did NOT run.
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to live compute when no stored snapshot exists for a historical date', async () => {
+    // First call: store query returns [] (no row captured). Subsequent
+    // calls: evaluator's slice1 + slice2 SELECTs over ws_option_trades.
+    mockSql.mockResolvedValueOnce([]); // store SELECT
+    mockSql.mockResolvedValue([]); // evaluator queries — empty trades
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-13' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      windowStatus: string;
+      tickers: Record<
+        string,
+        { slice1: unknown; slice2: unknown; signal: { fired: boolean } }
+      >;
+    };
+    // Historical date forces effectiveNow past close → 'closed'.
+    expect(body.windowStatus).toBe('closed');
+    // Empty trade tape → no signal for either ticker.
+    expect(body.tickers.SPY?.signal.fired).toBe(false);
+    expect(body.tickers.QQQ?.signal.fired).toBe(false);
+    // Store SELECT (1) + per-ticker slice1+slice2 (2 × 2 = 4) = 5 calls.
+    expect(mockSql).toHaveBeenCalledTimes(5);
+  });
+
+  it('skips the store and live-computes when date matches today (ET)', async () => {
+    // Pin the wall-clock to a known ET moment so getETDateStr is
+    // deterministic. 2026-05-13T20:00:00Z = 16:00 ET — well past
+    // close, so the evaluator's effective window is 'closed'.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-13T20:00:00Z'));
+    // Evaluator's slice1 + slice2 queries return empty.
+    mockSql.mockResolvedValue([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-13' }, // === today in ET
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { windowStatus: string };
+    expect(body.windowStatus).toBe('closed');
+    // 4 evaluator calls (SPY slice1, SPY slice2, QQQ slice1, QQQ slice2)
+    // — the store SELECT must NOT run for today's date.
+    expect(mockSql).toHaveBeenCalledTimes(4);
   });
 
   it('returns 400 when date passes Zod regex but evaluator rejects (month 13)', async () => {
