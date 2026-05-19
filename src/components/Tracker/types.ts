@@ -111,6 +111,10 @@ export interface ContractUpdateInput {
   spot_alerts?: SpotAlert[] | null;
   status?: 'closed';
   closed_price?: number;
+  /** Edit position sizing — must be a positive integer when provided. */
+  quantity?: number;
+  /** Edit entry price in dollars — must be a positive number when provided. */
+  entry_price?: number;
 }
 
 // ============================================================

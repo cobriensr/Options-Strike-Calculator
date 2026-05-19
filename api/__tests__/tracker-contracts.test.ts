@@ -588,6 +588,126 @@ describe('PATCH /api/tracker/contracts/[id]', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
   });
+
+  it('updates quantity + entry_price and returns the row', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        ...SAMPLE_ROW,
+        entry_price: '5.7500',
+        quantity: 10,
+      },
+    ]);
+    const res = mockResponse();
+    await idHandler(
+      mockRequest({
+        method: 'PATCH',
+        query: { id: '1' },
+        body: { quantity: 10, entry_price: 5.75 },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      contract: { entry_price: string; quantity: number };
+    };
+    expect(body.contract.entry_price).toBe('5.7500');
+    expect(body.contract.quantity).toBe(10);
+    // Verify the UPDATE statement applies these via COALESCE so omitted
+    // fields preserve the existing value.
+    const call = mockSql.mock.calls[0]!;
+    const sqlText = Array.isArray(call[0])
+      ? call[0].join('?')
+      : String(call[0]);
+    expect(sqlText).toContain('entry_price = COALESCE');
+    expect(sqlText).toContain('quantity = COALESCE');
+  });
+
+  it('rejects entry_price = 0 (must be positive)', async () => {
+    const res = mockResponse();
+    await idHandler(
+      mockRequest({
+        method: 'PATCH',
+        query: { id: '1' },
+        body: { entry_price: 0 },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects negative quantity', async () => {
+    const res = mockResponse();
+    await idHandler(
+      mockRequest({
+        method: 'PATCH',
+        query: { id: '1' },
+        body: { quantity: -3 },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-integer quantity (1.5 contracts)', async () => {
+    const res = mockResponse();
+    await idHandler(
+      mockRequest({
+        method: 'PATCH',
+        query: { id: '1' },
+        body: { quantity: 1.5 },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects sub-precision entry_price (1e-12) — NUMERIC(10,4) underflow guard', async () => {
+    // 1e-12 is a finite positive number but rounds to 0 on the column.
+    // Zod `.gte(0.0001)` rejects at the boundary so the SQL never sees it.
+    const res = mockResponse();
+    await idHandler(
+      mockRequest({
+        method: 'PATCH',
+        query: { id: '1' },
+        body: { entry_price: 1e-12 },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('PATCH with only quantity leaves entry_price binding null (COALESCE preserves)', async () => {
+    // Verifies the COALESCE semantics on the UPDATE: omitted fields
+    // must come through as `null` bindings so Postgres keeps the
+    // existing column value. Without this, the `?? null` fallback on
+    // an undefined `data.entry_price` could regress and accidentally
+    // bind `undefined`, which Neon serializes differently.
+    mockSql.mockResolvedValueOnce([
+      { ...SAMPLE_ROW, quantity: 8 }, // entry_price unchanged
+    ]);
+    const res = mockResponse();
+    await idHandler(
+      mockRequest({
+        method: 'PATCH',
+        query: { id: '1' },
+        body: { quantity: 8 },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    // Binding inspection: tagged-template call shape is
+    // [stringsArray, binding1, binding2, ...]. entry_price is the 12th
+    // binding and quantity is the 13th (see SQL in
+    // api/tracker/contracts/[id].ts handlePatch). When only quantity is
+    // sent, entry_price binding MUST be null (preserve via COALESCE).
+    const call = mockSql.mock.calls[0]!;
+    expect(call[12]).toBeNull();
+    expect(call[13]).toBe(8);
+  });
 });
 
 // ============================================================

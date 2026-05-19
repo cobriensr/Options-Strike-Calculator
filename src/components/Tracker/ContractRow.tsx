@@ -22,6 +22,7 @@ import {
 } from './helpers.js';
 import { ThresholdsEditor } from './ThresholdsEditor.js';
 import { SpotAlertsEditor } from './SpotAlertsEditor.js';
+import { PositionSizeEntryEditor } from './PositionSizeEntryEditor.js';
 
 interface Props {
   contract: TrackerContract;
@@ -66,6 +67,22 @@ export const ContractRow = memo(function ContractRow({
   const handleSpotAlertsChange = useCallback(
     (next: SpotAlert[] | null) => {
       void onUpdate(contract.id, { spot_alerts: next });
+    },
+    [contract.id, onUpdate],
+  );
+
+  const handlePositionSizeEntrySave = useCallback(
+    async ({
+      quantity,
+      entryPrice,
+    }: {
+      quantity: number;
+      entryPrice: number;
+    }) => {
+      await onUpdate(contract.id, {
+        quantity,
+        entry_price: entryPrice,
+      });
     },
     [contract.id, onUpdate],
   );
@@ -165,6 +182,13 @@ export const ContractRow = memo(function ContractRow({
         <tr id={detailsId} className="border-edge bg-surface-alt border-b">
           <td colSpan={10} className="px-4 py-3">
             <div className="space-y-4">
+              {contract.status === 'active' && (
+                <PositionSizeEntryEditor
+                  quantity={contract.quantity}
+                  entryPrice={contract.entry_price}
+                  onSave={handlePositionSizeEntrySave}
+                />
+              )}
               <ThresholdsEditor
                 upThresholds={
                   contract.up_thresholds

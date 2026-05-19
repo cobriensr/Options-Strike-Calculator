@@ -143,6 +143,8 @@ async function handlePatch(
           ELSE closed_at
         END,
         closed_price = COALESCE(${data.closed_price ?? null}::numeric, closed_price),
+        entry_price = COALESCE(${data.entry_price ?? null}::numeric, entry_price),
+        quantity = COALESCE(${data.quantity ?? null}::int, quantity),
         updated_at = NOW()
       WHERE id = ${id}
       RETURNING id, occ_symbol, ticker,

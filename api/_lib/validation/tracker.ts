@@ -122,6 +122,14 @@ export const contractUpdateSchema = z
     spot_alerts: z.array(spotAlertSchema).max(20).nullable().optional(),
     status: z.literal('closed').optional(),
     closed_price: z.number().finite().positive().optional(),
+    // Position-size + entry-price edits. Both are non-nullable on the
+    // underlying column (NOT NULL in tracker_contracts), so we require
+    // positive finite values when provided. `quantity` matches the
+    // create-schema integer constraint. `entry_price` enforces a
+    // minimum of 0.0001 — the NUMERIC(10,4) column rounds anything
+    // below that to 0, which would silently corrupt downstream PnL math.
+    entry_price: z.number().finite().gte(0.0001).optional(),
+    quantity: z.number().int().finite().positive().optional(),
   })
   .refine(
     (data) => {
@@ -132,7 +140,9 @@ export const contractUpdateSchema = z
         data.down_thresholds !== undefined ||
         data.spot_alerts !== undefined ||
         data.status !== undefined ||
-        data.closed_price !== undefined
+        data.closed_price !== undefined ||
+        data.entry_price !== undefined ||
+        data.quantity !== undefined
       );
     },
     { message: 'PATCH body must include at least one field to update' },

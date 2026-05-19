@@ -101,6 +101,56 @@ describe('ContractRow', () => {
     expect(onClose).toHaveBeenCalledWith(42, 8.4);
   });
 
+  it('renders PositionSizeEntryEditor in expanded details and saves changes', async () => {
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const row = makeRow();
+    render(
+      wrap(
+        <ContractRow
+          contract={row}
+          hasUnreadAlert={false}
+          onUpdate={onUpdate}
+          onClose={vi.fn()}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Details/i }));
+
+    // Editor is pre-filled with the current size + entry.
+    const sizeInput = screen.getByLabelText(/Position size/i);
+    const entryInput = screen.getByLabelText(/Entry price/i);
+    expect(sizeInput).toHaveValue(5);
+    expect(entryInput).toHaveValue(4.3);
+
+    // Bump size and entry, then save.
+    fireEvent.change(sizeInput, { target: { value: '8' } });
+    fireEvent.change(entryInput, { target: { value: '5.75' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+    expect(onUpdate).toHaveBeenCalledWith(42, {
+      quantity: 8,
+      entry_price: 5.75,
+    });
+  });
+
+  it('hides PositionSizeEntryEditor for closed contracts', () => {
+    const row = makeRow({ status: 'closed' });
+    render(
+      wrap(
+        <ContractRow
+          contract={row}
+          hasUnreadAlert={false}
+          onUpdate={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Details/i }));
+    expect(screen.queryByLabelText(/Position size/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Entry price/i)).not.toBeInTheDocument();
+  });
+
   it('rejects close when price is non-positive', async () => {
     const onClose = vi.fn();
     render(
