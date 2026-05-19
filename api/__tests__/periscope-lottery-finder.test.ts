@@ -9,7 +9,9 @@ vi.mock('../_lib/db.js', () => ({
 
 import {
   detectCallLottery,
+  detectCallLotteryAllForDate,
   detectPutLottery,
+  detectPutLotteryAllForDate,
   fetchEntryPx,
   fetchGexTarget,
   fetchLatestVix,
@@ -313,5 +315,176 @@ describe('detectPutLottery — v3 strict filter cascade', () => {
     const fires = await detectPutLottery('2026-04-23');
     expect(fires).toHaveLength(1);
     expect(fires[0]!.v4Badge).toBe(false);
+  });
+});
+
+describe('detectCallLotteryAllForDate — historical backfill variant', () => {
+  it('emits one fire per qualifying slot — not just the latest', async () => {
+    // Two slot pairs in the same expiry, both qualifying. The
+    // all-day variant should fire on BOTH, while the live variant
+    // would only see the latest.
+    const slot1 = {
+      captured_at: '2026-05-18T16:00:00Z',
+      strike: 7400,
+      greek_post: -5000,
+      greek_prior: -2000,
+      greek_delta: -3000,
+      spot_at_event: 7380,
+      lvl_rank: 0.92,
+      chg_rank: 0.98,
+    };
+    const slot2 = {
+      captured_at: '2026-05-18T18:43:12Z',
+      strike: 7380,
+      greek_post: -7403.4,
+      greek_prior: -2890.1,
+      greek_delta: -4513.3,
+      spot_at_event: 7362.14,
+      lvl_rank: 0.95,
+      chg_rank: 0.999,
+    };
+    // fetchAllCandidatesForExpiry returns both rows
+    mockSql.mockResolvedValueOnce([slot1, slot2]);
+    // Per-slot augmentation calls (gex, qqq, entry, vix) — slot1 first
+    mockSql.mockResolvedValueOnce([
+      { gex_dollars: '-500000000', call_ratio: '0.5' },
+    ]);
+    mockSql.mockResolvedValueOnce([{ sum_call: '600000', sum_put: '400000' }]);
+    mockSql.mockResolvedValueOnce([{ price: '0.15' }]);
+    mockSql.mockResolvedValueOnce([{ vix: '17.5' }]);
+    // slot2
+    mockSql.mockResolvedValueOnce([
+      { gex_dollars: '-974008661', call_ratio: '-3.58' },
+    ]);
+    mockSql.mockResolvedValueOnce([{ sum_call: '800000', sum_put: '200000' }]);
+    mockSql.mockResolvedValueOnce([{ price: '0.10' }]);
+    mockSql.mockResolvedValueOnce([{ vix: '18.31' }]);
+
+    const fires = await detectCallLotteryAllForDate('2026-05-18');
+    expect(fires).toHaveLength(2);
+    expect(fires[0]!.eventStrike).toBe(7400);
+    expect(fires[1]!.eventStrike).toBe(7380);
+    // Both rows go through the same v3 strict filter
+    expect(fires[0]!.v3StrictPass).toBe(true);
+    expect(fires[1]!.v3StrictPass).toBe(true);
+  });
+
+  it('still applies the v3 strict filter on each historical candidate', async () => {
+    // One qualifying candidate + one disqualifying (lvl_rank too low)
+    const ok = {
+      captured_at: '2026-04-23T17:00:00Z',
+      strike: 7170,
+      greek_post: -6000,
+      greek_prior: -2500,
+      greek_delta: -3500,
+      spot_at_event: 7140,
+      lvl_rank: 0.93,
+      chg_rank: 0.97,
+    };
+    const rejected = {
+      captured_at: '2026-04-23T17:10:00Z',
+      strike: 7180,
+      greek_post: -6200,
+      greek_prior: -2600,
+      greek_delta: -3600,
+      spot_at_event: 7140,
+      lvl_rank: 0.55, // < 0.9 RANK_FLOOR
+      chg_rank: 0.97,
+    };
+    mockSql.mockResolvedValueOnce([ok, rejected]);
+    // Only the ok row should reach augmentation
+    mockSql.mockResolvedValueOnce([
+      { gex_dollars: '-500000000', call_ratio: '0.7' },
+    ]);
+    mockSql.mockResolvedValueOnce([{ sum_call: '600000', sum_put: '400000' }]);
+    mockSql.mockResolvedValueOnce([{ price: '0.20' }]);
+    mockSql.mockResolvedValueOnce([{ vix: '20.1' }]);
+
+    const fires = await detectCallLotteryAllForDate('2026-04-23');
+    expect(fires).toHaveLength(1);
+    expect(fires[0]!.eventStrike).toBe(7170);
+  });
+});
+
+describe('detectPutLotteryAllForDate — historical backfill variant', () => {
+  it('emits fires across multiple slots for a single expiry', async () => {
+    const slot1 = {
+      captured_at: '2026-04-23T15:00:00Z',
+      strike: 7100,
+      greek_post: 5000,
+      greek_prior: 1000,
+      greek_delta: 4000,
+      spot_at_event: 7140,
+      lvl_rank: 0.6,
+      chg_rank: 0.99,
+    };
+    const slot2 = {
+      captured_at: '2026-04-23T18:00:00Z',
+      strike: 7050,
+      greek_post: -3500,
+      greek_prior: 200,
+      greek_delta: -3700,
+      spot_at_event: 7080,
+      lvl_rank: 0.7,
+      chg_rank: 0.95,
+    };
+    mockSql.mockResolvedValueOnce([slot1, slot2]);
+    // slot1 augmentation
+    mockSql.mockResolvedValueOnce([
+      { gex_dollars: '300000000', call_ratio: '0.6' },
+    ]);
+    mockSql.mockResolvedValueOnce([{ price: '0.42' }]);
+    mockSql.mockResolvedValueOnce([{ vix: '20.5' }]);
+    // slot2 augmentation
+    mockSql.mockResolvedValueOnce([
+      { gex_dollars: '200000000', call_ratio: '0.8' },
+    ]);
+    mockSql.mockResolvedValueOnce([{ price: '0.60' }]);
+    mockSql.mockResolvedValueOnce([{ vix: '21.0' }]);
+
+    const fires = await detectPutLotteryAllForDate('2026-04-23');
+    expect(fires).toHaveLength(2);
+    expect(fires.map((f) => f.eventStrike).sort()).toEqual([7050, 7100]);
+    // Both should be v3StrictPass + put_lottery
+    expect(fires.every((f) => f.fireType === 'put_lottery')).toBe(true);
+  });
+
+  it('rejects per-slot rows that fail call_ratio cap (>=1.5)', async () => {
+    const ok = {
+      captured_at: '2026-04-22T16:00:00Z',
+      strike: 7090,
+      greek_post: 4000,
+      greek_prior: 500,
+      greek_delta: 3500,
+      spot_at_event: 7115,
+      lvl_rank: 0.5,
+      chg_rank: 0.96,
+    };
+    const tooCallHeavy = {
+      captured_at: '2026-04-22T16:10:00Z',
+      strike: 7080,
+      greek_post: 3800,
+      greek_prior: 400,
+      greek_delta: 3400,
+      spot_at_event: 7115,
+      lvl_rank: 0.5,
+      chg_rank: 0.96,
+    };
+    mockSql.mockResolvedValueOnce([ok, tooCallHeavy]);
+    // ok row passes
+    mockSql.mockResolvedValueOnce([
+      { gex_dollars: '300000000', call_ratio: '0.8' },
+    ]);
+    mockSql.mockResolvedValueOnce([{ price: '0.30' }]);
+    mockSql.mockResolvedValueOnce([{ vix: '20.0' }]);
+    // tooCallHeavy row's gex returns call_ratio >= 1.5 → filtered before
+    // entry_px / vix lookups
+    mockSql.mockResolvedValueOnce([
+      { gex_dollars: '300000000', call_ratio: '1.9' },
+    ]);
+
+    const fires = await detectPutLotteryAllForDate('2026-04-22');
+    expect(fires).toHaveLength(1);
+    expect(fires[0]!.eventStrike).toBe(7090);
   });
 });

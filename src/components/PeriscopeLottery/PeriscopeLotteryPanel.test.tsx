@@ -5,17 +5,22 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import { PeriscopeLotteryPanel } from './PeriscopeLotteryPanel';
 import type { PeriscopeLotteryFire } from './types';
 
 const mockFeed = vi.fn();
+const lastArgs = vi.fn<(args: unknown) => void>();
 vi.mock('../../hooks/usePeriscopeLotteryFeed.js', () => ({
-  usePeriscopeLotteryFeed: () => mockFeed(),
+  usePeriscopeLotteryFeed: (args: unknown) => {
+    lastArgs(args);
+    return mockFeed();
+  },
 }));
 
 beforeEach(() => {
   mockFeed.mockReset();
+  lastArgs.mockReset();
 });
 
 function baseFire(
@@ -184,6 +189,47 @@ describe('PeriscopeLotteryPanel', () => {
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 500');
+  });
+
+  it('renders a date picker that defaults to today (ET) and clamps max=today', () => {
+    mockFeed.mockReturnValue({
+      fires: [],
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refetch: vi.fn(),
+    });
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    const picker = screen.getByLabelText(
+      'Pick a date to view Periscope Lottery fires',
+    ) as HTMLInputElement;
+    expect(picker.type).toBe('date');
+    // Default value === today (ET). We assert the format rather than
+    // the exact string so the test survives day-to-day.
+    expect(picker.value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(picker.max).toBe(picker.value);
+  });
+
+  it('threads the selected date into the hook and marks past dates historical', () => {
+    mockFeed.mockReturnValue({
+      fires: [],
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refetch: vi.fn(),
+    });
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    const picker = screen.getByLabelText(
+      'Pick a date to view Periscope Lottery fires',
+    ) as HTMLInputElement;
+    fireEvent.change(picker, { target: { value: '2024-01-01' } });
+    // The hook was called with date='2024-01-01' and historical=true
+    expect(lastArgs).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        date: '2024-01-01',
+        historical: true,
+      }),
+    );
   });
 
   it('links the strike label to the UW chain page for SPXW 0DTE', () => {

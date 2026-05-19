@@ -226,6 +226,77 @@ async function fetchLatestVix(ts: Date): Promise<number | null> {
 }
 
 /**
+ * Per-candidate filter + augmentation for the call lottery. Extracted
+ * so the live cron and the historical backfill can share the same
+ * downstream logic. Returns null when the candidate fails the filter
+ * (caller skips it); a fire record otherwise.
+ */
+async function applyCallFilter(
+  c: SliceRow,
+  expiry: string,
+): Promise<PeriscopeLotteryFire | null> {
+  const t = PERISCOPE_LOTTERY_THRESHOLDS.CALL;
+  const strike = Math.round(toNum(c.strike));
+  const spot = toNum(c.spot_at_event);
+  const greekPost = toNum(c.greek_post);
+  const greekDelta = toNum(c.greek_delta);
+  const lvlRank = toNum(c.lvl_rank);
+  const chgRank = toNum(c.chg_rank);
+  const strikeDist = strike - spot;
+  const fireTime = toDate(c.captured_at);
+
+  if (strike <= spot) return null;
+  if (greekPost >= 0) return null;
+  if (lvlRank < t.RANK_FLOOR || chgRank < t.RANK_FLOOR) return null;
+  if (strikeDist < t.STRIKE_DIST_MIN_PTS) return null;
+
+  const gex = await fetchGexTarget(strike, fireTime);
+  const gexDollars = gex ? toNum(gex.gex_dollars) : null;
+  if (
+    gexDollars === null ||
+    Number.isNaN(gexDollars) ||
+    gexDollars >= t.GEX_DOLLARS_MAX
+  )
+    return null;
+
+  const callRatio = gex ? toNum(gex.call_ratio) : null;
+  const qqqBalance = await fetchQqqNetPremBalance30m(fireTime);
+  const tradeStrike = strike + t.TRADE_OFFSET_PTS;
+  const entryPx = await fetchEntryPx(expiry, tradeStrike, 'C', fireTime);
+  const vix = await fetchLatestVix(fireTime);
+
+  return {
+    fireType: 'call_lottery',
+    fireTime,
+    expiry,
+    eventStrike: strike,
+    tradeStrike,
+    spotAtEvent: spot,
+    strikeDist,
+    greekPost,
+    greekDelta,
+    greekLvlRank: lvlRank,
+    greekChgRank: chgRank,
+    gexDollars,
+    callRatio,
+    qqqNetPremBalance30m: qqqBalance,
+    entryPx,
+    vix,
+    v3StrictPass: true,
+    v4Badge:
+      qqqBalance !== null &&
+      Math.abs(qqqBalance) >= t.QQQ_BALANCE_BADGE_MIN_ABS,
+    peakPx: null,
+    peakPct: null,
+    peakTime: null,
+    eodClosePx: null,
+    realizedRPeak: null,
+    realizedREod: null,
+    outcomeLocked: false,
+  };
+}
+
+/**
  * Filter I — call lottery. Runs the v3 strict filter cascade:
  *
  *   strike > spot
@@ -238,72 +309,77 @@ async function fetchLatestVix(ts: Date): Promise<number | null> {
 export async function detectCallLottery(
   expiry: string,
 ): Promise<PeriscopeLotteryFire[]> {
-  const t = PERISCOPE_LOTTERY_THRESHOLDS.CALL;
   const candidates = await fetchCandidates('gamma', expiry);
-
   const fires: PeriscopeLotteryFire[] = [];
   for (const c of candidates) {
-    const strike = Math.round(toNum(c.strike));
-    const spot = toNum(c.spot_at_event);
-    const greekPost = toNum(c.greek_post);
-    const greekDelta = toNum(c.greek_delta);
-    const lvlRank = toNum(c.lvl_rank);
-    const chgRank = toNum(c.chg_rank);
-    const strikeDist = strike - spot;
-    const fireTime = toDate(c.captured_at);
-
-    // Hard filters (v3 strict)
-    if (strike <= spot) continue;
-    if (greekPost >= 0) continue;
-    if (lvlRank < t.RANK_FLOOR || chgRank < t.RANK_FLOOR) continue;
-    if (strikeDist < t.STRIKE_DIST_MIN_PTS) continue;
-
-    const gex = await fetchGexTarget(strike, fireTime);
-    const gexDollars = gex ? toNum(gex.gex_dollars) : null;
-    if (
-      gexDollars === null ||
-      Number.isNaN(gexDollars) ||
-      gexDollars >= t.GEX_DOLLARS_MAX
-    )
-      continue;
-
-    const callRatio = gex ? toNum(gex.call_ratio) : null;
-    const qqqBalance = await fetchQqqNetPremBalance30m(fireTime);
-    const tradeStrike = strike + t.TRADE_OFFSET_PTS;
-    const entryPx = await fetchEntryPx(expiry, tradeStrike, 'C', fireTime);
-    const vix = await fetchLatestVix(fireTime);
-
-    fires.push({
-      fireType: 'call_lottery',
-      fireTime,
-      expiry,
-      eventStrike: strike,
-      tradeStrike,
-      spotAtEvent: spot,
-      strikeDist,
-      greekPost,
-      greekDelta,
-      greekLvlRank: lvlRank,
-      greekChgRank: chgRank,
-      gexDollars,
-      callRatio,
-      qqqNetPremBalance30m: qqqBalance,
-      entryPx,
-      vix,
-      v3StrictPass: true,
-      v4Badge:
-        qqqBalance !== null &&
-        Math.abs(qqqBalance) >= t.QQQ_BALANCE_BADGE_MIN_ABS,
-      peakPx: null,
-      peakPct: null,
-      peakTime: null,
-      eodClosePx: null,
-      realizedRPeak: null,
-      realizedREod: null,
-      outcomeLocked: false,
-    });
+    const fire = await applyCallFilter(c, expiry);
+    if (fire) fires.push(fire);
   }
   return fires;
+}
+
+/**
+ * Per-candidate filter + augmentation for the put lottery. Same shape
+ * as applyCallFilter — extracted so live and backfill share it.
+ */
+async function applyPutFilter(
+  c: SliceRow,
+  expiry: string,
+): Promise<PeriscopeLotteryFire | null> {
+  const t = PERISCOPE_LOTTERY_THRESHOLDS.PUT;
+  const strike = Math.round(toNum(c.strike));
+  const spot = toNum(c.spot_at_event);
+  const greekPost = toNum(c.greek_post);
+  const greekDelta = toNum(c.greek_delta);
+  const lvlRank = toNum(c.lvl_rank);
+  const chgRank = toNum(c.chg_rank);
+  const strikeDist = spot - strike;
+  const fireTime = toDate(c.captured_at);
+
+  if (strike >= spot) return null;
+  if (strikeDist < t.STRIKE_DIST_MIN_PTS) return null;
+
+  const gex = await fetchGexTarget(strike, fireTime);
+  const gexDollars = gex ? toNum(gex.gex_dollars) : null;
+  const callRatio = gex ? toNum(gex.call_ratio) : null;
+  if (
+    callRatio === null ||
+    Number.isNaN(callRatio) ||
+    callRatio >= t.CALL_RATIO_MAX
+  )
+    return null;
+
+  const tradeStrike = strike - t.TRADE_OFFSET_PTS;
+  const entryPx = await fetchEntryPx(expiry, tradeStrike, 'P', fireTime);
+  const vix = await fetchLatestVix(fireTime);
+
+  return {
+    fireType: 'put_lottery',
+    fireTime,
+    expiry,
+    eventStrike: strike,
+    tradeStrike,
+    spotAtEvent: spot,
+    strikeDist,
+    greekPost,
+    greekDelta,
+    greekLvlRank: lvlRank,
+    greekChgRank: chgRank,
+    gexDollars,
+    callRatio,
+    qqqNetPremBalance30m: null, // not used for L
+    entryPx,
+    vix,
+    v3StrictPass: true,
+    v4Badge: entryPx !== null && entryPx <= t.ENTRY_PX_BADGE_MAX,
+    peakPx: null,
+    peakPct: null,
+    peakTime: null,
+    eodClosePx: null,
+    realizedRPeak: null,
+    realizedREod: null,
+    outcomeLocked: false,
+  };
 }
 
 /**
@@ -319,64 +395,117 @@ export async function detectCallLottery(
 export async function detectPutLottery(
   expiry: string,
 ): Promise<PeriscopeLotteryFire[]> {
-  const t = PERISCOPE_LOTTERY_THRESHOLDS.PUT;
   const candidates = await fetchCandidates('charm', expiry);
-
   const fires: PeriscopeLotteryFire[] = [];
   for (const c of candidates) {
-    const strike = Math.round(toNum(c.strike));
-    const spot = toNum(c.spot_at_event);
-    const greekPost = toNum(c.greek_post);
-    const greekDelta = toNum(c.greek_delta);
-    const lvlRank = toNum(c.lvl_rank);
-    const chgRank = toNum(c.chg_rank);
-    const strikeDist = spot - strike;
-    const fireTime = toDate(c.captured_at);
+    const fire = await applyPutFilter(c, expiry);
+    if (fire) fires.push(fire);
+  }
+  return fires;
+}
 
-    if (strike >= spot) continue;
-    if (strikeDist < t.STRIKE_DIST_MIN_PTS) continue;
+/**
+ * Pull ALL slice-pair events for the expiry's full day. Same query
+ * shape as fetchCandidates but using a LAG window for slice-over-slice
+ * deltas instead of `latest_slot vs prior_slot` join, and partitioning
+ * `lvl_rank` / `chg_rank` by `captured_at` so per-slot ranking matches
+ * the live cron's semantics.
+ *
+ * Used by the historical backfill — never by the live cron.
+ *
+ * Semantic note vs. the live `fetchCandidates`: the live query joins
+ * the latest slot's rows against a single global `prior_slot`
+ * captured_at. This backfill uses `LAG(value) OVER (PARTITION BY
+ * strike ORDER BY captured_at)`, which gives the strike's own previous
+ * row regardless of whether other strikes were captured in between.
+ * In practice Periscope publishes every strike on every 10-min slice,
+ * so the LAG row's captured_at == the previous slot's captured_at and
+ * the two queries are equivalent. If a strike ever misses a slice, the
+ * backfill spans a longer time gap for that one transition only.
+ */
+async function fetchAllCandidatesForExpiry(
+  panel: 'gamma' | 'charm',
+  expiry: string,
+): Promise<SliceRow[]> {
+  const sql = getDb();
+  const dayTopPct =
+    panel === 'gamma'
+      ? PERISCOPE_LOTTERY_THRESHOLDS.CALL.DAY_TOP_PCT
+      : PERISCOPE_LOTTERY_THRESHOLDS.PUT.DAY_TOP_PCT;
+  const quantile = 1 - dayTopPct;
 
-    const gex = await fetchGexTarget(strike, fireTime);
-    const gexDollars = gex ? toNum(gex.gex_dollars) : null;
-    const callRatio = gex ? toNum(gex.call_ratio) : null;
-    if (
-      callRatio === null ||
-      Number.isNaN(callRatio) ||
-      callRatio >= t.CALL_RATIO_MAX
+  const rows = (await sql`
+    WITH pairs AS (
+      SELECT
+        captured_at,
+        strike,
+        value AS greek_post,
+        LAG(value) OVER (PARTITION BY strike ORDER BY captured_at)
+          AS greek_prior,
+        value - LAG(value) OVER (PARTITION BY strike ORDER BY captured_at)
+          AS greek_delta
+      FROM periscope_snapshots
+      WHERE panel = ${panel} AND expiry = ${expiry}
+    ),
+    day_threshold AS (
+      SELECT PERCENTILE_CONT(${quantile})
+        WITHIN GROUP (ORDER BY ABS(greek_delta)) AS d_thresh
+      FROM pairs
+      WHERE greek_delta IS NOT NULL
+    ),
+    candidates AS (
+      SELECT
+        p.*,
+        PERCENT_RANK() OVER (PARTITION BY captured_at ORDER BY ABS(greek_post))
+          AS lvl_rank,
+        PERCENT_RANK() OVER (PARTITION BY captured_at ORDER BY ABS(greek_delta))
+          AS chg_rank
+      FROM pairs p
+      WHERE p.greek_prior IS NOT NULL
+        AND ABS(p.greek_delta) >= (SELECT d_thresh FROM day_threshold)
+    ),
+    spot_lookup AS (
+      SELECT
+        c.captured_at, c.strike, c.greek_post, c.greek_prior,
+        c.greek_delta, c.lvl_rank, c.chg_rank,
+        (SELECT close::numeric FROM index_candles_1m
+         WHERE symbol = 'SPX' AND timestamp <= c.captured_at
+         ORDER BY timestamp DESC LIMIT 1) AS spot_at_event
+      FROM candidates c
     )
-      continue;
+    SELECT * FROM spot_lookup
+    WHERE spot_at_event IS NOT NULL
+    ORDER BY captured_at, strike
+  `) as SliceRow[];
 
-    const tradeStrike = strike - t.TRADE_OFFSET_PTS;
-    const entryPx = await fetchEntryPx(expiry, tradeStrike, 'P', fireTime);
-    const vix = await fetchLatestVix(fireTime);
+  return rows;
+}
 
-    fires.push({
-      fireType: 'put_lottery',
-      fireTime,
-      expiry,
-      eventStrike: strike,
-      tradeStrike,
-      spotAtEvent: spot,
-      strikeDist,
-      greekPost,
-      greekDelta,
-      greekLvlRank: lvlRank,
-      greekChgRank: chgRank,
-      gexDollars,
-      callRatio,
-      qqqNetPremBalance30m: null, // not used for L
-      entryPx,
-      vix,
-      v3StrictPass: true,
-      v4Badge: entryPx !== null && entryPx <= t.ENTRY_PX_BADGE_MAX,
-      peakPx: null,
-      peakPct: null,
-      peakTime: null,
-      eodClosePx: null,
-      realizedRPeak: null,
-      realizedREod: null,
-      outcomeLocked: false,
-    });
+/**
+ * Backfill variants — run the full v3 strict filter across every
+ * slice-pair in the day, not just the latest. Identical downstream
+ * semantics to the live `detectCallLottery` / `detectPutLottery`.
+ */
+export async function detectCallLotteryAllForDate(
+  expiry: string,
+): Promise<PeriscopeLotteryFire[]> {
+  const candidates = await fetchAllCandidatesForExpiry('gamma', expiry);
+  const fires: PeriscopeLotteryFire[] = [];
+  for (const c of candidates) {
+    const fire = await applyCallFilter(c, expiry);
+    if (fire) fires.push(fire);
+  }
+  return fires;
+}
+
+export async function detectPutLotteryAllForDate(
+  expiry: string,
+): Promise<PeriscopeLotteryFire[]> {
+  const candidates = await fetchAllCandidatesForExpiry('charm', expiry);
+  const fires: PeriscopeLotteryFire[] = [];
+  for (const c of candidates) {
+    const fire = await applyPutFilter(c, expiry);
+    if (fire) fires.push(fire);
   }
   return fires;
 }
