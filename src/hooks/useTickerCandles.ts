@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
+import { usePolling } from './usePolling.js';
 import type {
   TickerCandle,
   TickerCandlesResponse,
@@ -100,14 +101,18 @@ export function useTickerCandles({
     }
   }, [ticker, date, enabled]);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
-    fetchOnce();
-    if (!enabled) return;
-    if (!marketOpen) return;
-    if (date !== todayCt()) return;
-    const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
-    return () => clearInterval(id);
-  }, [fetchOnce, enabled, marketOpen, date]);
+    void fetchOnce();
+  }, [fetchOnce]);
+
+  usePolling(
+    () => {
+      void fetchOnce();
+    },
+    POLL_INTERVALS.OTM_FLOW,
+    [enabled, marketOpen, date === todayCt()],
+  );
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

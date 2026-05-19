@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
 import { getErrorMessage } from '../utils/error.js';
+import { usePolling } from './usePolling.js';
 
 export interface TickerNetFlowSnapshot {
   cumNcp: number;
@@ -148,14 +149,13 @@ export function useTickerNetFlowBatch({
   }, [doFetch, marketOpen, tickersKey]);
 
   // Recurring poll while market is open and we have a non-empty set.
-  useEffect(() => {
-    if (!marketOpen) return;
-    if (tickersKey.length === 0) return;
-    const id = setInterval(() => {
+  usePolling(
+    () => {
       void doFetch();
-    }, POLL_INTERVALS.TICKER_NET_FLOW);
-    return () => clearInterval(id);
-  }, [doFetch, marketOpen, tickersKey]);
+    },
+    POLL_INTERVALS.TICKER_NET_FLOW,
+    [marketOpen, tickersKey.length > 0],
+  );
 
   // Cancel any in-flight request on unmount.
   useEffect(() => () => abortRef.current?.abort(), []);

@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
+import { usePolling } from './usePolling.js';
 import type {
   OptionType,
   SilentBoomAlert,
@@ -180,14 +181,18 @@ export function useSilentBoomFeed({
     pageSize,
   ]);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
-    fetchOnce();
-    if (!marketOpen) return;
-    if (page > 0) return;
-    if (historical) return;
-    const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
-    return () => clearInterval(id);
-  }, [fetchOnce, marketOpen, page, historical]);
+    void fetchOnce();
+  }, [fetchOnce]);
+
+  usePolling(
+    () => {
+      void fetchOnce();
+    },
+    POLL_INTERVALS.OTM_FLOW,
+    [marketOpen, page === 0, !historical],
+  );
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

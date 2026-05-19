@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
+import { usePolling } from './usePolling.js';
 import type {
   NetFlowHistoryResponse,
   NetFlowTick,
@@ -100,15 +101,19 @@ export function useNetFlowHistory({
     }
   }, [ticker, date, from, to, enabled]);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
-    fetchOnce();
-    if (!enabled) return;
-    if (!marketOpen) return;
-    // Only poll today's data — historical is stable.
-    if (date !== todayCt()) return;
-    const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
-    return () => clearInterval(id);
-  }, [fetchOnce, enabled, marketOpen, date]);
+    void fetchOnce();
+  }, [fetchOnce]);
+
+  // Only poll today's data — historical is stable.
+  usePolling(
+    () => {
+      void fetchOnce();
+    },
+    POLL_INTERVALS.OTM_FLOW,
+    [enabled, marketOpen, date === todayCt()],
+  );
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

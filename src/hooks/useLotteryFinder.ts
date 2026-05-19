@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
+import { usePolling } from './usePolling.js';
 import type {
   LotteryFinderResponse,
   LotteryFire,
@@ -183,16 +184,21 @@ export function useLotteryFinder({
     pageSize,
   ]);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
-    fetchOnce();
-    if (!marketOpen) return;
-    // No polling when the user is on a specific minute (historical
-    // bucket — won't change) or browsing past page 0 (would shift
-    // their cursor on every poll).
-    if (minute || page > 0) return;
-    const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
-    return () => clearInterval(id);
-  }, [fetchOnce, marketOpen, minute, page]);
+    void fetchOnce();
+  }, [fetchOnce]);
+
+  // No polling when the user is on a specific minute (historical bucket —
+  // won't change) or browsing past page 0 (would shift their cursor on
+  // every poll).
+  usePolling(
+    () => {
+      void fetchOnce();
+    },
+    POLL_INTERVALS.OTM_FLOW,
+    [marketOpen, !minute, page === 0],
+  );
 
   // Cancel any in-flight request on unmount.
   useEffect(() => () => abortRef.current?.abort(), []);
