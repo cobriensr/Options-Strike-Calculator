@@ -7,10 +7,26 @@ const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  // Real classifier — matches `timeout`, `fetch failed`, etc. The
+  // degradeOnTimeout tests below depend on this returning true for
+  // the synthetic 'db attempt timeout' error.
+  isRetryableDbError: (err: unknown): boolean =>
+    err instanceof Error &&
+    /timeout|fetch failed|connection|ECONNRESET|terminated|socket/i.test(
+      err.message,
+    ),
+}));
+
+const { mockCaptureMessage } = vi.hoisted(() => ({
+  mockCaptureMessage: vi.fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: mockCaptureMessage,
+    setTag: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -24,7 +40,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
-import handler from '../lottery-finder.js';
+import handler, { degradeOnTimeout } from '../lottery-finder.js';
 
 const ROW = {
   id: 42,
@@ -1395,5 +1411,55 @@ describe('lottery-finder endpoint', () => {
     expect(body.fires[0]!.roundTripScoreDeduct).toBe(-2);
     expect(body.fires[0]!.fireCountScoreAdjustment).toBe(1);
     expect(body.fires[0]!.score).toBe(19);
+  });
+});
+
+describe('degradeOnTimeout', () => {
+  beforeEach(() => {
+    mockCaptureMessage.mockReset();
+  });
+
+  it('returns fallback + emits Sentry warning when the inner query throws a retryable error', async () => {
+    // Pin SENTRY-EMERALD-DESERT-7J behavior: when a nice-to-have query
+    // (chainExtras / clusterByMinute / sbChains / reignitedRows) hits
+    // a Neon timeout, the helper degrades to a typed empty result so
+    // the load-bearing rows + COUNT path can still respond 200. The
+    // fallback is emitted as a Sentry warning so we can see degradation
+    // rate in production — explicit observability, not a silent
+    // `.catch(() => [])`.
+    const result = await degradeOnTimeout(
+      async () => {
+        throw new Error('db attempt timeout');
+      },
+      [] as { foo: number }[],
+      'chainExtras',
+      0, // retries=0 so the test doesn't wait on real-time setTimeout
+    );
+    expect(result).toEqual([]);
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('chainExtras'),
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({ context: 'chainExtras' }),
+      }),
+    );
+  });
+
+  it('re-throws when the inner query fails with a non-retryable error', async () => {
+    // SQL syntax error / type mismatch is a real bug, not a transient
+    // Neon blip — must surface as 500, not get masked by the degradation
+    // fallback.
+    await expect(
+      degradeOnTimeout(
+        async () => {
+          throw new Error('syntax error at or near "FORM"');
+        },
+        [] as { foo: number }[],
+        'chainExtras',
+        0,
+      ),
+    ).rejects.toThrow(/syntax error/);
+    expect(mockCaptureMessage).not.toHaveBeenCalled();
   });
 });

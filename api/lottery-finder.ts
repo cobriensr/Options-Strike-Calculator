@@ -13,7 +13,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb, withDbRetry } from './_lib/db.js';
+import { getDb, isRetryableDbError, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import {
@@ -219,6 +219,50 @@ const toIso = (v: DbTimestamp): string =>
 
 const num = (v: DbNullableNumeric): number | null =>
   v == null ? null : Number(v);
+
+/**
+ * Run a "nice-to-have" SQL query under `withDbRetry`, but on a
+ * retryable failure (timeout, fetch failed, etc. — see
+ * `isRetryableDbError`) degrade gracefully to a typed fallback
+ * value instead of propagating the rejection up to the outer
+ * `Promise.all`. Non-retryable errors (SQL syntax, type mismatch)
+ * still throw so genuine bugs surface as 500s.
+ *
+ * Used to keep the lottery-finder feed responsive when Neon is
+ * under load: the load-bearing `rows` + `totalRows` queries stay on
+ * plain `withDbRetry` (failure → 500), while the secondary signals
+ * (reignition flag, mega-cluster badge, SilentBoom cofire indicator,
+ * pinned reignited rows) degrade to empty arrays so the panel still
+ * renders. Every degradation hits Sentry as a warning so we can see
+ * what fraction of requests are running in degraded mode — explicit
+ * observability, not a silent `.catch(() => [])`.
+ *
+ * Spec: docs/superpowers/specs/ (no dedicated spec — hotfix to
+ * SENTRY-EMERALD-DESERT-7J 2026-05-19).
+ */
+export async function degradeOnTimeout<T>(
+  fn: () => Promise<T>,
+  fallback: T,
+  context: string,
+  retries = 2,
+  perAttemptTimeoutMs = 10_000,
+): Promise<T> {
+  try {
+    return await withDbRetry(fn, retries, perAttemptTimeoutMs);
+  } catch (err) {
+    // Only swallow retryable-class failures. SQL syntax or type
+    // errors mean the query is broken — those must surface as 500.
+    if (!isRetryableDbError(err)) throw err;
+    Sentry.captureMessage(`lottery-finder: ${context} degraded to fallback`, {
+      level: 'warning',
+      extra: {
+        context,
+        errMessage: err instanceof Error ? err.message : String(err),
+      },
+    });
+    return fallback;
+  }
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guarded = await guardOwnerOrGuestEndpoint(req, res, () => undefined);
@@ -610,7 +654,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // stable semantics across filter views — a chain that's #3 of
       // the day stays #3 whether the user is filtered to QQQ-only or
       // showing all tickers.
-      withDbRetry(
+      degradeOnTimeout(
         () => db`
         WITH ordered AS (
           SELECT
@@ -677,8 +721,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN qualified q USING (underlying_symbol, strike, option_type, expiry)
         WHERE pc.fire_count > 1
       `,
-        2,
-        10000,
+        [] as ChainExtrasRow[],
+        'chainExtras',
       ),
       // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
       // badge. Truncates trigger_time_ct to the 1-min bucket and
@@ -687,7 +731,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // count reflects the WHOLE market's minute concentration, not
       // a filtered subset — same stable-semantics decision as the
       // chainExtras reignition flag.
-      withDbRetry(
+      degradeOnTimeout(
         () => db`
         SELECT
           date_trunc('minute', trigger_time_ct) AS minute_bucket_ct,
@@ -699,8 +743,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         GROUP BY date_trunc('minute', trigger_time_ct)
         HAVING COUNT(DISTINCT underlying_symbol) >= ${MEGA_CLUSTER_MIN_DISTINCT_TICKERS}
       `,
-        2,
-        10000,
+        [] as ClusterByMinuteRow[],
+        'clusterByMinute',
       ),
       // Silent Boom chain-IDs for the date — drives the DUAL FLAG
       // badge. When the same chain-day appears in BOTH
@@ -713,14 +757,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // wrapped in try/catch at execution because silent_boom_alerts
       // started 2026-04-13; for older dates the table may have no
       // matching rows but the query is still cheap.
-      withDbRetry(
+      degradeOnTimeout(
         () => db`
         SELECT DISTINCT option_chain_id
         FROM silent_boom_alerts
         WHERE date = ${targetDate}::date
       `,
-        2,
-        10000,
+        [] as { option_chain_id: string }[],
+        'sbChains',
       ),
       // Pinned "Hot Right Now" rows — full row payload (same SELECT
       // shape as the main fires query) for the day's top-N reignited
@@ -739,7 +783,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       //
       // Spec: docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md
       // Phase 3 ("REIGNITED section is always visible on every page").
-      withDbRetry(
+      degradeOnTimeout(
         () => db`
         WITH ordered AS (
           SELECT
@@ -854,8 +898,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
         ORDER BY f.trigger_time_ct DESC, f.id DESC
       `,
-        2,
-        10000,
+        [] as FireRow[],
+        'reignitedRows',
       ),
     ])) as [
       FireRow[],
