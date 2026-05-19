@@ -20,6 +20,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 /**
  * Lifecycle states a playbook row can be in. Mirrors the DB CHECK on
@@ -186,13 +187,13 @@ export function usePeriscopePlaybook({
 
   // Polling — RTH only AND only when on Live (no selectedDate). When
   // viewing a historical date the data is immutable; polling is wasted.
-  useEffect(() => {
-    if (!canFetch || !marketOpen || isHistorical) return;
-    const id = setInterval(() => {
+  usePolling(
+    () => {
       void fetchPlaybook();
-    }, POLL_INTERVALS.PERISCOPE);
-    return () => clearInterval(id);
-  }, [canFetch, marketOpen, isHistorical, fetchPlaybook]);
+    },
+    POLL_INTERVALS.PERISCOPE,
+    [canFetch, marketOpen, !isHistorical],
+  );
 
   return {
     data,

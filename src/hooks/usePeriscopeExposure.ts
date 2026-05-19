@@ -19,6 +19,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 export interface RankedRow {
   strike: number;
@@ -181,13 +182,13 @@ export function usePeriscopeExposure({
   // Polling — RTH only AND only when on Live (no selectedSlot). When
   // viewing a historical slot the data is immutable; polling is wasted
   // bandwidth.
-  useEffect(() => {
-    if (!canFetch || !marketOpen || isHistorical) return;
-    const id = setInterval(() => {
+  usePolling(
+    () => {
       void fetchView();
-    }, POLL_INTERVALS.PERISCOPE);
-    return () => clearInterval(id);
-  }, [canFetch, marketOpen, isHistorical, fetchView]);
+    },
+    POLL_INTERVALS.PERISCOPE,
+    [canFetch, marketOpen, !isHistorical],
+  );
 
   return {
     view,

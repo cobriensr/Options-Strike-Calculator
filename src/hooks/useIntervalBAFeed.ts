@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as Sentry from '@sentry/react';
 import { POLL_INTERVALS } from '../constants';
+import { usePolling } from './usePolling';
 
 export interface IntervalBAFeedAlert {
   id: number;
@@ -213,14 +214,17 @@ export function useIntervalBAFeed(
   // The fetch effect above handles cancellation, so a slow request that
   // overlaps with the next tick is harmlessly aborted on the next
   // refreshTick bump.
-  useEffect(() => {
-    if (!marketOpen) return;
-    if (params.date !== todayCt()) return;
-    const id = setInterval(() => {
+  //
+  // The `params.date === todayCt()` predicate is evaluated per render so
+  // a midnight rollover correctly flips the gate and stops polling the
+  // (now historical) prior date.
+  usePolling(
+    () => {
       setRefreshTick((n) => n + 1);
-    }, POLL_INTERVALS.ALERTS);
-    return () => clearInterval(id);
-  }, [marketOpen, params.date]);
+    },
+    POLL_INTERVALS.ALERTS,
+    [marketOpen, params.date === todayCt()],
+  );
 
   return { alerts, summary, loading, error, fetchedAt, refetch };
 }

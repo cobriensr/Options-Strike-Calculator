@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import type { ChainResponse } from '../types/api';
 import { getErrorMessage } from '../utils/error';
+import { usePolling } from './usePolling';
 
 export interface UseChainDataReturn {
   chain: ChainResponse | null;
@@ -86,14 +87,11 @@ export function useChainData(
   }, [enabled, refresh]);
 
   // Poll every 60s only during market hours (with backoff on failures).
-  // Depending on `failStreak` ensures the effect re-runs when the streak
-  // crosses the threshold, so the doubled interval is actually used.
-  useEffect(() => {
-    if (!enabled || !marketOpen) return;
-    const backoff = failStreak >= 3 ? 2 : 1;
-    const interval = setInterval(refresh, POLL_INTERVALS.CHAIN * backoff);
-    return () => clearInterval(interval);
-  }, [enabled, marketOpen, refresh, failStreak]);
+  // The `intervalMs` passed to usePolling depends on `failStreak`, so
+  // when the streak crosses the threshold usePolling clears the existing
+  // interval and re-schedules at the doubled cadence.
+  const backoff = failStreak >= 3 ? 2 : 1;
+  usePolling(refresh, POLL_INTERVALS.CHAIN * backoff, [enabled, marketOpen]);
 
   return { chain, loading, error, refresh };
 }
