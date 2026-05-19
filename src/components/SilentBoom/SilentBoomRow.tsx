@@ -391,6 +391,8 @@ export const SilentBoomRow = memo(function SilentBoomRow({
     enabled: expanded,
     marketOpen,
   });
+  const candles = tickerCandles.data?.candles ?? [];
+  const previousClose = tickerCandles.data?.previousClose ?? null;
 
   const tapeStats = useMemo(() => {
     if (tape.series.length === 0) return null;
@@ -883,11 +885,11 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             </div>
             {flowStats != null && (
               <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
-                {tickerCandles.candles.length > 0 && (
+                {candles.length > 0 && (
                   <span>
                     <span className="text-amber-300">spot</span>{' '}
                     <span className="text-neutral-200">
-                      {tickerCandles.candles.at(-1)!.close.toFixed(2)}
+                      {candles.at(-1)!.close.toFixed(2)}
                     </span>
                   </span>
                 )}
@@ -926,8 +928,8 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             ) : (
               <TickerNetFlowChart
                 series={netFlow.series}
-                candles={tickerCandles.candles}
-                previousClose={tickerCandles.previousClose}
+                candles={candles}
+                previousClose={previousClose}
                 markerTs={alert.bucketCt}
                 ariaLabel={`${alert.underlyingSymbol} cumulative net call/put premium with stock price overlay`}
               />

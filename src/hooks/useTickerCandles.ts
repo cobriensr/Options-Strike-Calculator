@@ -7,21 +7,16 @@
  * Polls during market hours when the date is today AND the row is
  * expanded. Historical days don't poll because the data is stable.
  *
- * Phase 2L migration: the hook is now a thin wrapper around the
- * `useFetchedData<T>` primitive. The PUBLIC return shape is preserved
- * (callers see `candles`, `previousClose`, `loading`, `error`,
- * `fetchedAt`, `refetch`) — the canonical `{ data, ... }` shape
- * migration is queued for Phase 2M.
+ * Phase 2M migration: the hook is now a thin wrapper around
+ * `useFetchedData<TickerCandlesResponse>` that returns the canonical
+ * `{ data, loading, error, refresh, fetchedAt }` shape. Callers
+ * destructure `candles` / `previousClose` from `data` at the call
+ * site (see LotteryRow / SilentBoomRow / IntervalBARow).
  */
 
-import { useMemo } from 'react';
-
 import { POLL_INTERVALS } from '../constants/index.js';
-import type {
-  TickerCandle,
-  TickerCandlesResponse,
-} from '../components/LotteryFinder/types.js';
-import { useFetchedData } from './useFetchedData.js';
+import type { TickerCandlesResponse } from '../components/LotteryFinder/types.js';
+import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 
 interface UseTickerCandlesArgs {
   /** Ticker — required when enabled. */
@@ -32,15 +27,6 @@ interface UseTickerCandlesArgs {
   enabled: boolean;
   /** Whether to poll while live (today + market hours). */
   marketOpen: boolean;
-}
-
-interface UseTickerCandlesReturn {
-  candles: TickerCandle[];
-  previousClose: number | null;
-  loading: boolean;
-  error: string | null;
-  fetchedAt: number | null;
-  refetch: () => void;
 }
 
 const todayCt = (): string =>
@@ -56,28 +42,15 @@ export function useTickerCandles({
   date,
   enabled,
   marketOpen,
-}: UseTickerCandlesArgs): UseTickerCandlesReturn {
+}: UseTickerCandlesArgs): UseFetchedDataResult<TickerCandlesResponse> {
   const url = enabled
     ? `/api/ticker-candles?ticker=${encodeURIComponent(ticker)}&date=${encodeURIComponent(date)}`
     : null;
 
-  const { data, loading, error, refresh, fetchedAt } =
-    useFetchedData<TickerCandlesResponse>({
-      url,
-      marketOpen,
-      pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
-      historical: date !== todayCt(),
-    });
-
-  return useMemo(
-    () => ({
-      candles: data?.candles ?? [],
-      previousClose: data?.previousClose ?? null,
-      loading,
-      error,
-      fetchedAt,
-      refetch: refresh,
-    }),
-    [data, loading, error, fetchedAt, refresh],
-  );
+  return useFetchedData<TickerCandlesResponse>({
+    url,
+    marketOpen,
+    pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
+    historical: date !== todayCt(),
+  });
 }

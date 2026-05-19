@@ -63,8 +63,7 @@ describe('useTickerCandles', () => {
     );
     await act(async () => {});
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(result.current.candles).toEqual([]);
-    expect(result.current.previousClose).toBeNull();
+    expect(result.current.data).toBeNull();
     expect(result.current.loading).toBe(false);
   });
 
@@ -113,16 +112,17 @@ describe('useTickerCandles', () => {
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.candles).toHaveLength(1);
-    expect(result.current.candles[0]?.close).toBe(500.5);
-    expect(result.current.previousClose).toBe(499.5);
+    expect(result.current.data?.candles).toHaveLength(1);
+    expect(result.current.data?.candles[0]?.close).toBe(500.5);
+    expect(result.current.data?.previousClose).toBe(499.5);
     expect(result.current.error).toBeNull();
     expect(result.current.fetchedAt).not.toBeNull();
   });
 
-  it('falls back to null previousClose when missing from response', async () => {
-    // Cast through unknown — TickerCandlesResponse requires previousClose,
-    // but the hook defensively coalesces undefined to null.
+  it('passes through previousClose when missing from response', async () => {
+    // Phase 2M: the hook is now a thin pass-through over
+    // useFetchedData; the previousClose coalesce moved to the call
+    // site (e.g. `tickerCandles.data?.previousClose ?? null`).
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         ticker: 'SPY',
@@ -142,7 +142,7 @@ describe('useTickerCandles', () => {
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.previousClose).toBeNull();
+    expect(result.current.data?.previousClose).toBeUndefined();
   });
 
   it('exposes error on non-2xx response', async () => {
@@ -157,7 +157,7 @@ describe('useTickerCandles', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toContain('500');
-    expect(result.current.candles).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 
   it('captures error message on fetch reject', async () => {
@@ -236,7 +236,7 @@ describe('useTickerCandles', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('refetch() triggers a fresh fetch', async () => {
+  it('refresh() triggers a fresh fetch', async () => {
     fetchMock.mockResolvedValue(jsonResponse(emptyCandles()));
     const { result } = renderHook(() =>
       useTickerCandles({
@@ -250,7 +250,7 @@ describe('useTickerCandles', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
@@ -273,6 +273,6 @@ describe('useTickerCandles', () => {
     unmount();
     resolveFetch(jsonResponse(emptyCandles({ count: 1 })));
     await act(async () => {});
-    expect(result.current.candles).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 });

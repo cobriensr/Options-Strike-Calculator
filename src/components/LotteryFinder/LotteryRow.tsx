@@ -389,6 +389,14 @@ export const LotteryRow = memo(function LotteryRow({
     enabled: expanded,
     marketOpen,
   });
+  // Memo so `candles` keeps a stable reference across renders while
+  // `tickerCandles.data` is null — `liveSpot` (below) lists it as a
+  // useMemo dep, so a fresh `[]` per render would force re-computation.
+  const candles = useMemo(
+    () => tickerCandles.data?.candles ?? [],
+    [tickerCandles.data],
+  );
+  const previousClose = tickerCandles.data?.previousClose ?? null;
 
   /**
    * Aggregate side-volume + vol-weighted avg fill across the tape
@@ -450,11 +458,11 @@ export const LotteryRow = memo(function LotteryRow({
    * cases where candles haven't loaded yet (early polls, history).
    */
   const liveSpot = useMemo<number | null>(() => {
-    const last = tickerCandles.candles.at(-1);
+    const last = candles.at(-1);
     if (last != null && Number.isFinite(last.close)) return last.close;
     if (Number.isFinite(fire.entry.spotAtFirst)) return fire.entry.spotAtFirst;
     return null;
-  }, [tickerCandles.candles, fire.entry.spotAtFirst]);
+  }, [candles, fire.entry.spotAtFirst]);
 
   /**
    * Distance-from-spot in percent, signed so the reader can tell ITM
@@ -1088,7 +1096,7 @@ export const LotteryRow = memo(function LotteryRow({
                 lines. */}
             {flowStats != null && (
               <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
-                {tickerCandles.candles.length > 0 && (
+                {candles.length > 0 && (
                   <span className="inline-flex items-center gap-1">
                     <span
                       aria-hidden
@@ -1096,7 +1104,7 @@ export const LotteryRow = memo(function LotteryRow({
                     />
                     <span className="text-amber-300">spot</span>{' '}
                     <span className="text-neutral-200">
-                      {tickerCandles.candles.at(-1)!.close.toFixed(2)}
+                      {candles.at(-1)!.close.toFixed(2)}
                     </span>
                   </span>
                 )}
@@ -1183,8 +1191,8 @@ export const LotteryRow = memo(function LotteryRow({
             ) : (
               <TickerNetFlowChart
                 series={netFlow.series}
-                candles={tickerCandles.candles}
-                previousClose={tickerCandles.previousClose}
+                candles={candles}
+                previousClose={previousClose}
                 markerTs={fire.triggerTimeCt}
                 date={fire.date}
                 syncHoverTime={hoverTime}
