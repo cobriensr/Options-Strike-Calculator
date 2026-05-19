@@ -48,7 +48,7 @@ export {
   priceHedgeLegs,
   recommendHedgeContracts,
   buildScenarioTable,
-} from './hedge.js';
+} from './hedge/index.js';
 
 export {
   validateMarketTime,

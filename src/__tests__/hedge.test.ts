@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { stressedSigma, calcHedge } from '../utils/hedge';
+import { stressedSigma, calcHedge } from '../utils/hedge/index';
 import { STRESS, DEFAULTS } from '../constants';
 import type { HedgeDelta } from '../types';
 
