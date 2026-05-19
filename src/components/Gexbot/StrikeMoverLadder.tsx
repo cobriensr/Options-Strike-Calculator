@@ -240,6 +240,14 @@ function LadderRow({ row, spot, maxAbsChange }: LadderRowProps) {
         />
       </span>
 
+      {/*
+        Status icon column. ⚡ (largest mover in visible set) takes
+        precedence over ▽ (direction mismatch — e.g. a floor that's
+        weakening or a ceiling that's strengthening unexpectedly). A
+        row that's both will show only ⚡; the ▽ signal would be
+        redundant for the largest mover since users will inspect it
+        regardless.
+      */}
       <span className="w-5 text-center">
         {row.isLargestMover ? '⚡' : classified.marker === '▽' ? '▽' : ''}
       </span>
