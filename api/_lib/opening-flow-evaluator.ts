@@ -16,7 +16,7 @@
  * in Sentry without crashing the rest of the daily run.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 import {
   evaluateRule,
   OPENING_FLOW_CONSTANTS,
@@ -169,15 +169,24 @@ export async function evaluateOpeningFlow(
       // accept the mismatch for now. If live signal diverges from
       // walk-forward expectations, add a `raw_payload->>'report_flags'`
       // filter here.
-      const slice1Rows = (await db`
-        SELECT executed_at, strike, option_type, price, size
-        FROM ws_option_trades
-        WHERE ticker = ${ticker}
-          AND canceled = FALSE
-          AND expiry = ${date}::date
-          AND executed_at >= ${openIso}::timestamptz
-          AND executed_at < ${slice1Upper}::timestamptz
-      `) as DbTradeRow[];
+      // Wrap in withDbRetry — Neon HTTP serverless can have multi-hour
+      // blips that exceed Vercel's gateway window. 3 attempts × 10s per
+      // attempt = 30s fail-fast budget; without this an idle Neon socket
+      // can hang the whole evaluator until the 300s function timeout,
+      // surfacing as HTTP 504 in the browser.
+      const slice1Rows = (await withDbRetry(
+        () => db`
+          SELECT executed_at, strike, option_type, price, size
+          FROM ws_option_trades
+          WHERE ticker = ${ticker}
+            AND canceled = FALSE
+            AND expiry = ${date}::date
+            AND executed_at >= ${openIso}::timestamptz
+            AND executed_at < ${slice1Upper}::timestamptz
+        `,
+        2,
+        10_000,
+      )) as DbTradeRow[];
 
       // Slice 2 trades — 09:35:00 to 09:40:00 ET (or up to now if mid-slice).
       let slice2Rows: DbTradeRow[] = [];
@@ -186,15 +195,19 @@ export async function evaluateOpeningFlow(
           windowStatus === 'slice2'
             ? new Date(effectiveNowMs).toISOString()
             : slice2EndIso;
-        slice2Rows = (await db`
-          SELECT executed_at, strike, option_type, price, size
-          FROM ws_option_trades
-          WHERE ticker = ${ticker}
-            AND canceled = FALSE
-            AND expiry = ${date}::date
-            AND executed_at >= ${slice1EndIso}::timestamptz
-            AND executed_at < ${slice2Upper}::timestamptz
-        `) as DbTradeRow[];
+        slice2Rows = (await withDbRetry(
+          () => db`
+            SELECT executed_at, strike, option_type, price, size
+            FROM ws_option_trades
+            WHERE ticker = ${ticker}
+              AND canceled = FALSE
+              AND expiry = ${date}::date
+              AND executed_at >= ${slice1EndIso}::timestamptz
+              AND executed_at < ${slice2Upper}::timestamptz
+          `,
+          2,
+          10_000,
+        )) as DbTradeRow[];
       }
 
       const evaluation = evaluateRule({

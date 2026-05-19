@@ -9,7 +9,13 @@
  * frontend renders empty-state for that case. They do NOT throw.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
+
+// Per-attempt timeout for read queries — same budget the rest of the
+// codebase uses. 3 attempts × 10s = 30s fail-fast, before Vercel's
+// 300s gateway timeout surfaces as HTTP 504 in the browser.
+const READ_RETRIES = 2;
+const READ_TIMEOUT_MS = 10_000;
 
 // ────────────────────────────────────────────────────────────
 // Types — shared with src/components/Gexbot/types.ts via JSON
@@ -149,19 +155,23 @@ export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
   // is stale (cron-down, ticker decommissioned, weekend) and shouldn't
   // appear in "latest" results. Also bounds the DISTINCT ON scan to
   // recent rows in the (ticker, captured_at DESC) index.
-  const rows = (await sql`
-    SELECT DISTINCT ON (ticker)
-      ticker, captured_at,
-      spot, zero_gamma,
-      z_mlgamma, z_msgamma, zcvr, zgr, zvanna, zcharm,
-      o_mlgamma, o_msgamma, ocvr, ogr, ovanna, ocharm,
-      dexoflow, gexoflow, cvroflow,
-      one_dexoflow, one_gexoflow, one_cvroflow,
-      delta_risk_reversal
-    FROM gexbot_snapshots
-    WHERE captured_at >= now() - INTERVAL '15 minutes'
-    ORDER BY ticker, captured_at DESC
-  `) as RawSnapshotsRow[];
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT DISTINCT ON (ticker)
+        ticker, captured_at,
+        spot, zero_gamma,
+        z_mlgamma, z_msgamma, zcvr, zgr, zvanna, zcharm,
+        o_mlgamma, o_msgamma, ocvr, ogr, ovanna, ocharm,
+        dexoflow, gexoflow, cvroflow,
+        one_dexoflow, one_gexoflow, one_cvroflow,
+        delta_risk_reversal
+      FROM gexbot_snapshots
+      WHERE captured_at >= now() - INTERVAL '15 minutes'
+      ORDER BY ticker, captured_at DESC
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as RawSnapshotsRow[];
 
   return rows.map((r) => ({
     ticker: r.ticker,
@@ -204,13 +214,17 @@ export async function getConvexityTrend(
   windowMinutes = 60,
 ): Promise<ConvexityTrendRow[]> {
   const sql = getDb();
-  const rows = (await sql`
-    SELECT ticker, captured_at, zcvr
-    FROM gexbot_snapshots
-    WHERE captured_at >= now() - (${windowMinutes}::int * INTERVAL '1 minute')
-      AND zcvr IS NOT NULL
-    ORDER BY ticker, captured_at ASC
-  `) as RawConvexityPoint[];
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT ticker, captured_at, zcvr
+      FROM gexbot_snapshots
+      WHERE captured_at >= now() - (${windowMinutes}::int * INTERVAL '1 minute')
+        AND zcvr IS NOT NULL
+      ORDER BY ticker, captured_at ASC
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as RawConvexityPoint[];
 
   const byTicker = new Map<string, Array<[string, number]>>();
   for (const r of rows) {
@@ -246,13 +260,17 @@ function pickWindowTuple(raw: unknown, key: string): [number, number] | null {
 
 export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
   const sql = getDb();
-  const rows = (await sql`
-    SELECT DISTINCT ON (ticker, endpoint, category)
-      ticker, endpoint, category, captured_at, raw_response
-    FROM gexbot_api_capture
-    WHERE category LIKE '%/maxchange'
-    ORDER BY ticker, endpoint, category, captured_at DESC
-  `) as RawCaptureRow[];
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT DISTINCT ON (ticker, endpoint, category)
+        ticker, endpoint, category, captured_at, raw_response
+      FROM gexbot_api_capture
+      WHERE category LIKE '%/maxchange'
+      ORDER BY ticker, endpoint, category, captured_at DESC
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as RawCaptureRow[];
 
   return rows.map((r) => ({
     ticker: r.ticker,
@@ -292,14 +310,18 @@ export async function getSiblingConfirmation(
   if (siblings.length === 0) return [];
 
   const sql = getDb();
-  const rows = (await sql`
-    SELECT DISTINCT ON (ticker)
-      ticker, zcvr, delta_risk_reversal
-    FROM gexbot_snapshots
-    WHERE ticker = ANY(${siblings as readonly string[]}::text[])
-      AND captured_at >= now() - INTERVAL '5 minutes'
-    ORDER BY ticker, captured_at DESC
-  `) as Array<{ ticker: string; zcvr: unknown; delta_risk_reversal: unknown }>;
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT DISTINCT ON (ticker)
+        ticker, zcvr, delta_risk_reversal
+      FROM gexbot_snapshots
+      WHERE ticker = ANY(${siblings as readonly string[]}::text[])
+        AND captured_at >= now() - INTERVAL '5 minutes'
+      ORDER BY ticker, captured_at DESC
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as Array<{ ticker: string; zcvr: unknown; delta_risk_reversal: unknown }>;
 
   return rows.map((r) => {
     const zcvr = toNum(r.zcvr);
