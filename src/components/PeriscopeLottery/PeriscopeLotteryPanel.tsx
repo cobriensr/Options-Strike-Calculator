@@ -11,6 +11,7 @@
  */
 
 import { useMemo, useState } from 'react';
+import { SectionBox } from '../ui';
 import { usePeriscopeLotteryFeed } from '../../hooks/usePeriscopeLotteryFeed.js';
 import { getETDateStr } from '../../utils/timezone.js';
 import { buildSpxwOcc, spxwUwChainUrl } from './buildSpxwOcc.js';
@@ -18,10 +19,18 @@ import type { LotteryFireType, PeriscopeLotteryFire } from './types.js';
 
 interface Props {
   marketOpen: boolean;
+  /**
+   * When true the panel starts collapsed (chevron pointing right).
+   * Set on at-a-glance monitors that often show "0 fires" — the user
+   * opts in by clicking to expand. Other panels (Periscope, Settlement)
+   * default to expanded because they answer the user's primary question.
+   */
+  defaultCollapsed?: boolean;
 }
 
 export function PeriscopeLotteryPanel({
   marketOpen,
+  defaultCollapsed,
 }: Props): React.ReactElement {
   const today = useMemo(() => getETDateStr(new Date()), []);
   const [selectedDate, setSelectedDate] = useState<string>(today);
@@ -43,42 +52,40 @@ export function PeriscopeLotteryPanel({
     [fires],
   );
 
+  const headerRight = (
+    <div className="flex items-center gap-2">
+      <label
+        className="text-muted font-sans text-[10px]"
+        htmlFor="periscope-lottery-date"
+      >
+        Date
+      </label>
+      <input
+        id="periscope-lottery-date"
+        type="date"
+        value={selectedDate}
+        max={today}
+        onChange={(e) => setSelectedDate(e.target.value || today)}
+        className="border-edge bg-input text-primary rounded-md border px-2 py-0.5 font-mono text-[11px]"
+        aria-label="Pick a date to view Periscope Lottery fires"
+      />
+      <FreshnessChip fetchedAt={fetchedAt} loading={loading} />
+    </div>
+  );
+
   return (
-    <section aria-labelledby="periscope-lottery-heading">
-      <header className="mb-2 flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h3
-            id="periscope-lottery-heading"
-            className="text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
-          >
-            Periscope Lottery
-          </h3>
-          <p className="text-muted mt-0.5 font-sans text-[10px]">
-            0DTE SPXW · MM gamma + charm extremes ·{' '}
-            {historical
-              ? 'historical — outcomes locked'
-              : 'auto-refreshes every 60s'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <label
-            className="text-muted font-sans text-[10px]"
-            htmlFor="periscope-lottery-date"
-          >
-            Date
-          </label>
-          <input
-            id="periscope-lottery-date"
-            type="date"
-            value={selectedDate}
-            max={today}
-            onChange={(e) => setSelectedDate(e.target.value || today)}
-            className="border-edge bg-input text-primary rounded-md border px-2 py-0.5 font-mono text-[11px]"
-            aria-label="Pick a date to view Periscope Lottery fires"
-          />
-          <FreshnessChip fetchedAt={fetchedAt} loading={loading} />
-        </div>
-      </header>
+    <SectionBox
+      label="Periscope Lottery"
+      collapsible
+      defaultCollapsed={defaultCollapsed}
+      headerRight={headerRight}
+    >
+      <p className="text-muted -mt-1 mb-3 font-sans text-[10px]">
+        0DTE SPXW · MM gamma + charm extremes ·{' '}
+        {historical
+          ? 'historical — outcomes locked'
+          : 'auto-refreshes every 60s'}
+      </p>
 
       {error && (
         <div
@@ -103,7 +110,7 @@ export function PeriscopeLotteryPanel({
           date={selectedDate}
         />
       </div>
-    </section>
+    </SectionBox>
   );
 }
 

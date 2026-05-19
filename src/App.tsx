@@ -1209,6 +1209,7 @@ export default function StrikeCalculator() {
                         fallback={<SkeletonSection lines={4} />}
                       >
                         <PeriscopeLotteryPanel
+                          defaultCollapsed
                           marketOpen={market.data.quotes?.marketOpen ?? false}
                         />
                       </GatedSection>
