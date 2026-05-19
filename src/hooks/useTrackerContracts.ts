@@ -24,6 +24,7 @@ import type {
   ContractUpdateInput,
   TrackerContract,
 } from '../components/Tracker/types.js';
+import { usePolling } from './usePolling.js';
 import { getErrorMessage } from '../utils/error.js';
 
 interface ListResponse {
@@ -121,6 +122,7 @@ export function useTrackerContracts({
     }
   }, [status]);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
@@ -128,10 +130,9 @@ export function useTrackerContracts({
     }
     setLoading(true);
     refetch();
-    if (!marketOpen) return;
-    const id = setInterval(refetch, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [enabled, marketOpen, refetch]);
+  }, [enabled, refetch]);
+
+  usePolling(refetch, POLL_INTERVAL_MS, [enabled, marketOpen]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

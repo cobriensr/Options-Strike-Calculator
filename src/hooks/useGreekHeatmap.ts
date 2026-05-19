@@ -6,9 +6,9 @@
  * is expanded). Outside those conditions, the hook does a single fetch
  * on mount/arg change and stops.
  *
- * Mirrors the AbortController + setInterval + cleanup pattern used by
- * `useLotteryFinder` so polling is cancel-safe across rapid ticker
- * switches.
+ * Schedules the recurring poll via `usePolling`; the eager mount /
+ * arg-change fetch lives in a sibling effect. AbortController on the
+ * fetch keeps the polling cancel-safe across rapid ticker switches.
  *
  * See docs/superpowers/specs/per-ticker-greek-heatmap-2026-05-15.md
  * Phase 4 + the `/api/greek-heatmap` endpoint contract.
@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { fetchWithRetry } from '../utils/fetchWithRetry';
+import { usePolling } from './usePolling';
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -150,12 +151,15 @@ export function useGreekHeatmap({
     }
   }, [ticker, date, at]);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
+  // `enabled` stays in the dep array so a `false → true` flip triggers a
+  // fresh fetch (matches the legacy single-effect behavior the tests
+  // assert on).
   useEffect(() => {
     fetchOnce();
-    if (!enabled) return;
-    const id = setInterval(fetchOnce, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
   }, [fetchOnce, enabled]);
+
+  usePolling(fetchOnce, POLL_INTERVAL_MS, [enabled]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

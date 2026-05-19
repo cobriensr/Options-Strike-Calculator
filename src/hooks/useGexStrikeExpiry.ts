@@ -20,6 +20,7 @@ import * as Sentry from '@sentry/react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 // Ticker set + row shape mirror api/_lib/db-gex-strike-expiry.ts.
 
@@ -243,6 +244,7 @@ export function useGexStrikeExpiry(
     };
   }, []);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     if (accessMode === 'public') {
       setLoading(false);
@@ -250,16 +252,14 @@ export function useGexStrikeExpiry(
     }
 
     void fetchAll();
+  }, [accessMode, fetchAll]);
 
-    // Snapshot mode is static — no polling.
-    if (!marketOpen || at) return;
-
-    const id = setInterval(
-      () => void fetchAll(),
-      POLL_INTERVALS.STRIKE_BATTLE_MAP,
-    );
-    return () => clearInterval(id);
-  }, [accessMode, marketOpen, at, fetchAll]);
+  // Snapshot mode (`at`) is static — no polling. Public access stays idle.
+  usePolling(() => void fetchAll(), POLL_INTERVALS.STRIKE_BATTLE_MAP, [
+    accessMode !== 'public',
+    marketOpen,
+    !at,
+  ]);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -332,19 +332,21 @@ export function useGexStrikeExpirySpx(
     };
   }, []);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     if (accessMode === 'public') {
       setLoading(false);
       return;
     }
     void fetchSpx();
-    if (!marketOpen || at) return;
-    const id = setInterval(
-      () => void fetchSpx(),
-      POLL_INTERVALS.STRIKE_BATTLE_MAP,
-    );
-    return () => clearInterval(id);
-  }, [accessMode, marketOpen, at, fetchSpx]);
+  }, [accessMode, fetchSpx]);
+
+  // Snapshot mode (`at`) is static — no polling. Public access stays idle.
+  usePolling(() => void fetchSpx(), POLL_INTERVALS.STRIKE_BATTLE_MAP, [
+    accessMode !== 'public',
+    marketOpen,
+    !at,
+  ]);
 
   const refresh = useCallback(() => {
     setLoading(true);

@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TrackerAlert } from '../components/Tracker/types.js';
 import { buildAlertToast } from '../components/Tracker/helpers.js';
 import { useToast } from './useToast.js';
+import { usePolling } from './usePolling.js';
 import { getErrorMessage } from '../utils/error.js';
 
 const POLL_INTERVAL_MS = 30_000;
@@ -156,6 +157,9 @@ export function useTrackerAlerts({
     }
   }, [toast]);
 
+  // Eager mount fetch — seeds the seen-id set even off-hours so toasts
+  // don't fire for alerts that existed before the user opened the tab.
+  // usePolling only schedules the recurring tick.
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
@@ -163,14 +167,12 @@ export function useTrackerAlerts({
     }
     setLoading(true);
     refetch();
-    // Off-hours: do the initial fetch (seeds seen-id set) but skip the
-    // recurring poll. Project convention from CLAUDE.md — the refresh
-    // cron only fires during RTH, so polling outside RTH would just
-    // re-return the same payload every 30s.
-    if (!marketOpen) return;
-    const id = setInterval(refetch, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [enabled, marketOpen, refetch]);
+  }, [enabled, refetch]);
+
+  // Off-hours: skip the recurring poll. Project convention from CLAUDE.md
+  // — the refresh cron only fires during RTH, so polling outside RTH
+  // would just re-return the same payload every 30s.
+  usePolling(refetch, POLL_INTERVAL_MS, [enabled, marketOpen]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

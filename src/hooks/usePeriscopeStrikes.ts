@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getAccessMode } from '../utils/auth';
 import { getErrorMessage } from '../utils/error';
+import { usePolling } from './usePolling';
 
 export interface PeriscopeStrikeRow {
   strike: number;
@@ -234,14 +235,14 @@ export function usePeriscopeStrikes(
       return;
     }
     void fetchAll();
-    // Snapshot mode is static — no polling.
-    if (!marketOpen || at) return;
-    const id = setInterval(
-      () => void fetchAll(),
-      POLL_INTERVALS.STRIKE_BATTLE_MAP,
-    );
-    return () => clearInterval(id);
-  }, [accessMode, marketOpen, at, fetchAll]);
+  }, [accessMode, fetchAll]);
+
+  // Snapshot mode (`at`) is static — no polling. Public access stays idle.
+  usePolling(() => void fetchAll(), POLL_INTERVALS.STRIKE_BATTLE_MAP, [
+    accessMode !== 'public',
+    marketOpen,
+    !at,
+  ]);
 
   const refresh = useCallback(() => {
     setLoading(true);
