@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
 import { getCTTime } from '../utils/timezone.js';
 import { getErrorMessage } from '../utils/error.js';
+import { usePolling } from './usePolling.js';
 
 export type WindowStatus =
   | 'before_open'
@@ -267,46 +268,29 @@ export function useOpeningFlowSignal(date?: string): State & {
     setState(INITIAL_STATE);
   }, [effectiveDate]);
 
-  // Tick every 30s to (a) re-check the window predicate and (b) refetch
-  // when we're inside the window. Outside the window we still tick to
-  // notice when it opens, but we skip the recurring fetch.
-  //
-  // First-tick (mount or date change) ALWAYS fetches, even outside the
-  // polling window — otherwise loading the page at 9 AM (after the
-  // 08:50 CT window closes) would leave the panel empty until tomorrow
-  // morning. The endpoint live-computes from ws_option_trades for
-  // today's date, which still has this morning's prints inside its
-  // 2-day retention.
-  //
-  // Historical mode (effectiveDate != null): fetch once on mount /
-  // date change, then no polling — historical days are static.
+  // Eager fetch on mount / date change. Live mode ALWAYS fetches once,
+  // even outside the polling window — otherwise loading the page at 9 AM
+  // (after the 08:50 CT window closes) would leave the panel empty until
+  // tomorrow morning. The endpoint live-computes from ws_option_trades
+  // for today's date, which still has this morning's prints inside its
+  // 2-day retention. Historical mode (effectiveDate != null) is the same
+  // shape — single fetch — but never polls below.
   useEffect(() => {
-    let cancelled = false;
-
-    if (effectiveDate != null) {
-      // Historical: single fetch, no polling, no window check.
-      void fetchOnce();
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    let isFirstTick = true;
-    const tick = () => {
-      if (cancelled) return;
-      const open = inPollingWindow(new Date());
-      setIsWindowOpen(open);
-      if (open || isFirstTick) void fetchOnce();
-      isFirstTick = false;
-    };
-
-    tick();
-    const id = setInterval(tick, POLL_INTERVALS.OPENING_FLOW);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
+    if (effectiveDate == null) setIsWindowOpen(inPollingWindow(new Date()));
+    void fetchOnce();
   }, [fetchOnce, effectiveDate]);
+
+  // Live-mode polling. Tick every 30s to (a) re-check the window
+  // predicate and (b) refetch when we're inside the window. Outside the
+  // window we still tick to notice when it opens, but we skip the
+  // recurring fetch — `usePolling` runs as long as we're in live mode,
+  // and the callback gates the fetch on `inPollingWindow`.
+  const tick = useCallback(() => {
+    const open = inPollingWindow(new Date());
+    setIsWindowOpen(open);
+    if (open) void fetchOnce();
+  }, [fetchOnce]);
+  usePolling(tick, POLL_INTERVALS.OPENING_FLOW, [effectiveDate == null]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

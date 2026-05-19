@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { checkIsOwner } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 export interface VixSnapshot {
   entryTime: string;
@@ -155,11 +156,7 @@ export function useVixTrajectory(marketOpen: boolean): VixTrajectoryState {
     void fetchSnapshots();
   }, [isOwner, fetchSnapshots]);
 
-  useEffect(() => {
-    if (!isOwner || !marketOpen) return;
-    const id = setInterval(fetchSnapshots, POLL_INTERVALS.MARKET_DATA);
-    return () => clearInterval(id);
-  }, [isOwner, marketOpen, fetchSnapshots]);
+  usePolling(fetchSnapshots, POLL_INTERVALS.MARKET_DATA, [isOwner, marketOpen]);
 
   return state;
 }

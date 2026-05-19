@@ -17,6 +17,7 @@ import type {
   SilentBoomTod,
 } from '../components/SilentBoom/types.js';
 import { getErrorMessage } from '../utils/error.js';
+import { usePolling } from './usePolling.js';
 
 export interface SilentBoomTickerCount {
   ticker: string;
@@ -140,13 +141,13 @@ export function useSilentBoomTickerCounts({
     askPctBand,
   ]);
 
+  // Eager fetch on mount / arg change. usePolling only schedules the
+  // recurring tick.
   useEffect(() => {
     fetchOnce();
-    if (!marketOpen) return;
-    if (historical) return;
-    const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
-    return () => clearInterval(id);
-  }, [fetchOnce, marketOpen, historical]);
+  }, [fetchOnce]);
+
+  usePolling(fetchOnce, POLL_INTERVALS.OTM_FLOW, [marketOpen, !historical]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

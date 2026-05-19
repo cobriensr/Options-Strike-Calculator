@@ -13,6 +13,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
+import { usePolling } from './usePolling';
 
 export type PinSetupState = 'ARMED' | 'WATCH' | 'NOT_TRIGGERED';
 export type PinSetupBias = 'fade-rips' | 'fade-dips' | 'full-pin' | 'no-signal';
@@ -111,17 +112,17 @@ export function usePinSetupStatus({
     };
   }, []);
 
+  // Eager fetch on mount / date change. usePolling only schedules the
+  // recurring tick — never the initial fetch.
   useEffect(() => {
     void doFetch(date);
+  }, [date, doFetch]);
 
-    // Poll only in live mode while the cash session is open.
-    if (date != null || !marketOpen) return;
-
-    const id = setInterval(() => {
-      void doFetch(null);
-    }, POLL_INTERVALS.PIN_SETUP);
-    return () => clearInterval(id);
-  }, [date, marketOpen, doFetch]);
+  // Poll only in live mode while the cash session is open.
+  const pollLive = useCallback(() => {
+    void doFetch(null);
+  }, [doFetch]);
+  usePolling(pollLive, POLL_INTERVALS.PIN_SETUP, [date == null, marketOpen]);
 
   return { data, loading, error, date, setDate, refresh };
 }
