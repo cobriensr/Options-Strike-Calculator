@@ -13,6 +13,7 @@ import type {
   OpeningFlowTickerPayload,
   WindowStatus,
 } from '../../hooks/useOpeningFlowSignal.js';
+import { buildOcc } from './buildOcc.js';
 
 interface Props {
   ticker: 'SPY' | 'QQQ';
@@ -20,6 +21,9 @@ interface Props {
   windowStatus: WindowStatus;
   stopPct: number;
   exitMinutesFromEntry: number;
+  /** ISO date (YYYY-MM-DD) of the underlying signal day — used as the
+   *  OCC expiry when building Unusual Whales contract URLs. */
+  expiryDate: string;
   loading: boolean;
 }
 
@@ -30,6 +34,9 @@ const usdM = (n: number): string => `$${(n / 1_000_000).toFixed(2)}M`;
 
 const pct = (n: number): string => `${(n * 100).toFixed(0)}%`;
 
+const uwContractUrl = (occ: string): string =>
+  `https://unusualwhales.com/flow/option_chains?chain=${encodeURIComponent(occ)}`;
+
 export function SignalCard(props: Props): React.ReactElement {
   const {
     ticker,
@@ -37,6 +44,7 @@ export function SignalCard(props: Props): React.ReactElement {
     windowStatus,
     stopPct,
     exitMinutesFromEntry,
+    expiryDate,
     loading,
   } = props;
 
@@ -45,7 +53,7 @@ export function SignalCard(props: Props): React.ReactElement {
       className="rounded border border-slate-700 bg-slate-950/60 p-3"
       aria-labelledby={`flow-${ticker}`}
     >
-      <header className="mb-2 flex items-center justify-between">
+      <header className="mb-1.5 flex items-center justify-between">
         <h3
           id={`flow-${ticker}`}
           className="text-base font-semibold tracking-wide text-slate-100"
@@ -65,10 +73,12 @@ export function SignalCard(props: Props): React.ReactElement {
         </p>
       ) : (
         <CardBody
+          ticker={ticker}
           payload={payload}
           windowStatus={windowStatus}
           stopPct={stopPct}
           exitMinutesFromEntry={exitMinutesFromEntry}
+          expiryDate={expiryDate}
         />
       )}
     </article>
@@ -76,15 +86,19 @@ export function SignalCard(props: Props): React.ReactElement {
 }
 
 function CardBody({
+  ticker,
   payload,
   windowStatus,
   stopPct,
   exitMinutesFromEntry,
+  expiryDate,
 }: {
+  ticker: string;
   payload: OpeningFlowTickerPayload;
   windowStatus: WindowStatus;
   stopPct: number;
   exitMinutesFromEntry: number;
+  expiryDate: string;
 }): React.ReactElement {
   const { slice1, slice2, signal } = payload;
 
@@ -95,7 +109,7 @@ function CardBody({
   }
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <BiasLine slice1={slice1} slice2={slice2} />
       {signal && signal.fired ? (
         <ActionBlock
@@ -111,7 +125,11 @@ function CardBody({
           reason={signal && !signal.fired ? signal.reason : null}
         />
       )}
-      <TicketBreakdown slice1={slice1} />
+      <TicketBreakdown
+        slice1={slice1}
+        ticker={ticker}
+        expiryDate={expiryDate}
+      />
     </div>
   );
 }
@@ -233,8 +251,12 @@ function describeReason(reason: string | null): string {
 
 function TicketBreakdown({
   slice1,
+  ticker,
+  expiryDate,
 }: {
   slice1: OpeningFlowSlice1;
+  ticker: string;
+  expiryDate: string;
 }): React.ReactElement {
   return (
     <details className="text-xs text-slate-300">
@@ -242,21 +264,38 @@ function TicketBreakdown({
         Slice 1 tickets ({slice1.tickets.length} qualifying)
       </summary>
       <ul className="mt-1 space-y-0.5 font-mono">
-        {slice1.tickets.map((t) => (
-          <li
-            key={`${t.strike}-${t.side}`}
-            className="grid grid-cols-[auto_1fr_auto] gap-x-2 tabular-nums"
-          >
-            <span className="text-slate-100">
-              {t.strike}
-              {t.side === 'call' ? 'C' : 'P'}
-            </span>
-            <span className="text-slate-400">{usdM(t.premium)}</span>
-            <span className="text-right text-slate-400">
-              {t.volume.toLocaleString()}v
-            </span>
-          </li>
-        ))}
+        {slice1.tickets.map((t) => {
+          const isCall = t.side === 'call';
+          const chipClasses = isCall
+            ? 'bg-emerald-500/10 text-emerald-300'
+            : 'bg-red-500/10 text-red-300';
+          const occ = buildOcc(ticker, expiryDate, t.side, t.strike);
+          const url = uwContractUrl(occ);
+          return (
+            <li key={`${t.strike}-${t.side}`}>
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Open ${occ} on Unusual Whales`}
+                className="grid grid-cols-[auto_1fr_auto] items-center gap-x-2 rounded px-1 py-0.5 tabular-nums hover:bg-white/5"
+              >
+                <span
+                  className={`rounded px-1.5 py-0.5 text-sm font-semibold ${chipClasses}`}
+                >
+                  {t.strike}
+                  {isCall ? 'C' : 'P'}
+                </span>
+                <span className="text-xs text-slate-400">
+                  {usdM(t.premium)}
+                </span>
+                <span className="text-right text-xs text-slate-400">
+                  {t.volume.toLocaleString()}v
+                </span>
+              </a>
+            </li>
+          );
+        })}
       </ul>
     </details>
   );

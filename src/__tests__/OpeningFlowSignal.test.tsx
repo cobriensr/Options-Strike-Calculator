@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
-const { getCTTimeMock } = vi.hoisted(() => ({
+const { getCTTimeMock, getCTDateStrMock } = vi.hoisted(() => ({
   getCTTimeMock: vi.fn(() => ({ hour: 8, minute: 30 })),
+  getCTDateStrMock: vi.fn(() => '2026-05-13'),
 }));
 
 vi.mock('../utils/timezone', async () => {
@@ -10,10 +11,15 @@ vi.mock('../utils/timezone', async () => {
     await vi.importActual<typeof import('../utils/timezone')>(
       '../utils/timezone',
     );
-  return { ...actual, getCTTime: getCTTimeMock };
+  return {
+    ...actual,
+    getCTTime: getCTTimeMock,
+    getCTDateStr: getCTDateStrMock,
+  };
 });
 
 import { OpeningFlowSignal } from '../components/OpeningFlowSignal';
+import { buildOcc } from '../components/OpeningFlowSignal/buildOcc';
 import type {
   OpeningFlowResponse,
   OpeningFlowTicket,
@@ -57,6 +63,9 @@ describe('OpeningFlowSignal', () => {
     fetchMock.mockReset();
     getCTTimeMock.mockReset();
     getCTTimeMock.mockReturnValue({ hour: 8, minute: 30 });
+    getCTDateStrMock.mockReset();
+    getCTDateStrMock.mockReturnValue('2026-05-13');
+    localStorage.clear();
   });
 
   it('renders the section header', () => {
@@ -70,7 +79,7 @@ describe('OpeningFlowSignal', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows "Outside the signal window" message when not in window', () => {
+  it('shows "Outside the signal window" message when not in window and no cache', () => {
     getCTTimeMock.mockReturnValue({ hour: 10, minute: 0 });
     render(<OpeningFlowSignal />);
     expect(screen.getByText(/outside the signal window/i)).toBeInTheDocument();
@@ -149,5 +158,198 @@ describe('OpeningFlowSignal', () => {
     expect(
       await screen.findByText(/top-3 tickets split across both sides/i),
     ).toBeInTheDocument();
+  });
+
+  it('persists last-good payload to localStorage after a successful fetch', async () => {
+    const contract = makeTicket('call', 745, 3_350_000, 24_683, 1.36);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () =>
+        makeResponse({
+          tickers: {
+            SPY: {
+              slice1: {
+                tickets: [contract],
+                callPremium: 3_350_000,
+                putPremium: 0,
+                biasSide: 'call',
+                biasRatio: 1,
+                top3SameSide: true,
+              },
+              slice2: null,
+              signal: { fired: false, reason: 'window_not_complete' },
+            },
+            QQQ: { slice1: null, slice2: null, signal: null },
+          },
+        }),
+    });
+    render(<OpeningFlowSignal />);
+    // Wait for the slice1 tickets section to render — that proves the
+    // fetch resolved and state has been written.
+    await screen.findByText(/Slice 1 tickets/i);
+    const raw = localStorage.getItem('openingFlowSignal.lastGood');
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw!) as {
+      date: string;
+      data: OpeningFlowResponse;
+    };
+    expect(parsed.date).toBe('2026-05-13');
+    expect(parsed.data.tickers.SPY?.slice1?.tickets[0]?.strike).toBe(745);
+  });
+
+  it('rehydrates from cache on mount when same CT date — even outside window', () => {
+    // Outside polling window — ensures we'd otherwise see the
+    // "Outside the signal window" message.
+    getCTTimeMock.mockReturnValue({ hour: 12, minute: 0 });
+    const contract = makeTicket('put', 740, 2_100_000, 12_500, 0.95);
+    const cached: OpeningFlowResponse = makeResponse({
+      tickers: {
+        SPY: {
+          slice1: {
+            tickets: [contract],
+            callPremium: 0,
+            putPremium: 2_100_000,
+            biasSide: 'put',
+            biasRatio: 1,
+            top3SameSide: true,
+          },
+          slice2: null,
+          signal: { fired: false, reason: 'window_not_complete' },
+        },
+        QQQ: { slice1: null, slice2: null, signal: null },
+      },
+    });
+    localStorage.setItem(
+      'openingFlowSignal.lastGood',
+      JSON.stringify({
+        data: cached,
+        savedAt: new Date().toISOString(),
+        date: '2026-05-13',
+      }),
+    );
+
+    render(<OpeningFlowSignal />);
+
+    // Cached payload should drive the UI even though no fetch ran.
+    expect(screen.getByText(/Slice 1 tickets/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/outside the signal window/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clears stale (yesterday) cache on mount', () => {
+    getCTTimeMock.mockReturnValue({ hour: 12, minute: 0 });
+    getCTDateStrMock.mockReturnValue('2026-05-14'); // today
+    const cached: OpeningFlowResponse = makeResponse({ date: '2026-05-13' }); // yesterday
+    localStorage.setItem(
+      'openingFlowSignal.lastGood',
+      JSON.stringify({
+        data: cached,
+        savedAt: '2026-05-13T20:00:00Z',
+        date: '2026-05-13',
+      }),
+    );
+
+    render(<OpeningFlowSignal />);
+
+    // Stale entry should be cleared from storage and not displayed.
+    expect(localStorage.getItem('openingFlowSignal.lastGood')).toBeNull();
+    expect(screen.getByText(/outside the signal window/i)).toBeInTheDocument();
+  });
+
+  it('renders call ticket with emerald chip and a UW anchor with correct OCC', async () => {
+    const callT = makeTicket('call', 745, 3_350_000, 24_683, 1.36);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () =>
+        makeResponse({
+          windowStatus: 'closed',
+          tickers: {
+            SPY: {
+              slice1: {
+                tickets: [callT],
+                callPremium: 3_350_000,
+                putPremium: 0,
+                biasSide: 'call',
+                biasRatio: 1,
+                top3SameSide: true,
+              },
+              slice2: null,
+              signal: { fired: false, reason: 'window_not_complete' },
+            },
+            QQQ: { slice1: null, slice2: null, signal: null },
+          },
+        }),
+    });
+    render(<OpeningFlowSignal />);
+    await screen.findByText(/Slice 1 tickets/i);
+    const occ = buildOcc('SPY', '2026-05-13', 'call', 745);
+    expect(occ).toBe('SPY260513C00745000');
+    const anchor = screen.getByTitle(`Open ${occ} on Unusual Whales`);
+    expect(anchor).toHaveAttribute(
+      'href',
+      `https://unusualwhales.com/flow/option_chains?chain=${occ}`,
+    );
+    expect(anchor).toHaveAttribute('target', '_blank');
+    // Chip carries the emerald palette class.
+    const chip = anchor.querySelector('span');
+    expect(chip?.className).toMatch(/emerald/);
+    expect(chip?.className).not.toMatch(/red/);
+  });
+
+  it('renders put ticket with red chip', async () => {
+    const putT = makeTicket('put', 740, 2_100_000, 12_500, 0.95);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () =>
+        makeResponse({
+          windowStatus: 'closed',
+          tickers: {
+            SPY: {
+              slice1: {
+                tickets: [putT],
+                callPremium: 0,
+                putPremium: 2_100_000,
+                biasSide: 'put',
+                biasRatio: 1,
+                top3SameSide: true,
+              },
+              slice2: null,
+              signal: { fired: false, reason: 'window_not_complete' },
+            },
+            QQQ: { slice1: null, slice2: null, signal: null },
+          },
+        }),
+    });
+    render(<OpeningFlowSignal />);
+    await screen.findByText(/Slice 1 tickets/i);
+    const occ = buildOcc('SPY', '2026-05-13', 'put', 740);
+    const anchor = screen.getByTitle(`Open ${occ} on Unusual Whales`);
+    const chip = anchor.querySelector('span');
+    expect(chip?.className).toMatch(/red/);
+    expect(chip?.className).not.toMatch(/emerald/);
+  });
+});
+
+describe('buildOcc', () => {
+  it('produces the canonical OCC body for whole-dollar strikes', () => {
+    expect(buildOcc('SPY', '2026-05-19', 'put', 500)).toBe(
+      'SPY260519P00500000',
+    );
+    expect(buildOcc('QQQ', '2026-05-13', 'call', 500)).toBe(
+      'QQQ260513C00500000',
+    );
+  });
+
+  it('handles fractional strikes via the ×1000 scaling rule', () => {
+    expect(buildOcc('SPY', '2026-05-19', 'call', 397.5)).toBe(
+      'SPY260519C00397500',
+    );
+  });
+
+  it('upper-cases the ticker', () => {
+    expect(buildOcc('spy', '2026-05-19', 'put', 500)).toBe(
+      'SPY260519P00500000',
+    );
   });
 });

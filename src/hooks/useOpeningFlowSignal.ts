@@ -5,11 +5,22 @@
  *
  * Outside the window, the hook returns the last known state (or null)
  * and stops polling.
+ *
+ * Persistence: after every successful fetch we mirror the payload to
+ * localStorage under `openingFlowSignal.lastGood` so that after the
+ * window closes (~08:50 CT) the most recent ticket data stays visible
+ * for the rest of the trading day — even across page reloads. The
+ * cache is keyed by the response's `date` field and ignored / cleared
+ * once a new CT calendar date rolls over, so yesterday's tickets
+ * never bleed into today's open.
+ *
+ * `displayData` is what the UI should render. It prefers the fresh
+ * fetch result (`data`) and falls back to the same-CT-date cache.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
-import { getCTTime } from '../utils/timezone.js';
+import { getCTTime, getCTDateStr } from '../utils/timezone.js';
 import { getErrorMessage } from '../utils/error.js';
 
 export type WindowStatus =
@@ -91,6 +102,68 @@ const INITIAL_STATE: State = {
   fetchedAt: null,
 };
 
+const STORAGE_KEY = 'openingFlowSignal.lastGood';
+
+interface CachedEntry {
+  data: OpeningFlowResponse;
+  savedAt: string;
+  date: string;
+}
+
+function safeReadCache(): CachedEntry | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw == null) return null;
+    const parsed = JSON.parse(raw) as Partial<CachedEntry>;
+    if (
+      parsed == null ||
+      typeof parsed.date !== 'string' ||
+      typeof parsed.savedAt !== 'string' ||
+      parsed.data == null
+    ) {
+      return null;
+    }
+    return parsed as CachedEntry;
+  } catch {
+    return null;
+  }
+}
+
+function safeWriteCache(entry: CachedEntry): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entry));
+  } catch {
+    // swallow: storage quota / private-mode / disabled
+  }
+}
+
+function safeClearCache(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // swallow
+  }
+}
+
+/**
+ * Read the cached payload on mount, but only if its `date` matches
+ * today's CT calendar date. Stale entries (different date) are
+ * cleared so yesterday's tickets never bleed into today's open.
+ */
+function loadFreshCache(): OpeningFlowResponse | null {
+  const cached = safeReadCache();
+  if (cached == null) return null;
+  const ctToday = getCTDateStr(new Date());
+  if (cached.date !== ctToday) {
+    safeClearCache();
+    return null;
+  }
+  return cached.data;
+}
+
 /**
  * Polling-window predicate. Returns true between 08:25 CT (5 min
  * before market open) and 08:50 CT (5 min after the evaluating
@@ -108,8 +181,12 @@ function inPollingWindow(now: Date): boolean {
 export function useOpeningFlowSignal(): State & {
   refetch: () => void;
   isWindowOpen: boolean;
+  displayData: OpeningFlowResponse | null;
 } {
   const [state, setState] = useState<State>(INITIAL_STATE);
+  const [cachedData, setCachedData] = useState<OpeningFlowResponse | null>(() =>
+    loadFreshCache(),
+  );
   const [isWindowOpen, setIsWindowOpen] = useState<boolean>(() =>
     inPollingWindow(new Date()),
   );
@@ -137,6 +214,15 @@ export function useOpeningFlowSignal(): State & {
         error: null,
         fetchedAt: Date.now(),
       });
+      // Mirror the fresh payload into localStorage so it survives
+      // both the post-08:50 window close (hook stops polling) AND
+      // a page reload later in the trading day.
+      safeWriteCache({
+        data: json,
+        savedAt: new Date().toISOString(),
+        date: json.date,
+      });
+      setCachedData(json);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       if (ctrl.signal.aborted) return;
@@ -171,8 +257,10 @@ export function useOpeningFlowSignal(): State & {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  const displayData = state.data ?? cachedData;
+
   return useMemo(
-    () => ({ ...state, refetch: fetchOnce, isWindowOpen }),
-    [state, fetchOnce, isWindowOpen],
+    () => ({ ...state, refetch: fetchOnce, isWindowOpen, displayData }),
+    [state, fetchOnce, isWindowOpen, displayData],
   );
 }
