@@ -22,7 +22,10 @@
  * Reads the panel registry filtered by the caller's `(isAuthenticated,
  * hasMarketOrSnapshot)` context so a guest never sees a checkbox for
  * the Futures Calculator they couldn't reach anyway. The `results`
- * panel is excluded — hiding the calculator output is not a useful UX.
+ * panel is included like every other registered entry — users can
+ * hide the strike-calculator output if they're using the page for
+ * non-calculator workflows (e.g. monitoring only). Prior versions
+ * excluded it; reverted by user request.
  *
  * Specs:
  *   - docs/superpowers/specs/panel-prefs-2026-05-17.md (visibility)
@@ -227,10 +230,7 @@ export function PanelPrefsModal({
 
   // Build the registry view filtered by context + grouped + ordered.
   const registry = useMemo(
-    () =>
-      getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot }).filter(
-        (entry) => entry.id !== 'results',
-      ),
+    () => getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot }),
     [isAuthenticated, hasMarketOrSnapshot],
   );
 

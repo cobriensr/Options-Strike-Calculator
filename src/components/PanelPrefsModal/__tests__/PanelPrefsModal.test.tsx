@@ -51,7 +51,12 @@ describe('PanelPrefsModal', () => {
     expect(screen.getByText('Date & Time')).toBeInTheDocument();
   });
 
-  it('excludes the results panel from the togglable list', () => {
+  it('includes the results panel in the togglable list', () => {
+    // Reverted from a prior "exclude results" filter so users can hide
+    // the strike-calculator output if they're monitoring-only. The
+    // Results panel is registered like every other entry now, which
+    // means "Results" appears twice in the modal: once as the group
+    // heading and once as the panel row.
     render(
       <PanelPrefsModal
         isOpen
@@ -61,7 +66,8 @@ describe('PanelPrefsModal', () => {
         hasMarketOrSnapshot
       />,
     );
-    expect(screen.queryByText('Results')).toBeNull();
+    const matches = screen.getAllByText('Results');
+    expect(matches.length).toBeGreaterThanOrEqual(2);
   });
 
   it('hides authenticated-only panels for a public visitor', () => {

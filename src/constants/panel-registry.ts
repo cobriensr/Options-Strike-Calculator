@@ -182,4 +182,5 @@ export const PANEL_GROUP_ORDER: PanelGroup[] = [
   'Futures',
   'Charts & History',
   'Trading',
+  'Results',
 ];
