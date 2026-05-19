@@ -69,7 +69,9 @@ let vapidConfigured = false;
  * form) keeps working identically.
  */
 function normalizeVapidKey(key: string): string {
-  return key.trim().replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  let out = key.trim().replace(/\+/g, '-').replace(/\//g, '_');
+  while (out.endsWith('=')) out = out.slice(0, -1);
+  return out;
 }
 
 /**

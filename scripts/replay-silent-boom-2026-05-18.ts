@@ -335,6 +335,8 @@ async function processOneCronTick(
   chains: number;
   totalFires: number;
   inserted: number;
+  skippedShort: number;
+  skippedNoOi: number;
 }> {
   const windowStart = new Date(
     simulatedNow.getTime() - SCAN_WINDOW_MIN * 60_000,
@@ -423,7 +425,14 @@ async function processOneCronTick(
   `) as BucketRow[];
 
   if (bucketRows.length === 0) {
-    return { bucketRows: 0, chains: 0, totalFires: 0, inserted: 0 };
+    return {
+      bucketRows: 0,
+      chains: 0,
+      totalFires: 0,
+      inserted: 0,
+      skippedShort: 0,
+      skippedNoOi: 0,
+    };
   }
 
   // Group buckets by chain — mirrors production lines ~290-334.
@@ -714,15 +723,13 @@ async function processOneCronTick(
     if (result.length > 0) inserted += 1;
   }
 
-  // Suppress unused-var warnings for diagnostic counters we don't surface.
-  void skippedShort;
-  void skippedNoOi;
-
   return {
     bucketRows: bucketRows.length,
     chains: groups.size,
     totalFires,
     inserted,
+    skippedShort,
+    skippedNoOi,
   };
 }
 
