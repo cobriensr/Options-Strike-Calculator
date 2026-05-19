@@ -101,7 +101,7 @@ describe('<VixDealerStateBadge>', () => {
     expect(badge.className).toMatch(/emerald/);
   });
 
-  it('falls back to empty state when spot or zero_gamma is null', () => {
+  it('surfaces a partial-data message when spot is null but VIX row exists', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [makeVix({ spot: null, zeroGamma: 20.0 })],
       loading: false,
@@ -109,7 +109,20 @@ describe('<VixDealerStateBadge>', () => {
       freshestAt: '2026-05-19T14:00:00Z',
     });
     render(<VixDealerStateBadge marketOpen />);
-    expect(screen.getByText(/awaiting first GEXBot tick/i)).toBeInTheDocument();
+    expect(screen.getByText(/partial data \(missing spot\)/i)).toBeInTheDocument();
+  });
+
+  it('surfaces a partial-data message when zero_gamma is null but VIX row exists', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeVix({ spot: 18.5, zeroGamma: null })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    render(<VixDealerStateBadge marketOpen />);
+    expect(
+      screen.getByText(/partial data \(missing zero-gamma\)/i),
+    ).toBeInTheDocument();
   });
 
   it('surfaces fetch errors', () => {

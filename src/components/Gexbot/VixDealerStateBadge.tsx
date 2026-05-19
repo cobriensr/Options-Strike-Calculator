@@ -30,12 +30,13 @@ function formatLevel(value: number | null): string {
 function VixDealerStateBadgeInner({ marketOpen }: VixDealerStateBadgeProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
 
-  const { sign, spot, zeroGamma } = useMemo(() => {
+  const { sign, spot, zeroGamma, vixPresent } = useMemo(() => {
     const vix = rows.find((r) => r.ticker === 'VIX');
     return {
       sign: deriveGammaSign(vix?.spot ?? null, vix?.zeroGamma ?? null),
       spot: vix?.spot ?? null,
       zeroGamma: vix?.zeroGamma ?? null,
+      vixPresent: vix != null,
     };
   }, [rows]);
 
@@ -65,8 +66,9 @@ function VixDealerStateBadgeInner({ marketOpen }: VixDealerStateBadgeProps) {
     );
   }
 
-  // Empty-state: tables empty until Monday 13:00 UTC.
-  if (rows.length === 0 || sign === 'unknown') {
+  // True empty state — gexbot_snapshots has no VIX row in the 15-min
+  // freshness window (cron down, weekend, brand-new install).
+  if (rows.length === 0 || !vixPresent) {
     return (
       <div
         role="status"
@@ -75,6 +77,26 @@ function VixDealerStateBadgeInner({ marketOpen }: VixDealerStateBadgeProps) {
         className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
       >
         VIX Dealer State — awaiting first GEXBot tick
+      </div>
+    );
+  }
+
+  // VIX row exists but missing spot or zero_gamma — distinct from
+  // "no tick yet". GEXBot occasionally ships partial rows for VIX
+  // when the upstream calc isn't available; surface that explicitly
+  // so the user doesn't think the cron is down.
+  if (sign === 'unknown') {
+    const missing: string[] = [];
+    if (spot == null) missing.push('spot');
+    if (zeroGamma == null) missing.push('zero-gamma');
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        data-testid="vix-dealer-state-badge-partial"
+        className="text-tertiary rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
+      >
+        VIX Dealer State — partial data (missing {missing.join(' + ')})
       </div>
     );
   }
