@@ -720,7 +720,7 @@ export default function StrikeCalculator() {
     const list: NavSection[] = [];
     for (const group of resolvedGroups) {
       for (const id of resolvedPanelsByGroup.get(group) ?? []) {
-        if (id !== 'results' && hiddenPanels.has(id)) continue;
+        if (hiddenPanels.has(id)) continue;
         const label = labelById.get(id);
         if (label) list.push({ id, label });
       }
@@ -1414,11 +1414,7 @@ export default function StrikeCalculator() {
                   for (const group of resolvedGroups) {
                     const ids = resolvedPanelsByGroup.get(group) ?? [];
                     for (const id of ids) {
-                      // `results` is structurally pinned — toggling it
-                      // in the modal is a latent no-op (preserved from
-                      // the pre-refactor behavior). Every other id
-                      // respects the hidden Set.
-                      if (id !== 'results' && panelPrefs.isHidden(id)) {
+                      if (panelPrefs.isHidden(id)) {
                         continue;
                       }
                       const render = panelRenderers[id];
