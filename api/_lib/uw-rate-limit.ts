@@ -41,8 +41,17 @@ function isRedisConfigured(): boolean {
 
 // ── Tuning ────────────────────────────────────────────────────
 
-/** Max UW requests in any 60-second window. Headroom under UW's 120/min. */
-export const UW_PER_MINUTE_CAP = 100;
+/**
+ * Max UW requests in any 60-second window. Headroom under UW's 120/min.
+ *
+ * Raised from 100 → 115 on 2026-05-19. Multiple every-minute crons
+ * (fetch-strike-trade-volume, fetch-greek-flow-etf, fetch-nope,
+ * fetch-flow-alerts, enrich-lottery-outcomes) plus on-demand
+ * lottery-finder reads were collectively burning ~95-110 calls/min
+ * during peak and tripping our self-cap (15 events/day across crons).
+ * 115 keeps a 5-call buffer under UW's 120/min ceiling.
+ */
+export const UW_PER_MINUTE_CAP = 115;
 
 // ── Internal helpers ──────────────────────────────────────────
 

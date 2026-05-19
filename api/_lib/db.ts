@@ -64,9 +64,21 @@ export function _resetDb() {
  * like a transient network failure. Non-transient `NeonDbError`s
  * (constraint violations, syntax errors) bubble up unchanged so the
  * caller's error path stays intact.
+ *
+ * Patterns added 2026-05-19 after a ~30-minute Neon recovery-mode
+ * blip spilled ~35 distinct Sentry issues across endpoints that
+ * never got past the first attempt:
+ *   - `recovery_mode` / `server_login_retry`: the proxy responds to
+ *     login attempts with a cached "database is in recovery mode"
+ *     error while a node is being restarted. Resolves in seconds.
+ *   - `Too many connections`: brief saturation when a compute node
+ *     just started; resolves once the pool warms.
+ *   - `server conn crashed` / `connection closed`: transient cut on
+ *     an in-flight request. The HTTP serverless driver does not
+ *     reconnect on retry — caller must reissue.
  */
 const DB_RETRYABLE_RX =
-  /timeout|ECONNREFUSED|ECONNRESET|ENETUNREACH|ENOTFOUND|fetch failed|socket hang up|TLS connection|EAI_AGAIN/i;
+  /timeout|ECONNREFUSED|ECONNRESET|ENETUNREACH|ENOTFOUND|fetch failed|socket hang up|TLS connection|EAI_AGAIN|recovery_mode|server_login_retry|Too many connections|connection closed|server conn crashed/i;
 
 export function isRetryableDbError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
