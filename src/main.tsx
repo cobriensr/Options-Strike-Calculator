@@ -135,6 +135,7 @@ if (import.meta.env.PROD)
       { path: '/api/lottery-contract-tape', method: 'GET' },
       { path: '/api/opening-flow-signal', method: 'GET' },
       { path: '/api/silent-boom-feed', method: 'GET' },
+      { path: '/api/periscope-lottery-feed', method: 'GET' },
       { path: '/api/silent-boom-ticker-counts', method: 'GET' },
       { path: '/api/silent-boom-export', method: 'GET' },
       { path: '/api/net-flow-history', method: 'GET' },
