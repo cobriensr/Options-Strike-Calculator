@@ -4915,4 +4915,48 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS spread_in_bucket NUMERIC`,
     ],
   },
+  {
+    id: 172,
+    description:
+      "Create periscope_lottery_fires table for the dual-panel Periscope-event-driven lottery alerts (call lottery / put lottery). Triggers on periscope_snapshots gamma (call lottery) and charm (put lottery) events that meet the v3 in-sample-validated filter chain documented in docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md. Idempotent UNIQUE (fire_type, fire_time, event_strike) so the 5-min cron can re-scan the same 10-min Periscope slice without duplicating rows. Outcome columns (peak_px, realized_r) filled by enrich-periscope-lottery-outcomes cron at 20:10 UTC daily.",
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS periscope_lottery_fires (
+            id BIGSERIAL PRIMARY KEY,
+            fire_type TEXT NOT NULL CHECK (fire_type IN ('call_lottery','put_lottery')),
+            fire_time TIMESTAMPTZ NOT NULL,
+            expiry DATE NOT NULL,
+            event_strike INTEGER NOT NULL,
+            trade_strike INTEGER NOT NULL,
+            spot_at_event NUMERIC(10,4) NOT NULL,
+            strike_dist NUMERIC(10,4) NOT NULL,
+            greek_post NUMERIC(20,4) NOT NULL,
+            greek_delta NUMERIC(20,4) NOT NULL,
+            greek_lvl_rank REAL,
+            greek_chg_rank REAL,
+            gex_dollars NUMERIC(20,4),
+            call_ratio REAL,
+            qqq_net_prem_balance_30m REAL,
+            entry_px NUMERIC(10,4),
+            vix NUMERIC(8,2),
+            v3_strict_pass BOOLEAN NOT NULL DEFAULT FALSE,
+            v4_badge BOOLEAN NOT NULL DEFAULT FALSE,
+            peak_px NUMERIC(10,4),
+            peak_pct NUMERIC(10,4),
+            peak_time TIMESTAMPTZ,
+            eod_close_px NUMERIC(10,4),
+            realized_r_peak NUMERIC(10,4),
+            realized_r_eod NUMERIC(10,4),
+            outcome_locked BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (fire_type, fire_time, event_strike)
+          )`,
+      sql`CREATE INDEX IF NOT EXISTS periscope_lottery_fires_lookup_idx
+            ON periscope_lottery_fires (fire_type, fire_time DESC)`,
+      sql`CREATE INDEX IF NOT EXISTS periscope_lottery_fires_expiry_idx
+            ON periscope_lottery_fires (expiry, fire_type)`,
+      sql`CREATE INDEX IF NOT EXISTS periscope_lottery_fires_unlocked_idx
+            ON periscope_lottery_fires (outcome_locked, fire_time)
+         WHERE outcome_locked = FALSE`,
+    ],
+  },
 ];
