@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  usePersistedState,
+  type UsePersistedStateOptions,
+} from '../../hooks/usePersistedState.js';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { useSilentBoomTickerCounts } from '../../hooks/useSilentBoomTickerCounts.js';
@@ -57,6 +61,73 @@ const MONEYNESS_LS_KEY = 'silentBoom.moneynessMode';
 const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
 const ASK_PCT_BAND_LS_KEY = 'silentBoom.askPctBand';
 const TICKER_EXPANDED_LS_KEY = 'silent-boom-ticker-expanded';
+
+// Encoding shims so the usePersistedState migration preserves the
+// localStorage payload format from before Phase 2B. Users' saved
+// filter state stays valid across the refactor. Returning `undefined`
+// from `parse` tells the hook to fall back to its `defaultValue`.
+const boolPersistOpts: UsePersistedStateOptions<boolean> = {
+  parse: (raw) => raw === '1',
+  serialize: (v) => (v ? '1' : '0'),
+};
+
+const intPersistOpts: UsePersistedStateOptions<number> = {
+  parse: (raw) => {
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
+  },
+  serialize: String,
+};
+
+const floatPersistOpts: UsePersistedStateOptions<number> = {
+  parse: (raw) => {
+    const n = Number.parseFloat(raw);
+    return Number.isFinite(n) ? n : undefined;
+  },
+  serialize: String,
+};
+
+const moneynessPersistOpts: UsePersistedStateOptions<MoneynessMode> = {
+  parse: (raw) => (isMoneynessMode(raw) ? raw : undefined),
+  serialize: (v) => v,
+};
+
+const exitPolicyPersistOpts: UsePersistedStateOptions<SilentBoomExitPolicy> = {
+  parse: (raw) => (isSilentBoomExitPolicy(raw) ? raw : undefined),
+  serialize: (v) => v,
+};
+
+const sortModePersistOpts: UsePersistedStateOptions<SilentBoomSortMode> = {
+  parse: (raw): SilentBoomSortMode | undefined =>
+    raw === 'newest' ||
+    raw === 'spike_ratio' ||
+    raw === 'vol_oi' ||
+    raw === 'peak'
+      ? raw
+      : undefined,
+  serialize: (v) => v,
+};
+
+const convictionFloorPersistOpts: UsePersistedStateOptions<ConvictionFloor> = {
+  parse: (raw): ConvictionFloor | undefined =>
+    raw === 'tier1' || raw === 'tier2' || raw === 'all' ? raw : undefined,
+  serialize: (v) => v,
+};
+
+const askPctBandPersistOpts: UsePersistedStateOptions<SilentBoomAskPctBand | null> =
+  {
+    parse: (raw): SilentBoomAskPctBand | undefined =>
+      raw === '70-80' ||
+      raw === '80-90' ||
+      raw === '90-95' ||
+      raw === '95-99' ||
+      raw === '100'
+        ? raw
+        : undefined,
+    // `null` return removes the slot — preserves the pre-refactor
+    // behavior of calling `removeItem` when the band is cleared.
+    serialize: (v) => v,
+  };
 
 const EXIT_POLICIES: SilentBoomExitPolicy[] = [
   'realized30mPct',
@@ -370,20 +441,18 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   // Numeric DTE floor — 0 means all DTEs. Replaces the legacy enum
   // chip group (0DTE / 1-3D / 4D+) so the user can scope to e.g. "1+"
   // (= 1-DTE and beyond) which the bucket form couldn't express.
-  const [minDte, setMinDte] = useState<number>(() => {
-    if (typeof window === 'undefined') return 0;
-    const stored = window.localStorage.getItem(MIN_DTE_LS_KEY);
-    const n = stored == null ? 0 : Number.parseInt(stored, 10);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  });
+  const [minDte, setMinDte] = usePersistedState<number>(
+    MIN_DTE_LS_KEY,
+    0,
+    intPersistOpts,
+  );
   // Min premium floor in $K. Server-side filter so pagination reflects
   // the post-filter count. 0 means no floor.
-  const [minPremiumK, setMinPremiumK] = useState<number>(() => {
-    if (typeof window === 'undefined') return 0;
-    const stored = window.localStorage.getItem(MIN_PREMIUM_K_LS_KEY);
-    const n = stored == null ? 0 : Number.parseInt(stored, 10);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  });
+  const [minPremiumK, setMinPremiumK] = usePersistedState<number>(
+    MIN_PREMIUM_K_LS_KEY,
+    0,
+    intPersistOpts,
+  );
   // Legacy bucket state retained for type compatibility with the hook's
   // `dte` field. Now hard-wired to null; the numeric `minDte` controls
   // the filter exclusively from this component.
@@ -391,210 +460,102 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const [burstFilter, setBurstFilter] = useState<SilentBoomBurstColor | null>(
     null,
   );
-  const [askPctBand, setAskPctBand] = useState<SilentBoomAskPctBand | null>(
-    () => {
-      if (typeof window === 'undefined') return null;
-      const stored = window.localStorage.getItem(ASK_PCT_BAND_LS_KEY);
-      if (
-        stored === '70-80' ||
-        stored === '80-90' ||
-        stored === '90-95' ||
-        stored === '95-99' ||
-        stored === '100'
-      ) {
-        return stored;
-      }
-      return null;
-    },
+  const [askPctBand, setAskPctBand] =
+    usePersistedState<SilentBoomAskPctBand | null>(
+      ASK_PCT_BAND_LS_KEY,
+      null,
+      askPctBandPersistOpts,
+    );
+  const [sortMode, setSortMode] = usePersistedState<SilentBoomSortMode>(
+    SORT_LS_KEY,
+    'newest',
+    sortModePersistOpts,
   );
-  const [sortMode, setSortMode] = useState<SilentBoomSortMode>(() => {
-    if (typeof window === 'undefined') return 'newest';
-    const stored = window.localStorage.getItem(SORT_LS_KEY);
-    if (
-      stored === 'newest' ||
-      stored === 'spike_ratio' ||
-      stored === 'vol_oi' ||
-      stored === 'peak'
-    ) {
-      return stored;
-    }
-    return 'newest';
-  });
-  const [minVolOi, setMinVolOi] = useState<number>(() => {
-    if (typeof window === 'undefined') return 0.5;
-    const stored = window.localStorage.getItem(MIN_VOL_OI_LS_KEY);
-    if (stored == null) return 0.5;
-    const parsed = Number.parseFloat(stored);
-    return Number.isFinite(parsed) ? parsed : 0.5;
-  });
-  const [convictionFloor, setConvictionFloor] = useState<ConvictionFloor>(
-    () => {
-      if (typeof window === 'undefined') return 'all';
-      const stored = window.localStorage.getItem(CONVICTION_LS_KEY);
-      if (stored === 'tier1' || stored === 'tier2' || stored === 'all') {
-        return stored;
-      }
-      return 'all';
-    },
+  const [minVolOi, setMinVolOi] = usePersistedState<number>(
+    MIN_VOL_OI_LS_KEY,
+    0.5,
+    floatPersistOpts,
   );
-  const [hideLatePm, setHideLatePm] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_LATE_PM_LS_KEY) === '1';
-  });
-  const [hideGhosts, setHideGhosts] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_GHOSTS_LS_KEY) === '1';
-  });
-  const [hideGated, setHideGated] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
-  });
+  const [convictionFloor, setConvictionFloor] =
+    usePersistedState<ConvictionFloor>(
+      CONVICTION_LS_KEY,
+      'all',
+      convictionFloorPersistOpts,
+    );
+  const [hideLatePm, setHideLatePm] = usePersistedState<boolean>(
+    HIDE_LATE_PM_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
+  const [hideGhosts, setHideGhosts] = usePersistedState<boolean>(
+    HIDE_GHOSTS_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
+  const [hideGated, setHideGated] = usePersistedState<boolean>(
+    HIDE_GATED_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
   // "Hide round-tripped" — filters out alerts where the round-trip
   // cron applied a non-zero score deduct. Default ON (Phase 3, post-2E
   // soak: deducted alerts had +14.4pp trail-loss rate vs baseline on
   // silent_boom — hiding them by default is the higher-EV move). User
   // can flip the chip OFF to see deducted alerts. Persists locally.
   // Spec: docs/superpowers/specs/round-trip-score-deduct-production-2026-05-16.md
-  const [hideRoundTripped, setHideRoundTripped] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    const stored = window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY);
-    return stored == null ? true : stored === '1';
-  });
+  const [hideRoundTripped, setHideRoundTripped] = usePersistedState<boolean>(
+    HIDE_ROUND_TRIPPED_LS_KEY,
+    true,
+    boolPersistOpts,
+  );
   // "Hide round-tripped (any DTE)" — structural filter on
   // round_trip_net_pct < ROUND_TRIPPED_ANY_DTE_CUTOFF. Independent of the
   // outcome-gated `hideRoundTripped` chip (which is ≤7 DTE only via the
   // cron's score_deduct). This one catches visually-obvious in/outs at
   // any DTE — e.g. MSTR 11-DTE puts that fire on a big ask print and get
   // sold back on a similar-size bid print in the next 60min.
-  const [hideRoundTrippedAnyDte, setHideRoundTrippedAnyDte] = useState<boolean>(
-    () => {
-      if (typeof window === 'undefined') return false;
-      return (
-        window.localStorage.getItem(HIDE_ROUND_TRIPPED_ANY_DTE_LS_KEY) === '1'
-      );
-    },
-  );
+  const [hideRoundTrippedAnyDte, setHideRoundTrippedAnyDte] =
+    usePersistedState<boolean>(
+      HIDE_ROUND_TRIPPED_ANY_DTE_LS_KEY,
+      false,
+      boolPersistOpts,
+    );
   // "Hide counter-flow" — hides alerts where the per-ticker net flow
   // direction at fire time contradicts the option type. Calls hidden when
   // cumNcpAtFire < cumNppAtFire; puts hidden when cumNcpAtFire > cumNppAtFire.
   // Rows with null fire-time snapshots are never hidden (outside-WS-universe
   // tickers + pre-#158 historical rows). Client-side filter; persists locally.
-  const [hideCounterFlow, setHideCounterFlow] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_COUNTER_FLOW_LS_KEY) === '1';
-  });
+  const [hideCounterFlow, setHideCounterFlow] = usePersistedState<boolean>(
+    HIDE_COUNTER_FLOW_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
   // Aggressive Premium chip — single toggle that ANDs together the
   // trader's 5-criterion UW filter: premium ≥ $100K, DTE ≤ 8,
   // vol/OI > 1, single-leg, OTM. See server-side enforcement in
   // api/silent-boom-feed.ts and the migration #152 column it gates on.
-  const [aggressivePremium, setAggressivePremium] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(AGGRESSIVE_PREMIUM_LS_KEY) === '1';
-  });
-  const [moneynessMode, setMoneynessMode] = useState<MoneynessMode>(() => {
-    if (typeof window === 'undefined') return 'all';
-    const stored = window.localStorage.getItem(MONEYNESS_LS_KEY);
-    return isMoneynessMode(stored) ? stored : 'all';
-  });
-  const [exitPolicy, setExitPolicy] = useState<SilentBoomExitPolicy>(() => {
-    if (typeof window === 'undefined') return 'realized60mPct';
-    const stored = window.localStorage.getItem(EXIT_POLICY_LS_KEY);
-    return isSilentBoomExitPolicy(stored) ? stored : 'realized60mPct';
-  });
+  const [aggressivePremium, setAggressivePremium] = usePersistedState<boolean>(
+    AGGRESSIVE_PREMIUM_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
+  const [moneynessMode, setMoneynessMode] = usePersistedState<MoneynessMode>(
+    MONEYNESS_LS_KEY,
+    'all',
+    moneynessPersistOpts,
+  );
+  const [exitPolicy, setExitPolicy] = usePersistedState<SilentBoomExitPolicy>(
+    EXIT_POLICY_LS_KEY,
+    'realized60mPct',
+    exitPolicyPersistOpts,
+  );
   /** ISO of the 5-min bucket the scrubber is on; null = whole day. */
   const [bucketIso, setBucketIso] = useState<string | null>(null);
   const [page, setPage] = useState<number>(0);
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(SORT_LS_KEY, sortMode);
-    }
-  }, [sortMode]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MIN_VOL_OI_LS_KEY, String(minVolOi));
-    }
-  }, [minVolOi]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(CONVICTION_LS_KEY, convictionFloor);
-    }
-  }, [convictionFloor]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(HIDE_LATE_PM_LS_KEY, hideLatePm ? '1' : '0');
-    }
-  }, [hideLatePm]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(HIDE_GHOSTS_LS_KEY, hideGhosts ? '1' : '0');
-    }
-  }, [hideGhosts]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
-    }
-  }, [hideGated]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(
-        HIDE_ROUND_TRIPPED_LS_KEY,
-        hideRoundTripped ? '1' : '0',
-      );
-    }
-  }, [hideRoundTripped]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(
-        HIDE_ROUND_TRIPPED_ANY_DTE_LS_KEY,
-        hideRoundTrippedAnyDte ? '1' : '0',
-      );
-    }
-  }, [hideRoundTrippedAnyDte]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(
-        HIDE_COUNTER_FLOW_LS_KEY,
-        hideCounterFlow ? '1' : '0',
-      );
-    }
-  }, [hideCounterFlow]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MIN_DTE_LS_KEY, String(minDte));
-    }
-  }, [minDte]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MIN_PREMIUM_K_LS_KEY, String(minPremiumK));
-    }
-  }, [minPremiumK]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(
-        AGGRESSIVE_PREMIUM_LS_KEY,
-        aggressivePremium ? '1' : '0',
-      );
-    }
-  }, [aggressivePremium]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MONEYNESS_LS_KEY, moneynessMode);
-    }
-  }, [moneynessMode]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(EXIT_POLICY_LS_KEY, exitPolicy);
-    }
-  }, [exitPolicy]);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (askPctBand == null) {
-      window.localStorage.removeItem(ASK_PCT_BAND_LS_KEY);
-    } else {
-      window.localStorage.setItem(ASK_PCT_BAND_LS_KEY, askPctBand);
-    }
-  }, [askPctBand]);
+  // (Phase 2B: the 16 localStorage write effects that lived here were
+  // collapsed into the `usePersistedState` calls above. Same keys,
+  // same encodings, same defaults.)
 
   // Reset bucket scrub when the date changes — a bucket from yesterday
   // shouldn't carry over.
