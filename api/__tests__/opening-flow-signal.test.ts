@@ -372,4 +372,23 @@ describe('opening-flow-signal endpoint', () => {
     const body = res._json as { error: string };
     expect(body.error).toBe('invalid query');
   });
+
+  it('returns 400 when date passes Zod regex but evaluator rejects (month 13)', async () => {
+    // `2026-13-01` matches the Zod regex `^\d{4}-\d{2}-\d{2}$` so it
+    // reaches the evaluator, which then throws
+    // `InvalidTradingDateError` because etWallClockToUtcIso rejects
+    // the impossible month. Endpoint must map that to a 400, not a 500.
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-13-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(400);
+    const body = res._json as { error: string };
+    expect(body.error).toContain('invalid trading date');
+    // No DB query — evaluator throws before any SQL runs.
+    expect(mockSql).not.toHaveBeenCalled();
+  });
 });
