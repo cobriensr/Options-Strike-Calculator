@@ -351,6 +351,11 @@ export const POLL_INTERVALS = {
    *  compute-zero-gamma cron's 5-min cadence with 10× safety margin so
    *  the tile picks up a fresh regime read within ≤30s of the write. */
   DEALER_REGIME: 30_000,
+  /** Futures snapshot refresh (useFuturesData) — matches the every-5-min
+   *  Databento sidecar cron with a 10× safety margin so the panel picks
+   *  up a fresh ES/NQ/VX snapshot within ≤30s of the write. Gated on
+   *  marketOpen. */
+  FUTURES: 30_000,
   /** GexTarget history refresh (useGexTarget) — matches the 1-min cron cadence */
   GEX_TARGET: 60_000,
   /** SPY NOPE intraday refresh (useNopeIntraday) — matches fetch-nope cron */

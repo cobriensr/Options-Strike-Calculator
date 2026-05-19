@@ -1234,7 +1234,12 @@ export default function StrikeCalculator() {
                         <span id="sec-futures" className="block scroll-mt-28" />
                         <ErrorBoundary label="Futures">
                           <Suspense fallback={<SkeletonSection lines={5} />}>
-                            <FuturesPanel defaultCollapsed />
+                            <FuturesPanel
+                              defaultCollapsed
+                              marketOpen={
+                                market.data.quotes?.marketOpen ?? false
+                              }
+                            />
                           </Suspense>
                         </ErrorBoundary>
                       </>

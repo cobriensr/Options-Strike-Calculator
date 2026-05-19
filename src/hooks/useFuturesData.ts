@@ -3,12 +3,18 @@
  *
  * Calls GET /api/futures/snapshot on mount (live mode), or with an
  * optional `?at=<ISO>` query param when the caller supplies a historical
- * timestamp. No polling (data updates every 5 min via cron; the caller
- * refreshes manually via the returned `refetch`). Aborts any in-flight
- * request when `at` changes or the component unmounts.
+ * timestamp. Polls every `POLL_INTERVALS.FUTURES` (30s) while
+ * `marketOpen === true` AND no historical `at` is set (a snapshot view
+ * doesn't change). Aborts any in-flight request when `at` changes or
+ * the component unmounts.
+ *
+ * The 30s cadence is 10× safer than the 5-min sidecar cron that writes
+ * fresh ES/NQ/VX rows, so the panel picks up a new snapshot within
+ * ≤30s of it landing in Postgres.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { POLL_INTERVALS } from '../constants/index.js';
 import { getErrorMessage } from '../utils/error';
 
 export interface FuturesSnapshot {
@@ -43,7 +49,10 @@ export interface FuturesDataState {
   refetch: () => Promise<void>;
 }
 
-export function useFuturesData(at?: string): FuturesDataState {
+export function useFuturesData(
+  at?: string,
+  marketOpen = false,
+): FuturesDataState {
   const [snapshots, setSnapshots] = useState<FuturesSnapshot[]>([]);
   const [vxTermSpread, setVxTermSpread] = useState<number | null>(null);
   const [vxTermStructure, setVxTermStructure] =
@@ -115,6 +124,19 @@ export function useFuturesData(at?: string): FuturesDataState {
       abortRef.current?.abort();
     };
   }, [fetchData]);
+
+  // Recurring poll while live (no `at` snapshot) and market is open.
+  // A historical `at` view is static — polling would waste bandwidth
+  // re-fetching the same snapshot. Gating on `marketOpen` matches every
+  // other polling hook in the app.
+  useEffect(() => {
+    if (at) return;
+    if (!marketOpen) return;
+    const id = setInterval(() => {
+      void fetchData();
+    }, POLL_INTERVALS.FUTURES);
+    return () => clearInterval(id);
+  }, [fetchData, at, marketOpen]);
 
   return {
     snapshots,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useFuturesData } from '../../hooks/useFuturesData';
 import type { FuturesSnapshotResponse } from '../../hooks/useFuturesData';
+import { POLL_INTERVALS } from '../../constants';
 
 // ============================================================
 // MOCK FETCH
@@ -268,5 +269,98 @@ describe('useFuturesData', () => {
     });
 
     expect(result.current.error).toBeNull();
+  });
+
+  // ── Polling (Phase 1E) ───────────────────────────────────
+
+  it('polls every FUTURES interval while marketOpen=true and no historical `at`', async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetch.mockImplementation(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(makeApiResponse()),
+        }),
+      );
+
+      renderHook(() => useFuturesData(undefined, true));
+
+      // Initial eager fetch flushes microtasks.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      // First poll tick.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_INTERVALS.FUTURES);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+
+      // Second poll tick.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_INTERVALS.FUTURES);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll when marketOpen=false — single fetch on mount only', async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetch.mockImplementation(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(makeApiResponse()),
+        }),
+      );
+
+      renderHook(() => useFuturesData(undefined, false));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      // Advance well past several poll intervals — no recurring fetch.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_INTERVALS.FUTURES * 5);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll when a historical `at` is set, even with marketOpen=true', async () => {
+    vi.useFakeTimers();
+    try {
+      mockFetch.mockImplementation(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(makeApiResponse()),
+        }),
+      );
+
+      // Historical snapshot view — static, polling would waste bandwidth.
+      renderHook(() => useFuturesData('2026-05-15T15:00:00Z', true));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_INTERVALS.FUTURES * 5);
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

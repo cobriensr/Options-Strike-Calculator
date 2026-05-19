@@ -85,10 +85,13 @@ function ctInputToIso(value: string): string | null {
 
 interface FuturesPanelProps {
   defaultCollapsed?: boolean;
+  /** Gates the 30s futures-snapshot poll. Closed market = no poll. */
+  marketOpen?: boolean;
 }
 
 export default function FuturesPanel({
   defaultCollapsed,
+  marketOpen = false,
 }: Readonly<FuturesPanelProps> = {}) {
   // Raw `datetime-local` input value, interpreted as Central Time.
   // Empty = live.
@@ -111,7 +114,7 @@ export default function FuturesPanel({
     loading,
     error,
     refetch,
-  } = useFuturesData(at);
+  } = useFuturesData(at, marketOpen);
 
   const timeLabel = formatUpdatedAt(updatedAt);
   const isHistorical = pickerValue !== '';
