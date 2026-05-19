@@ -5,7 +5,10 @@
  * Spec: docs/superpowers/specs/lottery-finder-2026-05-02.md
  */
 
-export type OptionType = 'C' | 'P';
+// Re-export canonical OptionType from the shared module — kept
+// importable from this path so existing LF call sites don't churn.
+import type { OptionType, ScoreTier } from '../../types/index.js';
+export type { OptionType };
 export type LotteryMode =
   | 'A_intraday_0DTE'
   | 'B_multi_day_DTE1_3'
@@ -114,8 +117,10 @@ export interface LotteryFireOutcomes {
   enrichedAt: string | null;
 }
 
-/** Tier label derived from `score`. Tier 1 ≥18, Tier 2 12-17, Tier 3 <12. */
-export type LotteryScoreTier = 'tier1' | 'tier2' | 'tier3';
+/** Tier label derived from `score`. Tier 1 ≥18, Tier 2 12-17, Tier 3 <12.
+ *  Alias of the canonical `ScoreTier` — kept here so LF call sites keep
+ *  the descriptive name without forcing a project-wide rename. */
+export type LotteryScoreTier = ScoreTier;
 
 /** Sort modes accepted by /api/lottery-finder?sort=. */
 export type LotterySortMode = 'chronological' | 'score' | 'peak';

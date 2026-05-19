@@ -5,11 +5,16 @@
  * Spec: docs/superpowers/specs/silent-boom-detector-2026-05-08.md
  */
 
-export type OptionType = 'C' | 'P';
+// Re-export canonical OptionType from the shared module — kept
+// importable from this path so existing SB call sites don't churn.
+import type { OptionType, ScoreTier } from '../../types/index.js';
+export type { OptionType };
 
 export type SilentBoomSortMode = 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
 
-export type SilentBoomScoreTier = 'tier1' | 'tier2' | 'tier3';
+/** Alias of the canonical `ScoreTier` — kept under the SB-specific
+ *  name so existing call sites don't churn during Phase 2G. */
+export type SilentBoomScoreTier = ScoreTier;
 
 /**
  * Realized exit policies surfaced by the section's chip selector.

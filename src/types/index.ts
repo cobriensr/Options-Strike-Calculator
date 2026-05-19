@@ -1,6 +1,25 @@
 /** Traffic-light signal: green / yellow / red */
 export type TrafficSignal = 'green' | 'yellow' | 'red';
 
+/**
+ * Canonical option-type discriminator — calls ('C') or puts ('P').
+ * Replaces the per-feature `OptionType` declarations that
+ * LotteryFinder + SilentBoom used to ship independently. Per-feature
+ * `types.ts` modules re-export this verbatim so existing consumers
+ * keep importing from the same path.
+ */
+export type OptionType = 'C' | 'P';
+
+/**
+ * Canonical conviction tier label derived from score. Used by both
+ * LotteryFinder and SilentBoom (each had its own typedef before
+ * Phase 2G — same shape, different name). The per-feature aliases
+ * (`LotteryScoreTier`, `SilentBoomScoreTier`) continue to exist as
+ * type aliases pointing at this canonical declaration so consumer
+ * code keeps working without a rename sweep.
+ */
+export type ScoreTier = 'tier1' | 'tier2' | 'tier3';
+
 /** Valid delta targets for which we have z-scores */
 export type DeltaTarget = 5 | 8 | 10 | 12 | 15 | 20;
 
