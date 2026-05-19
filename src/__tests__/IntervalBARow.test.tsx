@@ -88,9 +88,11 @@ beforeEach(() => {
   mockUseContractTape.mockReturnValue({ ...defaultHookState, series: [] });
   mockUseNetFlowHistory.mockReturnValue({ ...defaultHookState, series: [] });
   mockUseTickerCandles.mockReturnValue({
-    ...defaultHookState,
-    candles: [],
-    previousClose: null,
+    data: null,
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refresh: vi.fn(),
   });
 });
 
@@ -326,18 +328,28 @@ describe('IntervalBARow — expand toggle', () => {
 
   it('renders the spot price from ticker candles when available in expanded mode', () => {
     mockUseTickerCandles.mockReturnValue({
-      ...defaultHookState,
-      candles: [
-        {
-          ts: '2026-03-27T17:00:00Z',
-          open: 5790,
-          high: 5810,
-          low: 5785,
-          close: 5795.12,
-          volume: 1000,
-        },
-      ],
-      previousClose: 5800,
+      data: {
+        ticker: 'SPXW',
+        date: '2026-03-27',
+        previousClose: 5800,
+        count: 1,
+        candles: [
+          {
+            ts: '2026-03-27T17:00:00Z',
+            open: 5790,
+            high: 5810,
+            low: 5785,
+            close: 5795.12,
+            volume: 1000,
+          },
+        ],
+        marketOpen: false,
+        asOf: '2026-03-27T20:00:00Z',
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     mockUseNetFlowHistory.mockReturnValue({
       ...defaultHookState,

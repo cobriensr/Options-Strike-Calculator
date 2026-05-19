@@ -168,9 +168,11 @@ beforeEach(() => {
   mockUseContractTape.mockReturnValue({ ...defaultHookState, series: [] });
   mockUseNetFlowHistory.mockReturnValue({ ...defaultHookState, series: [] });
   mockUseTickerCandles.mockReturnValue({
-    ...defaultHookState,
-    candles: [],
-    previousClose: null,
+    data: null,
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refresh: vi.fn(),
   });
 });
 
@@ -464,18 +466,28 @@ describe('LotteryRow: expand / collapse', () => {
       ],
     });
     mockUseTickerCandles.mockReturnValue({
-      ...defaultHookState,
-      candles: [
-        {
-          ts: '2026-05-08T14:30:00Z',
-          open: 200,
-          high: 200.5,
-          low: 199.8,
-          close: 200.2,
-          volume: 1_000_000,
-        },
-      ],
-      previousClose: 199.5,
+      data: {
+        ticker: 'SPY',
+        date: '2026-05-08',
+        previousClose: 199.5,
+        count: 1,
+        candles: [
+          {
+            ts: '2026-05-08T14:30:00Z',
+            open: 200,
+            high: 200.5,
+            low: 199.8,
+            close: 200.2,
+            volume: 1_000_000,
+          },
+        ],
+        marketOpen: false,
+        asOf: '2026-05-08T20:00:00Z',
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
 
     render(
@@ -535,18 +547,28 @@ describe('LotteryRow: expand / collapse', () => {
       ],
     });
     mockUseTickerCandles.mockReturnValue({
-      ...defaultHookState,
-      candles: [
-        {
-          ts: '2026-05-08T14:30:00Z',
-          open: 200,
-          high: 200.5,
-          low: 199.8,
-          close: 200.2,
-          volume: 1_000_000,
-        },
-      ],
-      previousClose: 199.5,
+      data: {
+        ticker: 'SPY',
+        date: '2026-05-08',
+        previousClose: 199.5,
+        count: 1,
+        candles: [
+          {
+            ts: '2026-05-08T14:30:00Z',
+            open: 200,
+            high: 200.5,
+            low: 199.8,
+            close: 200.2,
+            volume: 1_000_000,
+          },
+        ],
+        marketOpen: false,
+        asOf: '2026-05-08T20:00:00Z',
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     render(
       <LotteryRow
