@@ -109,6 +109,41 @@ describe('usePersistedState', () => {
     });
   });
 
+  describe('lazy defaultValue', () => {
+    it('accepts a () => T thunk and only runs it on first render', () => {
+      const factory = vi.fn(() => 'initial');
+      const { rerender } = renderHook(() =>
+        usePersistedState<string>(KEY, factory),
+      );
+      expect(factory).toHaveBeenCalledTimes(1);
+      rerender();
+      expect(factory).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets the lazy default read another LS key (legacy-migration pattern)', () => {
+      // Simulates the LotteryFinder one-time migration from a legacy
+      // boolean key — `factory` reads localStorage, but only when the
+      // main key is missing.
+      window.localStorage.setItem('legacy.flag', '1');
+      const { result } = renderHook(() =>
+        usePersistedState<'tier1' | 'all'>(KEY, () =>
+          window.localStorage.getItem('legacy.flag') === '1' ? 'tier1' : 'all',
+        ),
+      );
+      expect(result.current[0]).toBe('tier1');
+    });
+
+    it('skips the lazy default when the main key has a parseable value', () => {
+      window.localStorage.setItem(KEY, JSON.stringify('persisted'));
+      const factory = vi.fn(() => 'fallback');
+      const { result } = renderHook(() =>
+        usePersistedState<string>(KEY, factory),
+      );
+      expect(result.current[0]).toBe('persisted');
+      expect(factory).not.toHaveBeenCalled();
+    });
+  });
+
   describe('round trip across remount', () => {
     it('preserves value through unmount + remount', () => {
       const first = renderHook(() => usePersistedState(KEY, 0));

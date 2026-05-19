@@ -68,7 +68,7 @@ function defaultSerialize<T>(value: T): string {
 
 export function usePersistedState<T>(
   key: string,
-  defaultValue: T,
+  defaultValue: T | (() => T),
   options: UsePersistedStateOptions<T> = {},
 ): [T, Dispatch<SetStateAction<T>>] {
   // Stash parse/serialize in a ref so callers can pass inline
@@ -77,15 +77,22 @@ export function usePersistedState<T>(
   optsRef.current = options;
 
   const [value, setValue] = useState<T>(() => {
-    if (!isStorageAvailable()) return defaultValue;
+    // Matches React's useState lazy-initializer contract — callers
+    // pass a thunk when computing the default is expensive (e.g.
+    // reads from a legacy localStorage key for a one-time migration).
+    const resolveDefault = (): T =>
+      typeof defaultValue === 'function'
+        ? (defaultValue as () => T)()
+        : defaultValue;
+    if (!isStorageAvailable()) return resolveDefault();
     try {
       const raw = window.localStorage.getItem(key);
-      if (raw == null) return defaultValue;
+      if (raw == null) return resolveDefault();
       const parse = options.parse ?? defaultParse<T>;
       const parsed = parse(raw);
-      return parsed === undefined ? defaultValue : parsed;
+      return parsed === undefined ? resolveDefault() : parsed;
     } catch {
-      return defaultValue;
+      return resolveDefault();
     }
   });
 
