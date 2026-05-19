@@ -42,8 +42,12 @@ function mockBundle(version: string): TakeitBundle {
 }
 
 function mockListResponse(blobs: { pathname: string; url: string }[]) {
+  // The loader fetches `entry.downloadUrl`, not `entry.url`, since
+  // private blob stores reject the raw store URL with 403. Default
+  // downloadUrl to the same value as url so existing test fixtures
+  // (which only set `url`) keep matching against the fetch spy.
   vi.mocked(list).mockResolvedValueOnce({
-    blobs,
+    blobs: blobs.map((b) => ({ ...b, downloadUrl: b.url })),
     cursor: undefined,
     hasMore: false,
   } as Awaited<ReturnType<typeof list>>);

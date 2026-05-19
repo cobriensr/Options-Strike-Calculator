@@ -72,7 +72,12 @@ async function fetchManifest(): Promise<ManifestPayload> {
   if (!entry) {
     throw new Error(`take-it manifest missing at ${MANIFEST_PATH}`);
   }
-  const res = await fetch(entry.url);
+  // Private blob stores require the signed downloadUrl — entry.url is the
+  // raw store URL which 403s on a private store (recurring failure mode
+  // per memory feedback_blob_access_mode.md; the bare-url path worked
+  // when the takeit store was public but started returning 403 once it
+  // was switched to private).
+  const res = await fetch(entry.downloadUrl);
   if (!res.ok) {
     throw new Error(
       `take-it manifest fetch failed: ${res.status} ${res.statusText}`,
@@ -83,13 +88,13 @@ async function fetchManifest(): Promise<ManifestPayload> {
 
 async function fetchBundleByPath(blobPath: string): Promise<TakeitBundle> {
   // The manifest stores the relative pathname; list() turns it into a
-  // signed URL we can fetch.
+  // signed downloadUrl we can fetch (private store — see fetchManifest).
   const { blobs } = await list({ prefix: blobPath });
   const entry = blobs.find((b) => b.pathname === blobPath);
   if (!entry) {
     throw new Error(`take-it bundle missing at ${blobPath}`);
   }
-  const res = await fetch(entry.url);
+  const res = await fetch(entry.downloadUrl);
   if (!res.ok) {
     throw new Error(
       `take-it bundle fetch failed: ${res.status} ${res.statusText}`,
