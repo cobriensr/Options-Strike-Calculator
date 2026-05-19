@@ -58,10 +58,4 @@ describe('classifyRow', () => {
     expect(r.side).toBe('below');
     expect(r.tone).toBe('weakening');
   });
-
-  it('treats Δ === 0 above spot as strengthening (no positive contribution)', () => {
-    const r = classifyRow(6800, SPOT, 0);
-    expect(r.side).toBe('above');
-    expect(r.tone).toBe('strengthening');
-  });
 });

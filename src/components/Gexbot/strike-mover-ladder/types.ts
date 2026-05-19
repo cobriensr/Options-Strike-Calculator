@@ -12,12 +12,7 @@ export type LadderSymbol = 'SPX' | 'ES_SPX' | 'SPY';
 export interface ClassifiedRow {
   side: Side;
   tone: Tone;
-  toneClass:
-    | 'text-violet-300'
-    | 'text-yellow-300'
-    | 'text-rose-300'
-    | 'text-emerald-300'
-    | 'text-amber-300';
+  toneClass: string;
   marker: '▽' | '◈ ATM' | null;
 }
 
