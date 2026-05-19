@@ -272,6 +272,10 @@
     {
       "path": "/api/cron/cleanup-gexbot",
       "schedule": "15 12 * * 1-5"
+    },
+    {
+      "path": "/api/cron/capture-opening-flow-signal",
+      "schedule": "50 14 * * 1-5"
     }
   ],
   "functions": {

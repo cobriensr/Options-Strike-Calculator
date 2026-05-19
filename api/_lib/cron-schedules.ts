@@ -58,6 +58,19 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
+  'capture-opening-flow-signal': {
+    // 14:50 UTC weekdays. Fires year-round AFTER the V4 09:30–09:40 ET
+    // slice 2 window has closed:
+    //   - CDT (Mar–Nov): 09:50 CT / 10:50 ET (1h 10m after window close)
+    //   - CST (Nov–Mar): 08:50 CT / 09:50 ET (10m after window close)
+    // The earlier 13:50 UTC option would have fired DURING the window
+    // in CST (07:50 CT / 08:50 ET), so the cron would have written an
+    // empty `windowStatus='before_open'` row for the ~4-week DST seam
+    // and never had a chance to overwrite it later in the day.
+    schedule: '50 14 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'check-cone-breach': {
     schedule: '* 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
