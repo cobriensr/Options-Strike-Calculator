@@ -356,18 +356,30 @@ export default function StrikeCalculator() {
     getEarlyCloseHourET(vix.selectedDate),
   );
 
-  // Derive VIX OHLC from history candles when static data and API have no entry
-  useEffect(() => {
-    if (vix.vixOHLC) return; // already have OHLC from static data or API
+  // Derive VIX OHLC from history candles when static data and API have no
+  // entry. Splitting the derivation (pure) from the side-effecting state
+  // write lets us keep correct exhaustive-deps without disabling the lint
+  // rule. Destructured locals so exhaustive-deps is satisfied without
+  // pulling the whole `vix` object into deps (`vix` itself is a fresh
+  // object every render).
+  const { vixOHLC, setVixOHLC } = vix;
+  const vixOHLCFromHistory = useMemo(() => {
     const candles = historyData.history?.vix.candles;
-    if (!candles || candles.length === 0) return;
-    vix.setVixOHLC({
-      open: candles[0]!.open,
-      close: candles.at(-1)!.close,
+    if (!candles || candles.length === 0) return null;
+    const first = candles[0];
+    const last = candles.at(-1);
+    if (!first || !last) return null;
+    return {
+      open: first.open,
+      close: last.close,
       high: Math.max(...candles.map((c) => c.high)),
       low: Math.min(...candles.map((c) => c.low)),
-    });
-  }, [vix.vixOHLC, historyData.history?.vix.candles, vix.setVixOHLC]); // eslint-disable-line react-hooks/exhaustive-deps
+    };
+  }, [historyData.history?.vix.candles]);
+  useEffect(() => {
+    if (vixOHLC || !vixOHLCFromHistory) return;
+    setVixOHLC(vixOHLCFromHistory);
+  }, [vixOHLC, vixOHLCFromHistory, setVixOHLC]);
 
   // Track user edits so auto-fill overwrites defaults but not manual input
   const spotEdited = useRef(false);
