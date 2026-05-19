@@ -110,7 +110,14 @@ export const PERISCOPE_LOTTERY_THRESHOLDS = {
     TRADE_OFFSET_PTS: 50,
     HOLD_MINUTES: 180,
     TP_MULTIPLE: 5,
-    /** v4 badge alt: entry_px below this is "cheap-lottery" badge */
-    ENTRY_PX_BADGE_MAX: 1.0,
+    /**
+     * Hard filter — fires only when the trade strike's first observed
+     * tick within +5min of fire_time is ≤ this price. Promoted from a
+     * "cheap-lottery" badge to a filter on 2026-05-19 after the 26-day
+     * backfill showed entry_px ≤ $1.00 has a 7.6× lift on peak ≥ +50%
+     * (55.6% win rate vs 7.3% baseline), cutting put volume from
+     * ~110/day to ~14/day with no winners lost.
+     */
+    ENTRY_PX_MAX: 1.0,
   },
 } as const;

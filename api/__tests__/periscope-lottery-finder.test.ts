@@ -56,7 +56,7 @@ describe('PERISCOPE_LOTTERY_THRESHOLDS — constants are locked', () => {
     expect(t.CALL_RATIO_MAX).toBe(1.5);
     expect(t.TRADE_OFFSET_PTS).toBe(50);
     expect(t.HOLD_MINUTES).toBe(180);
-    expect(t.ENTRY_PX_BADGE_MAX).toBe(1.0);
+    expect(t.ENTRY_PX_MAX).toBe(1.0);
   });
 });
 
@@ -304,17 +304,26 @@ describe('detectPutLottery — v3 strict filter cascade', () => {
     expect(fires).toHaveLength(0);
   });
 
-  it('does not set v4Badge when entry_px > 1.0', async () => {
+  it('rejects when entry_px > ENTRY_PX_MAX ($1.00 hard filter)', async () => {
     mockSql.mockResolvedValueOnce([APRIL23_CANDIDATE]);
     mockSql.mockResolvedValueOnce([
       { gex_dollars: '500000000', call_ratio: '0.8' },
     ]);
-    mockSql.mockResolvedValueOnce([{ price: '2.50' }]); // > $1
-    mockSql.mockResolvedValueOnce([{ vix: '20.5' }]);
+    mockSql.mockResolvedValueOnce([{ price: '2.50' }]); // > $1 → hard reject
 
     const fires = await detectPutLottery('2026-04-23');
-    expect(fires).toHaveLength(1);
-    expect(fires[0]!.v4Badge).toBe(false);
+    expect(fires).toHaveLength(0);
+  });
+
+  it('rejects when entry_px is null (no trade within 5min of fire)', async () => {
+    mockSql.mockResolvedValueOnce([APRIL23_CANDIDATE]);
+    mockSql.mockResolvedValueOnce([
+      { gex_dollars: '500000000', call_ratio: '0.8' },
+    ]);
+    mockSql.mockResolvedValueOnce([]); // fetchEntryPx → no row
+
+    const fires = await detectPutLottery('2026-04-23');
+    expect(fires).toHaveLength(0);
   });
 });
 

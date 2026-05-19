@@ -351,6 +351,11 @@ async function applyPutFilter(
 
   const tradeStrike = strike - t.TRADE_OFFSET_PTS;
   const entryPx = await fetchEntryPx(expiry, tradeStrike, 'P', fireTime);
+  // Hard filter: only fire when the trade strike is cheap enough to
+  // bet on. 26-day backfill showed entry_px ≤ $1 has a 7.6× lift on
+  // peak ≥ +50% vs the unfiltered population — making this a filter
+  // instead of a badge cuts volume to actionable density.
+  if (entryPx === null || entryPx > t.ENTRY_PX_MAX) return null;
   const vix = await fetchLatestVix(fireTime);
 
   return {
@@ -371,7 +376,11 @@ async function applyPutFilter(
     entryPx,
     vix,
     v3StrictPass: true,
-    v4Badge: entryPx !== null && entryPx <= t.ENTRY_PX_BADGE_MAX,
+    // v4Badge is always true for puts after the entry_px hard filter
+    // landed (2026-05-19). Left as an explicit comparison so the
+    // detection model stays self-documenting — flips to false the day
+    // ENTRY_PX_MAX changes or the filter is loosened back to a badge.
+    v4Badge: entryPx <= t.ENTRY_PX_MAX,
     peakPx: null,
     peakPct: null,
     peakTime: null,
