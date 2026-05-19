@@ -141,7 +141,54 @@ describe('<CharmClock>', () => {
     expect(screen.getByText(/\+\$0\.85/)).toBeInTheDocument();
   });
 
-  it('formats negative drift in rose color tone', () => {
+  it('shows "By close" as zcharm × (hoursRemaining / 6.5) in the same unit', () => {
+    // At 3h to close, session fraction = 3 / 6.5 ≈ 0.4615.
+    // zcharm = 47M  →  By close ≈ 21.69M
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47_000_000 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    const cell = screen.getByTestId('charm-by-close-SPX');
+    expect(cell).toHaveTextContent(/\+\$21\.69M/);
+  });
+
+  it('labels EOD bias as ▲ BUYS for positive zcharm', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47_000_000 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByTestId('charm-bias-SPX')).toHaveTextContent(/▲\s*BUYS/);
+  });
+
+  it('labels EOD bias as ▼ SELLS for negative zcharm', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'QQQ', spot: 540, zcharm: -29_950_000 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByTestId('charm-bias-QQQ')).toHaveTextContent(/▼\s*SELLS/);
+  });
+
+  it('labels EOD bias as — FLAT for zero zcharm', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'HYG', spot: 80, zcharm: 0 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByTestId('charm-bias-HYG')).toHaveTextContent(/—\s*FLAT/);
+  });
+
+  it('colors negative-bias cells in rose tone', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: -10_000_000 })],
       loading: false,
@@ -149,11 +196,13 @@ describe('<CharmClock>', () => {
       freshestAt: '2026-05-19T17:00:00Z',
     });
     const { container } = render(<CharmClock marketOpen />);
-    const driftCell = container.querySelector('td.text-rose-300');
-    expect(driftCell).not.toBeNull();
+    const roseCell = container.querySelector('td.text-rose-300');
+    expect(roseCell).not.toBeNull();
   });
 
-  it('sorts rows by absolute projected drift descending', () => {
+  it('sorts rows by absolute By-close descending', () => {
+    // Session fraction is constant across rows, so |By close| ordering
+    // matches |zcharm| ordering: SPX (47M) > QQQ (15M) > SPY (3M).
     mockUseGexbotData.mockReturnValue({
       rows: [
         makeRow({ ticker: 'SPY', spot: 596, zcharm: 3_000_000 }),
@@ -166,13 +215,8 @@ describe('<CharmClock>', () => {
     });
     render(<CharmClock marketOpen />);
     const tickerCells = screen.getAllByRole('row').slice(1); // skip header
-    // |projected drift| = |zcharm × (hours / 6.5) / (spot × 1e9)|
-    // QQQ ≈ 15e6 / 540 / 1e9  ≈ 2.78e-8
-    // SPX ≈ 47e6 / 5985 / 1e9 ≈ 7.85e-9
-    // SPY ≈ 3e6  / 596 / 1e9  ≈ 5.03e-9
-    // Order (largest first): QQQ, SPX, SPY
-    expect(tickerCells[0]).toHaveTextContent('QQQ');
-    expect(tickerCells[1]).toHaveTextContent('SPX');
+    expect(tickerCells[0]).toHaveTextContent('SPX');
+    expect(tickerCells[1]).toHaveTextContent('QQQ');
     expect(tickerCells[2]).toHaveTextContent('SPY');
   });
 

@@ -1,19 +1,18 @@
 /**
- * CharmClock — multi-ticker projected dealer-hedging drift to close.
+ * CharmClock — multi-ticker dealer-hedging direction for the 0DTE close.
  *
- * 0DTE charm (`zcharm`) measures how much dollar delta will bleed off
- * as time passes. If a dealer is delta-neutral now, that drift forces
- * a mechanical hedge between now and close — predicting the direction
- * of expected intraday flow.
+ * `zcharm` is GEXBot's net 0DTE charm, signed. The sign tells the direction
+ * dealers must mechanically hedge as charm decays into the bell:
+ *   +zcharm → dealers BUY to stay delta-neutral  → lifts price into close
+ *   −zcharm → dealers SELL to stay delta-neutral → drags price into close
  *
- * Projection formula (v0, scale uncalibrated):
- *   projected_delta_dollars = zcharm × (hours_remaining / 6.5)
- *   projected_drift_pct     = projected_delta_dollars / (spot × 1e9)
- *
- * The 6.5 hours = full SPX session. 1e9 is a rough scale we'll
- * recalibrate after the first week of data by regressing projected
- * vs realized drift. The numbers are heuristic until then; the relative
- * ordering across tickers is the actionable signal.
+ * "By close" = zcharm × (hoursRemaining / SESSION_HOURS) — the portion
+ * of today's charm that has not yet decayed. Reported in the same unit as
+ * net charm: we do not have a defensible conversion from zcharm to a
+ * realized % move, so we do not fabricate one. The actionable read is the
+ * cross-ticker ranking of |By close| plus the signed direction — biggest
+ * mover is where hedging pressure is strongest, and SPX↔SPY↔QQQ direction
+ * agreement confirms regime.
  *
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  */
@@ -33,13 +32,13 @@ interface CharmClockProps {
 interface CharmRow {
   ticker: string;
   zcharm: number;
-  spot: number | null;
-  projectedDriftPct: number | null;
+  byClose: number;
 }
 
 const SPEC = { view: 'snapshots-latest' as const };
 const SESSION_HOURS = 6.5;
-const SCALE = 1e9;
+/** Minimum bar fill % so a tiny-but-nonzero value still produces a visible nub. */
+const MIN_BAR_PCT = 4;
 
 function hoursToClose(now: Date): number {
   const today = getETToday();
@@ -49,35 +48,10 @@ function hoursToClose(now: Date): number {
   return Math.max(0, ms / 3_600_000);
 }
 
-function projectDrift(
-  zcharm: number,
-  spot: number | null,
-  hoursRemaining: number,
-): number | null {
-  if (spot == null || spot <= 0) return null;
-  const deltaDollars = zcharm * (hoursRemaining / SESSION_HOURS);
-  return deltaDollars / (spot * SCALE);
-}
-
 function formatHoursMinutes(hours: number): string {
   const h = Math.floor(hours);
   const m = Math.round((hours - h) * 60);
   return `${h}h ${m.toString().padStart(2, '0')}m`;
-}
-
-function formatDriftPct(pct: number | null): string {
-  if (pct == null) return '—';
-  const abs = Math.abs(pct * 100);
-  const signed = pct >= 0 ? '+' : '−';
-  // Auto-precision: drift is uncalibrated (1e9 divisor), so most values
-  // land in tiny ranges. Switch precision so non-zero signal is always
-  // visible — otherwise everything rounds to 0.000% and the relative
-  // ordering (the actual actionable read per the spec) is lost.
-  if (abs >= 1) return `${signed}${abs.toFixed(2)}%`;
-  if (abs >= 0.01) return `${signed}${abs.toFixed(3)}%`;
-  if (abs >= 0.0001) return `${signed}${abs.toFixed(5)}%`;
-  if (abs > 0) return `${signed}${abs.toExponential(2)}%`;
-  return '0%';
 }
 
 function formatCharm(value: number): string {
@@ -95,11 +69,24 @@ function formatCharm(value: number): string {
   return '$0';
 }
 
+function biasLabel(byClose: number): string {
+  if (byClose > 0) return '▲ BUYS';
+  if (byClose < 0) return '▼ SELLS';
+  return '— FLAT';
+}
+
+function toneClass(byClose: number): string {
+  if (byClose > 0) return 'text-emerald-300';
+  if (byClose < 0) return 'text-rose-300';
+  return 'text-tertiary';
+}
+
 function CharmClockInner({ marketOpen }: CharmClockProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
   const hoursRemaining = useMemo(() => hoursToClose(new Date()), []);
 
   const charmRows = useMemo<CharmRow[]>(() => {
+    const sessionFraction = hoursRemaining / SESSION_HOURS;
     return rows
       .filter(
         (r): r is SnapshotsLatestRow & { zcharm: number } => r.zcharm != null,
@@ -107,15 +94,15 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
       .map((r) => ({
         ticker: r.ticker,
         zcharm: r.zcharm,
-        spot: r.spot,
-        projectedDriftPct: projectDrift(r.zcharm, r.spot, hoursRemaining),
+        byClose: r.zcharm * sessionFraction,
       }))
-      .sort(
-        (a, b) =>
-          Math.abs(b.projectedDriftPct ?? 0) -
-          Math.abs(a.projectedDriftPct ?? 0),
-      );
+      .sort((a, b) => Math.abs(b.byClose) - Math.abs(a.byClose));
   }, [rows, hoursRemaining]);
+
+  const maxAbsByClose = useMemo(
+    () => charmRows.reduce((m, r) => Math.max(m, Math.abs(r.byClose)), 0),
+    [charmRows],
+  );
 
   if (loading) {
     return (
@@ -170,19 +157,26 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
           <tr>
             <th className="px-3 py-1.5 font-medium">Ticker</th>
             <th className="px-3 py-1.5 text-right font-medium">Net charm</th>
-            <th className="px-3 py-1.5 text-right font-medium">
-              Projected drift
-            </th>
+            <th className="px-3 py-1.5 text-right font-medium">By close</th>
+            <th className="px-3 py-1.5 text-right font-medium">EOD bias</th>
           </tr>
         </thead>
         <tbody>
           {charmRows.map((row) => {
-            const driftClass =
-              row.projectedDriftPct == null
-                ? 'text-tertiary'
-                : row.projectedDriftPct > 0
-                  ? 'text-emerald-300'
-                  : 'text-rose-300';
+            const tone = toneClass(row.byClose);
+            const barColor =
+              row.byClose > 0
+                ? 'bg-emerald-400/50'
+                : row.byClose < 0
+                  ? 'bg-rose-400/50'
+                  : 'bg-white/10';
+            const barPct =
+              maxAbsByClose > 0 && row.byClose !== 0
+                ? Math.max(
+                    MIN_BAR_PCT,
+                    (Math.abs(row.byClose) / maxAbsByClose) * 100,
+                  )
+                : 0;
             return (
               <tr key={row.ticker} className="border-t border-white/5">
                 <td className="px-3 py-1.5 font-medium">{row.ticker}</td>
@@ -190,19 +184,35 @@ function CharmClockInner({ marketOpen }: CharmClockProps) {
                   {formatCharm(row.zcharm)}
                 </td>
                 <td
-                  className={`px-3 py-1.5 text-right tabular-nums ${driftClass}`}
+                  data-testid={`charm-by-close-${row.ticker}`}
+                  className={`px-3 py-1.5 ${tone}`}
                 >
-                  {formatDriftPct(row.projectedDriftPct)}
+                  <div className="flex items-center justify-end gap-2">
+                    <span className="tabular-nums">
+                      {formatCharm(row.byClose)}
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="h-1.5 w-12 overflow-hidden rounded-sm bg-white/5"
+                    >
+                      <span
+                        className={`block h-full ${barColor}`}
+                        style={{ width: `${barPct}%` }}
+                      />
+                    </span>
+                  </div>
+                </td>
+                <td
+                  data-testid={`charm-bias-${row.ticker}`}
+                  className={`px-3 py-1.5 text-right text-[11px] font-medium tabular-nums ${tone}`}
+                >
+                  {biasLabel(row.byClose)}
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
-      <p className="text-tertiary px-3 py-2 text-[10px] italic">
-        Drift formula uncalibrated — relative ordering across tickers is the
-        signal; absolute % needs first-week regression.
-      </p>
     </div>
   );
 }
