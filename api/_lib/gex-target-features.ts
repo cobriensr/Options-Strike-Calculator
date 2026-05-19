@@ -33,7 +33,7 @@
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 import logger from './logger.js';
 import {
   numOrNull as canonicalNumOrNull,
@@ -182,11 +182,11 @@ export async function loadSnapshotHistory(
 
   let rows: RawStrikeRow[];
   try {
-    rows = (await sql.query(selectSql, [
-      date,
-      asOfTimestamp,
-      historySize,
-    ])) as RawStrikeRow[];
+    rows = (await withDbRetry(
+      () => sql.query(selectSql, [date, asOfTimestamp, historySize]),
+      2,
+      10_000,
+    )) as RawStrikeRow[];
   } catch (err) {
     logger.warn(
       { err, date, asOfTimestamp },
@@ -363,7 +363,11 @@ export async function writeFeatureRows(
 
   let insertResult: Array<{ id: number; mode: string }>;
   try {
-    insertResult = (await sql.query(insertSql, params)) as Array<{
+    insertResult = (await withDbRetry(
+      () => sql.query(insertSql, params),
+      2,
+      10_000,
+    )) as Array<{
       id: number;
       mode: string;
     }>;
@@ -918,7 +922,8 @@ export async function loadStrikeScoreHistory(
     // planner can choose a nested-loop plan for the three-table join and
     // repeatedly scan all `gex_strike_0dte` rows for the day, which makes
     // the endpoint exceed the frontend's 10s request timeout.
-    const featureRows = (await sql`
+    const featureRows = (await withDbRetry(
+      () => sql`
       SELECT
         gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
         gtf.gex_dollars,
@@ -941,11 +946,15 @@ export async function loadStrikeScoreHistory(
         AND ges.strike::numeric = gtf.strike::numeric
       WHERE gtf.date = ${date}
       ORDER BY gtf.timestamp ASC, gtf.mode ASC, gtf.strike ASC
-    `) as BulkFeatureBaseRow[];
+    `,
+      2,
+      10_000,
+    )) as BulkFeatureBaseRow[];
 
     if (featureRows.length === 0) return [];
 
-    const rawRows = (await sql`
+    const rawRows = (await withDbRetry(
+      () => sql`
       SELECT
         timestamp, strike,
         call_gamma_vol, put_gamma_vol,
@@ -953,14 +962,18 @@ export async function loadStrikeScoreHistory(
         put_gamma_ask, put_gamma_bid
       FROM gex_strike_0dte
       WHERE date = ${date}
-    `) as BulkRawGexRow[];
+    `,
+      2,
+      10_000,
+    )) as BulkRawGexRow[];
 
     return mergeBulkGexRows(featureRows, rawRows);
   }
 
   // Single-snapshot path: one (date, timestamp) tuple. Default for
   // `GET /api/gex-target-history` without `?all=true`.
-  return (await sql`
+  return (await withDbRetry(
+    () => sql`
     SELECT
       gtf.date, gtf.timestamp, gtf.mode, gtf.math_version, gtf.strike,
       CASE gtf.mode
@@ -1001,5 +1014,8 @@ export async function loadStrikeScoreHistory(
       AND ges.strike::numeric = gtf.strike::numeric
     WHERE gtf.date = ${date} AND gtf.timestamp = ${timestamp}
     ORDER BY gtf.mode ASC, gtf.strike ASC
-  `) as GexTargetFeatureRow[];
+  `,
+    2,
+    10_000,
+  )) as GexTargetFeatureRow[];
 }
