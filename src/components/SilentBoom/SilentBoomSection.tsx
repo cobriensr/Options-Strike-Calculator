@@ -22,11 +22,9 @@ import { SilentBoomRegimeBanner } from './SilentBoomRegimeBanner.js';
 import { SilentBoomTickerGroup } from './SilentBoomTickerGroup.js';
 import {
   BURST_STORM_INTENSITY_THRESHOLDS,
-  computeRollupAggregates,
-  isBurstStorm,
-  isHighConviction,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates.js';
+import { useTickerGrouping } from '../../hooks/useTickerGrouping.js';
 import { deltaFromAtFire } from '../../utils/macro-badges.js';
 import {
   SILENT_BOOM_EXIT_POLICY_LABELS,
@@ -743,84 +741,37 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   );
 
   // Group the displayed alerts by ticker so each underlying renders
-  // as one collapsible row instead of N scattered cards. When
-  // sortMode === 'peak', both group order AND within-group order use
-  // realized peak desc (nulls last) so the user's chosen sort survives
-  // the grouping. Otherwise: conviction → storm → alert count desc →
-  // most-recent bucket desc.
-  const groupedByTicker = useMemo(() => {
-    const map = new Map<string, SilentBoomAlert[]>();
-    for (const a of displayedAlerts) {
-      const arr = map.get(a.underlyingSymbol);
-      if (arr) arr.push(a);
-      else map.set(a.underlyingSymbol, [a]);
-    }
-    return [...map.entries()]
-      .map(([ticker, list]) => {
-        const orderedAlerts =
-          sortMode === 'peak'
-            ? [...list].sort((a, b) => {
-                const ap = a.outcomes.peakCeilingPct ?? -Infinity;
-                const bp = b.outcomes.peakCeilingPct ?? -Infinity;
-                return bp - ap;
-              })
-            : list;
-        const agg = computeRollupAggregates(
-          orderedAlerts.map<RollupAlertSummary>((a) => ({
-            optionType: a.optionType,
-            mktTideDiff: a.mktTideDiff,
-            directionGated: a.directionGated,
-            triggeredAt: a.bucketCt,
-            strike: a.strike,
-            tickerNetFlowAtFire: deltaFromAtFire(
-              a.tickerCumNcpAtFire,
-              a.tickerCumNppAtFire,
-            ),
-            premium: a.entryPrice * a.spikeVolume * 100,
-            intensity: a.spikeRatio,
-          })),
-        );
-        const peakBest = orderedAlerts.reduce<number | null>((best, a) => {
-          const p = a.outcomes.peakCeilingPct;
-          if (p == null) return best;
-          if (best == null) return p;
-          return Math.max(best, p);
-        }, null);
-        return {
-          ticker,
-          alerts: orderedAlerts,
-          conviction: isHighConviction(agg, orderedAlerts.length),
-          storm: isBurstStorm(
-            agg,
-            orderedAlerts.length,
-            BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
-          ),
-          peakBest,
-          // Latest bucket within the group — used as tiebreak so two
-          // tickers with the same alert count are ordered by recency.
-          latestBucketMs: orderedAlerts.reduce<number>((max, a) => {
-            const t = Date.parse(a.bucketCt);
-            return Number.isFinite(t) && t > max ? t : max;
-          }, 0),
-        };
-      })
-      .sort((a, b) => {
-        if (sortMode === 'peak') {
-          const ap = a.peakBest ?? -Infinity;
-          const bp = b.peakBest ?? -Infinity;
-          if (ap !== bp) return bp - ap;
-          return b.latestBucketMs - a.latestBucketMs;
-        }
-        // Conviction first (clean), then storm (loud); both above the
-        // alert-count + recency rule.
-        if (a.conviction !== b.conviction) return a.conviction ? -1 : 1;
-        if (a.storm !== b.storm) return a.storm ? -1 : 1;
-        if (b.alerts.length !== a.alerts.length) {
-          return b.alerts.length - a.alerts.length;
-        }
-        return b.latestBucketMs - a.latestBucketMs;
-      });
-  }, [displayedAlerts, sortMode]);
+  // as one collapsible row instead of N scattered cards. Grouping +
+  // ordering + conviction/storm rollups live in `useTickerGrouping`;
+  // the only Silent-Boom-specific input is the `extract` projection
+  // mapping a SilentBoomAlert to the hook's normalized shape.
+  const groupedByTicker = useTickerGrouping({
+    items: displayedAlerts,
+    sortMode: sortMode === 'peak' ? 'peak' : 'default',
+    stormIntensityThreshold: BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
+    extract: (a) => {
+      const triggerMs = Date.parse(a.bucketCt);
+      const rollupSummary: RollupAlertSummary = {
+        optionType: a.optionType,
+        mktTideDiff: a.mktTideDiff,
+        directionGated: a.directionGated,
+        triggeredAt: a.bucketCt,
+        strike: a.strike,
+        tickerNetFlowAtFire: deltaFromAtFire(
+          a.tickerCumNcpAtFire,
+          a.tickerCumNppAtFire,
+        ),
+        premium: a.entryPrice * a.spikeVolume * 100,
+        intensity: a.spikeRatio,
+      };
+      return {
+        ticker: a.underlyingSymbol,
+        peakPct: a.outcomes.peakCeilingPct,
+        triggerMs: Number.isFinite(triggerMs) ? triggerMs : 0,
+        rollupSummary,
+      };
+    },
+  });
 
   // Live ticker net-flow snapshots driving the Flow Match / Mismatch /
   // Inverted badges. One panel-level poll (60s while marketOpen)
@@ -1604,7 +1555,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
               <SilentBoomTickerGroup
                 key={g.ticker}
                 ticker={g.ticker}
-                alerts={g.alerts}
+                alerts={g.items}
                 expanded={tickerExpandedMap[g.ticker] === true}
                 onToggle={handleTickerToggle}
                 marketOpen={marketOpen}

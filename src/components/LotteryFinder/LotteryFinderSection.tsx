@@ -32,11 +32,9 @@ import {
 } from './types.js';
 import {
   BURST_STORM_INTENSITY_THRESHOLDS,
-  computeRollupAggregates,
-  isBurstStorm,
-  isHighConviction,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates.js';
+import { useTickerGrouping } from '../../hooks/useTickerGrouping.js';
 import { deltaFromAtFire } from '../../utils/macro-badges.js';
 import {
   CHIP_BASE,
@@ -681,82 +679,36 @@ export function LotteryFinderSection({
   );
 
   // Group displayed fires by ticker so each underlying renders as one
-  // collapsible row. When sortMode === 'peak', both group order AND
-  // within-group order use realized peak desc (nulls last) so the
-  // user's chosen sort survives the grouping. Otherwise: conviction →
-  // storm → fire count desc → latest trigger desc.
-  const groupedByTicker = useMemo(() => {
-    const map = new Map<string, LotteryFire[]>();
-    for (const f of tickerGroupFires) {
-      const arr = map.get(f.underlyingSymbol);
-      if (arr) arr.push(f);
-      else map.set(f.underlyingSymbol, [f]);
-    }
-    return [...map.entries()]
-      .map(([ticker, list]) => {
-        const orderedFires =
-          sortMode === 'peak'
-            ? [...list].sort((a, b) => {
-                const ap = a.outcomes.peakCeilingPct ?? -Infinity;
-                const bp = b.outcomes.peakCeilingPct ?? -Infinity;
-                return bp - ap;
-              })
-            : list;
-        const agg = computeRollupAggregates(
-          orderedFires.map<RollupAlertSummary>((f) => ({
-            optionType: f.optionType,
-            mktTideDiff: f.macro.mktTideDiff,
-            directionGated: f.directionGated,
-            triggeredAt: f.triggerTimeCt,
-            strike: f.strike,
-            tickerNetFlowAtFire: deltaFromAtFire(
-              f.macro.tickerCumNcpAtFire,
-              f.macro.tickerCumNppAtFire,
-            ),
-            premium: f.entry.price * f.trigger.windowSize * 100,
-            intensity: f.fireCount,
-          })),
-        );
-        const peakBest = orderedFires.reduce<number | null>((best, f) => {
-          const p = f.outcomes.peakCeilingPct;
-          if (p == null) return best;
-          if (best == null) return p;
-          return Math.max(best, p);
-        }, null);
-        return {
-          ticker,
-          fires: orderedFires,
-          conviction: isHighConviction(agg, orderedFires.length),
-          storm: isBurstStorm(
-            agg,
-            orderedFires.length,
-            BURST_STORM_INTENSITY_THRESHOLDS.lottery,
-          ),
-          peakBest,
-          latestTriggerMs: orderedFires.reduce<number>((max, f) => {
-            const t = Date.parse(f.triggerTimeCt);
-            return Number.isFinite(t) && t > max ? t : max;
-          }, 0),
-        };
-      })
-      .sort((a, b) => {
-        if (sortMode === 'peak') {
-          const ap = a.peakBest ?? -Infinity;
-          const bp = b.peakBest ?? -Infinity;
-          if (ap !== bp) return bp - ap;
-          return b.latestTriggerMs - a.latestTriggerMs;
-        }
-        // Conviction first (clean), then storm (loud) — both surface
-        // above the regular fire-count + recency rule. A ticker that
-        // hits BOTH lives at the very top.
-        if (a.conviction !== b.conviction) return a.conviction ? -1 : 1;
-        if (a.storm !== b.storm) return a.storm ? -1 : 1;
-        if (b.fires.length !== a.fires.length) {
-          return b.fires.length - a.fires.length;
-        }
-        return b.latestTriggerMs - a.latestTriggerMs;
-      });
-  }, [tickerGroupFires, sortMode]);
+  // collapsible row. Grouping + ordering + conviction/storm rollups
+  // live in `useTickerGrouping`; only the LotteryFire → normalized
+  // shape projection is panel-specific.
+  const groupedByTicker = useTickerGrouping({
+    items: tickerGroupFires,
+    sortMode: sortMode === 'peak' ? 'peak' : 'default',
+    stormIntensityThreshold: BURST_STORM_INTENSITY_THRESHOLDS.lottery,
+    extract: (f) => {
+      const triggerMs = Date.parse(f.triggerTimeCt);
+      const rollupSummary: RollupAlertSummary = {
+        optionType: f.optionType,
+        mktTideDiff: f.macro.mktTideDiff,
+        directionGated: f.directionGated,
+        triggeredAt: f.triggerTimeCt,
+        strike: f.strike,
+        tickerNetFlowAtFire: deltaFromAtFire(
+          f.macro.tickerCumNcpAtFire,
+          f.macro.tickerCumNppAtFire,
+        ),
+        premium: f.entry.price * f.trigger.windowSize * 100,
+        intensity: f.fireCount,
+      };
+      return {
+        ticker: f.underlyingSymbol,
+        peakPct: f.outcomes.peakCeilingPct,
+        triggerMs: Number.isFinite(triggerMs) ? triggerMs : 0,
+        rollupSummary,
+      };
+    },
+  });
 
   // Live ticker net-flow snapshots driving the Flow Match / Mismatch /
   // Inverted badges. One panel-level poll (60s while marketOpen)
@@ -1502,7 +1454,7 @@ export function LotteryFinderSection({
               <LotteryFinderTickerGroup
                 key={g.ticker}
                 ticker={g.ticker}
-                fires={g.fires}
+                fires={g.items}
                 expanded={tickerExpandedMap[g.ticker] === true}
                 onToggle={handleTickerToggle}
                 marketOpen={marketOpen}
