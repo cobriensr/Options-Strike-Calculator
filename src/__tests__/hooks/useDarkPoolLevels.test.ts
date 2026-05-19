@@ -748,3 +748,121 @@ describe('useDarkPoolLevels: refresh', () => {
     expect(url).toContain(`time=${encodeURIComponent(scrubTime!)}`);
   });
 });
+
+// ============================================================
+// ABORT
+// ============================================================
+
+describe('useDarkPoolLevels: abort', () => {
+  it('aborts the in-flight request when selectedSymbol changes mid-flight', async () => {
+    vi.useRealTimers();
+    // First fetch hangs until aborted; symbol switch should fire
+    // AbortError on the old controller and let the new fetch land.
+    const abortRef: { signal: AbortSignal | null } = { signal: null };
+    mockFetch.mockReset();
+    mockFetch.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          abortRef.signal = init.signal ?? null;
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        }),
+    );
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        levels: [makeLevel({ level: 7000 })],
+        date: '2026-04-02',
+      }),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+
+    // First fetch in-flight.
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    // Switch symbol — old AbortController must fire, new fetch lands.
+    act(() => {
+      result.current.setSelectedSymbol('QQQ');
+    });
+
+    await waitFor(() => expect(result.current.levels).toHaveLength(1));
+    expect(result.current.levels[0]!.level).toBe(7000);
+    expect(result.current.error).toBeNull();
+    expect(abortRef.signal?.aborted).toBe(true);
+  });
+
+  it('bails after fetch resolves if superseded by a newer selectedSymbol set', async () => {
+    vi.useRealTimers();
+    // First fetch resolves successfully AFTER it has been superseded
+    // by the symbol change — the hook must check
+    // `ctrl.signal.aborted` between resolve and JSON parse and bail
+    // so the stale SPX response can't clobber the winning QQQ state.
+    let resolveFirst!: (value: unknown) => void;
+    const aborts: AbortSignal[] = [];
+    mockFetch.mockReset();
+    mockFetch.mockImplementationOnce((_url: string, init: RequestInit) => {
+      if (init.signal) aborts.push(init.signal);
+      return new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        levels: [makeLevel({ level: 7000 })],
+        date: '2026-04-02',
+      }),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    // Switch — first ctrl is aborted, second fetch resolves with QQQ.
+    act(() => {
+      result.current.setSelectedSymbol('QQQ');
+    });
+    await waitFor(() => expect(result.current.levels).toHaveLength(1));
+    expect(result.current.levels[0]!.level).toBe(7000);
+    expect(aborts[0]?.aborted).toBe(true);
+
+    // Now resolve the first fetch's body — the hook should detect the
+    // controller was superseded and bail without clobbering QQQ state.
+    await act(async () => {
+      resolveFirst({
+        ok: true,
+        json: async () => ({
+          levels: [makeLevel({ level: 6575 })],
+          date: '2026-04-02',
+        }),
+      });
+      await Promise.resolve();
+    });
+
+    // Still showing QQQ result, not the stale SPX one.
+    expect(result.current.levels).toHaveLength(1);
+    expect(result.current.levels[0]!.level).toBe(7000);
+  });
+
+  it('aborts the in-flight request on unmount', async () => {
+    vi.useRealTimers();
+    const abortRef: { signal: AbortSignal | null } = { signal: null };
+    mockFetch.mockReset();
+    mockFetch.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise(() => {
+          abortRef.signal = init.signal ?? null;
+        }),
+    );
+
+    const { unmount } = renderHook(() => useDarkPoolLevels(true));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(abortRef.signal?.aborted).toBe(false);
+
+    unmount();
+    expect(abortRef.signal?.aborted).toBe(true);
+  });
+});

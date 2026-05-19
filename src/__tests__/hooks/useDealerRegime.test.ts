@@ -213,4 +213,49 @@ describe('useDealerRegime', () => {
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
+
+  it('aborts the in-flight request on unmount', async () => {
+    const aborts: AbortSignal[] = [];
+    mockFetch.mockReset().mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise(() => {
+          if (init.signal) aborts.push(init.signal);
+        }),
+    );
+    const { unmount } = renderHook(() => useDealerRegime(true));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(aborts[0]?.aborted).toBe(false);
+    unmount();
+    expect(aborts[0]?.aborted).toBe(true);
+  });
+
+  it('aborts the in-flight request when the ticker filter changes mid-flight', async () => {
+    const aborts: AbortSignal[] = [];
+    // First fetch hangs until aborted.
+    mockFetch.mockReset().mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          if (init.signal) aborts.push(init.signal);
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        }),
+    );
+    // Second fetch resolves with NDX-filtered data.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ ...SAMPLE_RESPONSE, rows: [] }),
+    });
+
+    const { result, rerender } = renderHook(
+      ({ ticker }: { ticker: string | null }) => useDealerRegime(true, ticker),
+      { initialProps: { ticker: null as string | null } },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(true));
+
+    rerender({ ticker: 'NDX' });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(aborts[0]?.aborted).toBe(true);
+  });
 });

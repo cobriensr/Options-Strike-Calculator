@@ -172,4 +172,51 @@ describe('useZeroGamma', () => {
       expect.any(Object),
     );
   });
+
+  it('aborts the in-flight request when the ticker changes mid-flight', async () => {
+    const aborts: AbortSignal[] = [];
+    // First fetch: never resolves until aborted, captures its signal.
+    mockFetch.mockReset().mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          if (init.signal) aborts.push(init.signal);
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        }),
+    );
+    // Second fetch resolves with NDX data.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        latest: { ...SAMPLE_LATEST, ticker: 'NDX' },
+        history: [{ ...SAMPLE_LATEST, ticker: 'NDX' }],
+      }),
+    });
+
+    const { result, rerender } = renderHook(
+      ({ ticker }: { ticker: string }) => useZeroGamma(ticker, true),
+      { initialProps: { ticker: 'SPX' } },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(true));
+
+    rerender({ ticker: 'NDX' });
+    await waitFor(() => expect(result.current.latest?.ticker).toBe('NDX'));
+    expect(aborts[0]?.aborted).toBe(true);
+  });
+
+  it('aborts the in-flight request on unmount', async () => {
+    const aborts: AbortSignal[] = [];
+    mockFetch.mockReset().mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise(() => {
+          if (init.signal) aborts.push(init.signal);
+        }),
+    );
+    const { unmount } = renderHook(() => useZeroGamma('SPX', true));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(aborts[0]?.aborted).toBe(false);
+    unmount();
+    expect(aborts[0]?.aborted).toBe(true);
+  });
 });

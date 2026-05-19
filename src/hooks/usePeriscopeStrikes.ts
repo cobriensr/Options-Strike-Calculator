@@ -91,12 +91,13 @@ function isoToCtDate(iso: string): string {
 async function fetchLatest(
   expiry: string,
   at: string | null,
+  signal: AbortSignal,
 ): Promise<PeriscopeStrikesResponse | null> {
   const qs = new URLSearchParams({ date: expiry });
   if (at) qs.set('time', isoToCtHhMm(at));
   const res = await fetch(`/api/periscope-strikes?${qs.toString()}`, {
     credentials: 'same-origin',
-    signal: AbortSignal.timeout(8_000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]),
   });
   if (!res.ok) {
     if (res.status === 401) return null;
@@ -113,6 +114,7 @@ async function fetchLatest(
  */
 async function fetchSlot(
   capturedAtIso: string,
+  signal: AbortSignal,
 ): Promise<PeriscopeStrikesResponse | null> {
   const qs = new URLSearchParams({
     date: isoToCtDate(capturedAtIso),
@@ -120,7 +122,7 @@ async function fetchSlot(
   });
   const res = await fetch(`/api/periscope-strikes?${qs.toString()}`, {
     credentials: 'same-origin',
-    signal: AbortSignal.timeout(8_000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]),
   });
   if (!res.ok) {
     if (res.status === 401) return null;
@@ -150,11 +152,23 @@ export function usePeriscopeStrikes(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  // Cancels any in-flight request on rerun / unmount so a stale response
+  // can't clobber a newer fetch's state and the browser stops the
+  // bandwidth burn on rapid expiry/at changes. Threaded through every
+  // sub-fetch in fetchAll() so the lookback round-trips are killed too.
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchAll = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     try {
-      const primary = await fetchLatest(expiry, at);
+      const primary = await fetchLatest(expiry, at, ctrl.signal);
       if (!mountedRef.current) return;
+      // Superseded by a newer fetch between resolve and parse — bail
+      // before clobbering newer state.
+      if (ctrl.signal.aborted) return;
       setLatest(primary);
       setError(null);
 
@@ -189,16 +203,21 @@ export function usePeriscopeStrikes(
         if (idx < 0) return Promise.resolve(null);
         const lookbackIso = slots[idx];
         if (lookbackIso == null) return Promise.resolve(null);
-        return fetchSlot(lookbackIso);
+        return fetchSlot(lookbackIso, ctrl.signal);
       });
       const [p10, p30] = await Promise.all(lookbackPromises);
       if (!mountedRef.current) return;
+      if (ctrl.signal.aborted) return;
       setPrior10m(rowsToGammaMap(p10 ?? null));
       setPrior30m(rowsToGammaMap(p30 ?? null));
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (ctrl.signal.aborted) return;
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setLoading(false);
+      // Only clear loading if this fetch wasn't superseded — a newer
+      // fetch owns loading=true until it itself resolves.
+      if (mountedRef.current && abortRef.current === ctrl) setLoading(false);
     }
   }, [expiry, at]);
 
@@ -228,6 +247,9 @@ export function usePeriscopeStrikes(
     setLoading(true);
     void fetchAll();
   }, [fetchAll]);
+
+  // Cancel any in-flight request on unmount.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return { latest, prior10m, prior30m, loading, error, refresh };
 }

@@ -268,4 +268,61 @@ describe('usePeriscopeStrikes', () => {
       vi.useRealTimers();
     }
   });
+
+  it('aborts the in-flight request on unmount', async () => {
+    const aborts: AbortSignal[] = [];
+    // Direct stubGlobal with both args so we can capture `init.signal`
+    // — the helper `mockFetch` above only forwards the URL.
+    const stub = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.signal) aborts.push(init.signal);
+        // Never resolves — request stays in-flight until aborted.
+        return new Promise<Response>(() => {});
+      },
+    );
+    vi.stubGlobal('fetch', stub);
+
+    const { unmount } = renderHook(() =>
+      usePeriscopeStrikes(true, '2026-05-12'),
+    );
+    await waitFor(() => expect(stub).toHaveBeenCalled());
+    expect(aborts[0]?.aborted).toBe(false);
+
+    unmount();
+    expect(aborts[0]?.aborted).toBe(true);
+  });
+
+  it('aborts the in-flight request when the date prop changes mid-flight', async () => {
+    const aborts: AbortSignal[] = [];
+    let callCount = 0;
+    // First date: requests hang until aborted (so we capture the signals).
+    // Second date: requests resolve immediately so the new fetch completes.
+    const stub = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        callCount += 1;
+        if (init?.signal) aborts.push(init.signal);
+        // First 3 calls (initial latest + 2 lookbacks for date #1) hang.
+        if (callCount <= 3) {
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener('abort', () =>
+              reject(new DOMException('aborted', 'AbortError')),
+            );
+          });
+        }
+        // Subsequent calls for date #2 resolve cleanly.
+        return jsonResponse(makeResponse());
+      },
+    );
+    vi.stubGlobal('fetch', stub);
+
+    const { rerender } = renderHook(
+      ({ d }: { d: string }) => usePeriscopeStrikes(true, d),
+      { initialProps: { d: '2026-05-12' } },
+    );
+    await waitFor(() => expect(stub).toHaveBeenCalled());
+    expect(aborts[0]?.aborted).toBe(false);
+
+    rerender({ d: '2026-05-13' });
+    await waitFor(() => expect(aborts[0]?.aborted).toBe(true));
+  });
 });

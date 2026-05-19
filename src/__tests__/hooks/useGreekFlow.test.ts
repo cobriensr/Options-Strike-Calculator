@@ -178,4 +178,128 @@ describe('useGreekFlow', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBe('Failed to load Greek flow');
   });
+
+  it('aborts the in-flight request when date changes mid-flight', async () => {
+    vi.useRealTimers();
+    // First fetch hangs until aborted; date switch should fire
+    // AbortError on the old controller and let the new fetch land.
+    const abortRef: { signal: AbortSignal | null } = { signal: null };
+    mockFetch.mockReset();
+    mockFetch.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          abortRef.signal = init.signal ?? null;
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        }),
+    );
+    const winning: GreekFlowResponse = {
+      ...SAMPLE,
+      date: '2026-04-25',
+      asOf: '2026-04-25T21:00:00.000Z',
+    };
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => winning,
+    });
+
+    const { result, rerender } = renderHook(
+      ({ date }: { date: string | null }) => useGreekFlow(true, date),
+      { initialProps: { date: null as string | null } },
+    );
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    // Switch date — old AbortController must fire, new fetch lands.
+    rerender({ date: '2026-04-25' });
+
+    await waitFor(() => expect(result.current.data?.date).toBe('2026-04-25'));
+    expect(result.current.error).toBeNull();
+    expect(abortRef.signal?.aborted).toBe(true);
+  });
+
+  it('bails after fetch resolves if superseded by a newer date set', async () => {
+    vi.useRealTimers();
+    // First fetch resolves AFTER it has been superseded by the rerender.
+    // The hook must check `ctrl.signal.aborted` between resolve and JSON
+    // parse so the stale live-mode response can't clobber the winning
+    // date-scoped state.
+    let resolveFirst!: (value: unknown) => void;
+    const aborts: AbortSignal[] = [];
+    mockFetch.mockReset();
+    mockFetch.mockImplementationOnce((_url: string, init: RequestInit) => {
+      if (init.signal) aborts.push(init.signal);
+      return new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+    });
+    const winning: GreekFlowResponse = {
+      ...SAMPLE,
+      date: '2026-04-25',
+      asOf: '2026-04-25T21:00:00.000Z',
+    };
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => winning,
+    });
+
+    const { result, rerender } = renderHook(
+      ({ date }: { date: string | null }) => useGreekFlow(true, date),
+      { initialProps: { date: null as string | null } },
+    );
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    rerender({ date: '2026-04-25' });
+    await waitFor(() => expect(result.current.data?.date).toBe('2026-04-25'));
+    expect(aborts[0]?.aborted).toBe(true);
+
+    // Resolve the first fetch's body — hook should bail.
+    const stale: GreekFlowResponse = {
+      ...SAMPLE,
+      date: '2026-01-01',
+      asOf: '2026-01-01T21:00:00.000Z',
+    };
+    await act(async () => {
+      resolveFirst({ ok: true, json: async () => stale });
+      await Promise.resolve();
+    });
+
+    // Still showing winning date, not the stale resolved one.
+    expect(result.current.data?.date).toBe('2026-04-25');
+  });
+
+  it('refresh() triggers an additional fetch and re-enters loading', async () => {
+    const { result } = renderHook(() => useGreekFlow(false));
+    await act(async () => {});
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mockFetch.mockClear();
+    act(() => {
+      result.current.refresh();
+    });
+    expect(result.current.loading).toBe(true);
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts the in-flight request on unmount', async () => {
+    vi.useRealTimers();
+    const abortRef: { signal: AbortSignal | null } = { signal: null };
+    mockFetch.mockReset();
+    mockFetch.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise(() => {
+          abortRef.signal = init.signal ?? null;
+        }),
+    );
+
+    const { unmount } = renderHook(() => useGreekFlow(true));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(abortRef.signal?.aborted).toBe(false);
+
+    unmount();
+    expect(abortRef.signal?.aborted).toBe(true);
+  });
 });

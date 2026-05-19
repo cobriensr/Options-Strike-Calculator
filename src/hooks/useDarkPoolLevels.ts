@@ -112,8 +112,16 @@ export function useDarkPoolLevels(
   // flash "signal timed out" on the dark pool panel. Same pattern as
   // useGexStrikeExpiry + useGexTarget.
   const failCountRef = useRef(0);
+  // Cancels any in-flight request on rerun / unmount so a stale response
+  // can't clobber a newer fetch's state and the browser stops the
+  // bandwidth burn on rapid date/symbol/scrub changes.
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchLevels = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     try {
       const qs = new URLSearchParams();
       qs.set('date', selectedDate);
@@ -123,10 +131,13 @@ export function useDarkPoolLevels(
         credentials: 'same-origin',
         // 30s covers ~p95 of API latency. 5s was too tight against
         // Neon's intermittent serverless HTTP cold-connection hangs.
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]),
       });
 
       if (!mountedRef.current) return;
+      // Superseded by a newer fetch between resolve and parse — bail
+      // before clobbering newer state or touching the fail counter.
+      if (ctrl.signal.aborted) return;
 
       if (!res.ok) {
         // 401 is the owner check — silently swallow.
@@ -148,6 +159,7 @@ export function useDarkPoolLevels(
       };
 
       if (!mountedRef.current) return;
+      if (ctrl.signal.aborted) return;
 
       setLevels(data.levels);
       failCountRef.current = 0;
@@ -159,13 +171,19 @@ export function useDarkPoolLevels(
         setUpdatedAt(data.levels[0]!.updatedAt);
       }
     } catch (err) {
+      // Aborts are intentional cancellations — don't count toward the
+      // FAIL_GRACE_COUNT or flip the error banner.
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (ctrl.signal.aborted) return;
       if (!mountedRef.current) return;
       failCountRef.current += 1;
       if (failCountRef.current >= FAIL_GRACE_COUNT) {
         setError(getErrorMessage(err));
       }
     } finally {
-      if (mountedRef.current) setLoading(false);
+      // Only clear loading if this fetch wasn't superseded — a newer
+      // fetch owns loading=true until it itself resolves.
+      if (mountedRef.current && abortRef.current === ctrl) setLoading(false);
     }
   }, [selectedDate, selectedSymbol, scrubTime]);
 
@@ -214,6 +232,9 @@ export function useDarkPoolLevels(
     setLoading(true);
     void fetchLevels();
   }, [fetchLevels]);
+
+  // Cancel any in-flight request on unmount.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return {
     levels,

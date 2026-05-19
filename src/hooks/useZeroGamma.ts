@@ -54,17 +54,27 @@ export function useZeroGamma(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  // Cancels any in-flight request on rerun / unmount so a stale response
+  // can't clobber a newer fetch's state and the browser stops the
+  // bandwidth burn on rapid ticker/date changes.
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     try {
       const qs = new URLSearchParams({ ticker });
       if (date) qs.set('date', date);
       const res = await fetch(`/api/zero-gamma?${qs}`, {
         credentials: 'same-origin',
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(5_000)]),
       });
 
       if (!mountedRef.current) return;
+      // Superseded by a newer fetch between resolve and parse — bail.
+      if (ctrl.signal.aborted) return;
 
       if (!res.ok) {
         // 401 for anon visitors is expected and not a user-visible error.
@@ -74,14 +84,19 @@ export function useZeroGamma(
 
       const data = (await res.json()) as ApiResponse;
       if (!mountedRef.current) return;
+      if (ctrl.signal.aborted) return;
 
       setLatest(data.latest);
       setHistory(data.history);
       setError(null);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (ctrl.signal.aborted) return;
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setLoading(false);
+      // Only clear loading if this fetch wasn't superseded — a newer
+      // fetch owns loading=true until it itself resolves.
+      if (mountedRef.current && abortRef.current === ctrl) setLoading(false);
     }
   }, [ticker, date]);
 
@@ -111,6 +126,9 @@ export function useZeroGamma(
     setLoading(true);
     void fetchData();
   }, [fetchData]);
+
+  // Cancel any in-flight request on unmount.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return { latest, history, loading, error, refresh };
 }

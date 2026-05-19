@@ -122,8 +122,16 @@ export function useGreekFlow(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  // Cancels any in-flight request on rerun / unmount so a stale response
+  // can't clobber a newer fetch's state and the browser stops the
+  // bandwidth burn on rapid date/scope changes.
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchData = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     try {
       const qs = new URLSearchParams();
       if (date) qs.set('date', date);
@@ -132,10 +140,12 @@ export function useGreekFlow(
 
       const res = await fetch(url, {
         credentials: 'same-origin',
-        signal: AbortSignal.timeout(8_000),
+        signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(8_000)]),
       });
 
       if (!mountedRef.current) return;
+      // Superseded by a newer fetch between resolve and parse — bail.
+      if (ctrl.signal.aborted) return;
 
       if (!res.ok) {
         // 401 for anon visitors is expected and not a user-visible error.
@@ -145,13 +155,18 @@ export function useGreekFlow(
 
       const body = (await res.json()) as GreekFlowResponse;
       if (!mountedRef.current) return;
+      if (ctrl.signal.aborted) return;
 
       setData(body);
       setError(null);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (ctrl.signal.aborted) return;
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setLoading(false);
+      // Only clear loading if this fetch wasn't superseded — a newer
+      // fetch owns loading=true until it itself resolves.
+      if (mountedRef.current && abortRef.current === ctrl) setLoading(false);
     }
   }, [date, scope]);
 
@@ -181,6 +196,9 @@ export function useGreekFlow(
     setLoading(true);
     void fetchData();
   }, [fetchData]);
+
+  // Cancel any in-flight request on unmount.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return { data, loading, error, refresh };
 }

@@ -45,6 +45,7 @@ export interface UseDealerRegimeReturn {
 async function fetchDealerRegime(
   date: string | null,
   at: string | null,
+  signal: AbortSignal,
 ): Promise<DealerRegimeResponse | null> {
   const qs = new URLSearchParams();
   if (date) qs.set('date', date);
@@ -54,7 +55,7 @@ async function fetchDealerRegime(
     : '/api/dealer-regime';
   const res = await fetch(url, {
     credentials: 'same-origin',
-    signal: AbortSignal.timeout(8_000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]),
   });
   if (!res.ok) {
     if (res.status === 401) return null;
@@ -73,17 +74,31 @@ export function useDealerRegime(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  // Cancels any in-flight request on rerun / unmount so a stale response
+  // can't clobber a newer fetch's state and the browser stops the
+  // bandwidth burn on rapid date/at changes.
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchOnce = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     try {
-      const next = await fetchDealerRegime(date, at);
+      const next = await fetchDealerRegime(date, at, ctrl.signal);
       if (!mountedRef.current) return;
+      // Superseded by a newer fetch between resolve and parse — bail.
+      if (ctrl.signal.aborted) return;
       setData(next);
       setError(null);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (ctrl.signal.aborted) return;
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setLoading(false);
+      // Only clear loading if this fetch wasn't superseded — a newer
+      // fetch owns loading=true until it itself resolves.
+      if (mountedRef.current && abortRef.current === ctrl) setLoading(false);
     }
   }, [date, at]);
 
@@ -116,6 +131,9 @@ export function useDealerRegime(
     setLoading(true);
     void fetchOnce();
   }, [fetchOnce]);
+
+  // Cancel any in-flight request on unmount.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return { data, loading, error, refresh };
 }
