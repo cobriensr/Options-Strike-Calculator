@@ -24,6 +24,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getAccessMode } from '../utils/auth';
 import { playSweepAlarm } from '../utils/anomaly-sound';
+import { usePolling } from './usePolling';
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -238,21 +239,24 @@ export function useIntervalBAAlerts(
     }
   }, []);
 
+  // Eager fetch + chime-stop-on-gate-flip. usePolling owns the recurring
+  // setInterval, but the cleanup contract here is broader: when the
+  // gate flips closed (marketOpen → false, session lost, unmount), any
+  // chime this hook started must stop. Without this, a chime that fired
+  // during market hours would keep ringing every 5–15s after 4:01 PM
+  // ET. stopChime is idempotent so iterating the full seen-IDs set is
+  // safe even for already-acknowledged alerts.
   useEffect(() => {
     if (!hasSession || !marketOpen) return;
     fetchAlerts();
-    const id = setInterval(fetchAlerts, POLL_INTERVALS.ALERTS);
     const seen = seenIdsRef.current;
     return () => {
-      clearInterval(id);
-      // Stop any chimes this hook started. Without this, a chime that
-      // started during market hours would keep firing every 5-15s after
-      // marketOpen flips false (4:01 PM ET close, or any tab close /
-      // hook unmount). stopChime is idempotent so iterating the full
-      // seen-IDs set is safe even for already-acknowledged alerts.
       for (const alertId of seen) stopChime(alertId);
     };
   }, [hasSession, marketOpen, fetchAlerts]);
+
+  // Recurring poll — gated identically to the eager fetch above.
+  usePolling(fetchAlerts, POLL_INTERVALS.ALERTS, [hasSession, marketOpen]);
 
   const acknowledge = useCallback(async (id: number) => {
     stopChime(id);

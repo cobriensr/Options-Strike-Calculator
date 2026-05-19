@@ -14,6 +14,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import * as Sentry from '@sentry/react';
 import { POLL_INTERVALS } from '../constants';
 import { checkIsOwner } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 // Sample rate for polling-failure capture. Without sampling, a sustained
 // outage would flood Sentry with one event per poll tick across every
@@ -209,16 +210,15 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
     }
   }, []);
 
-  // Polling interval
+  // Eager fetch on gate-open — usePolling only schedules, never fires
+  // immediately, so the initial fetch lives in its own effect.
   useEffect(() => {
     if (!isOwner || !marketOpen) return;
-
-    // Initial fetch
     fetchAlerts();
-
-    const id = setInterval(fetchAlerts, POLL_INTERVALS.ALERTS);
-    return () => clearInterval(id);
   }, [isOwner, marketOpen, fetchAlerts]);
+
+  // Recurring poll — gated identically to the eager fetch.
+  usePolling(fetchAlerts, POLL_INTERVALS.ALERTS, [isOwner, marketOpen]);
 
   // Acknowledge an alert — stops the repeating chime
   const acknowledge = useCallback(async (id: number) => {

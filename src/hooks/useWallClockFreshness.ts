@@ -22,7 +22,8 @@
  * tick. The worst-case "fresh badge on stale data" is `thresholdMs + tickMs`.
  */
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { usePolling } from './usePolling';
 
 /**
  * Default cadence for the wall-clock re-render ticker. Per the original
@@ -79,15 +80,9 @@ export function useWallClockFreshness(
   const { gates = [], tickMs = FRESHNESS_TICK_MS } = options;
   const [nowMs, setNowMs] = useState(() => Date.now());
 
-  // Ticker runs only when every gate is truthy. The dep array intentionally
-  // serializes `gates` via spread so a referentially-new array with the same
-  // contents doesn't churn the effect — React diff is structural per index.
-  const allGatesOpen = gates.every(Boolean);
-  useEffect(() => {
-    if (!allGatesOpen) return;
-    const id = setInterval(() => setNowMs(Date.now()), tickMs);
-    return () => clearInterval(id);
-  }, [allGatesOpen, tickMs]);
+  // Ticker runs only when every gate is truthy — usePolling owns the gate
+  // conjunction + cleanup. Empty gates array means always-active.
+  usePolling(() => setNowMs(Date.now()), tickMs, gates);
 
   const ageMs = timestamp == null ? null : nowMs - timestamp;
   const isFresh = ageMs != null && ageMs < thresholdMs;
