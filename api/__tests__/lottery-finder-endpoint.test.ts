@@ -326,6 +326,116 @@ describe('lottery-finder endpoint', () => {
     expect(countCall.slice(1)).toContain(18);
   });
 
+  it('honors minPremium=100000 — $-floor gates rows + COUNT queries + echoes in filters', async () => {
+    // Mirrors the SilentBoom minPremium chip: server-side filter on
+    // entry_price * trigger_window_size * 100 (lottery's analog of
+    // SB's entry_price * spike_volume * 100). Must bind on BOTH the
+    // rows query AND the COUNT query so pagination stays accurate
+    // when the filter is on, and the SQL template must reference the
+    // correct columns.
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', minPremium: '100000' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.minPremium).toBe(100000);
+
+    // Rows + COUNT both bind the floor.
+    const rowsCall = mockSql.mock.calls[0] as unknown[];
+    const countCall = mockSql.mock.calls[1] as unknown[];
+    expect(rowsCall.slice(1)).toContain(100000);
+    expect(countCall.slice(1)).toContain(100000);
+
+    // SQL text references the correct columns (entry_price *
+    // trigger_window_size * 100), not the SilentBoom spike_volume
+    // shape. Both queries should have the filter inline.
+    const rowsSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+      ' ',
+    );
+    const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+      ' ',
+    );
+    expect(rowsSql).toContain('entry_price * f.trigger_window_size * 100');
+    expect(countSql).toContain('entry_price * trigger_window_size * 100');
+  });
+
+  it('omits minPremium from filters echo when not provided', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { filters: Record<string, unknown> };
+    // Filters echo defaults to null when the query omitted the param.
+    expect(body.filters.minPremium).toBeNull();
+  });
+
+  it('rejects negative minPremium with 400 (Zod min(0))', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', minPremium: '-1' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-numeric minPremium with 400 (Zod coerce.number)', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', minPremium: 'abc' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('minPremium binds to the reignited-section query (5th SQL touch)', async () => {
+    // The reignited-rows query (page-0 only, separate from the rows
+    // and COUNT queries) MUST also bind the minPremium floor — otherwise
+    // a "Hot Right Now" chain whose entry premium falls below the floor
+    // would appear in the reignited strip while being filtered out of
+    // the main feed. The query string at api/lottery-finder.ts:815
+    // contains the binding; this test pins it.
+    mockSql
+      .mockResolvedValueOnce([ROW]) // rows
+      .mockResolvedValueOnce([{ total: 1 }]) // COUNT
+      .mockResolvedValueOnce([]) // chainExtras
+      .mockResolvedValueOnce([]) // mega-cluster (if invoked)
+      .mockResolvedValueOnce([]) // reignited-rows
+      .mockResolvedValueOnce([]); // safety pad
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', minPremium: '100000' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+
+    // Find every call whose SQL strings contain the reignited section
+    // marker (`top_reignited`) — these are the queries the test cares
+    // about. Each must bind 100000.
+    const reignitedCalls = mockSql.mock.calls.filter((call) => {
+      const strings = call[0] as TemplateStringsArray | undefined;
+      if (!strings) return false;
+      return strings.join(' ').includes('top_reignited');
+    });
+    expect(reignitedCalls.length).toBeGreaterThan(0);
+    for (const call of reignitedCalls) {
+      expect((call as unknown[]).slice(1)).toContain(100000);
+    }
+  });
+
   it('rows query reads cum_ncp/cum_npp from the snapshot column on the row', async () => {
     // Pin the post-LATERAL shape: migration #158 added cum_ncp_at_fire +
     // cum_npp_at_fire columns populated at detect time by

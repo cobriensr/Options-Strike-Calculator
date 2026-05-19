@@ -68,6 +68,40 @@ describe('useLotteryFinder', () => {
     expect(url).not.toContain('optionType=');
     expect(url).not.toContain('tod=');
     expect(url).not.toContain('minScore=');
+    // minPremium default (null) is also omitted from the wire so the
+    // server's `.optional()` default holds.
+    expect(url).not.toContain('minPremium=');
+  });
+
+  it('omits minPremium when 0 (matches null floor)', async () => {
+    // The chip resets to 0 (no floor); the hook must NOT serialize a
+    // 0 floor — it would pin the server to `minPremium=0` and trip
+    // the `> 0` server guard. Mirrors useSilentBoomFeed's behavior.
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({
+        date: '2026-05-07',
+        marketOpen: false,
+        minPremium: 0,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('minPremium=');
+  });
+
+  it('appends minPremium when > 0 (server-side $-floor)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({
+        date: '2026-05-07',
+        marketOpen: false,
+        minPremium: 100_000,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('minPremium=100000');
   });
 
   it('attaches all optional filters when supplied', async () => {

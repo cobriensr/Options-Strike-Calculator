@@ -47,6 +47,12 @@ const AGGRESSIVE_PREMIUM_LS_KEY = 'lottery.aggressivePremium';
 const MONEYNESS_LS_KEY = 'lottery.moneynessMode';
 const TICKER_EXPANDED_LS_KEY = 'lottery-ticker-expanded';
 /**
+ * Min premium floor in $K — server-side filter on
+ * entry_price * trigger_window_size * 100 (≥ N dollars). Mirrors the
+ * SilentBoom `minPremium` chip so muscle memory carries between panels.
+ */
+const MIN_PREMIUM_K_LS_KEY = 'lotteryFinder.minPremiumK';
+/**
  * Late-PM cutoff (CT minute-of-day). Fires whose triggerTimeCt is at
  * or after this minute are hidden when the filter is on. 14:30 CT —
  * 30 min before regular-session close — chosen because by that point
@@ -382,6 +388,15 @@ export function LotteryFinderSection({
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(AGGRESSIVE_PREMIUM_LS_KEY) === '1';
   });
+  // Min premium floor in $K. Server-side filter so pagination reflects
+  // the post-filter count. 0 means no floor. Mirrors the SilentBoom
+  // minPremium chip (see SilentBoomSection).
+  const [minPremiumK, setMinPremiumK] = useState<number>(() => {
+    if (typeof window === 'undefined') return 0;
+    const stored = window.localStorage.getItem(MIN_PREMIUM_K_LS_KEY);
+    const n = stored == null ? 0 : Number.parseInt(stored, 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  });
   const [moneynessMode, setMoneynessMode] = useState<MoneynessMode>(() => {
     if (typeof window === 'undefined') return 'all';
     const stored = window.localStorage.getItem(MONEYNESS_LS_KEY);
@@ -443,6 +458,11 @@ export function LotteryFinderSection({
   }, [aggressivePremium]);
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      window.localStorage.setItem(MIN_PREMIUM_K_LS_KEY, String(minPremiumK));
+    }
+  }, [minPremiumK]);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
       window.localStorage.setItem(MONEYNESS_LS_KEY, moneynessMode);
     }
   }, [moneynessMode]);
@@ -466,6 +486,7 @@ export function LotteryFinderSection({
     hideGated,
     aggressivePremium,
     moneynessMode,
+    minPremiumK,
   ]);
 
   const {
@@ -489,6 +510,7 @@ export function LotteryFinderSection({
     tod: todFilter,
     sort: sortMode,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minPremium: minPremiumK * 1000,
     page,
     pageSize: PAGE_SIZE,
   });
@@ -507,6 +529,7 @@ export function LotteryFinderSection({
     optionType: optionTypeFilter,
     tod: todFilter,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minPremium: minPremiumK * 1000,
   });
 
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
@@ -1110,6 +1133,42 @@ export function LotteryFinderSection({
                 </FilterChip>
               );
             })}
+          </div>
+
+          {/* Row 2b: numeric server-side filter — min premium $K. Mirrors
+            SilentBoom's "min prem $K" input. Server-side filter so
+            pagination + ticker counts reflect the post-filter result.
+            Floor is entry_price * trigger_window_size * 100 ≥ N
+            dollars; the LF detector's trigger_window_size is the
+            rolling window volume (analog of SB's spike_volume). */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <label
+              className="flex items-center gap-1.5"
+              title="Minimum premium floor (entry_price × trigger_window_size × 100), in $K. 0 = no floor. Server-side filter so pagination + ticker counts reflect the post-filter result."
+            >
+              <span className={SECTION_LABEL}>min prem $K</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={100_000}
+                step={10}
+                value={minPremiumK === 0 ? '' : minPremiumK}
+                placeholder="0"
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  if (raw === '') {
+                    setMinPremiumK(0);
+                    return;
+                  }
+                  const n = Number.parseInt(raw, 10);
+                  if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
+                }}
+                aria-label="Minimum premium in thousands of dollars"
+                data-testid="lottery-min-premium-input"
+                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
+              />
+            </label>
           </div>
 
           {/* Row 3: Tag toggles + Mode (A/B/all). RE-LOAD and

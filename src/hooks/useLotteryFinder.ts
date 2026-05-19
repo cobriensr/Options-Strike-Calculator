@@ -45,6 +45,13 @@ interface UseLotteryFinderArgs {
   sort?: LotterySortMode;
   /** Minimum score floor (Tier 1 = 18 enables High Conviction filter). */
   minScore?: number | null;
+  /**
+   * Numeric premium floor in dollars
+   * (entry_price * trigger_window_size * 100). 0 / null = no floor.
+   * Server-side filter so pagination + ticker counts reflect the
+   * post-filter result. Mirrors the SilentBoom feed param.
+   */
+  minPremium?: number | null;
   /** 0-based page index (offset = page * limit). */
   page?: number;
   /** Page size. Default 50. */
@@ -97,6 +104,7 @@ export function useLotteryFinder({
   tod = null,
   sort = 'chronological',
   minScore = null,
+  minPremium = null,
   page = 0,
   pageSize = 50,
 }: UseLotteryFinderArgs): State & { refetch: () => void } {
@@ -125,6 +133,8 @@ export function useLotteryFinder({
       if (tod != null) params.set('tod', tod);
       if (sort !== 'chronological') params.set('sort', sort);
       if (minScore != null) params.set('minScore', String(minScore));
+      if (minPremium != null && minPremium > 0)
+        params.set('minPremium', String(minPremium));
       const res = await fetch(`/api/lottery-finder?${params.toString()}`, {
         credentials: 'include',
         signal: ctrl.signal,
@@ -168,6 +178,7 @@ export function useLotteryFinder({
     tod,
     sort,
     minScore,
+    minPremium,
     page,
     pageSize,
   ]);

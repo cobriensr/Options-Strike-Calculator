@@ -33,6 +33,10 @@ interface UseLotteryFinderTickerCountsArgs {
   optionType?: OptionType | null;
   tod?: TimeOfDay | null;
   minScore?: number | null;
+  /** Numeric premium floor in dollars. Mirrors the section's
+   *  `minPremiumK * 1000` value so the chip-strip counts match the
+   *  filtered feed. */
+  minPremium?: number;
 }
 
 interface State {
@@ -63,6 +67,7 @@ export function useLotteryFinderTickerCounts({
   optionType = null,
   tod = null,
   minScore = null,
+  minPremium = 0,
 }: UseLotteryFinderTickerCountsArgs): State & { refetch: () => void } {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
@@ -80,6 +85,7 @@ export function useLotteryFinderTickerCounts({
       if (optionType) params.set('optionType', optionType);
       if (tod) params.set('tod', tod);
       if (minScore != null) params.set('minScore', String(minScore));
+      if (minPremium > 0) params.set('minPremium', String(minPremium));
       const res = await fetch(
         `/api/lottery-finder-ticker-counts?${params.toString()}`,
         { credentials: 'include', signal: ctrl.signal },
@@ -102,7 +108,7 @@ export function useLotteryFinderTickerCounts({
         error: getErrorMessage(err),
       }));
     }
-  }, [date, reload, cheapCallPm, mode, optionType, tod, minScore]);
+  }, [date, reload, cheapCallPm, mode, optionType, tod, minScore, minPremium]);
 
   useEffect(() => {
     fetchOnce();

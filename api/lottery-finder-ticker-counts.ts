@@ -46,6 +46,7 @@ interface LotteryFinderTickerCountsResponse {
     mode: 'A_intraday_0DTE' | 'B_multi_day_DTE1_3' | null;
     tod: 'AM_open' | 'MID' | 'LUNCH' | 'PM' | null;
     minScore: number | null;
+    minPremium: number | null;
   };
   tickers: {
     ticker: string;
@@ -82,6 +83,10 @@ export default async function handler(
   }
   const q = parsed.data;
   const date = q.date ?? getETDateStr(new Date());
+  // Coerce 0 / missing → null so the SQL `NULL IS NULL` short-circuit
+  // skips the predicate cleanly (same convention as /api/lottery-finder).
+  const minPremium =
+    q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
 
   try {
     const db = getDb();
@@ -109,6 +114,10 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? ''})
           AND (${q.tod ?? null}::text IS NULL OR tod = ${q.tod ?? ''})
           AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? 0})
+          AND (
+            ${minPremium}::numeric IS NULL
+            OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric
+          )
         GROUP BY underlying_symbol, strike, option_type, expiry
       )
       SELECT
@@ -130,6 +139,7 @@ export default async function handler(
         mode: q.mode ?? null,
         tod: q.tod ?? null,
         minScore: q.minScore ?? null,
+        minPremium,
       },
       tickers: rows.map((r) => ({
         ticker: r.ticker,

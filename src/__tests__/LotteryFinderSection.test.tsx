@@ -415,6 +415,32 @@ describe('LotteryFinderSection: filter interactions', () => {
     expect(window.localStorage.getItem('lottery.aggressivePremium')).toBe('1');
   });
 
+  it('persists min premium $K input → LS and forwards minPremium (× 1000) to the hook', () => {
+    // Mirrors SilentBoom's "min prem $K" chip. The chip is a numeric
+    // input (not a toggle chip); typing a value:
+    //   1. persists the $K integer to localStorage
+    //   2. passes the dollar floor (× 1000) to useLotteryFinder so
+    //      the server-side filter gates pagination + total.
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    const input = screen.getByTestId(
+      'lottery-min-premium-input',
+    ) as HTMLInputElement;
+    // Default empty (0 = no floor).
+    expect(input.value).toBe('');
+
+    fireEvent.change(input, { target: { value: '100' } });
+    expect(input.value).toBe('100');
+    expect(window.localStorage.getItem('lotteryFinder.minPremiumK')).toBe(
+      '100',
+    );
+
+    // The hook is called on every render — grab the most recent
+    // invocation to confirm the dollar-denominated floor reached it.
+    const lastCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(lastCall?.[0]).toMatchObject({ minPremium: 100_000 });
+  });
+
   it('keeps only fires matching the aggressive-premium predicate', () => {
     // Default makeFire matches the predicate: estPremium = 0.85 * 1.5 *
     // 5000 * 100 = $637,500 ≥ $50K, DTE=0 ≤ 3, tier2, OTM (200 > 198.5).

@@ -252,6 +252,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       minScore,
     } = parsed.data;
 
+    // Premium floor — entry_price * trigger_window_size * 100, in
+    // dollars. null = no floor. Filtered server-side so pagination
+    // reflects the post-filter count. Mirrors SilentBoom's
+    // `minPremium` (which uses spike_volume) — lottery's analogous
+    // rolling window volume is `trigger_window_size`.
+    const minPremium =
+      parsed.data.minPremium != null && parsed.data.minPremium > 0
+        ? parsed.data.minPremium
+        : null;
+
     // Bound the result set to one trading day. `date` defaults to
     // ET-today; the trading day rolls in CT/ET, not UTC. We filter on
     // the `date` column (which the cron stamps from ctx.today, also
@@ -364,6 +374,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
             AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+            AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
         )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
@@ -438,6 +449,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
             AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+            AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
         )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
@@ -511,6 +523,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
             AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+            AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
         )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
@@ -577,6 +590,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR score >= ${minScore ?? 0})
             AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+            AND (${minPremium}::numeric IS NULL OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric)
           GROUP BY underlying_symbol, strike, option_type, expiry
         ) collapsed
       `,
@@ -798,6 +812,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
             AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
             AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
+            AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
         )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
@@ -1244,6 +1259,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         tod,
         sort,
         minScore,
+        minPremium: parsed.data.minPremium ?? null,
       },
       // count = rows returned (≤ limit). total = total matching rows
       // before LIMIT/OFFSET. UI uses (offset, limit, total) for the

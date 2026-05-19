@@ -356,6 +356,7 @@ export interface LotteryFinderResponse {
     tod?: TimeOfDay;
     sort?: LotterySortMode;
     minScore?: number;
+    minPremium?: number | null;
   };
   /** Number of fires actually returned in this response (≤ limit). */
   count: number;

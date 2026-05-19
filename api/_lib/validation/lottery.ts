@@ -81,6 +81,15 @@ export const lotteryFinderQuerySchema = z.object({
   // `score >= minScore` so the High-Conviction filter can collapse the
   // visible feed.
   minScore: z.coerce.number().int().min(0).max(50).optional(),
+  // Numeric premium floor in DOLLARS (entry_price * trigger_window_size * 100).
+  // 0 = no floor. Server-side filter so pagination reflects the
+  // post-filter count. Mirrors `minPremium` on /api/silent-boom-feed —
+  // SilentBoom uses `spike_volume` for the window volume; the lottery
+  // detector stamps the equivalent rolling window volume in
+  // `trigger_window_size`. Multiplied by entry_price * 100 (contract
+  // multiplier) yields the dollar premium deployed in the trigger
+  // window.
+  minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
 });
 
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
@@ -352,6 +361,10 @@ export const lotteryFinderTickerCountsQuerySchema = z.object({
   optionType: z.enum(['C', 'P']).optional(),
   tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
   minScore: z.coerce.number().int().min(0).max(50).optional(),
+  /** Dollar floor on premium = entry_price * trigger_window_size * 100.
+   *  Mirrors the same filter on `lotteryFinderQuerySchema` so the chip
+   *  ticker counts stay consistent with the filtered feed. */
+  minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
 });
 
 export type LotteryFinderTickerCountsQuery = z.infer<
