@@ -180,25 +180,29 @@ describe('sortAndCapRows', () => {
   });
 
   it('caps each side at 5 rows, preferring proximity to spot', () => {
-    const ceilings = [6760, 6770, 6780, 6790, 6800, 6810, 6820].map((s) =>
+    // Spot 6750; ATM band ≈ ±16.875 pts. All test strikes must sit
+    // outside the band so they classify cleanly as ceilings/floors.
+    const ceilings = [6770, 6780, 6790, 6800, 6810, 6820, 6830].map((s) =>
       make(s, 1),
     );
-    const floors = [6740, 6730, 6720, 6710, 6700, 6690, 6680].map((s) =>
+    const floors = [6730, 6720, 6710, 6700, 6690, 6680, 6670].map((s) =>
       make(s, 1),
     );
     const out = sortAndCapRows([...ceilings, ...floors], 6750);
 
-    // 5 ceilings closest to spot: 6760, 6770, 6780, 6790, 6800 (NOT 6810/6820).
-    // 5 floors closest to spot: 6740, 6730, 6720, 6710, 6700 (NOT 6690/6680).
+    // 5 ceilings closest to spot: 6770, 6780, 6790, 6800, 6810 (NOT 6820/6830).
+    // 5 floors closest to spot: 6730, 6720, 6710, 6700, 6690 (NOT 6680/6670).
     expect(out.map((r) => r.strike)).toEqual([
-      6800, 6790, 6780, 6770, 6760,
-      6740, 6730, 6720, 6710, 6700,
+      6810, 6800, 6790, 6780, 6770,
+      6730, 6720, 6710, 6700, 6690,
     ]);
   });
 
   it('keeps ATM rows in the visible set even when ceilings/floors are capped', () => {
+    // 6770-6820 are ceilings (outside band); 6750 is exact ATM and
+    // must survive even when the ceiling side is fully populated.
     const rows = [
-      ...[6760, 6770, 6780, 6790, 6800, 6810].map((s) => make(s, 1)),
+      ...[6770, 6780, 6790, 6800, 6810, 6820].map((s) => make(s, 1)),
       make(6750, 1), // exact ATM
     ];
     const out = sortAndCapRows(rows, 6750);

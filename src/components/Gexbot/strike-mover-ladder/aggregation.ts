@@ -18,6 +18,7 @@
 
 import type { MaxchangeWinnerRow } from '../../../hooks/useGexbotData';
 import {
+  ATM_BAND_BPS,
   CATEGORY_TO_GEXBOT_KEY,
   CROSS_ASSET_TOLERANCE_PTS,
   GEXBOT_MAXCHANGE_SUFFIX,
@@ -157,17 +158,13 @@ export function sortAndCapRows(
   rows: AggregatedRow[],
   spot: number,
 ): AggregatedRow[] {
-  // For row-capping purposes, ATM is defined as within ±CROSS_ASSET_TOLERANCE_PTS
-  // of spot (fixed points). This is intentionally narrower than ATM_BAND_BPS
-  // (used only for color tone in classifyRow), so that strikes at the standard
-  // 10-pt SPX interval from spot are classified as ceilings/floors, not ATM.
-  const atmTolerancePts = CROSS_ASSET_TOLERANCE_PTS;
+  const bandWidth = spot * (ATM_BAND_BPS / 10_000);
   const ceilings: AggregatedRow[] = [];
   const floors: AggregatedRow[] = [];
   const atm: AggregatedRow[] = [];
   for (const r of rows) {
     const dist = Math.abs(r.strike - spot);
-    if (dist <= atmTolerancePts) atm.push(r);
+    if (dist <= bandWidth) atm.push(r);
     else if (r.strike > spot) ceilings.push(r);
     else floors.push(r);
   }
