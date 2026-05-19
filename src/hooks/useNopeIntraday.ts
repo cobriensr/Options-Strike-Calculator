@@ -16,6 +16,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 export interface NopePoint {
   /** ISO 8601 UTC timestamp at minute resolution. */
@@ -95,13 +96,14 @@ export function useNopeIntraday({
 
   // Live polling — only while market is open. Outside hours we keep the
   // last-known points and stop firing requests.
-  useEffect(() => {
-    if (!isOwner || !marketOpen) return;
-    const id = setInterval(() => {
+  // 60s cadence matches the fetch-nope cron.
+  usePolling(
+    () => {
       void fetchPoints();
-    }, POLL_INTERVALS.NOPE); // 60s — matches the fetch-nope cron cadence
-    return () => clearInterval(id);
-  }, [isOwner, marketOpen, fetchPoints]);
+    },
+    POLL_INTERVALS.NOPE,
+    [isOwner, marketOpen],
+  );
 
   return { points, date, isLoading, error };
 }

@@ -19,6 +19,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 export interface ZeroGammaRow {
   ticker: string;
@@ -107,6 +108,7 @@ export function useZeroGamma(
     };
   }, []);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     if (accessMode === 'public') {
       setLoading(false);
@@ -114,13 +116,14 @@ export function useZeroGamma(
     }
 
     void fetchData();
+  }, [accessMode, fetchData]);
 
-    // Date-scrubbed view is static (the past doesn't change) — no polling.
-    if (!marketOpen || date) return;
-
-    const id = setInterval(() => void fetchData(), POLL_INTERVALS.ZERO_GAMMA);
-    return () => clearInterval(id);
-  }, [accessMode, marketOpen, date, fetchData]);
+  // Date-scrubbed view is static (the past doesn't change) — no polling.
+  usePolling(() => void fetchData(), POLL_INTERVALS.ZERO_GAMMA, [
+    accessMode !== 'public',
+    marketOpen,
+    !date,
+  ]);
 
   const refresh = useCallback(() => {
     setLoading(true);

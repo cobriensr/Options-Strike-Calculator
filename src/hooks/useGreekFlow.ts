@@ -16,6 +16,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 // ── Types mirror the server response in api/greek-flow.ts ───────────
 
@@ -177,6 +178,7 @@ export function useGreekFlow(
     };
   }, []);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     if (accessMode === 'public') {
       setLoading(false);
@@ -184,13 +186,14 @@ export function useGreekFlow(
     }
 
     void fetchData();
+  }, [accessMode, fetchData]);
 
-    // Date-scrubbed view is static — no polling.
-    if (!marketOpen || date) return;
-
-    const id = setInterval(() => void fetchData(), POLL_INTERVALS.GREEK_FLOW);
-    return () => clearInterval(id);
-  }, [accessMode, marketOpen, date, fetchData]);
+  // Date-scrubbed view is static — no polling.
+  usePolling(() => void fetchData(), POLL_INTERVALS.GREEK_FLOW, [
+    accessMode !== 'public',
+    marketOpen,
+    !date,
+  ]);
 
   const refresh = useCallback(() => {
     setLoading(true);

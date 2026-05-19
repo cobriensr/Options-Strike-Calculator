@@ -23,6 +23,7 @@ import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
 import { useTimeGridScrubber } from './useTimeGridScrubber';
 import { getETToday } from '../utils/timezone';
+import { usePolling } from './usePolling';
 
 /**
  * Number of consecutive poll failures before the error banner surfaces.
@@ -200,31 +201,41 @@ export function useDarkPoolLevels(
     scrubLive();
   }, [selectedDate, selectedSymbol, scrubLive]);
 
+  // Branched eager-fetch effect: chooses between no-fetch / one-shot /
+  // initial-fetch-then-poll based on owner + date + scrub + market-open.
+  // The recurring poll is handled by `usePolling` below; this effect
+  // covers everything else (loading-state side-effects and the eager
+  // first fetch for branches 2-4).
   useEffect(() => {
     if (!isOwner) {
       setLoading(false);
       return;
     }
-
-    // Past date or scrubbed: fetch once — the snapshot is static.
     if (!isToday || isScrubbed) {
+      // Past date or scrubbed: fetch once — the snapshot is static.
       setLoading(true);
       void fetchLevels();
       return;
     }
-
-    // Today, market closed: one-shot fetch — no fresh data being produced.
     if (!marketOpen) {
+      // Today, market closed: one-shot fetch — no fresh data being produced.
       setLoading(true);
       void fetchLevels();
       return;
     }
-
-    // Today, live, market open → live polling.
+    // Today, live, market open → eager fetch; recurring poll handled below.
     void fetchLevels();
-    const id = setInterval(() => void fetchLevels(), POLL_INTERVALS.DARK_POOL);
-    return () => clearInterval(id);
   }, [isOwner, marketOpen, isToday, isScrubbed, fetchLevels]);
+
+  // Recurring poll only fires in branch 4 (today, live, market open).
+  // Every other branch keeps its return-early-after-fetch behavior via
+  // the effect above.
+  usePolling(() => void fetchLevels(), POLL_INTERVALS.DARK_POOL, [
+    isOwner,
+    isToday,
+    !isScrubbed,
+    marketOpen,
+  ]);
 
   // ── Explicit refresh ─────────────────────────────────────────────
 

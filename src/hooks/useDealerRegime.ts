@@ -18,6 +18,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
+import { usePolling } from './usePolling';
 
 export interface DealerRegimeRow {
   ticker: 'SPX' | 'SPY' | 'QQQ';
@@ -109,6 +110,7 @@ export function useDealerRegime(
     };
   }, []);
 
+  // Eager mount fetch — usePolling only schedules the recurring tick.
   useEffect(() => {
     if (accessMode === 'public') {
       setLoading(false);
@@ -116,16 +118,15 @@ export function useDealerRegime(
     }
 
     void fetchOnce();
+  }, [accessMode, fetchOnce]);
 
-    // Snapshot mode (date or at set) is static — no polling.
-    if (!marketOpen || date || at) return;
-
-    const id = setInterval(
-      () => void fetchOnce(),
-      POLL_INTERVALS.DEALER_REGIME,
-    );
-    return () => clearInterval(id);
-  }, [accessMode, marketOpen, date, at, fetchOnce]);
+  // Snapshot mode (date or at set) is static — no polling.
+  usePolling(() => void fetchOnce(), POLL_INTERVALS.DEALER_REGIME, [
+    accessMode !== 'public',
+    marketOpen,
+    !date,
+    !at,
+  ]);
 
   const refresh = useCallback(() => {
     setLoading(true);
