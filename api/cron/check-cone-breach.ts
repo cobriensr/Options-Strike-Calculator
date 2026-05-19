@@ -27,7 +27,7 @@
  *       (Phase 1 — cone breach detection)
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -55,12 +55,16 @@ export default withCronInstrumentation(
     const { today, logger } = ctx;
     const sql = getDb();
 
-    const coneRows = (await sql`
-      SELECT cone_upper, cone_lower
-      FROM cone_levels
-      WHERE date = ${today}
-      LIMIT 1
-    `) as ConeRow[];
+    const coneRows = (await withDbRetry(
+      () => sql`
+        SELECT cone_upper, cone_lower
+        FROM cone_levels
+        WHERE date = ${today}
+        LIMIT 1
+      `,
+      2,
+      10_000,
+    )) as ConeRow[];
 
     if (coneRows.length === 0) {
       // compute-cone hasn't run yet today (or failed). Silent skip — the
@@ -81,14 +85,18 @@ export default withCronInstrumentation(
       };
     }
 
-    const spotRows = (await sql`
-      SELECT close, timestamp
-      FROM index_candles_1m
-      WHERE symbol = 'SPX'
-        AND date = ${today}
-      ORDER BY timestamp DESC
-      LIMIT 1
-    `) as SpotRow[];
+    const spotRows = (await withDbRetry(
+      () => sql`
+        SELECT close, timestamp
+        FROM index_candles_1m
+        WHERE symbol = 'SPX'
+          AND date = ${today}
+        ORDER BY timestamp DESC
+        LIMIT 1
+      `,
+      2,
+      10_000,
+    )) as SpotRow[];
 
     if (spotRows.length === 0) {
       // No SPX bar yet for today — too early in the session, or the SPX
@@ -140,18 +148,22 @@ export default withCronInstrumentation(
 
     let recorded = false;
     if (breach != null) {
-      const inserted = (await sql`
-        INSERT INTO cone_breach_events (
-          date, direction, breach_time,
-          spot_at_breach, cone_bound_at_breach, pts_past_bound
-        )
-        VALUES (
-          ${today}, ${breach.direction}, ${breachTs},
-          ${round2(spot)}, ${breach.bound}, ${breach.pts}
-        )
-        ON CONFLICT (date, direction) DO NOTHING
-        RETURNING id
-      `) as Array<{ id: number }>;
+      const inserted = (await withDbRetry(
+        () => sql`
+          INSERT INTO cone_breach_events (
+            date, direction, breach_time,
+            spot_at_breach, cone_bound_at_breach, pts_past_bound
+          )
+          VALUES (
+            ${today}, ${breach.direction}, ${breachTs},
+            ${round2(spot)}, ${breach.bound}, ${breach.pts}
+          )
+          ON CONFLICT (date, direction) DO NOTHING
+          RETURNING id
+        `,
+        2,
+        10_000,
+      )) as Array<{ id: number }>;
       if (inserted.length > 0) {
         recorded = true;
         logger.info(

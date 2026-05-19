@@ -17,7 +17,7 @@
  */
 
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
@@ -81,15 +81,19 @@ async function storeLatest(
 
   for (const [ts, tick] of sampled) {
     try {
-      const result = await sql`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (
-          ${tick.date}, ${ts}, ${SOURCE},
-          ${tick.net_call_premium}, ${tick.net_put_premium}, ${tick.net_volume}
-        )
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `;
+      const result = await withDbRetry(
+        () => sql`
+          INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+          VALUES (
+            ${tick.date}, ${ts}, ${SOURCE},
+            ${tick.net_call_premium}, ${tick.net_put_premium}, ${tick.net_volume}
+          )
+          ON CONFLICT (date, timestamp, source) DO NOTHING
+          RETURNING id
+        `,
+        2,
+        10_000,
+      );
       if (result.length > 0) stored++;
       else skipped++;
     } catch (err) {

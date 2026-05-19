@@ -29,7 +29,7 @@
  * Spec: docs/superpowers/specs/contract-tracker-2026-05-17.md
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import { uwFetch, withRetry } from '../_lib/api-helpers.js';
 import {
@@ -307,23 +307,27 @@ async function autoExpirePastDue(
       // Use COALESCE of (latest tick last, entry_price) so the archive
       // panel can render a closed_price even when no tick has ever been
       // recorded for the contract.
-      await sql`
-        UPDATE tracker_contracts
-        SET status = 'expired',
-            closed_at = NOW(),
-            closed_price = COALESCE(
-              (
-                SELECT last
-                FROM tracker_contract_ticks
-                WHERE contract_id = ${c.id}
-                ORDER BY fetched_at DESC
-                LIMIT 1
+      await withDbRetry(
+        () => sql`
+          UPDATE tracker_contracts
+          SET status = 'expired',
+              closed_at = NOW(),
+              closed_price = COALESCE(
+                (
+                  SELECT last
+                  FROM tracker_contract_ticks
+                  WHERE contract_id = ${c.id}
+                  ORDER BY fetched_at DESC
+                  LIMIT 1
+                ),
+                ${c.entryPrice}
               ),
-              ${c.entryPrice}
-            ),
-            updated_at = NOW()
-        WHERE id = ${c.id}
-      `;
+              updated_at = NOW()
+          WHERE id = ${c.id}
+        `,
+        2,
+        10_000,
+      );
       expired += 1;
     } else {
       live.push(c);
@@ -353,26 +357,30 @@ async function insertTicksBatched(
     const openInts = chunk.map((t) => t.open_int);
     const underlyings = chunk.map((t) => t.underlying);
 
-    await sql`
-      INSERT INTO tracker_contract_ticks (
-        contract_id, fetched_at, last, bid, ask, volume, open_int, underlying
-      )
-      SELECT t.contract_id, t.fetched_at::timestamptz,
-             t.last, t.bid, t.ask, t.volume, t.open_int, t.underlying
-      FROM unnest(
-        ${contractIds}::int[],
-        ${fetchedAts}::text[],
-        ${lasts}::numeric[],
-        ${bids}::numeric[],
-        ${asks}::numeric[],
-        ${volumes}::int[],
-        ${openInts}::int[],
-        ${underlyings}::numeric[]
-      ) AS t(
-        contract_id, fetched_at,
-        last, bid, ask, volume, open_int, underlying
-      )
-    `;
+    await withDbRetry(
+      () => sql`
+        INSERT INTO tracker_contract_ticks (
+          contract_id, fetched_at, last, bid, ask, volume, open_int, underlying
+        )
+        SELECT t.contract_id, t.fetched_at::timestamptz,
+               t.last, t.bid, t.ask, t.volume, t.open_int, t.underlying
+        FROM unnest(
+          ${contractIds}::int[],
+          ${fetchedAts}::text[],
+          ${lasts}::numeric[],
+          ${bids}::numeric[],
+          ${asks}::numeric[],
+          ${volumes}::int[],
+          ${openInts}::int[],
+          ${underlyings}::numeric[]
+        ) AS t(
+          contract_id, fetched_at,
+          last, bid, ask, volume, open_int, underlying
+        )
+      `,
+      2,
+      10_000,
+    );
     inserted += chunk.length;
   }
 
@@ -496,17 +504,21 @@ async function insertAlerts(
     // idempotent — second-and-subsequent calls for the same (contract,
     // alert, threshold) silently noop. RETURNING id gives us a precise
     // "did this row actually fire?" signal for the response payload.
-    const result = await sql`
-      INSERT INTO tracker_alerts (
-        contract_id, alert_type, threshold,
-        price_at_fire, underlying_at_fire
-      ) VALUES (
-        ${c.contract_id}, ${c.alert_type}, ${c.threshold},
-        ${c.price_at_fire}, ${c.underlying_at_fire}
-      )
-      ON CONFLICT (contract_id, alert_type, threshold) DO NOTHING
-      RETURNING id
-    `;
+    const result = await withDbRetry(
+      () => sql`
+        INSERT INTO tracker_alerts (
+          contract_id, alert_type, threshold,
+          price_at_fire, underlying_at_fire
+        ) VALUES (
+          ${c.contract_id}, ${c.alert_type}, ${c.threshold},
+          ${c.price_at_fire}, ${c.underlying_at_fire}
+        )
+        ON CONFLICT (contract_id, alert_type, threshold) DO NOTHING
+        RETURNING id
+      `,
+      2,
+      10_000,
+    );
     if (result.length > 0) fired += 1;
   }
   return fired;
@@ -655,12 +667,16 @@ export default withCronInstrumentation(
 
     // 1. Load active rows. Read fields needed for both expiry sweep and
     // alert evaluation in a single round trip.
-    const rawRows = (await sql`
-      SELECT id, occ_symbol, ticker, expiry,
-             entry_price, up_thresholds, down_thresholds, spot_alerts
-      FROM tracker_contracts
-      WHERE status = 'active'
-    `) as ActiveContractRow[];
+    const rawRows = (await withDbRetry(
+      () => sql`
+        SELECT id, occ_symbol, ticker, expiry,
+               entry_price, up_thresholds, down_thresholds, spot_alerts
+        FROM tracker_contracts
+        WHERE status = 'active'
+      `,
+      2,
+      10_000,
+    )) as ActiveContractRow[];
 
     if (rawRows.length === 0) {
       return {

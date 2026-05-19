@@ -31,7 +31,7 @@
  * Spec: docs/superpowers/specs/silent-boom-otm-tide-and-trail-2026-05-13.md
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -81,17 +81,21 @@ export default withCronInstrumentation(
   async (): Promise<CronResult> => {
     const db = getDb();
 
-    const alerts = (await db`
-      SELECT
-        id,
-        option_chain_id AS "optionChainId",
-        bucket_ct AS "bucketCt",
-        entry_price AS "entryPrice"
-      FROM silent_boom_alerts
-      WHERE enriched_at IS NULL
-      ORDER BY inserted_at ASC
-      LIMIT 1000
-    `) as UnenrichedAlert[];
+    const alerts = (await withDbRetry(
+      () => db`
+        SELECT
+          id,
+          option_chain_id AS "optionChainId",
+          bucket_ct AS "bucketCt",
+          entry_price AS "entryPrice"
+        FROM silent_boom_alerts
+        WHERE enriched_at IS NULL
+        ORDER BY inserted_at ASC
+        LIMIT 1000
+      `,
+      2,
+      10_000,
+    )) as UnenrichedAlert[];
 
     if (alerts.length === 0) {
       return { status: 'success', message: 'No unenriched fires' };
@@ -101,17 +105,21 @@ export default withCronInstrumentation(
     let skipped = 0;
 
     for (const alert of alerts) {
-      const ticks = (await db`
-        SELECT
-          executed_at AS "executedAt",
-          price
-        FROM ws_option_trades
-        WHERE option_chain = ${alert.optionChainId}
-          AND executed_at >= ${alert.bucketCt}
-          AND canceled = FALSE
-          AND price > 0
-        ORDER BY executed_at ASC
-      `) as TradeTick[];
+      const ticks = (await withDbRetry(
+        () => db`
+          SELECT
+            executed_at AS "executedAt",
+            price
+          FROM ws_option_trades
+          WHERE option_chain = ${alert.optionChainId}
+            AND executed_at >= ${alert.bucketCt}
+            AND canceled = FALSE
+            AND price > 0
+          ORDER BY executed_at ASC
+        `,
+        2,
+        10_000,
+      )) as TradeTick[];
 
       if (ticks.length === 0) {
         skipped++;
@@ -148,19 +156,23 @@ export default withCronInstrumentation(
         ((prices.at(-1)! - alert.entryPrice) / alert.entryPrice) * 100;
       const trail30 = realizedTrailAct30Trail10(prices, alert.entryPrice);
 
-      await db`
-        UPDATE silent_boom_alerts
-        SET
-          peak_ceiling_pct = ${peak},
-          minutes_to_peak = ${minToPeak},
-          realized_30m_pct = ${r30},
-          realized_60m_pct = ${r60},
-          realized_120m_pct = ${r120},
-          realized_eod_pct = ${eod},
-          realized_trail30_10_pct = ${trail30},
-          enriched_at = NOW()
-        WHERE id = ${alert.id}
-      `;
+      await withDbRetry(
+        () => db`
+          UPDATE silent_boom_alerts
+          SET
+            peak_ceiling_pct = ${peak},
+            minutes_to_peak = ${minToPeak},
+            realized_30m_pct = ${r30},
+            realized_60m_pct = ${r60},
+            realized_120m_pct = ${r120},
+            realized_eod_pct = ${eod},
+            realized_trail30_10_pct = ${trail30},
+            enriched_at = NOW()
+          WHERE id = ${alert.id}
+        `,
+        2,
+        10_000,
+      );
 
       enriched++;
     }

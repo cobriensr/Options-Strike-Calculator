@@ -20,7 +20,7 @@
  * Environment: GEXBOT_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { mapWithConcurrency } from '../_lib/uw-fetch.js';
 import {
   withCronInstrumentation,
@@ -82,7 +82,8 @@ async function storeSnapshots(rows: SnapshotRow[]): Promise<void> {
   if (rows.length === 0) return;
   const sql = getDb();
   for (const { ticker, body } of rows) {
-    await sql`
+    await withDbRetry(
+      () => sql`
       INSERT INTO gexbot_snapshots (
         ticker, source_timestamp, spot, zero_gamma,
         z_mlgamma, z_msgamma, zero_mcall, zero_mput,
@@ -116,7 +117,10 @@ async function storeSnapshots(rows: SnapshotRow[]): Promise<void> {
         ${n(body.delta_risk_reversal)}, ${i(body.min_dte)}, ${i(body.sec_min_dte)},
         ${JSON.stringify(body)}::jsonb
       )
-    `;
+    `,
+      2,
+      10_000,
+    );
   }
 }
 

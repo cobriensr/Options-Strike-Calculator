@@ -23,7 +23,7 @@
  * Phase 3 of docs/superpowers/specs/opening-flow-signal-historical-persistence-2026-05-19.md
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -89,29 +89,33 @@ export default withCronInstrumentation(
       const slice2Json = jsonbOrNull(payload.slice2);
       const signalJson = jsonbOrNull(payload.signal);
 
-      await sql`
-        INSERT INTO opening_flow_signals (
-          date, ticker, window_status,
-          slice1, slice2, signal,
-          as_of_utc, stop_pct, exit_minutes_from_entry,
-          updated_at
-        ) VALUES (
-          ${date}::date, ${ticker}, ${evaluation.windowStatus},
-          ${slice1Json}::jsonb, ${slice2Json}::jsonb, ${signalJson}::jsonb,
-          ${evaluation.asOfUtc}::timestamptz,
-          ${evaluation.stopPct}, ${evaluation.exitMinutesFromEntry},
-          NOW()
-        )
-        ON CONFLICT (date, ticker) DO UPDATE SET
-          window_status = EXCLUDED.window_status,
-          slice1 = EXCLUDED.slice1,
-          slice2 = EXCLUDED.slice2,
-          signal = EXCLUDED.signal,
-          as_of_utc = EXCLUDED.as_of_utc,
-          stop_pct = EXCLUDED.stop_pct,
-          exit_minutes_from_entry = EXCLUDED.exit_minutes_from_entry,
-          updated_at = NOW()
-      `;
+      await withDbRetry(
+        () => sql`
+          INSERT INTO opening_flow_signals (
+            date, ticker, window_status,
+            slice1, slice2, signal,
+            as_of_utc, stop_pct, exit_minutes_from_entry,
+            updated_at
+          ) VALUES (
+            ${date}::date, ${ticker}, ${evaluation.windowStatus},
+            ${slice1Json}::jsonb, ${slice2Json}::jsonb, ${signalJson}::jsonb,
+            ${evaluation.asOfUtc}::timestamptz,
+            ${evaluation.stopPct}, ${evaluation.exitMinutesFromEntry},
+            NOW()
+          )
+          ON CONFLICT (date, ticker) DO UPDATE SET
+            window_status = EXCLUDED.window_status,
+            slice1 = EXCLUDED.slice1,
+            slice2 = EXCLUDED.slice2,
+            signal = EXCLUDED.signal,
+            as_of_utc = EXCLUDED.as_of_utc,
+            stop_pct = EXCLUDED.stop_pct,
+            exit_minutes_from_entry = EXCLUDED.exit_minutes_from_entry,
+            updated_at = NOW()
+        `,
+        2,
+        10_000,
+      );
       written += 1;
     }
 

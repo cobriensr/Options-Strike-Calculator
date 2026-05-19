@@ -28,7 +28,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronJitter, uwFetch, withRetry } from '../_lib/api-helpers.js';
@@ -62,16 +62,20 @@ async function storeCandles(
 
   for (const candle of candles) {
     try {
-      const result = await sql`
-        INSERT INTO etf_candles_1m (ticker, timestamp, open, high, low, close, volume)
-        VALUES (
-          ${ticker}, ${candle.start_time},
-          ${candle.open}, ${candle.high}, ${candle.low}, ${candle.close},
-          ${candle.volume ?? null}
-        )
-        ON CONFLICT (ticker, timestamp) DO NOTHING
-        RETURNING id
-      `;
+      const result = await withDbRetry(
+        () => sql`
+          INSERT INTO etf_candles_1m (ticker, timestamp, open, high, low, close, volume)
+          VALUES (
+            ${ticker}, ${candle.start_time},
+            ${candle.open}, ${candle.high}, ${candle.low}, ${candle.close},
+            ${candle.volume ?? null}
+          )
+          ON CONFLICT (ticker, timestamp) DO NOTHING
+          RETURNING id
+        `,
+        2,
+        10_000,
+      );
       if (result.length > 0) stored++;
       else skipped++;
     } catch (err) {

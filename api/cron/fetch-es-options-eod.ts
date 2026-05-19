@@ -16,7 +16,7 @@
  * Environment: CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
@@ -74,18 +74,22 @@ export default withCronInstrumentation(
     const sql = getDb();
 
     // 1. Verify data arrived from the sidecar
-    const countRows = await sql`
-      SELECT
-        COUNT(*)                                           AS total_rows,
-        COUNT(*) FILTER (WHERE open_interest IS NOT NULL)  AS with_oi,
-        COUNT(*) FILTER (WHERE implied_vol IS NOT NULL)    AS with_iv,
-        COUNT(*) FILTER (WHERE delta IS NOT NULL)          AS with_delta,
-        COUNT(DISTINCT strike)                             AS unique_strikes,
-        COUNT(DISTINCT option_type)                        AS option_types
-      FROM futures_options_daily
-      WHERE underlying = 'ES'
-        AND trade_date = ${tradeDate}
-    `;
+    const countRows = await withDbRetry(
+      () => sql`
+        SELECT
+          COUNT(*)                                           AS total_rows,
+          COUNT(*) FILTER (WHERE open_interest IS NOT NULL)  AS with_oi,
+          COUNT(*) FILTER (WHERE implied_vol IS NOT NULL)    AS with_iv,
+          COUNT(*) FILTER (WHERE delta IS NOT NULL)          AS with_delta,
+          COUNT(DISTINCT strike)                             AS unique_strikes,
+          COUNT(DISTINCT option_type)                        AS option_types
+        FROM futures_options_daily
+        WHERE underlying = 'ES'
+          AND trade_date = ${tradeDate}
+      `,
+      2,
+      10_000,
+    );
 
     const stats = countRows[0]!;
     const totalRows = Number.parseInt(String(stats.total_rows), 10);
@@ -112,17 +116,21 @@ export default withCronInstrumentation(
     }
 
     // 2. Compute OI concentration ratios
-    const oiByStrike = await sql`
-      SELECT
-        strike,
-        option_type,
-        COALESCE(open_interest, 0) AS oi
-      FROM futures_options_daily
-      WHERE underlying = 'ES'
-        AND trade_date = ${tradeDate}
-        AND open_interest IS NOT NULL
-      ORDER BY strike
-    `;
+    const oiByStrike = await withDbRetry(
+      () => sql`
+        SELECT
+          strike,
+          option_type,
+          COALESCE(open_interest, 0) AS oi
+        FROM futures_options_daily
+        WHERE underlying = 'ES'
+          AND trade_date = ${tradeDate}
+          AND open_interest IS NOT NULL
+        ORDER BY strike
+      `,
+      2,
+      10_000,
+    );
 
     // Aggregate call and put OI by strike
     const strikeMap = new Map<number, { callOi: number; putOi: number }>();

@@ -20,7 +20,7 @@
  * Environment: CRON_SECRET, SIDECAR_URL, DATABASE_URL
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { fetchDayOhlcFromPostgres } from '../_lib/postgres-day-summary.js';
 import { metrics } from '../_lib/sentry.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
@@ -147,18 +147,22 @@ export default withCronInstrumentation(
     }
 
     const sql = getDb();
-    const result = await sql`
-      UPDATE day_embeddings SET
-        day_open  = ${ohlc.open},
-        day_high  = ${ohlc.high},
-        day_low   = ${ohlc.low},
-        day_close = ${ohlc.close},
-        range_pt  = ${ohlc.range},
-        up_exc    = ${ohlc.upExc},
-        down_exc  = ${ohlc.downExc}
-      WHERE date = ${targetDate}::date
-      RETURNING date
-    `;
+    const result = await withDbRetry(
+      () => sql`
+        UPDATE day_embeddings SET
+          day_open  = ${ohlc.open},
+          day_high  = ${ohlc.high},
+          day_low   = ${ohlc.low},
+          day_close = ${ohlc.close},
+          range_pt  = ${ohlc.range},
+          up_exc    = ${ohlc.upExc},
+          down_exc  = ${ohlc.downExc}
+        WHERE date = ${targetDate}::date
+        RETURNING date
+      `,
+      2,
+      10_000,
+    );
 
     const updated = result.length;
 

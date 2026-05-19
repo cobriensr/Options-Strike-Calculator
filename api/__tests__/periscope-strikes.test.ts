@@ -23,7 +23,8 @@ const { mockSql, mockGuard, mockSetCacheHeaders, mockIsMarketOpen } =
   }));
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: () => mockSql,
+  getDb: () => mockSql,  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({

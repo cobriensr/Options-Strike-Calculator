@@ -8,7 +8,7 @@
  * Schedule: 35 13,14 * * 1-5 (DST-safe: skips if before 9:30 AM ET)
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { metrics, Sentry } from '../_lib/sentry.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
 import { getETTime } from '../../src/utils/timezone.js';
@@ -136,20 +136,24 @@ export default withCronInstrumentation(
     const overnightStart = getOvernightStart(tradeDate);
     const overnightEnd = getOvernightEnd(tradeDate);
 
-    const bars = await sql`
-      SELECT
-        (ARRAY_AGG(open ORDER BY ts ASC))[1]        AS globex_open,
-        MAX(high)                                     AS globex_high,
-        MIN(low)                                      AS globex_low,
-        (ARRAY_AGG(close ORDER BY ts DESC))[1]        AS globex_close,
-        SUM(((high + low + close) / 3) * volume) / NULLIF(SUM(volume), 0) AS vwap,
-        SUM(volume)                                   AS total_volume,
-        COUNT(*)                                      AS bar_count
-      FROM es_bars
-      WHERE symbol = 'ES'
-        AND ts >= ${overnightStart}
-        AND ts <  ${overnightEnd}
-    `;
+    const bars = await withDbRetry(
+      () => sql`
+        SELECT
+          (ARRAY_AGG(open ORDER BY ts ASC))[1]        AS globex_open,
+          MAX(high)                                     AS globex_high,
+          MIN(low)                                      AS globex_low,
+          (ARRAY_AGG(close ORDER BY ts DESC))[1]        AS globex_close,
+          SUM(((high + low + close) / 3) * volume) / NULLIF(SUM(volume), 0) AS vwap,
+          SUM(volume)                                   AS total_volume,
+          COUNT(*)                                      AS bar_count
+        FROM es_bars
+        WHERE symbol = 'ES'
+          AND ts >= ${overnightStart}
+          AND ts <  ${overnightEnd}
+      `,
+      2,
+      10_000,
+    );
 
     if (!bars[0]?.globex_open) {
       logger.info({ tradeDate }, 'No overnight ES bars found');
@@ -170,11 +174,15 @@ export default withCronInstrumentation(
     const rangePts = globexHigh - globexLow;
 
     // 2. Get previous SPX settlement
-    const prevOutcome = await sql`
-      SELECT settlement FROM outcomes
-      WHERE date < ${tradeDate}
-      ORDER BY date DESC LIMIT 1
-    `;
+    const prevOutcome = await withDbRetry(
+      () => sql`
+        SELECT settlement FROM outcomes
+        WHERE date < ${tradeDate}
+        ORDER BY date DESC LIMIT 1
+      `,
+      2,
+      10_000,
+    );
     const prevCashClose = prevOutcome[0]?.settlement
       ? Number.parseFloat(String(prevOutcome[0].settlement))
       : null;
@@ -209,11 +217,15 @@ export default withCronInstrumentation(
       globexRange > 0 ? ((cashOpen - globexLow) / globexRange) * 100 : 50;
     const positionClass = classifyPosition(cashOpenPctRank);
 
-    const histVol = await sql`
-      SELECT total_volume FROM es_overnight_summaries
-      WHERE trade_date < ${tradeDate}
-      ORDER BY trade_date DESC LIMIT 20
-    `;
+    const histVol = await withDbRetry(
+      () => sql`
+        SELECT total_volume FROM es_overnight_summaries
+        WHERE trade_date < ${tradeDate}
+        ORDER BY trade_date DESC LIMIT 20
+      `,
+      2,
+      10_000,
+    );
     const avg20d =
       histVol.length > 0
         ? histVol.reduce(
@@ -241,7 +253,8 @@ export default withCronInstrumentation(
     const rangePct = prevCashClose ? rangePts / prevCashClose : 0;
 
     // 5. Upsert summary
-    await sql`
+    await withDbRetry(
+      () => sql`
       INSERT INTO es_overnight_summaries (
         trade_date, globex_open, globex_high, globex_low, globex_close,
         vwap, total_volume, bar_count, range_pts, range_pct,
@@ -285,7 +298,10 @@ export default withCronInstrumentation(
         vwap_signal = EXCLUDED.vwap_signal,
         fill_score = EXCLUDED.fill_score,
         fill_probability = EXCLUDED.fill_probability
-    `;
+    `,
+      2,
+      10_000,
+    );
 
     logger.info(
       {

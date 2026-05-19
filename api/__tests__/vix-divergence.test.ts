@@ -12,7 +12,8 @@ const FIXED_NOW = new Date('2026-04-18T15:30:00.000Z');
 const mockSql = vi.fn();
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
+  getDb: vi.fn(() => mockSql),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 import {

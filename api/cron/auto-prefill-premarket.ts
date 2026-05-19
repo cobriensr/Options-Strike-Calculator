@@ -11,7 +11,7 @@
  * Environment: CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -59,18 +59,22 @@ export default withCronInstrumentation(
     const overnightEnd = getOvernightEndCT(tradeDate);
 
     // Query overnight ES bars from futures_bars
-    const bars = await sql`
-      SELECT
-        MAX(high)                                      AS globex_high,
-        MIN(low)                                       AS globex_low,
-        (ARRAY_AGG(close ORDER BY ts DESC))[1]         AS globex_close,
-        SUM(close * volume) / NULLIF(SUM(volume), 0)   AS vwap,
-        COUNT(*)                                       AS bar_count
-      FROM futures_bars
-      WHERE symbol = 'ES'
-        AND ts >= ${overnightStart}
-        AND ts <  ${overnightEnd}
-    `;
+    const bars = await withDbRetry(
+      () => sql`
+        SELECT
+          MAX(high)                                      AS globex_high,
+          MIN(low)                                       AS globex_low,
+          (ARRAY_AGG(close ORDER BY ts DESC))[1]         AS globex_close,
+          SUM(close * volume) / NULLIF(SUM(volume), 0)   AS vwap,
+          COUNT(*)                                       AS bar_count
+        FROM futures_bars
+        WHERE symbol = 'ES'
+          AND ts >= ${overnightStart}
+          AND ts <  ${overnightEnd}
+      `,
+      2,
+      10_000,
+    );
 
     if (!bars[0]?.globex_high) {
       logger.info({ tradeDate }, 'No overnight ES bars found for pre-fill');
@@ -103,23 +107,35 @@ export default withCronInstrumentation(
     });
 
     // Upsert: update existing snapshot or create minimal one
-    const existing = await sql`
-      SELECT id FROM market_snapshots
-      WHERE date = ${tradeDate}
-      ORDER BY created_at DESC LIMIT 1
-    `;
+    const existing = await withDbRetry(
+      () => sql`
+        SELECT id FROM market_snapshots
+        WHERE date = ${tradeDate}
+        ORDER BY created_at DESC LIMIT 1
+      `,
+      2,
+      10_000,
+    );
 
     if (existing.length > 0) {
-      await sql`
-        UPDATE market_snapshots
-        SET pre_market_data = ${preMarketData}::jsonb
-        WHERE id = ${existing[0]!.id}
-      `;
+      await withDbRetry(
+        () => sql`
+          UPDATE market_snapshots
+          SET pre_market_data = ${preMarketData}::jsonb
+          WHERE id = ${existing[0]!.id}
+        `,
+        2,
+        10_000,
+      );
     } else {
-      await sql`
-        INSERT INTO market_snapshots (date, entry_time, pre_market_data)
-        VALUES (${tradeDate}, 'pre-market', ${preMarketData}::jsonb)
-      `;
+      await withDbRetry(
+        () => sql`
+          INSERT INTO market_snapshots (date, entry_time, pre_market_data)
+          VALUES (${tradeDate}, 'pre-market', ${preMarketData}::jsonb)
+        `,
+        2,
+        10_000,
+      );
     }
 
     logger.info(

@@ -23,7 +23,7 @@
 
 import { head, put } from '@vercel/blob';
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -89,22 +89,30 @@ async function* streamRows(
   while (true) {
     const page =
       tableName === 'gexbot_snapshots'
-        ? ((await sql`
-            SELECT * FROM gexbot_snapshots
-            WHERE captured_at >= ${archiveDate}::timestamptz
-              AND captured_at <  (${archiveDate}::date + 1)::timestamptz
-              AND id > ${lastId}
-            ORDER BY id
-            LIMIT ${PAGE_SIZE}
-          `) as Array<Record<string, unknown>>)
-        : ((await sql`
-            SELECT * FROM gexbot_api_capture
-            WHERE captured_at >= ${archiveDate}::timestamptz
-              AND captured_at <  (${archiveDate}::date + 1)::timestamptz
-              AND id > ${lastId}
-            ORDER BY id
-            LIMIT ${PAGE_SIZE}
-          `) as Array<Record<string, unknown>>);
+        ? ((await withDbRetry(
+            () => sql`
+              SELECT * FROM gexbot_snapshots
+              WHERE captured_at >= ${archiveDate}::timestamptz
+                AND captured_at <  (${archiveDate}::date + 1)::timestamptz
+                AND id > ${lastId}
+              ORDER BY id
+              LIMIT ${PAGE_SIZE}
+            `,
+            2,
+            10_000,
+          )) as Array<Record<string, unknown>>)
+        : ((await withDbRetry(
+            () => sql`
+              SELECT * FROM gexbot_api_capture
+              WHERE captured_at >= ${archiveDate}::timestamptz
+                AND captured_at <  (${archiveDate}::date + 1)::timestamptz
+                AND id > ${lastId}
+              ORDER BY id
+              LIMIT ${PAGE_SIZE}
+            `,
+            2,
+            10_000,
+          )) as Array<Record<string, unknown>>);
     if (page.length === 0) return;
     for (const row of page) {
       // Normalize row shape for Parquet: JSONB → string, Date → ms
@@ -137,19 +145,23 @@ async function recordAudit(
   sha256: string,
 ): Promise<void> {
   const sql = getDb();
-  await sql`
-    INSERT INTO gexbot_archive_audit (
-      table_name, archive_date, row_count, blob_url, blob_size_bytes, sha256
-    ) VALUES (
-      ${tableName}, ${archiveDate}, ${rowCount}, ${blobUrl}, ${bytes}, ${sha256}
-    )
-    ON CONFLICT (table_name, archive_date) DO UPDATE SET
-      row_count       = EXCLUDED.row_count,
-      blob_url        = EXCLUDED.blob_url,
-      blob_size_bytes = EXCLUDED.blob_size_bytes,
-      sha256          = EXCLUDED.sha256,
-      archived_at     = now()
-  `;
+  await withDbRetry(
+    () => sql`
+      INSERT INTO gexbot_archive_audit (
+        table_name, archive_date, row_count, blob_url, blob_size_bytes, sha256
+      ) VALUES (
+        ${tableName}, ${archiveDate}, ${rowCount}, ${blobUrl}, ${bytes}, ${sha256}
+      )
+      ON CONFLICT (table_name, archive_date) DO UPDATE SET
+        row_count       = EXCLUDED.row_count,
+        blob_url        = EXCLUDED.blob_url,
+        blob_size_bytes = EXCLUDED.blob_size_bytes,
+        sha256          = EXCLUDED.sha256,
+        archived_at     = now()
+    `,
+    2,
+    10_000,
+  );
 }
 
 interface ArchiveSummary {

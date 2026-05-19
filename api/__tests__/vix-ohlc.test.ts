@@ -9,7 +9,8 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 vi.mock('../_lib/db.js', () => ({
-  getVixOhlcFromSnapshots: vi.fn(),
+  getVixOhlcFromSnapshots: vi.fn(),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 vi.mock('../_lib/sentry.js', () => ({

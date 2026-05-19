@@ -8,7 +8,7 @@
  * Spec: docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   detectPutLottery,
   todayExpiry,
@@ -36,27 +36,31 @@ export default withCronInstrumentation(
     const sql = getDb();
     let inserted = 0;
     for (const f of fires) {
-      const result = (await sql`
-        INSERT INTO periscope_lottery_fires (
-          fire_type, fire_time, expiry, event_strike, trade_strike,
-          spot_at_event, strike_dist, greek_post, greek_delta,
-          greek_lvl_rank, greek_chg_rank,
-          gex_dollars, call_ratio, qqq_net_prem_balance_30m,
-          entry_px, vix,
-          v3_strict_pass, v4_badge
-        ) VALUES (
-          ${f.fireType}, ${f.fireTime.toISOString()}, ${f.expiry},
-          ${f.eventStrike}, ${f.tradeStrike},
-          ${f.spotAtEvent}, ${f.strikeDist},
-          ${f.greekPost}, ${f.greekDelta},
-          ${f.greekLvlRank}, ${f.greekChgRank},
-          ${f.gexDollars}, ${f.callRatio}, ${f.qqqNetPremBalance30m},
-          ${f.entryPx}, ${f.vix},
-          ${f.v3StrictPass}, ${f.v4Badge}
-        )
-        ON CONFLICT (fire_type, fire_time, event_strike) DO NOTHING
-        RETURNING id
-      `) as { id: number }[];
+      const result = (await withDbRetry(
+        () => sql`
+          INSERT INTO periscope_lottery_fires (
+            fire_type, fire_time, expiry, event_strike, trade_strike,
+            spot_at_event, strike_dist, greek_post, greek_delta,
+            greek_lvl_rank, greek_chg_rank,
+            gex_dollars, call_ratio, qqq_net_prem_balance_30m,
+            entry_px, vix,
+            v3_strict_pass, v4_badge
+          ) VALUES (
+            ${f.fireType}, ${f.fireTime.toISOString()}, ${f.expiry},
+            ${f.eventStrike}, ${f.tradeStrike},
+            ${f.spotAtEvent}, ${f.strikeDist},
+            ${f.greekPost}, ${f.greekDelta},
+            ${f.greekLvlRank}, ${f.greekChgRank},
+            ${f.gexDollars}, ${f.callRatio}, ${f.qqqNetPremBalance30m},
+            ${f.entryPx}, ${f.vix},
+            ${f.v3StrictPass}, ${f.v4Badge}
+          )
+          ON CONFLICT (fire_type, fire_time, event_strike) DO NOTHING
+          RETURNING id
+        `,
+        2,
+        10_000,
+      )) as { id: number }[];
       if (result.length > 0) inserted += 1;
     }
 

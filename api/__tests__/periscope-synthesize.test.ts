@@ -15,7 +15,8 @@ const sqlQueue: unknown[][] = [];
 const mockSql = vi.fn(async (): Promise<unknown[]> => sqlQueue.shift() ?? []);
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
+  getDb: vi.fn(() => mockSql),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 // ============================================================

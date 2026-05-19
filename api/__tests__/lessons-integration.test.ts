@@ -42,7 +42,8 @@ vi.mock('../_lib/db.js', () => ({
   saveAnalysis: vi.fn().mockResolvedValue(undefined),
   saveSnapshot: vi.fn().mockResolvedValue(null),
   getLatestPositions: vi.fn().mockResolvedValue(null),
-  getPreviousRecommendation: vi.fn().mockResolvedValue(null),
+  getPreviousRecommendation: vi.fn().mockResolvedValue(null),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 // --- Lessons mock ---

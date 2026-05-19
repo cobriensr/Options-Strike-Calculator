@@ -27,7 +27,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { uwFetch, checkDataQuality, withRetry } from '../_lib/api-helpers.js';
 import {
@@ -86,41 +86,45 @@ async function storeStrikeRows(
       const { netGex, netDelta, netCharm, netVanna, absGex, callGexFraction } =
         computeColumns(row);
 
-      const result = await sql`
-        INSERT INTO greek_exposure_strike (
-          date, expiry, strike, dte,
-          call_gex, put_gex, call_delta, put_delta,
-          call_charm, put_charm, call_vanna, put_vanna,
-          net_gex, net_delta, net_charm, net_vanna,
-          abs_gex, call_gex_fraction
-        )
-        VALUES (
-          ${row.date}, ${row.expiry}, ${row.strike}, ${row.dte},
-          ${row.call_gex}, ${row.put_gex},
-          ${row.call_delta}, ${row.put_delta},
-          ${row.call_charm}, ${row.put_charm},
-          ${row.call_vanna}, ${row.put_vanna},
-          ${netGex}, ${netDelta}, ${netCharm}, ${netVanna},
-          ${absGex}, ${callGexFraction}
-        )
-        ON CONFLICT (date, expiry, strike) DO UPDATE SET
-          dte               = EXCLUDED.dte,
-          call_gex          = EXCLUDED.call_gex,
-          put_gex           = EXCLUDED.put_gex,
-          call_delta        = EXCLUDED.call_delta,
-          put_delta         = EXCLUDED.put_delta,
-          call_charm        = EXCLUDED.call_charm,
-          put_charm         = EXCLUDED.put_charm,
-          call_vanna        = EXCLUDED.call_vanna,
-          put_vanna         = EXCLUDED.put_vanna,
-          net_gex           = EXCLUDED.net_gex,
-          net_delta         = EXCLUDED.net_delta,
-          net_charm         = EXCLUDED.net_charm,
-          net_vanna         = EXCLUDED.net_vanna,
-          abs_gex           = EXCLUDED.abs_gex,
-          call_gex_fraction = EXCLUDED.call_gex_fraction
-        RETURNING strike
-      `;
+      const result = await withDbRetry(
+        () => sql`
+          INSERT INTO greek_exposure_strike (
+            date, expiry, strike, dte,
+            call_gex, put_gex, call_delta, put_delta,
+            call_charm, put_charm, call_vanna, put_vanna,
+            net_gex, net_delta, net_charm, net_vanna,
+            abs_gex, call_gex_fraction
+          )
+          VALUES (
+            ${row.date}, ${row.expiry}, ${row.strike}, ${row.dte},
+            ${row.call_gex}, ${row.put_gex},
+            ${row.call_delta}, ${row.put_delta},
+            ${row.call_charm}, ${row.put_charm},
+            ${row.call_vanna}, ${row.put_vanna},
+            ${netGex}, ${netDelta}, ${netCharm}, ${netVanna},
+            ${absGex}, ${callGexFraction}
+          )
+          ON CONFLICT (date, expiry, strike) DO UPDATE SET
+            dte               = EXCLUDED.dte,
+            call_gex          = EXCLUDED.call_gex,
+            put_gex           = EXCLUDED.put_gex,
+            call_delta        = EXCLUDED.call_delta,
+            put_delta         = EXCLUDED.put_delta,
+            call_charm        = EXCLUDED.call_charm,
+            put_charm         = EXCLUDED.put_charm,
+            call_vanna        = EXCLUDED.call_vanna,
+            put_vanna         = EXCLUDED.put_vanna,
+            net_gex           = EXCLUDED.net_gex,
+            net_delta         = EXCLUDED.net_delta,
+            net_charm         = EXCLUDED.net_charm,
+            net_vanna         = EXCLUDED.net_vanna,
+            abs_gex           = EXCLUDED.abs_gex,
+            call_gex_fraction = EXCLUDED.call_gex_fraction
+          RETURNING strike
+        `,
+        2,
+        10_000,
+      );
       if (result.length > 0) stored++;
       else skipped++;
     } catch (err) {

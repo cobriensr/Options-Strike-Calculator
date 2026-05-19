@@ -34,7 +34,7 @@
  * persisted; consumption is future work).
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -135,20 +135,28 @@ async function processTable(
   // are excluded automatically.
   const candidates =
     cfg.name === 'lottery'
-      ? ((await db`
-          SELECT id, underlying_symbol, option_type, trigger_time_ct AS trigger_time
-          FROM lottery_finder_fires
-          WHERE wave2_status IS NULL
-            AND trigger_time_ct >= NOW() - (${LOOKBACK_MIN}::int * INTERVAL '1 minute')
-            AND trigger_time_ct <= NOW() - (${GRACE_SECONDS}::int * INTERVAL '1 second')
-        `) as CandidateRow[])
-      : ((await db`
-          SELECT id, underlying_symbol, option_type, bucket_ct AS trigger_time
-          FROM silent_boom_alerts
-          WHERE wave2_status IS NULL
-            AND bucket_ct >= NOW() - (${LOOKBACK_MIN}::int * INTERVAL '1 minute')
-            AND bucket_ct <= NOW() - (${GRACE_SECONDS}::int * INTERVAL '1 second')
-        `) as CandidateRow[]);
+      ? ((await withDbRetry(
+          () => db`
+            SELECT id, underlying_symbol, option_type, trigger_time_ct AS trigger_time
+            FROM lottery_finder_fires
+            WHERE wave2_status IS NULL
+              AND trigger_time_ct >= NOW() - (${LOOKBACK_MIN}::int * INTERVAL '1 minute')
+              AND trigger_time_ct <= NOW() - (${GRACE_SECONDS}::int * INTERVAL '1 second')
+          `,
+          2,
+          10_000,
+        )) as CandidateRow[])
+      : ((await withDbRetry(
+          () => db`
+            SELECT id, underlying_symbol, option_type, bucket_ct AS trigger_time
+            FROM silent_boom_alerts
+            WHERE wave2_status IS NULL
+              AND bucket_ct >= NOW() - (${LOOKBACK_MIN}::int * INTERVAL '1 minute')
+              AND bucket_ct <= NOW() - (${GRACE_SECONDS}::int * INTERVAL '1 second')
+          `,
+          2,
+          10_000,
+        )) as CandidateRow[]);
 
   const result: TableResult = {
     processed: 0,
@@ -175,28 +183,36 @@ async function processTable(
     // share the same minute (rare but possible with this 5-min cron tick).
     const followups =
       cfg.name === 'lottery'
-        ? ((await db`
-            SELECT trigger_time_ct AS trigger_time
-            FROM lottery_finder_fires
-            WHERE underlying_symbol = ${cand.underlying_symbol}
-              AND option_type = ${cand.option_type}
-              AND id != ${cand.id}
-              AND trigger_time_ct > ${triggerIso}::timestamptz
-              AND trigger_time_ct <= ${triggerIso}::timestamptz + (${LAGGING_WINDOW_MIN}::int * INTERVAL '1 minute')
-            ORDER BY trigger_time_ct ASC
-            LIMIT 1
-          `) as FollowupRow[])
-        : ((await db`
-            SELECT bucket_ct AS trigger_time
-            FROM silent_boom_alerts
-            WHERE underlying_symbol = ${cand.underlying_symbol}
-              AND option_type = ${cand.option_type}
-              AND id != ${cand.id}
-              AND bucket_ct > ${triggerIso}::timestamptz
-              AND bucket_ct <= ${triggerIso}::timestamptz + (${LAGGING_WINDOW_MIN}::int * INTERVAL '1 minute')
-            ORDER BY bucket_ct ASC
-            LIMIT 1
-          `) as FollowupRow[]);
+        ? ((await withDbRetry(
+            () => db`
+              SELECT trigger_time_ct AS trigger_time
+              FROM lottery_finder_fires
+              WHERE underlying_symbol = ${cand.underlying_symbol}
+                AND option_type = ${cand.option_type}
+                AND id != ${cand.id}
+                AND trigger_time_ct > ${triggerIso}::timestamptz
+                AND trigger_time_ct <= ${triggerIso}::timestamptz + (${LAGGING_WINDOW_MIN}::int * INTERVAL '1 minute')
+              ORDER BY trigger_time_ct ASC
+              LIMIT 1
+            `,
+            2,
+            10_000,
+          )) as FollowupRow[])
+        : ((await withDbRetry(
+            () => db`
+              SELECT bucket_ct AS trigger_time
+              FROM silent_boom_alerts
+              WHERE underlying_symbol = ${cand.underlying_symbol}
+                AND option_type = ${cand.option_type}
+                AND id != ${cand.id}
+                AND bucket_ct > ${triggerIso}::timestamptz
+                AND bucket_ct <= ${triggerIso}::timestamptz + (${LAGGING_WINDOW_MIN}::int * INTERVAL '1 minute')
+              ORDER BY bucket_ct ASC
+              LIMIT 1
+            `,
+            2,
+            10_000,
+          )) as FollowupRow[]);
 
     const followup = followups[0];
 
@@ -208,21 +224,29 @@ async function processTable(
         deltaMin <= CONFIRMED_WINDOW_MIN ? 'confirmed' : 'lagging';
 
       if (cfg.name === 'lottery') {
-        await db`
-          UPDATE lottery_finder_fires
-          SET wave2_status = ${verdict},
-              wave2_detected_at = ${followupIso}::timestamptz
-          WHERE id = ${cand.id}
-            AND wave2_status IS NULL
-        `;
+        await withDbRetry(
+          () => db`
+            UPDATE lottery_finder_fires
+            SET wave2_status = ${verdict},
+                wave2_detected_at = ${followupIso}::timestamptz
+            WHERE id = ${cand.id}
+              AND wave2_status IS NULL
+          `,
+          2,
+          10_000,
+        );
       } else {
-        await db`
-          UPDATE silent_boom_alerts
-          SET wave2_status = ${verdict},
-              wave2_detected_at = ${followupIso}::timestamptz
-          WHERE id = ${cand.id}
-            AND wave2_status IS NULL
-        `;
+        await withDbRetry(
+          () => db`
+            UPDATE silent_boom_alerts
+            SET wave2_status = ${verdict},
+                wave2_detected_at = ${followupIso}::timestamptz
+            WHERE id = ${cand.id}
+              AND wave2_status IS NULL
+          `,
+          2,
+          10_000,
+        );
       }
       result.processed += 1;
       if (verdict === 'confirmed') {
@@ -238,19 +262,27 @@ async function processTable(
     // only path that lets a candidate survive the cron unchanged.
     if (ageMin >= LAGGING_WINDOW_MIN) {
       if (cfg.name === 'lottery') {
-        await db`
-          UPDATE lottery_finder_fires
-          SET wave2_status = 'fizzled'
-          WHERE id = ${cand.id}
-            AND wave2_status IS NULL
-        `;
+        await withDbRetry(
+          () => db`
+            UPDATE lottery_finder_fires
+            SET wave2_status = 'fizzled'
+            WHERE id = ${cand.id}
+              AND wave2_status IS NULL
+          `,
+          2,
+          10_000,
+        );
       } else {
-        await db`
-          UPDATE silent_boom_alerts
-          SET wave2_status = 'fizzled'
-          WHERE id = ${cand.id}
-            AND wave2_status IS NULL
-        `;
+        await withDbRetry(
+          () => db`
+            UPDATE silent_boom_alerts
+            SET wave2_status = 'fizzled'
+            WHERE id = ${cand.id}
+              AND wave2_status IS NULL
+          `,
+          2,
+          10_000,
+        );
       }
       result.processed += 1;
       result.fizzled += 1;

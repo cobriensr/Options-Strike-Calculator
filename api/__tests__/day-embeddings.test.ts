@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(),
+  getDb: vi.fn(),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 vi.mock('../_lib/embeddings.js', () => ({

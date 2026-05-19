@@ -30,7 +30,7 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 
 /** Spec resolved-decision #5: peak_ceiling_pct ≥ 20 → win = 1. */
@@ -161,28 +161,36 @@ async function fetchFeatureCoverage(
   try {
     const rows =
       alertType === 'lottery'
-        ? ((await db`
-            SELECT
-              inferred_structure,
-              wave2_status,
-              COUNT(*)::int AS n
-            FROM lottery_finder_fires
-            WHERE date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
-            GROUP BY inferred_structure, wave2_status
-          `) as Array<{
+        ? ((await withDbRetry(
+            () => db`
+              SELECT
+                inferred_structure,
+                wave2_status,
+                COUNT(*)::int AS n
+              FROM lottery_finder_fires
+              WHERE date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
+              GROUP BY inferred_structure, wave2_status
+            `,
+            2,
+            10_000,
+          )) as Array<{
             inferred_structure: string | null;
             wave2_status: string | null;
             n: number;
           }>)
-        : ((await db`
-            SELECT
-              inferred_structure,
-              wave2_status,
-              COUNT(*)::int AS n
-            FROM silent_boom_alerts
-            WHERE date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
-            GROUP BY inferred_structure, wave2_status
-          `) as Array<{
+        : ((await withDbRetry(
+            () => db`
+              SELECT
+                inferred_structure,
+                wave2_status,
+                COUNT(*)::int AS n
+              FROM silent_boom_alerts
+              WHERE date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
+              GROUP BY inferred_structure, wave2_status
+            `,
+            2,
+            10_000,
+          )) as Array<{
             inferred_structure: string | null;
             wave2_status: string | null;
             n: number;
@@ -216,24 +224,32 @@ async function auditOne(alertType: AlertType): Promise<AuditResult> {
   const db = getDb();
   const rows =
     alertType === 'lottery'
-      ? ((await db`
-          SELECT
-            takeit_prob::float AS prob,
-            (peak_ceiling_pct >= ${WIN_LABEL_THRESHOLD_PCT})::int AS win
-          FROM lottery_finder_fires
-          WHERE takeit_prob IS NOT NULL
-            AND peak_ceiling_pct IS NOT NULL
-            AND date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
-        `) as Array<{ prob: number; win: 0 | 1 }>)
-      : ((await db`
-          SELECT
-            takeit_prob::float AS prob,
-            (peak_ceiling_pct >= ${WIN_LABEL_THRESHOLD_PCT})::int AS win
-          FROM silent_boom_alerts
-          WHERE takeit_prob IS NOT NULL
-            AND peak_ceiling_pct IS NOT NULL
-            AND date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
-        `) as Array<{ prob: number; win: 0 | 1 }>);
+      ? ((await withDbRetry(
+          () => db`
+            SELECT
+              takeit_prob::float AS prob,
+              (peak_ceiling_pct >= ${WIN_LABEL_THRESHOLD_PCT})::int AS win
+            FROM lottery_finder_fires
+            WHERE takeit_prob IS NOT NULL
+              AND peak_ceiling_pct IS NOT NULL
+              AND date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
+          `,
+          2,
+          10_000,
+        )) as Array<{ prob: number; win: 0 | 1 }>)
+      : ((await withDbRetry(
+          () => db`
+            SELECT
+              takeit_prob::float AS prob,
+              (peak_ceiling_pct >= ${WIN_LABEL_THRESHOLD_PCT})::int AS win
+            FROM silent_boom_alerts
+            WHERE takeit_prob IS NOT NULL
+              AND peak_ceiling_pct IS NOT NULL
+              AND date >= CURRENT_DATE - (${LOOKBACK_DAYS}::int * INTERVAL '1 day')
+          `,
+          2,
+          10_000,
+        )) as Array<{ prob: number; win: 0 | 1 }>);
 
   const featureCoverage = await fetchFeatureCoverage(alertType);
 

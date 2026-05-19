@@ -12,7 +12,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { uwFetch, withRetry, checkDataQuality } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
@@ -89,23 +89,31 @@ export default withCronInstrumentation(
 
     for (const e of todayEvents) {
       const eventType = categorizeEvent(e.event);
-      await sql`
-        INSERT INTO economic_events (date, event_name, event_time, event_type, forecast, previous, reported_period)
-        VALUES (${todayStr}, ${e.event}, ${e.time}, ${eventType}, ${e.forecast}, ${e.prev}, ${e.reported_period})
-        ON CONFLICT (date, event_name, event_time) DO NOTHING
-      `;
+      await withDbRetry(
+        () => sql`
+          INSERT INTO economic_events (date, event_name, event_time, event_type, forecast, previous, reported_period)
+          VALUES (${todayStr}, ${e.event}, ${e.time}, ${eventType}, ${e.forecast}, ${e.prev}, ${e.reported_period})
+          ON CONFLICT (date, event_name, event_time) DO NOTHING
+        `,
+        2,
+        10_000,
+      );
     }
 
     // Data quality check: alert if API returned events but all key fields are null
     if (todayEvents.length > 0) {
-      const qcRows = await sql`
-        SELECT COUNT(*) AS total,
-               COUNT(*) FILTER (
-                 WHERE event_name IS NOT NULL AND event_name != ''
-               ) AS has_name
-        FROM economic_events
-        WHERE date = ${todayStr}
-      `;
+      const qcRows = await withDbRetry(
+        () => sql`
+          SELECT COUNT(*) AS total,
+                 COUNT(*) FILTER (
+                   WHERE event_name IS NOT NULL AND event_name != ''
+                 ) AS has_name
+          FROM economic_events
+          WHERE date = ${todayStr}
+        `,
+        2,
+        10_000,
+      );
       const { total, has_name } = qcRows[0]!;
       await checkDataQuality({
         job: 'fetch-economic-calendar',

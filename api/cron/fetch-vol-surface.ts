@@ -14,7 +14,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { uwFetch, cronGuard, withRetry } from '../_lib/api-helpers.js';
@@ -83,12 +83,16 @@ async function storeTermStructure(
         String(row.implied_move_perc ?? row.implied_move ?? ''),
       ) || null;
 
-    const result = await sql`
-      INSERT INTO vol_term_structure (date, days, volatility, implied_move)
-      VALUES (${today}, ${days}, ${volatility}, ${impliedMove})
-      ON CONFLICT (date, days) DO NOTHING
-      RETURNING id
-    `;
+    const result = await withDbRetry(
+      () => sql`
+        INSERT INTO vol_term_structure (date, days, volatility, implied_move)
+        VALUES (${today}, ${days}, ${volatility}, ${impliedMove})
+        ON CONFLICT (date, days) DO NOTHING
+        RETURNING id
+      `,
+      2,
+      10_000,
+    );
     if (result.length > 0) stored++;
     else skipped++;
   }
@@ -125,22 +129,26 @@ async function storeRealizedVol(
       ) || null
     : null;
 
-  await sql`
-    INSERT INTO vol_realized (
-      date, iv_30d, rv_30d, iv_rv_spread,
-      iv_overpricing_pct, iv_rank
-    )
-    VALUES (
-      ${today}, ${iv30d}, ${rv30d}, ${ivRvSpread},
-      ${ivOverpricingPct}, ${ivRank}
-    )
-    ON CONFLICT (date) DO UPDATE SET
-      iv_30d             = EXCLUDED.iv_30d,
-      rv_30d             = EXCLUDED.rv_30d,
-      iv_rv_spread       = EXCLUDED.iv_rv_spread,
-      iv_overpricing_pct = EXCLUDED.iv_overpricing_pct,
-      iv_rank            = EXCLUDED.iv_rank
-  `;
+  await withDbRetry(
+    () => sql`
+      INSERT INTO vol_realized (
+        date, iv_30d, rv_30d, iv_rv_spread,
+        iv_overpricing_pct, iv_rank
+      )
+      VALUES (
+        ${today}, ${iv30d}, ${rv30d}, ${ivRvSpread},
+        ${ivOverpricingPct}, ${ivRank}
+      )
+      ON CONFLICT (date) DO UPDATE SET
+        iv_30d             = EXCLUDED.iv_30d,
+        rv_30d             = EXCLUDED.rv_30d,
+        iv_rv_spread       = EXCLUDED.iv_rv_spread,
+        iv_overpricing_pct = EXCLUDED.iv_overpricing_pct,
+        iv_rank            = EXCLUDED.iv_rank
+    `,
+    2,
+    10_000,
+  );
 
   return true;
 }
@@ -157,11 +165,15 @@ export default withCronCheckin('fetch-vol-surface', async (req, res) => {
   try {
     // Skip if data already exists for today
     const sql = getDb();
-    const existing = await sql`
-      SELECT COUNT(*)::int AS cnt
-      FROM vol_term_structure
-      WHERE date = ${today}
-    `;
+    const existing = await withDbRetry(
+      () => sql`
+        SELECT COUNT(*)::int AS cnt
+        FROM vol_term_structure
+        WHERE date = ${today}
+      `,
+      2,
+      10_000,
+    );
     const existingCount = (existing[0]?.cnt as number) ?? 0;
     if (existingCount > 0) {
       return res.status(200).json({

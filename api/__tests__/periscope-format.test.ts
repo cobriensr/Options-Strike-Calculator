@@ -14,7 +14,8 @@ import { vi, beforeEach, describe, it, expect } from 'vitest';
 
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
-  getDb: () => mockSql,
+  getDb: () => mockSql,  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 import {

@@ -13,7 +13,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import {
   uwFetch,
@@ -107,12 +107,16 @@ async function storeAllCandles(
   let skipped = 0;
 
   for (const candle of candles) {
-    const result = await sql`
-      INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-      VALUES (${date}, ${candle.timestamp}, ${source}, ${candle.ncp}, ${candle.npp}, ${candle.netVolume})
-      ON CONFLICT (date, timestamp, source) DO NOTHING
-      RETURNING id
-    `;
+    const result = await withDbRetry(
+      () => sql`
+        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+        VALUES (${date}, ${candle.timestamp}, ${source}, ${candle.ncp}, ${candle.npp}, ${candle.netVolume})
+        ON CONFLICT (date, timestamp, source) DO NOTHING
+        RETURNING id
+      `,
+      2,
+      10_000,
+    );
     if (result.length > 0) stored++;
     else skipped++;
   }

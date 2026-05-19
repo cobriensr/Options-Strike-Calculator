@@ -32,7 +32,8 @@ vi.mock('../_lib/sentry.js', () => ({
 
 const mockDbFn = vi.fn();
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockDbFn),
+  getDb: vi.fn(() => mockDbFn),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 import handler from '../pre-market.js';

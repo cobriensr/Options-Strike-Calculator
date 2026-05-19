@@ -38,7 +38,7 @@
  * Environment: CRON_SECRET (no UW API key required — purely derivative)
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
@@ -85,13 +85,17 @@ async function loadLatestSnapshot(
   today: string,
   expiry: string,
 ): Promise<SnapshotBundle | null> {
-  const latestTsRows = (await sql`
-    SELECT MAX(timestamp) AS latest_ts
-    FROM strike_exposures
-    WHERE date = ${today}
-      AND ticker = ${ticker}
-      AND expiry = ${expiry}
-  `) as Array<{ latest_ts: string | Date | null }>;
+  const latestTsRows = (await withDbRetry(
+    () => sql`
+      SELECT MAX(timestamp) AS latest_ts
+      FROM strike_exposures
+      WHERE date = ${today}
+        AND ticker = ${ticker}
+        AND expiry = ${expiry}
+    `,
+    2,
+    10_000,
+  )) as Array<{ latest_ts: string | Date | null }>;
 
   const latestTsRaw = latestTsRows[0]?.latest_ts ?? null;
   if (latestTsRaw == null) return null;
@@ -101,15 +105,19 @@ async function loadLatestSnapshot(
       ? latestTsRaw.toISOString()
       : new Date(latestTsRaw).toISOString();
 
-  const rows = (await sql`
-    SELECT strike, price, call_gamma_oi, put_gamma_oi, timestamp
-    FROM strike_exposures
-    WHERE date = ${today}
-      AND ticker = ${ticker}
-      AND expiry = ${expiry}
-      AND timestamp = ${latestTs}
-    ORDER BY strike ASC
-  `) as StrikeExposureRow[];
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT strike, price, call_gamma_oi, put_gamma_oi, timestamp
+      FROM strike_exposures
+      WHERE date = ${today}
+        AND ticker = ${ticker}
+        AND expiry = ${expiry}
+        AND timestamp = ${latestTs}
+      ORDER BY strike ASC
+    `,
+    2,
+    10_000,
+  )) as StrikeExposureRow[];
 
   if (rows.length === 0) return null;
 
@@ -212,13 +220,17 @@ async function processTicker(
   // post-mortem context on trades that misfire around the transition.
   // We log + breadcrumb here rather than alert because the flip is
   // expected behavior, just one we want to be able to grep for.
-  const prevRows = (await sql`
-    SELECT net_gamma_at_spot::numeric AS net_gamma_at_spot
-    FROM zero_gamma_levels
-    WHERE ticker = ${ticker}
-    ORDER BY ts DESC
-    LIMIT 1
-  `) as { net_gamma_at_spot: string | number | null }[];
+  const prevRows = (await withDbRetry(
+    () => sql`
+      SELECT net_gamma_at_spot::numeric AS net_gamma_at_spot
+      FROM zero_gamma_levels
+      WHERE ticker = ${ticker}
+      ORDER BY ts DESC
+      LIMIT 1
+    `,
+    2,
+    10_000,
+  )) as { net_gamma_at_spot: string | number | null }[];
   const prevNetGammaRaw = prevRows[0]?.net_gamma_at_spot ?? null;
   const prevNetGamma =
     prevNetGammaRaw == null
@@ -260,17 +272,21 @@ async function processTicker(
     );
   }
 
-  await sql`
-    INSERT INTO zero_gamma_levels (
-      ticker, spot, zero_gamma, confidence,
-      net_gamma_at_spot, gamma_curve
-    )
-    VALUES (
-      ${ticker}, ${snapshot.spot}, ${zeroGamma}, ${result.confidence},
-      ${netGamma}, ${gammaCurveJson}::jsonb
-    )
-    ON CONFLICT (ticker, ts) DO NOTHING
-  `;
+  await withDbRetry(
+    () => sql`
+      INSERT INTO zero_gamma_levels (
+        ticker, spot, zero_gamma, confidence,
+        net_gamma_at_spot, gamma_curve
+      )
+      VALUES (
+        ${ticker}, ${snapshot.spot}, ${zeroGamma}, ${result.confidence},
+        ${netGamma}, ${gammaCurveJson}::jsonb
+      )
+      ON CONFLICT (ticker, ts) DO NOTHING
+    `,
+    2,
+    10_000,
+  );
 
   logger.info(
     {

@@ -37,7 +37,7 @@
  *       (Phase 1 — cone auto-compute)
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
@@ -216,20 +216,24 @@ export default withCronInstrumentation(
     const round2 = (n: number): number => Math.round(n * 100) / 100;
     const round4 = (n: number): number => Math.round(n * 10000) / 10000;
 
-    await sql`
-      INSERT INTO cone_levels (
-        date, calc_time, spot_at_calc, atm_strike,
-        call_premium, put_premium,
-        cone_upper, cone_lower, cone_width, asymmetry_pts
-      )
-      VALUES (
-        ${today}, NOW(), ${round2(spot)}, ${atm.atmStrike},
-        ${round4(atm.callMark)}, ${round4(atm.putMark)},
-        ${round2(coneUpper)}, ${round2(coneLower)},
-        ${round2(coneWidth)}, ${round2(asymmetryPts)}
-      )
-      ON CONFLICT (date) DO NOTHING
-    `;
+    await withDbRetry(
+      () => sql`
+        INSERT INTO cone_levels (
+          date, calc_time, spot_at_calc, atm_strike,
+          call_premium, put_premium,
+          cone_upper, cone_lower, cone_width, asymmetry_pts
+        )
+        VALUES (
+          ${today}, NOW(), ${round2(spot)}, ${atm.atmStrike},
+          ${round4(atm.callMark)}, ${round4(atm.putMark)},
+          ${round2(coneUpper)}, ${round2(coneLower)},
+          ${round2(coneWidth)}, ${round2(asymmetryPts)}
+        )
+        ON CONFLICT (date) DO NOTHING
+      `,
+      2,
+      10_000,
+    );
 
     logger.info(
       {

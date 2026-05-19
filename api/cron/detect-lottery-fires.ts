@@ -19,7 +19,7 @@
  * baseline on total realized $ in the 15-day backtest).
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   detectChainFires,
   enrichFires,
@@ -309,15 +309,19 @@ export default withCronInstrumentation(
     }
     const priorByChain = new Map<string, number>();
     if (eligibleChainIds.length > 0) {
-      const priorRows = (await db`
-        SELECT
-          option_chain_id,
-          EXTRACT(EPOCH FROM MAX(trigger_time_ct)) * 1000 AS last_ms
-        FROM lottery_finder_fires
-        WHERE option_chain_id = ANY(${eligibleChainIds}::text[])
-          AND trigger_time_ct >= NOW() - (${PRIOR_FIRE_LOOKBACK_MIN}::int * INTERVAL '1 minute')
-        GROUP BY option_chain_id
-      `) as { option_chain_id: string; last_ms: DbNullableNumeric }[];
+      const priorRows = (await withDbRetry(
+        () => db`
+          SELECT
+            option_chain_id,
+            EXTRACT(EPOCH FROM MAX(trigger_time_ct)) * 1000 AS last_ms
+          FROM lottery_finder_fires
+          WHERE option_chain_id = ANY(${eligibleChainIds}::text[])
+            AND trigger_time_ct >= NOW() - (${PRIOR_FIRE_LOOKBACK_MIN}::int * INTERVAL '1 minute')
+          GROUP BY option_chain_id
+        `,
+        2,
+        10_000,
+      )) as { option_chain_id: string; last_ms: DbNullableNumeric }[];
       for (const r of priorRows) {
         if (r.last_ms != null) {
           priorByChain.set(r.option_chain_id, Number(r.last_ms));
@@ -330,11 +334,15 @@ export default withCronInstrumentation(
     // without takeit_prob — the heuristic INSERT still lands.
     const takeitCtx = await loadTakeitDetectContext('lottery', {
       fetchRecentSameType: async (lookbackMin) => {
-        const rows = (await db`
-          SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
-          FROM lottery_finder_fires
-          WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-        `) as Array<{
+        const rows = (await withDbRetry(
+          () => db`
+            SELECT trigger_time_ct AS fire_time, underlying_symbol, option_type
+            FROM lottery_finder_fires
+            WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+          `,
+          2,
+          10_000,
+        )) as Array<{
           fire_time: Date;
           underlying_symbol: string;
           option_type: 'C' | 'P';
@@ -345,15 +353,19 @@ export default withCronInstrumentation(
         // Pulls underlying_symbol + option_type too so the same row set powers
         // both the chain-keyed cofire map AND the sibling-chain (ticker+dir)
         // cofire map. One round-trip.
-        const rows = (await db`
-          SELECT
-            option_chain_id,
-            underlying_symbol,
-            option_type,
-            bucket_ct AS fire_time
-          FROM silent_boom_alerts
-          WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-        `) as Array<{
+        const rows = (await withDbRetry(
+          () => db`
+            SELECT
+              option_chain_id,
+              underlying_symbol,
+              option_type,
+              bucket_ct AS fire_time
+            FROM silent_boom_alerts
+            WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+          `,
+          2,
+          10_000,
+        )) as Array<{
           option_chain_id: string;
           underlying_symbol: string;
           option_type: 'C' | 'P';
@@ -364,18 +376,22 @@ export default withCronInstrumentation(
       fetchPriorSessionWinRateByTicker: async () => {
         // Mean of daily win-rates (PIT-correct: only strictly-earlier dates)
         // per ticker. ~50 rows; cheap aggregate against an indexed table.
-        const rows = (await db`
-          SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
-          FROM (
-            SELECT underlying_symbol, date,
-                   AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
-            FROM lottery_finder_fires
-            WHERE peak_ceiling_pct IS NOT NULL
-              AND date < ${ctx.today}::date
-            GROUP BY underlying_symbol, date
-          ) per_day
-          GROUP BY underlying_symbol
-        `) as Array<{ underlying_symbol: string; win_rate: number | null }>;
+        const rows = (await withDbRetry(
+          () => db`
+            SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
+            FROM (
+              SELECT underlying_symbol, date,
+                     AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
+              FROM lottery_finder_fires
+              WHERE peak_ceiling_pct IS NOT NULL
+                AND date < ${ctx.today}::date
+              GROUP BY underlying_symbol, date
+            ) per_day
+            GROUP BY underlying_symbol
+          `,
+          2,
+          10_000,
+        )) as Array<{ underlying_symbol: string; win_rate: number | null }>;
         return rows;
       },
     });
@@ -617,7 +633,8 @@ export default withCronInstrumentation(
         const takeitFeaturesJson =
           takeitFeatures === null ? null : JSON.stringify(takeitFeatures);
 
-        const result = (await db`
+        const result = (await withDbRetry(
+          () => db`
           INSERT INTO lottery_finder_fires (
             date, trigger_time_ct, entry_time_ct, option_chain_id,
             underlying_symbol, option_type, strike, expiry, dte,
@@ -664,7 +681,10 @@ export default withCronInstrumentation(
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id
-        `) as { id: number }[];
+        `,
+          2,
+          10_000,
+        )) as { id: number }[];
         if (result.length > 0) inserted += 1;
       }
     }
@@ -719,48 +739,63 @@ async function fetchMacroSnapshot(
   // Single round-trip per fire. flow_data + spot_exposures are required;
   // strike_exposures only matters for index/ETF tickers and is left null
   // otherwise.
-  const flowQuery = db`
-    SELECT source, ncp, npp
-    FROM flow_data
-    WHERE timestamp <= ${asOf.toISOString()}
-      AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
-      AND source IN (
-        'market_tide', 'market_tide_otm', 'spx_flow',
-        'spy_etf_tide', 'qqq_etf_tide', 'zero_dte_greek_flow'
-      )
-    ORDER BY timestamp DESC
-    LIMIT 200
-  ` as Promise<FlowMacroRow[]>;
+  const flowQuery = withDbRetry(
+    () =>
+      db`
+        SELECT source, ncp, npp
+        FROM flow_data
+        WHERE timestamp <= ${asOf.toISOString()}
+          AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
+          AND source IN (
+            'market_tide', 'market_tide_otm', 'spx_flow',
+            'spy_etf_tide', 'qqq_etf_tide', 'zero_dte_greek_flow'
+          )
+        ORDER BY timestamp DESC
+        LIMIT 200
+      ` as Promise<FlowMacroRow[]>,
+    2,
+    10_000,
+  );
 
-  const spotQuery = db`
-    SELECT gamma_oi, gamma_vol, charm_oi, vanna_oi
-    FROM spot_exposures
-    WHERE ticker = 'SPX'
-      AND timestamp <= ${asOf.toISOString()}
-      AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
-    ORDER BY timestamp DESC
-    LIMIT 1
-  ` as Promise<SpotMacroRow[]>;
+  const spotQuery = withDbRetry(
+    () =>
+      db`
+        SELECT gamma_oi, gamma_vol, charm_oi, vanna_oi
+        FROM spot_exposures
+        WHERE ticker = 'SPX'
+          AND timestamp <= ${asOf.toISOString()}
+          AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
+        ORDER BY timestamp DESC
+        LIMIT 1
+      ` as Promise<SpotMacroRow[]>,
+    2,
+    10_000,
+  );
 
   const wantStrike = TICKERS_WITH_GEX_STRIKE.has(rec.underlyingSymbol);
   // Look up the closest stored strike (within ±1% of fire strike) for
   // SPX/SPXW/NDX/NDXP/SPY/QQQ. Other tickers don't have per-strike GEX
   // ingested, so we skip the query.
   const strikeQuery: Promise<StrikeMacroRow[]> = wantStrike
-    ? (db`
-        SELECT
-          strike,
-          (call_gamma_oi - put_gamma_oi) AS call_minus_put,
-          (call_gamma_ask - call_gamma_bid) AS call_ask_minus_bid,
-          (put_gamma_ask - put_gamma_bid) AS put_ask_minus_bid
-        FROM strike_exposures
-        WHERE ticker = ${rec.underlyingSymbol}
-          AND timestamp <= ${asOf.toISOString()}
-          AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
-          AND ABS(strike - ${rec.strike}::numeric) / NULLIF(${rec.strike}::numeric, 0) <= 0.01
-        ORDER BY timestamp DESC, ABS(strike - ${rec.strike}::numeric) ASC
-        LIMIT 1
-      ` as Promise<StrikeMacroRow[]>)
+    ? withDbRetry(
+        () =>
+          db`
+            SELECT
+              strike,
+              (call_gamma_oi - put_gamma_oi) AS call_minus_put,
+              (call_gamma_ask - call_gamma_bid) AS call_ask_minus_bid,
+              (put_gamma_ask - put_gamma_bid) AS put_ask_minus_bid
+            FROM strike_exposures
+            WHERE ticker = ${rec.underlyingSymbol}
+              AND timestamp <= ${asOf.toISOString()}
+              AND timestamp >= ${asOf.toISOString()}::timestamptz - INTERVAL '30 minutes'
+              AND ABS(strike - ${rec.strike}::numeric) / NULLIF(${rec.strike}::numeric, 0) <= 0.01
+            ORDER BY timestamp DESC, ABS(strike - ${rec.strike}::numeric) ASC
+            LIMIT 1
+          ` as Promise<StrikeMacroRow[]>,
+        2,
+        10_000,
+      )
     : Promise.resolve<StrikeMacroRow[]>([]);
 
   const [flowRows, spotRows, strikeRows] = await Promise.all([

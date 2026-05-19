@@ -48,7 +48,7 @@
  * Environment: CRON_SECRET (no UW_API_KEY needed — DB-only).
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { metrics } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
@@ -103,12 +103,16 @@ async function enrichRow(row: PendingRow): Promise<EnrichOutcome> {
   const t30 = new Date(anchorMs + 30 * 60_000).toISOString();
   const anchorIso = anchor.toISOString();
 
-  const candles = (await sql`
-    SELECT timestamp, close
-    FROM etf_candles_1m
-    WHERE ticker = ${row.ticker}
-      AND timestamp IN (${anchorIso}, ${t5}, ${t15}, ${t30})
-  `) as CandleRow[];
+  const candles = (await withDbRetry(
+    () => sql`
+      SELECT timestamp, close
+      FROM etf_candles_1m
+      WHERE ticker = ${row.ticker}
+        AND timestamp IN (${anchorIso}, ${t5}, ${t15}, ${t30})
+    `,
+    2,
+    10_000,
+  )) as CandleRow[];
 
   // Index candles by their ISO timestamp for direct lookup.
   const byIso = new Map<string, number>();
@@ -135,15 +139,19 @@ async function enrichRow(row: PendingRow): Promise<EnrichOutcome> {
   // (9:30 → 16:00 ET) plus margin, while staying within the
   // (ticker, timestamp DESC) index range — etf_candles_1m has no
   // afterhours/futures bars so this can't bleed into the next day.
-  const eodCandles = (await sql`
-    SELECT close
-    FROM etf_candles_1m
-    WHERE ticker = ${row.ticker}
-      AND timestamp >= ${anchorIso}
-      AND timestamp <= ${anchorIso}::timestamptz + INTERVAL '7 hours'
-    ORDER BY timestamp DESC
-    LIMIT 1
-  `) as Array<{ close: string | number }>;
+  const eodCandles = (await withDbRetry(
+    () => sql`
+      SELECT close
+      FROM etf_candles_1m
+      WHERE ticker = ${row.ticker}
+        AND timestamp >= ${anchorIso}
+        AND timestamp <= ${anchorIso}::timestamptz + INTERVAL '7 hours'
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `,
+    2,
+    10_000,
+  )) as Array<{ close: string | number }>;
   const eodCloseRaw = eodCandles[0]?.close;
   const eodClose =
     eodCloseRaw != null ? Number.parseFloat(String(eodCloseRaw)) : null;
@@ -153,14 +161,18 @@ async function enrichRow(row: PendingRow): Promise<EnrichOutcome> {
   const r30 = forwardReturn(anchorClose, close30);
   const rEod = forwardReturn(anchorClose, eodClose);
 
-  await sql`
-    UPDATE vega_spike_events
-    SET fwd_return_5m = ${r5},
-        fwd_return_15m = ${r15},
-        fwd_return_30m = ${r30},
-        fwd_return_eod = ${rEod}
-    WHERE id = ${row.id}
-  `;
+  await withDbRetry(
+    () => sql`
+      UPDATE vega_spike_events
+      SET fwd_return_5m = ${r5},
+          fwd_return_15m = ${r15},
+          fwd_return_30m = ${r30},
+          fwd_return_eod = ${rEod}
+      WHERE id = ${row.id}
+    `,
+    2,
+    10_000,
+  );
 
   return { enriched: true, skippedNoAnchor: false };
 }
@@ -177,15 +189,19 @@ export default withCronInstrumentation(
     // and no older than 7 days (rows older than that with still-NULL
     // forward returns are treated as permanently unenrichable — see
     // the JSDoc above for rationale).
-    const pendingRaw = await sql`
-      SELECT id, ticker, timestamp
-      FROM vega_spike_events
-      WHERE fwd_return_30m IS NULL
-        AND timestamp <= NOW() - INTERVAL '30 minutes'
-        AND timestamp >= NOW() - INTERVAL '7 days'
-      ORDER BY timestamp ASC
-      LIMIT 100
-    `;
+    const pendingRaw = await withDbRetry(
+      () => sql`
+        SELECT id, ticker, timestamp
+        FROM vega_spike_events
+        WHERE fwd_return_30m IS NULL
+          AND timestamp <= NOW() - INTERVAL '30 minutes'
+          AND timestamp >= NOW() - INTERVAL '7 days'
+        ORDER BY timestamp ASC
+        LIMIT 100
+      `,
+      2,
+      10_000,
+    );
     const pending = pendingRaw as PendingRow[];
 
     let enriched = 0;

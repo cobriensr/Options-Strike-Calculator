@@ -17,7 +17,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import { uwFetch, checkDataQuality, withRetry } from '../_lib/api-helpers.js';
 import {
@@ -77,24 +77,28 @@ async function fetchByExpiry(apiKey: string): Promise<ExpiryRow[]> {
 
 async function storeAggregate(row: AggregateRow): Promise<boolean> {
   const sql = getDb();
-  const result = await sql`
-    INSERT INTO greek_exposure (
-      date, ticker, expiry, dte,
-      call_gamma, put_gamma, call_charm, put_charm,
-      call_delta, put_delta, call_vanna, put_vanna
-    )
-    VALUES (
-      ${row.date}, 'SPX', ${row.date}, -1,
-      ${row.call_gamma}, ${row.put_gamma},
-      ${row.call_charm}, ${row.put_charm},
-      ${row.call_delta}, ${row.put_delta},
-      ${row.call_vanna}, ${row.put_vanna}
-    )
-    ON CONFLICT (date, ticker, expiry, dte) DO UPDATE SET
-      call_gamma = EXCLUDED.call_gamma,
-      put_gamma = EXCLUDED.put_gamma
-    RETURNING id
-  `;
+  const result = await withDbRetry(
+    () => sql`
+      INSERT INTO greek_exposure (
+        date, ticker, expiry, dte,
+        call_gamma, put_gamma, call_charm, put_charm,
+        call_delta, put_delta, call_vanna, put_vanna
+      )
+      VALUES (
+        ${row.date}, 'SPX', ${row.date}, -1,
+        ${row.call_gamma}, ${row.put_gamma},
+        ${row.call_charm}, ${row.put_charm},
+        ${row.call_delta}, ${row.put_delta},
+        ${row.call_vanna}, ${row.put_vanna}
+      )
+      ON CONFLICT (date, ticker, expiry, dte) DO UPDATE SET
+        call_gamma = EXCLUDED.call_gamma,
+        put_gamma = EXCLUDED.put_gamma
+      RETURNING id
+    `,
+    2,
+    10_000,
+  );
   return result.length > 0;
 }
 
@@ -110,22 +114,26 @@ async function storeExpiryRows(
 
   for (const row of rows) {
     try {
-      const result = await sql`
-        INSERT INTO greek_exposure (
-          date, ticker, expiry, dte,
-          call_gamma, put_gamma, call_charm, put_charm,
-          call_delta, put_delta, call_vanna, put_vanna
-        )
-        VALUES (
-          ${row.date}, 'SPX', ${row.expiry}, ${row.dte},
-          ${row.call_gamma}, ${row.put_gamma},
-          ${row.call_charm}, ${row.put_charm},
-          ${row.call_delta}, ${row.put_delta},
-          ${row.call_vanna}, ${row.put_vanna}
-        )
-        ON CONFLICT (date, ticker, expiry, dte) DO NOTHING
-        RETURNING id
-      `;
+      const result = await withDbRetry(
+        () => sql`
+          INSERT INTO greek_exposure (
+            date, ticker, expiry, dte,
+            call_gamma, put_gamma, call_charm, put_charm,
+            call_delta, put_delta, call_vanna, put_vanna
+          )
+          VALUES (
+            ${row.date}, 'SPX', ${row.expiry}, ${row.dte},
+            ${row.call_gamma}, ${row.put_gamma},
+            ${row.call_charm}, ${row.put_charm},
+            ${row.call_delta}, ${row.put_delta},
+            ${row.call_vanna}, ${row.put_vanna}
+          )
+          ON CONFLICT (date, ticker, expiry, dte) DO NOTHING
+          RETURNING id
+        `,
+        2,
+        10_000,
+      );
       if (result.length > 0) stored++;
       else skipped++;
     } catch (err) {
@@ -208,15 +216,20 @@ export default withCronInstrumentation(
     );
 
     // Data quality check: alert if all gamma values are null/zero
-    const qcRows = await getDb()`
-      SELECT COUNT(*) AS total,
-             COUNT(*) FILTER (
-               WHERE (call_gamma::numeric IS NOT NULL AND call_gamma::numeric != 0)
-                  OR (put_gamma::numeric IS NOT NULL AND put_gamma::numeric != 0)
-             ) AS nonzero
-      FROM greek_exposure
-      WHERE date = ${today} AND ticker = 'SPX'
-    `;
+    const qcSql = getDb();
+    const qcRows = await withDbRetry(
+      () => qcSql`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (
+                 WHERE (call_gamma::numeric IS NOT NULL AND call_gamma::numeric != 0)
+                    OR (put_gamma::numeric IS NOT NULL AND put_gamma::numeric != 0)
+               ) AS nonzero
+        FROM greek_exposure
+        WHERE date = ${today} AND ticker = 'SPX'
+      `,
+      2,
+      10_000,
+    );
     const { total: qcTotal, nonzero: qcNonzero } = qcRows[0]!;
     await checkDataQuality({
       job: 'fetch-greek-exposure',

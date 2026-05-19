@@ -19,7 +19,7 @@
  */
 
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
@@ -84,17 +84,21 @@ async function storeRatioReading(
   const sql = getDb();
   const now = new Date().toISOString();
 
-  await sql`
-    INSERT INTO flow_ratio_monitor (
-      date, timestamp, abs_npp, abs_ncp, ratio, spx_price
-    )
-    VALUES (
-      ${today}, ${now},
-      ${reading.absNpp}, ${reading.absNcp}, ${reading.ratio},
-      ${reading.spxPrice}
-    )
-    ON CONFLICT (date, timestamp) DO NOTHING
-  `;
+  await withDbRetry(
+    () => sql`
+      INSERT INTO flow_ratio_monitor (
+        date, timestamp, abs_npp, abs_ncp, ratio, spx_price
+      )
+      VALUES (
+        ${today}, ${now},
+        ${reading.absNpp}, ${reading.absNcp}, ${reading.ratio},
+        ${reading.spxPrice}
+      )
+      ON CONFLICT (date, timestamp) DO NOTHING
+    `,
+    2,
+    10_000,
+  );
 }
 
 // ── ROC (1-min rate-of-change) detection ────────────────────
@@ -114,13 +118,17 @@ async function detectRatioROC(
 
   // Fetch the most recent prior tick, skipping the one we just inserted
   // (30-second offset prevents self-comparison on the freshly committed row).
-  const prev = await sql`
-    SELECT ratio, abs_npp, abs_ncp FROM flow_ratio_monitor
-    WHERE date = ${today}
-      AND ratio IS NOT NULL
-      AND timestamp < NOW() - make_interval(secs => 30)
-    ORDER BY timestamp DESC LIMIT 1
-  `;
+  const prev = await withDbRetry(
+    () => sql`
+      SELECT ratio, abs_npp, abs_ncp FROM flow_ratio_monitor
+      WHERE date = ${today}
+        AND ratio IS NOT NULL
+        AND timestamp < NOW() - make_interval(secs => 30)
+      ORDER BY timestamp DESC LIMIT 1
+    `,
+    2,
+    10_000,
+  );
 
   if (prev.length === 0) return null;
 
@@ -202,13 +210,17 @@ async function detectRatioSurge(
   const sql = getDb();
   const lookback = ALERT_THRESHOLDS.RATIO_LOOKBACK_MINUTES;
 
-  const prev = await sql`
-    SELECT ratio, abs_npp, abs_ncp FROM flow_ratio_monitor
-    WHERE date = ${today}
-      AND ratio IS NOT NULL
-      AND timestamp <= NOW() - make_interval(mins => ${lookback})
-    ORDER BY timestamp DESC LIMIT 1
-  `;
+  const prev = await withDbRetry(
+    () => sql`
+      SELECT ratio, abs_npp, abs_ncp FROM flow_ratio_monitor
+      WHERE date = ${today}
+        AND ratio IS NOT NULL
+        AND timestamp <= NOW() - make_interval(mins => ${lookback})
+      ORDER BY timestamp DESC LIMIT 1
+    `,
+    2,
+    10_000,
+  );
 
   if (prev.length === 0) return null;
 

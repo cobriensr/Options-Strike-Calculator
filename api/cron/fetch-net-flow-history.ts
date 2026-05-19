@@ -22,7 +22,7 @@ import {
   uwFetch,
   withRetry,
 } from '../_lib/api-helpers.js';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
   withCronInstrumentation,
@@ -133,35 +133,39 @@ async function storeRows(
   const pv = rows.map((r) => r.putVolume);
   const pva = rows.map((r) => r.putVolumeAsk);
   const pvb = rows.map((r) => r.putVolumeBid);
-  const result = (await sql`
-    INSERT INTO net_flow_per_ticker_history (
-      ticker, ts,
-      net_call_prem, net_call_vol,
-      net_put_prem, net_put_vol,
-      call_volume, call_volume_ask_side, call_volume_bid_side,
-      put_volume, put_volume_ask_side, put_volume_bid_side,
-      source
-    )
-    SELECT ${ticker}, t.ts::timestamptz,
-           t.ncp, t.ncv, t.npp, t.npv,
-           t.cv, t.cva, t.cvb, t.pv, t.pva, t.pvb,
-           ${SOURCE}
-    FROM unnest(
-      ${ts}::text[],
-      ${ncp}::numeric[],
-      ${ncv}::int[],
-      ${npp}::numeric[],
-      ${npv}::int[],
-      ${cv}::int[],
-      ${cva}::int[],
-      ${cvb}::int[],
-      ${pv}::int[],
-      ${pva}::int[],
-      ${pvb}::int[]
-    ) AS t(ts, ncp, ncv, npp, npv, cv, cva, cvb, pv, pva, pvb)
-    ON CONFLICT (ticker, ts, source) DO NOTHING
-    RETURNING id
-  `) as Array<{ id: number }>;
+  const result = (await withDbRetry(
+    () => sql`
+      INSERT INTO net_flow_per_ticker_history (
+        ticker, ts,
+        net_call_prem, net_call_vol,
+        net_put_prem, net_put_vol,
+        call_volume, call_volume_ask_side, call_volume_bid_side,
+        put_volume, put_volume_ask_side, put_volume_bid_side,
+        source
+      )
+      SELECT ${ticker}, t.ts::timestamptz,
+             t.ncp, t.ncv, t.npp, t.npv,
+             t.cv, t.cva, t.cvb, t.pv, t.pva, t.pvb,
+             ${SOURCE}
+      FROM unnest(
+        ${ts}::text[],
+        ${ncp}::numeric[],
+        ${ncv}::int[],
+        ${npp}::numeric[],
+        ${npv}::int[],
+        ${cv}::int[],
+        ${cva}::int[],
+        ${cvb}::int[],
+        ${pv}::int[],
+        ${pva}::int[],
+        ${pvb}::int[]
+      ) AS t(ts, ncp, ncv, npp, npv, cv, cva, cvb, pv, pva, pvb)
+      ON CONFLICT (ticker, ts, source) DO NOTHING
+      RETURNING id
+    `,
+    2,
+    10_000,
+  )) as Array<{ id: number }>;
   return result.length;
 }
 

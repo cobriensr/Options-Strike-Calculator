@@ -22,7 +22,7 @@
  * Environment: CRON_SECRET, UW_API_KEY
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
   withCronInstrumentation,
@@ -93,14 +93,18 @@ async function loadMatchedFlow(
   if (hit) return hit;
 
   const db = getDb();
-  const rows = (await db`
-    SELECT ts, net_call_prem AS "netCallPrem", net_put_prem AS "netPutPrem"
-    FROM net_flow_per_ticker_history
-    WHERE ticker = ${ticker}
-      AND ts >= ${`${date}T00:00:00Z`}::timestamptz
-      AND ts <  ${`${date}T00:00:00Z`}::timestamptz + INTERVAL '1 day'
-    ORDER BY ts ASC
-  `) as FlowRow[];
+  const rows = (await withDbRetry(
+    () => db`
+      SELECT ts, net_call_prem AS "netCallPrem", net_put_prem AS "netPutPrem"
+      FROM net_flow_per_ticker_history
+      WHERE ticker = ${ticker}
+        AND ts >= ${`${date}T00:00:00Z`}::timestamptz
+        AND ts <  ${`${date}T00:00:00Z`}::timestamptz + INTERVAL '1 day'
+      ORDER BY ts ASC
+    `,
+    2,
+    10_000,
+  )) as FlowRow[];
   const out: FlowMinute[] = rows
     .map((r) => {
       const raw =
@@ -119,22 +123,26 @@ export default withCronInstrumentation(
     const db = getDb();
     const { apiKey } = ctx;
 
-    const fires = (await db`
-      SELECT
-        id,
-        option_chain_id AS "optionChainId",
-        underlying_symbol AS "underlyingSymbol",
-        option_type AS "optionType",
-        date,
-        trigger_time_ct AS "triggerTimeCt",
-        entry_time_ct AS "entryTimeCt",
-        entry_price AS "entryPrice",
-        expiry
-      FROM lottery_finder_fires
-      WHERE enriched_at IS NULL
-      ORDER BY inserted_at ASC
-      LIMIT 1000
-    `) as UnenrichedFire[];
+    const fires = (await withDbRetry(
+      () => db`
+        SELECT
+          id,
+          option_chain_id AS "optionChainId",
+          underlying_symbol AS "underlyingSymbol",
+          option_type AS "optionType",
+          date,
+          trigger_time_ct AS "triggerTimeCt",
+          entry_time_ct AS "entryTimeCt",
+          entry_price AS "entryPrice",
+          expiry
+        FROM lottery_finder_fires
+        WHERE enriched_at IS NULL
+        ORDER BY inserted_at ASC
+        LIMIT 1000
+      `,
+      2,
+      10_000,
+    )) as UnenrichedFire[];
 
     if (fires.length === 0) {
       return { status: 'success', message: 'No unenriched fires' };
@@ -146,17 +154,21 @@ export default withCronInstrumentation(
     const flowCache = new Map<string, FlowMinute[]>();
 
     for (const fire of fires) {
-      const ticks = (await db`
-        SELECT
-          executed_at AS "executedAt",
-          price
-        FROM ws_option_trades
-        WHERE option_chain = ${fire.optionChainId}
-          AND executed_at >= ${fire.entryTimeCt}
-          AND canceled = FALSE
-          AND price > 0
-        ORDER BY executed_at ASC
-      `) as TradeTick[];
+      const ticks = (await withDbRetry(
+        () => db`
+          SELECT
+            executed_at AS "executedAt",
+            price
+          FROM ws_option_trades
+          WHERE option_chain = ${fire.optionChainId}
+            AND executed_at >= ${fire.entryTimeCt}
+            AND canceled = FALSE
+            AND price > 0
+          ORDER BY executed_at ASC
+        `,
+        2,
+        10_000,
+      )) as TradeTick[];
 
       if (ticks.length === 0) {
         skipped++;
@@ -215,19 +227,23 @@ export default withCronInstrumentation(
       }
       if (flowInversion != null) inversionFilled++;
 
-      await db`
-        UPDATE lottery_finder_fires
-        SET
-          realized_trail30_10_pct = ${trail30_10},
-          realized_hard30m_pct = ${hard30m},
-          realized_tier50_holdeod_pct = ${tier50},
-          realized_eod_pct = ${eod},
-          realized_flow_inversion_pct = ${flowInversion},
-          peak_ceiling_pct = ${peak},
-          minutes_to_peak = ${minToPeak},
-          enriched_at = NOW()
-        WHERE id = ${fire.id}
-      `;
+      await withDbRetry(
+        () => db`
+          UPDATE lottery_finder_fires
+          SET
+            realized_trail30_10_pct = ${trail30_10},
+            realized_hard30m_pct = ${hard30m},
+            realized_tier50_holdeod_pct = ${tier50},
+            realized_eod_pct = ${eod},
+            realized_flow_inversion_pct = ${flowInversion},
+            peak_ceiling_pct = ${peak},
+            minutes_to_peak = ${minToPeak},
+            enriched_at = NOW()
+          WHERE id = ${fire.id}
+        `,
+        2,
+        10_000,
+      );
 
       enriched++;
     }

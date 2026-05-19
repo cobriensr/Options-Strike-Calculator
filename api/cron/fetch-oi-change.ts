@@ -13,7 +13,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { uwFetch, checkDataQuality, withRetry } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
@@ -91,22 +91,26 @@ async function storeOiChanges(
     const prevTotalPremium =
       Number.parseFloat(String(row.prev_total_premium)) || null;
 
-    const result = await sql`
-      INSERT INTO oi_changes (
-        date, option_symbol, strike, is_call, oi_diff,
-        curr_oi, last_oi, avg_price,
-        prev_ask_volume, prev_bid_volume,
-        prev_multi_leg_volume, prev_total_premium
-      )
-      VALUES (
-        ${date}, ${row.option_symbol}, ${strike}, ${isCall},
-        ${oiDiff}, ${currOi}, ${lastOi}, ${avgPrice},
-        ${prevAskVolume}, ${prevBidVolume},
-        ${prevMultiLegVolume}, ${prevTotalPremium}
-      )
-      ON CONFLICT (date, option_symbol) DO NOTHING
-      RETURNING id
-    `;
+    const result = await withDbRetry(
+      () => sql`
+        INSERT INTO oi_changes (
+          date, option_symbol, strike, is_call, oi_diff,
+          curr_oi, last_oi, avg_price,
+          prev_ask_volume, prev_bid_volume,
+          prev_multi_leg_volume, prev_total_premium
+        )
+        VALUES (
+          ${date}, ${row.option_symbol}, ${strike}, ${isCall},
+          ${oiDiff}, ${currOi}, ${lastOi}, ${avgPrice},
+          ${prevAskVolume}, ${prevBidVolume},
+          ${prevMultiLegVolume}, ${prevTotalPremium}
+        )
+        ON CONFLICT (date, option_symbol) DO NOTHING
+        RETURNING id
+      `,
+      2,
+      10_000,
+    );
     if (result.length > 0) stored++;
     else skipped++;
   }
@@ -123,11 +127,15 @@ export default withCronInstrumentation(
 
     // Skip if data already exists for today
     const sql = getDb();
-    const existing = await sql`
-      SELECT COUNT(*)::int AS cnt
-      FROM oi_changes
-      WHERE date = ${today}
-    `;
+    const existing = await withDbRetry(
+      () => sql`
+        SELECT COUNT(*)::int AS cnt
+        FROM oi_changes
+        WHERE date = ${today}
+      `,
+      2,
+      10_000,
+    );
     const existingCount = (existing[0]?.cnt as number) ?? 0;
     if (existingCount > 0) {
       return {
@@ -145,12 +153,16 @@ export default withCronInstrumentation(
 
     // Data quality check: alert if all oi_diff values are zero
     if (result.stored > 10) {
-      const qcRows = await sql`
-        SELECT COUNT(*) AS total,
-               COUNT(*) FILTER (WHERE oi_diff != 0) AS nonzero
-        FROM oi_changes
-        WHERE date = ${today}
-      `;
+      const qcRows = await withDbRetry(
+        () => sql`
+          SELECT COUNT(*) AS total,
+                 COUNT(*) FILTER (WHERE oi_diff != 0) AS nonzero
+          FROM oi_changes
+          WHERE date = ${today}
+        `,
+        2,
+        10_000,
+      );
       const { total, nonzero } = qcRows[0]!;
       await checkDataQuality({
         job: 'fetch-oi-change',

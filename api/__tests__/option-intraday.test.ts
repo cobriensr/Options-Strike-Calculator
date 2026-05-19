@@ -6,7 +6,8 @@ const mockSql = vi.fn();
 const mockUwFetch = vi.fn();
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
+  getDb: vi.fn(() => mockSql),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 vi.mock('../_lib/uw-fetch.js', () => ({

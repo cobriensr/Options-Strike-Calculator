@@ -22,7 +22,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   uwFetch,
   cronJitter,
@@ -72,11 +72,15 @@ async function storeNewRows(
   if (rows.length === 0) return { stored: 0 };
 
   const sql = getDb();
-  const hwmRows = (await sql`
-    SELECT MAX(timestamp) AS max_ts
-    FROM spot_exposures
-    WHERE date = ${today} AND ticker = 'SPX'
-  `) as Array<{ max_ts: string | Date | null }>;
+  const hwmRows = (await withDbRetry(
+    () => sql`
+      SELECT MAX(timestamp) AS max_ts
+      FROM spot_exposures
+      WHERE date = ${today} AND ticker = 'SPX'
+    `,
+    2,
+    10_000,
+  )) as Array<{ max_ts: string | Date | null }>;
   const rawMax = hwmRows[0]?.max_ts ?? null;
   const hwmIso =
     rawMax === null
@@ -97,27 +101,31 @@ async function storeNewRows(
 
   for (const { row, tsIso } of toInsert) {
     const rowDate = getETDateStr(new Date(row.start_time ?? row.time));
-    await sql`
-      INSERT INTO spot_exposures (
-        date, timestamp, ticker, price,
-        gamma_oi, gamma_vol, gamma_dir,
-        charm_oi, charm_vol, charm_dir,
-        vanna_oi, vanna_vol, vanna_dir
-      )
-      VALUES (
-        ${rowDate}, ${tsIso}, 'SPX', ${row.price},
-        ${row.gamma_per_one_percent_move_oi},
-        ${row.gamma_per_one_percent_move_vol},
-        ${row.gamma_per_one_percent_move_dir},
-        ${row.charm_per_one_percent_move_oi},
-        ${row.charm_per_one_percent_move_vol},
-        ${row.charm_per_one_percent_move_dir},
-        ${row.vanna_per_one_percent_move_oi},
-        ${row.vanna_per_one_percent_move_vol},
-        ${row.vanna_per_one_percent_move_dir}
-      )
-      ON CONFLICT (date, timestamp, ticker) DO NOTHING
-    `;
+    await withDbRetry(
+      () => sql`
+        INSERT INTO spot_exposures (
+          date, timestamp, ticker, price,
+          gamma_oi, gamma_vol, gamma_dir,
+          charm_oi, charm_vol, charm_dir,
+          vanna_oi, vanna_vol, vanna_dir
+        )
+        VALUES (
+          ${rowDate}, ${tsIso}, 'SPX', ${row.price},
+          ${row.gamma_per_one_percent_move_oi},
+          ${row.gamma_per_one_percent_move_vol},
+          ${row.gamma_per_one_percent_move_dir},
+          ${row.charm_per_one_percent_move_oi},
+          ${row.charm_per_one_percent_move_vol},
+          ${row.charm_per_one_percent_move_dir},
+          ${row.vanna_per_one_percent_move_oi},
+          ${row.vanna_per_one_percent_move_vol},
+          ${row.vanna_per_one_percent_move_dir}
+        )
+        ON CONFLICT (date, timestamp, ticker) DO NOTHING
+      `,
+      2,
+      10_000,
+    );
   }
 
   return { stored: toInsert.length, timestamp: toInsert.at(-1)!.tsIso };
@@ -135,12 +143,17 @@ export default withCronInstrumentation(
     const result = await withRetry(() => storeNewRows(rows, today));
 
     // Data quality check: alert if all gamma_oi values are null/zero
-    const qcRows = await getDb()`
-      SELECT COUNT(*) AS total,
-             COUNT(*) FILTER (WHERE gamma_oi::numeric != 0) AS nonzero
-      FROM spot_exposures
-      WHERE date = ${today} AND ticker = 'SPX'
-    `;
+    const qcSql = getDb();
+    const qcRows = await withDbRetry(
+      () => qcSql`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE gamma_oi::numeric != 0) AS nonzero
+        FROM spot_exposures
+        WHERE date = ${today} AND ticker = 'SPX'
+      `,
+      2,
+      10_000,
+    );
     const { total, nonzero } = qcRows[0]!;
     await checkDataQuality({
       job: 'fetch-spot-gex',

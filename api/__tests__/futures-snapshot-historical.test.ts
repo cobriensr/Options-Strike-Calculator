@@ -12,7 +12,8 @@ import { mockRequest, mockResponse } from './helpers';
 const mockSql = vi.fn().mockResolvedValue([]);
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
+  getDb: vi.fn(() => mockSql),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 vi.mock('../_lib/sentry.js', () => ({

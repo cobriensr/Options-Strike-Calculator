@@ -18,7 +18,7 @@
  * Spec: docs/superpowers/specs/silent-boom-detector-2026-05-08.md
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   detectSilentBoomFires,
   SILENT_BOOM_SPEC_V1,
@@ -368,15 +368,19 @@ export default withCronInstrumentation(
     }
     const priorByChain = new Map<string, number>();
     if (eligibleChainIds.length > 0) {
-      const priorRows = (await db`
-        SELECT
-          option_chain_id,
-          EXTRACT(EPOCH FROM MAX(bucket_ct)) * 1000 AS last_ms
-        FROM silent_boom_alerts
-        WHERE option_chain_id = ANY(${eligibleChainIds}::text[])
-          AND bucket_ct >= NOW() - (${PRIOR_FIRE_LOOKBACK_MIN}::int * INTERVAL '1 minute')
-        GROUP BY option_chain_id
-      `) as { option_chain_id: string; last_ms: DbNullableNumeric }[];
+      const priorRows = (await withDbRetry(
+        () => db`
+          SELECT
+            option_chain_id,
+            EXTRACT(EPOCH FROM MAX(bucket_ct)) * 1000 AS last_ms
+          FROM silent_boom_alerts
+          WHERE option_chain_id = ANY(${eligibleChainIds}::text[])
+            AND bucket_ct >= NOW() - (${PRIOR_FIRE_LOOKBACK_MIN}::int * INTERVAL '1 minute')
+          GROUP BY option_chain_id
+        `,
+        2,
+        10_000,
+      )) as { option_chain_id: string; last_ms: DbNullableNumeric }[];
       for (const r of priorRows) {
         if (r.last_ms != null) {
           priorByChain.set(r.option_chain_id, Number(r.last_ms));
@@ -389,11 +393,15 @@ export default withCronInstrumentation(
     // INSERT still lands.
     const takeitCtx = await loadTakeitDetectContext('silentboom', {
       fetchRecentSameType: async (lookbackMin) => {
-        const rows = (await db`
-          SELECT bucket_ct AS fire_time, underlying_symbol, option_type
-          FROM silent_boom_alerts
-          WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-        `) as Array<{
+        const rows = (await withDbRetry(
+          () => db`
+            SELECT bucket_ct AS fire_time, underlying_symbol, option_type
+            FROM silent_boom_alerts
+            WHERE bucket_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+          `,
+          2,
+          10_000,
+        )) as Array<{
           fire_time: Date;
           underlying_symbol: string;
           option_type: 'C' | 'P';
@@ -404,15 +412,19 @@ export default withCronInstrumentation(
         // Pulls underlying_symbol + option_type too so the same row set powers
         // both the chain-keyed cofire map AND the sibling-chain (ticker+dir)
         // cofire map. One round-trip.
-        const rows = (await db`
-          SELECT
-            option_chain_id,
-            underlying_symbol,
-            option_type,
-            trigger_time_ct AS fire_time
-          FROM lottery_finder_fires
-          WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
-        `) as Array<{
+        const rows = (await withDbRetry(
+          () => db`
+            SELECT
+              option_chain_id,
+              underlying_symbol,
+              option_type,
+              trigger_time_ct AS fire_time
+            FROM lottery_finder_fires
+            WHERE trigger_time_ct >= NOW() - (${lookbackMin}::int * INTERVAL '1 minute')
+          `,
+          2,
+          10_000,
+        )) as Array<{
           option_chain_id: string;
           underlying_symbol: string;
           option_type: 'C' | 'P';
@@ -421,18 +433,22 @@ export default withCronInstrumentation(
         return rows as RecentCofireRow[];
       },
       fetchPriorSessionWinRateByTicker: async () => {
-        const rows = (await db`
-          SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
-          FROM (
-            SELECT underlying_symbol, date,
-                   AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
-            FROM silent_boom_alerts
-            WHERE peak_ceiling_pct IS NOT NULL
-              AND date < ${ctx.today}::date
-            GROUP BY underlying_symbol, date
-          ) per_day
-          GROUP BY underlying_symbol
-        `) as Array<{ underlying_symbol: string; win_rate: number | null }>;
+        const rows = (await withDbRetry(
+          () => db`
+            SELECT underlying_symbol, AVG(daily_rate)::float AS win_rate
+            FROM (
+              SELECT underlying_symbol, date,
+                     AVG((peak_ceiling_pct >= 20)::int::float) AS daily_rate
+              FROM silent_boom_alerts
+              WHERE peak_ceiling_pct IS NOT NULL
+                AND date < ${ctx.today}::date
+              GROUP BY underlying_symbol, date
+            ) per_day
+            GROUP BY underlying_symbol
+          `,
+          2,
+          10_000,
+        )) as Array<{ underlying_symbol: string; win_rate: number | null }>;
         return rows;
       },
     });
@@ -441,54 +457,70 @@ export default withCronInstrumentation(
     // mkt_tide_diff / zero_dte_diff / spx_spot_gamma_oi is the latest
     // tick at or before the bucket time within 30 min — same window
     // lottery uses. Single round-trip per source vs. a per-fire LATERAL.
-    const tideTicks = (await db`
-      SELECT
-        EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
-        ncp, npp
-      FROM flow_data
-      WHERE source = 'market_tide'
-        AND timestamp >= NOW() - (
-          (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
-        )
-      ORDER BY timestamp ASC
-    `) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+    const tideTicks = (await withDbRetry(
+      () => db`
+        SELECT
+          EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+          ncp, npp
+        FROM flow_data
+        WHERE source = 'market_tide'
+          AND timestamp >= NOW() - (
+            (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+          )
+        ORDER BY timestamp ASC
+      `,
+      2,
+      10_000,
+    )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
     // OTM variant of market_tide. Per the spec, the OTM data for
     // source='market_tide_otm' lives in the regular ncp/npp columns;
     // the otm_ncp/otm_npp columns on flow_data are vestigial and NULL
     // for this source. Same lookup window (30 min) as the all-in tide.
-    const tideOtmTicks = (await db`
-      SELECT
-        EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
-        ncp, npp
-      FROM flow_data
-      WHERE source = 'market_tide_otm'
-        AND timestamp >= NOW() - (
-          (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
-        )
-      ORDER BY timestamp ASC
-    `) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-    const zeroDteTicks = (await db`
-      SELECT
-        EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
-        ncp, npp
-      FROM flow_data
-      WHERE source = 'zero_dte_greek_flow'
-        AND timestamp >= NOW() - (
-          (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
-        )
-      ORDER BY timestamp ASC
-    `) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-    const spxGammaTicks = (await db`
-      SELECT
-        EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
-        gamma_oi
-      FROM spot_exposures
-      WHERE ticker = 'SPX'
-        AND timestamp >= NOW() - (
-          (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
-        )
-      ORDER BY timestamp ASC
-    `) as { ts_ms: DbNumeric; gamma_oi: DbNumeric }[];
+    const tideOtmTicks = (await withDbRetry(
+      () => db`
+        SELECT
+          EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+          ncp, npp
+        FROM flow_data
+        WHERE source = 'market_tide_otm'
+          AND timestamp >= NOW() - (
+            (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+          )
+        ORDER BY timestamp ASC
+      `,
+      2,
+      10_000,
+    )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+    const zeroDteTicks = (await withDbRetry(
+      () => db`
+        SELECT
+          EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+          ncp, npp
+        FROM flow_data
+        WHERE source = 'zero_dte_greek_flow'
+          AND timestamp >= NOW() - (
+            (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+          )
+        ORDER BY timestamp ASC
+      `,
+      2,
+      10_000,
+    )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+    const spxGammaTicks = (await withDbRetry(
+      () => db`
+        SELECT
+          EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+          gamma_oi
+        FROM spot_exposures
+        WHERE ticker = 'SPX'
+          AND timestamp >= NOW() - (
+            (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+          )
+        ORDER BY timestamp ASC
+      `,
+      2,
+      10_000,
+    )) as { ts_ms: DbNumeric; gamma_oi: DbNumeric }[];
 
     /** Generic "latest tick at or before targetMs within 30min" lookup.
      *  Sorted ascending; binary-search for the rightmost element with
@@ -626,18 +658,22 @@ export default withCronInstrumentation(
       // Postgres handles the CT-to-UTC conversion via AT TIME ZONE so
       // DST works without explicit math. Migration #169 added the
       // storage column.
-      const preTradeCountRows = (await db`
-          SELECT COUNT(*)::int AS cnt
-            FROM ws_option_trades
-           WHERE option_chain = ${g.optionChain}
-             AND canceled = FALSE
-             AND price > 0
-             AND executed_at >= (
-               (${ctx.today}::date + INTERVAL '8 hours 30 minutes')
-                 AT TIME ZONE 'America/Chicago'
-             )
-             AND executed_at < ${f.bucketTs.toISOString()}::timestamptz
-        `) as { cnt: number }[];
+      const preTradeCountRows = (await withDbRetry(
+        () => db`
+            SELECT COUNT(*)::int AS cnt
+              FROM ws_option_trades
+             WHERE option_chain = ${g.optionChain}
+               AND canceled = FALSE
+               AND price > 0
+               AND executed_at >= (
+                 (${ctx.today}::date + INTERVAL '8 hours 30 minutes')
+                   AT TIME ZONE 'America/Chicago'
+               )
+               AND executed_at < ${f.bucketTs.toISOString()}::timestamptz
+          `,
+        2,
+        10_000,
+      )) as { cnt: number }[];
       const preTradeCount = preTradeCountRows[0]?.cnt ?? 0;
 
       const score = computeSilentBoomScore({
@@ -751,38 +787,42 @@ export default withCronInstrumentation(
       const takeitFeaturesJson =
         takeitFeatures === null ? null : JSON.stringify(takeitFeatures);
 
-      const result = (await db`
-          INSERT INTO silent_boom_alerts (
-            date, bucket_ct, option_chain_id, underlying_symbol,
-            option_type, strike, expiry, dte,
-            spike_volume, baseline_volume, spike_ratio,
-            ask_pct, vol_oi, entry_price, open_interest,
-            score, score_tier, direction_gated,
-            mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
-            multi_leg_share, underlying_price_at_spike,
-            cum_ncp_at_fire, cum_npp_at_fire,
-            inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
-            takeit_prob, takeit_model_version, takeit_features,
-            gamma_at_trigger, pre_trade_count, adj_cofire,
-            first_min_share, spread_in_bucket
-          ) VALUES (
-            ${ctx.today}::date, ${f.bucketTs.toISOString()},
-            ${g.optionChain}, ${g.ticker},
-            ${g.optionType}, ${g.strike}, ${g.expiry}::date, ${dte},
-            ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
-            ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
-            ${score}, ${effectiveTier}, ${directionGated},
-            ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
-            ${f.multiLegShare}, ${f.underlyingPriceAtSpike},
-            ${cumNcpAtFire}, ${cumNppAtFire},
-            ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
-            ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
-            ${f.gammaAtSpike}, ${preTradeCount}, ${adjCofire},
-            ${f.firstMinShareAtSpike}, ${f.spreadInBucketAtSpike}
-          )
-          ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
-          RETURNING id
-        `) as { id: number }[];
+      const result = (await withDbRetry(
+        () => db`
+            INSERT INTO silent_boom_alerts (
+              date, bucket_ct, option_chain_id, underlying_symbol,
+              option_type, strike, expiry, dte,
+              spike_volume, baseline_volume, spike_ratio,
+              ask_pct, vol_oi, entry_price, open_interest,
+              score, score_tier, direction_gated,
+              mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff, spx_spot_gamma_oi,
+              multi_leg_share, underlying_price_at_spike,
+              cum_ncp_at_fire, cum_npp_at_fire,
+              inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
+              takeit_prob, takeit_model_version, takeit_features,
+              gamma_at_trigger, pre_trade_count, adj_cofire,
+              first_min_share, spread_in_bucket
+            ) VALUES (
+              ${ctx.today}::date, ${f.bucketTs.toISOString()},
+              ${g.optionChain}, ${g.ticker},
+              ${g.optionType}, ${g.strike}, ${g.expiry}::date, ${dte},
+              ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
+              ${f.askPct}, ${f.volOi}, ${f.entryPrice}, ${f.openInterest},
+              ${score}, ${effectiveTier}, ${directionGated},
+              ${mktTideDiff}, ${mktTideOtmDiff}, ${zeroDteDiff}, ${spxSpotGammaOi},
+              ${f.multiLegShare}, ${f.underlyingPriceAtSpike},
+              ${cumNcpAtFire}, ${cumNppAtFire},
+              ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
+              ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
+              ${f.gammaAtSpike}, ${preTradeCount}, ${adjCofire},
+              ${f.firstMinShareAtSpike}, ${f.spreadInBucketAtSpike}
+            )
+            ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
+            RETURNING id
+          `,
+        2,
+        10_000,
+      )) as { id: number }[];
       if (result.length > 0) inserted += 1;
     }
 

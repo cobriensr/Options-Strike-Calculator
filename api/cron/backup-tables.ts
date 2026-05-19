@@ -13,7 +13,7 @@
  */
 
 import { put, list, del } from '@vercel/blob';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronGuard } from '../_lib/api-helpers.js';
@@ -83,12 +83,16 @@ async function exportTable(
   let rowCount = 0;
   let offset = 0;
   while (true) {
-    const rows = (await sql`
-      SELECT * FROM ${sql.unsafe(tableName)}
-      ORDER BY 1
-      LIMIT ${EXPORT_CHUNK_ROWS}
-      OFFSET ${offset}
-    `) as Record<string, unknown>[];
+    const rows = (await withDbRetry(
+      () => sql`
+        SELECT * FROM ${sql.unsafe(tableName)}
+        ORDER BY 1
+        LIMIT ${EXPORT_CHUNK_ROWS}
+        OFFSET ${offset}
+      `,
+      2,
+      10_000,
+    )) as Record<string, unknown>[];
     if (rows.length === 0) break;
     for (const row of rows) {
       if (chunks.length > 0) chunks.push(NEWLINE);

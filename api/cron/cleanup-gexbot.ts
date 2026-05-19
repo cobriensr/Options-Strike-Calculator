@@ -22,7 +22,7 @@
  * Environment: CRON_SECRET only — no UW key, no GEXBot key.
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -53,11 +53,15 @@ async function cleanupOne(
 
   // Find the latest archive date for this table. If there isn't one,
   // there's nothing safe to delete — skip the table entirely.
-  const auditRows = (await sql`
-    SELECT MAX(archive_date) AS max_date
-    FROM gexbot_archive_audit
-    WHERE table_name = ${table}
-  `) as Array<{ max_date: string | Date | null }>;
+  const auditRows = (await withDbRetry(
+    () => sql`
+      SELECT MAX(archive_date) AS max_date
+      FROM gexbot_archive_audit
+      WHERE table_name = ${table}
+    `,
+    2,
+    10_000,
+  )) as Array<{ max_date: string | Date | null }>;
   const maxArchivedRaw = auditRows[0]?.max_date ?? null;
   if (maxArchivedRaw === null) {
     return {
@@ -83,9 +87,13 @@ async function cleanupOne(
   // interpret `today` as local time then mutate UTC, which mis-aligns
   // by a day between 00:00–05:00 ET. Cap at maxArchived so a missed
   // archive day never prematurely deletes its unarchived rows.
-  const yesterdayRows = (await sql`
-    SELECT (${today}::date - INTERVAL '1 day')::date AS yesterday_et
-  `) as Array<{ yesterday_et: string | Date }>;
+  const yesterdayRows = (await withDbRetry(
+    () => sql`
+      SELECT (${today}::date - INTERVAL '1 day')::date AS yesterday_et
+    `,
+    2,
+    10_000,
+  )) as Array<{ yesterday_et: string | Date }>;
   const yesterdayRaw = yesterdayRows[0]?.yesterday_et;
   const yesterdayStr =
     yesterdayRaw instanceof Date
@@ -102,26 +110,34 @@ async function cleanupOne(
     // before cutoff+1, i.e. everything on or before cutoff.
     const result =
       table === 'gexbot_snapshots'
-        ? ((await sql`
-            WITH batch AS (
-              SELECT id FROM gexbot_snapshots
-              WHERE captured_at < (${cutoff}::date + 1)::timestamptz
-              LIMIT ${BATCH_SIZE}
-            )
-            DELETE FROM gexbot_snapshots
-            WHERE id IN (SELECT id FROM batch)
-            RETURNING id
-          `) as Array<{ id: number }>)
-        : ((await sql`
-            WITH batch AS (
-              SELECT id FROM gexbot_api_capture
-              WHERE captured_at < (${cutoff}::date + 1)::timestamptz
-              LIMIT ${BATCH_SIZE}
-            )
-            DELETE FROM gexbot_api_capture
-            WHERE id IN (SELECT id FROM batch)
-            RETURNING id
-          `) as Array<{ id: number }>);
+        ? ((await withDbRetry(
+            () => sql`
+              WITH batch AS (
+                SELECT id FROM gexbot_snapshots
+                WHERE captured_at < (${cutoff}::date + 1)::timestamptz
+                LIMIT ${BATCH_SIZE}
+              )
+              DELETE FROM gexbot_snapshots
+              WHERE id IN (SELECT id FROM batch)
+              RETURNING id
+            `,
+            2,
+            10_000,
+          )) as Array<{ id: number }>)
+        : ((await withDbRetry(
+            () => sql`
+              WITH batch AS (
+                SELECT id FROM gexbot_api_capture
+                WHERE captured_at < (${cutoff}::date + 1)::timestamptz
+                LIMIT ${BATCH_SIZE}
+              )
+              DELETE FROM gexbot_api_capture
+              WHERE id IN (SELECT id FROM batch)
+              RETURNING id
+            `,
+            2,
+            10_000,
+          )) as Array<{ id: number }>);
 
     const deleted = result.length;
     totalDeleted += deleted;

@@ -11,7 +11,7 @@
  * Environment: CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { cronGuard, withRetry } from '../_lib/api-helpers.js';
@@ -87,20 +87,24 @@ export default withCronCheckin('fetch-futures-snapshot', async (req, res) => {
     // Upsert each snapshot
     const ts = now.toISOString();
     for (const snap of snapshots) {
-      await sql`
-        INSERT INTO futures_snapshots (
-          trade_date, ts, symbol, price,
-          change_1h_pct, change_day_pct, volume_ratio
-        ) VALUES (
-          ${tradeDate}, ${ts}, ${snap.symbol}, ${snap.price},
-          ${snap.change1hPct}, ${snap.changeDayPct}, ${snap.volumeRatio}
-        )
-        ON CONFLICT (symbol, ts) DO UPDATE SET
-          price = EXCLUDED.price,
-          change_1h_pct = EXCLUDED.change_1h_pct,
-          change_day_pct = EXCLUDED.change_day_pct,
-          volume_ratio = EXCLUDED.volume_ratio
-      `;
+      await withDbRetry(
+        () => sql`
+          INSERT INTO futures_snapshots (
+            trade_date, ts, symbol, price,
+            change_1h_pct, change_day_pct, volume_ratio
+          ) VALUES (
+            ${tradeDate}, ${ts}, ${snap.symbol}, ${snap.price},
+            ${snap.change1hPct}, ${snap.changeDayPct}, ${snap.volumeRatio}
+          )
+          ON CONFLICT (symbol, ts) DO UPDATE SET
+            price = EXCLUDED.price,
+            change_1h_pct = EXCLUDED.change_1h_pct,
+            change_day_pct = EXCLUDED.change_day_pct,
+            volume_ratio = EXCLUDED.volume_ratio
+        `,
+        2,
+        10_000,
+      );
     }
 
     if (snapshots.length === 0 && errors.length > 0) {

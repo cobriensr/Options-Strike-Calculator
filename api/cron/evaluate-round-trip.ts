@@ -25,7 +25,7 @@
  * per-DTE slice).
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -107,19 +107,23 @@ export default withCronInstrumentation(
     // `INTERVAL '$1 minutes'` and Postgres parses the placeholder inside
     // the literal as raw text (silent failure). Same pattern as
     // detect-silent-boom.ts:248 and detect-lottery-fires.ts:179.
-    const eligible = (await db`
-      SELECT 'lottery'::text AS source, id, option_chain_id, trigger_time_ct AS fire_time, dte
-        FROM lottery_finder_fires
-       WHERE round_trip_net_pct IS NULL
-         AND trigger_time_ct <= NOW() - (${LOOKBACK_MIN_FLOOR}::int * INTERVAL '1 minute')
-         AND trigger_time_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
-      UNION ALL
-      SELECT 'silent_boom'::text AS source, id, option_chain_id, bucket_ct AS fire_time, dte
-        FROM silent_boom_alerts
-       WHERE round_trip_net_pct IS NULL
-         AND bucket_ct <= NOW() - (${LOOKBACK_MIN_FLOOR}::int * INTERVAL '1 minute')
-         AND bucket_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
-    `) as EligibleAlert[];
+    const eligible = (await withDbRetry(
+      () => db`
+        SELECT 'lottery'::text AS source, id, option_chain_id, trigger_time_ct AS fire_time, dte
+          FROM lottery_finder_fires
+         WHERE round_trip_net_pct IS NULL
+           AND trigger_time_ct <= NOW() - (${LOOKBACK_MIN_FLOOR}::int * INTERVAL '1 minute')
+           AND trigger_time_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
+        UNION ALL
+        SELECT 'silent_boom'::text AS source, id, option_chain_id, bucket_ct AS fire_time, dte
+          FROM silent_boom_alerts
+         WHERE round_trip_net_pct IS NULL
+           AND bucket_ct <= NOW() - (${LOOKBACK_MIN_FLOOR}::int * INTERVAL '1 minute')
+           AND bucket_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
+      `,
+      2,
+      10_000,
+    )) as EligibleAlert[];
 
     if (eligible.length === 0) {
       ctx.logger.info('evaluate-round-trip: no eligible alerts in window');
@@ -141,30 +145,34 @@ export default withCronInstrumentation(
     );
     const dtes = eligible.map((a) => a.dte);
 
-    const aggRows = (await db`
-      SELECT t.id, t.source, t.dte::int AS dte,
-             COALESCE(f.ask_size, 0)::int   AS ask_size,
-             COALESCE(f.bid_size, 0)::int   AS bid_size,
-             COALESCE(f.total_size, 0)::int AS total_size
-        FROM unnest(
-               ${ids}::int[],
-               ${sources}::text[],
-               ${chains}::text[],
-               ${fires}::timestamptz[],
-               ${dtes}::int[]
-             ) AS t(id, source, chain, fire_time, dte)
-   LEFT JOIN LATERAL (
-               SELECT
-                 SUM(size) FILTER (WHERE side = 'ask') AS ask_size,
-                 SUM(size) FILTER (WHERE side = 'bid') AS bid_size,
-                 SUM(size)                              AS total_size
-                 FROM ws_option_trades
-                WHERE option_chain = t.chain
-                  AND executed_at > t.fire_time
-                  AND executed_at <= t.fire_time + (${WINDOW_MIN}::int * INTERVAL '1 minute')
-                  AND NOT canceled
-             ) f ON TRUE
-    `) as AggRow[];
+    const aggRows = (await withDbRetry(
+      () => db`
+        SELECT t.id, t.source, t.dte::int AS dte,
+               COALESCE(f.ask_size, 0)::int   AS ask_size,
+               COALESCE(f.bid_size, 0)::int   AS bid_size,
+               COALESCE(f.total_size, 0)::int AS total_size
+          FROM unnest(
+                 ${ids}::int[],
+                 ${sources}::text[],
+                 ${chains}::text[],
+                 ${fires}::timestamptz[],
+                 ${dtes}::int[]
+               ) AS t(id, source, chain, fire_time, dte)
+     LEFT JOIN LATERAL (
+                 SELECT
+                   SUM(size) FILTER (WHERE side = 'ask') AS ask_size,
+                   SUM(size) FILTER (WHERE side = 'bid') AS bid_size,
+                   SUM(size)                              AS total_size
+                   FROM ws_option_trades
+                  WHERE option_chain = t.chain
+                    AND executed_at > t.fire_time
+                    AND executed_at <= t.fire_time + (${WINDOW_MIN}::int * INTERVAL '1 minute')
+                    AND NOT canceled
+               ) f ON TRUE
+      `,
+      2,
+      10_000,
+    )) as AggRow[];
 
     let evaluated = 0;
     let noFlow = 0;
@@ -209,29 +217,37 @@ export default withCronInstrumentation(
       const lotIds = lotUpdates.map((u) => u.id);
       const lotNet = lotUpdates.map((u) => u.netPct);
       const lotDed = lotUpdates.map((u) => u.deduct);
-      await db`
-        UPDATE lottery_finder_fires AS l
-           SET round_trip_net_pct      = u.net_pct,
-               round_trip_score_deduct = u.deduct
-          FROM unnest(${lotIds}::int[], ${lotNet}::numeric[], ${lotDed}::smallint[])
-                 AS u(id, net_pct, deduct)
-         WHERE l.id = u.id
-           AND l.round_trip_net_pct IS NULL
-      `;
+      await withDbRetry(
+        () => db`
+          UPDATE lottery_finder_fires AS l
+             SET round_trip_net_pct      = u.net_pct,
+                 round_trip_score_deduct = u.deduct
+            FROM unnest(${lotIds}::int[], ${lotNet}::numeric[], ${lotDed}::smallint[])
+                   AS u(id, net_pct, deduct)
+           WHERE l.id = u.id
+             AND l.round_trip_net_pct IS NULL
+        `,
+        2,
+        10_000,
+      );
     }
     if (sbUpdates.length > 0) {
       const sbIds = sbUpdates.map((u) => u.id);
       const sbNet = sbUpdates.map((u) => u.netPct);
       const sbDed = sbUpdates.map((u) => u.deduct);
-      await db`
-        UPDATE silent_boom_alerts AS s
-           SET round_trip_net_pct      = u.net_pct,
-               round_trip_score_deduct = u.deduct
-          FROM unnest(${sbIds}::int[], ${sbNet}::numeric[], ${sbDed}::smallint[])
-                 AS u(id, net_pct, deduct)
-         WHERE s.id = u.id
-           AND s.round_trip_net_pct IS NULL
-      `;
+      await withDbRetry(
+        () => db`
+          UPDATE silent_boom_alerts AS s
+             SET round_trip_net_pct      = u.net_pct,
+                 round_trip_score_deduct = u.deduct
+            FROM unnest(${sbIds}::int[], ${sbNet}::numeric[], ${sbDed}::smallint[])
+                   AS u(id, net_pct, deduct)
+           WHERE s.id = u.id
+             AND s.round_trip_net_pct IS NULL
+        `,
+        2,
+        10_000,
+      );
     }
 
     ctx.logger.info(

@@ -41,7 +41,7 @@
  */
 
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
@@ -325,23 +325,31 @@ async function anchorIndexPrice(
 ): Promise<void> {
   const sql = getDb();
   if (symbol === 'SPX') {
-    await sql`
-      UPDATE index_candles_1m
-      SET spx_schwab_price = ${indexPrice}
-      WHERE symbol = 'SPX'
-        AND date = ${today}
-        AND timestamp = ${currentMinuteTs}
-        AND spx_schwab_price IS NULL
-    `;
+    await withDbRetry(
+      () => sql`
+        UPDATE index_candles_1m
+        SET spx_schwab_price = ${indexPrice}
+        WHERE symbol = 'SPX'
+          AND date = ${today}
+          AND timestamp = ${currentMinuteTs}
+          AND spx_schwab_price IS NULL
+      `,
+      2,
+      10_000,
+    );
   } else {
-    await sql`
-      UPDATE index_candles_1m
-      SET ndx_schwab_price = ${indexPrice}
-      WHERE symbol = 'NDX'
-        AND date = ${today}
-        AND timestamp = ${currentMinuteTs}
-        AND ndx_schwab_price IS NULL
-    `;
+    await withDbRetry(
+      () => sql`
+        UPDATE index_candles_1m
+        SET ndx_schwab_price = ${indexPrice}
+        WHERE symbol = 'NDX'
+          AND date = ${today}
+          AND timestamp = ${currentMinuteTs}
+          AND ndx_schwab_price IS NULL
+      `,
+      2,
+      10_000,
+    );
   }
 }
 
@@ -412,13 +420,18 @@ async function processIndex(
 
   // Data quality check
   if (result.stored > 10) {
-    const qcRows = await getDb()`
-      SELECT COUNT(*) AS total,
-             COUNT(*) FILTER (WHERE volume > 0) AS nonzero
-      FROM index_candles_1m
-      WHERE symbol = ${symbol}
-        AND date = ${today}
-    `;
+    const qcSql = getDb();
+    const qcRows = await withDbRetry(
+      () => qcSql`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE volume > 0) AS nonzero
+        FROM index_candles_1m
+        WHERE symbol = ${symbol}
+          AND date = ${today}
+      `,
+      2,
+      10_000,
+    );
     const { total, nonzero } = qcRows[0]!;
     await checkDataQuality({
       job: 'fetch-spx-candles-1m',

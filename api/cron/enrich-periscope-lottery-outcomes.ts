@@ -28,7 +28,7 @@
  * Spec: docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -70,15 +70,19 @@ export default withCronInstrumentation(
     // Only enrich fires where the hold window has FULLY elapsed. The
     // call horizon is 120m and the put horizon is 180m; running at
     // 20:30 UTC ensures every fire from this morning is settled.
-    const unenriched = (await sql`
-      SELECT id, fire_type, fire_time, expiry::text AS expiry,
-             trade_strike, entry_px
-      FROM periscope_lottery_fires
-      WHERE outcome_locked = FALSE
-        AND entry_px IS NOT NULL
-      ORDER BY fire_time ASC
-      LIMIT 500
-    `) as UnenrichedFire[];
+    const unenriched = (await withDbRetry(
+      () => sql`
+        SELECT id, fire_type, fire_time, expiry::text AS expiry,
+               trade_strike, entry_px
+        FROM periscope_lottery_fires
+        WHERE outcome_locked = FALSE
+          AND entry_px IS NOT NULL
+        ORDER BY fire_time ASC
+        LIMIT 500
+      `,
+      2,
+      10_000,
+    )) as UnenrichedFire[];
 
     if (unenriched.length === 0) {
       return {
@@ -106,35 +110,43 @@ export default withCronInstrumentation(
       const closeCutoff = eodCtForTrigger(fireTime);
 
       // All trades in the hold window
-      const holdTrades = (await sql`
-        SELECT executed_at, price::numeric AS price
-        FROM ws_option_trades
-        WHERE ticker = 'SPXW'
-          AND expiry = ${f.expiry}
-          AND strike = ${f.trade_strike}
-          AND option_type = ${optionType}
-          AND executed_at >= ${fireTime}
-          AND executed_at <= ${horizonEnd}
-          AND canceled = FALSE
-          AND price > 0
-        ORDER BY executed_at ASC
-      `) as TradeRow[];
+      const holdTrades = (await withDbRetry(
+        () => sql`
+          SELECT executed_at, price::numeric AS price
+          FROM ws_option_trades
+          WHERE ticker = 'SPXW'
+            AND expiry = ${f.expiry}
+            AND strike = ${f.trade_strike}
+            AND option_type = ${optionType}
+            AND executed_at >= ${fireTime}
+            AND executed_at <= ${horizonEnd}
+            AND canceled = FALSE
+            AND price > 0
+          ORDER BY executed_at ASC
+        `,
+        2,
+        10_000,
+      )) as TradeRow[];
 
       // EOD trades at or before 20:00 UTC on the fire's date
-      const eodTrades = (await sql`
-        SELECT price::numeric AS price
-        FROM ws_option_trades
-        WHERE ticker = 'SPXW'
-          AND expiry = ${f.expiry}
-          AND strike = ${f.trade_strike}
-          AND option_type = ${optionType}
-          AND executed_at >= ${fireTime}
-          AND executed_at <= ${closeCutoff}
-          AND canceled = FALSE
-          AND price > 0
-        ORDER BY executed_at DESC
-        LIMIT 1
-      `) as { price: DbNumeric }[];
+      const eodTrades = (await withDbRetry(
+        () => sql`
+          SELECT price::numeric AS price
+          FROM ws_option_trades
+          WHERE ticker = 'SPXW'
+            AND expiry = ${f.expiry}
+            AND strike = ${f.trade_strike}
+            AND option_type = ${optionType}
+            AND executed_at >= ${fireTime}
+            AND executed_at <= ${closeCutoff}
+            AND canceled = FALSE
+            AND price > 0
+          ORDER BY executed_at DESC
+          LIMIT 1
+        `,
+        2,
+        10_000,
+      )) as { price: DbNumeric }[];
 
       // Compute peak metrics. If no trades observed, leave outcome NULL
       // but still lock the row (the option died with no print — realized
@@ -168,17 +180,21 @@ export default withCronInstrumentation(
           ? (eodClosePx - entryPx) / entryPx
           : -1; // No EOD print = expired OTM
 
-      await sql`
-        UPDATE periscope_lottery_fires SET
-          peak_px = ${peakPx},
-          peak_pct = ${peakPct},
-          peak_time = ${peakTime ? peakTime.toISOString() : null},
-          eod_close_px = ${eodClosePx},
-          realized_r_peak = ${realizedRPeak},
-          realized_r_eod = ${realizedREod},
-          outcome_locked = TRUE
-        WHERE id = ${f.id}
-      `;
+      await withDbRetry(
+        () => sql`
+          UPDATE periscope_lottery_fires SET
+            peak_px = ${peakPx},
+            peak_pct = ${peakPct},
+            peak_time = ${peakTime ? peakTime.toISOString() : null},
+            eod_close_px = ${eodClosePx},
+            realized_r_peak = ${realizedRPeak},
+            realized_r_eod = ${realizedREod},
+            outcome_locked = TRUE
+          WHERE id = ${f.id}
+        `,
+        2,
+        10_000,
+      );
       updated += 1;
     }
 

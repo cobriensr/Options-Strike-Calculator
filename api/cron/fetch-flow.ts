@@ -10,7 +10,7 @@
  * Environment: UW_API_KEY, CRON_SECRET (for Vercel cron auth)
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import { uwFetch, withRetry, checkDataQuality } from '../_lib/api-helpers.js';
 import {
@@ -90,18 +90,22 @@ async function storeLatestCandle(
   const latest = rows.at(-1)!;
   const sql = getDb();
 
-  await sql`
-    INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-    VALUES (
-      ${latest.date},
-      ${latest.timestamp},
-      ${source},
-      ${latest.net_call_premium},
-      ${latest.net_put_premium},
-      ${latest.net_volume}
-    )
-    ON CONFLICT (date, timestamp, source) DO NOTHING
-  `;
+  await withDbRetry(
+    () => sql`
+      INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+      VALUES (
+        ${latest.date},
+        ${latest.timestamp},
+        ${source},
+        ${latest.net_call_premium},
+        ${latest.net_put_premium},
+        ${latest.net_volume}
+      )
+      ON CONFLICT (date, timestamp, source) DO NOTHING
+    `,
+    2,
+    10_000,
+  );
 
   return { stored: true, timestamp: latest.timestamp };
 }

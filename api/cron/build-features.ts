@@ -19,7 +19,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
@@ -96,18 +96,22 @@ async function buildFeaturesForDate(
   // Prefer the earliest entry that has spx_open populated (many early/
   // pre-market snapshots store NaN before cash open). Fall back to the
   // absolute earliest if no snapshot has spx_open.
-  const snapshots = await sql`
-    SELECT vix, vix1d, vix9d, vvix, vix1d_vix_ratio, vix_vix9d_ratio,
-           regime_zone, cluster_mult, dow_mult_hl, dow_label,
-           spx_open, sigma, hours_remaining,
-           ic_ceiling, put_spread_ceiling, call_spread_ceiling,
-           opening_range_signal, opening_range_pct_consumed, is_event_day
-    FROM market_snapshots
-    WHERE date = ${dateStr}
-    ORDER BY (spx_open IS NULL OR spx_open = 'NaN') ASC,
-             entry_time ASC
-    LIMIT 1
-  `;
+  const snapshots = await withDbRetry(
+    () => sql`
+      SELECT vix, vix1d, vix9d, vvix, vix1d_vix_ratio, vix_vix9d_ratio,
+             regime_zone, cluster_mult, dow_mult_hl, dow_label,
+             spx_open, sigma, hours_remaining,
+             ic_ceiling, put_spread_ceiling, call_spread_ceiling,
+             opening_range_signal, opening_range_pct_consumed, is_event_day
+      FROM market_snapshots
+      WHERE date = ${dateStr}
+      ORDER BY (spx_open IS NULL OR spx_open = 'NaN') ASC,
+               entry_time ASC
+      LIMIT 1
+    `,
+    2,
+    10_000,
+  );
 
   if (snapshots.length > 0) {
     const s = snapshots[0] as SnapshotRow;
@@ -134,9 +138,13 @@ async function buildFeaturesForDate(
 
   // Fall back to outcomes.day_open if snapshots didn't provide spx_open
   if (features.spx_open == null) {
-    const fallback = await sql`
-      SELECT day_open FROM outcomes WHERE date = ${dateStr} LIMIT 1
-    `;
+    const fallback = await withDbRetry(
+      () => sql`
+        SELECT day_open FROM outcomes WHERE date = ${dateStr} LIMIT 1
+      `,
+      2,
+      10_000,
+    );
     if (fallback.length > 0 && fallback[0]!.day_open != null) {
       features.spx_open = num(fallback[0]!.day_open);
     }
@@ -163,13 +171,17 @@ async function buildFeaturesForDate(
   await engineerMonitorFeatures(sql, dateStr, features);
 
   // 11. NOPE features: SPY hedging-pressure checkpoints + AM aggregates
-  const nopeRows = (await sql`
-    SELECT timestamp, nope, call_delta, put_delta
-    FROM nope_ticks
-    WHERE ticker = 'SPY'
-      AND (timestamp AT TIME ZONE 'America/New_York')::date = ${dateStr}
-    ORDER BY timestamp ASC
-  `) as NopeTickRow[];
+  const nopeRows = (await withDbRetry(
+    () => sql`
+      SELECT timestamp, nope, call_delta, put_delta
+      FROM nope_ticks
+      WHERE ticker = 'SPY'
+        AND (timestamp AT TIME ZONE 'America/New_York')::date = ${dateStr}
+      ORDER BY timestamp ASC
+    `,
+    2,
+    10_000,
+  )) as NopeTickRow[];
   Object.assign(features, engineerNopeFeatures(nopeRows, dateStr));
 
   features.feature_completeness = computeCompleteness(features);
@@ -200,20 +212,24 @@ const wrappedCron = withCronInstrumentation(
     // Single-date and current-day runs use the tighter timeout; only blanket
     // backfill needs the long one.
     if (backfill && dateParam == null) {
-      await sql`SET statement_timeout = '120000'`; // 120s per statement for backfill
+      await withDbRetry(() => sql`SET statement_timeout = '120000'`, 2, 10_000); // 120s per statement for backfill
     } else {
-      await sql`SET statement_timeout = '30000'`; // 30s per statement
+      await withDbRetry(() => sql`SET statement_timeout = '30000'`, 2, 10_000); // 30s per statement
     }
 
     // Diagnostic: log flow_data coverage for today before doing any work
     const today = ctx.today;
-    const coverage = await sql`
-      SELECT source, COUNT(*) as rows
-      FROM flow_data
-      WHERE date = ${today}
-      GROUP BY source
-      ORDER BY source
-    `;
+    const coverage = await withDbRetry(
+      () => sql`
+        SELECT source, COUNT(*) as rows
+        FROM flow_data
+        WHERE date = ${today}
+        GROUP BY source
+        ORDER BY source
+      `,
+      2,
+      10_000,
+    );
     log.info({ date: today, sources: coverage }, 'flow_data coverage');
 
     // Determine which dates to process
@@ -226,20 +242,31 @@ const wrappedCron = withCronInstrumentation(
       log.info({ date: dateParam }, 'build-features: single-date mode');
     } else if (backfill) {
       // Process all historical dates with flow data
-      const rows = await sql`
-        SELECT DISTINCT date FROM flow_data ORDER BY date ASC
-      `;
+      const rows = await withDbRetry(
+        () => sql`
+          SELECT DISTINCT date FROM flow_data ORDER BY date ASC
+        `,
+        2,
+        10_000,
+      );
       dates = rows.map((r) => toDateStr(r.date));
     } else {
       // Check if table is empty (first run = automatic backfill)
-      const countResult =
-        await sql`SELECT COUNT(*) AS cnt FROM training_features`;
+      const countResult = await withDbRetry(
+        () => sql`SELECT COUNT(*) AS cnt FROM training_features`,
+        2,
+        10_000,
+      );
       const count = Number(countResult[0]!.cnt);
 
       if (count === 0) {
-        const rows = await sql`
-          SELECT DISTINCT date FROM flow_data ORDER BY date ASC
-        `;
+        const rows = await withDbRetry(
+          () => sql`
+            SELECT DISTINCT date FROM flow_data ORDER BY date ASC
+          `,
+          2,
+          10_000,
+        );
         dates = rows.map((r) => toDateStr(r.date));
         log.info(
           { dates: dates.length },

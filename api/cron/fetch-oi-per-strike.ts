@@ -12,7 +12,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { uwFetch, checkDataQuality, withRetry } from '../_lib/api-helpers.js';
@@ -57,12 +57,16 @@ async function storeStrikes(
     const strike = Number.parseFloat(String(row.strike));
 
     try {
-      const result = await sql`
-        INSERT INTO oi_per_strike (date, strike, call_oi, put_oi)
-        VALUES (${date}, ${strike}, ${callOi}, ${putOi})
-        ON CONFLICT (date, strike) DO NOTHING
-        RETURNING id
-      `;
+      const result = await withDbRetry(
+        () => sql`
+          INSERT INTO oi_per_strike (date, strike, call_oi, put_oi)
+          VALUES (${date}, ${strike}, ${callOi}, ${putOi})
+          ON CONFLICT (date, strike) DO NOTHING
+          RETURNING id
+        `,
+        2,
+        10_000,
+      );
       if (result.length > 0) stored++;
       else skipped++;
     } catch (err) {
@@ -87,9 +91,13 @@ export default withCronInstrumentation(
 
     // Skip if data already exists for today
     const sql = getDb();
-    const existing = await sql`
-      SELECT COUNT(*)::int AS cnt FROM oi_per_strike WHERE date = ${today}
-    `;
+    const existing = await withDbRetry(
+      () => sql`
+        SELECT COUNT(*)::int AS cnt FROM oi_per_strike WHERE date = ${today}
+      `,
+      2,
+      10_000,
+    );
     const existingCount = (existing[0]?.cnt as number) ?? 0;
     if (existingCount > 0) {
       return {
@@ -107,12 +115,16 @@ export default withCronInstrumentation(
 
     // Data quality check: alert if all OI values are zero
     if (result.stored > 10) {
-      const qcRows = await sql`
-        SELECT COUNT(*) AS total,
-               COUNT(*) FILTER (WHERE call_oi != 0 OR put_oi != 0) AS nonzero
-        FROM oi_per_strike
-        WHERE date = ${today}
-      `;
+      const qcRows = await withDbRetry(
+        () => sql`
+          SELECT COUNT(*) AS total,
+                 COUNT(*) FILTER (WHERE call_oi != 0 OR put_oi != 0) AS nonzero
+          FROM oi_per_strike
+          WHERE date = ${today}
+        `,
+        2,
+        10_000,
+      );
       const { total, nonzero } = qcRows[0]!;
       await checkDataQuality({
         job: 'fetch-oi-per-strike',

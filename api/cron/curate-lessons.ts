@@ -11,7 +11,7 @@
 
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import Anthropic from '@anthropic-ai/sdk';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
   upsertReport,
@@ -122,35 +122,47 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
 
     // Step 1: Query current active lesson count (for unchanged calculation)
     const sql = getDb();
-    await sql`SET statement_timeout = '60000'`; // 60s per statement (longer due to complex lesson queries)
-    const activeCountRows = await sql`
-      SELECT COUNT(*)::int AS count FROM lessons WHERE status = 'active'
-    `;
+    await withDbRetry(() => sql`SET statement_timeout = '60000'`, 2, 10_000); // 60s per statement (longer due to complex lesson queries)
+    const activeCountRows = await withDbRetry(
+      () => sql`
+        SELECT COUNT(*)::int AS count FROM lessons WHERE status = 'active'
+      `,
+      2,
+      10_000,
+    );
     const activeCountBefore = (activeCountRows[0]?.count as number) ?? 0;
 
     // Step 2: Query unprocessed reviews
     // ?backfill=true skips the 7-day window and processes ALL historical reviews
     const backfill = req.query.backfill === 'true';
     const reviews = backfill
-      ? await sql`
-          SELECT a.id, a.date, a.full_response, a.snapshot_id, a.spx, a.vix, a.vix1d,
-                 a.structure, a.confidence
-          FROM analyses a
-          LEFT JOIN lessons l ON l.source_analysis_id = a.id
-          WHERE a.mode = 'review'
-            AND l.id IS NULL
-          ORDER BY a.date ASC
-        `
-      : await sql`
-          SELECT a.id, a.date, a.full_response, a.snapshot_id, a.spx, a.vix, a.vix1d,
-                 a.structure, a.confidence
-          FROM analyses a
-          LEFT JOIN lessons l ON l.source_analysis_id = a.id
-          WHERE a.mode = 'review'
-            AND a.date >= CURRENT_DATE - INTERVAL '7 days'
-            AND l.id IS NULL
-          ORDER BY a.date ASC
-        `;
+      ? await withDbRetry(
+          () => sql`
+            SELECT a.id, a.date, a.full_response, a.snapshot_id, a.spx, a.vix, a.vix1d,
+                   a.structure, a.confidence
+            FROM analyses a
+            LEFT JOIN lessons l ON l.source_analysis_id = a.id
+            WHERE a.mode = 'review'
+              AND l.id IS NULL
+            ORDER BY a.date ASC
+          `,
+          2,
+          10_000,
+        )
+      : await withDbRetry(
+          () => sql`
+            SELECT a.id, a.date, a.full_response, a.snapshot_id, a.spx, a.vix, a.vix1d,
+                   a.structure, a.confidence
+            FROM analyses a
+            LEFT JOIN lessons l ON l.source_analysis_id = a.id
+            WHERE a.mode = 'review'
+              AND a.date >= CURRENT_DATE - INTERVAL '7 days'
+              AND l.id IS NULL
+            ORDER BY a.date ASC
+          `,
+          2,
+          10_000,
+        );
 
     // Step 3: No reviews — update report and return
     if (reviews.length === 0) {
@@ -220,10 +232,14 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
       // Fetch snapshot for market conditions
       let snapshotRow: Record<string, unknown> | null = null;
       if (review.snapshot_id != null) {
-        const snapRows = await sql`
-          SELECT vix, vix1d, regime_zone, dow_label, vix_term_signal
-          FROM market_snapshots WHERE id = ${review.snapshot_id}
-        `;
+        const snapRows = await withDbRetry(
+          () => sql`
+            SELECT vix, vix1d, regime_zone, dow_label, vix_term_signal
+            FROM market_snapshots WHERE id = ${review.snapshot_id}
+          `,
+          2,
+          10_000,
+        );
         snapshotRow =
           snapRows.length > 0 ? (snapRows[0] as Record<string, unknown>) : null;
       }
@@ -361,7 +377,11 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
           }[] = [];
 
           for (const lesson of writeActions) {
-            const seqRows = await sql`SELECT nextval('lessons_id_seq') AS id`;
+            const seqRows = await withDbRetry(
+              () => sql`SELECT nextval('lessons_id_seq') AS id`,
+              2,
+              10_000,
+            );
             const newId = Number(seqRows[0]!.id);
 
             let oldText: string | undefined;
@@ -369,9 +389,13 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
               lesson.decision.action === 'supersede' &&
               lesson.decision.supersedes_id != null
             ) {
-              const oldRows = await sql`
-                SELECT text FROM lessons WHERE id = ${lesson.decision.supersedes_id}
-              `;
+              const oldRows = await withDbRetry(
+                () => sql`
+                  SELECT text FROM lessons WHERE id = ${lesson.decision.supersedes_id}
+                `,
+                2,
+                10_000,
+              );
               oldText = oldRows.length > 0 ? String(oldRows[0]!.text) : '';
             }
 

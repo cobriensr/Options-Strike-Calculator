@@ -19,7 +19,7 @@
  *   - DB write failures bubble up; cron-instrumentation logs + 500.
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -86,24 +86,32 @@ async function fillForAlertType(alertType: AlertType): Promise<{
   // are skipped on purpose.
   const rows =
     alertType === 'lottery'
-      ? ((await db`
-          SELECT id, takeit_features
-          FROM lottery_finder_fires
-          WHERE takeit_prob IS NOT NULL
-            AND takeit_features IS NOT NULL
-            AND takeit_top_features IS NULL
-          ORDER BY id DESC
-          LIMIT ${BATCH_SIZE}
-        `) as FillCandidateRow[])
-      : ((await db`
-          SELECT id, takeit_features
-          FROM silent_boom_alerts
-          WHERE takeit_prob IS NOT NULL
-            AND takeit_features IS NOT NULL
-            AND takeit_top_features IS NULL
-          ORDER BY id DESC
-          LIMIT ${BATCH_SIZE}
-        `) as FillCandidateRow[]);
+      ? ((await withDbRetry(
+          () => db`
+            SELECT id, takeit_features
+            FROM lottery_finder_fires
+            WHERE takeit_prob IS NOT NULL
+              AND takeit_features IS NOT NULL
+              AND takeit_top_features IS NULL
+            ORDER BY id DESC
+            LIMIT ${BATCH_SIZE}
+          `,
+          2,
+          10_000,
+        )) as FillCandidateRow[])
+      : ((await withDbRetry(
+          () => db`
+            SELECT id, takeit_features
+            FROM silent_boom_alerts
+            WHERE takeit_prob IS NOT NULL
+              AND takeit_features IS NOT NULL
+              AND takeit_top_features IS NULL
+            ORDER BY id DESC
+            LIMIT ${BATCH_SIZE}
+          `,
+          2,
+          10_000,
+        )) as FillCandidateRow[]);
 
   if (rows.length === 0) {
     return { scanned: 0, updated: 0, failed: 0 };
@@ -172,17 +180,25 @@ async function fillForAlertType(alertType: AlertType): Promise<{
       negative: result.top_negative,
     };
     if (alertType === 'lottery') {
-      await db`
-        UPDATE lottery_finder_fires
-        SET takeit_top_features = ${JSON.stringify(topFeatures)}::jsonb
-        WHERE id = ${result.alert_id}
-      `;
+      await withDbRetry(
+        () => db`
+          UPDATE lottery_finder_fires
+          SET takeit_top_features = ${JSON.stringify(topFeatures)}::jsonb
+          WHERE id = ${result.alert_id}
+        `,
+        2,
+        10_000,
+      );
     } else {
-      await db`
-        UPDATE silent_boom_alerts
-        SET takeit_top_features = ${JSON.stringify(topFeatures)}::jsonb
-        WHERE id = ${result.alert_id}
-      `;
+      await withDbRetry(
+        () => db`
+          UPDATE silent_boom_alerts
+          SET takeit_top_features = ${JSON.stringify(topFeatures)}::jsonb
+          WHERE id = ${result.alert_id}
+        `,
+        2,
+        10_000,
+      );
     }
     updated += 1;
   }

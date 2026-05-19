@@ -38,7 +38,7 @@
  */
 
 import { cronJitter, uwFetch, withRetry } from '../_lib/api-helpers.js';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { computeDerived, type UwFlowAlert } from '../_lib/flow-alert-derive.js';
 import {
   withCronInstrumentation,
@@ -114,9 +114,13 @@ export default withCronInstrumentation(
     const db = getDb();
 
     // 1. Scope to records newer than our last-seen timestamp.
-    const rows = await db`
-      SELECT MAX(created_at) AS max_created_at FROM flow_alerts
-    `;
+    const rows = await withDbRetry(
+      () => db`
+        SELECT MAX(created_at) AS max_created_at FROM flow_alerts
+      `,
+      2,
+      10_000,
+    );
     const maxCreatedAt =
       (rows[0]?.max_created_at as string | Date | null | undefined) ?? null;
     const newerThan =
@@ -141,31 +145,35 @@ export default withCronInstrumentation(
     let inserted = 0;
     for (const a of alerts) {
       const d = computeDerived(a);
-      const result = await db`
-        INSERT INTO flow_alerts (
-          alert_rule, ticker, issue_type, option_chain, strike, expiry, type,
-          created_at, price, underlying_price,
-          total_premium, total_ask_side_prem, total_bid_side_prem,
-          total_size, trade_count, expiry_count, volume, open_interest, volume_oi_ratio,
-          has_sweep, has_floor, has_multileg, has_singleleg, all_opening_trades,
-          ask_side_ratio, bid_side_ratio, net_premium,
-          dte_at_alert, distance_from_spot, distance_pct, moneyness, is_itm,
-          minute_of_day, session_elapsed_min, day_of_week,
-          raw_response
-        ) VALUES (
-          ${a.alert_rule}, ${a.ticker}, ${a.issue_type}, ${a.option_chain}, ${a.strike}, ${a.expiry}, ${a.type},
-          ${a.created_at}, ${a.price}, ${a.underlying_price},
-          ${a.total_premium}, ${a.total_ask_side_prem}, ${a.total_bid_side_prem},
-          ${a.total_size}, ${a.trade_count}, ${a.expiry_count}, ${a.volume}, ${a.open_interest}, ${a.volume_oi_ratio},
-          ${a.has_sweep}, ${a.has_floor}, ${a.has_multileg}, ${a.has_singleleg}, ${a.all_opening_trades},
-          ${d.ask_side_ratio}, ${d.bid_side_ratio}, ${d.net_premium},
-          ${d.dte_at_alert}, ${d.distance_from_spot}, ${d.distance_pct}, ${d.moneyness}, ${d.is_itm},
-          ${d.minute_of_day}, ${d.session_elapsed_min}, ${d.day_of_week},
-          ${JSON.stringify(a)}::jsonb
-        )
-        ON CONFLICT (option_chain, created_at) DO NOTHING
-        RETURNING id
-      `;
+      const result = await withDbRetry(
+        () => db`
+          INSERT INTO flow_alerts (
+            alert_rule, ticker, issue_type, option_chain, strike, expiry, type,
+            created_at, price, underlying_price,
+            total_premium, total_ask_side_prem, total_bid_side_prem,
+            total_size, trade_count, expiry_count, volume, open_interest, volume_oi_ratio,
+            has_sweep, has_floor, has_multileg, has_singleleg, all_opening_trades,
+            ask_side_ratio, bid_side_ratio, net_premium,
+            dte_at_alert, distance_from_spot, distance_pct, moneyness, is_itm,
+            minute_of_day, session_elapsed_min, day_of_week,
+            raw_response
+          ) VALUES (
+            ${a.alert_rule}, ${a.ticker}, ${a.issue_type}, ${a.option_chain}, ${a.strike}, ${a.expiry}, ${a.type},
+            ${a.created_at}, ${a.price}, ${a.underlying_price},
+            ${a.total_premium}, ${a.total_ask_side_prem}, ${a.total_bid_side_prem},
+            ${a.total_size}, ${a.trade_count}, ${a.expiry_count}, ${a.volume}, ${a.open_interest}, ${a.volume_oi_ratio},
+            ${a.has_sweep}, ${a.has_floor}, ${a.has_multileg}, ${a.has_singleleg}, ${a.all_opening_trades},
+            ${d.ask_side_ratio}, ${d.bid_side_ratio}, ${d.net_premium},
+            ${d.dte_at_alert}, ${d.distance_from_spot}, ${d.distance_pct}, ${d.moneyness}, ${d.is_itm},
+            ${d.minute_of_day}, ${d.session_elapsed_min}, ${d.day_of_week},
+            ${JSON.stringify(a)}::jsonb
+          )
+          ON CONFLICT (option_chain, created_at) DO NOTHING
+          RETURNING id
+        `,
+        2,
+        10_000,
+      );
       if (result.length > 0) inserted++;
     }
 

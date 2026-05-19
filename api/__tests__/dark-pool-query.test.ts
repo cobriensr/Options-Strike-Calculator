@@ -3,7 +3,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(),
+  getDb: vi.fn(),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 import { getDb } from '../_lib/db.js';

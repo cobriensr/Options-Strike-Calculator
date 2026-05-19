@@ -26,7 +26,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
@@ -94,20 +94,24 @@ async function storeLatest(
       // ncp = total_delta_flow, npp = dir_delta_flow, net_volume = volume.
       // otm_ncp = otm_total_delta_flow, otm_npp = otm_dir_delta_flow
       // (wings-only variants that better represent directional conviction).
-      const result = await sql`
-        INSERT INTO flow_data (
-          date, timestamp, source,
-          ncp, npp, net_volume,
-          otm_ncp, otm_npp
-        )
-        VALUES (
-          ${today}, ${ts}, ${SOURCE},
-          ${tick.total_delta_flow}, ${tick.dir_delta_flow}, ${tick.volume},
-          ${tick.otm_total_delta_flow}, ${tick.otm_dir_delta_flow}
-        )
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `;
+      const result = await withDbRetry(
+        () => sql`
+          INSERT INTO flow_data (
+            date, timestamp, source,
+            ncp, npp, net_volume,
+            otm_ncp, otm_npp
+          )
+          VALUES (
+            ${today}, ${ts}, ${SOURCE},
+            ${tick.total_delta_flow}, ${tick.dir_delta_flow}, ${tick.volume},
+            ${tick.otm_total_delta_flow}, ${tick.otm_dir_delta_flow}
+          )
+          ON CONFLICT (date, timestamp, source) DO NOTHING
+          RETURNING id
+        `,
+        2,
+        10_000,
+      );
       if (result.length > 0) stored++;
       else skipped++;
     } catch (err) {

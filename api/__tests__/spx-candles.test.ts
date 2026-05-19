@@ -4,7 +4,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock db before importing the module under test
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(),
+  getDb: vi.fn(),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+
 }));
 
 vi.mock('../_lib/logger.js', () => ({
