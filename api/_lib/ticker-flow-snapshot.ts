@@ -15,6 +15,7 @@
  */
 
 import type { getDb } from './db.js';
+import { withDbRetry } from './db.js';
 import { ctSessionBounds } from '../../src/components/LotteryFinder/ct-window.js';
 
 export interface TickerFlowSnapshot {
@@ -56,28 +57,32 @@ export async function snapshotTickerFlowAtFire(
 ): Promise<TickerFlowSnapshot> {
   const session = ctSessionBounds(date);
   const fireIso = fireTs.toISOString();
-  const rows = (await db`
-    SELECT
-      SUM(net_call_prem) AS cum_ncp,
-      SUM(net_put_prem)  AS cum_npp
-    FROM (
-      SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
+  const rows = (await withDbRetry(
+    () => db`
+      SELECT
+        SUM(net_call_prem) AS cum_ncp,
+        SUM(net_put_prem)  AS cum_npp
       FROM (
-        SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-        FROM ws_net_flow_per_ticker
-        WHERE ticker = ${ticker}
-          AND ts >= ${session.min}::timestamptz
-          AND ts <= ${fireIso}::timestamptz
-        UNION ALL
-        SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-        FROM net_flow_per_ticker_history
-        WHERE ticker = ${ticker}
-          AND ts >= ${session.min}::timestamptz
-          AND ts <= ${fireIso}::timestamptz
-      ) combined
-      ORDER BY ts, priority
-    ) unified
-  `) as { cum_ncp: DbNumeric; cum_npp: DbNumeric }[];
+        SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
+        FROM (
+          SELECT ts, net_call_prem, net_put_prem, 1 AS priority
+          FROM ws_net_flow_per_ticker
+          WHERE ticker = ${ticker}
+            AND ts >= ${session.min}::timestamptz
+            AND ts <= ${fireIso}::timestamptz
+          UNION ALL
+          SELECT ts, net_call_prem, net_put_prem, 2 AS priority
+          FROM net_flow_per_ticker_history
+          WHERE ticker = ${ticker}
+            AND ts >= ${session.min}::timestamptz
+            AND ts <= ${fireIso}::timestamptz
+        ) combined
+        ORDER BY ts, priority
+      ) unified
+    `,
+    2,
+    10_000,
+  )) as { cum_ncp: DbNumeric; cum_npp: DbNumeric }[];
   const row = rows[0];
   return {
     cumNcp: row ? num(row.cum_ncp) : null,
@@ -100,32 +105,36 @@ export async function fetchTickerFlowSeries(
   date: string,
 ): Promise<TickerFlowSeries> {
   const session = ctSessionBounds(date);
-  const rows = (await db`
-    WITH unified AS (
-      SELECT DISTINCT ON (ts)
-        ts, net_call_prem, net_put_prem
-      FROM (
-        SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-        FROM ws_net_flow_per_ticker
-        WHERE ticker = ${ticker}
-          AND ts >= ${session.min}::timestamptz
-          AND ts <= ${session.max}::timestamptz
-        UNION ALL
-        SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-        FROM net_flow_per_ticker_history
-        WHERE ticker = ${ticker}
-          AND ts >= ${session.min}::timestamptz
-          AND ts <= ${session.max}::timestamptz
-      ) combined
-      ORDER BY ts, priority
-    )
-    SELECT
-      ts,
-      SUM(net_call_prem) OVER (ORDER BY ts) AS cum_ncp,
-      SUM(net_put_prem)  OVER (ORDER BY ts) AS cum_npp
-    FROM unified
-    ORDER BY ts
-  `) as { ts: DbTimestamp; cum_ncp: DbNumeric; cum_npp: DbNumeric }[];
+  const rows = (await withDbRetry(
+    () => db`
+      WITH unified AS (
+        SELECT DISTINCT ON (ts)
+          ts, net_call_prem, net_put_prem
+        FROM (
+          SELECT ts, net_call_prem, net_put_prem, 1 AS priority
+          FROM ws_net_flow_per_ticker
+          WHERE ticker = ${ticker}
+            AND ts >= ${session.min}::timestamptz
+            AND ts <= ${session.max}::timestamptz
+          UNION ALL
+          SELECT ts, net_call_prem, net_put_prem, 2 AS priority
+          FROM net_flow_per_ticker_history
+          WHERE ticker = ${ticker}
+            AND ts >= ${session.min}::timestamptz
+            AND ts <= ${session.max}::timestamptz
+        ) combined
+        ORDER BY ts, priority
+      )
+      SELECT
+        ts,
+        SUM(net_call_prem) OVER (ORDER BY ts) AS cum_ncp,
+        SUM(net_put_prem)  OVER (ORDER BY ts) AS cum_npp
+      FROM unified
+      ORDER BY ts
+    `,
+    2,
+    10_000,
+  )) as { ts: DbTimestamp; cum_ncp: DbNumeric; cum_npp: DbNumeric }[];
 
   const n = rows.length;
   const tsArr = new Array<number>(n);

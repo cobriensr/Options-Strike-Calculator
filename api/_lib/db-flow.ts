@@ -5,7 +5,7 @@
  * plus formatting functions for Claude's context.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 import type { InternalSymbol } from '../../src/types/market-internals.js';
 
 // ============================================================
@@ -37,18 +37,26 @@ export async function getFlowData(
 > {
   const sql = getDb();
   const rows = asOf
-    ? await sql`
-        SELECT timestamp, ncp, npp, net_volume, otm_ncp, otm_npp
-        FROM flow_data
-        WHERE date = ${date} AND source = ${source} AND timestamp <= ${asOf}
-        ORDER BY timestamp ASC
-      `
-    : await sql`
-        SELECT timestamp, ncp, npp, net_volume, otm_ncp, otm_npp
-        FROM flow_data
-        WHERE date = ${date} AND source = ${source}
-        ORDER BY timestamp ASC
-      `;
+    ? await withDbRetry(
+        () => sql`
+          SELECT timestamp, ncp, npp, net_volume, otm_ncp, otm_npp
+          FROM flow_data
+          WHERE date = ${date} AND source = ${source} AND timestamp <= ${asOf}
+          ORDER BY timestamp ASC
+        `,
+        2,
+        10_000,
+      )
+    : await withDbRetry(
+        () => sql`
+          SELECT timestamp, ncp, npp, net_volume, otm_ncp, otm_npp
+          FROM flow_data
+          WHERE date = ${date} AND source = ${source}
+          ORDER BY timestamp ASC
+        `,
+        2,
+        10_000,
+      );
 
   return rows.map((r) => ({
     timestamp: r.timestamp as string,
@@ -175,13 +183,17 @@ export async function getGreekExposure(
   ticker: string = 'SPX',
 ): Promise<GreekExposureRow[]> {
   const db = getDb();
-  const rows = await db`
-    SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm,
-           call_delta, put_delta, call_vanna, put_vanna
-    FROM greek_exposure
-    WHERE date = ${date} AND ticker = ${ticker}
-    ORDER BY dte ASC
-  `;
+  const rows = await withDbRetry(
+    () => db`
+      SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm,
+             call_delta, put_delta, call_vanna, put_vanna
+      FROM greek_exposure
+      WHERE date = ${date} AND ticker = ${ticker}
+      ORDER BY dte ASC
+    `,
+    2,
+    10_000,
+  );
 
   return rows.map((r) => {
     const cg = r.call_gamma != null ? Number(r.call_gamma) : null;
@@ -324,12 +336,16 @@ export async function getMarketInternalsToday(date: string): Promise<
   }>
 > {
   const sql = getDb();
-  const rows = await sql`
-    SELECT ts, symbol, open, high, low, close
-    FROM market_internals
-    WHERE ts::date = ${date}::date
-    ORDER BY ts ASC
-  `;
+  const rows = await withDbRetry(
+    () => sql`
+      SELECT ts, symbol, open, high, low, close
+      FROM market_internals
+      WHERE ts::date = ${date}::date
+      ORDER BY ts ASC
+    `,
+    2,
+    10_000,
+  );
 
   return rows.map((r) => ({
     ts: r.ts as string,
@@ -368,24 +384,32 @@ export async function getSpotExposures(
 ): Promise<SpotExposureRow[]> {
   const db = getDb();
   const rows = asOf
-    ? await db`
-        SELECT timestamp, price,
-               gamma_oi, gamma_vol, gamma_dir,
-               charm_oi, charm_vol, charm_dir,
-               vanna_oi, vanna_vol, vanna_dir
-        FROM spot_exposures
-        WHERE date = ${date} AND ticker = ${ticker} AND timestamp <= ${asOf}
-        ORDER BY timestamp ASC
-      `
-    : await db`
-        SELECT timestamp, price,
-               gamma_oi, gamma_vol, gamma_dir,
-               charm_oi, charm_vol, charm_dir,
-               vanna_oi, vanna_vol, vanna_dir
-        FROM spot_exposures
-        WHERE date = ${date} AND ticker = ${ticker}
-        ORDER BY timestamp ASC
-      `;
+    ? await withDbRetry(
+        () => db`
+          SELECT timestamp, price,
+                 gamma_oi, gamma_vol, gamma_dir,
+                 charm_oi, charm_vol, charm_dir,
+                 vanna_oi, vanna_vol, vanna_dir
+          FROM spot_exposures
+          WHERE date = ${date} AND ticker = ${ticker} AND timestamp <= ${asOf}
+          ORDER BY timestamp ASC
+        `,
+        2,
+        10_000,
+      )
+    : await withDbRetry(
+        () => db`
+          SELECT timestamp, price,
+                 gamma_oi, gamma_vol, gamma_dir,
+                 charm_oi, charm_vol, charm_dir,
+                 vanna_oi, vanna_vol, vanna_dir
+          FROM spot_exposures
+          WHERE date = ${date} AND ticker = ${ticker}
+          ORDER BY timestamp ASC
+        `,
+        2,
+        10_000,
+      );
 
   return rows.map((r) => ({
     timestamp: r.timestamp as string,

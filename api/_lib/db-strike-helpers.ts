@@ -1,6 +1,6 @@
 // ── Per-Strike Greek Exposure (0DTE naive gamma/charm profile) ──
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 
 // Re-export Claude-facing formatters from their new home
 // (api/_lib/db-strike-formatters.ts). Kept here as a barrel so existing
@@ -93,33 +93,45 @@ export async function getStrikeExposures(
 
   // Find the latest timestamp for this date (optionally capped by asOf)
   const tsRows = asOf
-    ? await db`
-        SELECT MAX(timestamp) as latest_ts
-        FROM strike_exposures
-        WHERE date = ${date} AND ticker = ${ticker}
-          AND expiry != ${ALL_EXPIRY_SENTINEL}
-          AND timestamp <= ${asOf}
-      `
-    : await db`
-        SELECT MAX(timestamp) as latest_ts
-        FROM strike_exposures
-        WHERE date = ${date} AND ticker = ${ticker} AND expiry != ${ALL_EXPIRY_SENTINEL}
-      `;
+    ? await withDbRetry(
+        () => db`
+          SELECT MAX(timestamp) as latest_ts
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = ${ticker}
+            AND expiry != ${ALL_EXPIRY_SENTINEL}
+            AND timestamp <= ${asOf}
+        `,
+        2,
+        10_000,
+      )
+    : await withDbRetry(
+        () => db`
+          SELECT MAX(timestamp) as latest_ts
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = ${ticker} AND expiry != ${ALL_EXPIRY_SENTINEL}
+        `,
+        2,
+        10_000,
+      );
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
 
-  const rows = await db`
-    SELECT strike, price, timestamp,
-           call_gamma_oi, put_gamma_oi,
-           call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
-           call_charm_oi, put_charm_oi,
-           call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
-           call_delta_oi, put_delta_oi,
-           call_vanna_oi, put_vanna_oi
-    FROM strike_exposures
-    WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs} AND expiry != ${ALL_EXPIRY_SENTINEL}
-    ORDER BY strike ASC
-  `;
+  const rows = await withDbRetry(
+    () => db`
+      SELECT strike, price, timestamp,
+             call_gamma_oi, put_gamma_oi,
+             call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+             call_charm_oi, put_charm_oi,
+             call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+             call_delta_oi, put_delta_oi,
+             call_vanna_oi, put_vanna_oi
+      FROM strike_exposures
+      WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs} AND expiry != ${ALL_EXPIRY_SENTINEL}
+      ORDER BY strike ASC
+    `,
+    2,
+    10_000,
+  );
 
   return rows.map(mapStrikeRow);
 }
@@ -139,51 +151,67 @@ export async function getStrikeExposuresByExpiry(
   // Find the latest timestamp for this date + expiry filter
   const tsRows =
     expiryMode === '0dte'
-      ? await db`
-          SELECT MAX(timestamp) as latest_ts
-          FROM strike_exposures
-          WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${date}
-        `
-      : await db`
-          SELECT MAX(timestamp) as latest_ts
-          FROM strike_exposures
-          WHERE date = ${date} AND ticker = ${ticker}
-            AND expiry > ${date}
-            AND expiry <= (${date}::date + INTERVAL '3 days')::date
-        `;
+      ? await withDbRetry(
+          () => db`
+            SELECT MAX(timestamp) as latest_ts
+            FROM strike_exposures
+            WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${date}
+          `,
+          2,
+          10_000,
+        )
+      : await withDbRetry(
+          () => db`
+            SELECT MAX(timestamp) as latest_ts
+            FROM strike_exposures
+            WHERE date = ${date} AND ticker = ${ticker}
+              AND expiry > ${date}
+              AND expiry <= (${date}::date + INTERVAL '3 days')::date
+          `,
+          2,
+          10_000,
+        );
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
 
   const rows =
     expiryMode === '0dte'
-      ? await db`
-          SELECT strike, price, timestamp,
-                 call_gamma_oi, put_gamma_oi,
-                 call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
-                 call_charm_oi, put_charm_oi,
-                 call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
-                 call_delta_oi, put_delta_oi,
-                 call_vanna_oi, put_vanna_oi
-          FROM strike_exposures
-          WHERE date = ${date} AND ticker = ${ticker}
-            AND timestamp = ${latestTs} AND expiry = ${date}
-          ORDER BY strike ASC
-        `
-      : await db`
-          SELECT strike, price, timestamp,
-                 call_gamma_oi, put_gamma_oi,
-                 call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
-                 call_charm_oi, put_charm_oi,
-                 call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
-                 call_delta_oi, put_delta_oi,
-                 call_vanna_oi, put_vanna_oi
-          FROM strike_exposures
-          WHERE date = ${date} AND ticker = ${ticker}
-            AND timestamp = ${latestTs}
-            AND expiry > ${date}
-            AND expiry <= (${date}::date + INTERVAL '3 days')::date
-          ORDER BY strike ASC
-        `;
+      ? await withDbRetry(
+          () => db`
+            SELECT strike, price, timestamp,
+                   call_gamma_oi, put_gamma_oi,
+                   call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+                   call_charm_oi, put_charm_oi,
+                   call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+                   call_delta_oi, put_delta_oi,
+                   call_vanna_oi, put_vanna_oi
+            FROM strike_exposures
+            WHERE date = ${date} AND ticker = ${ticker}
+              AND timestamp = ${latestTs} AND expiry = ${date}
+            ORDER BY strike ASC
+          `,
+          2,
+          10_000,
+        )
+      : await withDbRetry(
+          () => db`
+            SELECT strike, price, timestamp,
+                   call_gamma_oi, put_gamma_oi,
+                   call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+                   call_charm_oi, put_charm_oi,
+                   call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+                   call_delta_oi, put_delta_oi,
+                   call_vanna_oi, put_vanna_oi
+            FROM strike_exposures
+            WHERE date = ${date} AND ticker = ${ticker}
+              AND timestamp = ${latestTs}
+              AND expiry > ${date}
+              AND expiry <= (${date}::date + INTERVAL '3 days')::date
+            ORDER BY strike ASC
+          `,
+          2,
+          10_000,
+        );
 
   return rows.map(mapStrikeRow);
 }
@@ -205,35 +233,47 @@ export async function getAllExpiryStrikeExposures(
 
   // Find the latest timestamp for all-expiry rows on this date (optionally capped by asOf)
   const tsRows = asOf
-    ? await db`
-        SELECT MAX(timestamp) as latest_ts
-        FROM strike_exposures
-        WHERE date = ${date} AND ticker = ${ticker}
-          AND expiry = ${ALL_EXPIRY_SENTINEL}
-          AND timestamp <= ${asOf}
-      `
-    : await db`
-        SELECT MAX(timestamp) as latest_ts
-        FROM strike_exposures
-        WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${ALL_EXPIRY_SENTINEL}
-      `;
+    ? await withDbRetry(
+        () => db`
+          SELECT MAX(timestamp) as latest_ts
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = ${ticker}
+            AND expiry = ${ALL_EXPIRY_SENTINEL}
+            AND timestamp <= ${asOf}
+        `,
+        2,
+        10_000,
+      )
+    : await withDbRetry(
+        () => db`
+          SELECT MAX(timestamp) as latest_ts
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = ${ticker} AND expiry = ${ALL_EXPIRY_SENTINEL}
+        `,
+        2,
+        10_000,
+      );
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
 
-  const rows = await db`
-    SELECT strike, price, timestamp,
-           call_gamma_oi, put_gamma_oi,
-           call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
-           call_charm_oi, put_charm_oi,
-           call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
-           call_delta_oi, put_delta_oi,
-           call_vanna_oi, put_vanna_oi
-    FROM strike_exposures
-    WHERE date = ${date} AND ticker = ${ticker}
-      AND timestamp = ${latestTs}
-      AND expiry = ${ALL_EXPIRY_SENTINEL}
-    ORDER BY strike ASC
-  `;
+  const rows = await withDbRetry(
+    () => db`
+      SELECT strike, price, timestamp,
+             call_gamma_oi, put_gamma_oi,
+             call_gamma_ask, call_gamma_bid, put_gamma_ask, put_gamma_bid,
+             call_charm_oi, put_charm_oi,
+             call_charm_ask, call_charm_bid, put_charm_ask, put_charm_bid,
+             call_delta_oi, put_delta_oi,
+             call_vanna_oi, put_vanna_oi
+      FROM strike_exposures
+      WHERE date = ${date} AND ticker = ${ticker}
+        AND timestamp = ${latestTs}
+        AND expiry = ${ALL_EXPIRY_SENTINEL}
+      ORDER BY strike ASC
+    `,
+    2,
+    10_000,
+  );
 
   return rows.map((r) => {
     const callGOi = Number(r.call_gamma_oi) || 0;
@@ -305,22 +345,30 @@ function mapNetGexRow(r: Record<string, unknown>): NetGexRow {
 export async function getNetGexHeatmap(date: string): Promise<NetGexRow[]> {
   const db = getDb();
 
-  const tsRows = await db`
-    SELECT MAX(timestamp) AS latest_ts
-    FROM strike_exposures
-    WHERE date = ${date} AND ticker = 'SPX' AND expiry = ${date}
-  `;
+  const tsRows = await withDbRetry(
+    () => db`
+      SELECT MAX(timestamp) AS latest_ts
+      FROM strike_exposures
+      WHERE date = ${date} AND ticker = 'SPX' AND expiry = ${date}
+    `,
+    2,
+    10_000,
+  );
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
 
-  const rows = await db`
-    SELECT strike, call_gamma_oi, put_gamma_oi,
-           call_delta_oi, put_delta_oi,
-           call_charm_oi, put_charm_oi
-    FROM strike_exposures
-    WHERE date = ${date} AND ticker = 'SPX'
-      AND expiry = ${date} AND timestamp = ${latestTs}
-    ORDER BY strike ASC
-  `;
+  const rows = await withDbRetry(
+    () => db`
+      SELECT strike, call_gamma_oi, put_gamma_oi,
+             call_delta_oi, put_delta_oi,
+             call_charm_oi, put_charm_oi
+      FROM strike_exposures
+      WHERE date = ${date} AND ticker = 'SPX'
+        AND expiry = ${date} AND timestamp = ${latestTs}
+      ORDER BY strike ASC
+    `,
+    2,
+    10_000,
+  );
   return rows.map(mapNetGexRow);
 }

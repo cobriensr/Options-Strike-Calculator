@@ -13,6 +13,7 @@ import type {
   ToolUseBlock,
   ToolResultBlockParam,
 } from '@anthropic-ai/sdk/resources/messages/messages.js';
+import { withDbRetry } from './db.js';
 import { getFlowData } from './db-flow.js';
 import { getSpotExposures, formatSpotExposuresForClaude } from './db-flow.js';
 import {
@@ -59,37 +60,53 @@ export async function getSpxCandles(
   let rows: Record<string, unknown>[];
 
   if (from && to) {
-    rows = await db`
-      SELECT timestamp, open, high, low, close, volume, spx_schwab_price
-      FROM index_candles_1m
-      WHERE symbol = 'SPX' AND date = ${date} AND timestamp >= ${from} AND timestamp <= ${to}
-      ORDER BY timestamp ASC
-      LIMIT ${CANDLE_LIMIT}
-    `;
+    rows = await withDbRetry(
+      () => db`
+        SELECT timestamp, open, high, low, close, volume, spx_schwab_price
+        FROM index_candles_1m
+        WHERE symbol = 'SPX' AND date = ${date} AND timestamp >= ${from} AND timestamp <= ${to}
+        ORDER BY timestamp ASC
+        LIMIT ${CANDLE_LIMIT}
+      `,
+      2,
+      10_000,
+    );
   } else if (from) {
-    rows = await db`
-      SELECT timestamp, open, high, low, close, volume, spx_schwab_price
-      FROM index_candles_1m
-      WHERE symbol = 'SPX' AND date = ${date} AND timestamp >= ${from}
-      ORDER BY timestamp ASC
-      LIMIT ${CANDLE_LIMIT}
-    `;
+    rows = await withDbRetry(
+      () => db`
+        SELECT timestamp, open, high, low, close, volume, spx_schwab_price
+        FROM index_candles_1m
+        WHERE symbol = 'SPX' AND date = ${date} AND timestamp >= ${from}
+        ORDER BY timestamp ASC
+        LIMIT ${CANDLE_LIMIT}
+      `,
+      2,
+      10_000,
+    );
   } else if (to) {
-    rows = await db`
-      SELECT timestamp, open, high, low, close, volume, spx_schwab_price
-      FROM index_candles_1m
-      WHERE symbol = 'SPX' AND date = ${date} AND timestamp <= ${to}
-      ORDER BY timestamp ASC
-      LIMIT ${CANDLE_LIMIT}
-    `;
+    rows = await withDbRetry(
+      () => db`
+        SELECT timestamp, open, high, low, close, volume, spx_schwab_price
+        FROM index_candles_1m
+        WHERE symbol = 'SPX' AND date = ${date} AND timestamp <= ${to}
+        ORDER BY timestamp ASC
+        LIMIT ${CANDLE_LIMIT}
+      `,
+      2,
+      10_000,
+    );
   } else {
-    rows = await db`
-      SELECT timestamp, open, high, low, close, volume, spx_schwab_price
-      FROM index_candles_1m
-      WHERE symbol = 'SPX' AND date = ${date}
-      ORDER BY timestamp ASC
-      LIMIT ${CANDLE_LIMIT}
-    `;
+    rows = await withDbRetry(
+      () => db`
+        SELECT timestamp, open, high, low, close, volume, spx_schwab_price
+        FROM index_candles_1m
+        WHERE symbol = 'SPX' AND date = ${date}
+        ORDER BY timestamp ASC
+        LIMIT ${CANDLE_LIMIT}
+      `,
+      2,
+      10_000,
+    );
   }
 
   return rows.map((r) => ({

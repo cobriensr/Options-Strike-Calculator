@@ -37,6 +37,7 @@ vi.mock('../_lib/db.js', () => ({
   formatGreekExposureForClaude: vi.fn().mockReturnValue(null),
   getSpotExposures: vi.fn().mockResolvedValue([]),
   formatSpotExposuresForClaude: vi.fn().mockReturnValue(null),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/db-strike-helpers.js', () => ({

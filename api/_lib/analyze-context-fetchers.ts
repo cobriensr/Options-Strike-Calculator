@@ -47,6 +47,7 @@ import {
   getFlowData,
   getGreekExposure,
   getSpotExposures,
+  withDbRetry,
 } from './db.js';
 import { fetchMaxPain, formatMaxPainForClaude } from './max-pain.js';
 import { formatOvernightForClaude } from './overnight-gap.js';
@@ -330,12 +331,16 @@ export async function fetchVolRealizedContext(
 ): Promise<VolRealizedRow | null> {
   try {
     const sql = getDb();
-    const rvRows = await sql`
-      SELECT iv_30d, rv_30d, iv_rv_spread, iv_overpricing_pct, iv_rank
-      FROM vol_realized
-      WHERE date = ${analysisDate}
-      LIMIT 1
-    `;
+    const rvRows = await withDbRetry(
+      () => sql`
+        SELECT iv_30d, rv_30d, iv_rv_spread, iv_overpricing_pct, iv_rank
+        FROM vol_realized
+        WHERE date = ${analysisDate}
+        LIMIT 1
+      `,
+      2,
+      10_000,
+    );
     if (rvRows.length === 0) return null;
     const rv = rvRows[0]! as Partial<VolRealizedRow>;
     return {
@@ -379,11 +384,15 @@ export async function fetchPreMarketContext(
   // at 9:32 ET and persisted to `cone_levels` (date PK). Read it here so
   // the analyze pipeline has cone bounds without any manual input.
   try {
-    const coneRows = await db`
-      SELECT cone_upper, cone_lower FROM cone_levels
-      WHERE date = ${analysisDate}
-      LIMIT 1
-    `;
+    const coneRows = await withDbRetry(
+      () => db`
+        SELECT cone_upper, cone_lower FROM cone_levels
+        WHERE date = ${analysisDate}
+        LIMIT 1
+      `,
+      2,
+      10_000,
+    );
     if (coneRows.length > 0 && coneRows[0] != null) {
       const r = coneRows[0];
       const cu = Number.parseFloat(String(r.cone_upper));
@@ -399,11 +408,15 @@ export async function fetchPreMarketContext(
   }
 
   try {
-    const pmRows = await db`
-      SELECT pre_market_data FROM market_snapshots
-      WHERE date = ${analysisDate} AND pre_market_data IS NOT NULL
-      ORDER BY created_at DESC LIMIT 1
-    `;
+    const pmRows = await withDbRetry(
+      () => db`
+        SELECT pre_market_data FROM market_snapshots
+        WHERE date = ${analysisDate} AND pre_market_data IS NOT NULL
+        ORDER BY created_at DESC LIMIT 1
+      `,
+      2,
+      10_000,
+    );
 
     if (pmRows.length > 0 && pmRows[0]?.pre_market_data) {
       const pm = pmRows[0].pre_market_data as PreMarketData;
@@ -577,9 +590,13 @@ export async function fetchOiChangeContext(
 export async function fetchMlCalibrationContext(): Promise<string | null> {
   try {
     const sql = getDb();
-    const mlRows = await sql`
-      SELECT findings, updated_at FROM ml_findings WHERE id = 1
-    `;
+    const mlRows = await withDbRetry(
+      () => sql`
+        SELECT findings, updated_at FROM ml_findings WHERE id = 1
+      `,
+      2,
+      10_000,
+    );
     if (mlRows.length === 0) return null;
     const { findings, updated_at } = mlRows[0] as {
       findings?: Record<string, unknown>;
@@ -637,13 +654,17 @@ export async function fetchEconomicCalendarContext(
 ): Promise<string | null> {
   try {
     const sql = getDb();
-    const calRows = await sql`
-      SELECT event_name, event_time, event_type, forecast, previous,
-             reported_period
-      FROM economic_events
-      WHERE date = ${analysisDate}
-      ORDER BY event_time ASC
-    `;
+    const calRows = await withDbRetry(
+      () => sql`
+        SELECT event_name, event_time, event_type, forecast, previous,
+               reported_period
+        FROM economic_events
+        WHERE date = ${analysisDate}
+        ORDER BY event_time ASC
+      `,
+      2,
+      10_000,
+    );
     if (calRows.length === 0) return 'No scheduled economic events today.';
     return formatEconomicCalendarForClaude(calRows as EconomicEventRow[]);
   } catch (error_) {
@@ -971,14 +992,18 @@ export async function fetchSimilarDaysContext(
       if (neighbors.length === 0) return null;
       // Neighbor summaries come from day_embeddings (stored per
       // historical row) — no sidecar round-trip per neighbor.
-      const { getDb } = await import('./db.js');
+      const { getDb, withDbRetry } = await import('./db.js');
       const sql = getDb();
       const dates = neighbors.map((n) => n.date);
       const rows = dates.length
-        ? await sql`
-            SELECT date, summary FROM day_embeddings
-            WHERE date = ANY(${dates})
-          `
+        ? await withDbRetry(
+            () => sql`
+              SELECT date, summary FROM day_embeddings
+              WHERE date = ANY(${dates})
+            `,
+            2,
+            10_000,
+          )
         : [];
       const byDate = new Map(
         rows.map((r) => [

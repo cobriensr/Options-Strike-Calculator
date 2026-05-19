@@ -26,6 +26,7 @@ vi.mock('../_lib/db.js', () => ({
   formatFlowDataForClaude: vi.fn(() => 'flow'),
   formatGreekExposureForClaude: vi.fn(() => 'greeks'),
   formatSpotExposuresForClaude: vi.fn(() => 'spot'),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/db-strike-helpers.js', () => ({
