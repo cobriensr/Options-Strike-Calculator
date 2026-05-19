@@ -2,7 +2,6 @@ import { IV_MODES } from './constants';
 import {
   Fragment,
   lazy,
-  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -58,6 +57,7 @@ import AnalysisHistory from './components/ChartAnalysis/AnalysisHistory';
 import BacktestDiag from './components/BacktestDiag';
 import ErrorBoundary from './components/ErrorBoundary';
 import GatedSection from './components/GatedSection';
+import LazySection from './components/LazySection';
 import AppHeader from './components/AppHeader';
 import AlertBanner from './components/AlertBanner';
 import IntervalBAAlertBanner from './components/IntervalBAAlertBanner';
@@ -989,41 +989,37 @@ export default function StrikeCalculator() {
                       </>
                     ),
                     'sec-risk': () => (
-                      <>
-                        <span id="sec-risk" className="block scroll-mt-28" />
-                        <ErrorBoundary label="Risk Calculator">
-                          <Suspense fallback={<SkeletonSection lines={5} />}>
-                            <RiskCalculator defaultCollapsed />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      <LazySection
+                        id="sec-risk"
+                        label="Risk Calculator"
+                        fallback={<SkeletonSection lines={5} />}
+                      >
+                        <RiskCalculator defaultCollapsed />
+                      </LazySection>
                     ),
                     'sec-regime': () => (
-                      <>
-                        <span id="sec-regime" className="block scroll-mt-28" />
-                        <ErrorBoundary label="Market Regime">
-                          <MarketRegimeSection
-                            dVix={dVix}
-                            results={results}
-                            errors={errors}
-                            skewPct={skewPct}
-                            selectedDate={vix.selectedDate}
-                            market={market}
-                            onClusterMultChange={setClusterMult}
-                            clusterMult={clusterMult}
-                            historySnapshot={historySnapshot}
-                            historyCandles={historyData.history?.spx.candles}
-                            entryTimeLabel={
-                              historySnapshot
-                                ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
-                                : undefined
-                            }
-                            signals={signals}
-                            chain={chainData.chain}
-                            defaultCollapsed
-                          />
-                        </ErrorBoundary>
-                      </>
+                      <LazySection id="sec-regime" label="Market Regime">
+                        <MarketRegimeSection
+                          dVix={dVix}
+                          results={results}
+                          errors={errors}
+                          skewPct={skewPct}
+                          selectedDate={vix.selectedDate}
+                          market={market}
+                          onClusterMultChange={setClusterMult}
+                          clusterMult={clusterMult}
+                          historySnapshot={historySnapshot}
+                          historyCandles={historyData.history?.spx.candles}
+                          entryTimeLabel={
+                            historySnapshot
+                              ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
+                              : undefined
+                          }
+                          signals={signals}
+                          chain={chainData.chain}
+                          defaultCollapsed
+                        />
+                      </LazySection>
                     ),
                     'sec-darkpool': () => (
                       <GatedSection
@@ -1248,147 +1244,104 @@ export default function StrikeCalculator() {
                       </GatedSection>
                     ),
                     'sec-futures': () => (
-                      <>
-                        <span id="sec-futures" className="block scroll-mt-28" />
-                        <ErrorBoundary label="Futures">
-                          <Suspense fallback={<SkeletonSection lines={5} />}>
-                            <FuturesPanel
-                              defaultCollapsed
-                              marketOpen={
-                                market.data.quotes?.marketOpen ?? false
-                              }
-                            />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      <LazySection
+                        id="sec-futures"
+                        label="Futures"
+                        fallback={<SkeletonSection lines={5} />}
+                      >
+                        <FuturesPanel
+                          defaultCollapsed
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </LazySection>
                     ),
                     'sec-charts': () => (
-                      <>
-                        <span id="sec-charts" className="block scroll-mt-28" />
-                        <ErrorBoundary label="Chart Analysis">
-                          <Suspense
-                            fallback={<SkeletonSection lines={6} tall />}
-                          >
-                            <ChartAnalysis
-                              results={results}
-                              onAnalysisSaved={handleAnalysisSaved}
-                              context={analysisContext}
-                              csvPositionSummary={csvPositionSummary}
-                              defaultCollapsed
-                            />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      <LazySection
+                        id="sec-charts"
+                        label="Chart Analysis"
+                        fallback={<SkeletonSection lines={6} tall />}
+                      >
+                        <ChartAnalysis
+                          results={results}
+                          onAnalysisSaved={handleAnalysisSaved}
+                          context={analysisContext}
+                          csvPositionSummary={csvPositionSummary}
+                          defaultCollapsed
+                        />
+                      </LazySection>
                     ),
                     'sec-history': () => (
-                      <>
-                        <span id="sec-history" className="block scroll-mt-28" />
-                        <ErrorBoundary label="Analysis History">
-                          <AnalysisHistory
-                            refreshKey={historyRefreshKey}
-                            defaultCollapsed
-                          />
-                        </ErrorBoundary>
-                      </>
+                      <LazySection id="sec-history" label="Analysis History">
+                        <AnalysisHistory
+                          refreshKey={historyRefreshKey}
+                          defaultCollapsed
+                        />
+                      </LazySection>
                     ),
                     'sec-ml-insights': () => (
-                      <>
-                        <span
-                          id="sec-ml-insights"
-                          className="block scroll-mt-28"
-                        />
-                        <ErrorBoundary label="ML Insights">
-                          <Suspense
-                            fallback={<SkeletonSection lines={6} tall />}
-                          >
-                            <MLInsights defaultCollapsed />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      <LazySection
+                        id="sec-ml-insights"
+                        label="ML Insights"
+                        fallback={<SkeletonSection lines={6} tall />}
+                      >
+                        <MLInsights defaultCollapsed />
+                      </LazySection>
                     ),
                     'sec-periscope-history': () => (
-                      <>
-                        <span
-                          id="sec-periscope-history"
-                          className="block scroll-mt-28"
-                        />
-                        <ErrorBoundary label="Periscope History">
-                          <Suspense
-                            fallback={<SkeletonSection lines={4} tall />}
-                          >
-                            <PeriscopeChatHistory />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      <LazySection
+                        id="sec-periscope-history"
+                        label="Periscope History"
+                        fallback={<SkeletonSection lines={4} tall />}
+                      >
+                        <PeriscopeChatHistory />
+                      </LazySection>
                     ),
                     'sec-periscope-lessons': () => (
-                      <>
-                        <span
-                          id="sec-periscope-lessons"
-                          className="block scroll-mt-28"
-                        />
-                        <ErrorBoundary label="Periscope Lesson Library">
-                          <Suspense
-                            fallback={<SkeletonSection lines={4} tall />}
-                          >
-                            <LessonLibrary />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      <LazySection
+                        id="sec-periscope-lessons"
+                        label="Periscope Lesson Library"
+                        fallback={<SkeletonSection lines={4} tall />}
+                      >
+                        <LessonLibrary />
+                      </LazySection>
                     ),
                     'sec-positions': () => (
-                      <>
-                        <span
-                          id="sec-positions"
-                          className="block scroll-mt-28"
+                      <LazySection
+                        id="sec-positions"
+                        label="Paper Dashboard"
+                        fallback={<SkeletonSection lines={5} tall />}
+                      >
+                        <PositionMonitor
+                          spotPrice={results?.spot ?? spxVal ?? 0}
+                          onPositionSummaryChange={setCsvPositionSummary}
+                          portfolioRiskThresholdPct={portfolioRiskThresholdPct}
+                          defaultCollapsed
                         />
-                        <ErrorBoundary label="Paper Dashboard">
-                          <Suspense
-                            fallback={<SkeletonSection lines={5} tall />}
-                          >
-                            <PositionMonitor
-                              spotPrice={results?.spot ?? spxVal ?? 0}
-                              onPositionSummaryChange={setCsvPositionSummary}
-                              portfolioRiskThresholdPct={
-                                portfolioRiskThresholdPct
-                              }
-                              defaultCollapsed
-                            />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      </LazySection>
                     ),
                     'sec-tracker': () => (
-                      <>
-                        <span id="sec-tracker" className="block scroll-mt-28" />
-                        <ErrorBoundary label="Contract Tracker">
-                          <Suspense
-                            fallback={<SkeletonSection lines={5} tall />}
-                          >
-                            <TrackerSection
-                              marketOpen={
-                                market.data.quotes?.marketOpen ?? false
-                              }
-                            />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      <LazySection
+                        id="sec-tracker"
+                        label="Contract Tracker"
+                        fallback={<SkeletonSection lines={5} tall />}
+                      >
+                        <TrackerSection
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </LazySection>
                     ),
                     'sec-bwb': () => (
-                      <>
-                        <span id="sec-bwb" className="block scroll-mt-28" />
-                        <ErrorBoundary label="BWB Calculator">
-                          <Suspense
-                            fallback={<SkeletonSection lines={5} tall />}
-                          >
-                            <BWBCalculator
-                              selectedDate={vix.selectedDate}
-                              vix={vixInput}
-                              defaultCollapsed
-                            />
-                          </Suspense>
-                        </ErrorBoundary>
-                      </>
+                      <LazySection
+                        id="sec-bwb"
+                        label="BWB Calculator"
+                        fallback={<SkeletonSection lines={5} tall />}
+                      >
+                        <BWBCalculator
+                          selectedDate={vix.selectedDate}
+                          vix={vixInput}
+                          defaultCollapsed
+                        />
+                      </LazySection>
                     ),
                     results: () => (
                       <ErrorBoundary label="Results">
