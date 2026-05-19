@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { ContractTapeChart } from '../components/LotteryFinder/ContractTapeChart';
+import { ContractTapeChart } from '../components/charts/ContractTapeChart';
 import type { ContractTapeBar } from '../components/LotteryFinder/types';
 
 // ── Fixture factory ──────────────────────────────────────────

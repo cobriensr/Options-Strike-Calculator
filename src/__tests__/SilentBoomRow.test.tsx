@@ -37,12 +37,12 @@ vi.mock('../hooks/useTickerCandles', () => ({
 // Stub the heavy chart components so the row's expand-state branch
 // renders without dragging in lightweight-charts or SVG layout. Use
 // data-testid markers so the expanded panel is detectable.
-vi.mock('../components/LotteryFinder/ContractTapeChart', () => ({
+vi.mock('../components/charts/ContractTapeChart', () => ({
   ContractTapeChart: ({ ariaLabel }: { ariaLabel: string }) => (
     <div data-testid="contract-tape-chart" aria-label={ariaLabel} />
   ),
 }));
-vi.mock('../components/LotteryFinder/TickerNetFlowChart', () => ({
+vi.mock('../components/charts/TickerNetFlowChart', () => ({
   TickerNetFlowChart: ({ ariaLabel }: { ariaLabel: string }) => (
     <div data-testid="ticker-netflow-chart" aria-label={ariaLabel} />
   ),

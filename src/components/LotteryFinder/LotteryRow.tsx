@@ -4,8 +4,8 @@ import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { SiblingAssetConfirmationBar } from '../Gexbot/SiblingAssetConfirmationBar.js';
 import { TakeItScore } from '../TakeItScore/TakeItScore.js';
-import { ContractTapeChart } from './ContractTapeChart.js';
-import { TickerNetFlowChart } from './TickerNetFlowChart.js';
+import { ContractTapeChart } from '../charts/ContractTapeChart.js';
+import { TickerNetFlowChart } from '../charts/TickerNetFlowChart.js';
 import type {
   ExitPolicy,
   LotteryFire,

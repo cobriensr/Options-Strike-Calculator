@@ -30,7 +30,7 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import type { ContractTapeBar } from './types.js';
+import type { ContractTapeBar } from '../LotteryFinder/types.js';
 
 interface ContractTapeChartProps {
   /** Per-minute bars from /api/lottery-contract-tape. */

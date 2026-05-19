@@ -38,8 +38,8 @@ import type {
   Time,
   UTCTimestamp,
 } from 'lightweight-charts';
-import type { NetFlowTick, TickerCandle } from './types.js';
-import { ctSessionBounds } from './ct-window.js';
+import type { NetFlowTick, TickerCandle } from '../LotteryFinder/types.js';
+import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 
 /** Live crosshair readout state — populated on hover, cleared on leave. */
 interface CrosshairReadout {

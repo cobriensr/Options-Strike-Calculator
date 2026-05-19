@@ -9,7 +9,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
-import { TickerNetFlowChart } from '../components/LotteryFinder/TickerNetFlowChart';
+import { TickerNetFlowChart } from '../components/charts/TickerNetFlowChart';
 import type {
   NetFlowTick,
   TickerCandle,

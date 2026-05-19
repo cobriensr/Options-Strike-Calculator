@@ -13,8 +13,8 @@ import { memo, useMemo, useState } from 'react';
 import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
-import { ContractTapeChart } from '../LotteryFinder/ContractTapeChart.js';
-import { TickerNetFlowChart } from '../LotteryFinder/TickerNetFlowChart.js';
+import { ContractTapeChart } from '../charts/ContractTapeChart.js';
+import { TickerNetFlowChart } from '../charts/TickerNetFlowChart.js';
 import type { IntervalBAFeedAlert } from '../../hooks/useIntervalBAFeed.js';
 
 interface IntervalBARowProps {

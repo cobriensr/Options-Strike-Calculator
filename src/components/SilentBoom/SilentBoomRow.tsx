@@ -3,8 +3,8 @@ import { useContractTape } from '../../hooks/useContractTape.js';
 import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { SiblingAssetConfirmationBar } from '../Gexbot/SiblingAssetConfirmationBar.js';
-import { ContractTapeChart } from '../LotteryFinder/ContractTapeChart.js';
-import { TickerNetFlowChart } from '../LotteryFinder/TickerNetFlowChart.js';
+import { ContractTapeChart } from '../charts/ContractTapeChart.js';
+import { TickerNetFlowChart } from '../charts/TickerNetFlowChart.js';
 import { TakeItScore } from '../TakeItScore/TakeItScore.js';
 import {
   SILENT_BOOM_EXIT_POLICY_LABELS,

@@ -31,12 +31,12 @@ vi.mock('../hooks/useTickerCandles', () => ({
   useTickerCandles: mockUseTickerCandles,
 }));
 
-vi.mock('../components/LotteryFinder/ContractTapeChart', () => ({
+vi.mock('../components/charts/ContractTapeChart', () => ({
   ContractTapeChart: ({ ariaLabel }: { ariaLabel: string }) => (
     <div data-testid="contract-tape-chart" aria-label={ariaLabel} />
   ),
 }));
-vi.mock('../components/LotteryFinder/TickerNetFlowChart', () => ({
+vi.mock('../components/charts/TickerNetFlowChart', () => ({
   TickerNetFlowChart: ({ ariaLabel }: { ariaLabel: string }) => (
     <div data-testid="ticker-netflow-chart" aria-label={ariaLabel} />
   ),
