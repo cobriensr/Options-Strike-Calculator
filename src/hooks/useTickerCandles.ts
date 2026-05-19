@@ -7,19 +7,21 @@
  * Polls during market hours when the date is today AND the row is
  * expanded. Historical days don't poll because the data is stable.
  *
- * Mirrors useNetFlowHistory's lazy + market-hours-gated pattern so
- * the two requests sourced from a single LotteryRow expand stay in
- * lockstep.
+ * Phase 2L migration: the hook is now a thin wrapper around the
+ * `useFetchedData<T>` primitive. The PUBLIC return shape is preserved
+ * (callers see `candles`, `previousClose`, `loading`, `error`,
+ * `fetchedAt`, `refetch`) — the canonical `{ data, ... }` shape
+ * migration is queued for Phase 2M.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo } from 'react';
+
 import { POLL_INTERVALS } from '../constants/index.js';
-import { usePolling } from './usePolling.js';
 import type {
   TickerCandle,
   TickerCandlesResponse,
 } from '../components/LotteryFinder/types.js';
-import { getErrorMessage } from '../utils/error.js';
+import { useFetchedData } from './useFetchedData.js';
 
 interface UseTickerCandlesArgs {
   /** Ticker — required when enabled. */
@@ -32,21 +34,14 @@ interface UseTickerCandlesArgs {
   marketOpen: boolean;
 }
 
-interface State {
+interface UseTickerCandlesReturn {
   candles: TickerCandle[];
   previousClose: number | null;
   loading: boolean;
   error: string | null;
   fetchedAt: number | null;
+  refetch: () => void;
 }
-
-const INITIAL_STATE: State = {
-  candles: [],
-  previousClose: null,
-  loading: false,
-  error: null,
-  fetchedAt: null,
-};
 
 const todayCt = (): string =>
   new Intl.DateTimeFormat('en-CA', {
@@ -61,60 +56,28 @@ export function useTickerCandles({
   date,
   enabled,
   marketOpen,
-}: UseTickerCandlesArgs): State & { refetch: () => void } {
-  const [state, setState] = useState<State>(INITIAL_STATE);
-  const abortRef = useRef<AbortController | null>(null);
+}: UseTickerCandlesArgs): UseTickerCandlesReturn {
+  const url = enabled
+    ? `/api/ticker-candles?ticker=${encodeURIComponent(ticker)}&date=${encodeURIComponent(date)}`
+    : null;
 
-  const fetchOnce = useCallback(async () => {
-    if (!enabled) return;
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
+  const { data, loading, error, refresh, fetchedAt } =
+    useFetchedData<TickerCandlesResponse>({
+      url,
+      marketOpen,
+      pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
+      historical: date !== todayCt(),
+    });
 
-    setState((prev) => ({ ...prev, loading: true, error: null }));
-
-    try {
-      const params = new URLSearchParams({ ticker, date });
-      const res = await fetch(`/api/ticker-candles?${params.toString()}`, {
-        credentials: 'include',
-        signal: ctrl.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as TickerCandlesResponse;
-
-      if (ctrl.signal.aborted) return;
-      setState({
-        candles: json.candles,
-        previousClose: json.previousClose ?? null,
-        loading: false,
-        error: null,
-        fetchedAt: Date.now(),
-      });
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      if (ctrl.signal.aborted) return;
-      setState((prev) => ({
-        ...prev,
-        loading: false,
-        error: getErrorMessage(err),
-      }));
-    }
-  }, [ticker, date, enabled]);
-
-  // Eager mount fetch — usePolling only schedules the recurring tick.
-  useEffect(() => {
-    void fetchOnce();
-  }, [fetchOnce]);
-
-  usePolling(
-    () => {
-      void fetchOnce();
-    },
-    POLL_INTERVALS.OTM_FLOW,
-    [enabled, marketOpen, date === todayCt()],
+  return useMemo(
+    () => ({
+      candles: data?.candles ?? [],
+      previousClose: data?.previousClose ?? null,
+      loading,
+      error,
+      fetchedAt,
+      refetch: refresh,
+    }),
+    [data, loading, error, fetchedAt, refresh],
   );
-
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  return useMemo(() => ({ ...state, refetch: fetchOnce }), [state, fetchOnce]);
 }
