@@ -688,8 +688,9 @@ async function main(): Promise<void> {
 
   const totalMinutes = Math.max(
     1,
-    Math.floor((REPLAY_END_UTC.getTime() - REPLAY_START_UTC.getTime()) / STEP_MS) +
-      1,
+    Math.floor(
+      (REPLAY_END_UTC.getTime() - REPLAY_START_UTC.getTime()) / STEP_MS,
+    ) + 1,
   );
   console.log(
     `replay window: ${REPLAY_START_UTC.toISOString()} → ${REPLAY_END_UTC.toISOString()} ` +

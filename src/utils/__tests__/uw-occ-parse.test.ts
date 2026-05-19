@@ -145,7 +145,9 @@ describe('tryParseOccChain', () => {
     // No OCC body in `chain=NFLX` — structured parser declines so the
     // caller can fall through to `tryParseUwTicker`.
     expect(
-      tryParseOccChain('https://unusualwhales.com/flow/option_chains?chain=NFLX'),
+      tryParseOccChain(
+        'https://unusualwhales.com/flow/option_chains?chain=NFLX',
+      ),
     ).toBeNull();
   });
 });
@@ -153,7 +155,9 @@ describe('tryParseOccChain', () => {
 describe('tryParseUwTicker', () => {
   it('returns the ticker from a flow URL with chain=<TICKER>', () => {
     expect(
-      tryParseUwTicker('https://unusualwhales.com/flow/option_chains?chain=NFLX'),
+      tryParseUwTicker(
+        'https://unusualwhales.com/flow/option_chains?chain=NFLX',
+      ),
     ).toBe('NFLX');
   });
 

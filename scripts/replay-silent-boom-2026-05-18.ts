@@ -766,8 +766,12 @@ async function main(): Promise<void> {
   ) {
     i += 1;
     const simulatedNow = new Date(t);
-    const { bucketRows, chains, totalFires: tickFires, inserted } =
-      await processOneCronTick(simulatedNow, takeitCtx);
+    const {
+      bucketRows,
+      chains,
+      totalFires: tickFires,
+      inserted,
+    } = await processOneCronTick(simulatedNow, takeitCtx);
     totalBucketRows += bucketRows;
     totalChains += chains;
     totalFires += tickFires;

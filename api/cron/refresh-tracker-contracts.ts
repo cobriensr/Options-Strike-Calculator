@@ -272,10 +272,7 @@ async function fetchOptionContractsForTicker(
   // brackets so they survive both the wrapper's URL parser and any
   // intermediate proxies.
   const qs = occSymbols
-    .map(
-      (s) =>
-        `option_symbol%5B%5D=${encodeURIComponent(normalizeOcc(s))}`,
-    )
+    .map((s) => `option_symbol%5B%5D=${encodeURIComponent(normalizeOcc(s))}`)
     .join('&');
   const rows = await uwFetch<UwOptionContract>(
     apiKey,

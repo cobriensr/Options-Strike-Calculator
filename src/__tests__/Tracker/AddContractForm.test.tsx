@@ -143,7 +143,9 @@ describe('AddContractForm', () => {
       /Paste OCC symbol or Unusual Whales/,
     );
     fireEvent.change(pasteField, {
-      target: { value: 'https://unusualwhales.com/flow/option_chains?chain=NFLX' },
+      target: {
+        value: 'https://unusualwhales.com/flow/option_chains?chain=NFLX',
+      },
     });
     await waitFor(() => {
       expect(screen.getByText(/NFLX detected/)).toBeInTheDocument();
