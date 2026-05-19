@@ -86,62 +86,74 @@ Phase 1 has soaked for 1+ session.
 
 No new APIs, DB migrations, env vars, or cron changes.
 
-Reuses two existing views from `useGexbotData`:
+Two hooks, two purposes:
 
-- `maxchange-winners` — one row per `(ticker, endpoint, category)` with
-  windows including `five: [strike, change]`.
-- `snapshots-latest` — provides per-ticker `spot` (used for SPX,
-  ES_SPX, SPY anchors).
+- `useGexbotData({ view: 'maxchange-winners' })` — one row per
+  `(ticker, endpoint, category)` with windows including
+  `five: [strike, change]`. Drives the ladder rows.
+- `useMarketData` — provides the real-time **Schwab SPX spot** that
+  anchors the ladder. Chosen over GEXBot's `snapshots-latest.spot`
+  because Schwab is sub-second cadence; GEXBot snapshots are
+  minute-cadence and on fast moves the divider could lag the true
+  spot by up to ~60 s, mis-classifying near-ATM strikes as the wrong
+  side.
+
+We do **not** display secondary spots (ES_SPX, SPY) in the header.
+Cross-asset confirmation only needs their **winner strikes** (from
+`maxchange-winners`), not their spots.
 
 ### What the data shape constrains
 
 `maxchange-winners` returns the **winner strike per category**, not
-all strikes. So at any moment we have at most:
+all strikes. With 0DTE-only and a single active category, at any
+moment we have at most:
 
-- `1 × {SPX, ES_SPX, SPY} × {GEX, γ, Δ, V, CH} × {0DTE, 1DTE, all}` rows.
+- 1 SPX winner + 1 ES_SPX winner + 1 SPY winner = up to 3 strike
+  candidates, which collapse to **1–2 unique SPX-equivalent rows**
+  after cross-asset binning.
 
-For `[GEX]+[0DTE]` (default), that is `3 tickers × 1 = 3` strikes
-worth of data, collapsing typically to 1–2 unique SPX-equivalent rows
-after cross-asset binning.
-
-This is *intentional sparseness* — we are surfacing where the biggest
-hedging pressure is, not painting every strike. A "show all SPX
-strikes' GEX" view would require a new API on top of `gex_strike_expiry`
-and is out of scope for this spec.
+This is the design point, not a limitation. The ladder is a **focus
+indicator**: the rendered row is *the* SPX strike where the largest
+5-minute hedging move is happening across the SPX complex. A
+"show all SPX strikes' GEX" view would require a new API on top of
+`gex_strike_expiry` and is an explicit non-goal here.
 
 ## Component structure (Phase 1)
 
 ```text
 ┌─ GEXBOT DEALER STATE ──────────────────────────────────────────────┐
-│  STRIKE MOVERS — SPX  ·  0DTE  ·  spot 6750  ·  12:08 CT          │
-│  [GEX ✓] [γ] [Δ] [V] [CH]    [0DTE ✓] [+1DTE] [all]               │
+│  STRIKE MOVERS — SPX 0DTE  ·  spot 6750  ·  12:08 CT              │
+│  [GEX ✓] [γ] [Δ] [V] [CH]                                          │
 │                                                                    │
 │  ▲ CEILINGS (dealer short γ — sells rips)                          │
 │  ─────────────────────────────────────────────────                 │
-│   7469  ▪ES ▪SPX             +164   ━━              (weakening)   │
-│   7419  ▪ES ▪SPX             −3.0K  ━━━━━━          (forming)     │
+│   6800  ▪ES ▪SPX           −820   ━━━━              (forming)     │
 │  ═════════════ SPX spot 6750 ═════════════════════                 │
-│   7400  ▪ES ▪SPX ▪SPY  3✓    +3.7K  ━━━━━━━ ⚡     (strengthening)│
-│   7385  ▪ES ▪SPX ▪SPY  3✓    +1.6K  ━━━━            (building)    │
-│   7375  ▪ES ▪SPX             −199   ▽               (weakening)   │
+│   6750  ◈ATM  ▪ES ▪SPX ▪SPY  3✓  +2.1K  ━━━━━ ⚡  (magnet)        │
+│   6700  ▪ES ▪SPX ▪SPY  3✓    +1.6K  ━━━━            (strengthening)│
 │  ─────────────────────────────────────────────────                 │
 │  ▼ FLOORS (dealer long γ — fades dips)                             │
 │                                                                    │
-│  empty-state: "No SPX winners in last 5 min for GEX-0DTE"          │
+│  empty-state: "No SPX winners in last 5 min for GEX (0DTE)"        │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
+The mockup above shows a stylized "everything aligned" state.
+Real-world resting case is typically **1 row** (the single SPX-spine
+winner for the active category) with 1–2 adjacent rows when the
+SPX, ES_SPX, and SPY winners straddle nearby strikes. The ladder is
+a focus indicator, not a survey.
+
 ### Subcomponents
 
-1. **Header row** — title, current SPX spot (with ES_SPX and SPY
-   secondary spots in a tooltip), and last-update timestamp.
+1. **Header row** — title (always `SPX 0DTE`), current Schwab SPX
+   spot, last-update timestamp from `maxchange-winners.capturedAt`.
 2. **Category tabs** — `[GEX] [γ] [Δ] [V] [CH]`. Mutually exclusive.
-   Default: `GEX`.
-3. **DTE switch** — `[0DTE] [+1DTE] [all]`. Mutually exclusive.
-   Default: `0DTE`.
-4. **Ladder body** — list of rows in descending strike order. Spot
+   Default: `GEX`. Each tab maps to the `*_zero/maxchange` category
+   in GEXBot (0DTE flavor only — no DTE switcher).
+3. **Ladder body** — list of rows in descending strike order. Spot
    line is rendered between the last ceiling and first floor row.
-5. **Empty state** — when no SPX winner matches the current filter,
+4. **Empty state** — when no SPX winner matches the active category,
    show a short explainer (data writes every 1 min; 5-min freshness
    window).
 
@@ -154,34 +166,41 @@ strike  symbol-dots  confirm-badge  Δ-value  magnitude-bar  status-icon
 | Element | Meaning |
 | --- | --- |
 | Strike | SPX-equivalent strike, rounded to nearest 5. |
+| ATM badge | `◈ ATM` prefix when strike is within ±0.25% of spot (the magnet case). Renders before the symbol dots. |
 | Symbol dots | One filled dot per symbol that has a winner within tolerance: `▪ES` `▪SPX` `▪SPY`. |
 | Confirm badge | `3✓` when all three symbols agree on direction; `2✓` when two; otherwise omitted. |
 | Δ-value | Signed change for the SPX row (the spine), formatted via existing `formatChange()`. |
 | Magnitude bar | Horizontal bar, width relative to the largest `\|Δ\|` in the visible ladder. Min 4% so non-zero is visible. |
-| Status icon | `⚡` = largest mover in current view. `▽` = sign opposes expected direction for this side (e.g., floor with `−Δ`). |
+| Status icon | `⚡` = largest mover in current view. `▽` = sign opposes expected direction for this side (e.g., floor with `−Δ` is weakening). |
 
 ## Trading-aware color logic
 
 This is the central insight. *Position relative to spot × sign of Δ*
 determines the read:
 
-| Position | 5-min Δ sign | Reads as | Row tone |
-| --- | --- | --- | --- |
-| Below spot | + | Floor strengthening | `text-emerald-300` |
-| Below spot | − | Floor weakening / failing | `text-amber-300` |
-| Above spot | − | Ceiling strengthening | `text-rose-300` |
-| Above spot | + | Ceiling weakening | `text-yellow-300` |
-| Equal to spot (±0.25%) | ± | At-the-money | `text-secondary` |
+| Position | 5-min Δ sign | Reads as | Row tone | Marker |
+| --- | --- | --- | --- | --- |
+| Below spot | + | Floor strengthening | `text-emerald-300` | — |
+| Below spot | − | Floor weakening / failing | `text-amber-300` | `▽` |
+| Above spot | − | Ceiling strengthening | `text-rose-300` | — |
+| Above spot | + | Ceiling weakening | `text-yellow-300` | `▽` |
+| Within ±0.25% of spot | ± | **Magnet** — pin candidate | `text-violet-300` | `◈ ATM` |
+
+ATM is treated as a distinct *magnet* state, not a muted middle case.
+An at-the-money winner is by definition the most-actionable level
+(pin candidate, gamma-flip neighborhood) and gets its own violet tone
+plus a `◈ ATM` badge so it pops visually.
 
 Implemented in `strike-mover-ladder/colors.ts` as a single pure function:
 
 ```ts
 type Side = 'above' | 'below' | 'atm';
-type Tone = 'strengthening' | 'weakening' | 'neutral';
+type Tone = 'strengthening' | 'weakening' | 'magnet';
 function classifyRow(strike: number, spot: number, deltaSign: 1 | -1 | 0): {
   side: Side;
   tone: Tone;
   toneClass: string;
+  marker: '▽' | '◈ ATM' | null;
 };
 ```
 
@@ -262,19 +281,23 @@ that matter will reappear within the next 5 minutes anyway.
 
 ## Acceptance criteria (Phase 1)
 
-- [ ] SPX spot rendered in header from `snapshots-latest`.
+- [ ] SPX spot rendered in header from `useMarketData` (Schwab
+      realtime), not `snapshots-latest`.
 - [ ] Ceilings (strikes > spot) listed above the spot divider in
       descending strike order; floors below in descending strike order.
 - [ ] Spot divider visually distinct (double line, label).
 - [ ] Position-aware color logic implemented exactly per the table
-      above and unit-tested for all four quadrants plus ATM.
+      above and unit-tested for all five cases (below+ / below− /
+      above− / above+ / ATM-magnet).
+- [ ] ATM rows (within ±0.25% of spot) render in violet tone with
+      `◈ ATM` marker — not the muted/neutral treatment.
 - [ ] Cross-asset binning produces `3✓` when SPX + ES_SPX + SPY winners
       agree, `2✓` when two of three agree, no badge otherwise.
 - [ ] Magnitude bar present per row, min 4% width when value is
       non-zero, scaled to max `|Δ|` in the visible ladder.
 - [ ] `[GEX] [γ] [Δ] [V] [CH]` tabs switch the active category.
-- [ ] `[0DTE] [+1DTE] [all]` switches the DTE filter.
-- [ ] Empty state when no SPX winners match the current filter.
+      0DTE-only — no DTE switcher.
+- [ ] Empty state when no SPX winners match the current category.
 - [ ] `npm run review` passes (tsc + eslint + prettier + vitest).
 - [ ] `GexbotSection` no longer imports `StrikeMoverTicker`; the old
       component and its test file are deleted.
