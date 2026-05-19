@@ -228,10 +228,12 @@ describe('classifyAlertMultileg', () => {
     expect(mockClassifyMultilegBatch).not.toHaveBeenCalled();
   });
 
-  it('returns null without calling sidecar when window exceeds the size cap (5000)', async () => {
-    // Build > 5000 rows on the chain to trip the defensive size gate.
+  it('returns null without calling sidecar when window exceeds the size cap (10000)', async () => {
+    // Build > 10000 rows on the chain to trip the defensive size gate.
+    // Cap was raised from 5000 → 10000 on 2026-05-19 to stop Sentry
+    // noise from high-vol ETF minutes that posted 6–8K-trade windows.
     const rows: FakeTradeRow[] = [];
-    for (let i = 0; i < 5001; i += 1) {
+    for (let i = 0; i < 10001; i += 1) {
       rows.push(
         makeRow({
           ws_trade_id: `t-${i}`,

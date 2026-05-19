@@ -192,7 +192,7 @@ async function archiveOneTable(
     `gexbot/${spec.name}/${archiveDate}.parquet`,
     result.buffer,
     {
-      access: 'public',
+      access: 'private',
       allowOverwrite: true,
       contentType: 'application/vnd.apache.parquet',
       token: process.env.BLOB_READ_WRITE_TOKEN,

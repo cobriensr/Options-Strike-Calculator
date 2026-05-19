@@ -63,12 +63,18 @@ const HALF_WINDOW_SEC = 45;
 
 /**
  * Defensive size cap. The matcher scales fine up to ~600K rows per
- * ticker per day, but a single ±45s window with > 5000 prints (SPXW
- * 0DTE peak minutes) would blow the cron's per-tick latency budget.
- * Above this cap we return `null` rather than calling the sidecar —
- * matches the project's flagged SPY/SPXW OOM follow-up.
+ * ticker per day, but a single ±45s window with too many prints would
+ * blow the cron's per-tick latency budget. Above this cap we return
+ * `null` rather than calling the sidecar — matches the project's
+ * flagged SPY/SPXW OOM follow-up.
+ *
+ * 10000 (raised from 5000 on 2026-05-19) — QQQ peak minutes routinely
+ * post 6–8K trades in a ±45s window during high-vol opens; the old cap
+ * was firing ~285 times/day on Sentry without classifier load actually
+ * being a problem. If memory pressure returns post-deploy, drop back
+ * to 7500 and add windowed chunking.
  */
-const MAX_WINDOW_TRADES = 5000;
+const MAX_WINDOW_TRADES = 10000;
 
 // ── DB row shape ───────────────────────────────────────────────────────────
 
@@ -256,7 +262,9 @@ async function classifyAlertMultilegInner(
   if (rows.length > MAX_WINDOW_TRADES) {
     // Window too large — log + skip. Matches the SPY/SPXW OOM
     // follow-up. We still cache the null so subsequent alerts in the
-    // same minute don't reissue the query.
+    // same minute don't reissue the query. Logger-only on purpose —
+    // hitting the cap is expected for high-vol ETF minutes and the
+    // Sentry capture was generating ~285 escalating issues/day.
     logger.warn(
       {
         ticker,
@@ -266,15 +274,6 @@ async function classifyAlertMultilegInner(
       },
       'multileg-classify window exceeds size cap; skipping classifier',
     );
-    Sentry.captureMessage('multileg.classify.window_too_large', {
-      level: 'warning',
-      extra: {
-        ticker,
-        optionChain,
-        windowTrades: rows.length,
-        cap: MAX_WINDOW_TRADES,
-      },
-    });
     return null;
   }
 

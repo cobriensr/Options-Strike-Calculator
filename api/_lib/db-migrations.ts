@@ -4982,4 +4982,13 @@ export const MIGRATIONS: Migration[] = [
             ON opening_flow_signals (date DESC)`,
     ],
   },
+  {
+    id: 174,
+    description:
+      'Add composite index on ws_option_trades (ticker, expiry, strike, option_type, executed_at DESC) to speed up the enrich-periscope-lottery-outcomes per-fire peak/EOD lookups. The existing ws_option_trades_ticker_executed_idx is too broad — a single SPXW lookup scans the whole day. Without this composite, the cron hits the 10s per-attempt timeout in withDbRetry on every fire, producing 1300+ Sentry events/day. Same index also accelerates intraday lottery-finder chainExtras / reignitedRows queries.',
+    statements: (sql) => [
+      sql`CREATE INDEX IF NOT EXISTS ws_option_trades_chain_lookup_idx
+            ON ws_option_trades (ticker, expiry, strike, option_type, executed_at DESC)`,
+    ],
+  },
 ];
