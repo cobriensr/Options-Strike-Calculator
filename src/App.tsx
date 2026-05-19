@@ -172,6 +172,11 @@ const SilentBoomSection = lazy(() =>
     .then((m) => ({ default: m.SilentBoomSection }))
     .catch(handleStaleChunk),
 );
+const PeriscopeLotteryPanel = lazy(() =>
+  import('./components/PeriscopeLottery/PeriscopeLotteryPanel')
+    .then((m) => ({ default: m.PeriscopeLotteryPanel }))
+    .catch(handleStaleChunk),
+);
 const TrackerSection = lazy(() =>
   import('./components/Tracker/TrackerSection')
     .then((m) => ({ default: m.TrackerSection }))
@@ -1192,6 +1197,18 @@ export default function StrikeCalculator() {
                         fallback={<SkeletonSection lines={5} />}
                       >
                         <SilentBoomSection
+                          marketOpen={market.data.quotes?.marketOpen ?? false}
+                        />
+                      </GatedSection>
+                    ),
+                    'sec-periscope-lottery': () => (
+                      <GatedSection
+                        gate={hasMarketContext}
+                        id="sec-periscope-lottery"
+                        label="Periscope Lottery"
+                        fallback={<SkeletonSection lines={4} />}
+                      >
+                        <PeriscopeLotteryPanel
                           marketOpen={market.data.quotes?.marketOpen ?? false}
                         />
                       </GatedSection>

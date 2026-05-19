@@ -103,6 +103,11 @@ export function getPanelRegistry(
         group: 'Market Context',
       },
       {
+        id: 'sec-periscope-lottery',
+        label: 'Periscope Lottery',
+        group: 'Market Context',
+      },
+      {
         id: 'sec-gexbot',
         label: 'GEXBot Dealer State',
         group: 'Market Context',

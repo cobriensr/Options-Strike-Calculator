@@ -82,6 +82,7 @@ describe('getPanelRegistry', () => {
       'sec-lottery-finder',
       'sec-greek-heatmap',
       'sec-silent-boom',
+      'sec-periscope-lottery',
       'sec-gexbot',
       'sec-futures',
       'sec-charts',
