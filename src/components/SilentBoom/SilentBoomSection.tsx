@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  boolPersistOpts,
+  convictionFloorPersistOpts,
+  floatPersistOpts,
+  intPersistOpts,
+  moneynessPersistOpts,
+  type ConvictionFloor,
+  type MoneynessMode,
+} from '../../hooks/persist-encoding.js';
+import {
   usePersistedState,
   type UsePersistedStateOptions,
 } from '../../hooks/usePersistedState.js';
@@ -62,36 +71,9 @@ const EXIT_POLICY_LS_KEY = 'silentBoom.exitPolicy';
 const ASK_PCT_BAND_LS_KEY = 'silentBoom.askPctBand';
 const TICKER_EXPANDED_LS_KEY = 'silent-boom-ticker-expanded';
 
-// Encoding shims so the usePersistedState migration preserves the
-// localStorage payload format from before Phase 2B. Users' saved
-// filter state stays valid across the refactor. Returning `undefined`
-// from `parse` tells the hook to fall back to its `defaultValue`.
-const boolPersistOpts: UsePersistedStateOptions<boolean> = {
-  parse: (raw) => raw === '1',
-  serialize: (v) => (v ? '1' : '0'),
-};
-
-const intPersistOpts: UsePersistedStateOptions<number> = {
-  parse: (raw) => {
-    const n = Number.parseInt(raw, 10);
-    return Number.isFinite(n) && n >= 0 ? n : undefined;
-  },
-  serialize: String,
-};
-
-const floatPersistOpts: UsePersistedStateOptions<number> = {
-  parse: (raw) => {
-    const n = Number.parseFloat(raw);
-    return Number.isFinite(n) ? n : undefined;
-  },
-  serialize: String,
-};
-
-const moneynessPersistOpts: UsePersistedStateOptions<MoneynessMode> = {
-  parse: (raw) => (isMoneynessMode(raw) ? raw : undefined),
-  serialize: (v) => v,
-};
-
+// File-local encoding shims. The shared boolean / int / float /
+// moneyness / convictionFloor opts live in src/hooks/persist-encoding.ts
+// (imported above). These ones are SilentBoom-specific.
 const exitPolicyPersistOpts: UsePersistedStateOptions<SilentBoomExitPolicy> = {
   parse: (raw) => (isSilentBoomExitPolicy(raw) ? raw : undefined),
   serialize: (v) => v,
@@ -105,12 +87,6 @@ const sortModePersistOpts: UsePersistedStateOptions<SilentBoomSortMode> = {
     raw === 'peak'
       ? raw
       : undefined,
-  serialize: (v) => v,
-};
-
-const convictionFloorPersistOpts: UsePersistedStateOptions<ConvictionFloor> = {
-  parse: (raw): ConvictionFloor | undefined =>
-    raw === 'tier1' || raw === 'tier2' || raw === 'all' ? raw : undefined,
   serialize: (v) => v,
 };
 
@@ -178,16 +154,13 @@ const GHOST_PRINT_SPIKE_RATIO_MIN = 100;
 const TIER1_MIN_SCORE = 21;
 const TIER2_MIN_SCORE = 8;
 
-type ConvictionFloor = 'all' | 'tier2' | 'tier1';
-
 /**
  * Moneyness chip — tri-state filter on the alert's strike vs. underlying
  * price at the spike bucket. Client-side filter only; rows with no spot
  * snapshot (pre-#152 backfill) fall through under 'all' and are hidden
- * under either 'otm' or 'itm'.
+ * under either 'otm' or 'itm'. `MoneynessMode` + `isMoneynessMode` are
+ * imported from the shared persist-encoding module.
  */
-type MoneynessMode = 'all' | 'otm' | 'itm';
-
 const MONEYNESS_FILTERS: ReadonlyArray<{
   value: MoneynessMode;
   label: string;
@@ -196,10 +169,6 @@ const MONEYNESS_FILTERS: ReadonlyArray<{
   { value: 'otm', label: 'OTM' },
   { value: 'itm', label: 'ITM' },
 ];
-
-function isMoneynessMode(v: unknown): v is MoneynessMode {
-  return v === 'all' || v === 'otm' || v === 'itm';
-}
 
 const TOD_FILTERS: Array<{ value: SilentBoomTod | null; label: string }> = [
   { value: null, label: 'all TOD' },

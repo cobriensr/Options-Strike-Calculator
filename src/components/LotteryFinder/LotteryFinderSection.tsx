@@ -1,4 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  boolPersistOpts,
+  convictionFloorPersistOpts,
+  intPersistOpts,
+  moneynessPersistOpts,
+  type ConvictionFloor,
+  type MoneynessMode,
+} from '../../hooks/persist-encoding.js';
+import {
+  usePersistedState,
+  type UsePersistedStateOptions,
+} from '../../hooks/usePersistedState.js';
 import { SectionBox } from '../ui/SectionBox.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
@@ -90,10 +102,9 @@ const AGGRESSIVE_PREMIUM_MAX_DTE = 3;
 /**
  * Moneyness chip — tri-state filter on strike vs. spot at first fire.
  * Client-side filter only; `entry.spotAtFirst` is always populated by
- * the lottery feed so there's no null fallthrough.
+ * the lottery feed so there's no null fallthrough. `MoneynessMode` is
+ * imported from the shared persist-encoding module.
  */
-type MoneynessMode = 'all' | 'otm' | 'itm';
-
 const MONEYNESS_FILTERS: ReadonlyArray<{
   value: MoneynessMode;
   label: string;
@@ -102,10 +113,6 @@ const MONEYNESS_FILTERS: ReadonlyArray<{
   { value: 'otm', label: 'OTM' },
   { value: 'itm', label: 'ITM' },
 ];
-
-function isMoneynessMode(v: unknown): v is MoneynessMode {
-  return v === 'all' || v === 'otm' || v === 'itm';
-}
 
 function isFireOtm(fire: LotteryFire): boolean {
   return fire.optionType === 'C'
@@ -126,8 +133,6 @@ function isFireAggressivePremium(fire: LotteryFire): boolean {
     isFireOtm(fire)
   );
 }
-
-type ConvictionFloor = 'all' | 'tier2' | 'tier1';
 
 const CONVICTION_OPTIONS: Array<{
   value: ConvictionFloor;
@@ -177,6 +182,22 @@ const CONVICTION_TO_MIN_SCORE: Record<ConvictionFloor, number | null> = {
 const MIN_FIRE_COUNT_LS_KEY = 'lottery.minFireCount';
 
 type MinFireCountFloor = 'all' | 'gte3' | 'gte8' | 'gte16';
+
+const sortModePersistOpts: UsePersistedStateOptions<LotterySortMode> = {
+  parse: (raw): LotterySortMode | undefined =>
+    raw === 'chronological' || raw === 'score' || raw === 'peak'
+      ? raw
+      : undefined,
+  serialize: (v) => v,
+};
+
+const minFireCountPersistOpts: UsePersistedStateOptions<MinFireCountFloor> = {
+  parse: (raw): MinFireCountFloor | undefined =>
+    raw === 'all' || raw === 'gte3' || raw === 'gte8' || raw === 'gte16'
+      ? raw
+      : undefined,
+  serialize: (v) => v,
+};
 
 const MIN_FIRE_COUNT_OPTIONS: Array<{
   value: MinFireCountFloor;
@@ -329,143 +350,79 @@ export function LotteryFinderSection({
     null,
   );
   const [todFilter, setTodFilter] = useState<TimeOfDay | null>(null);
-  // Persisted preferences. SSR-safe init via lazy useState fn.
-  const [sortMode, setSortMode] = useState<LotterySortMode>(() => {
-    if (typeof window === 'undefined') return 'chronological';
-    const stored = window.localStorage.getItem(SORT_LS_KEY);
-    return stored === 'score' || stored === 'peak' ? stored : 'chronological';
-  });
-  const [convictionFloor, setConvictionFloor] = useState<ConvictionFloor>(
-    () => {
-      if (typeof window === 'undefined') return 'all';
-      const stored = window.localStorage.getItem(CONVICTION_LS_KEY);
-      if (stored === 'tier1' || stored === 'tier2' || stored === 'all') {
-        return stored;
-      }
+  // Persisted preferences.
+  const [sortMode, setSortMode] = usePersistedState<LotterySortMode>(
+    SORT_LS_KEY,
+    'chronological',
+    sortModePersistOpts,
+  );
+  const [convictionFloor, setConvictionFloor] =
+    usePersistedState<ConvictionFloor>(
+      CONVICTION_LS_KEY,
       // One-time migration from the legacy boolean key. '1' means the
       // user had Tier 1 only enabled before; preserve that intent.
-      const legacy = window.localStorage.getItem(LEGACY_HIGH_CONVICTION_LS_KEY);
-      return legacy === '1' ? 'tier1' : 'all';
-    },
+      () =>
+        typeof window !== 'undefined' &&
+        window.localStorage.getItem(LEGACY_HIGH_CONVICTION_LS_KEY) === '1'
+          ? 'tier1'
+          : 'all',
+      convictionFloorPersistOpts,
+    );
+  const [minFireCount, setMinFireCount] = usePersistedState<MinFireCountFloor>(
+    MIN_FIRE_COUNT_LS_KEY,
+    'all',
+    minFireCountPersistOpts,
   );
-  const [minFireCount, setMinFireCount] = useState<MinFireCountFloor>(() => {
-    if (typeof window === 'undefined') return 'all';
-    const stored = window.localStorage.getItem(MIN_FIRE_COUNT_LS_KEY);
-    if (
-      stored === 'all' ||
-      stored === 'gte3' ||
-      stored === 'gte8' ||
-      stored === 'gte16'
-    ) {
-      return stored;
-    }
-    return 'all';
-  });
-  const [hideLatePm, setHideLatePm] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_LATE_PM_LS_KEY) === '1';
-  });
-  const [hideGated, setHideGated] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_GATED_LS_KEY) === '1';
-  });
-  const [hideCounterFlow, setHideCounterFlow] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HIDE_COUNTER_FLOW_LS_KEY) === '1';
-  });
+  const [hideLatePm, setHideLatePm] = usePersistedState<boolean>(
+    HIDE_LATE_PM_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
+  const [hideGated, setHideGated] = usePersistedState<boolean>(
+    HIDE_GATED_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
+  const [hideCounterFlow, setHideCounterFlow] = usePersistedState<boolean>(
+    HIDE_COUNTER_FLOW_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
   // Phase 2D — "Hide round-tripped" — filters out fires where the
   // evaluate-round-trip cron applied a non-zero score deduct. Defaults
   // ON (Phase 3 default-on shipped post-2E soak — deducted alerts had
   // +11.4pp trail-loss rate vs baseline; hiding them by default is the
   // higher-EV move). Persists locally; user can flip the chip OFF to
   // see deducted alerts. Spec: round-trip-score-deduct-production-2026-05-16.md
-  const [hideRoundTripped, setHideRoundTripped] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    const stored = window.localStorage.getItem(HIDE_ROUND_TRIPPED_LS_KEY);
-    return stored == null ? true : stored === '1';
-  });
-  const [aggressivePremium, setAggressivePremium] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(AGGRESSIVE_PREMIUM_LS_KEY) === '1';
-  });
+  const [hideRoundTripped, setHideRoundTripped] = usePersistedState<boolean>(
+    HIDE_ROUND_TRIPPED_LS_KEY,
+    true,
+    boolPersistOpts,
+  );
+  const [aggressivePremium, setAggressivePremium] = usePersistedState<boolean>(
+    AGGRESSIVE_PREMIUM_LS_KEY,
+    false,
+    boolPersistOpts,
+  );
   // Min premium floor in $K. Server-side filter so pagination reflects
   // the post-filter count. 0 means no floor. Mirrors the SilentBoom
   // minPremium chip (see SilentBoomSection).
-  const [minPremiumK, setMinPremiumK] = useState<number>(() => {
-    if (typeof window === 'undefined') return 0;
-    const stored = window.localStorage.getItem(MIN_PREMIUM_K_LS_KEY);
-    const n = stored == null ? 0 : Number.parseInt(stored, 10);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  });
-  const [moneynessMode, setMoneynessMode] = useState<MoneynessMode>(() => {
-    if (typeof window === 'undefined') return 'all';
-    const stored = window.localStorage.getItem(MONEYNESS_LS_KEY);
-    return isMoneynessMode(stored) ? stored : 'all';
-  });
+  const [minPremiumK, setMinPremiumK] = usePersistedState<number>(
+    MIN_PREMIUM_K_LS_KEY,
+    0,
+    intPersistOpts,
+  );
+  const [moneynessMode, setMoneynessMode] = usePersistedState<MoneynessMode>(
+    MONEYNESS_LS_KEY,
+    'all',
+    moneynessPersistOpts,
+  );
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
   const [page, setPage] = useState<number>(0);
 
-  // Persist on change. The === checks keep the writes idempotent so
-  // we don't thrash the storage on every render.
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(SORT_LS_KEY, sortMode);
-    }
-  }, [sortMode]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(CONVICTION_LS_KEY, convictionFloor);
-    }
-  }, [convictionFloor]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MIN_FIRE_COUNT_LS_KEY, minFireCount);
-    }
-  }, [minFireCount]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(HIDE_LATE_PM_LS_KEY, hideLatePm ? '1' : '0');
-    }
-  }, [hideLatePm]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(HIDE_GATED_LS_KEY, hideGated ? '1' : '0');
-    }
-  }, [hideGated]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(
-        HIDE_COUNTER_FLOW_LS_KEY,
-        hideCounterFlow ? '1' : '0',
-      );
-    }
-  }, [hideCounterFlow]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(
-        HIDE_ROUND_TRIPPED_LS_KEY,
-        hideRoundTripped ? '1' : '0',
-      );
-    }
-  }, [hideRoundTripped]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(
-        AGGRESSIVE_PREMIUM_LS_KEY,
-        aggressivePremium ? '1' : '0',
-      );
-    }
-  }, [aggressivePremium]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MIN_PREMIUM_K_LS_KEY, String(minPremiumK));
-    }
-  }, [minPremiumK]);
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(MONEYNESS_LS_KEY, moneynessMode);
-    }
-  }, [moneynessMode]);
+  // (Phase 2C: the 10 localStorage write effects that lived here were
+  // collapsed into the `usePersistedState` calls above. Same keys,
+  // same encodings, same defaults.)
 
   // Reset to page 0 whenever the result set's identity changes.
   // Otherwise the user could be on page 3, click a filter, and land

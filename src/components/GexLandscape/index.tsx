@@ -43,6 +43,11 @@ import {
 import { SectionBox } from '../ui';
 import type { GexStrikeLevel } from './types';
 import { useGexLandscapeData } from '../../hooks/useGexLandscapeData';
+import { boolPersistOpts } from '../../hooks/persist-encoding';
+import {
+  usePersistedState,
+  type UsePersistedStateOptions,
+} from '../../hooks/usePersistedState';
 import { useScrubController } from '../../hooks/useScrubController';
 import { useTopStrikesTracker } from '../../hooks/useTopStrikesTracker';
 import { getETToday } from '../../utils/timezone';
@@ -63,43 +68,13 @@ const TOP5_RANK_STORAGE_KEY = 'gex-landscape-top5-rank-by-v1';
 /** Ranking basis for the Top 5 tab: MM-attributed netGamma or naive OI sum. */
 type Top5RankBy = 'mm' | 'naive';
 
-function readTop5MutedFromStorage(): boolean {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return false;
-    return window.localStorage.getItem(TOP5_MUTE_STORAGE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function writeTop5MutedToStorage(muted: boolean): void {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(TOP5_MUTE_STORAGE_KEY, muted ? '1' : '0');
-  } catch {
-    /* private mode / quota — keep in-memory state */
-  }
-}
-
-function readTop5RankByFromStorage(): Top5RankBy {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return 'mm';
-    return window.localStorage.getItem(TOP5_RANK_STORAGE_KEY) === 'naive'
-      ? 'naive'
-      : 'mm';
-  } catch {
-    return 'mm';
-  }
-}
-
-function writeTop5RankByToStorage(rankBy: Top5RankBy): void {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(TOP5_RANK_STORAGE_KEY, rankBy);
-  } catch {
-    /* private mode / quota — keep in-memory state */
-  }
-}
+// File-local encoding shim. Boolean opts come from the shared
+// persist-encoding module; this one is Top5-specific.
+const top5RankByPersistOpts: UsePersistedStateOptions<Top5RankBy> = {
+  parse: (raw): Top5RankBy | undefined =>
+    raw === 'naive' || raw === 'mm' ? raw : undefined,
+  serialize: (v) => v,
+};
 
 /** View mode for the table area: full ±50pt grid or top 5 by |netGamma|. */
 type LandscapeTab = 'all' | 'top5';
@@ -239,26 +214,23 @@ const GexLandscape = memo(function GexLandscape({
   const tablistRef = useRef<HTMLDivElement>(null);
   // Mute the Top 5 composition-change chime. Persisted to localStorage so
   // the preference survives reloads.
-  const [top5Muted, setTop5Muted] = useState<boolean>(() =>
-    readTop5MutedFromStorage(),
+  const [top5Muted, setTop5Muted] = usePersistedState<boolean>(
+    TOP5_MUTE_STORAGE_KEY,
+    false,
+    boolPersistOpts,
   );
-  const toggleTop5Mute = useCallback(() => {
-    setTop5Muted((prev) => {
-      const next = !prev;
-      writeTop5MutedToStorage(next);
-      return next;
-    });
-  }, []);
+  const toggleTop5Mute = useCallback(
+    () => setTop5Muted((prev) => !prev),
+    [setTop5Muted],
+  );
   // Top 5 ranking basis. Persisted to localStorage so the choice
   // survives reloads — the trader's reading style typically settles
   // on one of MM or Naive for the day.
-  const [top5RankBy, setTop5RankBy] = useState<Top5RankBy>(() =>
-    readTop5RankByFromStorage(),
+  const [top5RankBy, setTop5RankBy] = usePersistedState<Top5RankBy>(
+    TOP5_RANK_STORAGE_KEY,
+    'mm',
+    top5RankByPersistOpts,
   );
-  const setTop5RankByPersisted = useCallback((next: Top5RankBy) => {
-    setTop5RankBy(next);
-    writeTop5RankByToStorage(next);
-  }, []);
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -659,7 +631,7 @@ const GexLandscape = memo(function GexLandscape({
                     type="button"
                     role="radio"
                     aria-checked={selected}
-                    onClick={() => setTop5RankByPersisted(key)}
+                    onClick={() => setTop5RankBy(key)}
                     title={title}
                     className={[
                       'rounded border px-2 py-0.5 font-mono text-[10px] font-semibold tracking-wider uppercase transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50',
