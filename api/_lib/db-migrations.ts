@@ -4959,4 +4959,27 @@ export const MIGRATIONS: Migration[] = [
          WHERE outcome_locked = FALSE`,
     ],
   },
+  {
+    id: 173,
+    description:
+      'Create opening_flow_signals table for per-date / per-ticker historical snapshots of the V4 Opening Flow Signal panel (spec: docs/superpowers/specs/opening-flow-signal-historical-persistence-2026-05-19.md). The endpoint re-computes from ws_option_trades when called for today, but raw trades are pruned at T+2 by cleanup-ws-option-trades (RETENTION_DAYS = 2), so historical reads beyond yesterday come back empty. The capture-opening-flow-signal cron writes one row per (date, ticker) at 08:50 CT daily so future-day reads survive the trade-table sweep. slice1/slice2/signal stored as JSONB to absorb shape growth without column proliferation. stop_pct + exit_minutes_from_entry are frozen per-row so a historical replay uses the rule constants that were in effect that morning (V4 → V5 etc.).',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS opening_flow_signals (
+            date DATE NOT NULL,
+            ticker TEXT NOT NULL,
+            window_status TEXT NOT NULL,
+            slice1 JSONB,
+            slice2 JSONB,
+            signal JSONB,
+            as_of_utc TIMESTAMPTZ NOT NULL,
+            stop_pct NUMERIC(6,4) NOT NULL,
+            exit_minutes_from_entry INTEGER NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (date, ticker)
+          )`,
+      sql`CREATE INDEX IF NOT EXISTS opening_flow_signals_date_idx
+            ON opening_flow_signals (date DESC)`,
+    ],
+  },
 ];
