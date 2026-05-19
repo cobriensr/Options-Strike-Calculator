@@ -16,7 +16,7 @@
  * fetch.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
 import { getErrorMessage } from '../utils/error.js';
 
@@ -86,6 +86,10 @@ export function useTickerNetFlowBatch({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
+  // Cancels any in-flight request on rerun / unmount so a stale response
+  // can't clobber a newer fetch's state and the browser stops the
+  // bandwidth burn on rapid ticker-set changes.
+  const abortRef = useRef<AbortController | null>(null);
 
   const canonical = useMemo(() => canonicalizeTickers(tickers), [tickers]);
   // Join into a primitive so it's a stable dep — a new array with the
@@ -94,15 +98,27 @@ export function useTickerNetFlowBatch({
 
   const doFetch = useCallback(async () => {
     if (tickersKey.length === 0) return;
+
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     setLoading(true);
     setError(null);
     try {
       const url = `/api/ticker-net-flow-current?tickers=${encodeURIComponent(tickersKey)}&date=${encodeURIComponent(date)}`;
-      const res = await fetch(url, { credentials: 'same-origin' });
+      const res = await fetch(url, {
+        credentials: 'same-origin',
+        signal: ctrl.signal,
+      });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
       const json = (await res.json()) as TickerNetFlowCurrentResponse;
+      // Superseded by a newer fetch between resolve and parse — bail
+      // before clobbering newer state.
+      if (ctrl.signal.aborted) return;
+
       const next = new Map<string, TickerNetFlowSnapshot>();
       for (const s of json.snapshots) {
         next.set(s.ticker, {
@@ -114,9 +130,13 @@ export function useTickerNetFlowBatch({
       setData(next);
       setFetchedAt(Date.now());
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (ctrl.signal.aborted) return;
       setError(getErrorMessage(err));
     } finally {
-      setLoading(false);
+      // Only clear loading if this fetch wasn't superseded — a newer
+      // fetch owns loading=true until it itself resolves.
+      if (abortRef.current === ctrl) setLoading(false);
     }
   }, [tickersKey, date]);
 
@@ -136,6 +156,9 @@ export function useTickerNetFlowBatch({
     }, POLL_INTERVALS.TICKER_NET_FLOW);
     return () => clearInterval(id);
   }, [doFetch, marketOpen, tickersKey]);
+
+  // Cancel any in-flight request on unmount.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   return { data, loading, error, fetchedAt };
 }

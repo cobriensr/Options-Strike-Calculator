@@ -242,4 +242,131 @@ describe('useTickerNetFlowBatch', () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it('aborts the in-flight request when the ticker set changes mid-flight', async () => {
+    // First fetch never resolves until aborted; rapid ticker switch
+    // should fire AbortError on the old controller and let the new
+    // fetch's response land without being clobbered.
+    const abortRef: { signal: AbortSignal | null } = { signal: null };
+    fetchMock.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise((_, reject) => {
+          abortRef.signal = init.signal ?? null;
+          init.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        date: '2026-05-07',
+        requestedTickers: ['IWM'],
+        count: 1,
+        snapshots: [snapshot('IWM', 999, -111)],
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ tickers }: { tickers: string[] }) =>
+        useTickerNetFlowBatch({
+          tickers,
+          date: '2026-05-07',
+          marketOpen: true,
+        }),
+      { initialProps: { tickers: ['SPY'] } },
+    );
+
+    // First fetch in-flight.
+    await waitFor(() => expect(result.current.loading).toBe(true));
+
+    // Switch tickers — old AbortController must fire, new fetch lands.
+    rerender({ tickers: ['IWM'] });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data.size).toBe(1);
+    expect(result.current.data.get('IWM')).toMatchObject({ cumNcp: 999 });
+    expect(result.current.error).toBeNull();
+    expect(abortRef.signal?.aborted).toBe(true);
+  });
+
+  it('bails after fetch resolves if superseded by a newer ticker set', async () => {
+    // The first fetch resolves successfully AFTER it has been
+    // superseded by the rerender — the hook must check
+    // `ctrl.signal.aborted` between resolve and JSON parse and bail
+    // so the stale SPY response can't clobber the winning IWM state.
+    let resolveFirst!: (value: Response) => void;
+    const aborts: AbortSignal[] = [];
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => {
+      if (init.signal) aborts.push(init.signal);
+      return new Promise<Response>((resolve) => {
+        resolveFirst = resolve;
+      });
+    });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        date: '2026-05-07',
+        requestedTickers: ['IWM'],
+        count: 1,
+        snapshots: [snapshot('IWM', 999, -111)],
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ tickers }: { tickers: string[] }) =>
+        useTickerNetFlowBatch({
+          tickers,
+          date: '2026-05-07',
+          marketOpen: true,
+        }),
+      { initialProps: { tickers: ['SPY'] } },
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // Switch — first ctrl is aborted, second fetch resolves with IWM data.
+    rerender({ tickers: ['IWM'] });
+    await waitFor(() => expect(result.current.data.get('IWM')).toBeDefined());
+    expect(aborts[0]?.aborted).toBe(true);
+
+    // Now resolve the first fetch's body — the hook should detect the
+    // controller was superseded and bail without clobbering IWM data.
+    await act(async () => {
+      resolveFirst(
+        jsonResponse({
+          date: '2026-05-07',
+          requestedTickers: ['SPY'],
+          count: 1,
+          snapshots: [snapshot('SPY', 100, -50)],
+        }),
+      );
+      await Promise.resolve();
+    });
+
+    expect(result.current.data.has('SPY')).toBe(false);
+    expect(result.current.data.get('IWM')).toMatchObject({ cumNcp: 999 });
+  });
+
+  it('aborts the in-flight request on unmount', async () => {
+    const abortRef: { signal: AbortSignal | null } = { signal: null };
+    fetchMock.mockImplementationOnce(
+      (_url: string, init: RequestInit) =>
+        new Promise(() => {
+          abortRef.signal = init.signal ?? null;
+        }),
+    );
+
+    const { unmount } = renderHook(() =>
+      useTickerNetFlowBatch({
+        tickers: ['SPY'],
+        date: '2026-05-07',
+        marketOpen: true,
+      }),
+    );
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(abortRef.signal?.aborted).toBe(false);
+
+    unmount();
+    expect(abortRef.signal?.aborted).toBe(true);
+  });
 });
