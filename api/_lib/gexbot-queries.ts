@@ -260,12 +260,21 @@ function pickWindowTuple(raw: unknown, key: string): [number, number] | null {
 
 export async function getMaxchangeWinners(): Promise<MaxchangeWinnerRow[]> {
   const sql = getDb();
+  // 5-min freshness window: fetch-gexbot-fast writes 1/min for every
+  // (ticker, endpoint, category) tuple, so anything older than 5 min
+  // is stale. Without this bound the DISTINCT ON has to walk through
+  // a full day's worth of captures (16 tickers × ~11 categories × 60
+  // min × ~6 hours ≈ 60k+ rows) to find the latest per tuple — slow
+  // enough under Neon load to blow past the client's 10s fetch
+  // timeout and surface as "Request timed out (HTTP 0)". With the
+  // bound the scan is ~16 × 11 ≈ 175 rows.
   const rows = (await withDbRetry(
     () => sql`
       SELECT DISTINCT ON (ticker, endpoint, category)
         ticker, endpoint, category, captured_at, raw_response
       FROM gexbot_api_capture
       WHERE category LIKE '%/maxchange'
+        AND captured_at >= now() - INTERVAL '5 minutes'
       ORDER BY ticker, endpoint, category, captured_at DESC
     `,
     READ_RETRIES,
