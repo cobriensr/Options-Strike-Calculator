@@ -104,6 +104,11 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'enrich-periscope-lottery-outcomes': {
+    schedule: '30 21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+  },
   'evaluate-round-trip': {
     schedule: '*/10 14-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,

@@ -218,6 +218,10 @@
       "schedule": "30 21 * * 1-5"
     },
     {
+      "path": "/api/cron/enrich-periscope-lottery-outcomes",
+      "schedule": "30 21 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-nope",
       "schedule": "* 13-21 * * 1-5"
     },
@@ -280,6 +284,7 @@
     "api/cron/detect-silent-boom.ts": { "maxDuration": 60 },
     "api/cron/detect-periscope-call-lottery.ts": { "maxDuration": 30 },
     "api/cron/detect-periscope-put-lottery.ts": { "maxDuration": 30 },
+    "api/cron/enrich-periscope-lottery-outcomes.ts": { "maxDuration": 120 },
     "api/cron/evaluate-round-trip.ts": { "maxDuration": 60 },
     "api/cron/takeit-fill-shap.ts": { "maxDuration": 60 },
     "api/cron/wave2-confirmation.ts": { "maxDuration": 60 },
