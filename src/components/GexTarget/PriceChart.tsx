@@ -72,28 +72,48 @@ export interface PriceChartProps {
 
 // ── 5-minute resampler ────────────────────────────────────────────────────
 
+interface FiveMinBucket {
+  first: SPXCandle;
+  last: SPXCandle;
+  high: number;
+  low: number;
+  volume: number;
+}
+
 function resampleTo5Min(candles: SPXCandle[]): SPXCandle[] {
   if (candles.length === 0) return [];
   const FIVE_MIN_MS = 5 * 60 * 1000;
-  const buckets = new Map<number, SPXCandle[]>();
+  // Track open/close as the first/last *inserted* candle. Same behavior
+  // as the previous `group.at(0)`/`group.at(-1)` form, but without the
+  // non-null assertions and without retaining the raw arrays.
+  const buckets = new Map<number, FiveMinBucket>();
   for (const c of candles) {
     const key = c.datetime - (c.datetime % FIVE_MIN_MS);
     const bucket = buckets.get(key);
     if (bucket) {
-      bucket.push(c);
+      bucket.last = c;
+      bucket.high = Math.max(bucket.high, c.high);
+      bucket.low = Math.min(bucket.low, c.low);
+      bucket.volume += c.volume;
     } else {
-      buckets.set(key, [c]);
+      buckets.set(key, {
+        first: c,
+        last: c,
+        high: c.high,
+        low: c.low,
+        volume: c.volume,
+      });
     }
   }
   return Array.from(buckets.entries())
     .sort(([a], [b]) => a - b)
-    .map(([key, group]) => ({
+    .map(([key, b]) => ({
       datetime: key,
-      open: group.at(0)!.open,
-      high: Math.max(...group.map((c) => c.high)),
-      low: Math.min(...group.map((c) => c.low)),
-      close: group.at(-1)!.close,
-      volume: group.reduce((sum, c) => sum + c.volume, 0),
+      open: b.first.open,
+      high: b.high,
+      low: b.low,
+      close: b.last.close,
+      volume: b.volume,
     }));
 }
 
@@ -349,11 +369,15 @@ export const PriceChart = memo(function PriceChart({
   // ── Overlay lines (GEX levels + opening walls + previous close) ────────
 
   useEffect(() => {
-    if (!candleSeriesRef.current) return;
+    // Capture once: refs are mutable, so reading `candleSeriesRef.current`
+    // on every line would leak `!` non-null assertions all over this
+    // effect. The local const lets TS narrow after the early return.
+    const series = candleSeriesRef.current;
+    if (!series) return;
 
     // Remove previous lines
     for (const line of priceLineRefs.current) {
-      candleSeriesRef.current.removePriceLine(line);
+      series.removePriceLine(line);
     }
     priceLineRefs.current = [];
 
@@ -370,7 +394,7 @@ export const PriceChart = memo(function PriceChart({
     // GEX levels: top 5 in leaderboard order (same set as urgency/sparklines panels)
     if (score) {
       score.leaderboard.slice(0, 5).forEach((s, i) => {
-        const line = candleSeriesRef.current!.createPriceLine({
+        const line = series.createPriceLine({
           price: s.strike,
           color: GEX_COLORS[i] ?? GEX_COLORS[4],
           lineWidth: GEX_WIDTHS[i] ?? 1,
@@ -385,7 +409,7 @@ export const PriceChart = memo(function PriceChart({
     // Call wall (highest dealer call-gamma-OI strike at open) — cyan dashed
     if (openingCallStrike !== null) {
       lines.push(
-        candleSeriesRef.current!.createPriceLine({
+        series.createPriceLine({
           price: openingCallStrike,
           color: '#00bcd4',
           lineWidth: 1,
@@ -399,7 +423,7 @@ export const PriceChart = memo(function PriceChart({
     // Put wall (highest dealer put-gamma-OI strike at open) — orange dashed
     if (openingPutStrike !== null) {
       lines.push(
-        candleSeriesRef.current!.createPriceLine({
+        series.createPriceLine({
           price: openingPutStrike,
           color: '#ff9800',
           lineWidth: 1,
@@ -413,7 +437,7 @@ export const PriceChart = memo(function PriceChart({
     // Previous close line
     if (previousClose !== null) {
       lines.push(
-        candleSeriesRef.current!.createPriceLine({
+        series.createPriceLine({
           price: previousClose,
           color: 'rgba(255,255,255,0.35)',
           lineWidth: 1,
