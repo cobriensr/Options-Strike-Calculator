@@ -4918,7 +4918,7 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 172,
     description:
-      "Create periscope_lottery_fires table for the dual-panel Periscope-event-driven lottery alerts (call lottery / put lottery). Triggers on periscope_snapshots gamma (call lottery) and charm (put lottery) events that meet the v3 in-sample-validated filter chain documented in docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md. Idempotent UNIQUE (fire_type, fire_time, event_strike) so the 5-min cron can re-scan the same 10-min Periscope slice without duplicating rows. Outcome columns (peak_px, realized_r) filled by enrich-periscope-lottery-outcomes cron at 20:10 UTC daily.",
+      'Create periscope_lottery_fires table for the dual-panel Periscope-event-driven lottery alerts (call lottery / put lottery). Triggers on periscope_snapshots gamma (call lottery) and charm (put lottery) events that meet the v3 in-sample-validated filter chain documented in docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md. Idempotent UNIQUE (fire_type, fire_time, event_strike) so the 5-min cron can re-scan the same 10-min Periscope slice without duplicating rows. Outcome columns (peak_px, realized_r) filled by enrich-periscope-lottery-outcomes cron at 20:10 UTC daily.',
     statements: (sql) => [
       sql`CREATE TABLE IF NOT EXISTS periscope_lottery_fires (
             id BIGSERIAL PRIMARY KEY,
