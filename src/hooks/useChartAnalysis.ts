@@ -10,6 +10,7 @@ import type {
 import { THINKING_MESSAGES } from '../constants';
 import { buildPreviousRecommendation } from '../utils/analysis';
 import { getErrorMessage } from '../utils/error';
+import { usePolling } from './usePolling';
 
 export interface RetryPrompt {
   attempt: number;
@@ -130,16 +131,15 @@ export function useChartAnalysis(opts: {
     setError('Retry cancelled.');
   }, []);
 
-  // Elapsed timer while loading
+  // Elapsed timer while loading. The eager reset on every `loading` flip
+  // (true→false AND false→true) mirrors the legacy single-effect shape
+  // where both branches called `setElapsed(0)` before either returning or
+  // starting the interval. usePolling only owns the recurring tick.
   useEffect(() => {
-    if (!loading) {
-      setElapsed(0);
-      return;
-    }
     setElapsed(0);
-    const interval = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(interval);
   }, [loading]);
+
+  usePolling(() => setElapsed((e) => e + 1), 1000, [loading]);
 
   // Build a fresh payload from current ref values so retries
   // always send up-to-date market data and potentially new images.

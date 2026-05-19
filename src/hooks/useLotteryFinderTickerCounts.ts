@@ -15,6 +15,7 @@ import type {
   TimeOfDay,
 } from '../components/LotteryFinder/types.js';
 import { getErrorMessage } from '../utils/error.js';
+import { usePolling } from './usePolling.js';
 
 export interface LotteryFinderTickerCount {
   ticker: string;
@@ -110,13 +111,13 @@ export function useLotteryFinderTickerCounts({
     }
   }, [date, reload, cheapCallPm, mode, optionType, tod, minScore, minPremium]);
 
+  // Eager fetch on mount / arg change. usePolling only schedules the
+  // recurring tick.
   useEffect(() => {
     fetchOnce();
-    if (!marketOpen) return;
-    if (historical) return;
-    const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
-    return () => clearInterval(id);
-  }, [fetchOnce, marketOpen, historical]);
+  }, [fetchOnce]);
+
+  usePolling(fetchOnce, POLL_INTERVALS.OTM_FLOW, [marketOpen, !historical]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

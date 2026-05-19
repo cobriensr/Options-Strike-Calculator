@@ -14,6 +14,7 @@ import type {
   ContractTapeResponse,
 } from '../components/LotteryFinder/types.js';
 import { getErrorMessage } from '../utils/error.js';
+import { usePolling } from './usePolling.js';
 
 interface UseContractTapeArgs {
   /** OCC OSI symbol — required when enabled. */
@@ -100,14 +101,17 @@ export function useContractTape({
     }
   }, [chain, date, from, to, enabled]);
 
+  // Eager fetch on mount / arg change. usePolling only schedules the
+  // recurring tick.
   useEffect(() => {
     fetchOnce();
-    if (!enabled) return;
-    if (!marketOpen) return;
-    if (date !== todayCt()) return;
-    const id = setInterval(fetchOnce, POLL_INTERVALS.OTM_FLOW);
-    return () => clearInterval(id);
-  }, [fetchOnce, enabled, marketOpen, date]);
+  }, [fetchOnce]);
+
+  usePolling(fetchOnce, POLL_INTERVALS.OTM_FLOW, [
+    enabled,
+    marketOpen,
+    date === todayCt(),
+  ]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

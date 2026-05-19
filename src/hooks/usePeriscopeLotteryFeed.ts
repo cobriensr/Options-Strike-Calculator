@@ -18,6 +18,7 @@ import type {
   PeriscopeLotteryFire,
 } from '../components/PeriscopeLottery/types.js';
 import { getErrorMessage } from '../utils/error.js';
+import { usePolling } from './usePolling.js';
 
 interface UsePeriscopeLotteryFeedArgs {
   /** YYYY-MM-DD (ET) — `today` in the panel, can also be a historical date. */
@@ -94,13 +95,13 @@ export function usePeriscopeLotteryFeed({
     }
   }, [date, fireType, limit]);
 
+  // Eager fetch on mount / arg change. usePolling only schedules the
+  // recurring tick.
   useEffect(() => {
     fetchOnce();
-    if (!marketOpen) return;
-    if (historical) return;
-    const id = setInterval(fetchOnce, POLL_INTERVALS.PERISCOPE);
-    return () => clearInterval(id);
-  }, [fetchOnce, marketOpen, historical]);
+  }, [fetchOnce]);
+
+  usePolling(fetchOnce, POLL_INTERVALS.PERISCOPE, [marketOpen, !historical]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 

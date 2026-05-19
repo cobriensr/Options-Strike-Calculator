@@ -16,6 +16,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
 import { getErrorMessage } from '../utils/error';
+import { usePolling } from './usePolling.js';
 
 export interface FuturesSnapshot {
   symbol: string;
@@ -129,14 +130,13 @@ export function useFuturesData(
   // A historical `at` view is static — polling would waste bandwidth
   // re-fetching the same snapshot. Gating on `marketOpen` matches every
   // other polling hook in the app.
-  useEffect(() => {
-    if (at) return;
-    if (!marketOpen) return;
-    const id = setInterval(() => {
+  usePolling(
+    () => {
       void fetchData();
-    }, POLL_INTERVALS.FUTURES);
-    return () => clearInterval(id);
-  }, [fetchData, at, marketOpen]);
+    },
+    POLL_INTERVALS.FUTURES,
+    [!at, marketOpen],
+  );
 
   return {
     snapshots,
