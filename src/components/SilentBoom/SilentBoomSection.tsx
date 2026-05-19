@@ -736,8 +736,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   // vertically on heavy days. Lets the user filter to TLT/CRWV/AMD-style
   // singleton-alert tickers without typing.
   const topTickers = useMemo(
-    () => tickerCounts.tickers.map((t) => [t.ticker, t.count] as const),
-    [tickerCounts.tickers],
+    () =>
+      (tickerCounts.data?.tickers ?? []).map(
+        (t) => [t.ticker, t.count] as const,
+      ),
+    [tickerCounts.data],
   );
 
   // Group the displayed alerts by ticker so each underlying renders

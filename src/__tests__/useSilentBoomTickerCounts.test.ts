@@ -3,6 +3,10 @@
  * dashboard. Mirrors useSilentBoomFeed's filter surface minus ticker /
  * pagination / sort. Polls every 30s during market hours, skipped when
  * historical or marketOpen=false.
+ *
+ * Phase 2M-2: the hook is now a thin wrapper around `useFetchedData<T>`;
+ * its return shape is the canonical `{ data, loading, error, refresh,
+ * fetchedAt }`. `tickers` lives at `result.current.data?.tickers`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
@@ -100,8 +104,8 @@ describe('useSilentBoomTickerCounts', () => {
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.tickers).toHaveLength(1);
-    expect(result.current.tickers[0]?.ticker).toBe('SNDK');
+    expect(result.current.data?.tickers).toHaveLength(1);
+    expect(result.current.data?.tickers[0]?.ticker).toBe('SNDK');
     expect(result.current.error).toBeNull();
     expect(result.current.fetchedAt).toBeTypeOf('number');
   });
@@ -116,7 +120,7 @@ describe('useSilentBoomTickerCounts', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toContain('500');
-    expect(result.current.tickers).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 
   it('surfaces a rejected fetch as a string error', async () => {
@@ -190,7 +194,7 @@ describe('useSilentBoomTickerCounts', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('exposes refetch that triggers a fresh fetch', async () => {
+  it('exposes refresh that triggers a fresh fetch', async () => {
     fetchMock.mockResolvedValue(jsonResponse(EMPTY));
     const { result } = renderHook(() =>
       useSilentBoomTickerCounts({
@@ -201,7 +205,7 @@ describe('useSilentBoomTickerCounts', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });

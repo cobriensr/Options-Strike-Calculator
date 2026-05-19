@@ -641,8 +641,11 @@ export function LotteryFinderSection({
   // because the API already sorts count desc and `flex flex-wrap`
   // handles the row growing vertically. Mirrors the Silent Boom fix.
   const topTickers = useMemo(
-    () => tickerCounts.tickers.map((t) => [t.ticker, t.count] as const),
-    [tickerCounts.tickers],
+    () =>
+      (tickerCounts.data?.tickers ?? []).map(
+        (t) => [t.ticker, t.count] as const,
+      ),
+    [tickerCounts.data],
   );
 
   // Task A of lottery-reignition-ui-2026-05-17 — promote REIGNITED

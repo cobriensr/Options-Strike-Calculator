@@ -115,11 +115,11 @@ beforeEach(() => {
   window.localStorage.clear();
   mockUseSilentBoomFeed.mockReturnValue(defaultHookResult);
   mockUseSilentBoomTickerCounts.mockReturnValue({
-    tickers: [],
+    data: { tickers: [] },
     loading: false,
     error: null,
     fetchedAt: null,
-    refetch: vi.fn(),
+    refresh: vi.fn(),
   });
 });
 

@@ -154,11 +154,11 @@ beforeEach(() => {
   window.localStorage.clear();
   mockUseLotteryFinder.mockReturnValue(defaultHookResult);
   mockUseLotteryFinderTickerCounts.mockReturnValue({
-    tickers: [],
+    data: { tickers: [] },
     loading: false,
     error: null,
     fetchedAt: null,
-    refetch: vi.fn(),
+    refresh: vi.fn(),
   });
 });
 
