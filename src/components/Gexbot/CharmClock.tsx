@@ -67,15 +67,32 @@ function formatHoursMinutes(hours: number): string {
 
 function formatDriftPct(pct: number | null): string {
   if (pct == null) return '—';
-  const signed = pct >= 0 ? '+' : '';
-  return `${signed}${(pct * 100).toFixed(3)}%`;
+  const abs = Math.abs(pct * 100);
+  const signed = pct >= 0 ? '+' : '−';
+  // Auto-precision: drift is uncalibrated (1e9 divisor), so most values
+  // land in tiny ranges. Switch precision so non-zero signal is always
+  // visible — otherwise everything rounds to 0.000% and the relative
+  // ordering (the actual actionable read per the spec) is lost.
+  if (abs >= 1) return `${signed}${abs.toFixed(2)}%`;
+  if (abs >= 0.01) return `${signed}${abs.toFixed(3)}%`;
+  if (abs >= 0.0001) return `${signed}${abs.toFixed(5)}%`;
+  if (abs > 0) return `${signed}${abs.toExponential(2)}%`;
+  return '0%';
 }
 
 function formatCharm(value: number): string {
-  // Render dollar-charm in M (millions). Sign included.
-  const millions = value / 1_000_000;
-  const signed = millions >= 0 ? '+' : '';
-  return `${signed}$${millions.toFixed(1)}M`;
+  // Auto-scale: GEXBot's zcharm can swing from small-ETF values
+  // (sub-thousand $) to index values (millions). A single fixed unit
+  // collapses most values to "$0.0M". Pick the unit that keeps two
+  // significant digits visible — preserves the relative ordering signal
+  // across very different magnitudes.
+  const abs = Math.abs(value);
+  const signed = value >= 0 ? '+' : '−';
+  if (abs >= 1_000_000) return `${signed}$${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${signed}$${(abs / 1_000).toFixed(2)}K`;
+  if (abs >= 1) return `${signed}$${abs.toFixed(2)}`;
+  if (abs > 0) return `${signed}$${abs.toFixed(4)}`;
+  return '$0';
 }
 
 function CharmClockInner({ marketOpen }: CharmClockProps) {

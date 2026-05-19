@@ -117,6 +117,42 @@ describe('<DexoflowVelocityTape>', () => {
     expect(rows[0]).toHaveTextContent('SPX');
   });
 
+  it('filters out rows where every flow scalar is zero', () => {
+    // GEXBot returns 0 (not null) for smaller ETFs and VIX when 0DTE
+    // flow is below measurement threshold. Surfacing them as "─ 0"
+    // rows just dilutes the tape — they carry no signal.
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({
+          ticker: 'SPX',
+          dexoflow: 1234.5,
+          gexoflow: -340,
+          cvroflow: 0.04,
+        }),
+        makeRow({
+          ticker: 'VIX',
+          dexoflow: 0,
+          gexoflow: 0,
+          cvroflow: 0,
+        }),
+        makeRow({
+          ticker: 'SLV',
+          dexoflow: 0,
+          gexoflow: 0,
+          cvroflow: 0,
+        }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    render(<DexoflowVelocityTape marketOpen />);
+    const tape = screen.getByTestId('dexoflow-tape');
+    const rows = tape.querySelectorAll('tbody tr');
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toHaveTextContent('SPX');
+  });
+
   it('formats large values with K/M suffixes and proper sign glyph', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [

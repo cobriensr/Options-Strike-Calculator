@@ -67,8 +67,14 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
   const velocityRows = useMemo<VelocityRow[]>(() => {
     return rows
       .filter(
+        // Drop rows where every flow-rate is null OR zero. GEXBot
+        // returns explicit zeros for the smaller ETFs and VIX when
+        // there's no measurable 0DTE flow — surfacing them here just
+        // makes the tape harder to scan. Magnitude-sum > 0 keeps any
+        // row with at least one meaningful scalar.
         (r: SnapshotsLatestRow) =>
-          r.dexoflow != null || r.gexoflow != null || r.cvroflow != null,
+          magnitude(r.dexoflow) + magnitude(r.gexoflow) + magnitude(r.cvroflow) >
+          0,
       )
       .map((r) => ({
         ticker: r.ticker,

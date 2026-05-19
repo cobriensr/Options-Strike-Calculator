@@ -119,7 +119,26 @@ describe('<CharmClock>', () => {
       freshestAt: '2026-05-19T17:00:00Z',
     });
     render(<CharmClock marketOpen />);
-    expect(screen.getByText(/\+\$47\.0M/)).toBeInTheDocument();
+    expect(screen.getByText(/\+\$47\.00M/)).toBeInTheDocument();
+  });
+
+  it('formats small-magnitude charm with extra precision so the value is visible', () => {
+    // GEXBot ships small zcharm values for smaller ETFs and VIX.
+    // Previously formatCharm rounded everything < 50K to "$0.0M" —
+    // every row collapsed to the same display and the relative
+    // ordering (the actionable signal per the spec) was lost.
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        makeRow({ ticker: 'VIX', spot: 18, zcharm: 4_200 }),
+        makeRow({ ticker: 'SLV', spot: 28, zcharm: 0.85 }),
+      ],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T17:00:00Z',
+    });
+    render(<CharmClock marketOpen />);
+    expect(screen.getByText(/\+\$4\.20K/)).toBeInTheDocument();
+    expect(screen.getByText(/\+\$0\.85/)).toBeInTheDocument();
   });
 
   it('formats negative drift in rose color tone', () => {
