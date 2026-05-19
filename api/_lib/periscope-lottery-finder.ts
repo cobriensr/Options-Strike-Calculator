@@ -50,8 +50,7 @@ interface FlowRow {
 const toNum = (v: DbNumeric | null | undefined): number =>
   v == null ? Number.NaN : typeof v === 'number' ? v : Number(v);
 
-const toDate = (v: DbTimestamp): Date =>
-  v instanceof Date ? v : new Date(v);
+const toDate = (v: DbTimestamp): Date => (v instanceof Date ? v : new Date(v));
 
 /** YYYY-MM-DD in America/Chicago (matches the trading-day boundary the
  * cron observes — 0DTE expiry rolls at 15:00 CT, not UTC midnight). */

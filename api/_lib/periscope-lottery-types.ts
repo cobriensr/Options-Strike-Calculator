@@ -80,7 +80,7 @@ export const PERISCOPE_LOTTERY_THRESHOLDS = {
     /** Stage 1: top-N% per-day filter on |gamma_delta| */
     DAY_TOP_PCT: 0.01,
     /** Stage 2: top-N% rank within top-1% subset (both axes, AND) */
-    RANK_FLOOR: 0.90,
+    RANK_FLOOR: 0.9,
     /** Sign filter: gamma_post must be strictly negative */
     SIGN_NEGATIVE: true,
     /** Strike must be at least this many points above spot */

@@ -1,0 +1,92 @@
+/**
+ * GET /api/cron/detect-periscope-call-lottery
+ *
+ * Runs every 5 min during market hours. Pulls the two most-recent
+ * periscope_snapshots gamma slices for today's 0DTE expiry, applies
+ * the v3 strict filter chain (see periscope-lottery-finder.ts /
+ * PERISCOPE_LOTTERY_THRESHOLDS.CALL), and UPSERTs qualifying rows into
+ * periscope_lottery_fires with ON CONFLICT DO NOTHING.
+ *
+ * The 5-min cadence is chosen to be tighter than the 10-min periscope
+ * scrape interval so a delayed slice still gets caught within the
+ * trading day. ON CONFLICT (fire_type, fire_time, event_strike) makes
+ * the re-scan idempotent — same slice scanned twice = no duplicate row.
+ *
+ * Spec: docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md
+ */
+
+import { getDb } from '../_lib/db.js';
+import {
+  detectCallLottery,
+  todayExpiry,
+} from '../_lib/periscope-lottery-finder.js';
+import type { PeriscopeLotteryFire } from '../_lib/periscope-lottery-types.js';
+import {
+  withCronInstrumentation,
+  type CronResult,
+} from '../_lib/cron-instrumentation.js';
+
+export default withCronInstrumentation(
+  'detect-periscope-call-lottery',
+  async (ctx): Promise<CronResult> => {
+    const expiry = todayExpiry();
+    const fires = await detectCallLottery(expiry);
+
+    if (fires.length === 0) {
+      return {
+        status: 'success',
+        rows: 0,
+        metadata: { expiry, candidates: 0 },
+      };
+    }
+
+    const sql = getDb();
+    let inserted = 0;
+    for (const f of fires) {
+      const result = (await sql`
+        INSERT INTO periscope_lottery_fires (
+          fire_type, fire_time, expiry, event_strike, trade_strike,
+          spot_at_event, strike_dist, greek_post, greek_delta,
+          greek_lvl_rank, greek_chg_rank,
+          gex_dollars, call_ratio, qqq_net_prem_balance_30m,
+          entry_px, vix,
+          v3_strict_pass, v4_badge
+        ) VALUES (
+          ${f.fireType}, ${f.fireTime.toISOString()}, ${f.expiry},
+          ${f.eventStrike}, ${f.tradeStrike},
+          ${f.spotAtEvent}, ${f.strikeDist},
+          ${f.greekPost}, ${f.greekDelta},
+          ${f.greekLvlRank}, ${f.greekChgRank},
+          ${f.gexDollars}, ${f.callRatio}, ${f.qqqNetPremBalance30m},
+          ${f.entryPx}, ${f.vix},
+          ${f.v3StrictPass}, ${f.v4Badge}
+        )
+        ON CONFLICT (fire_type, fire_time, event_strike) DO NOTHING
+        RETURNING id
+      `) as { id: number }[];
+      if (result.length > 0) inserted += 1;
+    }
+
+    ctx.logger.info(
+      { expiry, candidates: fires.length, inserted },
+      'detect-periscope-call-lottery completed',
+    );
+
+    // Surface notable diagnostics in the response for monitoring
+    const v4Badges = fires.filter(
+      (f: PeriscopeLotteryFire) => f.v4Badge,
+    ).length;
+
+    return {
+      status: 'success',
+      rows: inserted,
+      metadata: {
+        expiry,
+        candidates: fires.length,
+        inserted,
+        v4Badges,
+      },
+    };
+  },
+  { requireApiKey: false },
+);

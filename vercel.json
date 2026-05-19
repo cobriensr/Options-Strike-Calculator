@@ -182,6 +182,14 @@
       "schedule": "*/5 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/detect-periscope-call-lottery",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/detect-periscope-put-lottery",
+      "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
       "path": "/api/cron/evaluate-round-trip",
       "schedule": "*/10 14-21 * * 1-5"
     },
@@ -270,6 +278,8 @@
     "api/cron/backfill-futures-gaps.ts": { "maxDuration": 800 },
     "api/cron/detect-lottery-fires.ts": { "maxDuration": 60 },
     "api/cron/detect-silent-boom.ts": { "maxDuration": 60 },
+    "api/cron/detect-periscope-call-lottery.ts": { "maxDuration": 30 },
+    "api/cron/detect-periscope-put-lottery.ts": { "maxDuration": 30 },
     "api/cron/evaluate-round-trip.ts": { "maxDuration": 60 },
     "api/cron/takeit-fill-shap.ts": { "maxDuration": 60 },
     "api/cron/wave2-confirmation.ts": { "maxDuration": 60 },

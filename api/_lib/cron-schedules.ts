@@ -92,6 +92,18 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'detect-periscope-call-lottery': {
+    schedule: '*/5 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
+  'detect-periscope-put-lottery': {
+    schedule: '*/5 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
   'evaluate-round-trip': {
     schedule: '*/10 14-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,

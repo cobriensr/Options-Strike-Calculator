@@ -77,18 +77,14 @@ describe('fetchGexTarget', () => {
 describe('fetchQqqNetPremBalance30m', () => {
   it('reads sum_call / sum_put aliases (regression for v4 badge bug)', async () => {
     // Spec: +1.0 means decisively call-heavy
-    mockSql.mockResolvedValueOnce([
-      { sum_call: '1500000', sum_put: '500000' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ sum_call: '1500000', sum_put: '500000' }]);
     const result = await fetchQqqNetPremBalance30m(new Date());
     // (1.5M - 0.5M) / (1.5M + 0.5M) = +0.5
     expect(result).toBeCloseTo(0.5, 4);
   });
 
   it('returns -1.0 for put-heavy tape', async () => {
-    mockSql.mockResolvedValueOnce([
-      { sum_call: '100000', sum_put: '900000' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ sum_call: '100000', sum_put: '900000' }]);
     const result = await fetchQqqNetPremBalance30m(new Date());
     // (0.1M - 0.9M) / (0.1M + 0.9M) = -0.8
     expect(result).toBeCloseTo(-0.8, 4);
@@ -166,9 +162,7 @@ describe('detectCallLottery — v3 strict filter cascade', () => {
       { gex_dollars: '-974008661', call_ratio: '-3.58' },
     ]);
     // 3. fetchQqqNetPremBalance30m
-    mockSql.mockResolvedValueOnce([
-      { sum_call: '800000', sum_put: '200000' },
-    ]);
+    mockSql.mockResolvedValueOnce([{ sum_call: '800000', sum_put: '200000' }]);
     // 4. fetchEntryPx
     mockSql.mockResolvedValueOnce([{ price: '0.10' }]);
     // 5. fetchLatestVix
@@ -202,9 +196,7 @@ describe('detectCallLottery — v3 strict filter cascade', () => {
   });
 
   it('rejects when lvl_rank < 0.90 OR chg_rank < 0.90', async () => {
-    mockSql.mockResolvedValueOnce([
-      { ...WONCE_CANDIDATE, lvl_rank: 0.85 },
-    ]);
+    mockSql.mockResolvedValueOnce([{ ...WONCE_CANDIDATE, lvl_rank: 0.85 }]);
     const fires = await detectCallLottery('2026-05-18');
     expect(fires).toHaveLength(0);
   });
