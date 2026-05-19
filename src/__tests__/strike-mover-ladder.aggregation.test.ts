@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildLadderRows, sortAndCapRows } from '../components/Gexbot/strike-mover-ladder/aggregation';
+import {
+  buildLadderRows,
+  sortAndCapRows,
+} from '../components/Gexbot/strike-mover-ladder/aggregation';
 import type { MaxchangeWinnerRow } from '../hooks/useGexbotData';
 
 function makeWinner(
@@ -58,6 +61,27 @@ describe('buildLadderRows', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]!.symbols).toEqual(['SPX', 'ES_SPX']);
     expect(rows[0]!.confirmCount).toBe(2);
+  });
+
+  it('merges three adjacent bins (SPX/ES_SPX/SPY each ≤5pt apart) into one row', () => {
+    // Each nearest-5 key is 5pt from its neighbour:
+    //   SPX 6745    → bin 6745
+    //   ES_SPX 6750 → bin 6750  (6750 − 6745 = 5  → merges into 6745)
+    //   SPY 675.5×10 = 6755 → bin 6755 (6755 − 6750 = 5 → merges into 6745)
+    // Anchoring against the trailing edge (maxKeyInBucket) lets the
+    // chain collapse; anchoring against the original key (6745) would
+    // leave 6755 as its own bucket because |6755 − 6745| = 10 > 5.
+    const rows = buildLadderRows(
+      [
+        makeWinner('SPX', 'gex_zero/maxchange', 6745, 2_100),
+        makeWinner('ES_SPX', 'gex_zero/maxchange', 6750, 2_080),
+        makeWinner('SPY', 'gex_zero/maxchange', 675.5, 1_500),
+      ],
+      'gex',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.symbols).toEqual(['SPX', 'ES_SPX', 'SPY']);
+    expect(rows[0]!.confirmCount).toBe(3);
   });
 
   it('bins SPY × 10 with SPX into the same row', () => {
@@ -175,7 +199,10 @@ describe('sortAndCapRows', () => {
   });
 
   it('orders rows by strike descending', () => {
-    const out = sortAndCapRows([make(6700, 1), make(6800, 1), make(6750, 1)], 6750);
+    const out = sortAndCapRows(
+      [make(6700, 1), make(6800, 1), make(6750, 1)],
+      6750,
+    );
     expect(out.map((r) => r.strike)).toEqual([6800, 6750, 6700]);
   });
 
@@ -193,8 +220,7 @@ describe('sortAndCapRows', () => {
     // 5 ceilings closest to spot: 6770, 6780, 6790, 6800, 6810 (NOT 6820/6830).
     // 5 floors closest to spot: 6730, 6720, 6710, 6700, 6690 (NOT 6680/6670).
     expect(out.map((r) => r.strike)).toEqual([
-      6810, 6800, 6790, 6780, 6770,
-      6730, 6720, 6710, 6700, 6690,
+      6810, 6800, 6790, 6780, 6770, 6730, 6720, 6710, 6700, 6690,
     ]);
   });
 

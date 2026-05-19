@@ -97,16 +97,24 @@ export function buildLadderRows(
   const orderedKeys = [...bins.keys()].sort((a, b) => a - b);
   const merged = new Map<number, WinnerSample[]>();
   let activeKey: number | null = null;
+  // Trailing edge of the active bucket — compare against this, not the
+  // bucket's anchor key. Otherwise three bins each exactly within
+  // tolerance pairwise (e.g. 6745/6750/6755 at tolerance 5) fail to
+  // coalesce because the third compares against the original anchor.
+  let maxKeyInBucket: number | null = null;
   for (const key of orderedKeys) {
     if (
       activeKey !== null &&
-      Math.abs(key - activeKey) <= CROSS_ASSET_TOLERANCE_PTS
+      maxKeyInBucket !== null &&
+      key - maxKeyInBucket <= CROSS_ASSET_TOLERANCE_PTS
     ) {
       const bucket = merged.get(activeKey);
       bucket!.push(...bins.get(key)!);
+      maxKeyInBucket = key;
     } else {
       merged.set(key, [...bins.get(key)!]);
       activeKey = key;
+      maxKeyInBucket = key;
     }
   }
 
@@ -119,9 +127,7 @@ export function buildLadderRows(
     const symbols = SYMBOL_DISPLAY_ORDER.filter((s) => presentSet.has(s));
 
     const canonicalSign = Math.sign(canonical.change);
-    const allAgree = bucket.every(
-      (b) => Math.sign(b.change) === canonicalSign,
-    );
+    const allAgree = bucket.every((b) => Math.sign(b.change) === canonicalSign);
     const confirmCount: 0 | 2 | 3 =
       allAgree && symbols.length >= 2 ? (symbols.length as 2 | 3) : 0;
 
@@ -134,7 +140,10 @@ export function buildLadderRows(
     });
   }
 
-  // Mark the largest mover by |change|.
+  // Mark the largest mover by |change|. Strict `>` means ties resolve
+  // to the first row encountered (Map insertion order = sorted-strike
+  // order from the merge loop above). Display-only signal, so the
+  // tie-break choice is not load-bearing.
   let maxAbs = 0;
   let maxIdx = -1;
   for (let i = 0; i < out.length; i++) {
@@ -172,13 +181,20 @@ export function sortAndCapRows(
   ceilings.sort(
     (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
   );
-  floors.sort(
+  floors.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
+  atm.sort(
     (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
   );
   const trimmedCeilings = ceilings.slice(0, MAX_ROWS_PER_SIDE);
   const trimmedFloors = floors.slice(0, MAX_ROWS_PER_SIDE);
+  // Cap ATM at the same per-side budget. With ATM_BAND_BPS = 25 (±0.25%
+  // of spot) and 5-pt SPX strikes, only ~6 strikes can land in the band
+  // at any time, but capping keeps the contract symmetric with the
+  // ceiling/floor sides and prevents pathological inputs from blowing
+  // up the visible row count.
+  const trimmedAtm = atm.slice(0, MAX_ROWS_PER_SIDE);
 
-  const all = [...trimmedCeilings, ...atm, ...trimmedFloors];
+  const all = [...trimmedCeilings, ...trimmedAtm, ...trimmedFloors];
   all.sort((a, b) => b.strike - a.strike);
   return all;
 }
