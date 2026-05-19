@@ -6,16 +6,19 @@
  * Outside the window, the hook returns the last known state (or null)
  * and stops polling.
  *
+ * Historical mode: pass a `date` (YYYY-MM-DD) to fetch a prior trading
+ * day's evaluator output from the persistent DB store. Historical
+ * payloads are static — no polling happens when a date is supplied.
+ *
  * Persistence: after every successful fetch we mirror the payload to
- * localStorage under `openingFlowSignal.lastGood` so that after the
- * window closes (~08:50 CT) the most recent ticket data stays visible
- * for the rest of the trading day — even across page reloads. The
- * cache is keyed by the response's `date` field and ignored / cleared
- * once a new CT calendar date rolls over, so yesterday's tickets
- * never bleed into today's open.
+ * localStorage. The cache is keyed per-date so picking yesterday writes
+ * to its own slot and never clobbers today's last-good payload:
+ *
+ *   - live (today)   → `openingFlowSignal.lastGood`
+ *   - historical YYYY → `openingFlowSignal.lastGood:YYYY-MM-DD`
  *
  * `displayData` is what the UI should render. It prefers the fresh
- * fetch result (`data`) and falls back to the same-CT-date cache.
+ * fetch result (`data`) and falls back to the date-specific cache.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -102,7 +105,21 @@ const INITIAL_STATE: State = {
   fetchedAt: null,
 };
 
-const STORAGE_KEY = 'openingFlowSignal.lastGood';
+const STORAGE_KEY_LIVE = 'openingFlowSignal.lastGood';
+
+/**
+ * Per-date localStorage slot.
+ *
+ *   cacheKey()             → 'openingFlowSignal.lastGood'             (live)
+ *   cacheKey('2026-05-13') → 'openingFlowSignal.lastGood:2026-05-13'  (historical)
+ *
+ * Each historical date writes to its own slot, so picking yesterday
+ * leaves today's last-good payload untouched.
+ */
+function cacheKey(date?: string | null): string {
+  if (date == null || date === '') return STORAGE_KEY_LIVE;
+  return `${STORAGE_KEY_LIVE}:${date}`;
+}
 
 interface CachedEntry {
   data: OpeningFlowResponse;
@@ -110,10 +127,10 @@ interface CachedEntry {
   date: string;
 }
 
-function safeReadCache(): CachedEntry | null {
+function safeReadCache(date?: string | null): CachedEntry | null {
   if (typeof localStorage === 'undefined') return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(cacheKey(date));
     if (raw == null) return null;
     const parsed = JSON.parse(raw) as Partial<CachedEntry>;
     if (
@@ -130,35 +147,29 @@ function safeReadCache(): CachedEntry | null {
   }
 }
 
-function safeWriteCache(entry: CachedEntry): void {
+function safeWriteCache(entry: CachedEntry, date?: string | null): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entry));
+    localStorage.setItem(cacheKey(date), JSON.stringify(entry));
   } catch {
     // swallow: storage quota / private-mode / disabled
   }
 }
 
 /**
- * Read the cached payload on mount.
+ * Read the cached payload on mount or whenever the `date` arg changes.
  *
- * Last-good semantics: the cache survives across CT-date rollovers
- * and only gets overwritten when a fresh successful fetch lands.
- * This means revisiting the panel at 12:30 AM CT Tuesday still shows
- * Monday's tickets — the original "leave it visibly displayed so I
- * can go back during the day" UX extends naturally into the next
- * morning's pre-market read until the next slice-1 fetch overwrites
- * with new data. (The previous version evicted on `cached.date !==
- * today CT date`, which silently wiped the cache at midnight CT and
- * left the panel empty until 08:25 CT when fresh polling began.)
+ * Per-date keys: today's slot at `openingFlowSignal.lastGood` and
+ * historical slots at `openingFlowSignal.lastGood:YYYY-MM-DD` are
+ * fully independent. Picking yesterday does not evict today's cache.
  *
- * No TTL: if the panel is left dormant for days (weekend / holiday),
- * the cache stays. Worst case the user sees Friday's tickets on
- * Monday morning before the new window opens, which is a non-issue —
- * the date label on each card makes the source day explicit.
+ * Last-good semantics (live slot only): the live cache survives across
+ * CT-date rollovers and only gets overwritten when a fresh successful
+ * fetch lands. Revisiting the panel at 12:30 AM CT Tuesday still shows
+ * Monday's tickets until the next morning's slice-1 fetch arrives.
  */
-function loadCache(): OpeningFlowResponse | null {
-  const cached = safeReadCache();
+function loadCache(date?: string | null): OpeningFlowResponse | null {
+  const cached = safeReadCache(date);
   return cached?.data ?? null;
 }
 
@@ -176,14 +187,18 @@ function inPollingWindow(now: Date): boolean {
   return totalMinutes >= windowOpen && totalMinutes < windowClose;
 }
 
-export function useOpeningFlowSignal(): State & {
+export function useOpeningFlowSignal(date?: string): State & {
   refetch: () => void;
   isWindowOpen: boolean;
   displayData: OpeningFlowResponse | null;
+  isHistorical: boolean;
 } {
+  const effectiveDate: string | null =
+    date != null && date !== '' ? date : null;
+
   const [state, setState] = useState<State>(INITIAL_STATE);
   const [cachedData, setCachedData] = useState<OpeningFlowResponse | null>(() =>
-    loadCache(),
+    loadCache(effectiveDate),
   );
   const [isWindowOpen, setIsWindowOpen] = useState<boolean>(() =>
     inPollingWindow(new Date()),
@@ -198,7 +213,11 @@ export function useOpeningFlowSignal(): State & {
     setState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const res = await fetch('/api/opening-flow-signal', {
+      const url =
+        effectiveDate != null
+          ? `/api/opening-flow-signal?date=${encodeURIComponent(effectiveDate)}`
+          : '/api/opening-flow-signal';
+      const res = await fetch(url, {
         credentials: 'include',
         signal: ctrl.signal,
       });
@@ -212,14 +231,19 @@ export function useOpeningFlowSignal(): State & {
         error: null,
         fetchedAt: Date.now(),
       });
-      // Mirror the fresh payload into localStorage so it survives
-      // both the post-08:50 window close (hook stops polling) AND
-      // a page reload later in the trading day.
-      safeWriteCache({
-        data: json,
-        savedAt: new Date().toISOString(),
-        date: json.date,
-      });
+      // Mirror the fresh payload into localStorage. Write to the slot
+      // that matches the *response's* date — for live mode the
+      // response.date is today's CT date (server-determined), for
+      // historical mode it matches the requested date.
+      const slotDate = effectiveDate == null ? null : json.date;
+      safeWriteCache(
+        {
+          data: json,
+          savedAt: new Date().toISOString(),
+          date: json.date,
+        },
+        slotDate,
+      );
       setCachedData(json);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -230,13 +254,35 @@ export function useOpeningFlowSignal(): State & {
         error: getErrorMessage(err),
       }));
     }
-  }, []);
+  }, [effectiveDate]);
+
+  // Refresh cached payload when the date arg changes — historical
+  // dates have their own LS slot and `cachedData` must reflect that
+  // slot, not whatever the previous (live or historical) date had.
+  useEffect(() => {
+    setCachedData(loadCache(effectiveDate));
+    // Reset the in-memory `data` so stale fetches from the previous
+    // date don't bleed through as the new effective payload while the
+    // fresh fetch is in flight.
+    setState(INITIAL_STATE);
+  }, [effectiveDate]);
 
   // Tick every 30s to (a) re-check the window predicate and (b) refetch
   // when we're inside the window. Outside the window we still tick to
   // notice when it opens, but we skip the fetch.
+  //
+  // Historical mode (effectiveDate != null): fetch once on mount /
+  // date change, then no polling — historical days are static.
   useEffect(() => {
     let cancelled = false;
+
+    if (effectiveDate != null) {
+      // Historical: single fetch, no polling, no window check.
+      void fetchOnce();
+      return () => {
+        cancelled = true;
+      };
+    }
 
     const tick = () => {
       if (cancelled) return;
@@ -251,14 +297,21 @@ export function useOpeningFlowSignal(): State & {
       cancelled = true;
       clearInterval(id);
     };
-  }, [fetchOnce]);
+  }, [fetchOnce, effectiveDate]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const displayData = state.data ?? cachedData;
+  const isHistorical = effectiveDate != null;
 
   return useMemo(
-    () => ({ ...state, refetch: fetchOnce, isWindowOpen, displayData }),
-    [state, fetchOnce, isWindowOpen, displayData],
+    () => ({
+      ...state,
+      refetch: fetchOnce,
+      isWindowOpen,
+      displayData,
+      isHistorical,
+    }),
+    [state, fetchOnce, isWindowOpen, displayData, isHistorical],
   );
 }

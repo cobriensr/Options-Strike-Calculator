@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 const { getCTTimeMock, getCTDateStrMock } = vi.hoisted(() => ({
   getCTTimeMock: vi.fn(() => ({ hour: 8, minute: 30 })),
@@ -237,34 +237,159 @@ describe('OpeningFlowSignal', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('preserves cross-day cache on mount (last-good semantics)', () => {
-    // Pin the bug Wonce reported: at 12:32 AM CT Tuesday, the panel
-    // was showing the empty "Outside the signal window" state because
-    // the prior eviction rule wiped the cache the moment CT date
-    // rolled over. New rule: the cache survives across CT dates and
-    // only gets overwritten when a fresh fetch lands. Revisiting the
-    // panel after midnight still shows the previous session's tickets
-    // until the next morning's slice-1 data arrives.
+  it('keeps today and historical cache slots independent (per-date keys)', async () => {
+    // Per-date cache keys: today's last-good slot at
+    // `openingFlowSignal.lastGood` is fully independent from any
+    // historical slot like `openingFlowSignal.lastGood:2026-05-12`.
+    // Picking yesterday must NOT clobber today's cache.
     getCTTimeMock.mockReturnValue({ hour: 0, minute: 32 });
-    const cached: OpeningFlowResponse = makeResponse({ date: '2026-05-13' });
+
+    // Pre-seed today's slot with a live cached payload.
+    const todayCached: OpeningFlowResponse = makeResponse({
+      date: '2026-05-13',
+    });
     localStorage.setItem(
       'openingFlowSignal.lastGood',
       JSON.stringify({
-        data: cached,
+        data: todayCached,
         savedAt: '2026-05-13T20:00:00Z',
         date: '2026-05-13',
       }),
     );
 
+    // Historical fetch for 2026-05-12 returns its own payload.
+    const yesterdayPayload = makeResponse({
+      date: '2026-05-12',
+      tickers: {
+        SPY: {
+          slice1: {
+            tickets: [makeTicket('put', 740, 2_100_000, 12_500, 0.95)],
+            callPremium: 0,
+            putPremium: 2_100_000,
+            biasSide: 'put',
+            biasRatio: 1,
+            top3SameSide: true,
+          },
+          slice2: null,
+          signal: { fired: false, reason: 'window_not_complete' },
+        },
+        QQQ: { slice1: null, slice2: null, signal: null },
+      },
+    });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => yesterdayPayload,
+    });
+
     render(<OpeningFlowSignal />);
 
-    // Cache must NOT be wiped — the row data is the user's only
-    // record of the previous session's signal until the next fetch.
-    expect(localStorage.getItem('openingFlowSignal.lastGood')).not.toBeNull();
-    // Tickets render from cache; empty-state message must NOT appear.
+    // Pick yesterday via the date input.
+    const dateInput = screen.getByLabelText('Date') as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-05-12' } });
+
+    // Wait until the historical slot has been written.
+    await waitFor(() => {
+      expect(
+        localStorage.getItem('openingFlowSignal.lastGood:2026-05-12'),
+      ).not.toBeNull();
+    });
+
+    // Today's slot must STILL hold the original payload — picking
+    // yesterday wrote to its own slot, not today's.
+    const todayRaw = localStorage.getItem('openingFlowSignal.lastGood');
+    expect(todayRaw).not.toBeNull();
+    const todayParsed = JSON.parse(todayRaw!) as {
+      date: string;
+      data: OpeningFlowResponse;
+    };
+    expect(todayParsed.date).toBe('2026-05-13');
+
+    // Historical slot carries yesterday's date.
+    const yRaw = localStorage.getItem('openingFlowSignal.lastGood:2026-05-12');
+    const yParsed = JSON.parse(yRaw!) as {
+      date: string;
+      data: OpeningFlowResponse;
+    };
+    expect(yParsed.date).toBe('2026-05-12');
+
+    // Fetch URL includes ?date=…
+    const lastCall = fetchMock.mock.calls.at(-1);
+    expect(lastCall?.[0]).toContain('?date=2026-05-12');
+  });
+
+  it('renders the date picker and Live button', () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => makeResponse({ windowStatus: 'before_open' }),
+    });
+    render(<OpeningFlowSignal />);
+    expect(screen.getByLabelText('Date')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /live/i })).toBeInTheDocument();
+  });
+
+  it('passes ?date=… to the fetch URL when a historical date is picked', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => makeResponse({ date: '2026-05-12' }),
+    });
+
+    render(<OpeningFlowSignal />);
+
+    const dateInput = screen.getByLabelText('Date') as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-05-12' } });
+
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls;
+      expect(
+        calls.some(
+          (c) =>
+            typeof c[0] === 'string' &&
+            (c[0] as string).includes('?date=2026-05-12'),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it('shows "Data not captured" when historical response is empty/closed', async () => {
+    // Empty-shell response: closed window, every ticker payload null.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () =>
+        makeResponse({
+          date: '2026-04-01',
+          windowStatus: 'closed',
+          tickers: {
+            SPY: { slice1: null, slice2: null, signal: null },
+            QQQ: { slice1: null, slice2: null, signal: null },
+          },
+        }),
+    });
+
+    render(<OpeningFlowSignal />);
+
+    const dateInput = screen.getByLabelText('Date') as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-04-01' } });
+
     expect(
-      screen.queryByText(/outside the signal window/i),
-    ).not.toBeInTheDocument();
+      await screen.findByText(/data not captured for this date/i),
+    ).toBeInTheDocument();
+  });
+
+  it('Live button clears the selected date back to live mode', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => makeResponse({ date: '2026-05-12' }),
+    });
+
+    render(<OpeningFlowSignal />);
+
+    const dateInput = screen.getByLabelText('Date') as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-05-12' } });
+    expect(dateInput.value).toBe('2026-05-12');
+
+    const liveBtn = screen.getByRole('button', { name: /live/i });
+    fireEvent.click(liveBtn);
+    expect(dateInput.value).toBe('');
   });
 
   it('renders call ticket with emerald chip and a UW anchor with correct OCC', async () => {
