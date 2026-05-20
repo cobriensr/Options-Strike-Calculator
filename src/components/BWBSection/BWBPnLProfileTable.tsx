@@ -1,6 +1,7 @@
 import { theme } from '../../themes';
 import type { BWBLegs } from '../../types';
-import { mkTh, mkTd, fmtDollar } from '../../utils/ui-utils';
+import { mkTh, mkTd } from '../../utils/ui-utils';
+import { formatDollars } from '../../utils/format-magnitude.js';
 import { ScrollHint } from '../ui';
 
 interface Props {
@@ -154,7 +155,7 @@ export default function BWBPnLProfileTable({
                           : borderStyle,
                       }}
                     >
-                      {'$' + fmtDollar(r.credit * mult)}
+                      {'$' + formatDollars(r.credit * mult)}
                       <div className="text-muted text-[10px] font-normal">
                         {r.credit.toFixed(2)} pts
                       </div>
@@ -167,7 +168,7 @@ export default function BWBPnLProfileTable({
                           : borderStyle,
                       }}
                     >
-                      {'$' + fmtDollar(r.maxProfit * mult)}
+                      {'$' + formatDollars(r.maxProfit * mult)}
                       <div className="text-muted text-[10px] font-normal">
                         {r.maxProfit.toFixed(2)} pts
                       </div>
@@ -180,7 +181,7 @@ export default function BWBPnLProfileTable({
                           : borderStyle,
                       }}
                     >
-                      {'$' + fmtDollar(r.maxLoss * mult)}
+                      {'$' + formatDollars(r.maxLoss * mult)}
                       <div className="text-muted text-[10px] font-normal">
                         {r.maxLoss.toFixed(2)} pts
                       </div>
@@ -193,7 +194,7 @@ export default function BWBPnLProfileTable({
                           : borderStyle,
                       }}
                     >
-                      {'$' + fmtDollar(r.maxLoss * mult)}
+                      {'$' + formatDollars(r.maxLoss * mult)}
                     </td>
                     <td
                       className={`${mkTd()} text-accent text-right font-semibold`}

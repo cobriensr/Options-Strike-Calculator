@@ -1,6 +1,7 @@
 import { theme } from '../../themes';
 import type { IronCondorLegs } from '../../types';
-import { mkTh, mkTd, fmtDollar } from '../../utils/ui-utils';
+import { mkTh, mkTd } from '../../utils/ui-utils';
+import { formatDollars } from '../../utils/format-magnitude.js';
 import { ScrollHint } from '../ui';
 
 interface Props {
@@ -157,7 +158,7 @@ export default function PnLProfileTable({
                           : '1px solid var(--color-edge)',
                       }}
                     >
-                      {'$' + fmtDollar(r.credit * mult)}
+                      {'$' + formatDollars(r.credit * mult)}
                       <div className="text-muted text-[10px] font-normal">
                         {r.credit.toFixed(2)} pts
                       </div>
@@ -170,7 +171,7 @@ export default function PnLProfileTable({
                           : '1px solid var(--color-edge)',
                       }}
                     >
-                      {'$' + fmtDollar(r.maxLoss * mult)}
+                      {'$' + formatDollars(r.maxLoss * mult)}
                       <div className="text-muted text-[10px] font-normal">
                         {r.maxLoss.toFixed(2)} pts
                       </div>
@@ -183,7 +184,7 @@ export default function PnLProfileTable({
                           : '1px solid var(--color-edge)',
                       }}
                     >
-                      {'$' + fmtDollar(r.maxLoss * mult)}
+                      {'$' + formatDollars(r.maxLoss * mult)}
                     </td>
                     <td
                       className={`${mkTd()} text-accent text-right ${r.isLast ? 'font-bold' : 'font-semibold'}`}

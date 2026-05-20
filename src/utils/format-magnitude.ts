@@ -100,6 +100,24 @@ export function formatOI(oi: number): string {
   return String(oi);
 }
 
+/**
+ * Plain dollar amount with thousands separators, no `$` prefix.
+ * Values >= $100 render as a comma-grouped integer (`"1,234"`); values
+ * below $100 keep two decimals (`"42.50"`, `"99.99"`, `"0.00"`). The
+ * IronCondor / BWB / Hedge P&L tables prepend `$` or `+$` manually so
+ * the caller controls sign presentation.
+ *
+ * Distinct from `src/components/FuturesCalculator/formatters.ts`'s local
+ * `fmtDollar`, which has different semantics (always `$` prefix, optional
+ * always-sign) and intentionally stays scoped to that feature folder.
+ */
+export function formatDollars(value: number): string {
+  if (Math.abs(value) >= 100) {
+    return Math.round(value).toLocaleString('en-US');
+  }
+  return value.toFixed(2);
+}
+
 // ============================================================
 // OPTIONS-FLOW CURRENCY (PREMIUM)
 // ============================================================

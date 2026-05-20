@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  formatDollars,
   formatNetGexShort,
   formatOI,
   formatPremiumShort,
@@ -96,5 +97,35 @@ describe('formatOI', () => {
     expect(formatOI(1234)).toBe('1.2K');
     expect(formatOI(1250)).toBe('1.3K'); // 1.250 → toFixed(1) → "1.3" (JS rounds 5 up)
     expect(formatOI(1260)).toBe('1.3K');
+  });
+});
+
+describe('formatDollars', () => {
+  it('rounds and formats large values without cents', () => {
+    expect(formatDollars(1234)).toBe('1,234');
+  });
+
+  it('formats small values with two decimal places', () => {
+    expect(formatDollars(42.5)).toBe('42.50');
+  });
+
+  it('formats exactly 100 without cents', () => {
+    expect(formatDollars(100)).toBe('100');
+  });
+
+  it('formats 99.99 with cents', () => {
+    expect(formatDollars(99.99)).toBe('99.99');
+  });
+
+  it('handles negative large values', () => {
+    expect(formatDollars(-500)).toBe('-500');
+  });
+
+  it('handles negative small values', () => {
+    expect(formatDollars(-42.5)).toBe('-42.50');
+  });
+
+  it('handles zero', () => {
+    expect(formatDollars(0)).toBe('0.00');
   });
 });

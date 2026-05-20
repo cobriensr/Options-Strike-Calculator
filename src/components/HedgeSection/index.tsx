@@ -7,7 +7,7 @@ import type {
 } from '../../types';
 import { calcHedge } from '../../utils/calculator';
 import { HEDGE_DELTA_OPTIONS, DEFAULTS } from '../../constants';
-import { fmtDollar } from '../../utils/ui-utils';
+import { formatDollars } from '../../utils/format-magnitude.js';
 import StatBox from './StatBox';
 import ScenarioTable from './ScenarioTable';
 
@@ -192,7 +192,7 @@ export default function HedgeSection({
                 label="Cost"
                 value={
                   '$' +
-                  fmtDollar(hedge.putPremium * 100 * hedge.recommendedPuts)
+                  formatDollars(hedge.putPremium * 100 * hedge.recommendedPuts)
                 }
               />
             </div>
@@ -224,7 +224,9 @@ export default function HedgeSection({
                 label="Cost"
                 value={
                   '$' +
-                  fmtDollar(hedge.callPremium * 100 * hedge.recommendedCalls)
+                  formatDollars(
+                    hedge.callPremium * 100 * hedge.recommendedCalls,
+                  )
                 }
               />
             </div>
@@ -240,17 +242,17 @@ export default function HedgeSection({
         <div className="border-edge mt-3 grid grid-cols-2 gap-2 border-t pt-3 md:grid-cols-4">
           <StatBox
             label={hedgeDte > 1 ? 'Net Daily Cost' : 'Daily Hedge Cost'}
-            value={'$' + fmtDollar(hedge.dailyCostDollars)}
+            value={'$' + formatDollars(hedge.dailyCostDollars)}
             accent={theme.red}
           />
           <StatBox
             label="IC Credit"
-            value={'$' + fmtDollar(ic.creditReceived * 100 * contracts)}
+            value={'$' + formatDollars(ic.creditReceived * 100 * contracts)}
             accent={theme.green}
           />
           <StatBox
             label="Net Credit After Hedge"
-            value={'$' + fmtDollar(hedge.netCreditAfterHedge)}
+            value={'$' + formatDollars(hedge.netCreditAfterHedge)}
             accent={hedge.netCreditAfterHedge > 0 ? theme.green : theme.red}
           />
           <StatBox
@@ -270,7 +272,7 @@ export default function HedgeSection({
             {hedgeDte}DTE hedge: buy for{' '}
             <span className="text-danger font-semibold">
               $
-              {fmtDollar(
+              {formatDollars(
                 Math.round(
                   (hedge.putPremium * hedge.recommendedPuts +
                     hedge.callPremium * hedge.recommendedCalls) *
@@ -281,7 +283,7 @@ export default function HedgeSection({
             {'\u2192'} sell to close at EOD for est.{' '}
             <span className="text-success font-semibold">
               $
-              {fmtDollar(
+              {formatDollars(
                 Math.round(
                   (hedge.putRecovery * hedge.recommendedPuts +
                     hedge.callRecovery * hedge.recommendedCalls) *
@@ -291,7 +293,7 @@ export default function HedgeSection({
             </span>{' '}
             if OTM {'\u2192'} net cost{' '}
             <span className="font-semibold">
-              ${fmtDollar(hedge.dailyCostDollars)}
+              ${formatDollars(hedge.dailyCostDollars)}
             </span>
           </div>
         )}

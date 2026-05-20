@@ -65,14 +65,6 @@ export function mkTd(): string {
   return 'px-3 py-2.5 border-b border-edge whitespace-nowrap text-sm';
 }
 
-/** Format a dollar amount with commas, no cents for values >= $100 */
-export function fmtDollar(value: number): string {
-  if (Math.abs(value) >= 100) {
-    return Math.round(value).toLocaleString('en-US');
-  }
-  return value.toFixed(2);
-}
-
 /** Return a CSS color variable based on risk percentage thresholds */
 export function riskColor(pct: number): string {
   if (pct > 5) return 'var(--color-danger)';

@@ -1,6 +1,7 @@
 import { theme } from '../../themes';
 import type { HedgeScenario } from '../../types';
-import { mkTh, mkTd, fmtDollar } from '../../utils/ui-utils';
+import { mkTh, mkTd } from '../../utils/ui-utils';
+import { formatDollars } from '../../utils/format-magnitude.js';
 
 interface Props {
   scenarios: readonly HedgeScenario[];
@@ -78,7 +79,7 @@ export default function ScenarioTable({
                     {s.icPnL >= 0 ? '(gain)' : '(loss)'}
                   </span>
                   {s.icPnL >= 0 ? '+' : ''}
-                  {fmtDollar(s.icPnL)}
+                  {formatDollars(s.icPnL)}
                 </td>
                 <td
                   className={`${mkTd()} text-right`}
@@ -89,10 +90,10 @@ export default function ScenarioTable({
                   <span className="sr-only">
                     {hedgePayout > 0 ? '(gain)' : '(no payout)'}
                   </span>
-                  {hedgePayout > 0 ? '+$' + fmtDollar(hedgePayout) : '$0'}
+                  {hedgePayout > 0 ? '+$' + formatDollars(hedgePayout) : '$0'}
                 </td>
                 <td className={`${mkTd()} text-danger text-right text-[11px]`}>
-                  {fmtDollar(s.hedgeCost)}
+                  {formatDollars(s.hedgeCost)}
                 </td>
                 <td
                   className={`${mkTd()} text-right text-[13px] font-bold`}
@@ -101,7 +102,7 @@ export default function ScenarioTable({
                   <span className="sr-only">
                     {s.netPnL >= 0 ? '(gain)' : '(loss)'}
                   </span>
-                  {s.netPnL >= 0 ? '+' : ''}${fmtDollar(s.netPnL)}
+                  {s.netPnL >= 0 ? '+' : ''}${formatDollars(s.netPnL)}
                 </td>
               </tr>
             );

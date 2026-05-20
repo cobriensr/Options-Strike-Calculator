@@ -3,7 +3,6 @@ import {
   buildChevronUrl,
   mkTh,
   mkTd,
-  fmtDollar,
   tinyLbl,
   tintedSurface,
 } from '../../utils/ui-utils';
@@ -69,36 +68,6 @@ describe('mkTd', () => {
     expect(result).toContain('px-3');
     expect(result).toContain('py-2.5');
     expect(result).toContain('border-b');
-  });
-});
-
-describe('fmtDollar', () => {
-  it('rounds and formats large values without cents', () => {
-    expect(fmtDollar(1234)).toBe('1,234');
-  });
-
-  it('formats small values with two decimal places', () => {
-    expect(fmtDollar(42.5)).toBe('42.50');
-  });
-
-  it('formats exactly 100 without cents', () => {
-    expect(fmtDollar(100)).toBe('100');
-  });
-
-  it('formats 99.99 with cents', () => {
-    expect(fmtDollar(99.99)).toBe('99.99');
-  });
-
-  it('handles negative large values', () => {
-    expect(fmtDollar(-500)).toBe('-500');
-  });
-
-  it('handles negative small values', () => {
-    expect(fmtDollar(-42.5)).toBe('-42.50');
-  });
-
-  it('handles zero', () => {
-    expect(fmtDollar(0)).toBe('0.00');
   });
 });
 
