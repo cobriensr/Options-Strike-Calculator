@@ -23,10 +23,9 @@
  */
 
 import { useState } from 'react';
-import { DEFAULTS, IV_MODES } from '../constants';
-import type { AmPm, IVMode, Timezone } from '../types';
+import type { AmPm, Timezone } from '../types';
 import { getCTTime, getETTime } from '../utils/timezone';
-import { useDebounced } from './useDebounced';
+import { useIvInputs } from './useIvInputs';
 import { useSpotInputs } from './useSpotInputs';
 import { useTheme } from './useTheme';
 
@@ -59,14 +58,10 @@ export function useAppState() {
   // Phase 2P-2 deletes the facade entirely.
   const spotInputs = useSpotInputs();
 
-  // IV state — seeded with default VIX so term structure + regime cards
-  // render immediately; overwritten by live/historical data on load.
-  const [ivMode, setIvMode] = useState<IVMode>(IV_MODES.VIX);
-  const [vixInput, setVixInput] = useState('19');
-  const [multiplier, setMultiplier] = useState(
-    String(DEFAULTS.IV_PREMIUM_FACTOR),
-  );
-  const [directIVInput, setDirectIVInput] = useState('');
+  // IV inputs — Phase 2P-1c moved this to the dedicated `useIvInputs`
+  // hook. Provides ivMode/vixInput/multiplier/directIVInput +
+  // their debounced copies (dVix, dIV, dMult).
+  const ivInputs = useIvInputs();
 
   // Time state — initialized to current CT time so that useAutoFill's
   // deferred time-setting (which checks for the '10'/'00' sentinel) never
@@ -112,10 +107,8 @@ export function useAppState() {
   const [portfolioRiskThresholdPct, setPortfolioRiskThresholdPct] =
     useState(12);
 
-  // Debounced values (spot/spx now live in `useSpotInputs`).
-  const dVix = useDebounced(vixInput);
-  const dIV = useDebounced(directIVInput);
-  const dMult = useDebounced(multiplier);
+  // Debounced spot/spx live in useSpotInputs;
+  // debounced vix/iv/multiplier live in useIvInputs.
 
   return {
     // Theme
@@ -125,15 +118,8 @@ export function useAppState() {
     // Spot — sourced from `useSpotInputs` (also provides dSpot, dSpx,
     // spyVal, spxVal, spxDirectActive, effectiveRatio below).
 
-    // IV
-    ivMode,
-    setIvMode,
-    vixInput,
-    setVixInput,
-    multiplier,
-    setMultiplier,
-    directIVInput,
-    setDirectIVInput,
+    // IV — sourced from `useIvInputs` (spread below alongside its
+    // debounced copies dVix/dIV/dMult).
 
     // Time
     timeHour,
@@ -173,10 +159,9 @@ export function useAppState() {
     portfolioRiskThresholdPct,
     setPortfolioRiskThresholdPct,
 
-    // Debounced (non-spot — dSpot/dSpx come from spotInputs spread below).
-    dVix,
-    dIV,
-    dMult,
+    // IV inputs + their debounced copies (ivMode, vixInput,
+    // multiplier, directIVInput + dVix, dIV, dMult).
+    ...ivInputs,
 
     // Spot inputs + their debounced/derived values (spotPrice,
     // setSpotPrice, spxDirect, setSpxDirect, spxRatio, setSpxRatio,
