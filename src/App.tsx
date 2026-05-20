@@ -10,7 +10,11 @@ import {
 } from 'react';
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
-import { useAppState } from './hooks/useAppState';
+import { useIvInputs } from './hooks/useIvInputs';
+import { useSpotInputs } from './hooks/useSpotInputs';
+import { useStrategyInputs } from './hooks/useStrategyInputs';
+import { useTheme } from './hooks/useTheme';
+import { useTimeInputs } from './hooks/useTimeInputs';
 import { useAutoFill } from './hooks/useAutoFill';
 import { useVixData } from './hooks/useVixData';
 import { useCalculation } from './hooks/useCalculation';
@@ -216,18 +220,25 @@ export default function StrikeCalculator() {
   // sees the gated UI but can't trigger admin actions.
   const isOwner = accessMode === 'owner';
   const isAuthenticated = accessMode !== 'public';
-  const state = useAppState();
-  const panelPrefs = usePanelPrefs();
-  const [panelPrefsOpen, setPanelPrefsOpen] = useState(false);
+  // Phase 2P-2: the useAppState facade is gone. Call the 5 sub-hooks
+  // directly so the data ownership is explicit and downstream readers
+  // can grep one hook for the state they care about.
+  const { darkMode, setDarkMode } = useTheme();
   const {
-    darkMode,
-    setDarkMode,
     spotPrice,
     setSpotPrice,
     spxDirect,
     setSpxDirect,
     spxRatio,
     setSpxRatio,
+    dSpot,
+    dSpx,
+    spyVal,
+    spxVal,
+    spxDirectActive,
+    effectiveRatio,
+  } = useSpotInputs();
+  const {
     ivMode,
     setIvMode,
     vixInput,
@@ -236,6 +247,11 @@ export default function StrikeCalculator() {
     setMultiplier,
     directIVInput,
     setDirectIVInput,
+    dVix,
+    dIV,
+    dMult,
+  } = useIvInputs();
+  const {
     timeHour,
     setTimeHour,
     timeMinute,
@@ -244,6 +260,8 @@ export default function StrikeCalculator() {
     setTimeAmPm,
     timezone,
     setTimezone,
+  } = useTimeInputs();
+  const {
     wingWidth,
     setWingWidth,
     showIC,
@@ -263,16 +281,9 @@ export default function StrikeCalculator() {
     bwbWideMultiplier,
     setBwbWideMultiplier,
     portfolioRiskThresholdPct,
-    dSpot,
-    dSpx,
-    dVix,
-    dIV,
-    dMult,
-    spyVal,
-    spxVal,
-    spxDirectActive,
-    effectiveRatio,
-  } = state;
+  } = useStrategyInputs();
+  const panelPrefs = usePanelPrefs();
+  const [panelPrefsOpen, setPanelPrefsOpen] = useState(false);
 
   // Apply dark class to <html> so CSS vars resolve correctly everywhere
   useEffect(() => {
