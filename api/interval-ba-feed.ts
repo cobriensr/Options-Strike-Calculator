@@ -48,7 +48,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
@@ -295,8 +295,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // untouched. moneyness_state in the SELECT is the same logic the
       // pill renders client-side, recomputed in SQL so the gate can use
       // it in WHERE without redundant client filtering.
-      const rawRows = optionType
-        ? await sql`
+      const rawRows = await withDbRetry(
+        () => optionType
+        ? sql`
             WITH base AS (
               SELECT a.*,
                 COALESCE(a.underlying_price, spx.close)::numeric AS effective_spot
@@ -352,7 +353,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ORDER BY fired_at DESC
             LIMIT ${MAX_ROWS}
           `
-        : await sql`
+        : sql`
             WITH base AS (
               SELECT a.*,
                 COALESCE(a.underlying_price, spx.close)::numeric AS effective_spot
@@ -406,7 +407,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ))
             ORDER BY fired_at DESC
             LIMIT ${MAX_ROWS}
-          `;
+          `,
+        2,
+        10_000,
+      );
       const rows = rawRows as unknown as RawRow[];
 
       const alerts = rows.map(shapeRow);

@@ -46,7 +46,7 @@ import { Sentry, metrics } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import { rejectIfRateLimited } from './_lib/api-helpers.js';
 import { optionalEnv, requireEnv } from './_lib/env.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import {
   ctWallClockToUtcMs,
   fetchSPXSpotAtTimestamp,
@@ -161,15 +161,19 @@ function parseSlotEnd(
 async function resolveParentId(tradingDate: string): Promise<number | null> {
   const sql = getDb();
   try {
-    const rows = await sql`
-      SELECT id FROM periscope_analyses
-      WHERE trading_date = ${tradingDate}
-        AND auto_generated = TRUE
-        AND mode != 'debrief'
-        AND status = 'complete'
-      ORDER BY slot_captured_at DESC
-      LIMIT 1
-    `;
+    const rows = await withDbRetry(
+      () => sql`
+        SELECT id FROM periscope_analyses
+        WHERE trading_date = ${tradingDate}
+          AND auto_generated = TRUE
+          AND mode != 'debrief'
+          AND status = 'complete'
+        ORDER BY slot_captured_at DESC
+        LIMIT 1
+      `,
+      2,
+      10_000,
+    );
     const id = rows[0]?.id;
     if (id == null) return null;
     const n = Number(id);
@@ -191,13 +195,17 @@ async function findExistingRowId(
 ): Promise<number | null> {
   const sql = getDb();
   try {
-    const rows = await sql`
-      SELECT id FROM periscope_analyses
-      WHERE trading_date = ${tradingDate}
-        AND slot_captured_at = ${slotCapturedAt}
-        AND auto_generated = TRUE
-      LIMIT 1
-    `;
+    const rows = await withDbRetry(
+      () => sql`
+        SELECT id FROM periscope_analyses
+        WHERE trading_date = ${tradingDate}
+          AND slot_captured_at = ${slotCapturedAt}
+          AND auto_generated = TRUE
+        LIMIT 1
+      `,
+      2,
+      10_000,
+    );
     const id = rows[0]?.id;
     if (id == null) return null;
     const n = Number(id);

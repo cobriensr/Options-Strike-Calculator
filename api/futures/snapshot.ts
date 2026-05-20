@@ -23,7 +23,7 @@
 
 import type { VercelResponse } from '@vercel/node';
 import { z } from 'zod';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { withRequestScope } from '../_lib/request-scope.js';
@@ -101,9 +101,11 @@ function round2(v: number | null): number | null {
  */
 async function fetchOldestTs(): Promise<string | null> {
   const sql = getDb();
-  const rows = await sql`
-    SELECT MIN(ts) AS oldest FROM futures_bars
-  `;
+  const rows = await withDbRetry(
+    () => sql`SELECT MIN(ts) AS oldest FROM futures_bars`,
+    2,
+    10_000,
+  );
   const oldest = rows[0]?.oldest;
   if (!oldest) return null;
   return new Date(String(oldest)).toISOString();
@@ -115,11 +117,15 @@ async function fetchOldestTs(): Promise<string | null> {
  */
 async function fetchSpxForDate(tradeDate: string): Promise<number | null> {
   const sql = getDb();
-  const rows = await sql`
-    SELECT spx FROM market_snapshots
-    WHERE date = ${tradeDate} AND spx IS NOT NULL
-    ORDER BY created_at DESC LIMIT 1
-  `;
+  const rows = await withDbRetry(
+    () => sql`
+      SELECT spx FROM market_snapshots
+      WHERE date = ${tradeDate} AND spx IS NOT NULL
+      ORDER BY created_at DESC LIMIT 1
+    `,
+    2,
+    10_000,
+  );
   if (rows.length === 0 || !rows[0]?.spx) return null;
   return Number.parseFloat(String(rows[0].spx));
 }
@@ -168,16 +174,20 @@ async function handleLatest(res: VercelResponse) {
 
   // Get all symbols at the latest snapshot timestamp for today
   // Uses inline MAX to avoid JS Date round-trip precision loss
-  const rows = await sql`
-    SELECT symbol, price, change_1h_pct, change_day_pct, volume_ratio, ts
-    FROM futures_snapshots
-    WHERE trade_date = ${tradeDate}
-      AND ts = (
-        SELECT MAX(ts) FROM futures_snapshots
-        WHERE trade_date = ${tradeDate}
-      )
-    ORDER BY symbol
-  `;
+  const rows = await withDbRetry(
+    () => sql`
+      SELECT symbol, price, change_1h_pct, change_day_pct, volume_ratio, ts
+      FROM futures_snapshots
+      WHERE trade_date = ${tradeDate}
+        AND ts = (
+          SELECT MAX(ts) FROM futures_snapshots
+          WHERE trade_date = ${tradeDate}
+        )
+      ORDER BY symbol
+    `,
+    2,
+    10_000,
+  );
 
   const oldestTs = await fetchOldestTs();
 
