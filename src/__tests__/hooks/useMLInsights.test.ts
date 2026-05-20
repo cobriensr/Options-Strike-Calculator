@@ -101,6 +101,28 @@ describe('useMLInsights: basic behavior', () => {
     expect(result.current.error).toBeNull();
   });
 
+  it('stamps fetchedAt with Date.now() after a successful fetch', async () => {
+    globalThis.fetch = mockFetch();
+    const before = Date.now();
+    const { result } = renderHook(() => useMLInsights());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.fetchedAt).not.toBeNull();
+    expect(result.current.fetchedAt!).toBeGreaterThanOrEqual(before);
+    expect(result.current.fetchedAt!).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('does not stamp fetchedAt when the fetch fails', async () => {
+    globalThis.fetch = mockFetch({ status: 500, body: {} });
+    const { result } = renderHook(() => useMLInsights());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.fetchedAt).toBeNull();
+  });
+
   it('calls /api/ml/plots endpoint', async () => {
     const fetchMock = mockFetch();
     globalThis.fetch = fetchMock;

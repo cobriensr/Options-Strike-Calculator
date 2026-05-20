@@ -20,6 +20,7 @@ const defaultState: MLInsightsState = {
   pipelineDate: null,
   loading: false,
   error: null,
+  fetchedAt: null,
   refresh: mockRefresh,
 };
 
