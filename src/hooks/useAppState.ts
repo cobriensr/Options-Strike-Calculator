@@ -22,11 +22,12 @@
  * churn (theme toggle, time picker, etc.).
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DEFAULTS, IV_MODES } from '../constants';
 import type { AmPm, IVMode, Timezone } from '../types';
 import { getCTTime, getETTime } from '../utils/timezone';
 import { useDebounced } from './useDebounced';
+import { useTheme } from './useTheme';
 
 /**
  * Returns a CT time that is valid for the calculator.
@@ -46,23 +47,11 @@ function getInitialCTTime(): { hour: number; minute: number } {
 }
 
 export function useAppState() {
-  // Theme — persist preference in localStorage
-  const [darkMode, setDarkMode] = useState(() => {
-    try {
-      const stored = localStorage.getItem('darkMode');
-      return stored === null ? true : stored === 'true';
-    } catch {
-      return true;
-    }
-  });
-  const setDarkModeAndPersist = useCallback((value: boolean) => {
-    setDarkMode(value);
-    try {
-      localStorage.setItem('darkMode', String(value));
-    } catch {
-      // ignore
-    }
-  }, []);
+  // Theme — Phase 2P-1a moved this to the dedicated `useTheme` hook.
+  // useAppState stays the facade so existing consumers
+  // (`appState.darkMode` / `appState.setDarkMode`) don't churn until
+  // Phase 2P-2 deletes the facade entirely.
+  const { darkMode, setDarkMode } = useTheme();
 
   // Spot price state — seeded with reasonable defaults so UI renders fully;
   // overwritten by live/historical data via useAutoFill on load.
@@ -148,7 +137,7 @@ export function useAppState() {
   return {
     // Theme
     darkMode,
-    setDarkMode: setDarkModeAndPersist,
+    setDarkMode,
 
     // Spot
     spotPrice,
