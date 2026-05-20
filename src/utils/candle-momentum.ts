@@ -13,7 +13,7 @@
  * Pure module — no React, no fetch, no side effects.
  */
 
-import type { SPXCandle } from '../hooks/useGexTarget';
+import type { SPXCandle } from '../types/spx-candle.js';
 
 // ── Signal classification ────────────────────────────────────────────────
 

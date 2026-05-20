@@ -80,15 +80,11 @@ const FAIL_GRACE_COUNT = 2;
  * as a local frontend copy so the hook doesn't cross the `src/` -> `api/`
  * import boundary.
  */
-export interface SPXCandle {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  /** Epoch ms (start_time of the 1-minute bar). */
-  datetime: number;
-}
+// SPXCandle lifted to src/types/spx-candle.ts (Phase 3C). Re-exported
+// here so existing callers (PriceChart, GexTarget/index, candle-momentum
+// tests, etc.) keep working.
+export type { SPXCandle } from '../types/spx-candle.js';
+import type { SPXCandle } from '../types/spx-candle.js';
 
 /**
  * Single snapshot as returned inside the bulk `?all=true` response.

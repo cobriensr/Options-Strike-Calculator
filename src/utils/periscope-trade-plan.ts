@@ -26,7 +26,7 @@
  * + level tie + short reason, the trader makes the call.
  */
 
-import type { PeriscopeView } from '../hooks/usePeriscopeExposure';
+import type { PeriscopeView } from '../types/periscope.js';
 
 /** Distance (pts) under which a +γ wall is "near spot" — close enough to
  *  cap a directional move on its own. */

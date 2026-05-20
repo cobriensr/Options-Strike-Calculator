@@ -21,52 +21,15 @@ import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
 import { usePolling } from './usePolling';
 
-export interface RankedRow {
-  strike: number;
-  value: number;
-  ptsFromSpot: number;
-}
+// RankedRow, RankedRowSimple, PeriscopeView lifted to src/types/periscope.ts
+// (Phase 3C). Re-exported here so existing callers keep working.
+export type {
+  RankedRow,
+  RankedRowSimple,
+  PeriscopeView,
+} from '../types/periscope.js';
 
-export interface RankedRowSimple {
-  strike: number;
-  value: number;
-}
-
-export interface PeriscopeView {
-  capturedAt: string;
-  priorCapturedAt: string | null;
-  expiry: string;
-  spot: number;
-  gamma: {
-    ceiling: RankedRow | null;
-    floor: RankedRow | null;
-    accelTop: RankedRow[];
-    topByAbsNear: RankedRowSimple[];
-  };
-  charm: {
-    tallyNear50: number;
-    tallyWide100: number;
-    topByAbs: RankedRowSimple[];
-    charmZeroStrike: number | null;
-  };
-  vanna: {
-    topByAbs: RankedRowSimple[];
-  };
-  signFlips: Array<{ strike: number; from: number; to: number }>;
-  cone: {
-    coneUpper: number;
-    coneLower: number;
-    coneWidth: number;
-    asymmetryPts: number;
-    spotAtCalc: number;
-  } | null;
-  breaches: Array<{
-    direction: 'upper' | 'lower';
-    breachTime: string;
-    spotAtBreach: number;
-    ptsPastBound: number;
-  }>;
-}
+import type { PeriscopeView } from '../types/periscope.js';
 
 interface PeriscopeExposureResponse {
   marketOpen: boolean;
