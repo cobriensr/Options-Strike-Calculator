@@ -43,8 +43,8 @@
 - `api/__tests__/lottery-finder-endpoint.test.ts` — endpoint-level coverage
 - `src/components/LotteryFinder/LotteryRow.tsx` — tier badge prop + chip + tooltip
 - `src/components/LotteryFinder/types.ts` — new row fields
+- `src/components/LotteryFinder/LotteryFinderSection.tsx` — `showFilteredTickers` local state, URL builder, toggle UI (replaces the deleted `useAppState` plan from earlier draft — `useAppState` was removed in commit `f1426c39`)
 - `src/components/LotteryFinder/LotteryRow.test.tsx` (if exists) or add one
-- `src/hooks/useAppState.ts` — `showFilteredTickers` toggle state
 - `api/cron/refresh-vix1d.ts` — staleness warning Sentry capture
 - `docs/superpowers/specs/lottery-inversion-quality-filter-2026-05-19.md` — fill in locked tier cutoffs after Phase 2
 
@@ -1151,61 +1151,75 @@ Find the tier pill JSX (use the badge ref from Step 12.1). Adjacent to it, rende
 
 If a `cn()` helper isn't already imported in this file, look up the project's convention (likely `clsx`). Match what's already used elsewhere in this file.
 
-### Task 14: Escape-hatch toggle in `useAppState`
+### Task 14: Escape-hatch toggle state in `LotteryFinderSection.tsx`
 
 **Files:**
-- Modify: `src/hooks/useAppState.ts`
+- Modify: `src/components/LotteryFinder/LotteryFinderSection.tsx`
 
-- [ ] **Step 14.1: Find the useAppState file**
+> **Architecture note:** `useAppState` was deleted in commit `f1426c39` (2026-05-19). Lottery filter state now lives as local `useState` inside `LotteryFinderSection.tsx` alongside `reloadOnly`, `cheapCallPmOnly`, `modeFilter`, etc. (current file lines 337-350). The toggle state goes there too.
 
-Run: `ls src/hooks/useAppState.ts`
+- [ ] **Step 14.1: Add the local state declaration**
 
-If the file exists and exports a hook, add the toggle state:
+In `src/components/LotteryFinder/LotteryFinderSection.tsx`, alongside the other filter `useState` calls (around line 343 next to `reloadOnly`), add:
 
 ```ts
-// Lottery Finder: bypass the bottom-quintile inversion-quality filter
-const [showFilteredLotteryTickers, setShowFilteredLotteryTickers] =
-  useState(false);
+  // Bypass the server-side Q1/Q2 inversion-quality filter when on.
+  // Off by default; intentionally NOT persisted in localStorage — flips
+  // back off on reload so the narrowed feed is the default.
+  const [showFilteredTickers, setShowFilteredTickers] = useState<boolean>(false);
 ```
 
-Add `showFilteredLotteryTickers` and `setShowFilteredLotteryTickers` to the return object.
-
-### Task 15: Wire the toggle into the lottery feed fetch
+### Task 15: Wire the toggle into the lottery feed fetch URL
 
 **Files:**
-- Modify: wherever the lottery feed is fetched (find with grep)
+- Modify: `src/components/LotteryFinder/LotteryFinderSection.tsx` (same file)
 
-- [ ] **Step 15.1: Find the fetch call**
+- [ ] **Step 15.1: Find the URL builder for `/api/lottery-finder`**
 
-Run: `grep -rln "/api/lottery-finder" src/ | head -10`
+Run: `grep -n "/api/lottery-finder\|URLSearchParams\|searchParams" src/components/LotteryFinder/LotteryFinderSection.tsx | head -20`
 
-- [ ] **Step 15.2: Append `?showAll=1` when toggle is on**
+The URL is built inside the same file, near where the other query params (`reload`, `cheapCallPm`, `mode`, `ticker`, etc.) are appended.
 
-In the fetch URL construction, add `showAll=true` to the query string when `showFilteredLotteryTickers` is true. Pass through to the hook that builds the URL.
+- [ ] **Step 15.2: Append `showAll=true` when toggle is on**
+
+In the URL builder, after the existing param appends, add:
+
+```ts
+if (showFilteredTickers) params.set('showAll', 'true');
+```
+
+Match the project's existing convention — if other booleans use `params.append` vs `params.set` or omit the param when false, follow that pattern exactly. Inspect 2-3 nearby boolean appends and mirror them.
+
+Confirm `showFilteredTickers` is included in the dependency array of whatever `useMemo` / `useCallback` / `useEffect` rebuilds the URL — otherwise the toggle won't trigger a refetch.
 
 ### Task 16: Render the toggle UI
 
 **Files:**
-- Modify: the component that hosts the exit-policy chip selector (likely a parent of `LotteryRow`)
+- Modify: `src/components/LotteryFinder/LotteryFinderSection.tsx` (same file)
 
-- [ ] **Step 16.1: Find the exit-policy chip selector**
+- [ ] **Step 16.1: Find the toolbar / chip area**
 
-Run: `grep -rln "EXIT_POLICY_LABELS\|realizedTrail30_10Pct" src/components/LotteryFinder/`
+Run: `grep -n "FilterToolbar\|EXIT_POLICY\|reloadOnly\|cheapCallPmOnly" src/components/LotteryFinder/LotteryFinderSection.tsx | head -20`
 
-- [ ] **Step 16.2: Add a toggle next to the chip selector**
+Identify the JSX block that renders the existing filter chips (likely a `<FilterToolbar>` or equivalent — note the import on line 45).
+
+- [ ] **Step 16.2: Add the toggle adjacent to the existing chips**
+
+Match the styling and primitive of the surrounding filter controls (e.g. if other booleans use a `FilterChip` component, use the same; if they're raw `<input type="checkbox">`, use that). Example based on a generic checkbox pattern:
 
 ```tsx
 <label className="flex items-center gap-2 text-sm text-slate-300">
   <input
     type="checkbox"
-    checked={showFilteredLotteryTickers}
-    onChange={(e) => setShowFilteredLotteryTickers(e.target.checked)}
+    checked={showFilteredTickers}
+    onChange={(e) => setShowFilteredTickers(e.target.checked)}
+    data-testid="lottery-show-filtered-toggle"
   />
   Show filtered tickers (Q1/Q2)
 </label>
 ```
 
-Use whichever toggle / switch primitive the project already uses elsewhere — match existing styling.
+Place it adjacent to the `reloadOnly` / `cheapCallPmOnly` toggle controls so the cluster of "narrow the feed" controls stays together.
 
 ### Task 17: Playwright e2e spec
 
@@ -1262,16 +1276,15 @@ Expected: all clean.
 
 - [ ] **Step 18.2: Code-reviewer subagent**
 
-Dispatch: "Review Phase 4 diff (LotteryFinder/types.ts row shape, LotteryRow.tsx tier-badge + quintile chip + tooltip + data-testid, useAppState.ts toggle state, feed-fetch URL builder, host component toggle UI, e2e spec). Confirm: (a) NULL quintile hides the chip (no Q? placeholder); (b) tooltip uses native title attribute or matches existing tooltip primitive; (c) toggle is off-by-default; (d) URL query param is `showAll=true` not `showAll=1`; (e) e2e spec covers both visibility and toggle behavior + axe-core a11y."
+Dispatch: "Review Phase 4 diff (LotteryFinder/types.ts row shape, LotteryRow.tsx tier-badge + quintile chip + tooltip + data-testid, LotteryFinderSection.tsx local-state toggle + URL builder + toggle UI, e2e spec). Confirm: (a) NULL quintile hides the chip (no Q? placeholder); (b) tooltip uses native title attribute or matches existing tooltip primitive; (c) toggle is off-by-default; (d) URL query param is `showAll=true` not `showAll=1`; (e) `showFilteredTickers` is in the URL builder's dependency array; (f) e2e spec covers both visibility and toggle behavior + axe-core a11y."
 
 - [ ] **Step 18.3: Commit + push atomically**
 
 ```bash
 git add src/components/LotteryFinder/types.ts \
         src/components/LotteryFinder/LotteryRow.tsx \
-        src/hooks/useAppState.ts \
+        src/components/LotteryFinder/LotteryFinderSection.tsx \
         e2e/lottery-inversion-filter.spec.ts && \
-# Plus any host-component file(s) found in Step 16.1
 git commit -m "$(cat <<'EOF'
 feat(lottery-ui): Show inversion-quality chip and escape-hatch toggle
 
