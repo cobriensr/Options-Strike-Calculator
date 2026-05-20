@@ -26,6 +26,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import sys
@@ -39,6 +40,84 @@ import numpy as np
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
+
+
+# ============================================================
+# Ticker inversion-quality refit (Phase 2 of the inversion-quality filter)
+# ============================================================
+
+INVERSION_WIN_THRESHOLD = 50.0  # realized_flow_inversion_pct >= 50 = "win"
+SAMPLE_SIZE_FLOOR = 10
+WILSON_Z = 1.96  # 95% CI
+WINDOW_WEIGHT_21D = 0.6
+WINDOW_WEIGHT_90D = 0.4
+
+
+def wilson_lcb(wins: int, n: int) -> float | None:
+    """Wilson 95% lower confidence bound on P(win | n trials).
+
+    Returns None when n < SAMPLE_SIZE_FLOOR.
+    """
+    if n < SAMPLE_SIZE_FLOOR:
+        return None
+    if n == 0:
+        return None
+    p = wins / n
+    z = WILSON_Z
+    denom = 1 + z * z / n
+    center = p + z * z / (2 * n)
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return max(0.0, (center - margin) / denom)
+
+
+def inversion_blend(
+    lcb_21d: float | None,
+    lcb_90d: float | None,
+) -> float | None:
+    """Weighted blend of the 21d and 90d Wilson LCBs.
+
+    Both present  -> 0.6 * 21d + 0.4 * 90d
+    Only one      -> that one
+    Neither       -> None
+    """
+    if lcb_21d is not None and lcb_90d is not None:
+        return WINDOW_WEIGHT_21D * lcb_21d + WINDOW_WEIGHT_90D * lcb_90d
+    if lcb_21d is not None:
+        return lcb_21d
+    if lcb_90d is not None:
+        return lcb_90d
+    return None
+
+
+def quintile_cuts(
+    blends: dict[str, float | None],
+) -> dict[str, int]:
+    """Map each ticker's non-NULL blend to a quintile (1..5).
+
+    Quintile 1 = worst (smallest blend), Quintile 5 = best. Tickers with
+    NULL blends are omitted from the output. Rank-based: sort the valid
+    blends ascending, then assign quintile by sorted rank so every group
+    gets an equal share (vs. pandas qcut's duplicates='drop' behavior
+    which can shrink the output, or boundary-based comparisons which
+    miscount at exact-boundary ties).
+    """
+    valid = {t: b for t, b in blends.items() if b is not None}
+    if not valid:
+        return {}
+    # Stable sort by (value, ticker) so ties don't reshuffle across runs.
+    ordered = sorted(valid.items(), key=lambda kv: (kv[1], kv[0]))
+    n = len(ordered)
+    out: dict[str, int] = {}
+    if n == 1:
+        out[ordered[0][0]] = 1
+        return out
+    for rank, (ticker, _b) in enumerate(ordered):
+        # rank in [0..n-1]; map to quintile in [1..5].
+        q = int(rank * 5 / (n - 1)) + 1 if rank < n - 1 else 5
+        if q > 5:
+            q = 5
+        out[ticker] = q
+    return out
 
 DEFAULT_PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
 PARQUET_FORMATS = {
@@ -639,6 +718,194 @@ def mark_no_post_ticks(conn, fire_ids: list[int]) -> None:
         )
 
 
+def refit_ticker_inversion_stats(
+    conn,
+    write_db: bool,
+    sim_csv_path: Path | None = None,
+) -> None:
+    """Recompute lottery_ticker_stats.inversion_* columns from the rolling
+    21d / 90d window of realized_flow_inversion_pct values.
+
+    When sim_csv_path is provided, also writes the tune-before-ship CSV
+    (one row per historical fire in the last 90 days) so the operator
+    can lock Tier 1/2 cutoffs.
+    """
+    # NB: the table's fire-time column is `trigger_time_ct` (TIMESTAMPTZ).
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+              underlying_symbol AS ticker,
+              COUNT(*) FILTER (
+                WHERE trigger_time_ct >= NOW() - INTERVAL '21 days'
+                  AND realized_flow_inversion_pct IS NOT NULL
+              ) AS n_21d,
+              COUNT(*) FILTER (
+                WHERE trigger_time_ct >= NOW() - INTERVAL '21 days'
+                  AND realized_flow_inversion_pct >= %s
+              ) AS w_21d,
+              COUNT(*) FILTER (
+                WHERE trigger_time_ct >= NOW() - INTERVAL '90 days'
+                  AND realized_flow_inversion_pct IS NOT NULL
+              ) AS n_90d,
+              COUNT(*) FILTER (
+                WHERE trigger_time_ct >= NOW() - INTERVAL '90 days'
+                  AND realized_flow_inversion_pct >= %s
+              ) AS w_90d
+            FROM lottery_finder_fires
+            WHERE trigger_time_ct >= NOW() - INTERVAL '90 days'
+            GROUP BY underlying_symbol
+            """,
+            (INVERSION_WIN_THRESHOLD, INVERSION_WIN_THRESHOLD),
+        )
+        rows = cur.fetchall()
+
+    blends: dict[str, float | None] = {}
+    per_ticker: dict[str, dict] = {}
+    for ticker, n_21d, w_21d, n_90d, w_90d in rows:
+        lcb_21 = wilson_lcb(w_21d, n_21d)
+        lcb_90 = wilson_lcb(w_90d, n_90d)
+        blend = inversion_blend(lcb_21, lcb_90)
+        blends[ticker] = blend
+        per_ticker[ticker] = {
+            'lcb_21d': lcb_21,
+            'lcb_90d': lcb_90,
+            'blend': blend,
+            'n_21d': n_21d,
+            'n_90d': n_90d,
+        }
+
+    quintiles = quintile_cuts(blends)
+
+    upsert_rows = []
+    for ticker, stats in per_ticker.items():
+        upsert_rows.append((
+            ticker,
+            stats['lcb_21d'],
+            stats['lcb_90d'],
+            stats['blend'],
+            quintiles.get(ticker),
+            stats['n_21d'],
+            stats['n_90d'],
+        ))
+
+    from collections import Counter
+    quintile_counts = Counter(quintiles.values())
+    print(f'[ticker-quality] {len(per_ticker)} tickers seen in 90d window')
+    print(
+        f'[ticker-quality] quintile distribution: '
+        f'{dict(sorted(quintile_counts.items()))}'
+    )
+    null_count = sum(1 for b in blends.values() if b is None)
+    print(
+        f'[ticker-quality] {null_count} tickers had NULL blend '
+        f'(no window with N >= {SAMPLE_SIZE_FLOOR})'
+    )
+
+    if not write_db:
+        print('[ticker-quality] WRITE_DB not set — skipping UPSERT')
+    else:
+        with conn.cursor() as cur:
+            BATCH = 500
+            for i in range(0, len(upsert_rows), BATCH):
+                batch = upsert_rows[i:i + BATCH]
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO lottery_ticker_stats (
+                      ticker, inversion_lcb_21d, inversion_lcb_90d,
+                      inversion_blend, inversion_quintile,
+                      inversion_n_21d, inversion_n_90d, updated_at
+                    )
+                    VALUES %s
+                    ON CONFLICT (ticker) DO UPDATE SET
+                      inversion_lcb_21d = EXCLUDED.inversion_lcb_21d,
+                      inversion_lcb_90d = EXCLUDED.inversion_lcb_90d,
+                      inversion_blend = EXCLUDED.inversion_blend,
+                      inversion_quintile = EXCLUDED.inversion_quintile,
+                      inversion_n_21d = EXCLUDED.inversion_n_21d,
+                      inversion_n_90d = EXCLUDED.inversion_n_90d,
+                      updated_at = NOW()
+                    """,
+                    batch,
+                    template='(%s, %s, %s, %s, %s, %s, %s, NOW())',
+                )
+        conn.commit()
+        print(
+            f'[ticker-quality] UPSERTed {len(upsert_rows)} rows '
+            f'into lottery_ticker_stats'
+        )
+
+    if sim_csv_path is not None:
+        _write_tune_csv(conn, quintiles, sim_csv_path)
+
+
+INVERSION_BONUS_BY_QUINTILE = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
+
+
+def _write_tune_csv(
+    conn, quintiles: dict[str, int], out_path: Path
+) -> None:
+    """Simulate quality_adjusted_score for the last 90d of fires and emit a
+    CSV that lets the operator pick Tier 1/2 cutoffs hitting the 40-50/day target.
+    """
+    import csv
+    import statistics
+    from collections import defaultdict
+
+    # NB: the table's fire-time column is `trigger_time_ct` and the score
+    # column added in migration #174 is `score` (INTEGER).
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, underlying_symbol, date AS fire_date, score
+            FROM lottery_finder_fires
+            WHERE trigger_time_ct >= NOW() - INTERVAL '90 days'
+              AND score IS NOT NULL
+            """
+        )
+        fires = cur.fetchall()
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    daily_passes: dict[tuple[int, int], dict] = defaultdict(
+        lambda: defaultdict(int)
+    )
+    with out_path.open('w', newline='') as f:
+        w = csv.writer(f)
+        w.writerow([
+            'fire_id', 'ticker', 'fire_date',
+            'score', 'quintile', 'bonus',
+            'quality_adjusted_score', 'would_be_filtered',
+        ])
+        for fid, ticker, fire_date, score in fires:
+            q = quintiles.get(ticker)
+            bonus = (
+                INVERSION_BONUS_BY_QUINTILE.get(q, 0)
+                if q is not None
+                else 0
+            )
+            qas = float(score) + bonus
+            filtered = q in (1, 2) if q is not None else False
+            w.writerow([
+                fid, ticker, fire_date, score, q, bonus, qas, int(filtered)
+            ])
+            if not filtered:
+                for t1 in range(20, 25):
+                    for t2 in range(14, 18):
+                        if t2 >= t1:
+                            continue
+                        if qas >= t2:
+                            daily_passes[(t1, t2)][fire_date] += 1
+
+    print(f'[ticker-quality] wrote simulation CSV to {out_path}')
+    print('[ticker-quality] median daily Tier 1+2 count by cutoff:')
+    print('  tier1  tier2  median/day')
+    for (t1, t2), per_day in sorted(daily_passes.items()):
+        med = statistics.median(per_day.values()) if per_day else 0
+        marker = '  <-- target' if 40 <= med <= 50 else ''
+        print(f'  >={t1:>2}   >={t2:>2}     {med:>5.1f}{marker}')
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -681,51 +948,59 @@ def main() -> None:
         print(f'[enrich] unenriched fires: {len(fires):,}')
         if not fires:
             print('[enrich] main pass: nothing to do')
-            run_flow_inversion_pass(conn, target_date)
-            return
+        else:
+            chain_index = load_parquet_chain_index(
+                target_date, {f.option_chain_id for f in fires}
+            )
+            print(f'[enrich] chains in parquet: {len(chain_index):,}')
 
-        chain_index = load_parquet_chain_index(
-            target_date, {f.option_chain_id for f in fires}
-        )
-        print(f'[enrich] chains in parquet: {len(chain_index):,}')
+            t0 = time.time()
+            updates: list[tuple] = []
+            no_post_tick_ids: list[int] = []
+            skipped_chain_missing = 0
+            for fire in fires:
+                chain_df = chain_index.get(fire.option_chain_id)
+                if chain_df is None:
+                    skipped_chain_missing += 1
+                    continue
+                res = compute_fire_outcomes(fire, chain_df)
+                if res is None:
+                    no_post_tick_ids.append(fire.id)
+                    continue
+                trail, hard30, tier50, eod, peak, mtp = res
+                updates.append(
+                    (fire.id, trail, hard30, tier50, eod, peak, mtp)
+                )
 
-        t0 = time.time()
-        updates: list[tuple] = []
-        no_post_tick_ids: list[int] = []
-        skipped_chain_missing = 0
-        for fire in fires:
-            chain_df = chain_index.get(fire.option_chain_id)
-            if chain_df is None:
-                skipped_chain_missing += 1
-                continue
-            res = compute_fire_outcomes(fire, chain_df)
-            if res is None:
-                no_post_tick_ids.append(fire.id)
-                continue
-            trail, hard30, tier50, eod, peak, mtp = res
-            updates.append(
-                (fire.id, trail, hard30, tier50, eod, peak, mtp)
+            print(
+                f'[enrich] computed {len(updates):,} outcomes '
+                f'in {time.time() - t0:.1f}s '
+                f'(skipped: {skipped_chain_missing} no-chain, '
+                f'{len(no_post_tick_ids)} no-post-ticks)'
             )
 
-        print(
-            f'[enrich] computed {len(updates):,} outcomes '
-            f'in {time.time() - t0:.1f}s '
-            f'(skipped: {skipped_chain_missing} no-chain, '
-            f'{len(no_post_tick_ids)} no-post-ticks)'
-        )
-
-        update_fires(conn, updates)
-        mark_no_post_ticks(conn, no_post_tick_ids)
-        print(
-            f'[enrich] DB updated: {len(updates):,} rows '
-            f'(+ {len(no_post_tick_ids)} marked enriched-with-NULLs)'
-        )
+            update_fires(conn, updates)
+            mark_no_post_ticks(conn, no_post_tick_ids)
+            print(
+                f'[enrich] DB updated: {len(updates):,} rows '
+                f'(+ {len(no_post_tick_ids)} marked enriched-with-NULLs)'
+            )
 
         # Second pass — flow-inversion. Targets `realized_flow_inversion_pct
         # IS NULL` regardless of enriched_at, so it backfills both the
         # rows we just enriched AND any historical fires the Vercel cron
         # missed.
         run_flow_inversion_pass(conn, target_date)
+
+        # Third pass — per-ticker inversion-quality refit (Phase 2 of the
+        # inversion-quality filter). Runs against whatever is in
+        # lottery_finder_fires regardless of whether today's main pass ran.
+        sim_csv = Path('docs/tmp/lottery-quality-sim-2026-05-19.csv')
+        refit_ticker_inversion_stats(
+            conn,
+            write_db=bool(int(os.environ.get('WRITE_DB', '0'))),
+            sim_csv_path=sim_csv,
+        )
 
     finally:
         conn.close()
