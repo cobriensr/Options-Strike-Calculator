@@ -7,8 +7,8 @@ import { mockRequest, mockResponse } from './helpers';
 const mockSql = vi.fn().mockResolvedValue([]);
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-
+  getDb: vi.fn(() => mockSql),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -220,5 +220,37 @@ describe('fetch-day-ohlc handler', () => {
 
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  // 404 means "archive parquet not dropped yet for this date" — same
+  // semantic as rows:[] — fall through to Postgres fallback rather
+  // than 500-ing the cron.
+  it('falls back to Postgres OHLC when sidecar returns 404 (archive pending)', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: async () => ({}),
+    });
+    mockedFetchOhlcPg.mockResolvedValueOnce({
+      open: 5300,
+      high: 5320,
+      low: 5285,
+      close: 5310,
+      range: 35,
+      up_excursion: 20,
+      down_excursion: 15,
+    });
+    mockSql.mockResolvedValueOnce([{ date: '2026-04-19' }]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-day-ohlc',
+      source: 'postgres',
+      updated: 1,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 });

@@ -74,10 +74,17 @@ export default withCronInstrumentation(
     const sidecarRes = await fetch(url, {
       signal: AbortSignal.timeout(15_000),
     });
-    if (!sidecarRes.ok) {
+    // 404 means the archive parquet for `targetDate` hasn't been
+    // dropped yet (Databento batch ran late). That's the same semantic
+    // as `rows: []` — fall through to the Postgres fallback which
+    // reads the streaming index_candles_1m feed. 5xx and other non-ok
+    // statuses still escalate.
+    if (!sidecarRes.ok && sidecarRes.status !== 404) {
       throw new Error(`sidecar ${sidecarRes.status}`);
     }
-    const body = (await sidecarRes.json()) as { rows?: SummaryRow[] };
+    const body = sidecarRes.ok
+      ? ((await sidecarRes.json()) as { rows?: SummaryRow[] })
+      : { rows: [] as SummaryRow[] };
     const sidecarRow = body.rows?.[0];
 
     interface ResolvedOhlc {
