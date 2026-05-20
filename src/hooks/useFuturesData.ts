@@ -47,7 +47,7 @@ export interface FuturesDataState {
   oldestTs: string | null;
   loading: boolean;
   error: string | null;
-  refetch: () => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
 export function useFuturesData(
@@ -147,6 +147,6 @@ export function useFuturesData(
     oldestTs,
     loading,
     error,
-    refetch: fetchData,
+    refresh: fetchData,
   };
 }

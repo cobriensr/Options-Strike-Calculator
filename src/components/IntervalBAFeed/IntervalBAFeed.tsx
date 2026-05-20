@@ -102,7 +102,7 @@ export function IntervalBAFeed({
       moneyness,
     ],
   );
-  const { alerts, summary, loading, error, fetchedAt, refetch } =
+  const { alerts, summary, loading, error, fetchedAt, refresh } =
     useIntervalBAFeed(params, marketOpen);
 
   return (
@@ -145,7 +145,7 @@ export function IntervalBAFeed({
               )}
               <button
                 type="button"
-                onClick={refetch}
+                onClick={refresh}
                 disabled={loading}
                 title="Refetch the feed for the current filters"
                 aria-label="Refresh feed"

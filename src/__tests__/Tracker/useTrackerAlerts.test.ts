@@ -85,7 +85,7 @@ describe('useTrackerAlerts', () => {
     expect(show).not.toHaveBeenCalled();
   });
 
-  it('fires a toast for a newly-fired alert on the second refetch', async () => {
+  it('fires a toast for a newly-fired alert on the second refresh', async () => {
     const show = vi.fn();
     // Initial poll: no alerts. Second poll: a new up_pct alert appears.
     fetchMock
@@ -96,11 +96,11 @@ describe('useTrackerAlerts', () => {
     });
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(show).not.toHaveBeenCalled();
-    // Simulate the 30s poll by invoking refetch() directly. This is
+    // Simulate the 30s poll by invoking refresh() directly. This is
     // equivalent to the timer firing — much more reliable than juggling
     // fake timers across React effect microtasks.
     await act(async () => {
-      await result.current.refetch();
+      await result.current.refresh();
     });
     expect(show).toHaveBeenCalledTimes(1);
     const [message, type] = show.mock.calls[0] ?? [];
@@ -122,10 +122,10 @@ describe('useTrackerAlerts', () => {
     });
     await waitFor(() => expect(result.current.loading).toBe(false));
     await act(async () => {
-      await result.current.refetch();
+      await result.current.refresh();
     });
     await act(async () => {
-      await result.current.refetch();
+      await result.current.refresh();
     });
     expect(show).toHaveBeenCalledTimes(1);
   });
@@ -205,7 +205,7 @@ describe('useTrackerAlerts', () => {
     });
     await waitFor(() => expect(result.current.loading).toBe(false));
     await act(async () => {
-      await result.current.refetch();
+      await result.current.refresh();
     });
     expect(show).toHaveBeenCalledTimes(1);
     const [message, type] = show.mock.calls[0] ?? [];
@@ -233,7 +233,7 @@ describe('useTrackerAlerts — toast onClick wiring', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     await act(async () => {
-      await result.current.refetch();
+      await result.current.refresh();
     });
     expect(show).toHaveBeenCalledTimes(1);
     const opts = show.mock.calls[0]?.[2] as

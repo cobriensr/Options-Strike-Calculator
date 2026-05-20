@@ -20,7 +20,7 @@ function mockState(overrides: Partial<FuturesDataState> = {}) {
     oldestTs: null,
     loading: false,
     error: null,
-    refetch: vi.fn(),
+    refresh: vi.fn(),
   };
   mockUseFuturesData.mockReturnValue({ ...defaults, ...overrides });
 }

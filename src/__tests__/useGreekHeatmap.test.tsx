@@ -11,7 +11,7 @@
  *   - StrictMode/cancel-safety: rapid arg switch never leaves loading=true
  *     stuck on the previous fetch's abort (the bug the comment at
  *     useGreekHeatmap.ts:140 calls out).
- *   - refetch() returns same identity across re-renders for stable deps.
+ *   - refresh() returns same identity across re-renders for stable deps.
  */
 
 import '@testing-library/jest-dom';
@@ -152,7 +152,7 @@ describe('useGreekHeatmap', () => {
     expect(abortRef.signal?.aborted).toBe(true);
   });
 
-  it('refetch() triggers a fresh network call', async () => {
+  it('refresh() triggers a fresh network call', async () => {
     mockFetch.mockResolvedValue(okResponse(HAPPY_RESPONSE));
     const { result } = renderHook(() =>
       useGreekHeatmap({ ticker: 'SPY', enabled: false }),
@@ -162,7 +162,7 @@ describe('useGreekHeatmap', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
 
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));

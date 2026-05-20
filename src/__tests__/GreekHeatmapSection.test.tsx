@@ -15,9 +15,9 @@ import type {
   GreekHeatmapTopStrike,
 } from '../hooks/useGreekHeatmap';
 
-const { mockUseGreekHeatmap, mockRefetch } = vi.hoisted(() => ({
+const { mockUseGreekHeatmap, mockRefresh } = vi.hoisted(() => ({
   mockUseGreekHeatmap: vi.fn(),
-  mockRefetch: vi.fn(),
+  mockRefresh: vi.fn(),
 }));
 
 vi.mock('../hooks/useGreekHeatmap', () => ({
@@ -90,7 +90,7 @@ describe('GreekHeatmapSection', () => {
       data: makeData(),
       loading: false,
       error: null,
-      refetch: mockRefetch,
+      refresh: mockRefresh,
     });
   });
 
@@ -216,7 +216,7 @@ describe('GreekHeatmapSection', () => {
       data: null,
       loading: true,
       error: null,
-      refetch: mockRefetch,
+      refresh: mockRefresh,
     });
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(
@@ -229,12 +229,12 @@ describe('GreekHeatmapSection', () => {
       data: null,
       loading: false,
       error: 'HTTP 500',
-      refetch: mockRefetch,
+      refresh: mockRefresh,
     });
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText(/failed to load heatmap/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
-    expect(mockRefetch).toHaveBeenCalledTimes(1);
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
   });
 
   it('renders an empty-state hint when chainStrikes is empty and asOf is null', () => {
@@ -247,7 +247,7 @@ describe('GreekHeatmapSection', () => {
       }),
       loading: false,
       error: null,
-      refetch: mockRefetch,
+      refresh: mockRefresh,
     });
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText(/no greek data for spy/i)).toBeInTheDocument();
@@ -283,7 +283,7 @@ describe('GreekHeatmapSection', () => {
       }),
       loading: false,
       error: null,
-      refetch: mockRefetch,
+      refresh: mockRefresh,
     });
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText(/no intraday data/i)).toBeInTheDocument();
@@ -408,7 +408,7 @@ describe('GreekHeatmapSection', () => {
       data: makeData({ netFlow: null }),
       loading: false,
       error: null,
-      refetch: mockRefetch,
+      refresh: mockRefresh,
     });
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(

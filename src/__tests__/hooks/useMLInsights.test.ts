@@ -167,11 +167,11 @@ describe('useMLInsights: error handling', () => {
 });
 
 // ============================================================
-// REFETCH
+// REFRESH
 // ============================================================
 
-describe('useMLInsights: refetch', () => {
-  it('refetch re-fetches data', async () => {
+describe('useMLInsights: refresh', () => {
+  it('refresh re-fetches data', async () => {
     const fetchMock = mockFetch();
     globalThis.fetch = fetchMock;
     const { result } = renderHook(() => useMLInsights());
@@ -182,7 +182,7 @@ describe('useMLInsights: refetch', () => {
       .length;
 
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
 
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -192,7 +192,7 @@ describe('useMLInsights: refetch', () => {
     ).toBeGreaterThan(callsBefore);
   });
 
-  it('refetch clears previous error', async () => {
+  it('refresh clears previous error', async () => {
     // First call fails
     globalThis.fetch = mockFetch({ status: 500, body: {} });
     const { result } = renderHook(() => useMLInsights());
@@ -204,7 +204,7 @@ describe('useMLInsights: refetch', () => {
     globalThis.fetch = mockFetch();
 
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
 
     await waitFor(() => expect(result.current.loading).toBe(false));

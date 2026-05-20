@@ -24,7 +24,7 @@ function mockState(overrides: Partial<FuturesDataState> = {}) {
     oldestTs: '2026-03-01T13:30:00.000Z',
     loading: false,
     error: null,
-    refetch: vi.fn(),
+    refresh: vi.fn(),
   };
   mockUseFuturesData.mockImplementation((at) => {
     atHistory.push(at);

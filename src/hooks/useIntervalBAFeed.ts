@@ -4,7 +4,7 @@
  *
  * Refetch model:
  *   - Always: re-fetch when date / time / filter inputs change, or
- *     when the caller bumps `refetch()`.
+ *     when the caller bumps `refresh()`.
  *   - Auto-polling: when `marketOpen` is true AND the selected `date`
  *     is today (CT calendar), the hook bumps `refreshTick` every
  *     POLL_INTERVALS.ALERTS ms so the live feed stays in lockstep with
@@ -85,7 +85,7 @@ export interface UseIntervalBAFeedState {
   loading: boolean;
   error: string | null;
   fetchedAt: number | null;
-  refetch: () => void;
+  refresh: () => void;
 }
 
 function buildUrl(p: UseIntervalBAFeedParams): string {
@@ -132,7 +132,7 @@ export function useIntervalBAFeed(
   // Same effect handles param-driven refetches AND manual ones, so
   // the in-flight cancellation logic doesn't have to be duplicated.
   const [refreshTick, setRefreshTick] = useState(0);
-  const refetch = useCallback(() => {
+  const refresh = useCallback(() => {
     setRefreshTick((n) => n + 1);
   }, []);
 
@@ -226,5 +226,5 @@ export function useIntervalBAFeed(
     [marketOpen, params.date === todayCt()],
   );
 
-  return { alerts, summary, loading, error, fetchedAt, refetch };
+  return { alerts, summary, loading, error, fetchedAt, refresh };
 }

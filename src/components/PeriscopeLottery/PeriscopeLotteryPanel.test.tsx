@@ -65,7 +65,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: null,
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={false} />);
 
@@ -101,7 +101,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: Date.now(),
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
 
@@ -124,7 +124,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: Date.now(),
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     expect(screen.getByText('V4')).toBeInTheDocument();
@@ -137,7 +137,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: Date.now(),
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     expect(screen.getByText('V3')).toBeInTheDocument();
@@ -157,7 +157,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: Date.now(),
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     // peak 250% · eod -0.50R
@@ -173,7 +173,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: Date.now(),
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     expect(screen.queryByText(/peak/i)).not.toBeInTheDocument();
@@ -185,7 +185,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: 'HTTP 500',
       fetchedAt: null,
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     expect(screen.getByRole('alert')).toHaveTextContent('HTTP 500');
@@ -197,7 +197,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: null,
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     const picker = screen.getByLabelText(
@@ -216,7 +216,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: null,
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     const picker = screen.getByLabelText(
@@ -244,7 +244,7 @@ describe('PeriscopeLotteryPanel', () => {
       loading: false,
       error: null,
       fetchedAt: Date.now(),
-      refetch: vi.fn(),
+      refresh: vi.fn(),
     });
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     const link = screen.getByRole('link', { name: '7430C' });

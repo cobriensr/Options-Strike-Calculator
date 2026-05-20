@@ -78,7 +78,7 @@ interface MLInsightsProps {
 export default function MLInsights({
   defaultCollapsed,
 }: Readonly<MLInsightsProps> = {}) {
-  const { plots, findings, pipelineDate, loading, error, refetch } =
+  const { plots, findings, pipelineDate, loading, error, refresh } =
     useMLInsights();
   const [analyzeState, setAnalyzeState] = React.useState<
     'idle' | 'running' | 'done' | 'error'
@@ -142,7 +142,7 @@ export default function MLInsights({
           </button>
           <button
             type="button"
-            onClick={refetch}
+            onClick={refresh}
             disabled={loading}
             className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
             style={{

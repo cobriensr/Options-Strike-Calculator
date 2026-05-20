@@ -197,7 +197,7 @@ describe('usePeriscopeLotteryFeed', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('refetch() forces a fresh fetch on demand', async () => {
+  it('refresh() forces a fresh fetch on demand', async () => {
     fetchMock.mockResolvedValue(jsonResponse(emptyFeed()));
     const { result } = renderHook(() =>
       usePeriscopeLotteryFeed({ date: '2026-05-18', marketOpen: false }),
@@ -205,7 +205,7 @@ describe('usePeriscopeLotteryFeed', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });

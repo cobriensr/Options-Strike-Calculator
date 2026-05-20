@@ -126,7 +126,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
     setScrubbedAt(null);
   }, [ticker, selectedDate]);
 
-  const { data, loading, error, refetch } = useGreekHeatmap({
+  const { data, loading, error, refresh } = useGreekHeatmap({
     ticker,
     date: isViewingToday ? undefined : selectedDate,
     at: scrubbedAt ?? undefined,
@@ -269,7 +269,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
           <span>Failed to load heatmap: {error}</span>
           <button
             type="button"
-            onClick={() => refetch()}
+            onClick={() => refresh()}
             className="rounded border border-rose-700/70 px-2 py-0.5 text-[11px] hover:bg-rose-900/40"
           >
             Retry

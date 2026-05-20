@@ -158,7 +158,7 @@ describe('useFuturesData', () => {
 
   // ── Refetch ─────────────────────────────────────────────
 
-  it('refetch function triggers a new fetch', async () => {
+  it('refresh function triggers a new fetch', async () => {
     const firstData = makeApiResponse();
     mockOkResponse(firstData);
 
@@ -186,7 +186,7 @@ describe('useFuturesData', () => {
     mockOkResponse(secondData);
 
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
 
     await waitFor(() => {

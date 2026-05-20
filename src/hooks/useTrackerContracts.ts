@@ -3,11 +3,11 @@
  * status filter plus exposes CRUD helpers.
  *
  * Returns the existing-hook contract:
- *   `{ data, loading, error, refetch, mutate }`
+ *   `{ data, loading, error, refresh, mutate }`
  *
  * `mutate` is a synchronous client-side patch for optimistic updates
  * (e.g. closing a row); the caller is responsible for following up with
- * `refetch()` after the server PATCH resolves.
+ * `refresh()` after the server PATCH resolves.
  *
  * The hook re-fetches whenever `status` or `marketOpen` changes, and
  * polls every 30s during market hours. Pass `enabled={false}` to
@@ -58,7 +58,7 @@ export interface UseTrackerContractsState {
   loading: boolean;
   error: string | null;
   fetchedAt: number | null;
-  refetch: () => Promise<void>;
+  refresh: () => Promise<void>;
   mutate: (patch: (prev: TrackerContract[]) => TrackerContract[]) => void;
   create: (
     body: ContractCreateInput | ContractFreeTextInput,
@@ -98,7 +98,7 @@ export function useTrackerContracts({
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const refetch = useCallback(async () => {
+  const refresh = useCallback(async () => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -129,10 +129,10 @@ export function useTrackerContracts({
       return;
     }
     setLoading(true);
-    refetch();
-  }, [enabled, refetch]);
+    refresh();
+  }, [enabled, refresh]);
 
-  usePolling(refetch, POLL_INTERVAL_MS, [enabled, marketOpen]);
+  usePolling(refresh, POLL_INTERVAL_MS, [enabled, marketOpen]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -150,7 +150,7 @@ export function useTrackerContracts({
         body,
       );
       // Optimistic insert so the row appears immediately even before a
-      // refetch lands. Status mismatches are filtered out (e.g. a closed
+      // refresh lands. Status mismatches are filtered out (e.g. a closed
       // row should not appear on the Active tab).
       if (json.contract.status === status) {
         mutate((prev) => [...prev, json.contract]);
@@ -194,12 +194,12 @@ export function useTrackerContracts({
       loading,
       error,
       fetchedAt,
-      refetch,
+      refresh,
       mutate,
       create,
       update,
       close,
     }),
-    [data, loading, error, fetchedAt, refetch, mutate, create, update, close],
+    [data, loading, error, fetchedAt, refresh, mutate, create, update, close],
   );
 }

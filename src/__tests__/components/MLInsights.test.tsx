@@ -12,7 +12,7 @@ import type { MLInsightsState, MLPlot } from '../../hooks/useMLInsights';
 // MOCKS
 // ============================================================
 
-const mockRefetch = vi.fn();
+const mockRefresh = vi.fn();
 
 const defaultState: MLInsightsState = {
   plots: [],
@@ -20,7 +20,7 @@ const defaultState: MLInsightsState = {
   pipelineDate: null,
   loading: false,
   error: null,
-  refetch: mockRefetch,
+  refresh: mockRefresh,
 };
 
 let hookReturn: MLInsightsState = { ...defaultState };
@@ -54,7 +54,7 @@ function makePlot(overrides: Partial<MLPlot> = {}): MLPlot {
 
 beforeEach(() => {
   hookReturn = { ...defaultState };
-  mockRefetch.mockReset();
+  mockRefresh.mockReset();
 });
 
 // ============================================================
@@ -243,12 +243,12 @@ describe('MLInsights: content', () => {
 // ============================================================
 
 describe('MLInsights: interactions', () => {
-  it('calls refetch when refresh button clicked', () => {
+  it('calls refresh when refresh button clicked', () => {
     render(<MLInsights />);
     fireEvent.click(
       screen.getByRole('button', { name: /refresh ml insights/i }),
     );
-    expect(mockRefetch).toHaveBeenCalledTimes(1);
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
   });
 
   it('disables refresh button when loading', () => {

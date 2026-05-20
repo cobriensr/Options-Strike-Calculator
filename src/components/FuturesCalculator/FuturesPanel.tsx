@@ -113,7 +113,7 @@ export default function FuturesPanel({
     oldestTs,
     loading,
     error,
-    refetch,
+    refresh,
   } = useFuturesData(at, marketOpen);
 
   const timeLabel = formatUpdatedAt(updatedAt);
@@ -173,7 +173,7 @@ export default function FuturesPanel({
           </button>
           <button
             type="button"
-            onClick={refetch}
+            onClick={refresh}
             disabled={loading}
             className="cursor-pointer rounded-md px-2.5 py-1 font-sans text-[10px] font-semibold transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
             style={{

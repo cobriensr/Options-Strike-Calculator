@@ -23,7 +23,7 @@ function mockState(overrides: Partial<FuturesDataState> = {}) {
     oldestTs: null,
     loading: false,
     error: null,
-    refetch: vi.fn(),
+    refresh: vi.fn(),
   };
   mockUseFuturesData.mockReturnValue({ ...defaults, ...overrides });
 }
@@ -210,16 +210,16 @@ describe('FuturesPanel: refresh button', () => {
     ).toHaveTextContent('Refresh');
   });
 
-  it('calls refetch when clicked', async () => {
+  it('calls refresh when clicked', async () => {
     const user = userEvent.setup();
-    const refetch = vi.fn();
-    mockState({ loading: false, refetch });
+    const refresh = vi.fn();
+    mockState({ loading: false, refresh });
     render(<FuturesPanel />);
 
     await user.click(
       screen.getByRole('button', { name: 'Refresh futures data' }),
     );
-    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it('disables refresh button when loading', () => {

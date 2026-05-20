@@ -49,7 +49,7 @@ export interface UseTrackerAlertsState {
   loading: boolean;
   error: string | null;
   fetchedAt: number | null;
-  refetch: () => Promise<void>;
+  refresh: () => Promise<void>;
   ack: (id: number) => Promise<void>;
 }
 
@@ -103,7 +103,7 @@ export function useTrackerAlerts({
   // has been defined. Using a ref avoids the TDZ on the initial render.
   const ackRef = useRef<((id: number) => Promise<void>) | null>(null);
 
-  const refetch = useCallback(async () => {
+  const refresh = useCallback(async () => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -166,13 +166,13 @@ export function useTrackerAlerts({
       return;
     }
     setLoading(true);
-    refetch();
-  }, [enabled, refetch]);
+    refresh();
+  }, [enabled, refresh]);
 
   // Off-hours: skip the recurring poll. Project convention from CLAUDE.md
   // — the refresh cron only fires during RTH, so polling outside RTH
   // would just re-return the same payload every 30s.
-  usePolling(refetch, POLL_INTERVAL_MS, [enabled, marketOpen]);
+  usePolling(refresh, POLL_INTERVAL_MS, [enabled, marketOpen]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -182,14 +182,14 @@ export function useTrackerAlerts({
     setData((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
-  // Wire the ref so the toast onClick (defined inside refetch) can call
+  // Wire the ref so the toast onClick (defined inside refresh) can call
   // the latest `ack` without a circular useCallback dependency.
   useEffect(() => {
     ackRef.current = ack;
   }, [ack]);
 
   return useMemo(
-    () => ({ data, loading, error, fetchedAt, refetch, ack }),
-    [data, loading, error, fetchedAt, refetch, ack],
+    () => ({ data, loading, error, fetchedAt, refresh, ack }),
+    [data, loading, error, fetchedAt, refresh, ack],
   );
 }

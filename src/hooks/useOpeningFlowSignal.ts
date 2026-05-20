@@ -189,7 +189,7 @@ function inPollingWindow(now: Date): boolean {
 }
 
 export function useOpeningFlowSignal(date?: string): State & {
-  refetch: () => void;
+  refresh: () => void;
   isWindowOpen: boolean;
   displayData: OpeningFlowResponse | null;
   isHistorical: boolean;
@@ -300,7 +300,7 @@ export function useOpeningFlowSignal(date?: string): State & {
   return useMemo(
     () => ({
       ...state,
-      refetch: fetchOnce,
+      refresh: fetchOnce,
       isWindowOpen,
       displayData,
       isHistorical,

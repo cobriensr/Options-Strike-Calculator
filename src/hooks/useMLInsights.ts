@@ -2,7 +2,7 @@
  * useMLInsights — Fetches ML pipeline plot data and findings.
  *
  * Calls GET /api/ml/plots on mount.
- * No polling (data changes once nightly) but exposes a manual refetch.
+ * No polling (data changes once nightly) but exposes a manual refresh.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -35,7 +35,7 @@ export interface MLInsightsState {
   pipelineDate: string | null;
   loading: boolean;
   error: string | null;
-  refetch: () => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
 export function useMLInsights(): MLInsightsState {
@@ -84,5 +84,5 @@ export function useMLInsights(): MLInsightsState {
     };
   }, [fetchData]);
 
-  return { plots, findings, pipelineDate, loading, error, refetch: fetchData };
+  return { plots, findings, pipelineDate, loading, error, refresh: fetchData };
 }

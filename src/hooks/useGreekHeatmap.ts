@@ -98,7 +98,7 @@ export function useGreekHeatmap({
   at,
   enabled,
 }: UseGreekHeatmapArgs): State & {
-  refetch: () => void;
+  refresh: () => void;
 } {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
@@ -163,5 +163,5 @@ export function useGreekHeatmap({
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  return useMemo(() => ({ ...state, refetch: fetchOnce }), [state, fetchOnce]);
+  return useMemo(() => ({ ...state, refresh: fetchOnce }), [state, fetchOnce]);
 }

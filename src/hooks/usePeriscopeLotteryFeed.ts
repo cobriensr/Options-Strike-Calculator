@@ -53,7 +53,7 @@ export function usePeriscopeLotteryFeed({
   historical = false,
   fireType = 'both',
   limit = 50,
-}: UsePeriscopeLotteryFeedArgs): State & { refetch: () => void } {
+}: UsePeriscopeLotteryFeedArgs): State & { refresh: () => void } {
   const [state, setState] = useState<State>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -105,5 +105,5 @@ export function usePeriscopeLotteryFeed({
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  return useMemo(() => ({ ...state, refetch: fetchOnce }), [state, fetchOnce]);
+  return useMemo(() => ({ ...state, refresh: fetchOnce }), [state, fetchOnce]);
 }
