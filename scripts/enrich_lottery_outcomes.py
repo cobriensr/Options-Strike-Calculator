@@ -26,11 +26,14 @@ Usage
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import os
 import re
+import statistics
 import sys
 import time
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date as DateType, datetime, timezone
 from pathlib import Path
@@ -51,6 +54,7 @@ SAMPLE_SIZE_FLOOR = 10
 WILSON_Z = 1.96  # 95% CI
 WINDOW_WEIGHT_21D = 0.6
 WINDOW_WEIGHT_90D = 0.4
+INVERSION_BONUS_BY_QUINTILE = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
 
 
 def wilson_lcb(wins: int, n: int) -> float | None:
@@ -789,7 +793,6 @@ def refit_ticker_inversion_stats(
             stats['n_90d'],
         ))
 
-    from collections import Counter
     quintile_counts = Counter(quintiles.values())
     print(f'[ticker-quality] {len(per_ticker)} tickers seen in 90d window')
     print(
@@ -806,9 +809,9 @@ def refit_ticker_inversion_stats(
         print('[ticker-quality] WRITE_DB not set — skipping UPSERT')
     else:
         with conn.cursor() as cur:
-            BATCH = 500
-            for i in range(0, len(upsert_rows), BATCH):
-                batch = upsert_rows[i:i + BATCH]
+            batch_size = 500
+            for i in range(0, len(upsert_rows), batch_size):
+                batch = upsert_rows[i:i + batch_size]
                 execute_values(
                     cur,
                     """
@@ -840,19 +843,12 @@ def refit_ticker_inversion_stats(
         _write_tune_csv(conn, quintiles, sim_csv_path)
 
 
-INVERSION_BONUS_BY_QUINTILE = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
-
-
 def _write_tune_csv(
     conn, quintiles: dict[str, int], out_path: Path
 ) -> None:
     """Simulate quality_adjusted_score for the last 90d of fires and emit a
     CSV that lets the operator pick Tier 1/2 cutoffs hitting the 40-50/day target.
     """
-    import csv
-    import statistics
-    from collections import defaultdict
-
     # NB: the table's fire-time column is `trigger_time_ct` and the score
     # column added in migration #174 is `score` (INTEGER).
     with conn.cursor() as cur:
@@ -995,7 +991,7 @@ def main() -> None:
         # Third pass — per-ticker inversion-quality refit (Phase 2 of the
         # inversion-quality filter). Runs against whatever is in
         # lottery_finder_fires regardless of whether today's main pass ran.
-        sim_csv = Path('docs/tmp/lottery-quality-sim-2026-05-19.csv')
+        sim_csv = Path(f'docs/tmp/lottery-quality-sim-{target_date}.csv')
         refit_ticker_inversion_stats(
             conn,
             write_db=bool(int(os.environ.get('WRITE_DB', '0'))),
