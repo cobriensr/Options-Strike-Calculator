@@ -377,6 +377,9 @@ export const LotteryRow = memo(function LotteryRow({
     enabled: expanded,
     marketOpen,
   });
+  // Memo for stable identity — `tapeStats` lists `tapeSeries` as a
+  // useMemo dep, so a fresh `[]` per render would force re-computation.
+  const tapeSeries = useMemo(() => tape.data?.series ?? [], [tape.data]);
   const netFlow = useNetFlowHistory({
     ticker: fire.underlyingSymbol,
     date: fire.date,
@@ -412,14 +415,14 @@ export const LotteryRow = memo(function LotteryRow({
    * day's fill mix at a glance without staring at the bars.
    */
   const tapeStats = useMemo(() => {
-    if (tape.series.length === 0) return null;
+    if (tapeSeries.length === 0) return null;
     let bid = 0;
     let ask = 0;
     let mid = 0;
     let noSide = 0;
     let priceVolSum = 0;
     let volSum = 0;
-    for (const r of tape.series) {
+    for (const r of tapeSeries) {
       bid += r.bidVol;
       ask += r.askVol;
       mid += r.midVol;
@@ -437,7 +440,7 @@ export const LotteryRow = memo(function LotteryRow({
       total: bid + ask + mid + noSide,
       avgFill: volSum > 0 ? priceVolSum / volSum : null,
     };
-  }, [tape.series]);
+  }, [tapeSeries]);
 
   /**
    * Latest cumulative NCP / NPP / NCV / NPV plus signed call-minus-put
@@ -1059,7 +1062,7 @@ export const LotteryRow = memo(function LotteryRow({
                 </span>
               </div>
             )}
-            {tape.loading && tape.series.length === 0 ? (
+            {tape.loading && tapeSeries.length === 0 ? (
               <div className="text-[10px] text-neutral-500">Loading tape…</div>
             ) : tape.error ? (
               <div className="text-[10px] text-red-300">
@@ -1067,7 +1070,7 @@ export const LotteryRow = memo(function LotteryRow({
               </div>
             ) : (
               <ContractTapeChart
-                series={tape.series}
+                series={tapeSeries}
                 markerTs={fire.triggerTimeCt}
                 historicalFires={fire.historicalFires}
                 syncHoverTime={hoverTime}

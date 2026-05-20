@@ -2,6 +2,9 @@
  * useContractTape — fetches /api/lottery-contract-tape for an OCC chain
  * on a given date. Lazy (gated by `enabled`), polls only when today +
  * marketOpen + enabled. Aborts in-flight requests on unmount.
+ *
+ * Phase 2M-6: returns the canonical `{ data, loading, error, refresh,
+ * fetchedAt }` shape via useFetchedData; assertions hit `data?.series`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
@@ -63,7 +66,7 @@ describe('useContractTape', () => {
     // Give microtasks a chance to flush.
     await act(async () => {});
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(result.current.series).toEqual([]);
+    expect(result.current.data).toBeNull();
     expect(result.current.loading).toBe(false);
   });
 
@@ -134,8 +137,8 @@ describe('useContractTape', () => {
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.series).toHaveLength(1);
-    expect(result.current.series[0]?.askVol).toBe(100);
+    expect(result.current.data?.series).toHaveLength(1);
+    expect(result.current.data?.series[0]?.askVol).toBe(100);
     expect(result.current.error).toBeNull();
     expect(result.current.fetchedAt).not.toBeNull();
   });
@@ -152,7 +155,7 @@ describe('useContractTape', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toContain('500');
-    expect(result.current.series).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 
   it('captures error message when fetch rejects', async () => {
@@ -166,7 +169,7 @@ describe('useContractTape', () => {
       }),
     );
     await waitFor(() => expect(result.current.error).toBe('Network down'));
-    expect(result.current.series).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 
   it('polls today + marketOpen + enabled', async () => {
@@ -232,7 +235,7 @@ describe('useContractTape', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('refetch() triggers a fresh fetch', async () => {
+  it('refresh() triggers a fresh fetch', async () => {
     fetchMock.mockResolvedValue(jsonResponse(emptyTape()));
     const { result } = renderHook(() =>
       useContractTape({
@@ -246,7 +249,7 @@ describe('useContractTape', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
@@ -270,6 +273,6 @@ describe('useContractTape', () => {
     resolveFetch(jsonResponse(emptyTape({ count: 99 })));
     // Yield so the resolve callback flushes.
     await act(async () => {});
-    expect(result.current.series).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 });

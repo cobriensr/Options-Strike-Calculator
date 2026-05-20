@@ -76,16 +76,15 @@ function makeAlert(
   };
 }
 
-const defaultHookState = {
-  loading: false,
-  error: null,
-  fetchedAt: null,
-  refetch: vi.fn(),
-};
-
 beforeEach(() => {
   vi.clearAllMocks();
-  mockUseContractTape.mockReturnValue({ ...defaultHookState, series: [] });
+  mockUseContractTape.mockReturnValue({
+    data: { series: [] },
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refresh: vi.fn(),
+  });
   mockUseNetFlowHistory.mockReturnValue({
     data: { series: [] },
     loading: false,
@@ -242,9 +241,11 @@ describe('IntervalBARow — expand toggle', () => {
 
   it('shows a loading hint in the tape panel while the tape series is empty + loading', () => {
     mockUseContractTape.mockReturnValue({
-      ...defaultHookState,
-      series: [],
+      data: { series: [] },
       loading: true,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     renderRow(makeAlert());
     fireEvent.click(
@@ -255,9 +256,11 @@ describe('IntervalBARow — expand toggle', () => {
 
   it('surfaces a tape error message in the expanded tape panel', () => {
     mockUseContractTape.mockReturnValue({
-      ...defaultHookState,
-      series: [],
+      data: { series: [] },
+      loading: false,
       error: 'feed unavailable',
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     renderRow(makeAlert());
     fireEvent.click(
@@ -285,27 +288,32 @@ describe('IntervalBARow — expand toggle', () => {
 
   it('renders aggregated tape stats (bid, mid, ask, avg fill) when tape series has data', () => {
     mockUseContractTape.mockReturnValue({
-      ...defaultHookState,
-      series: [
-        {
-          ts: '2026-03-27T17:00:00Z',
-          bidVol: 100,
-          midVol: 50,
-          askVol: 800,
-          noSideVol: 0,
-          totalVol: 950,
-          avgPrice: 2.5,
-        },
-        {
-          ts: '2026-03-27T17:01:00Z',
-          bidVol: 200,
-          midVol: 100,
-          askVol: 1700,
-          noSideVol: 50,
-          totalVol: 2050,
-          avgPrice: 3.5,
-        },
-      ],
+      data: {
+        series: [
+          {
+            ts: '2026-03-27T17:00:00Z',
+            bidVol: 100,
+            midVol: 50,
+            askVol: 800,
+            noSideVol: 0,
+            totalVol: 950,
+            avgPrice: 2.5,
+          },
+          {
+            ts: '2026-03-27T17:01:00Z',
+            bidVol: 200,
+            midVol: 100,
+            askVol: 1700,
+            noSideVol: 50,
+            totalVol: 2050,
+            avgPrice: 3.5,
+          },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     renderRow(makeAlert());
     fireEvent.click(

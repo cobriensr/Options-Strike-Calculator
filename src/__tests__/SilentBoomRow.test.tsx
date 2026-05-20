@@ -98,16 +98,15 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
   };
 }
 
-const defaultHookState = {
-  loading: false,
-  error: null,
-  fetchedAt: null,
-  refetch: vi.fn(),
-};
-
 beforeEach(() => {
   vi.clearAllMocks();
-  mockUseContractTape.mockReturnValue({ ...defaultHookState, series: [] });
+  mockUseContractTape.mockReturnValue({
+    data: { series: [] },
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refresh: vi.fn(),
+  });
   mockUseNetFlowHistory.mockReturnValue({
     data: { series: [] },
     loading: false,
@@ -490,20 +489,25 @@ describe('SilentBoomRow: expand / collapse', () => {
     // Provide non-empty tape + flow data so the component renders charts
     // (instead of the inline "Loading…" branch).
     mockUseContractTape.mockReturnValue({
-      ...defaultHookState,
-      series: [
-        {
-          ts: '2026-05-08T14:30:00Z',
-          askVol: 100,
-          bidVol: 50,
-          midVol: 25,
-          noSideVol: 0,
-          totalVol: 175,
-          avgPrice: 1.25,
-          highPrice: 1.3,
-          lowPrice: 1.2,
-        },
-      ],
+      data: {
+        series: [
+          {
+            ts: '2026-05-08T14:30:00Z',
+            askVol: 100,
+            bidVol: 50,
+            midVol: 25,
+            noSideVol: 0,
+            totalVol: 175,
+            avgPrice: 1.25,
+            highPrice: 1.3,
+            lowPrice: 1.2,
+          },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     mockUseNetFlowHistory.mockReturnValue({
       data: {
@@ -566,9 +570,11 @@ describe('SilentBoomRow: expand / collapse', () => {
 
   it('shows the loading text when the tape hook is loading and series is empty', () => {
     mockUseContractTape.mockReturnValue({
-      ...defaultHookState,
+      data: { series: [] },
       loading: true,
-      series: [],
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     renderRow(makeAlert());
     fireEvent.click(screen.getByRole('button', { name: /▸ expand/ }));
@@ -577,9 +583,11 @@ describe('SilentBoomRow: expand / collapse', () => {
 
   it('renders the tape error message when the tape hook surfaces an error', () => {
     mockUseContractTape.mockReturnValue({
-      ...defaultHookState,
+      data: { series: [] },
+      loading: false,
       error: 'HTTP 500',
-      series: [],
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     renderRow(makeAlert());
     fireEvent.click(screen.getByRole('button', { name: /▸ expand/ }));

@@ -379,6 +379,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
     enabled: expanded,
     marketOpen,
   });
+  // Memo for stable identity — `tapeStats` lists `tapeSeries` as a
+  // useMemo dep, so a fresh `[]` per render would force re-computation.
+  const tapeSeries = useMemo(() => tape.data?.series ?? [], [tape.data]);
   const netFlow = useNetFlowHistory({
     ticker: alert.underlyingSymbol,
     date: alert.date,
@@ -401,14 +404,14 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const previousClose = tickerCandles.data?.previousClose ?? null;
 
   const tapeStats = useMemo(() => {
-    if (tape.series.length === 0) return null;
+    if (tapeSeries.length === 0) return null;
     let bid = 0;
     let ask = 0;
     let mid = 0;
     let noSide = 0;
     let priceVolSum = 0;
     let volSum = 0;
-    for (const r of tape.series) {
+    for (const r of tapeSeries) {
       bid += r.bidVol;
       ask += r.askVol;
       mid += r.midVol;
@@ -426,7 +429,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
       total: bid + ask + mid + noSide,
       avgFill: volSum > 0 ? priceVolSum / volSum : null,
     };
-  }, [tape.series]);
+  }, [tapeSeries]);
 
   const flowStats = useMemo(() => {
     if (netFlowSeries.length === 0) return null;
@@ -856,7 +859,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
                 </span>
               </div>
             )}
-            {tape.loading && tape.series.length === 0 ? (
+            {tape.loading && tapeSeries.length === 0 ? (
               <div className="text-[10px] text-neutral-500">Loading tape…</div>
             ) : tape.error ? (
               <div className="text-[10px] text-red-300">
@@ -864,7 +867,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
               </div>
             ) : (
               <ContractTapeChart
-                series={tape.series}
+                series={tapeSeries}
                 markerTs={alert.bucketCt}
                 ariaLabel={`${alert.optionChainId} per-minute tape`}
               />
