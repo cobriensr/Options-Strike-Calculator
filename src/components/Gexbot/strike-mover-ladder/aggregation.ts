@@ -108,11 +108,14 @@ export function buildLadderRows(
       maxKeyInBucket !== null &&
       key - maxKeyInBucket <= CROSS_ASSET_TOLERANCE_PTS
     ) {
-      const bucket = merged.get(activeKey);
-      bucket!.push(...bins.get(key)!);
+      const existingBucket = merged.get(activeKey);
+      if (existingBucket) {
+        const incoming = bins.get(key) ?? [];
+        existingBucket.push(...incoming);
+      }
       maxKeyInBucket = key;
     } else {
-      merged.set(key, [...bins.get(key)!]);
+      merged.set(key, [...bins.get(key) ?? []]);
       activeKey = key;
       maxKeyInBucket = key;
     }

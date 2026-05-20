@@ -46,7 +46,10 @@ function formatChange(value: number): string {
 
 function formatSpot(spot: number): string {
   // Number.parseFloat strips trailing zeros and the trailing dot.
-  return String(Number.parseFloat(spot.toFixed(2)));
+  // Use typographic minus (−) to match formatChange convention.
+  const abs = Math.abs(spot);
+  const sign = spot >= 0 ? '' : '−';
+  return `${sign}${Number.parseFloat(abs.toFixed(2)).toString()}`;
 }
 
 function StrikeMoverLadderInner({ marketOpen, spxSpot }: StrikeMoverLadderProps) {
@@ -111,6 +114,7 @@ function StrikeMoverLadderInner({ marketOpen, spxSpot }: StrikeMoverLadderProps)
             key={tab}
             type="button"
             onClick={() => setActiveTab(tab)}
+            aria-pressed={activeTab === tab}
             className={`rounded-sm px-2 py-0.5 text-[11px] tabular-nums transition ${
               activeTab === tab
                 ? 'bg-white/10 text-white'
@@ -148,7 +152,11 @@ interface LadderBodyProps {
   maxAbsChange: number;
 }
 
-function LadderBody({ rows, spot, maxAbsChange }: LadderBodyProps) {
+const LadderBody = memo(function LadderBody({
+  rows,
+  spot,
+  maxAbsChange,
+}: LadderBodyProps) {
   // Find the index where to insert the spot divider — between the
   // last ceiling (strike > spot) and the first floor (strike <= spot).
   const dividerIdx = rows.findIndex((r) => r.strike <= spot);
@@ -167,9 +175,9 @@ function LadderBody({ rows, spot, maxAbsChange }: LadderBodyProps) {
       {dividerIdx === -1 && rows.length > 0 && <SpotDivider spot={spot} />}
     </div>
   );
-}
+});
 
-function SpotDivider({ spot }: { spot: number }) {
+const SpotDivider = memo(function SpotDivider({ spot }: { spot: number }) {
   return (
     <div
       data-testid="strike-mover-ladder-spot-divider"
@@ -180,7 +188,7 @@ function SpotDivider({ spot }: { spot: number }) {
       <span className="flex-1 border-t border-white/20" />
     </div>
   );
-}
+});
 
 interface LadderRowProps {
   row: AggregatedRow;
@@ -188,7 +196,11 @@ interface LadderRowProps {
   maxAbsChange: number;
 }
 
-function LadderRow({ row, spot, maxAbsChange }: LadderRowProps) {
+const LadderRow = memo(function LadderRow({
+  row,
+  spot,
+  maxAbsChange,
+}: LadderRowProps) {
   const classified = classifyRow(row.strike, spot, row.change);
   const barPct =
     maxAbsChange > 0
@@ -216,7 +228,7 @@ function LadderRow({ row, spot, maxAbsChange }: LadderRowProps) {
 
       <span className="text-tertiary flex gap-1">
         {row.symbols.map((s) => (
-          <span key={s} aria-label={s}>
+          <span key={s} role="img" aria-label={s}>
             ▪{s === 'ES_SPX' ? 'ES' : s}
           </span>
         ))}
@@ -253,6 +265,6 @@ function LadderRow({ row, spot, maxAbsChange }: LadderRowProps) {
       </span>
     </div>
   );
-}
+});
 
 export const StrikeMoverLadder = memo(StrikeMoverLadderInner);

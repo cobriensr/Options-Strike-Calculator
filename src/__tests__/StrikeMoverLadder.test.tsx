@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { StrikeMoverLadder } from '../components/Gexbot/StrikeMoverLadder';
-import type { MaxchangeWinnerRow } from '../hooks/useGexbotData';
+import { makeWinner } from './helpers/makeWinner';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -15,28 +15,6 @@ vi.mock('../hooks/useGexbotData', async () => {
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
   };
 });
-
-function makeWinner(
-  ticker: string,
-  category: string,
-  strike: number,
-  change: number,
-): MaxchangeWinnerRow {
-  return {
-    ticker,
-    endpoint: `/foo/${ticker}`,
-    category,
-    capturedAt: '2026-05-19T17:00:00Z',
-    windows: {
-      current: null,
-      one: null,
-      five: [strike, change],
-      ten: null,
-      fifteen: null,
-      thirty: null,
-    },
-  };
-}
 
 describe('<StrikeMoverLadder>', () => {
   beforeEach(() => {
@@ -215,7 +193,6 @@ describe('<StrikeMoverLadder>', () => {
     expect(row).not.toBeNull();
     // compareDocumentPosition: 4 = DOCUMENT_POSITION_FOLLOWING.
     // i.e. `row` follows `divider` in document order.
-    // eslint-disable-next-line no-bitwise
     expect(divider!.compareDocumentPosition(row!) & 4).toBeTruthy();
   });
 });

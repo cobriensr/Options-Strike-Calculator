@@ -4,29 +4,7 @@ import {
   buildLadderRows,
   sortAndCapRows,
 } from '../components/Gexbot/strike-mover-ladder/aggregation';
-import type { MaxchangeWinnerRow } from '../hooks/useGexbotData';
-
-function makeWinner(
-  ticker: string,
-  category: string,
-  strike: number,
-  change: number,
-): MaxchangeWinnerRow {
-  return {
-    ticker,
-    endpoint: `/foo/${ticker}`,
-    category,
-    capturedAt: '2026-05-19T17:00:00Z',
-    windows: {
-      current: null,
-      one: null,
-      five: [strike, change],
-      ten: null,
-      fifteen: null,
-      thirty: null,
-    },
-  };
-}
+import { makeWinner } from './helpers/makeWinner';
 
 describe('buildLadderRows', () => {
   it('returns [] when no winners match the active category', () => {
