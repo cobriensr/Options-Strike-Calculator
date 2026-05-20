@@ -76,7 +76,8 @@ spam problem.
 | Bonus shape (Q5→Q1) | +5 / +3 / 0 / -2 / -5 | Symmetric, ~10pt swing top-to-bottom |
 | Quintile filter cut | Suppress Q1, Q2 (worst ~40% of tickers) | Server-side, bypassable via `?showAll=1` |
 | Target Tier 1+2 daily volume | 40-50 fires/day | User pick |
-| Tier cutoffs (post-bonus) | **TBD — locked from Phase 2 CSV** | Pinned during Phase 2 simulation |
+| Tier 1 cutoff (post-bonus) | `quality_adjusted_score >= 24` | Phase 2 CSV — ~22 fires/day in Tier 1 |
+| Tier 2 cutoff (post-bonus) | `quality_adjusted_score >= 22` | Phase 2 CSV — median 52/day Tier 1+2 combined (closest integer to 40-50 target; 23 dropped to 22/day) |
 | Staleness warning threshold | `MAX(lottery_ticker_stats.updated_at) > 3 days` | Operational guard |
 
 ---
