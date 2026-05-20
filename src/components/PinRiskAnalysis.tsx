@@ -1,6 +1,7 @@
 import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
-import { getTopOIStrikes, formatOI, PIN_ZONE_PCT } from '../utils/pin-risk';
+import { formatOI } from '../utils/format-magnitude';
+import { getTopOIStrikes, PIN_ZONE_PCT } from '../utils/pin-risk';
 import type { ChainResponse } from '../types/api';
 
 interface Props {

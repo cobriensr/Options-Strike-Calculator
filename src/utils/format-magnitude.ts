@@ -60,3 +60,14 @@ export function formatNetGexShort(netGexK: number): string {
   if (absK >= 1) return `${sign}$${absK.toFixed(0)}K`;
   return `${sign}$${(absK * 1000).toFixed(0)}`;
 }
+
+/**
+ * Open-interest compact formatter: `"500"`, `"1.0K"`, `"25.3K"`.
+ * Used by the Pin Risk chip + table. Unsigned; OI is always non-negative.
+ * Values below 1000 render as the raw integer; values >= 1000 use a
+ * single-decimal K suffix.
+ */
+export function formatOI(oi: number): string {
+  if (oi >= 1000) return (oi / 1000).toFixed(1) + 'K';
+  return String(oi);
+}

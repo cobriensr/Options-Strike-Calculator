@@ -94,8 +94,3 @@ export function getTopOIStrikes(
   for (const s of nearSpot) merged.set(s.strike, s);
   return Array.from(merged.values()).sort((a, b) => b.totalOI - a.totalOI);
 }
-
-export function formatOI(oi: number): string {
-  if (oi >= 1000) return (oi / 1000).toFixed(1) + 'K';
-  return String(oi);
-}

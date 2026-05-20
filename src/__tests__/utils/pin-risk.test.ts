@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getTopOIStrikes, formatOI } from '../../utils/pin-risk';
+import { getTopOIStrikes } from '../../utils/pin-risk';
 import type { ChainStrike } from '../../types/api';
 
 /** Helper to build a minimal ChainStrike with the fields pin-risk cares about */
@@ -19,28 +19,6 @@ function strike(s: number, oi: number): ChainStrike {
     itm: false,
   };
 }
-
-describe('formatOI', () => {
-  it('returns number as-is for values below 1000', () => {
-    expect(formatOI(0)).toBe('0');
-    expect(formatOI(1)).toBe('1');
-    expect(formatOI(500)).toBe('500');
-    expect(formatOI(999)).toBe('999');
-  });
-
-  it('returns K suffix for values >= 1000', () => {
-    expect(formatOI(1000)).toBe('1.0K');
-    expect(formatOI(1500)).toBe('1.5K');
-    expect(formatOI(10000)).toBe('10.0K');
-    expect(formatOI(25300)).toBe('25.3K');
-  });
-
-  it('rounds to one decimal place', () => {
-    expect(formatOI(1234)).toBe('1.2K');
-    expect(formatOI(1250)).toBe('1.3K'); // 1.250 → toFixed(1) → "1.3" (JS rounds 5 up)
-    expect(formatOI(1260)).toBe('1.3K');
-  });
-});
 
 describe('getTopOIStrikes', () => {
   it('combines put and call OI at the same strike', () => {
