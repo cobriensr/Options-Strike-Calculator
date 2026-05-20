@@ -24,6 +24,19 @@ export default defineConfig({
       project: process.env.SENTRY_PROJECT,
       authToken: process.env.SENTRY_AUTH_TOKEN,
       telemetry: process.env.NODE_ENV === 'production',
+      // Without this handler, a slow or hung Sentry source-map upload
+      // can keep the Node event loop alive after vite emits dist/ —
+      // Vercel waits for the build process to exit and times out the
+      // whole deployment at 45 min (see incident 2026-05-19). Treating
+      // upload failures as a warning lets the build process exit
+      // cleanly; missing source maps for one deploy is much cheaper
+      // than a stuck deploy queue.
+      errorHandler: (err) => {
+        console.warn(
+          '[sentry-vite-plugin] source map upload failed; continuing:',
+          err.message,
+        );
+      },
     }),
     VitePWA({
       // Switched from `generateSW` to `injectManifest` in Phase 2A.1 so
