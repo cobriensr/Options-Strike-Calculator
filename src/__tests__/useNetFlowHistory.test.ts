@@ -2,6 +2,9 @@
  * useNetFlowHistory — fetches /api/net-flow-history for a ticker on a
  * date. Lazy (gated by `enabled`), polls only when today + marketOpen
  * + enabled. Aborts in-flight requests on unmount.
+ *
+ * Phase 2M-3: returns the canonical `{ data, loading, error, refresh,
+ * fetchedAt }` shape via useFetchedData; assertions hit `data?.series`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
@@ -62,7 +65,7 @@ describe('useNetFlowHistory', () => {
     );
     await act(async () => {});
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(result.current.series).toEqual([]);
+    expect(result.current.data).toBeNull();
     expect(result.current.loading).toBe(false);
   });
 
@@ -133,8 +136,8 @@ describe('useNetFlowHistory', () => {
       }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.series).toHaveLength(1);
-    expect(result.current.series[0]?.ncp).toBe(1000);
+    expect(result.current.data?.series).toHaveLength(1);
+    expect(result.current.data?.series[0]?.ncp).toBe(1000);
     expect(result.current.error).toBeNull();
     expect(result.current.fetchedAt).not.toBeNull();
   });
@@ -151,7 +154,7 @@ describe('useNetFlowHistory', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toContain('500');
-    expect(result.current.series).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 
   it('captures error message when fetch rejects', async () => {
@@ -165,7 +168,7 @@ describe('useNetFlowHistory', () => {
       }),
     );
     await waitFor(() => expect(result.current.error).toBe('Network down'));
-    expect(result.current.series).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 
   it('polls today + marketOpen + enabled', async () => {
@@ -231,7 +234,7 @@ describe('useNetFlowHistory', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('refetch() triggers a fresh fetch', async () => {
+  it('refresh() triggers a fresh fetch', async () => {
     fetchMock.mockResolvedValue(jsonResponse(emptyHistory()));
     const { result } = renderHook(() =>
       useNetFlowHistory({
@@ -245,7 +248,7 @@ describe('useNetFlowHistory', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
@@ -268,6 +271,6 @@ describe('useNetFlowHistory', () => {
     unmount();
     resolveFetch(jsonResponse(emptyHistory({ count: 42 })));
     await act(async () => {});
-    expect(result.current.series).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 });

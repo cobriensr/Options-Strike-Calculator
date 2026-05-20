@@ -383,6 +383,13 @@ export const LotteryRow = memo(function LotteryRow({
     enabled: expanded,
     marketOpen,
   });
+  // Memo for stable identity — both `tapeStats` and `flowStats` list
+  // `netFlowSeries` as a useMemo dep, so a fresh `[]` per render would
+  // force re-computation. Same pattern as the `candles` memo below.
+  const netFlowSeries = useMemo(
+    () => netFlow.data?.series ?? [],
+    [netFlow.data],
+  );
   const tickerCandles = useTickerCandles({
     ticker: fire.underlyingSymbol,
     date: fire.date,
@@ -439,8 +446,8 @@ export const LotteryRow = memo(function LotteryRow({
    * who's loading on what side, both by dollars and contracts.
    */
   const flowStats = useMemo(() => {
-    if (netFlow.series.length === 0) return null;
-    const last = netFlow.series.at(-1);
+    if (netFlowSeries.length === 0) return null;
+    const last = netFlowSeries.at(-1);
     if (last == null) return null;
     return {
       cumNcp: last.cumNcp,
@@ -450,7 +457,7 @@ export const LotteryRow = memo(function LotteryRow({
       diff: last.cumNcp - last.cumNpp,
       diffVol: last.cumNcv - last.cumNpv,
     };
-  }, [netFlow.series]);
+  }, [netFlowSeries]);
 
   /**
    * Live spot for %OTM — prefer the latest underlying candle so the
@@ -1180,7 +1187,7 @@ export const LotteryRow = memo(function LotteryRow({
                 </span>
               </div>
             )}
-            {netFlow.loading && netFlow.series.length === 0 ? (
+            {netFlow.loading && netFlowSeries.length === 0 ? (
               <div className="text-[10px] text-neutral-500">
                 Loading net flow…
               </div>
@@ -1190,7 +1197,7 @@ export const LotteryRow = memo(function LotteryRow({
               </div>
             ) : (
               <TickerNetFlowChart
-                series={netFlow.series}
+                series={netFlowSeries}
                 candles={candles}
                 previousClose={previousClose}
                 markerTs={fire.triggerTimeCt}

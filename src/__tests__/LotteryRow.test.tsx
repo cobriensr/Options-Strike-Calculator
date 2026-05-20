@@ -166,7 +166,13 @@ const defaultHookState = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockUseContractTape.mockReturnValue({ ...defaultHookState, series: [] });
-  mockUseNetFlowHistory.mockReturnValue({ ...defaultHookState, series: [] });
+  mockUseNetFlowHistory.mockReturnValue({
+    data: { series: [] },
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refresh: vi.fn(),
+  });
   mockUseTickerCandles.mockReturnValue({
     data: null,
     loading: false,
@@ -450,20 +456,25 @@ describe('LotteryRow: expand / collapse', () => {
       ],
     });
     mockUseNetFlowHistory.mockReturnValue({
-      ...defaultHookState,
-      series: [
-        {
-          ts: '2026-05-08T14:30:00Z',
-          ncp: 100,
-          ncv: 50,
-          npp: 60,
-          npv: 30,
-          cumNcp: 100,
-          cumNcv: 50,
-          cumNpp: 60,
-          cumNpv: 30,
-        },
-      ],
+      data: {
+        series: [
+          {
+            ts: '2026-05-08T14:30:00Z',
+            ncp: 100,
+            ncv: 50,
+            npp: 60,
+            npv: 30,
+            cumNcp: 100,
+            cumNcv: 50,
+            cumNpp: 60,
+            cumNpv: 30,
+          },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     mockUseTickerCandles.mockReturnValue({
       data: {
@@ -531,20 +542,25 @@ describe('LotteryRow: expand / collapse', () => {
       ],
     });
     mockUseNetFlowHistory.mockReturnValue({
-      ...defaultHookState,
-      series: [
-        {
-          ts: '2026-05-08T14:30:00Z',
-          ncp: 100,
-          ncv: 50,
-          npp: 60,
-          npv: 30,
-          cumNcp: 100,
-          cumNcv: 50,
-          cumNpp: 60,
-          cumNpv: 30,
-        },
-      ],
+      data: {
+        series: [
+          {
+            ts: '2026-05-08T14:30:00Z',
+            ncp: 100,
+            ncv: 50,
+            npp: 60,
+            npv: 30,
+            cumNcp: 100,
+            cumNcv: 50,
+            cumNpp: 60,
+            cumNpv: 30,
+          },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     mockUseTickerCandles.mockReturnValue({
       data: {

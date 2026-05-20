@@ -86,7 +86,13 @@ const defaultHookState = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockUseContractTape.mockReturnValue({ ...defaultHookState, series: [] });
-  mockUseNetFlowHistory.mockReturnValue({ ...defaultHookState, series: [] });
+  mockUseNetFlowHistory.mockReturnValue({
+    data: { series: [] },
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refresh: vi.fn(),
+  });
   mockUseTickerCandles.mockReturnValue({
     data: null,
     loading: false,
@@ -264,9 +270,11 @@ describe('IntervalBARow — expand toggle', () => {
 
   it('surfaces a net-flow error message in the expanded flow panel', () => {
     mockUseNetFlowHistory.mockReturnValue({
-      ...defaultHookState,
-      series: [],
+      data: { series: [] },
+      loading: false,
       error: 'pg down',
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     renderRow(makeAlert());
     fireEvent.click(
@@ -311,10 +319,15 @@ describe('IntervalBARow — expand toggle', () => {
 
   it('renders cumulative NCP / NPP / Δ stats when netFlow series has data', () => {
     mockUseNetFlowHistory.mockReturnValue({
-      ...defaultHookState,
-      series: [
-        { ts: '2026-03-27T17:00:00Z', cumNcp: 1_000_000, cumNpp: 400_000 },
-      ],
+      data: {
+        series: [
+          { ts: '2026-03-27T17:00:00Z', cumNcp: 1_000_000, cumNpp: 400_000 },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     renderRow(makeAlert());
     fireEvent.click(
@@ -352,8 +365,13 @@ describe('IntervalBARow — expand toggle', () => {
       refresh: vi.fn(),
     });
     mockUseNetFlowHistory.mockReturnValue({
-      ...defaultHookState,
-      series: [{ ts: '2026-03-27T17:00:00Z', cumNcp: 1, cumNpp: 0 }],
+      data: {
+        series: [{ ts: '2026-03-27T17:00:00Z', cumNcp: 1, cumNpp: 0 }],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
     });
     renderRow(makeAlert());
     fireEvent.click(

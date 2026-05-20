@@ -5,16 +5,15 @@
  *
  * Polls during market hours when the date is today AND the row is
  * expanded. Historical days don't poll because the data is stable.
+ *
+ * Phase 2M-3: thin wrapper over `useFetchedData` exposing the canonical
+ * `{ data, loading, error, refresh, fetchedAt }` shape. Callers
+ * destructure `series` from `data?.series ?? []`.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
-import { usePolling } from './usePolling.js';
-import type {
-  NetFlowHistoryResponse,
-  NetFlowTick,
-} from '../components/LotteryFinder/types.js';
-import { getErrorMessage } from '../utils/error.js';
+import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
+import type { NetFlowHistoryResponse } from '../components/LotteryFinder/types.js';
 
 interface UseNetFlowHistoryArgs {
   /** Ticker — required when enabled. */
@@ -31,20 +30,6 @@ interface UseNetFlowHistoryArgs {
   marketOpen: boolean;
 }
 
-interface State {
-  series: NetFlowTick[];
-  loading: boolean;
-  error: string | null;
-  fetchedAt: number | null;
-}
-
-const INITIAL_STATE: State = {
-  series: [],
-  loading: false,
-  error: null,
-  fetchedAt: null,
-};
-
 const todayCt = (): string =>
   new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Chicago',
@@ -60,62 +45,21 @@ export function useNetFlowHistory({
   to,
   enabled,
   marketOpen,
-}: UseNetFlowHistoryArgs): State & { refetch: () => void } {
-  const [state, setState] = useState<State>(INITIAL_STATE);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const fetchOnce = useCallback(async () => {
-    if (!enabled) return;
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
-    setState((prev) => ({ ...prev, loading: true, error: null }));
-
-    try {
-      const params = new URLSearchParams({ ticker, date });
-      if (from) params.set('from', from);
-      if (to) params.set('to', to);
-      const res = await fetch(`/api/net-flow-history?${params.toString()}`, {
-        credentials: 'include',
-        signal: ctrl.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as NetFlowHistoryResponse;
-
-      if (ctrl.signal.aborted) return;
-      setState({
-        series: json.series,
-        loading: false,
-        error: null,
-        fetchedAt: Date.now(),
-      });
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      if (ctrl.signal.aborted) return;
-      setState((prev) => ({
-        ...prev,
-        loading: false,
-        error: getErrorMessage(err),
-      }));
-    }
-  }, [ticker, date, from, to, enabled]);
-
-  // Eager mount fetch — usePolling only schedules the recurring tick.
-  useEffect(() => {
-    void fetchOnce();
-  }, [fetchOnce]);
-
-  // Only poll today's data — historical is stable.
-  usePolling(
-    () => {
-      void fetchOnce();
-    },
-    POLL_INTERVALS.OTM_FLOW,
-    [enabled, marketOpen, date === todayCt()],
-  );
-
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  return useMemo(() => ({ ...state, refetch: fetchOnce }), [state, fetchOnce]);
+}: UseNetFlowHistoryArgs): UseFetchedDataResult<NetFlowHistoryResponse> {
+  let url: string | null = null;
+  if (enabled) {
+    const params = new URLSearchParams({ ticker, date });
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    url = `/api/net-flow-history?${params.toString()}`;
+  }
+  // Historical = not today → single fetch, no polling. Matches the
+  // original `date === todayCt()` gate the bespoke implementation used.
+  const historical = date !== todayCt();
+  return useFetchedData<NetFlowHistoryResponse>({
+    url,
+    marketOpen,
+    pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
+    historical,
+  });
 }

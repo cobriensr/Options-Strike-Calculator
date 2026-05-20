@@ -199,6 +199,12 @@ export const IntervalBARow = memo(function IntervalBARow({
     enabled: expanded,
     marketOpen,
   });
+  // Memo for stable identity — `flowStats` lists `netFlowSeries` as a
+  // useMemo dep, so a fresh `[]` per render would force re-computation.
+  const netFlowSeries = useMemo(
+    () => netFlow.data?.series ?? [],
+    [netFlow.data],
+  );
   const tickerCandles = useTickerCandles({
     ticker: alert.ticker,
     date,
@@ -237,15 +243,15 @@ export const IntervalBARow = memo(function IntervalBARow({
   }, [tape.series]);
 
   const flowStats = useMemo(() => {
-    if (netFlow.series.length === 0) return null;
-    const last = netFlow.series.at(-1);
+    if (netFlowSeries.length === 0) return null;
+    const last = netFlowSeries.at(-1);
     if (last == null) return null;
     return {
       cumNcp: last.cumNcp,
       cumNpp: last.cumNpp,
       diff: last.cumNcp - last.cumNpp,
     };
-  }, [netFlow.series]);
+  }, [netFlowSeries]);
 
   return (
     <div
@@ -516,7 +522,7 @@ export const IntervalBARow = memo(function IntervalBARow({
                 </span>
               </div>
             )}
-            {netFlow.loading && netFlow.series.length === 0 ? (
+            {netFlow.loading && netFlowSeries.length === 0 ? (
               <div className="text-[10px] text-neutral-500">
                 Loading net flow…
               </div>
@@ -526,7 +532,7 @@ export const IntervalBARow = memo(function IntervalBARow({
               </div>
             ) : (
               <TickerNetFlowChart
-                series={netFlow.series}
+                series={netFlowSeries}
                 candles={candles}
                 previousClose={previousClose}
                 markerTs={alert.fired_at}
