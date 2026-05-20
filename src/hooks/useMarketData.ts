@@ -309,7 +309,7 @@ export function useMarketData(): MarketDataState {
       }
       // FE-STATE-001: track quote-specific freshness independently.
       if (quotesSuccess) {
-        setQuotesLastUpdated(new Date().toISOString());
+        setQuotesFetchedAt(Date.now());
       }
 
       return nextData;
