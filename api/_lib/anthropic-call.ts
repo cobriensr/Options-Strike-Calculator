@@ -22,7 +22,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages/messages.js';
 import logger from './logger.js';
-import { metrics } from './sentry.js';
+import { Sentry, metrics } from './sentry.js';
 
 /**
  * Anthropic system block with optional ephemeral cache control. Re-export
@@ -235,6 +235,21 @@ export async function runCachedAnthropicCall(
       { err, primaryModel, fallbackModel },
       'Anthropic primary unavailable, falling back',
     );
+    // Surface the primary-model failure to Sentry — prior to the
+    // 2026-05-19 audit only `metrics.increment` was emitted, so
+    // sustained Opus 503s during market hours showed only as a counter
+    // tick in Axiom while the analyze endpoint quietly degraded to
+    // Sonnet. The fallback is the correct response; the alert lets us
+    // see systematic degradation before it affects analysis quality.
+    Sentry.captureException(err, {
+      level: 'warning',
+      tags: {
+        module: 'anthropic-call',
+        stage: 'primary_fallback',
+        primaryModel,
+        fallbackModel,
+      },
+    });
     metrics.increment(fallbackMetric);
     modelUsed = fallbackModel;
     response = await buildStream(

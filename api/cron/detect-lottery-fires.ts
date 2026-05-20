@@ -466,6 +466,18 @@ export default withCronInstrumentation(
             { err: macroErr, optionChain: rec.optionChainId },
             'detect-lottery-fires macro snapshot failed; using EMPTY_MACRO',
           );
+          // Surface to Sentry — prior to 2026-05-19 this was logger-only,
+          // so a sustained macro-fetch outage silently degraded every
+          // fire on that day to EMPTY_MACRO (no VIX, no futures regime,
+          // no GEX state). Score quality regressions were invisible.
+          Sentry.captureException(macroErr, {
+            level: 'warning',
+            tags: {
+              cron: 'detect-lottery-fires',
+              stage: 'macro_snapshot',
+            },
+            extra: { optionChain: rec.optionChainId },
+          });
           macro = EMPTY_MACRO;
         }
         // Score is computed from the same fields persisted on the row

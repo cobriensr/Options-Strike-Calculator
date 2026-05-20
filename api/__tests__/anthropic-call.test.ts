@@ -18,6 +18,7 @@ import logger from '../_lib/logger.js';
 
 vi.mock('../_lib/sentry.js', () => ({
   metrics: { increment: vi.fn(), anthropicCache: vi.fn() },
+  Sentry: { captureException: vi.fn(), captureMessage: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({

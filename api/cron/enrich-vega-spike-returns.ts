@@ -49,7 +49,7 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { metrics } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -224,6 +224,14 @@ export default withCronInstrumentation(
           { err, id: row.id, ticker: row.ticker, ts: row.timestamp },
           'enrich-vega-spike-returns row failed',
         );
+        // Surface to Sentry — prior to 2026-05-19 only the metric was
+        // emitted (visible in Axiom), so a systematic outage (e.g.
+        // Schwab candles down for the day) accrued only as a counter
+        // tick without a grouped Sentry issue.
+        Sentry.captureException(err, {
+          tags: { cron: 'enrich-vega-spike-returns', ticker: row.ticker },
+          extra: { row_id: row.id, ts: String(row.timestamp) },
+        });
       }
     }
 
