@@ -13,7 +13,7 @@ vi.mock('../hooks/useGexbotData', async () => {
   };
 });
 
-import { GexbotSection } from '../components/Gexbot/GexbotSection';
+import { GexbotSection } from '../components/Gexbot';
 
 describe('<GexbotSection>', () => {
   beforeEach(() => {

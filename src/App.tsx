@@ -167,7 +167,7 @@ const GreekHeatmapSection = lazy(() =>
     .catch(handleStaleChunk),
 );
 const GexbotSection = lazy(() =>
-  import('./components/Gexbot/GexbotSection')
+  import('./components/Gexbot')
     .then((m) => ({ default: m.GexbotSection }))
     .catch(handleStaleChunk),
 );
