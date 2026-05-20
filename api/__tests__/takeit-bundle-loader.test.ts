@@ -62,6 +62,9 @@ describe('getBundle', () => {
     // resetAllMocks drains queued mockResolvedValueOnce values that would
     // otherwise leak between tests.
     vi.resetAllMocks();
+    // Required by blobAuthHeaders() in takeit-bundle-loader; private store
+    // fetches need an Authorization: Bearer header.
+    process.env.BLOB_READ_WRITE_TOKEN = 'test-token';
   });
 
   it('fetches manifest then bundle on cold cache and caches the result', async () => {
@@ -96,6 +99,13 @@ describe('getBundle', () => {
     expect(bundle).not.toBeNull();
     expect(bundle?.version).toBe('v2026-05-16');
     expect(fetchSpy).toHaveBeenCalledTimes(2); // manifest + bundle
+    // Regression for 2026-05-20: both fetches must carry an Authorization
+    // header — without it, private-store blob URLs 403.
+    for (const call of fetchSpy.mock.calls) {
+      const init = call[1] as RequestInit | undefined;
+      const headers = init?.headers as Record<string, string> | undefined;
+      expect(headers?.Authorization).toBe('Bearer test-token');
+    }
     fetchSpy.mockRestore();
   });
 

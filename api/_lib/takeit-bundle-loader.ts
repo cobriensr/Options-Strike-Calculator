@@ -36,6 +36,17 @@ import {
 const BUNDLE_REFRESH_TTL_MS = 15 * 60 * 1000;
 const MANIFEST_PATH = 'takeit/latest.json';
 
+// Private Vercel Blob stores: neither `entry.url` nor `entry.downloadUrl`
+// is self-signed — both require a bearer token. The `?download=1` query
+// param on downloadUrl only forces Content-Disposition; it does NOT auth.
+// (Verified 2026-05-20 via direct probe — list() succeeds with the token
+// but fetch() of either URL 403s without an Authorization header.)
+function blobAuthHeaders(): HeadersInit {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  if (!token) throw new Error('BLOB_READ_WRITE_TOKEN not set');
+  return { Authorization: `Bearer ${token}` };
+}
+
 export type AlertType = 'lottery' | 'silentboom';
 
 interface ManifestPayload {
@@ -72,12 +83,7 @@ async function fetchManifest(): Promise<ManifestPayload> {
   if (!entry) {
     throw new Error(`take-it manifest missing at ${MANIFEST_PATH}`);
   }
-  // Private blob stores require the signed downloadUrl — entry.url is the
-  // raw store URL which 403s on a private store (recurring failure mode
-  // per memory feedback_blob_access_mode.md; the bare-url path worked
-  // when the takeit store was public but started returning 403 once it
-  // was switched to private).
-  const res = await fetch(entry.downloadUrl);
+  const res = await fetch(entry.downloadUrl, { headers: blobAuthHeaders() });
   if (!res.ok) {
     throw new Error(
       `take-it manifest fetch failed: ${res.status} ${res.statusText}`,
@@ -87,14 +93,12 @@ async function fetchManifest(): Promise<ManifestPayload> {
 }
 
 async function fetchBundleByPath(blobPath: string): Promise<TakeitBundle> {
-  // The manifest stores the relative pathname; list() turns it into a
-  // signed downloadUrl we can fetch (private store — see fetchManifest).
   const { blobs } = await list({ prefix: blobPath });
   const entry = blobs.find((b) => b.pathname === blobPath);
   if (!entry) {
     throw new Error(`take-it bundle missing at ${blobPath}`);
   }
-  const res = await fetch(entry.downloadUrl);
+  const res = await fetch(entry.downloadUrl, { headers: blobAuthHeaders() });
   if (!res.ok) {
     throw new Error(
       `take-it bundle fetch failed: ${res.status} ${res.statusText}`,
