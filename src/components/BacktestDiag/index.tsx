@@ -14,7 +14,8 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import type {
   HistorySnapshot,
   UseHistoryDataReturn,
-} from '../hooks/useHistoryData';
+} from '../../hooks/useHistoryData';
+import { POSITION_STORAGE_KEY, clamp, loadStoredPosition } from './helpers';
 
 interface Props {
   snapshot: HistorySnapshot | null;
@@ -25,35 +26,9 @@ interface Props {
   timezone: string;
 }
 
-interface Position {
+export interface Position {
   x: number;
   y: number;
-}
-
-const POSITION_STORAGE_KEY = 'backtestDiag.position';
-
-function loadStoredPosition(): Position | null {
-  try {
-    const raw = localStorage.getItem(POSITION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      typeof (parsed as Position).x === 'number' &&
-      typeof (parsed as Position).y === 'number'
-    ) {
-      return { x: (parsed as Position).x, y: (parsed as Position).y };
-    }
-  } catch {
-    // fall through
-  }
-  return null;
-}
-
-function clamp(value: number, min: number, max: number): number {
-  if (max < min) return min;
-  return Math.min(Math.max(value, min), max);
 }
 
 export default function BacktestDiag({
