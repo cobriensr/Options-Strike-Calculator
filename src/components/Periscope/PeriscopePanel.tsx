@@ -50,7 +50,7 @@ interface PeriscopePanelProps {
   view: PeriscopeView | null;
   emptyReason: 'no_spot' | 'no_slot' | null;
   asOf: string | null;
-  isLoading: boolean;
+  loading: boolean;
   error: string | null;
   onRefresh: () => void;
   /** ISO captured_at timestamps for the picked date, ascending. */
@@ -91,7 +91,7 @@ function PeriscopePanelInner({
   view,
   emptyReason,
   asOf,
-  isLoading,
+  loading,
   error,
   onRefresh,
   availableSlots,
@@ -162,7 +162,7 @@ function PeriscopePanelInner({
           canNext={canNext}
           isLive={isLive}
           asOf={asOf}
-          isLoading={isLoading}
+          loading={loading}
           onSelectSlot={onSelectSlot}
           onRefresh={onRefresh}
           stepTo={stepTo}

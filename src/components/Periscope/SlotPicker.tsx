@@ -32,7 +32,7 @@ interface SlotPickerProps {
   canNext: boolean;
   isLive: boolean;
   asOf: string | null;
-  isLoading: boolean;
+  loading: boolean;
   onSelectSlot: (slot: PeriscopeSelectedSlot | null) => void;
   onRefresh: () => void;
   stepTo: (iso: string) => void;
@@ -48,7 +48,7 @@ export function SlotPicker({
   canNext,
   isLive,
   asOf,
-  isLoading,
+  loading,
   onSelectSlot,
   onRefresh,
   stepTo,
@@ -156,14 +156,14 @@ export function SlotPicker({
       <button
         type="button"
         onClick={onRefresh}
-        disabled={isLoading}
+        disabled={loading}
         className="rounded px-2 py-0.5 font-mono text-[10px] tracking-wider uppercase disabled:opacity-50"
         style={{
           color: theme.accent,
           backgroundColor: theme.accentBg,
         }}
       >
-        {isLoading ? '…' : 'refresh'}
+        {loading ? '…' : 'refresh'}
       </button>
     </div>
   );

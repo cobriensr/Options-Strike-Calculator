@@ -48,7 +48,7 @@ export interface UsePeriscopeExposureReturn {
   /** ISO captured_at timestamps for the picked date, ascending. Backs
    *  the prev/next stepper. Empty when the date has no slots. */
   availableSlots: string[];
-  isLoading: boolean;
+  loading: boolean;
   error: string | null;
   refresh: () => void;
 }
@@ -90,7 +90,7 @@ export function usePeriscopeExposure({
   );
   const [asOf, setAsOf] = useState<string | null>(null);
   const [availableSlots, setAvailableSlots] = useState<string[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
@@ -107,7 +107,7 @@ export function usePeriscopeExposure({
 
   const fetchView = useCallback(async () => {
     if (!canFetch) return;
-    setIsLoading(true);
+    setLoading(true);
     try {
       const params = new URLSearchParams();
       if (spotHint != null && Number.isFinite(spotHint) && spotHint > 0) {
@@ -132,7 +132,7 @@ export function usePeriscopeExposure({
       if (!mountedRef.current) return;
       setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setIsLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, [canFetch, spotHint, selectedDate, selectedTime]);
 
@@ -158,7 +158,7 @@ export function usePeriscopeExposure({
     emptyReason,
     asOf,
     availableSlots,
-    isLoading,
+    loading,
     error,
     refresh: () => {
       void fetchView();

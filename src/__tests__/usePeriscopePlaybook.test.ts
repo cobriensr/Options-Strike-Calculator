@@ -89,7 +89,7 @@ describe('usePeriscopePlaybook: access mode', () => {
     );
     await act(async () => {});
     expect(mockFetch).not.toHaveBeenCalled();
-    expect(result.current.isLoading).toBe(false);
+    expect(result.current.loading).toBe(false);
     expect(result.current.data).toBeNull();
   });
 
@@ -159,7 +159,7 @@ describe('usePeriscopePlaybook: successful fetch', () => {
     const { result } = renderHook(() =>
       usePeriscopePlaybook({ marketOpen: true }),
     );
-    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toBeNull();
     expect(result.current.emptyReason).toBe('no_playbook');
   });
@@ -376,7 +376,7 @@ describe('usePeriscopePlaybook: unmount safety', () => {
     const { result, unmount } = renderHook(() =>
       usePeriscopePlaybook({ marketOpen: true }),
     );
-    await waitFor(() => expect(result.current.isLoading).toBe(true));
+    await waitFor(() => expect(result.current.loading).toBe(true));
     unmount();
     // Resolve fetch AFTER unmount — must not crash or warn.
     resolveFetch(

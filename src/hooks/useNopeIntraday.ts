@@ -37,7 +37,7 @@ interface NopeIntradayResponse {
 export interface UseNopeIntradayReturn {
   points: NopePoint[];
   date: string | null;
-  isLoading: boolean;
+  loading: boolean;
   error: string | null;
 }
 
@@ -57,7 +57,7 @@ export function useNopeIntraday({
   const isOwner = checkIsOwner();
   const [points, setPoints] = useState<NopePoint[]>(EMPTY_POINTS);
   const [date, setDate] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Avoid setting state after unmount.
   const mountedRef = useRef(true);
@@ -71,7 +71,7 @@ export function useNopeIntraday({
 
   const fetchPoints = useCallback(async () => {
     if (!isOwner) return;
-    setIsLoading(true);
+    setLoading(true);
     try {
       const res = await fetch('/api/nope-intraday', { method: 'GET' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -84,7 +84,7 @@ export function useNopeIntraday({
       if (!mountedRef.current) return;
       setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setIsLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, [isOwner]);
 
@@ -105,5 +105,5 @@ export function useNopeIntraday({
     [isOwner, marketOpen],
   );
 
-  return { points, date, isLoading, error };
+  return { points, date, loading, error };
 }

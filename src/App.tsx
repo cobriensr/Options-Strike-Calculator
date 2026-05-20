@@ -1198,7 +1198,7 @@ export default function StrikeCalculator() {
                 view={periscope.view}
                 emptyReason={periscope.emptyReason}
                 asOf={periscope.asOf}
-                isLoading={periscope.isLoading}
+                loading={periscope.loading}
                 error={periscope.error}
                 onRefresh={periscope.refresh}
                 availableSlots={periscope.availableSlots}

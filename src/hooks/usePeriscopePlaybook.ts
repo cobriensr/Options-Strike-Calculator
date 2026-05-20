@@ -104,7 +104,7 @@ export interface UsePeriscopePlaybookReturn {
   /** ISO timestamp of the server's response. Drives the staleness
    *  indicator on the panel ("Updated N min ago"). */
   asOf: string | null;
-  isLoading: boolean;
+  loading: boolean;
   error: string | null;
   /** Reason `data` is null, when known. */
   emptyReason: 'no_playbook' | null;
@@ -137,7 +137,7 @@ export function usePeriscopePlaybook({
   const [latestInProgress, setLatestInProgress] = useState(false);
   const [asOf, setAsOf] = useState<string | null>(null);
   const [emptyReason, setEmptyReason] = useState<'no_playbook' | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
@@ -152,7 +152,7 @@ export function usePeriscopePlaybook({
 
   const fetchPlaybook = useCallback(async () => {
     if (!canFetch) return;
-    setIsLoading(true);
+    setLoading(true);
     try {
       const params = new URLSearchParams();
       if (selectedDate != null) params.set('date', selectedDate);
@@ -175,7 +175,7 @@ export function usePeriscopePlaybook({
       if (!mountedRef.current) return;
       setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setIsLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }, [canFetch, selectedDate, selectedSlotCapturedAt]);
 
@@ -200,7 +200,7 @@ export function usePeriscopePlaybook({
     latestInProgress,
     asOf,
     emptyReason,
-    isLoading,
+    loading,
     error,
     refresh: () => {
       void fetchPlaybook();

@@ -53,7 +53,7 @@ const baseProps = {
   view: null as PeriscopeView | null,
   emptyReason: null as 'no_spot' | 'no_slot' | null,
   asOf: null as string | null,
-  isLoading: false,
+  loading: false,
   error: null as string | null,
   onRefresh: vi.fn(),
   availableSlots: [] as string[],
@@ -233,10 +233,10 @@ describe('PeriscopePanel: header controls', () => {
     expect(screen.getByText(/CT$/)).toBeInTheDocument();
   });
 
-  it('disables refresh button while isLoading and shows ellipsis', () => {
+  it('disables refresh button while loading and shows ellipsis', () => {
     const onRefresh = vi.fn();
     render(
-      <PeriscopePanel {...baseProps} isLoading={true} onRefresh={onRefresh} />,
+      <PeriscopePanel {...baseProps} loading={true} onRefresh={onRefresh} />,
     );
     const btn = screen.getByRole('button', { name: '…' });
     expect(btn).toBeDisabled();
@@ -412,7 +412,7 @@ describe('PeriscopePanel: Claude playbook section', () => {
       latestInProgress: opts.latestInProgress ?? false,
       asOf: '2026-05-08T13:30:00Z',
       emptyReason: opts.data == null ? ('no_playbook' as const) : null,
-      isLoading: false,
+      loading: false,
       error: opts.error ?? null,
       refresh: vi.fn(),
     };

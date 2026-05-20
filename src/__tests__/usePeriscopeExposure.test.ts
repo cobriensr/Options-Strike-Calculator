@@ -77,7 +77,7 @@ describe('usePeriscopeExposure: access mode', () => {
     );
     await act(async () => {});
     expect(mockFetch).not.toHaveBeenCalled();
-    expect(result.current.isLoading).toBe(false);
+    expect(result.current.loading).toBe(false);
     expect(result.current.view).toBeNull();
   });
 
