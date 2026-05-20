@@ -1,16 +1,20 @@
 /**
  * Compact-number formatters used by StrikeBox cells.
  *
- * `formatGex` and `formatNet` differ subtly: GEX values are always whole
- * (no decimals under 1k), while net values keep two decimals when the
- * absolute value drops below 0.5 — useful for est. Δ where small
+ * `formatGexBare` and `formatNet` differ subtly: GEX values are always
+ * whole (no decimals under 1k), while net values keep two decimals when
+ * the absolute value drops below 0.5 — useful for est. Δ where small
  * fractional positions still matter.
+ *
+ * Renamed from `formatGex` in Phase 3B to disambiguate from the
+ * canonical `formatGex` in `src/utils/format-magnitude.ts`, which has
+ * different semantics (`$` prefix + null handling).
  *
  * `formatDeltaPct` lives in `src/utils/component-formatters.ts` and is
  * shared with TargetTile / UrgencyPanel.
  */
 
-export function formatGex(v: number): string {
+export function formatGexBare(v: number): string {
   const abs = Math.abs(v);
   const sign = v >= 0 ? '+' : '-';
   if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(1)}B`;

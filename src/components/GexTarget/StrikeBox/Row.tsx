@@ -25,7 +25,7 @@ import { BAR_H, BAR_MAX_W, type BarStats } from './bars';
 import { GreekBar } from './GreekBar';
 import { RankArrow, type RankChangeInfo } from './RankArrow';
 import { formatDeltaPct } from '../../../utils/component-formatters';
-import { formatDist, formatGex, formatNet } from './formatters';
+import { formatDist, formatGexBare, formatNet } from './formatters';
 import {
   CHEX_TOOLTIPS,
   CP_TOOLTIPS,
@@ -203,7 +203,7 @@ export const Row = memo(function Row({
 
       {/* Hedge/1% */}
       <td className={TD_CLS} style={{ color: gexColor }}>
-        {formatGex(features.gexDollars)}
+        {formatGexBare(features.gexDollars)}
       </td>
 
       {/* MM Γ — UW Periscope MM-attributed dollar gamma, with sign-
@@ -214,7 +214,7 @@ export const Row = memo(function Row({
           <span style={{ color: theme.textMuted }}>—</span>
         ) : (
           <span className="inline-flex items-center gap-1">
-            <span>{formatGex(mmGamma)}</span>
+            <span>{formatGexBare(mmGamma)}</span>
             {mmAgreement === 'agree' && (
               <span
                 aria-label="MM attribution agrees with naive Hedge sign"

@@ -10,36 +10,36 @@
 import { describe, expect, it } from 'vitest';
 import {
   formatDist,
-  formatGex,
+  formatGexBare,
   formatNet,
 } from '../../components/GexTarget/StrikeBox/formatters';
 
-describe('formatGex', () => {
+describe('formatGexBare', () => {
   it('formats values in the billions with one decimal and B suffix', () => {
-    expect(formatGex(2_500_000_000)).toBe('+2.5B');
-    expect(formatGex(-1_200_000_000)).toBe('-1.2B');
+    expect(formatGexBare(2_500_000_000)).toBe('+2.5B');
+    expect(formatGexBare(-1_200_000_000)).toBe('-1.2B');
   });
 
   it('formats values in the millions with one decimal and M suffix', () => {
-    expect(formatGex(7_400_000)).toBe('+7.4M');
-    expect(formatGex(-3_100_000)).toBe('-3.1M');
+    expect(formatGexBare(7_400_000)).toBe('+7.4M');
+    expect(formatGexBare(-3_100_000)).toBe('-3.1M');
   });
 
   it('formats values in the thousands with no decimals and K suffix', () => {
-    expect(formatGex(15_678)).toBe('+16K');
-    expect(formatGex(-2_499)).toBe('-2K');
+    expect(formatGexBare(15_678)).toBe('+16K');
+    expect(formatGexBare(-2_499)).toBe('-2K');
   });
 
   it('formats sub-thousand values without a unit suffix', () => {
-    expect(formatGex(950)).toBe('+950');
-    expect(formatGex(-12)).toBe('-12');
-    expect(formatGex(0)).toBe('+0');
+    expect(formatGexBare(950)).toBe('+950');
+    expect(formatGexBare(-12)).toBe('-12');
+    expect(formatGexBare(0)).toBe('+0');
   });
 
   it('treats exactly 1B / 1M / 1K as boundaries entering the next unit', () => {
-    expect(formatGex(1_000_000_000)).toBe('+1.0B');
-    expect(formatGex(1_000_000)).toBe('+1.0M');
-    expect(formatGex(1_000)).toBe('+1K');
+    expect(formatGexBare(1_000_000_000)).toBe('+1.0B');
+    expect(formatGexBare(1_000_000)).toBe('+1.0M');
+    expect(formatGexBare(1_000)).toBe('+1K');
   });
 });
 
