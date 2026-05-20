@@ -528,51 +528,54 @@ describe('lessons.ts', () => {
       expect(result!.structures).toEqual([]);
     });
 
-    it('builds VIX range filter with ±5', async () => {
+    it('binds VIX range with ±5 as parameters', async () => {
       mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ vix: 20 });
 
-      const query = mockSql.unsafe.mock.calls[0]![0] as string;
+      // Tagged-template args: index 0 is the strings array; remaining
+      // entries are the bound parameter values. Post-2026-05-19
+      // refactor binds every value via $N to defeat SQL injection.
+      const args = mockSql.mock.calls[0]!.slice(1) as unknown[];
       // VIX 20 → lo = floor(15) = 15, hi = ceil(25) = 25
-      expect(query).toContain('BETWEEN 15 AND 25');
+      expect(args).toContain(15);
+      expect(args).toContain(25);
     });
 
-    it('builds VIX range filter with fractional VIX', async () => {
+    it('binds VIX range from fractional input', async () => {
       mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ vix: 18.7 });
 
-      const query = mockSql.unsafe.mock.calls[0]![0] as string;
+      const args = mockSql.mock.calls[0]!.slice(1) as unknown[];
       // lo = floor(13.7) = 13, hi = ceil(23.7) = 24
-      expect(query).toContain('BETWEEN 13 AND 24');
+      expect(args).toContain(13);
+      expect(args).toContain(24);
     });
 
-    it('builds gexRegime filter', async () => {
+    it('binds gexRegime value as a parameter', async () => {
       mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ gexRegime: 'GREEN' });
 
-      const query = mockSql.unsafe.mock.calls[0]![0] as string;
-      expect(query).toContain("market_conditions->>'gexRegime' = 'GREEN'");
+      const args = mockSql.mock.calls[0]!.slice(1) as unknown[];
+      expect(args).toContain('GREEN');
     });
 
-    it('builds structure filter', async () => {
+    it('binds structure value as a parameter', async () => {
       mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ structure: 'IRON CONDOR' });
 
-      const query = mockSql.unsafe.mock.calls[0]![0] as string;
-      expect(query).toContain(
-        "market_conditions->>'structure' = 'IRON CONDOR'",
-      );
+      const args = mockSql.mock.calls[0]!.slice(1) as unknown[];
+      expect(args).toContain('IRON CONDOR');
     });
 
-    it('builds dayOfWeek filter', async () => {
+    it('binds dayOfWeek value as a parameter', async () => {
       mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({ dayOfWeek: 'Friday' });
 
-      const query = mockSql.unsafe.mock.calls[0]![0] as string;
-      expect(query).toContain("market_conditions->>'dayOfWeek' = 'Friday'");
+      const args = mockSql.mock.calls[0]!.slice(1) as unknown[];
+      expect(args).toContain('Friday');
     });
 
-    it('combines all filters when all conditions provided', async () => {
+    it('binds all values when all conditions provided', async () => {
       mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({
         vix: 18,
@@ -581,26 +584,46 @@ describe('lessons.ts', () => {
         dayOfWeek: 'Monday',
       });
 
-      const query = mockSql.unsafe.mock.calls[0]![0] as string;
-      expect(query).toContain('BETWEEN');
-      expect(query).toContain("'RED'");
-      expect(query).toContain("'PUT CREDIT SPREAD'");
-      expect(query).toContain("'Monday'");
+      const args = mockSql.mock.calls[0]!.slice(1) as unknown[];
+      expect(args).toContain(13); // vix lo = floor(13)
+      expect(args).toContain(23); // vix hi = ceil(23)
+      expect(args).toContain('RED');
+      expect(args).toContain('PUT CREDIT SPREAD');
+      expect(args).toContain('Monday');
     });
 
-    it('omits optional filters when conditions are empty', async () => {
+    it('binds null for every optional filter when conditions are empty', async () => {
       mockSql.mockResolvedValueOnce([makeWinRateRow()]);
       await getHistoricalWinRate({});
 
-      const query = mockSql.unsafe.mock.calls[0]![0] as string;
-      // Base filters always present
-      expect(query).toContain("status = 'active'");
-      expect(query).toContain("'wasCorrect' IS NOT NULL");
-      // No optional filters
-      expect(query).not.toContain('BETWEEN');
-      expect(query).not.toContain("gexRegime' =");
-      expect(query).not.toContain("structure' =");
-      expect(query).not.toContain("dayOfWeek' =");
+      const args = mockSql.mock.calls[0]!.slice(1) as unknown[];
+      // The query uses `(${param}::T IS NULL OR col = ${param})` —
+      // a null bind short-circuits the filter to TRUE without any
+      // string-templated SQL.
+      expect(args.every((a) => a === null)).toBe(true);
+      expect(args.length).toBeGreaterThan(0);
+    });
+
+    // Security regression test for the 2026-05-19 audit finding.
+    // Prior version used `sql.unsafe(\`market_conditions->>'gexRegime' = '\${conditions.gexRegime}'\`)`,
+    // making any value containing a single quote a SQL injection.
+    // Defense: every value is bound through a $N parameter.
+    it('SECURITY: SQL-injection payloads bind as parameters, not interpolated', async () => {
+      mockSql.mockResolvedValueOnce([makeWinRateRow()]);
+      const payload = "x' OR '1'='1";
+      await getHistoricalWinRate({ gexRegime: payload });
+
+      // The payload value appears verbatim in the bound args …
+      const args = mockSql.mock.calls[0]!.slice(1) as unknown[];
+      expect(args).toContain(payload);
+
+      // … and does NOT appear in the static template strings (which
+      // would mean it was string-interpolated and could alter SQL
+      // structure).
+      const templateStrings = mockSql.mock.calls[0]![0] as string[];
+      const joinedTemplate = templateStrings.join('?');
+      expect(joinedTemplate).not.toContain(payload);
+      expect(joinedTemplate).not.toContain("'1'='1");
     });
 
     it('accepts exactly 5 sessions (minimum boundary)', async () => {

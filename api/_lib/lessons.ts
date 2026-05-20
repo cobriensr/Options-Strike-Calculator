@@ -116,38 +116,51 @@ export async function getHistoricalWinRate(conditions: {
 }): Promise<WinRateResult | null> {
   const sql = getDb();
 
-  // Build JSONB filter conditions dynamically
-  const filters: string[] = [
-    "status = 'active'",
-    "market_conditions->>'wasCorrect' IS NOT NULL",
-  ];
+  // SECURITY: prior version string-concatenated `conditions.gexRegime`
+  // etc. into a SQL fragment that was then run via `sql.unsafe(...)`.
+  // Even though the endpoint is owner-gated, the values originate from
+  // `req.body.context` (typed as `z.record(z.string(), z.unknown())`
+  // — no Zod constraints on the string values), so a single quote in
+  // any value would corrupt the query and a malicious value would have
+  // been a textbook SQL injection. Audit finding 2026-05-19.
+  //
+  // Fix: bind every value through a `$N` parameter via the Neon tagged
+  // template. The optional filters use the
+  // `(${param}::T IS NULL OR col = ${param})` idiom so a NULL bind
+  // short-circuits to TRUE without any string templating.
+  const vixLo = conditions.vix != null ? Math.floor(conditions.vix - 5) : null;
+  const vixHi = conditions.vix != null ? Math.ceil(conditions.vix + 5) : null;
+  const gexRegime = conditions.gexRegime ?? null;
+  const structure = conditions.structure ?? null;
+  const dayOfWeek = conditions.dayOfWeek ?? null;
 
-  if (conditions.vix != null) {
-    const lo = Math.floor(conditions.vix - 5);
-    const hi = Math.ceil(conditions.vix + 5);
-    filters.push(
-      `(market_conditions->>'vix')::numeric BETWEEN ${lo} AND ${hi}`,
-    );
-  }
-  if (conditions.gexRegime) {
-    filters.push(`market_conditions->>'gexRegime' = '${conditions.gexRegime}'`);
-  }
-  if (conditions.structure) {
-    filters.push(`market_conditions->>'structure' = '${conditions.structure}'`);
-  }
-  if (conditions.dayOfWeek) {
-    filters.push(`market_conditions->>'dayOfWeek' = '${conditions.dayOfWeek}'`);
-  }
-
-  const whereClause = filters.join(' AND ');
-
-  const rows = (await sql`SELECT
+  const rows = (await sql`
+    SELECT
       COUNT(*)::int AS total,
       COUNT(*) FILTER (WHERE (market_conditions->>'wasCorrect')::boolean = true)::int AS wins,
       AVG((market_conditions->>'vix')::numeric)::numeric AS avg_vix,
       ARRAY_AGG(DISTINCT market_conditions->>'structure') AS structures
     FROM lessons
-    WHERE ${sql.unsafe(whereClause)}`) as Array<Record<string, unknown>>;
+    WHERE status = 'active'
+      AND market_conditions->>'wasCorrect' IS NOT NULL
+      AND (
+        ${vixLo}::numeric IS NULL
+        OR (market_conditions->>'vix')::numeric
+             BETWEEN ${vixLo}::numeric AND ${vixHi}::numeric
+      )
+      AND (
+        ${gexRegime}::text IS NULL
+        OR market_conditions->>'gexRegime' = ${gexRegime}
+      )
+      AND (
+        ${structure}::text IS NULL
+        OR market_conditions->>'structure' = ${structure}
+      )
+      AND (
+        ${dayOfWeek}::text IS NULL
+        OR market_conditions->>'dayOfWeek' = ${dayOfWeek}
+      )
+  `) as Array<Record<string, unknown>>;
 
   const row = rows[0];
   if (!row || (row.total as number) < 5) return null;
