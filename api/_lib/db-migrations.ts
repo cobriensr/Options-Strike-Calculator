@@ -4991,4 +4991,23 @@ export const MIGRATIONS: Migration[] = [
             ON ws_option_trades (ticker, expiry, strike, option_type, executed_at DESC)`,
     ],
   },
+  {
+    id: 175,
+    description:
+      'Add inversion-quality columns to lottery_ticker_stats. Wilson 95% LCB on ' +
+      'P(realized_flow_inversion_pct >= 50) per ticker, computed on rolling 21d ' +
+      'and 90d windows (sample-size floor N>=10 per window; NULL otherwise). ' +
+      'inversion_blend = 0.6 * 21d + 0.4 * 90d, fallback to whichever window has ' +
+      'N>=10 if only one qualifies. inversion_quintile maps blend across the ' +
+      'ticker universe to 1..5. Populated nightly by scripts/enrich_lottery_outcomes.py.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_ticker_stats
+            ADD COLUMN IF NOT EXISTS inversion_lcb_21d NUMERIC,
+            ADD COLUMN IF NOT EXISTS inversion_lcb_90d NUMERIC,
+            ADD COLUMN IF NOT EXISTS inversion_blend NUMERIC,
+            ADD COLUMN IF NOT EXISTS inversion_quintile SMALLINT,
+            ADD COLUMN IF NOT EXISTS inversion_n_21d INTEGER,
+            ADD COLUMN IF NOT EXISTS inversion_n_90d INTEGER`,
+    ],
+  },
 ];
