@@ -23,6 +23,7 @@ RUN npm prune --omit=dev
 
 FROM node:24-slim
 
+# Restart nudge: 2026-05-20
 # OS packages required by Playwright's bundled Chromium.
 # Reference: https://playwright.dev/docs/docker
 #

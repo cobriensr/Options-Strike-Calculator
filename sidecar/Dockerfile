@@ -3,6 +3,7 @@ FROM python:3.12-slim AS builder
 WORKDIR /app
 
 # Install build dependencies for psycopg2
+# Restart nudge: 2026-05-20
 RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc libc-dev libpq-dev && \
     rm -rf /var/lib/apt/lists/*

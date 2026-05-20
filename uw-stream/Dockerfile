@@ -10,6 +10,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 FROM python:3.12-slim
 
 # curl is only used by the Docker HEALTHCHECK probe.
+# Restart nudge: 2026-05-20
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
