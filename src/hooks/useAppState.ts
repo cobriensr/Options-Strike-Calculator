@@ -23,28 +23,10 @@
  */
 
 import { useState } from 'react';
-import type { AmPm, Timezone } from '../types';
-import { getCTTime, getETTime } from '../utils/timezone';
 import { useIvInputs } from './useIvInputs';
 import { useSpotInputs } from './useSpotInputs';
 import { useTheme } from './useTheme';
-
-/**
- * Returns a CT time that is valid for the calculator.
- * If the current time is outside market hours (9:30 AM – 4:00 PM ET),
- * falls back to 10:00 AM CT so the calculator produces results immediately.
- */
-function getInitialCTTime(): { hour: number; minute: number } {
-  const now = new Date();
-  const et = getETTime(now);
-  const etMinutes = et.hour * 60 + et.minute;
-  // Market hours: 9:30 AM ET (570) to 4:00 PM ET (960)
-  if (etMinutes >= 570 && etMinutes < 960) {
-    return getCTTime(now);
-  }
-  // Outside market hours: default to 10:00 AM CT (11:00 AM ET)
-  return { hour: 10, minute: 0 };
-}
+import { useTimeInputs } from './useTimeInputs';
 
 export function useAppState() {
   // Theme — Phase 2P-1a moved this to the dedicated `useTheme` hook.
@@ -63,25 +45,9 @@ export function useAppState() {
   // their debounced copies (dVix, dIV, dMult).
   const ivInputs = useIvInputs();
 
-  // Time state — initialized to current CT time so that useAutoFill's
-  // deferred time-setting (which checks for the '10'/'00' sentinel) never
-  // fires. Without this, market-data arrival (~1 s after load) triggers
-  // React DOM writes to the <select> elements inside the same SectionBox
-  // as the date input, which causes Firefox Android to close the native
-  // date picker while it is open.
-  const [timeHour, setTimeHour] = useState(() => {
-    const { hour } = getInitialCTTime();
-    const h = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
-    return String(h);
-  });
-  const [timeMinute, setTimeMinute] = useState(() => {
-    const { minute } = getInitialCTTime();
-    return String(Math.floor(minute / 5) * 5).padStart(2, '0');
-  });
-  const [timeAmPm, setTimeAmPm] = useState<AmPm>(() =>
-    getInitialCTTime().hour >= 12 ? 'PM' : 'AM',
-  );
-  const [timezone, setTimezone] = useState<Timezone>('CT');
+  // Time inputs — Phase 2P-1d moved this to the dedicated
+  // `useTimeInputs` hook. Provides timeHour/timeMinute/timeAmPm/timezone.
+  const timeInputs = useTimeInputs();
 
   // IC & skew state
   const [wingWidth, setWingWidth] = useState(20);
@@ -121,15 +87,7 @@ export function useAppState() {
     // IV — sourced from `useIvInputs` (spread below alongside its
     // debounced copies dVix/dIV/dMult).
 
-    // Time
-    timeHour,
-    setTimeHour,
-    timeMinute,
-    setTimeMinute,
-    timeAmPm,
-    setTimeAmPm,
-    timezone,
-    setTimezone,
+    // Time — sourced from `useTimeInputs` (spread below).
 
     // IC & skew
     wingWidth,
@@ -162,6 +120,9 @@ export function useAppState() {
     // IV inputs + their debounced copies (ivMode, vixInput,
     // multiplier, directIVInput + dVix, dIV, dMult).
     ...ivInputs,
+
+    // Time inputs (timeHour, timeMinute, timeAmPm, timezone + setters).
+    ...timeInputs,
 
     // Spot inputs + their debounced/derived values (spotPrice,
     // setSpotPrice, spxDirect, setSpxDirect, spxRatio, setSpxRatio,
