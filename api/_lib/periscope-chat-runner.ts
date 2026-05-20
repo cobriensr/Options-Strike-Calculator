@@ -65,43 +65,65 @@ const FALLBACK_MODEL_DEFAULT = 'claude-sonnet-4-6';
 // the SDK surfaces a clean timeout rather than getting killed mid-stream.
 const SDK_TIMEOUT_MS = 660_000;
 
-// Skill + references load at module init. SKILLS_DIR resolves to
-// `<repo-root>/.claude/skills` — TWO levels up from `api/_lib/` (where
-// this file lives) vs. ONE level for `api/periscope-chat.ts`. The
-// vercel.json `includeFiles: ".claude/skills/**/*.md"` ships the
-// directory under `/var/task/.claude/skills` regardless of which
-// function imports the runner.
+// Skill + references load lazily on first invocation. SKILLS_DIR
+// resolves to `<repo-root>/.claude/skills` — TWO levels up from
+// `api/_lib/`. The vercel.json `includeFiles: ".claude/skills/**/*.md"`
+// ships the directory under `/var/task/.claude/skills` for any function
+// that imports this runner.
+//
+// Why lazy (was module-init IIFE before 2026-05-19): module-init
+// filesystem access of paths that resolve differently across deploy
+// paths (e.g., Vercel's deploy-validation step vs. runtime) is a
+// fragility surface. Lazy-loading defers the read until the handler
+// actually runs, when `/var/task/` is fully materialized, and isolates
+// any future filesystem-availability hiccup to the request that needs
+// the skill rather than to module load.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = join(__dirname, '..', '..', '.claude', 'skills');
 
-const PERISCOPE_SKILL: string = (() => {
+let _periscopeSkillCache: string | null = null;
+
+function loadPeriscopeSkill(): string {
+  if (_periscopeSkillCache !== null) return _periscopeSkillCache;
   try {
-    return readFileSync(join(SKILLS_DIR, 'periscope', 'SKILL.md'), 'utf8');
+    _periscopeSkillCache = readFileSync(
+      join(SKILLS_DIR, 'periscope', 'SKILL.md'),
+      'utf8',
+    );
+    return _periscopeSkillCache;
   } catch (err) {
     Sentry.captureException(err, {
       tags: { module: 'periscope-chat-runner', stage: 'skill_load' },
     });
-    // Skill is mandatory; fail loudly at runtime so the scraper sees a 500
-    // and Sentry pages the failure rather than silently producing
+    // Skill is mandatory; fail loudly so the scraper sees a 500 and
+    // Sentry pages the failure rather than silently producing
     // skill-less reads.
     throw new Error('periscope-chat-runner: SKILL.md failed to load', {
       cause: err,
     });
   }
-})();
+}
 
-let PERISCOPE_REFERENCES: string | null = null;
-try {
-  PERISCOPE_REFERENCES = readFileSync(
-    join(SKILLS_DIR, 'periscope', 'references', 'vol-signals-mm-heuristics.md'),
-    'utf8',
-  );
-} catch (err) {
-  // References are optional augmentation. Module init logs to Sentry +
-  // proceeds without; subsequent reads simply skip the references block.
-  Sentry.captureException(err, {
-    tags: { module: 'periscope-chat-runner', stage: 'references_load' },
-  });
+let _periscopeReferencesCache: string | null = null;
+let _periscopeReferencesLoaded = false;
+
+function loadPeriscopeReferences(): string | null {
+  if (_periscopeReferencesLoaded) return _periscopeReferencesCache;
+  _periscopeReferencesLoaded = true;
+  try {
+    _periscopeReferencesCache = readFileSync(
+      join(SKILLS_DIR, 'periscope', 'references', 'vol-signals-mm-heuristics.md'),
+      'utf8',
+    );
+  } catch (err) {
+    // References are optional augmentation. Log to Sentry + proceed
+    // without; subsequent reads simply skip the references block.
+    Sentry.captureException(err, {
+      tags: { module: 'periscope-chat-runner', stage: 'references_load' },
+    });
+    _periscopeReferencesCache = null;
+  }
+  return _periscopeReferencesCache;
 }
 
 const PERISCOPE_REFERENCES_HEADER = `# Companion reference — VolSignals MM heuristics
@@ -212,12 +234,13 @@ async function buildSystemBlocks(args: {
   const blocks: Anthropic.Messages.TextBlockParam[] = [
     {
       type: 'text',
-      text: PERISCOPE_SKILL,
+      text: loadPeriscopeSkill(),
       cache_control: { type: 'ephemeral', ttl: '1h' },
     },
   ];
 
-  if (PERISCOPE_REFERENCES != null) {
+  const periscopeReferences = loadPeriscopeReferences();
+  if (periscopeReferences != null) {
     let lessonsBlock = '';
     try {
       const activeLessons = await fetchActiveLessons(15);
@@ -239,7 +262,7 @@ async function buildSystemBlocks(args: {
     }
     blocks.push({
       type: 'text',
-      text: PERISCOPE_REFERENCES_HEADER + PERISCOPE_REFERENCES + lessonsBlock,
+      text: PERISCOPE_REFERENCES_HEADER + periscopeReferences + lessonsBlock,
       cache_control: { type: 'ephemeral', ttl: '1h' },
     });
   }
