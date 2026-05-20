@@ -58,7 +58,17 @@ export interface UseFetchedDataResult<T> {
   error: string | null;
   /** Cancel any in-flight request and fire a fresh fetch. */
   refresh: () => void;
-  /** Epoch-ms timestamp of the last successful fetch, or `null`. */
+  /**
+   * Epoch-ms timestamp of the last successful fetch, or `null`.
+   *
+   * **Convention:** this primitive uses `Date.now()` (client wall-clock
+   * at fetch-success). Hooks fetching cron-prepared data (`useFuturesData`,
+   * `useDarkPoolLevels`) intentionally diverge — they parse the server's
+   * ISO timestamp so consumers see "data age from when the server
+   * prepared it" rather than "from when this client polled." Both
+   * patterns produce `number | null` epoch ms; the per-hook doc comment
+   * states which semantic applies.
+   */
   fetchedAt: number | null;
 }
 
