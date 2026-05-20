@@ -1,5 +1,5 @@
 import type { HistoryCandle } from '../types/api.js';
-import type { SettlementResult } from '../components/SettlementCheck/types.js';
+import type { SettlementResult } from '../types/settlement.js';
 import { round2 } from './formatting.js';
 
 /**

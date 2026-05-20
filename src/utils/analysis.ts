@@ -1,4 +1,4 @@
-import type { AnalysisResult } from '../components/ChartAnalysis/types';
+import type { AnalysisResult } from '../types/analysis.js';
 
 /**
  * Build a concise previous recommendation string from a client-side analysis result.
