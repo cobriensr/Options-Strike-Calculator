@@ -135,7 +135,7 @@ function createMarket(quotes: QuotesResponse | null = null): MarketDataState {
     refresh: vi.fn(),
     fetchedAt: null,
     // FE-STATE-001 staleness fields.
-    quotesLastUpdated: null,
+    quotesFetchedAt: null,
     isStale: false,
     isVeryStale: false,
     staleAgeSec: null,

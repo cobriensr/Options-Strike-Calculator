@@ -34,7 +34,7 @@ function makeMarket(overrides: Partial<MarketState> = {}): MarketState {
     needsAuth: false,
     refresh: async () => {},
     fetchedAt: null,
-    quotesLastUpdated: null,
+    quotesFetchedAt: null,
     isStale: false,
     isVeryStale: false,
     staleAgeSec: null,

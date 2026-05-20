@@ -698,21 +698,21 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     const { result } = renderHook(() => useMarketData());
     expect(result.current.isStale).toBe(false);
     expect(result.current.isVeryStale).toBe(false);
-    expect(result.current.quotesLastUpdated).toBeNull();
+    expect(result.current.quotesFetchedAt).toBeNull();
     // Let the mount fetch settle so the trailing setData/setLoading
     // state updates don't leak past the test boundary and trigger
     // React's "update not wrapped in act" warning.
     await waitFor(() => expect(result.current.loading).toBe(false));
   });
 
-  it('populates quotesLastUpdated when quotes fetch succeeds', async () => {
+  it('populates quotesFetchedAt when quotes fetch succeeds', async () => {
     vi.setSystemTime(REGULAR_HOURS);
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() =>
-      expect(result.current.quotesLastUpdated).not.toBeNull(),
+      expect(result.current.quotesFetchedAt).not.toBeNull(),
     );
     // Freshly fetched → not stale.
     expect(result.current.isStale).toBe(false);
@@ -726,12 +726,12 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() =>
-      expect(result.current.quotesLastUpdated).not.toBeNull(),
+      expect(result.current.quotesFetchedAt).not.toBeNull(),
     );
 
     // Hijack the next poll by making the quotes endpoint return stale data
     // (same timestamps) AND prevent the auto-refresh from touching
-    // quotesLastUpdated: we want to observe the force-tick advancing the
+    // quotesFetchedAt: we want to observe the force-tick advancing the
     // staleness flag purely via wall-clock passing. We use 401s so the
     // fetch completes but quotesSuccess stays false.
     globalThis.fetch = mockFetchResponses({
@@ -759,10 +759,10 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() =>
-      expect(result.current.quotesLastUpdated).not.toBeNull(),
+      expect(result.current.quotesFetchedAt).not.toBeNull(),
     );
 
-    // Subsequent polls 401 so quotesLastUpdated stays pinned.
+    // Subsequent polls 401 so quotesFetchedAt stays pinned.
     globalThis.fetch = mockFetchResponses({
       quotes: { status: 401, body: null },
       intraday: { status: 401, body: null },
@@ -792,7 +792,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() =>
-      expect(result.current.quotesLastUpdated).not.toBeNull(),
+      expect(result.current.quotesFetchedAt).not.toBeNull(),
     );
 
     // Advance way past both thresholds.
@@ -811,7 +811,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() =>
-      expect(result.current.quotesLastUpdated).not.toBeNull(),
+      expect(result.current.quotesFetchedAt).not.toBeNull(),
     );
 
     // Drift into stale territory by letting the interval polls 401.
@@ -843,7 +843,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
   it('quote-specific: events-only updates do NOT reset stale flag', async () => {
     // Scenario: /api/quotes 401s, /api/events succeeds. The whole-state
     // fetchedAt advances (because events came through), but
-    // quotesLastUpdated does NOT, and `isStale` should still flip true
+    // quotesFetchedAt does NOT, and `isStale` should still flip true
     // once 90s pass since the last quotes success. This is the Decision 4
     // "quotes-specific staleness" behavior — events/movers freshness
     // should never mask a stale quotes warning.
@@ -853,7 +853,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
     await waitFor(() =>
-      expect(result.current.quotesLastUpdated).not.toBeNull(),
+      expect(result.current.quotesFetchedAt).not.toBeNull(),
     );
 
     // Now quotes 401 but events keep succeeding.
@@ -869,7 +869,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
     });
 
     // fetchedAt may have advanced (events are still fetching), but
-    // quotesLastUpdated is pinned, so isStale fires.
+    // quotesFetchedAt is pinned, so isStale fires.
     expect(result.current.isStale).toBe(true);
   });
 });

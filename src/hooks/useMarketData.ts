@@ -157,11 +157,9 @@ export interface MarketDataState {
    * Timestamp of last successful fetch of the /api/quotes endpoint
    * specifically. Distinct from `fetchedAt` because events/movers/
    * yesterday have their own cadences and shouldn't affect quote
-   * freshness. Kept as ISO string for backward compatibility - the
-   * staleness math inside the hook already wraps it with `new Date()`.
-   * FE-STATE-001.
+   * freshness. Epoch ms (canonical), matching `fetchedAt`. FE-STATE-001.
    */
-  quotesLastUpdated: string | null;
+  quotesFetchedAt: number | null;
   /**
    * True when quotes data is older than STALE_THRESHOLD_MS (90s) during
    * market hours. Gated on `marketOpen` so the badge doesn't show after
@@ -259,9 +257,7 @@ export function useMarketData(): MarketDataState {
   // reflects ANY successful endpoint; the staleness badge needs to reflect
   // the /api/quotes endpoint specifically since that's what drives hedge
   // pricing and calculator inputs.
-  const [quotesLastUpdated, setQuotesLastUpdated] = useState<string | null>(
-    null,
-  );
+  const [quotesFetchedAt, setQuotesFetchedAt] = useState<number | null>(null);
   // Wall-clock snapshot used by the staleness derivations below. Updated
   // periodically by the force-tick effect so `isStale` / `isVeryStale` can
   // flip as real time passes without a new fetch. Storing the clock value
@@ -350,7 +346,7 @@ export function useMarketData(): MarketDataState {
   usePolling(
     () => {
       // Track whether the quotes fetch specifically succeeded so we can
-      // update `quotesLastUpdated` independently of `fetchedAt`.
+      // update `quotesFetchedAt` independently of `fetchedAt`.
       let quotesSucceeded = false;
       const fetches: Promise<void>[] = [
         fetchJson<QuotesResponse>('/api/quotes').then((result) => {
@@ -378,12 +374,11 @@ export function useMarketData(): MarketDataState {
       }
 
       Promise.all(fetches).then(() => {
-        // `fetchedAt` is epoch ms (canonical), `quotesLastUpdated` stays
-        // ISO because the staleness math downstream wraps it with
-        // `new Date()` and changing that is out of scope for this rename.
-        setFetchedAt(Date.now());
+        // Both freshness fields use epoch ms (canonical fetchedAt shape).
+        const now = Date.now();
+        setFetchedAt(now);
         if (quotesSucceeded) {
-          setQuotesLastUpdated(new Date().toISOString());
+          setQuotesFetchedAt(now);
         }
       });
     },
@@ -411,7 +406,7 @@ export function useMarketData(): MarketDataState {
   // re-evaluation. Runs while the session is NOT closed — that covers
   // pre-market / regular / after-hours so stale-badge semantics match
   // the extended polling gate above. Outside those windows polling has
-  // intentionally stopped, `quotesLastUpdated` is no longer updating,
+  // intentionally stopped, `quotesFetchedAt` is no longer updating,
   // and a stale badge would be pure noise overnight.
   //
   // Fires once immediately so the first render after a session flip has
@@ -453,10 +448,10 @@ export function useMarketData(): MarketDataState {
   let staleAgeSec: number | null = null;
   if (
     session !== 'closed' &&
-    quotesLastUpdated != null &&
+    quotesFetchedAt != null &&
     nowForStaleness != null
   ) {
-    const ageMs = nowForStaleness - new Date(quotesLastUpdated).getTime();
+    const ageMs = nowForStaleness - quotesFetchedAt;
     isStale = ageMs >= STALE_THRESHOLD_MS;
     isVeryStale = ageMs >= VERY_STALE_THRESHOLD_MS;
     staleAgeSec = Math.max(0, Math.round(ageMs / 1000));
@@ -475,7 +470,7 @@ export function useMarketData(): MarketDataState {
     needsAuth,
     refresh: fetchAll,
     fetchedAt,
-    quotesLastUpdated,
+    quotesFetchedAt,
     isStale,
     isVeryStale,
     staleAgeSec,

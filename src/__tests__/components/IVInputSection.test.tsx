@@ -18,7 +18,7 @@ const mockMarket = {
   refresh: async () => {},
   fetchedAt: null,
   // FE-STATE-001 staleness fields.
-  quotesLastUpdated: null,
+  quotesFetchedAt: null,
   isStale: false,
   isVeryStale: false,
   staleAgeSec: null,
