@@ -92,6 +92,18 @@ interface CacheEntry {
 const responseCache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<GexStrikeExpiryResponse>>();
 
+// Periodic eviction of expired entries. Fluid Compute reuses instances
+// for many minutes; without eviction, 30s polling × 4 tickers × 24h
+// accumulates ~12k stale entries per instance lifetime. Walks the map
+// on every write — bounded O(n) where n is the live working set
+// (typically <50 in production). Audit 2026-05-19.
+function evictExpiredCacheEntries(): void {
+  const now = Date.now();
+  for (const [k, v] of responseCache) {
+    if (v.expiresAt <= now) responseCache.delete(k);
+  }
+}
+
 function cacheKey(
   ticker: string,
   expiry: string,
@@ -165,6 +177,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           timestamps,
           asOf: new Date().toISOString(),
         };
+        evictExpiredCacheEntries();
         responseCache.set(key, { body, expiresAt: Date.now() + ttlMs });
         return body;
       })();

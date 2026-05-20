@@ -171,6 +171,17 @@ interface CacheEntry {
 const responseCache = new Map<string, CacheEntry>();
 const inFlight = new Map<string, Promise<CachedBody>>();
 
+// Periodic eviction of expired entries. Without it, polling
+// accumulates stale entries unboundedly across Fluid Compute's
+// instance lifetime. Walks the map on every write — O(n) where n is
+// the live working set (typically <100). Audit 2026-05-19.
+function evictExpiredCacheEntries(): void {
+  const now = Date.now();
+  for (const [k, v] of responseCache) {
+    if (v.expiresAt <= now) responseCache.delete(k);
+  }
+}
+
 function ghKey(
   date: string | undefined,
   ts: string | undefined,
@@ -415,6 +426,7 @@ export default withRequestScope(
 
     try {
       const body = await inProgress;
+      evictExpiredCacheEntries();
       responseCache.set(key, {
         body,
         expiresAt: Date.now() + (hasTs ? SNAPSHOT_TTL_MS : LIVE_TTL_MS),
