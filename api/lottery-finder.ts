@@ -1336,11 +1336,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // inversion quintile 1 or 2 unless ?showAll=true is passed. NULL
     // quintile (cold-start tickers) is never filtered. The filter is
     // applied post-SELECT in JS — the SQL COUNT(*) `total` does NOT
-    // include this filter, so `hasMore` is recomputed from the
-    // post-filter page length to keep prev/next controls honest at
-    // the page boundary (a best-effort heuristic; the worst-case
-    // user impact is one redundant "next" click that returns an
-    // empty page when the next page is entirely Q1/Q2).
+    // include this filter. `hasMore` is computed against the pre-filter
+    // SQL window length (`rows.length`) so it matches the SQL pagination
+    // cleanly; `count` reflects the post-filter page that's actually
+    // returned. The visible tradeoff is that `total` overstates the
+    // displayed-feed size when many Q1/Q2 rows exist — Phase 4 can
+    // surface a "showing N of M after quality filter" hint.
     const passesQuintileFilter = (
       f: ReturnType<typeof toLotteryFire>,
     ): boolean =>
@@ -1380,7 +1381,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       total,
       limit,
       offset,
-      hasMore: offset + fires.length < total,
+      hasMore: offset + rows.length < total,
       fires,
       // Pinned "Hot Right Now" payload — full LotteryFire rows for the
       // day's top-N reignited chains, independent of pagination so the
