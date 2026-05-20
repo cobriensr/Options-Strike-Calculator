@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { tryParseOccChain, tryParseUwTicker } from '../uw-occ-parse';
+import { tryParseOccChain, tryParseUwTicker } from '../../utils/uw-occ-parse';
 
 describe('tryParseOccChain', () => {
   it('parses an unpadded bare OCC body', () => {

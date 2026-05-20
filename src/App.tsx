@@ -1567,14 +1567,16 @@ export default function StrikeCalculator() {
       </div>
       <BackToTop />
       <UpdateAvailableBanner pushedUp={historySnapshot != null} />
-      <BacktestDiag
-        snapshot={historySnapshot}
-        history={historyData}
-        timeHour={timeHour}
-        timeMinute={timeMinute}
-        timeAmPm={timeAmPm}
-        timezone={timezone}
-      />
+      {historySnapshot != null && (
+        <BacktestDiag
+          snapshot={historySnapshot}
+          history={historyData}
+          timeHour={timeHour}
+          timeMinute={timeMinute}
+          timeAmPm={timeAmPm}
+          timezone={timezone}
+        />
+      )}
       <Analytics />
       <SpeedInsights />
     </CollapseAllContext.Provider>

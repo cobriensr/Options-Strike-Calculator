@@ -23,6 +23,8 @@
  * break the render path.
  */
 
+import { getAudioContextCtor } from './audio-utils.js';
+
 const STORAGE_KEY = 'anomalySoundEnabled';
 /** Minimum ms between two consecutive plays. */
 export const SOUND_THROTTLE_MS = 3_000;
@@ -79,15 +81,6 @@ export function setAnomalySoundEnabled(enabled: boolean): void {
   }
 }
 
-/** Resolve the AudioContext constructor. Returns null when unavailable. */
-function getAudioContextCtor(): (new () => AudioContext) | null {
-  const w = globalThis as typeof globalThis & {
-    AudioContext?: new () => AudioContext;
-    webkitAudioContext?: new () => AudioContext;
-  };
-  return w.AudioContext ?? w.webkitAudioContext ?? null;
-}
-
 /**
  * Play a short sine-wave tone with attack + exponential-decay envelope.
  * All failures are swallowed — AudioContext creation can fail in test envs
@@ -96,7 +89,7 @@ function getAudioContextCtor(): (new () => AudioContext) | null {
 function playTone(spec: ChimeSpec): void {
   try {
     const Ctor = getAudioContextCtor();
-    if (!Ctor) return;
+    if (Ctor == null) return;
     const ctx = new Ctor();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();

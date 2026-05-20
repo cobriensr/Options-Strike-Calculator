@@ -20,7 +20,7 @@ import { describe, it, expect } from 'vitest';
 import {
   CHARM_DRIFT_NOISE_THRESHOLD,
   computeCharmDriftRead,
-} from '../periscope-charm-drift';
+} from '../../utils/periscope-charm-drift';
 import { theme } from '../../themes';
 
 // A non-noise tally so we exercise drift branches rather than fall into

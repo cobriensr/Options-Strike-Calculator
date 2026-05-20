@@ -11,9 +11,15 @@ import { markNeedsRefresh, setUpdateFn } from './lib/sw-update';
 import { installAuthInterceptor } from './utils/authInterceptor';
 
 if (import.meta.env.DEV) {
-  import('@vercel/toolbar/vite').then(({ mountVercelToolbar }) =>
-    mountVercelToolbar(),
-  );
+  import('@vercel/toolbar/vite')
+    .then(({ mountVercelToolbar }) => mountVercelToolbar())
+    .catch((err: unknown) => {
+      // Dev-only toolbar — failure to load is not user-visible. Log so
+      // the failure isn't silently swallowed; matches the .catch policy
+      // used on every other dynamic import() in this codebase.
+      // eslint-disable-next-line no-console
+      console.warn('Vercel toolbar failed to mount', err);
+    });
 }
 
 // Self-healing 401 handler: when the server reports the session is gone

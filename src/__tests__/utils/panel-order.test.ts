@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import type { PanelRegistryEntry } from '../../constants/panel-registry.js';
-import { resolveGroupOrder, resolvePanelOrder } from '../panel-order.js';
+import {
+  resolveGroupOrder,
+  resolvePanelOrder,
+} from '../../utils/panel-order.js';
 
 const REGISTRY_GROUPS = [
   'Inputs',
