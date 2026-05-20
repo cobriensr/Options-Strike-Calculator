@@ -1,14 +1,18 @@
 /**
  * Charm Flow section of the Periscope panel.
  *
- * Renders the tally tally rows, top-by-|charm| cells, the charm-zero
- * strike, and the three-line charm-drift read computed by
- * `computeCharmDriftRead` (extracted to src/utils/periscope-charm-drift).
+ * Renders the tally rows, top-by-|charm| cells, the charm-zero strike,
+ * and the three-line charm-drift read computed by `computeCharmDriftRead`
+ * (extracted to src/utils/periscope-charm-drift).
  */
 
 import { theme } from '../../themes';
 import type { PeriscopeView } from '../../hooks/usePeriscopeExposure';
 import { colorForValue, fmtSigned } from '../../utils/periscope-formatting';
+// `CharmDriftRead` is the util's data-shape interface; the local
+// presenter component below is named `CharmDriftReadDisplay`. Aliasing
+// the imported type to `CharmDriftReadType` avoids the name collision
+// that existed in the pre-3A monolith.
 import {
   computeCharmDriftRead,
   type CharmDriftRead as CharmDriftReadType,

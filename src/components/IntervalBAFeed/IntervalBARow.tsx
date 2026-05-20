@@ -37,6 +37,10 @@ const formatTimeCT = (iso: string): string =>
     timeZone: 'America/Chicago',
   });
 
+// Local IntervalBA variant — kept distinct from the canonical
+// `formatPremium` in src/utils/format-magnitude.ts because this row
+// needs 2-decimal precision in the M branch (e.g. `$1.40M`) to keep
+// adjacent alerts visually distinguishable; canonical uses 1-decimal.
 const formatPremium = (n: number): string => {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000) return `$${Math.round(n / 1000)}K`;

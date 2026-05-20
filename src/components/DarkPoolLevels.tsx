@@ -62,6 +62,11 @@ interface Props {
   onScrubLive?: () => void;
 }
 
+// Local DarkPool variant — kept distinct from the canonical
+// `formatPremium` in src/utils/format-magnitude.ts because dark pool
+// notional volumes regularly exceed $1B (canonical caps at M) and
+// the integer-precision M/K rounding here matches the price-ladder
+// column width budget.
 function formatPremium(value: number): string {
   const abs = Math.abs(value);
   if (abs >= 1_000_000_000) return `$${(abs / 1_000_000_000).toFixed(1)}B`;

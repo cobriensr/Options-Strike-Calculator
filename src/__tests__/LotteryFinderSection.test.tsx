@@ -47,7 +47,7 @@ vi.mock('../components/LotteryFinder/LotteryFinderTickerGroup', () => ({
   ),
 }));
 
-import { LotteryFinderSection } from '../components/LotteryFinder/LotteryFinderSection';
+import { LotteryFinderSection } from '../components/LotteryFinder';
 
 // ── Fixtures ──────────────────────────────────────────────────────────
 

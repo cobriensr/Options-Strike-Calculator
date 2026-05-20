@@ -114,7 +114,14 @@ const formatVol = (n: number): string => {
   return n.toFixed(0);
 };
 
-/** Compact $ formatter for net premium tallies (signed). */
+/**
+ * Compact $ formatter for net premium tallies (signed).
+ *
+ * Local LotteryRow variant — kept distinct from the canonical
+ * `formatPremium` in src/utils/format-magnitude.ts because this one
+ * shows the leading `+` / `−` sign (canonical coalesces negatives to
+ * `$0` since premium magnitudes are unsigned by convention).
+ */
 const formatPremium = (n: number): string => {
   const sign = n >= 0 ? '+' : '−';
   const abs = Math.abs(n);

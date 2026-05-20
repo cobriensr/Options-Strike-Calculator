@@ -157,7 +157,7 @@ const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
 const LotteryFinderSection = lazy(() =>
-  import('./components/LotteryFinder/LotteryFinderSection')
+  import('./components/LotteryFinder')
     .then((m) => ({ default: m.LotteryFinderSection }))
     .catch(handleStaleChunk),
 );
