@@ -5,20 +5,22 @@
  * optionType / TOD). Polls every 30s during market hours when no
  * minute is selected and the date is today; otherwise the response is
  * stable and polling is skipped.
+ *
+ * Phase 2M-5: thin wrapper over `useFetchedData` exposing the canonical
+ * `{ data, loading, error, refresh, fetchedAt }` shape. Callers
+ * destructure `data?.fires ?? []`, `data?.reignitedFires ?? []`,
+ * `data?.total ?? 0`, etc.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
-import { usePolling } from './usePolling.js';
+import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 import type {
   LotteryFinderResponse,
-  LotteryFire,
   LotteryMode,
   LotterySortMode,
   OptionType,
   TimeOfDay,
 } from '../components/LotteryFinder/types.js';
-import { getErrorMessage } from '../utils/error.js';
 
 interface UseLotteryFinderArgs {
   /** YYYY-MM-DD trading day. */
@@ -59,40 +61,6 @@ interface UseLotteryFinderArgs {
   pageSize?: number;
 }
 
-interface State {
-  fires: LotteryFire[];
-  /**
-   * Pinned "Hot Right Now" rows — top-N reignited chains for the day,
-   * served independent of pagination so the section stays visible on
-   * every page. Always populated from the server when present;
-   * back-compat default is `[]`.
-   */
-  reignitedFires: LotteryFire[];
-  loading: boolean;
-  error: string | null;
-  fetchedAt: number | null;
-  /** Total matching fires across all pages. */
-  total: number;
-  /** Effective limit (page size) the endpoint applied. */
-  limit: number;
-  /** Effective offset the endpoint applied. */
-  offset: number;
-  /** True when a Next page exists. */
-  hasMore: boolean;
-}
-
-const INITIAL_STATE: State = {
-  fires: [],
-  reignitedFires: [],
-  loading: true,
-  error: null,
-  fetchedAt: null,
-  total: 0,
-  limit: 0,
-  offset: 0,
-  hasMore: false,
-};
-
 export function useLotteryFinder({
   date,
   minute,
@@ -108,100 +76,32 @@ export function useLotteryFinder({
   minPremium = null,
   page = 0,
   pageSize = 50,
-}: UseLotteryFinderArgs): State & { refetch: () => void } {
-  const [state, setState] = useState<State>(INITIAL_STATE);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const fetchOnce = useCallback(async () => {
-    // Cancel any in-flight request before starting a new one — prevents
-    // a stale poll from clobbering the user's just-scrubbed state.
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
-    try {
-      const params = new URLSearchParams({
-        date,
-        limit: String(pageSize),
-        offset: String(page * pageSize),
-      });
-      if (minute) params.set('minute', minute);
-      if (ticker) params.set('ticker', ticker);
-      if (reload != null) params.set('reload', String(reload));
-      if (cheapCallPm != null) params.set('cheapCallPm', String(cheapCallPm));
-      if (mode != null) params.set('mode', mode);
-      if (optionType != null) params.set('optionType', optionType);
-      if (tod != null) params.set('tod', tod);
-      if (sort !== 'chronological') params.set('sort', sort);
-      if (minScore != null) params.set('minScore', String(minScore));
-      if (minPremium != null && minPremium > 0)
-        params.set('minPremium', String(minPremium));
-      const res = await fetch(`/api/lottery-finder?${params.toString()}`, {
-        credentials: 'include',
-        signal: ctrl.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as LotteryFinderResponse;
-
-      // The signal might have been aborted between fetch resolution
-      // and JSON parse; bail before clobbering newer state.
-      if (ctrl.signal.aborted) return;
-      setState({
-        fires: json.fires,
-        reignitedFires: json.reignitedFires ?? [],
-        loading: false,
-        error: null,
-        fetchedAt: Date.now(),
-        total: json.total,
-        limit: json.limit,
-        offset: json.offset,
-        hasMore: json.hasMore,
-      });
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      // Defensive: a non-abort error from a request that was just
-      // superseded by a newer fetch must not surface as the live error.
-      if (ctrl.signal.aborted) return;
-      setState((prev) => ({
-        ...prev,
-        loading: false,
-        error: getErrorMessage(err),
-      }));
-    }
-  }, [
+}: UseLotteryFinderArgs): UseFetchedDataResult<LotteryFinderResponse> {
+  const params = new URLSearchParams({
     date,
-    minute,
-    ticker,
-    reload,
-    cheapCallPm,
-    mode,
-    optionType,
-    tod,
-    sort,
-    minScore,
-    minPremium,
-    page,
-    pageSize,
-  ]);
+    limit: String(pageSize),
+    offset: String(page * pageSize),
+  });
+  if (minute) params.set('minute', minute);
+  if (ticker) params.set('ticker', ticker);
+  if (reload != null) params.set('reload', String(reload));
+  if (cheapCallPm != null) params.set('cheapCallPm', String(cheapCallPm));
+  if (mode != null) params.set('mode', mode);
+  if (optionType != null) params.set('optionType', optionType);
+  if (tod != null) params.set('tod', tod);
+  if (sort !== 'chronological') params.set('sort', sort);
+  if (minScore != null) params.set('minScore', String(minScore));
+  if (minPremium != null && minPremium > 0)
+    params.set('minPremium', String(minPremium));
+  const url = `/api/lottery-finder?${params.toString()}`;
 
-  // Eager mount fetch — usePolling only schedules the recurring tick.
-  useEffect(() => {
-    void fetchOnce();
-  }, [fetchOnce]);
-
-  // No polling when the user is on a specific minute (historical bucket —
-  // won't change) or browsing past page 0 (would shift their cursor on
-  // every poll).
-  usePolling(
-    () => {
-      void fetchOnce();
-    },
-    POLL_INTERVALS.OTM_FLOW,
-    [marketOpen, !minute, page === 0],
-  );
-
-  // Cancel any in-flight request on unmount.
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  return useMemo(() => ({ ...state, refetch: fetchOnce }), [state, fetchOnce]);
+  // Original gates were `[marketOpen, !minute, page === 0]` — fold the
+  // `!minute` and `page === 0` gates into the historical flag so the
+  // minute-scrub view and paginated views single-fetch instead of polling.
+  return useFetchedData<LotteryFinderResponse>({
+    url,
+    marketOpen,
+    pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
+    historical: minute != null || page !== 0,
+  });
 }

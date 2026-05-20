@@ -133,18 +133,63 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
   };
 }
 
-const defaultHookResult = {
-  fires: [] as LotteryFire[],
-  reignitedFires: [] as LotteryFire[],
+interface DefaultHookResult {
+  data: {
+    fires: LotteryFire[];
+    reignitedFires: LotteryFire[];
+    total: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+  };
+  loading: boolean;
+  error: string | null;
+  fetchedAt: number | null;
+  refresh: ReturnType<typeof vi.fn>;
+}
+
+const defaultHookResult: DefaultHookResult = {
+  data: {
+    fires: [],
+    reignitedFires: [],
+    total: 0,
+    limit: 50,
+    offset: 0,
+    hasMore: false,
+  },
   loading: false,
-  error: null as string | null,
-  fetchedAt: null as number | null,
-  total: 0,
-  limit: 50,
-  offset: 0,
-  hasMore: false,
-  refetch: vi.fn(),
+  error: null,
+  fetchedAt: null,
+  refresh: vi.fn(),
 };
+
+/**
+ * Helper for overriding the mock with a custom fires array + paged
+ * metadata. The hook now returns a nested `data` object, so test cases
+ * that spread `defaultHookResult` and override the (formerly top-level)
+ * `fires` / `total` fields would silently fall through to the empty
+ * default. Funneling through this builder keeps the test bodies legible.
+ */
+function feedResult(
+  overrides: Partial<DefaultHookResult['data']> &
+    Partial<Omit<DefaultHookResult, 'data'>> = {},
+): DefaultHookResult {
+  const { fires, reignitedFires, total, limit, offset, hasMore, ...rest } =
+    overrides;
+  return {
+    ...defaultHookResult,
+    ...rest,
+    data: {
+      ...defaultHookResult.data,
+      ...(fires !== undefined && { fires }),
+      ...(reignitedFires !== undefined && { reignitedFires }),
+      ...(total !== undefined && { total }),
+      ...(limit !== undefined && { limit }),
+      ...(offset !== undefined && { offset }),
+      ...(hasMore !== undefined && { hasMore }),
+    },
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -205,19 +250,13 @@ describe('LotteryFinderSection: states', () => {
   });
 
   it('renders the loading line when the hook is loading and fires are empty', () => {
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      loading: true,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ loading: true }));
     render(<LotteryFinderSection marketOpen={false} />);
     expect(screen.getByText(/Loading lottery feed…/i)).toBeInTheDocument();
   });
 
   it('renders the error alert when the hook surfaces an error', () => {
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      error: 'HTTP 503',
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ error: 'HTTP 503' }));
     render(<LotteryFinderSection marketOpen={false} />);
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent(/Error: HTTP 503/);
@@ -244,11 +283,7 @@ describe('LotteryFinderSection: populated rendering', () => {
         strike: 250,
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 2,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
 
     render(<LotteryFinderSection marketOpen={true} />);
 
@@ -325,11 +360,7 @@ describe('LotteryFinderSection: filter interactions', () => {
         directionGated: true,
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 2,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
 
@@ -379,11 +410,7 @@ describe('LotteryFinderSection: filter interactions', () => {
         roundTripScoreDeduct: -3,
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 2,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
 
@@ -469,11 +496,9 @@ describe('LotteryFinderSection: filter interactions', () => {
       optionChainId: 'AAPL-itm',
       strike: 195,
     });
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires: [matching, tooCheap, tier3, itm],
-      total: 4,
-    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [matching, tooCheap, tier3, itm], total: 4 }),
+    );
 
     render(<LotteryFinderSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('lottery-aggressive-premium-chip'));
@@ -519,11 +544,7 @@ describe('LotteryFinderSection: filter interactions', () => {
         },
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 2,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('lottery-moneyness-otm-chip'));
@@ -588,11 +609,7 @@ describe('LotteryFinderSection: filter interactions', () => {
         },
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 2,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('lottery-moneyness-itm-chip'));
@@ -621,11 +638,7 @@ describe('LotteryFinderSection: filter interactions', () => {
         fireCount: 3, // low — drops on ≥8
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 2,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('burst-filter-gte8'));
@@ -647,11 +660,7 @@ describe('LotteryFinderSection: filter interactions', () => {
         fireCount: 1,
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 1,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 1 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
     // No chip click — default state is 'all'.
@@ -669,11 +678,7 @@ describe('LotteryFinderSection: filter interactions', () => {
         fireCount: 5,
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 1,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 1 }));
 
     const { unmount } = render(<LotteryFinderSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('burst-filter-gte8'));
@@ -738,11 +743,9 @@ describe("LotteryFinderSection: sortMode === 'peak' two-tier ordering", () => {
       peakFire('SNDK', 1175, 30),
       peakFire('RKLB', 123, null),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: fires.length,
-    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires, total: fires.length }),
+    );
 
     // Pre-set sortMode=peak via localStorage so the section boots into
     // that mode without a UI click.
@@ -787,11 +790,9 @@ describe("LotteryFinderSection: sortMode === 'peak' two-tier ordering", () => {
       peakFire('TSLA', 260, 150, '2026-05-08T19:30:00Z'),
       peakFire('SNDK', 1175, 30, '2026-05-08T20:00:00Z'),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: fires.length,
-    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires, total: fires.length }),
+    );
 
     // Default sortMode is 'chronological' which uses the same fall-
     // through ordering — newest trigger wins on the count tiebreak.
@@ -883,11 +884,7 @@ describe('LotteryFinderSection: hide-counter-flow filter', () => {
         },
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 2,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
 
@@ -940,11 +937,7 @@ describe('LotteryFinderSection: hide-counter-flow filter', () => {
         },
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 1,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 1 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
     expect(
@@ -968,11 +961,7 @@ describe('LotteryFinderSection: hide-counter-flow filter', () => {
         // macro defaults from makeFire: tickerCumNcpAtFire: null, tickerCumNppAtFire: null
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 1,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 1 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('lottery-hide-counter-flow-chip'));
@@ -1038,11 +1027,7 @@ describe('LotteryFinderSection: hide-counter-flow filter', () => {
         },
       }),
     ];
-    mockUseLotteryFinder.mockReturnValue({
-      ...defaultHookResult,
-      fires,
-      total: 2,
-    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
 
     render(<LotteryFinderSection marketOpen={false} />);
     const chip = screen.getByTestId('lottery-hide-counter-flow-chip');

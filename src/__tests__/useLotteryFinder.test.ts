@@ -139,6 +139,9 @@ describe('useLotteryFinder', () => {
   });
 
   it('populates fires + pagination metadata on success', async () => {
+    // Phase 2M-5: hook now returns `{ data, loading, error, refresh,
+    // fetchedAt }` — `fires`, `reignitedFires`, and the paged scalars
+    // live under `data` and are read via `result.current.data?.fires`.
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
         emptyFinder({
@@ -158,11 +161,11 @@ describe('useLotteryFinder', () => {
       useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.fires).toHaveLength(1);
-    expect(result.current.total).toBe(100);
-    expect(result.current.limit).toBe(50);
-    expect(result.current.offset).toBe(0);
-    expect(result.current.hasMore).toBe(true);
+    expect(result.current.data?.fires).toHaveLength(1);
+    expect(result.current.data?.total).toBe(100);
+    expect(result.current.data?.limit).toBe(50);
+    expect(result.current.data?.offset).toBe(0);
+    expect(result.current.data?.hasMore).toBe(true);
     expect(result.current.error).toBeNull();
     expect(result.current.fetchedAt).not.toBeNull();
   });
@@ -184,17 +187,20 @@ describe('useLotteryFinder', () => {
       useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.reignitedFires).toHaveLength(1);
-    expect(result.current.reignitedFires[0]!.id).toBe(999);
+    expect(result.current.data?.reignitedFires).toHaveLength(1);
+    expect(result.current.data?.reignitedFires?.[0]!.id).toBe(999);
   });
 
-  it('defaults reignitedFires to [] when the response omits the field', async () => {
+  it('passes reignitedFires through verbatim (undefined when omitted)', async () => {
+    // The legacy hook coerced `undefined` → `[]`. With useFetchedData
+    // the response is delivered verbatim — consumers apply the
+    // `?? []` fallback. Mirrors SilentBoom's Phase 2M-4 contract.
     fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
     const { result } = renderHook(() =>
       useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.reignitedFires).toEqual([]);
+    expect(result.current.data?.reignitedFires).toBeUndefined();
   });
 
   it('exposes error on non-2xx response', async () => {
@@ -282,7 +288,7 @@ describe('useLotteryFinder', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('refetch() triggers a fresh fetch', async () => {
+  it('refresh() triggers a fresh fetch', async () => {
     fetchMock.mockResolvedValue(jsonResponse(emptyFinder()));
     const { result } = renderHook(() =>
       useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
@@ -291,7 +297,7 @@ describe('useLotteryFinder', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      result.current.refetch();
+      result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
@@ -309,7 +315,7 @@ describe('useLotteryFinder', () => {
     unmount();
     resolveFetch(jsonResponse(emptyFinder({ total: 99 })));
     await act(async () => {});
-    expect(result.current.total).toBe(0);
+    expect(result.current.data).toBeNull();
   });
 
   it('cancels prior in-flight fetch when filters change', async () => {
@@ -333,7 +339,7 @@ describe('useLotteryFinder', () => {
     // Resolve the now-stale first request — should not clobber state.
     resolveFirst(jsonResponse(emptyFinder({ total: 9999, count: 0 })));
 
-    await waitFor(() => expect(result.current.total).toBe(5));
-    expect(result.current.total).not.toBe(9999);
+    await waitFor(() => expect(result.current.data?.total).toBe(5));
+    expect(result.current.data?.total).not.toBe(9999);
   });
 });

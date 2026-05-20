@@ -444,16 +444,7 @@ export function LotteryFinderSection({
     minPremiumK,
   ]);
 
-  const {
-    fires,
-    reignitedFires: rawReignitedFires,
-    loading,
-    error,
-    fetchedAt,
-    total,
-    offset,
-    hasMore,
-  } = useLotteryFinder({
+  const lotteryFinder = useLotteryFinder({
     date,
     minute,
     marketOpen,
@@ -469,6 +460,23 @@ export function LotteryFinderSection({
     page,
     pageSize: PAGE_SIZE,
   });
+  const { loading, error, fetchedAt } = lotteryFinder;
+  // Destructure response fields into referentially-stable locals — child
+  // components (banners, ticker-group, reignited section) consume the
+  // array reference and the `useMemo` deps below pin on
+  // `lotteryFinder.data` (which is itself referentially stable across
+  // ticks where the response is unchanged).
+  const fires = useMemo(
+    () => lotteryFinder.data?.fires ?? [],
+    [lotteryFinder.data],
+  );
+  const rawReignitedFires = useMemo(
+    () => lotteryFinder.data?.reignitedFires ?? [],
+    [lotteryFinder.data],
+  );
+  const total = lotteryFinder.data?.total ?? 0;
+  const offset = lotteryFinder.data?.offset ?? 0;
+  const hasMore = lotteryFinder.data?.hasMore ?? false;
 
   // All-day ticker counts for the chip strip — chain-day deduped on
   // the server so counts match what the user sees in the list.
