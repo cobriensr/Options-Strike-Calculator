@@ -95,17 +95,59 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
   };
 }
 
-const defaultHookResult = {
-  alerts: [] as SilentBoomAlert[],
+interface DefaultHookResult {
+  data: {
+    alerts: SilentBoomAlert[];
+    total: number;
+    limit: number;
+    offset: number;
+    hasMore: boolean;
+  };
+  loading: boolean;
+  error: string | null;
+  fetchedAt: number | null;
+  refresh: ReturnType<typeof vi.fn>;
+}
+
+const defaultHookResult: DefaultHookResult = {
+  data: {
+    alerts: [],
+    total: 0,
+    limit: 50,
+    offset: 0,
+    hasMore: false,
+  },
   loading: false,
-  error: null as string | null,
-  fetchedAt: null as number | null,
-  total: 0,
-  limit: 50,
-  offset: 0,
-  hasMore: false,
-  refetch: vi.fn(),
+  error: null,
+  fetchedAt: null,
+  refresh: vi.fn(),
 };
+
+/**
+ * Helper for overriding the mock with a custom alerts array + total.
+ * The hook now returns a nested `data` object, so test cases that
+ * spread `defaultHookResult` and override the (formerly top-level)
+ * `alerts` / `total` fields would silently fall through to the empty
+ * default. Funneling through this builder keeps the test bodies legible.
+ */
+function feedResult(
+  overrides: Partial<DefaultHookResult['data']> &
+    Partial<Omit<DefaultHookResult, 'data'>> = {},
+): DefaultHookResult {
+  const { alerts, total, limit, offset, hasMore, ...rest } = overrides;
+  return {
+    ...defaultHookResult,
+    ...rest,
+    data: {
+      ...defaultHookResult.data,
+      ...(alerts !== undefined && { alerts }),
+      ...(total !== undefined && { total }),
+      ...(limit !== undefined && { limit }),
+      ...(offset !== undefined && { offset }),
+      ...(hasMore !== undefined && { hasMore }),
+    },
+  };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -202,11 +244,7 @@ describe('SilentBoomSection: populated rendering', () => {
         strike: 250,
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 2,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
 
     render(<SilentBoomSection marketOpen={true} />);
 
@@ -264,11 +302,7 @@ describe('SilentBoomSection: filter interactions', () => {
         directionGated: true,
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 2,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
 
     render(<SilentBoomSection marketOpen={false} />);
 
@@ -320,11 +354,7 @@ describe('SilentBoomSection: filter interactions', () => {
         roundTripScoreDeduct: -3,
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 2,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
 
     render(<SilentBoomSection marketOpen={false} />);
 
@@ -364,11 +394,7 @@ describe('SilentBoomSection: filter interactions', () => {
         underlyingPriceAtSpike: 200,
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 2,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
 
     render(<SilentBoomSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('silent-boom-moneyness-otm-chip'));
@@ -399,11 +425,7 @@ describe('SilentBoomSection: filter interactions', () => {
         underlyingPriceAtSpike: 500,
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 2,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
 
     render(<SilentBoomSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('silent-boom-moneyness-itm-chip'));
@@ -442,11 +464,7 @@ describe('SilentBoomSection: filter interactions', () => {
         underlyingPriceAtSpike: 200,
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 2,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
 
     render(<SilentBoomSection marketOpen={false} />);
 
@@ -596,11 +614,9 @@ describe("SilentBoomSection: sortMode === 'peak' two-tier ordering", () => {
       peakAlert('SNDK', 1175, 30),
       peakAlert('RKLB', 123, null),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: alerts.length,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts, total: alerts.length }),
+    );
     window.localStorage.setItem('silentBoom.sortMode', 'peak');
 
     const { container } = render(<SilentBoomSection marketOpen={false} />);
@@ -629,11 +645,9 @@ describe("SilentBoomSection: sortMode === 'peak' two-tier ordering", () => {
       peakAlert('TSLA', 260, 150, '2026-05-08T14:30:00Z'),
       peakAlert('SNDK', 1175, 30, '2026-05-08T15:00:00Z'),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: alerts.length,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts, total: alerts.length }),
+    );
     // Default sortMode is 'newest'; with no conviction/storm and equal
     // alert counts, the fall-through tiebreak is latestBucketMs desc.
 
@@ -691,11 +705,7 @@ describe('hide-counter-flow filter', () => {
         optionChainId: 'MSFT|2026-05-15|105|C',
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 2,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
     render(<SilentBoomSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('silent-boom-hide-counter-flow-chip'));
     // Counter-flow call (NCP < NPP) is dropped; aligned call survives.
@@ -719,11 +729,7 @@ describe('hide-counter-flow filter', () => {
         optionChainId: 'AAPL|2026-05-15|150|P',
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 1,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 1 }));
     render(<SilentBoomSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('silent-boom-hide-counter-flow-chip'));
     // Counter-flow put (NCP > NPP) is dropped.
@@ -744,11 +750,7 @@ describe('hide-counter-flow filter', () => {
         optionChainId: 'TLT|2026-05-15|95|C',
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 1,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 1 }));
     render(<SilentBoomSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('silent-boom-hide-counter-flow-chip'));
     // Null snapshot → always kept.
@@ -772,11 +774,7 @@ describe('hide-counter-flow filter', () => {
         optionChainId: 'AAPL260508C00210000',
       }),
     ];
-    mockUseSilentBoomFeed.mockReturnValue({
-      ...defaultHookResult,
-      alerts,
-      total: 2,
-    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
     render(<SilentBoomSection marketOpen={false} />);
     const chip = screen.getByTestId('silent-boom-hide-counter-flow-chip');
     fireEvent.click(chip);

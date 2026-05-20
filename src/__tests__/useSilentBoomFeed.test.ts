@@ -158,6 +158,9 @@ describe('useSilentBoomFeed', () => {
   });
 
   it('clears loading and exposes alerts on success', async () => {
+    // Phase 2M-4: hook now returns `{ data, loading, error, refresh,
+    // fetchedAt }` — `alerts` and the other paged fields live under
+    // `data` and are read via `result.current.data?.alerts ?? []`.
     fetchMock.mockResolvedValueOnce(
       jsonResponse(
         emptyFeed({
@@ -212,8 +215,8 @@ describe('useSilentBoomFeed', () => {
       useSilentBoomFeed({ date: '2026-05-07', marketOpen: false }),
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.alerts).toHaveLength(1);
-    expect(result.current.alerts[0]?.underlyingSymbol).toBe('SNDK');
+    expect(result.current.data?.alerts).toHaveLength(1);
+    expect(result.current.data?.alerts[0]?.underlyingSymbol).toBe('SNDK');
     expect(result.current.error).toBeNull();
   });
 
@@ -224,7 +227,7 @@ describe('useSilentBoomFeed', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toContain('500');
-    expect(result.current.alerts).toEqual([]);
+    expect(result.current.data).toBeNull();
   });
 
   it('does not poll when historical=true (date is in the past)', async () => {

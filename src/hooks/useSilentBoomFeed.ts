@@ -3,15 +3,15 @@
  * and pagination. Polls every 30s during market hours when on page 0
  * AND the selected date is today (historical days are static).
  *
- * Mirrors the pattern in useLotteryFinder.ts.
+ * Phase 2M-4: thin wrapper over `useFetchedData` exposing the canonical
+ * `{ data, loading, error, refresh, fetchedAt }` shape. Callers
+ * destructure `data?.alerts ?? []`, `data?.total ?? 0`, etc.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
-import { usePolling } from './usePolling.js';
+import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 import type {
   OptionType,
-  SilentBoomAlert,
   SilentBoomAskPctBand,
   SilentBoomBurstColor,
   SilentBoomDteBucket,
@@ -19,7 +19,6 @@ import type {
   SilentBoomSortMode,
   SilentBoomTod,
 } from '../components/SilentBoom/types.js';
-import { getErrorMessage } from '../utils/error.js';
 
 interface UseSilentBoomFeedArgs {
   date: string;
@@ -64,28 +63,6 @@ interface UseSilentBoomFeedArgs {
   pageSize?: number;
 }
 
-interface State {
-  alerts: SilentBoomAlert[];
-  loading: boolean;
-  error: string | null;
-  fetchedAt: number | null;
-  total: number;
-  limit: number;
-  offset: number;
-  hasMore: boolean;
-}
-
-const INITIAL_STATE: State = {
-  alerts: [],
-  loading: true,
-  error: null,
-  fetchedAt: null,
-  total: 0,
-  limit: 0,
-  offset: 0,
-  hasMore: false,
-};
-
 export function useSilentBoomFeed({
   date,
   marketOpen,
@@ -106,95 +83,35 @@ export function useSilentBoomFeed({
   sort = 'newest',
   page = 0,
   pageSize = 50,
-}: UseSilentBoomFeedArgs): State & { refetch: () => void } {
-  const [state, setState] = useState<State>(INITIAL_STATE);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const fetchOnce = useCallback(async () => {
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
-    try {
-      const params = new URLSearchParams({
-        date,
-        limit: String(pageSize),
-        offset: String(page * pageSize),
-        minVolOi: String(minVolOi),
-        minSpikeRatio: String(minSpikeRatio),
-        sort,
-      });
-      if (ticker) params.set('ticker', ticker);
-      if (optionType) params.set('optionType', optionType);
-      if (minScore != null) params.set('minScore', String(minScore));
-      if (tod) params.set('tod', tod);
-      if (dte) params.set('dte', dte);
-      if (minDte > 0) params.set('minDte', String(minDte));
-      if (minPremium > 0) params.set('minPremium', String(minPremium));
-      if (hideLatePm) params.set('hideLatePm', 'true');
-      if (burst) params.set('burst', burst);
-      if (askPctBand) params.set('askPctBand', askPctBand);
-      if (aggressivePremium) params.set('aggressivePremium', 'true');
-      const res = await fetch(`/api/silent-boom-feed?${params.toString()}`, {
-        credentials: 'include',
-        signal: ctrl.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as SilentBoomFeedResponse;
-      if (ctrl.signal.aborted) return;
-      setState({
-        alerts: json.alerts,
-        loading: false,
-        error: null,
-        fetchedAt: Date.now(),
-        total: json.total,
-        limit: json.limit,
-        offset: json.offset,
-        hasMore: json.hasMore,
-      });
-    } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      if (ctrl.signal.aborted) return;
-      setState((prev) => ({
-        ...prev,
-        loading: false,
-        error: getErrorMessage(err),
-      }));
-    }
-  }, [
+}: UseSilentBoomFeedArgs): UseFetchedDataResult<SilentBoomFeedResponse> {
+  const params = new URLSearchParams({
     date,
-    ticker,
-    optionType,
-    minVolOi,
-    minSpikeRatio,
-    minScore,
-    tod,
-    dte,
-    minDte,
-    minPremium,
-    hideLatePm,
-    burst,
-    askPctBand,
-    aggressivePremium,
+    limit: String(pageSize),
+    offset: String(page * pageSize),
+    minVolOi: String(minVolOi),
+    minSpikeRatio: String(minSpikeRatio),
     sort,
-    page,
-    pageSize,
-  ]);
+  });
+  if (ticker) params.set('ticker', ticker);
+  if (optionType) params.set('optionType', optionType);
+  if (minScore != null) params.set('minScore', String(minScore));
+  if (tod) params.set('tod', tod);
+  if (dte) params.set('dte', dte);
+  if (minDte > 0) params.set('minDte', String(minDte));
+  if (minPremium > 0) params.set('minPremium', String(minPremium));
+  if (hideLatePm) params.set('hideLatePm', 'true');
+  if (burst) params.set('burst', burst);
+  if (askPctBand) params.set('askPctBand', askPctBand);
+  if (aggressivePremium) params.set('aggressivePremium', 'true');
+  const url = `/api/silent-boom-feed?${params.toString()}`;
 
-  // Eager mount fetch — usePolling only schedules the recurring tick.
-  useEffect(() => {
-    void fetchOnce();
-  }, [fetchOnce]);
-
-  usePolling(
-    () => {
-      void fetchOnce();
-    },
-    POLL_INTERVALS.OTM_FLOW,
-    [marketOpen, page === 0, !historical],
-  );
-
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  return useMemo(() => ({ ...state, refetch: fetchOnce }), [state, fetchOnce]);
+  // Original gates were `[marketOpen, page === 0, !historical]` — fold
+  // the `page === 0` gate into the historical flag so paginated views
+  // single-fetch instead of polling.
+  return useFetchedData<SilentBoomFeedResponse>({
+    url,
+    marketOpen,
+    pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
+    historical: historical || page !== 0,
+  });
 }

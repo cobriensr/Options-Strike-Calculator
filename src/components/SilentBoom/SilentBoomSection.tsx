@@ -559,27 +559,37 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const isHistorical = date !== todayCt();
   const isLive = !isHistorical && bucketIso == null;
 
-  const { alerts, loading, error, fetchedAt, total, offset, hasMore } =
-    useSilentBoomFeed({
-      date,
-      marketOpen,
-      historical: isHistorical,
-      ticker: tickerFilter,
-      optionType: optionTypeFilter,
-      tod: todFilter,
-      dte: dteFilter,
-      minDte,
-      minPremium: minPremiumK * 1000,
-      hideLatePm,
-      burst: burstFilter,
-      askPctBand,
-      aggressivePremium,
-      minVolOi,
-      minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
-      sort: sortMode,
-      page,
-      pageSize: PAGE_SIZE,
-    });
+  const silentBoomFeed = useSilentBoomFeed({
+    date,
+    marketOpen,
+    historical: isHistorical,
+    ticker: tickerFilter,
+    optionType: optionTypeFilter,
+    tod: todFilter,
+    dte: dteFilter,
+    minDte,
+    minPremium: minPremiumK * 1000,
+    hideLatePm,
+    burst: burstFilter,
+    askPctBand,
+    aggressivePremium,
+    minVolOi,
+    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    sort: sortMode,
+    page,
+    pageSize: PAGE_SIZE,
+  });
+  const { loading, error, fetchedAt } = silentBoomFeed;
+  // Destructure response fields into referentially-stable locals — child
+  // components (banners, ticker-group) consume the array reference and
+  // `useMemo` deps below pin on `silentBoomFeed.data`.
+  const alerts = useMemo(
+    () => silentBoomFeed.data?.alerts ?? [],
+    [silentBoomFeed.data],
+  );
+  const total = silentBoomFeed.data?.total ?? 0;
+  const offset = silentBoomFeed.data?.offset ?? 0;
+  const hasMore = silentBoomFeed.data?.hasMore ?? false;
 
   // All-day ticker counts for the chip strip — independent of the
   // 50-item page slice so tickers that fired on later pages still
