@@ -47,7 +47,7 @@ vi.mock('../components/SilentBoom/SilentBoomTickerGroup', () => ({
   ),
 }));
 
-import { SilentBoomSection } from '../components/SilentBoom/SilentBoomSection';
+import { SilentBoomSection } from '../components/SilentBoom';
 
 // ── Fixture factory ───────────────────────────────────────────────────
 

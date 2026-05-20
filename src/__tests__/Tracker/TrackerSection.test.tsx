@@ -135,7 +135,7 @@ vi.mock('../../components/Tracker/helpers', async (importOriginal) => {
   };
 });
 
-import { TrackerSection } from '../../components/Tracker/TrackerSection';
+import { TrackerSection } from '../../components/Tracker';
 import { useTrackerContracts } from '../../hooks/useTrackerContracts';
 import { useTrackerAlerts } from '../../hooks/useTrackerAlerts';
 import type { TrackerContract } from '../../components/Tracker/types';

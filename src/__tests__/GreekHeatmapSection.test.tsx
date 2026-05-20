@@ -24,7 +24,7 @@ vi.mock('../hooks/useGreekHeatmap', () => ({
   useGreekHeatmap: mockUseGreekHeatmap,
 }));
 
-import { GreekHeatmapSection } from '../components/GreekHeatmap/GreekHeatmapSection';
+import { GreekHeatmapSection } from '../components/GreekHeatmap';
 
 function makeStrike(
   strike: number,

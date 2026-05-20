@@ -162,7 +162,7 @@ const LotteryFinderSection = lazy(() =>
     .catch(handleStaleChunk),
 );
 const GreekHeatmapSection = lazy(() =>
-  import('./components/GreekHeatmap/GreekHeatmapSection')
+  import('./components/GreekHeatmap')
     .then((m) => ({ default: m.GreekHeatmapSection }))
     .catch(handleStaleChunk),
 );
@@ -172,7 +172,7 @@ const GexbotSection = lazy(() =>
     .catch(handleStaleChunk),
 );
 const SilentBoomSection = lazy(() =>
-  import('./components/SilentBoom/SilentBoomSection')
+  import('./components/SilentBoom')
     .then((m) => ({ default: m.SilentBoomSection }))
     .catch(handleStaleChunk),
 );
@@ -182,7 +182,7 @@ const PeriscopeLotteryPanel = lazy(() =>
     .catch(handleStaleChunk),
 );
 const TrackerSection = lazy(() =>
-  import('./components/Tracker/TrackerSection')
+  import('./components/Tracker')
     .then((m) => ({ default: m.TrackerSection }))
     .catch(handleStaleChunk),
 );
