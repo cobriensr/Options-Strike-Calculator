@@ -15,7 +15,7 @@
  * conservative aggregate.
  */
 
-import type { IronCondor, Spread } from '../components/PositionMonitor/types';
+import type { IronCondor, Spread } from '../types/positions.js';
 
 /**
  * Compute effective max loss using per-spread stop multiplier.

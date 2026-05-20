@@ -96,19 +96,17 @@ export interface ExecutedTrade {
 
 // ── Section 4: Options (Open Positions) ────────────────────
 
-/** A single open option leg from the Options section */
-export interface OpenLeg {
-  readonly symbol: string;
-  readonly optionCode: string;
-  readonly exp: string;
-  readonly strike: number;
-  readonly type: 'CALL' | 'PUT';
-  /** Signed quantity: negative = short, positive = long */
-  readonly qty: number;
-  readonly tradePrice: number;
-  readonly mark: number | null;
-  readonly markValue: number | null;
-}
+// OpenLeg, SpreadType, Spread, IronCondor lifted to src/types/positions.ts
+// in Phase 3C to fix a utils -> components inversion. They are imported
+// locally here so the rest of this module can keep referencing them,
+// and re-exported so existing `from './types'` imports keep working.
+import type {
+  OpenLeg,
+  SpreadType,
+  Spread,
+  IronCondor,
+} from '../../types/positions.js';
+export type { OpenLeg, SpreadType, Spread, IronCondor };
 
 // ── Section 5: Profits and Losses ──────────────────────────
 
@@ -141,62 +139,8 @@ export interface AccountSummary {
 }
 
 // ── Grouped Positions ──────────────────────────────────────
-
-export type SpreadType =
-  | 'PUT_CREDIT_SPREAD'
-  | 'CALL_CREDIT_SPREAD'
-  | 'IRON_CONDOR';
-
-/** A grouped vertical spread (PCS or CCS) */
-export interface Spread {
-  readonly spreadType: SpreadType;
-  readonly shortLeg: OpenLeg;
-  readonly longLeg: OpenLeg;
-  readonly contracts: number;
-  readonly wingWidth: number;
-  readonly creditReceived: number;
-  readonly maxProfit: number;
-  readonly maxLoss: number;
-  readonly riskRewardRatio: number;
-  readonly breakeven: number;
-  /** Entry time from trade history, if matched */
-  readonly entryTime: string | null;
-  /** Entry net price from trade history, if matched */
-  readonly entryNetPrice: number | null;
-  /** Sum of (leg.mark * leg.qty * 100) if marks present */
-  readonly currentValue: number | null;
-  /** creditReceived - abs(currentValue) if marks present */
-  readonly openPnl: number | null;
-  /** (openPnl / maxProfit) * 100 if openPnl available */
-  readonly pctOfMaxProfit: number | null;
-  /** spotPrice - shortStrike (puts) or shortStrike - spotPrice (calls) */
-  readonly distanceToShortStrike: number | null;
-  /** distanceToShortStrike as pct of spotPrice */
-  readonly distanceToShortStrikePct: number | null;
-  /** The short leg strike closest to spot */
-  readonly nearestShortStrike: number;
-  /** Total entry commissions for this spread */
-  readonly entryCommissions: number;
-}
-
-/** Iron condor = PCS + CCS pair */
-export interface IronCondor {
-  readonly spreadType: 'IRON_CONDOR';
-  readonly putSpread: Spread;
-  readonly callSpread: Spread;
-  readonly contracts: number;
-  readonly totalCredit: number;
-  readonly maxProfit: number;
-  /** Max loss = wider wing width * 100 * contracts - totalCredit */
-  readonly maxLoss: number;
-  readonly riskRewardRatio: number;
-  readonly breakevenLow: number;
-  readonly breakevenHigh: number;
-  readonly putWingWidth: number;
-  readonly callWingWidth: number;
-  /** Entry time from trade history, if matched */
-  readonly entryTime: string | null;
-}
+// (SpreadType / Spread / IronCondor now live in src/types/positions.ts;
+//  imported + re-exported at the top of this file.)
 
 /** A long option held as a hedge */
 export interface HedgePosition {
