@@ -17,9 +17,6 @@ import { GexbotSection } from '../components/Gexbot/GexbotSection';
 
 describe('<GexbotSection>', () => {
   beforeEach(() => {
-    // Default: empty data → every child renders its own empty-state.
-    // The section's job is to compose them, not to gate on data.
-    // `mockReset` clears call history (`mockReturnValue` alone does not).
     mockUseGexbotData.mockReset();
     mockUseGexbotData.mockReturnValue({
       rows: [],
@@ -30,25 +27,29 @@ describe('<GexbotSection>', () => {
   });
 
   it('renders without crashing with marketOpen=true', () => {
-    const { container } = render(<GexbotSection marketOpen />);
+    const { container } = render(
+      <GexbotSection marketOpen spxSpot={6750} />,
+    );
     expect(container.firstChild).not.toBeNull();
   });
 
   it('renders without crashing with marketOpen=false', () => {
-    const { container } = render(<GexbotSection marketOpen={false} />);
+    const { container } = render(
+      <GexbotSection marketOpen={false} spxSpot={null} />,
+    );
     expect(container.firstChild).not.toBeNull();
   });
 
   it('shows the section label', () => {
-    render(<GexbotSection marketOpen />);
+    render(<GexbotSection marketOpen spxSpot={6750} />);
     expect(screen.getByText(/GEXBot Dealer State/i)).toBeInTheDocument();
   });
 
   it('mounts all 7 child components (drives empty-state testids)', () => {
-    render(<GexbotSection marketOpen />);
-    // Each child has a distinct *-empty testid; if any import broke,
-    // one of these would be absent.
-    expect(screen.getByTestId('strike-mover-empty')).toBeInTheDocument();
+    render(<GexbotSection marketOpen spxSpot={6750} />);
+    expect(
+      screen.getByTestId('strike-mover-ladder-empty'),
+    ).toBeInTheDocument();
     expect(
       screen.getByTestId('vix-dealer-state-badge-empty'),
     ).toBeInTheDocument();
@@ -60,8 +61,7 @@ describe('<GexbotSection>', () => {
   });
 
   it('forwards marketOpen=false to the data hook for each child', () => {
-    render(<GexbotSection marketOpen={false} />);
-    // Every call to useGexbotData should carry marketOpen=false.
+    render(<GexbotSection marketOpen={false} spxSpot={null} />);
     const calls = mockUseGexbotData.mock.calls;
     expect(calls.length).toBeGreaterThan(0);
     for (const call of calls) {
@@ -70,7 +70,9 @@ describe('<GexbotSection>', () => {
   });
 
   it('renders the trial-context footnote', () => {
-    render(<GexbotSection marketOpen />);
-    expect(screen.getByText(/GEXBot Orderflow-tier data/i)).toBeInTheDocument();
+    render(<GexbotSection marketOpen spxSpot={6750} />);
+    expect(
+      screen.getByText(/GEXBot Orderflow-tier data/i),
+    ).toBeInTheDocument();
   });
 });

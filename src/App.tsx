@@ -1219,6 +1219,7 @@ export default function StrikeCalculator() {
                       >
                         <GexbotSection
                           marketOpen={market.data.quotes?.marketOpen ?? false}
+                          spxSpot={market.data.quotes?.spx?.price ?? null}
                         />
                       </GatedSection>
                     ),
