@@ -12,15 +12,19 @@
  */
 
 import { memo, useMemo, useState, useCallback } from 'react';
-import { theme } from '../themes';
-import { formatTimeCT } from '../utils/component-formatters';
-import { getETToday } from '../utils/timezone';
-import { DateInput } from './ui/DateInput';
-import { SectionBox } from './ui';
-import { StatusBadge } from './ui';
-import { ScrubControlsCompact } from './ui/ScrubControlsCompact';
-import type { DarkPoolLevel, DarkPoolSymbol } from '../hooks/useDarkPoolLevels';
-import { DARK_POOL_SYMBOLS } from '../hooks/useDarkPoolLevels';
+import { theme } from '../../themes';
+import { formatTimeCT } from '../../utils/component-formatters';
+import { getETToday } from '../../utils/timezone';
+import { DateInput } from '../ui/DateInput';
+import { SectionBox } from '../ui';
+import { StatusBadge } from '../ui';
+import { ScrubControlsCompact } from '../ui/ScrubControlsCompact';
+import type {
+  DarkPoolLevel,
+  DarkPoolSymbol,
+} from '../../hooks/useDarkPoolLevels';
+import { DARK_POOL_SYMBOLS } from '../../hooks/useDarkPoolLevels';
+import LevelRow from './LevelRow';
 
 const DEFAULT_VISIBLE = 15;
 const MIN_VISIBLE = 5;
@@ -63,25 +67,6 @@ interface Props {
   /** Available HH:MM time slots for the trading session. */
   timeGrid?: readonly string[];
   onScrubLive?: () => void;
-}
-
-// Local DarkPool variant — kept distinct from the canonical
-// `formatPremium` in src/utils/format-magnitude.ts because dark pool
-// notional volumes regularly exceed $1B (canonical caps at M) and
-// the integer-precision M/K rounding here matches the price-ladder
-// column width budget.
-function formatPremium(value: number): string {
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `$${(abs / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `$${(abs / 1_000_000).toFixed(0)}M`;
-  if (abs >= 1_000) return `$${(abs / 1_000).toFixed(0)}K`;
-  return `$${abs.toFixed(0)}`;
-}
-
-function formatDist(level: number, price: number): string {
-  const diff = Math.round(level - price);
-  if (diff === 0) return 'ATM';
-  return `${diff > 0 ? '+' : ''}${diff}pts`;
 }
 
 const SORT_LABELS: Record<SortMode, string> = {
@@ -405,80 +390,3 @@ export default memo(function DarkPoolLevels({
     </SectionBox>
   );
 });
-
-function LevelRow({
-  level,
-  maxPremium,
-  spxPrice,
-}: Readonly<{
-  level: DarkPoolLevel;
-  maxPremium: number;
-  spxPrice: number | null;
-}>) {
-  const barWidth = Math.max((level.totalPremium / maxPremium) * 100, 2);
-  const isAtm = spxPrice != null && Math.abs(level.level - spxPrice) < 2.5;
-  const distLabel = spxPrice != null ? formatDist(level.level, spxPrice) : null;
-
-  // Color the distance label: above spot = green, below = red, at = accent
-  const distColor = (() => {
-    if (spxPrice == null) return theme.textMuted;
-    if (isAtm) return theme.accent;
-    return level.level > spxPrice ? theme.green : theme.red;
-  })();
-
-  return (
-    <tr
-      className="flex items-center gap-2 py-1.5"
-      style={isAtm ? { backgroundColor: 'rgba(255,255,255,0.04)' } : undefined}
-    >
-      {/* Index level */}
-      <td
-        className="w-[52px] shrink-0 text-right font-mono text-sm font-bold"
-        style={{ color: isAtm ? theme.accent : theme.text }}
-      >
-        {level.level}
-      </td>
-
-      {/* Distance from spot (only when spxPrice is known) */}
-      {spxPrice != null && (
-        <td
-          className="w-[46px] shrink-0 text-right font-mono text-[10px]"
-          style={{ color: distColor }}
-        >
-          {distLabel}
-        </td>
-      )}
-
-      {/* Premium bar */}
-      <td className="min-w-0 flex-1">
-        <div
-          className="h-[14px] rounded-sm transition-[width] duration-300"
-          style={{
-            width: `${barWidth}%`,
-            backgroundColor: theme.accent,
-            opacity: 0.6,
-          }}
-          aria-label={`${formatPremium(level.totalPremium)} premium`}
-        />
-      </td>
-
-      {/* Premium value */}
-      <td
-        className="w-[56px] shrink-0 text-right font-mono text-xs font-semibold"
-        style={{ color: theme.textSecondary }}
-      >
-        {formatPremium(level.totalPremium)}
-      </td>
-
-      {/* Block count */}
-      <td className="text-muted w-[52px] shrink-0 text-right font-sans text-[10px]">
-        {level.tradeCount} block{level.tradeCount !== 1 ? 's' : ''}
-      </td>
-
-      {/* Latest trade time */}
-      <td className="text-muted w-[52px] shrink-0 text-right font-mono text-[10px]">
-        {formatTimeCT(level.latestTime)}
-      </td>
-    </tr>
-  );
-}
