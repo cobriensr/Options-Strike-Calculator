@@ -22,9 +22,9 @@
  * churn (theme toggle, time picker, etc.).
  */
 
-import { useState } from 'react';
 import { useIvInputs } from './useIvInputs';
 import { useSpotInputs } from './useSpotInputs';
+import { useStrategyInputs } from './useStrategyInputs';
 import { useTheme } from './useTheme';
 import { useTimeInputs } from './useTimeInputs';
 
@@ -49,29 +49,10 @@ export function useAppState() {
   // `useTimeInputs` hook. Provides timeHour/timeMinute/timeAmPm/timezone.
   const timeInputs = useTimeInputs();
 
-  // IC & skew state
-  const [wingWidth, setWingWidth] = useState(20);
-  const [showIC, setShowIC] = useState(true);
-  const [contracts, setContracts] = useState(20);
-  const [skewPct, setSkewPct] = useState(3);
-  const [clusterMult, setClusterMult] = useState(1);
-
-  // Hedge breakeven coverage target — audit FE-MATH-009.
-  // Multiplier of spot-to-hedge-strike distance used to size hedge contracts.
-  // 1.0 = cost-neutral (hedge covers full IC loss only at 1× distance),
-  // 1.5 = default (moderate coverage), 3.0 = aggressive.
-  const [breakevenTarget, setBreakevenTarget] = useState(1.5);
-
-  // BWB state
-  const [showBWB, setShowBWB] = useState(false);
-  const [bwbNarrowWidth, setBwbNarrowWidth] = useState(20);
-  const [bwbWideMultiplier, setBwbWideMultiplier] = useState(2);
-
-  // FE-STATE-006: aggregate portfolio risk threshold as % of NLV.
-  // Warning fires when total effective max loss exceeds this % of NLV.
-  // Default 12% is mid-range of audit's 10-15% suggestion.
-  const [portfolioRiskThresholdPct, setPortfolioRiskThresholdPct] =
-    useState(12);
+  // Strategy / sizing inputs — Phase 2P-1e moved this to the
+  // dedicated `useStrategyInputs` hook. Provides IC + skew geometry,
+  // hedge breakeven target, BWB geometry, portfolio risk threshold.
+  const strategyInputs = useStrategyInputs();
 
   // Debounced spot/spx live in useSpotInputs;
   // debounced vix/iv/multiplier live in useIvInputs.
@@ -89,33 +70,9 @@ export function useAppState() {
 
     // Time — sourced from `useTimeInputs` (spread below).
 
-    // IC & skew
-    wingWidth,
-    setWingWidth,
-    showIC,
-    setShowIC,
-    contracts,
-    setContracts,
-    skewPct,
-    setSkewPct,
-    clusterMult,
-    setClusterMult,
-
-    // Hedge
-    breakevenTarget,
-    setBreakevenTarget,
-
-    // BWB
-    showBWB,
-    setShowBWB,
-    bwbNarrowWidth,
-    setBwbNarrowWidth,
-    bwbWideMultiplier,
-    setBwbWideMultiplier,
-
-    // Portfolio risk gate (FE-STATE-006)
-    portfolioRiskThresholdPct,
-    setPortfolioRiskThresholdPct,
+    // Strategy/sizing inputs — sourced from `useStrategyInputs`
+    // (IC + skew geometry, hedge breakeven, BWB, portfolio risk gate).
+    ...strategyInputs,
 
     // IV inputs + their debounced copies (ivMode, vixInput,
     // multiplier, directIVInput + dVix, dIV, dMult).
