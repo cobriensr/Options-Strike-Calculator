@@ -33,7 +33,10 @@ interface Props {
   levels: DarkPoolLevel[];
   loading: boolean;
   error: string | null;
-  updatedAt: string | null;
+  /** Epoch milliseconds of the most recent fetch, or null for "no time
+   *  yet". Rendered via the shared `formatTimeCT` helper which accepts
+   *  the numeric overload directly. */
+  fetchedAt: number | null;
   /** Reference price for ATM detection + distance label. Caller is
    *  responsible for passing a price that matches `selectedSymbol`'s
    *  scale (SPX→spx, NDX→ndx, SPY→spy, QQQ→qqq). When the price's
@@ -92,7 +95,7 @@ export default memo(function DarkPoolLevels({
   levels,
   loading,
   error,
-  updatedAt,
+  fetchedAt,
   spxPrice,
   onRefresh,
   selectedSymbol = 'SPX',
@@ -238,7 +241,7 @@ export default memo(function DarkPoolLevels({
         onScrubTo={onScrubTo}
         showLiveButton={isScrubbed || !isLive}
         onScrubLive={onScrubLive}
-        fallbackText={updatedAt ? formatTimeCT(updatedAt) : ''}
+        fallbackText={fetchedAt != null ? formatTimeCT(fetchedAt) : ''}
         prevAriaLabel="Earlier snapshot"
         nextAriaLabel="Later snapshot"
       />

@@ -31,7 +31,7 @@ describe('DarkPoolLevels: loading state', () => {
         levels={[]}
         loading={true}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -47,7 +47,7 @@ describe('DarkPoolLevels: loading state', () => {
         levels={[]}
         loading={true}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -68,7 +68,7 @@ describe('DarkPoolLevels: error state', () => {
         levels={[]}
         loading={false}
         error="Failed to load dark pool data"
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -89,7 +89,7 @@ describe('DarkPoolLevels: empty state', () => {
         levels={[]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -108,7 +108,7 @@ describe('DarkPoolLevels: empty state', () => {
         levels={levels}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -138,7 +138,7 @@ describe('DarkPoolLevels: rendering levels', () => {
         levels={levels}
         loading={false}
         error={null}
-        updatedAt="2026-04-02T16:35:00Z"
+        fetchedAt={Date.parse('2026-04-02T16:35:00Z')}
         onRefresh={noop}
       />,
     );
@@ -160,7 +160,7 @@ describe('DarkPoolLevels: rendering levels', () => {
         levels={levels}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -182,7 +182,7 @@ describe('DarkPoolLevels: premium formatting', () => {
         levels={[makeLevel({ totalPremium: 1_700_000_000 })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -195,7 +195,7 @@ describe('DarkPoolLevels: premium formatting', () => {
         levels={[makeLevel({ totalPremium: 373_000_000 })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -208,7 +208,7 @@ describe('DarkPoolLevels: premium formatting', () => {
         levels={[makeLevel({ totalPremium: 750_000 })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -227,7 +227,7 @@ describe('DarkPoolLevels: block count', () => {
         levels={[makeLevel({ tradeCount: 13 })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -240,7 +240,7 @@ describe('DarkPoolLevels: block count', () => {
         levels={[makeLevel({ tradeCount: 1 })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -263,7 +263,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
         levels={levels}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -287,7 +287,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
         levels={levels}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -309,7 +309,7 @@ describe('DarkPoolLevels: accessibility', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -324,7 +324,7 @@ describe('DarkPoolLevels: accessibility', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -339,7 +339,7 @@ describe('DarkPoolLevels: accessibility', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -355,7 +355,7 @@ describe('DarkPoolLevels: accessibility', () => {
         levels={[makeLevel(), makeLevel({ level: 6550 })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -370,7 +370,7 @@ describe('DarkPoolLevels: accessibility', () => {
         levels={[makeLevel({ totalPremium: 500_000_000 })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -389,7 +389,7 @@ describe('DarkPoolLevels: header', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -404,7 +404,7 @@ describe('DarkPoolLevels: header', () => {
         levels={[]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -417,7 +417,7 @@ describe('DarkPoolLevels: header', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -436,7 +436,7 @@ describe('DarkPoolLevels: time display', () => {
         levels={[makeLevel({ latestTime: '2026-04-02T19:30:00Z' })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -444,14 +444,14 @@ describe('DarkPoolLevels: time display', () => {
     expect(screen.getByText(/2:30/)).toBeInTheDocument();
   });
 
-  it('shows the updatedAt time in the scrubber when no scrub time is set', () => {
+  it('shows the fetchedAt time in the scrubber when no scrub time is set', () => {
     // 2026-04-02T19:35:00Z = 2:35 PM CT
     render(
       <DarkPoolLevels
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt="2026-04-02T19:35:00Z"
+        fetchedAt={Date.parse('2026-04-02T19:35:00Z')}
         onRefresh={noop}
       />,
     );
@@ -470,7 +470,7 @@ describe('DarkPoolLevels: visible count control', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -488,7 +488,7 @@ describe('DarkPoolLevels: visible count control', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -503,7 +503,7 @@ describe('DarkPoolLevels: visible count control', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -526,7 +526,7 @@ describe('DarkPoolLevels: refresh button', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -543,7 +543,7 @@ describe('DarkPoolLevels: refresh button', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={onRefresh}
       />,
     );
@@ -559,7 +559,7 @@ describe('DarkPoolLevels: refresh button', () => {
         levels={[]}
         loading={true}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -580,7 +580,7 @@ describe('DarkPoolLevels: distance from spot', () => {
         levels={[makeLevel({ level: 6610 })]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -599,7 +599,7 @@ describe('DarkPoolLevels: distance from spot', () => {
         ]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         spxPrice={6610}
         onRefresh={noop}
       />,
@@ -618,7 +618,7 @@ describe('DarkPoolLevels: distance from spot', () => {
         ]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         spxPrice={6610}
         onRefresh={noop}
       />,
@@ -641,7 +641,7 @@ describe('DarkPoolLevels: sort modes', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         spxPrice={6610}
         onRefresh={noop}
       />,
@@ -687,7 +687,7 @@ describe('DarkPoolLevels: sort modes', () => {
         ]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -710,7 +710,7 @@ describe('DarkPoolLevels: sort modes', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -737,7 +737,7 @@ describe('DarkPoolLevels: sort modes', () => {
         ]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -765,7 +765,7 @@ describe('DarkPoolLevels: sort modes', () => {
         ]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         spxPrice={6610}
         onRefresh={noop}
       />,
@@ -797,7 +797,7 @@ describe('DarkPoolLevels — symbol selector', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
       />,
     );
@@ -813,7 +813,7 @@ describe('DarkPoolLevels — symbol selector', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
         selectedSymbol="NDX"
         onSymbolChange={onSymbolChange}
@@ -849,7 +849,7 @@ describe('DarkPoolLevels — symbol selector', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
         selectedSymbol="SPX"
         onSymbolChange={onSymbolChange}
@@ -868,7 +868,7 @@ describe('DarkPoolLevels — symbol selector', () => {
         levels={[makeLevel()]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
         selectedSymbol="NDX"
         onSymbolChange={vi.fn()}
@@ -886,7 +886,7 @@ describe('DarkPoolLevels — symbol selector', () => {
         levels={[]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
         selectedSymbol="NDX"
         onSymbolChange={vi.fn()}
@@ -903,7 +903,7 @@ describe('DarkPoolLevels — symbol selector', () => {
         levels={[]}
         loading={false}
         error={null}
-        updatedAt={null}
+        fetchedAt={null}
         onRefresh={noop}
         selectedSymbol="SPX"
         onSymbolChange={vi.fn()}

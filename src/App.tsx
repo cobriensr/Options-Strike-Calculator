@@ -953,7 +953,7 @@ export default function StrikeCalculator() {
                 levels={darkPool.levels}
                 loading={darkPool.loading}
                 error={darkPool.error}
-                updatedAt={darkPool.updatedAt}
+                fetchedAt={darkPool.fetchedAt}
                 spxPrice={
                   // SPX selector is the only one with a wired
                   // reference price; pass null for NDX/SPY/QQQ

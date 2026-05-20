@@ -13,7 +13,7 @@
  * IMPORTANT: The `scrubTime` state is the hook's own internal time-scrubber
  * for historical browsing. It is NOT coupled to the app's time picker —
  * doing so caused the "panel appears frozen" bug because polling refetched
- * the same stale snapshot every cycle while the displayed `updatedAt` never
+ * the same stale snapshot every cycle while the displayed `fetchedAt` never
  * advanced. Only the user's explicit scrubPrev/scrubNext actions set scrubTime.
  */
 
@@ -55,7 +55,16 @@ export interface UseDarkPoolLevelsReturn {
   levels: DarkPoolLevel[];
   loading: boolean;
   error: string | null;
-  updatedAt: string | null;
+  /**
+   * Epoch milliseconds derived from the server's freshness timestamp.
+   * Preference order, matching the legacy `updatedAt` semantics:
+   *   1. `data.meta.lastUpdated` (MAX(updated_at) across all rows) — the
+   *      cron's actual last successful write, ISO string.
+   *   2. `data.levels[0].updatedAt` (top row's row-level timestamp) — only
+   *      used when meta is absent; ISO string from a per-row payload field.
+   * Both branches parse via Date.parse and coerce non-finite to null.
+   */
+  fetchedAt: number | null;
   refresh: () => void;
   // Symbol selector
   selectedSymbol: DarkPoolSymbol;
@@ -86,7 +95,7 @@ export function useDarkPoolLevels(
   const [levels, setLevels] = useState<DarkPoolLevel[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const mountedRef = useRef(true);
 
   // Own date state — decoupled from the app's vix.selectedDate so that
@@ -166,10 +175,16 @@ export function useDarkPoolLevels(
       failCountRef.current = 0;
       setError(null);
 
-      if (data.meta?.lastUpdated != null) {
-        setUpdatedAt(data.meta.lastUpdated);
-      } else if (data.levels.length > 0) {
-        setUpdatedAt(data.levels[0]!.updatedAt);
+      // Convert the chosen ISO timestamp into canonical epoch ms.
+      // Preference: meta.lastUpdated (cron's MAX(updated_at) — never stale
+      // when any row was written) > levels[0].updatedAt (legacy fallback
+      // when the server omits meta). Date.parse yields NaN on bad input;
+      // coerce via Number.isFinite so consumers can show a clean empty
+      // state instead of a NaN-flavored timestamp.
+      const sourceIso = data.meta?.lastUpdated ?? data.levels[0]?.updatedAt;
+      if (sourceIso != null) {
+        const parsed = Date.parse(sourceIso);
+        setFetchedAt(Number.isFinite(parsed) ? parsed : null);
       }
     } catch (err) {
       // Aborts are intentional cancellations — don't count toward the
@@ -251,7 +266,7 @@ export function useDarkPoolLevels(
     levels,
     loading,
     error,
-    updatedAt,
+    fetchedAt,
     refresh,
     selectedSymbol,
     setSelectedSymbol,

@@ -111,7 +111,7 @@ describe('useDarkPoolLevels: fetching', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('sets updatedAt from first level (legacy fallback)', async () => {
+  it('sets fetchedAt from first level (legacy fallback, epoch ms)', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -123,11 +123,13 @@ describe('useDarkPoolLevels: fetching', () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
 
     await waitFor(() =>
-      expect(result.current.updatedAt).toBe('2026-04-02T17:00:00Z'),
+      expect(result.current.fetchedAt).toBe(
+        Date.parse('2026-04-02T17:00:00Z'),
+      ),
     );
   });
 
-  // REGRESSION GUARD: the displayed updatedAt badge used to be derived
+  // REGRESSION GUARD: the displayed freshness badge used to be derived
   // from levels[0].updatedAt (the highest-premium row's timestamp). On
   // days where the top row is a big anchor level that gets its only
   // prints early and never receives more, that timestamp freezes while
@@ -151,7 +153,9 @@ describe('useDarkPoolLevels: fetching', () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
 
     await waitFor(() =>
-      expect(result.current.updatedAt).toBe('2026-04-02T19:58:00Z'),
+      expect(result.current.fetchedAt).toBe(
+        Date.parse('2026-04-02T19:58:00Z'),
+      ),
     );
   });
 });
@@ -190,10 +194,10 @@ describe('useDarkPoolLevels: polling', () => {
     expect(mockFetch.mock.calls.length).toBe(callsAfterMount);
   });
 
-  it('advances the displayed updatedAt when polling fetches fresh data', async () => {
+  it('advances the displayed fetchedAt when polling fetches fresh data', async () => {
     // REGRESSION GUARD: the previous bug was that the hook coupled to
     // `selectedTime`, so every poll refetched the same stale snapshot. Fetch
-    // counts still incremented, but the displayed `updatedAt` never changed,
+    // counts still incremented, but the displayed `fetchedAt` never changed,
     // so the panel looked frozen to the user. This test asserts that the
     // user-facing state actually advances — not just that polling fires.
     //
@@ -215,11 +219,13 @@ describe('useDarkPoolLevels: polling', () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
 
     await waitFor(() =>
-      expect(result.current.updatedAt).toBe(`${todayET}T19:58:00Z`),
+      expect(result.current.fetchedAt).toBe(
+        Date.parse(`${todayET}T19:58:00Z`),
+      ),
     );
 
     // Next poll: the cron has written a newer block. The displayed
-    // updatedAt must advance.
+    // fetchedAt must advance.
     mockFetch.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -233,7 +239,9 @@ describe('useDarkPoolLevels: polling', () => {
     });
 
     await waitFor(() =>
-      expect(result.current.updatedAt).toBe(`${todayET}T19:59:00Z`),
+      expect(result.current.fetchedAt).toBe(
+        Date.parse(`${todayET}T19:59:00Z`),
+      ),
     );
   });
 
