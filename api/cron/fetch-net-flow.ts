@@ -18,6 +18,7 @@
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   uwFetch,
   roundTo5Min,
@@ -180,6 +181,13 @@ export default withCronInstrumentation(
         results[source] = { ...result, candles: candles.length };
       } catch (err) {
         logger.warn({ err, ticker, source }, 'Failed to fetch net flow');
+        // Surface to Sentry — the prior version only logger.warned and
+        // returned a zero-candle tuple, so a 3-ticker UW outage looked
+        // like a successful run with three flat flow lines. Net flow
+        // feeds Claude analyze context; silent zeros = bad decisions.
+        Sentry.captureException(err, {
+          tags: { cron: 'fetch-net-flow', ticker, source },
+        });
         results[source] = { stored: 0, skipped: 0, candles: 0 };
       }
     }

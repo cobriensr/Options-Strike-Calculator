@@ -78,6 +78,10 @@ async function storeLatest(
   const sql = getDb();
   let stored = 0;
   let skipped = 0;
+  // Cap per-run Sentry captures so a sustained Neon hiccup that fails
+  // many adjacent timestamps doesn't flood the Sentry project.
+  let sentryCaptured = 0;
+  const SENTRY_CAPTURE_CAP = 3;
 
   for (const [ts, tick] of sampled) {
     try {
@@ -98,6 +102,18 @@ async function storeLatest(
       else skipped++;
     } catch (err) {
       logger.warn({ err, ts }, '0DTE flow insert failed');
+      // Surface to Sentry — the prior version only logger.warned,
+      // so a pattern of transient Neon errors silently inflated the
+      // skip count with zero Sentry signal. Cap captures per cron run
+      // to avoid flooding (one error usually means many adjacent
+      // timestamps will fail the same way).
+      if (sentryCaptured < SENTRY_CAPTURE_CAP) {
+        Sentry.captureException(err, {
+          tags: { cron: 'fetch-zero-dte-flow', stage: 'per_row_insert' },
+          extra: { ts: String(ts) },
+        });
+        sentryCaptured++;
+      }
       skipped++;
     }
   }

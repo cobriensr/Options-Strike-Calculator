@@ -182,6 +182,13 @@ async function storeStrikes(
     return { stored, skipped: aggregated.length - stored };
   } catch (err) {
     logger.warn({ err }, 'Batch volume_per_strike_0dte insert failed');
+    // Surface to Sentry — the prior version only logger.warned, so a
+    // Neon connection-pool error mid-batch looked like a normal
+    // "0 stored" run instead of a DB failure worth alerting on.
+    Sentry.captureException(err, {
+      tags: { cron: 'fetch-vol-0dte', stage: 'batch_insert' },
+      extra: { aggregated_count: aggregated.length },
+    });
     return { stored: 0, skipped: aggregated.length };
   }
 }
