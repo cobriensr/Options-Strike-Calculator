@@ -90,6 +90,16 @@ export const lotteryFinderQuerySchema = z.object({
   // multiplier) yields the dollar premium deployed in the trigger
   // window.
   minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  /**
+   * Phase 3 escape hatch: when 'true', server bypasses the bottom-quintile
+   * inversion-quality filter and returns all surviving fires regardless of
+   * ticker quintile. Off by default — the lottery feed is intentionally
+   * narrowed by default.
+   */
+  showAll: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
 });
 
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;

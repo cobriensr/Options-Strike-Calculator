@@ -23,9 +23,10 @@ import {
 import { lotteryFinderQuerySchema } from './_lib/validation.js';
 import {
   gammaScoreAdjustment,
-  lotteryScoreTier,
   type LotteryScoreTier,
 } from './_lib/lottery-score-weights.js';
+import { qualityAdjustedScore } from './_lib/lottery-inversion-bonus.js';
+import { tierFromQualityScore } from './_lib/lottery-tier.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import {
   MACRO_WINDOW_MS,
@@ -157,6 +158,10 @@ interface FireRow {
   ticker_ci_upper: DbNullableNumeric;
   ticker_ci_width: DbNullableNumeric;
   ticker_tier: string | null;
+  ticker_inversion_blend: DbNullableNumeric;
+  ticker_inversion_quintile: DbNullableNumeric;
+  ticker_inversion_n_21d: DbNullableNumeric;
+  ticker_inversion_n_90d: DbNullableNumeric;
 
   // Per-(date, ticker, strike, option_type, expiry) aggregate count
   // from the chain-day dedup CTE. Hot chains stay genuinely hot for
@@ -295,6 +300,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       offset,
       sort,
       minScore,
+      showAll,
     } = parsed.data;
 
     // Premium floor — entry_price * trigger_window_size * 100, in
@@ -454,6 +460,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier,
+          s.inversion_blend       AS ticker_inversion_blend,
+          s.inversion_quintile    AS ticker_inversion_quintile,
+          s.inversion_n_21d       AS ticker_inversion_n_21d,
+          s.inversion_n_90d       AS ticker_inversion_n_90d,
           f.cum_ncp_at_fire AS fire_time_cum_ncp,
           f.cum_npp_at_fire AS fire_time_cum_npp
         FROM filtered f
@@ -529,6 +539,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier,
+          s.inversion_blend       AS ticker_inversion_blend,
+          s.inversion_quintile    AS ticker_inversion_quintile,
+          s.inversion_n_21d       AS ticker_inversion_n_21d,
+          s.inversion_n_90d       AS ticker_inversion_n_90d,
           f.cum_ncp_at_fire AS fire_time_cum_ncp,
           f.cum_npp_at_fire AS fire_time_cum_npp
         FROM filtered f
@@ -603,6 +617,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier,
+          s.inversion_blend       AS ticker_inversion_blend,
+          s.inversion_quintile    AS ticker_inversion_quintile,
+          s.inversion_n_21d       AS ticker_inversion_n_21d,
+          s.inversion_n_90d       AS ticker_inversion_n_90d,
           f.cum_ncp_at_fire AS fire_time_cum_ncp,
           f.cum_npp_at_fire AS fire_time_cum_npp
         FROM filtered f
@@ -892,6 +910,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           s.ci_upper AS ticker_ci_upper,
           s.ci_width AS ticker_ci_width,
           s.tier AS ticker_tier,
+          s.inversion_blend       AS ticker_inversion_blend,
+          s.inversion_quintile    AS ticker_inversion_quintile,
+          s.inversion_n_21d       AS ticker_inversion_n_21d,
+          s.inversion_n_90d       AS ticker_inversion_n_90d,
           f.cum_ncp_at_fire AS fire_time_cum_ncp,
           f.cum_npp_at_fire AS fire_time_cum_npp
         FROM filtered f
@@ -1085,7 +1107,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // tier to 'tier3' when the row was flagged counter-trend so the
       // UI badge + tier filters agree with the demoted semantics.
       const directionGated = r.direction_gated === true;
-      const rawTier: LotteryScoreTier = lotteryScoreTier(score);
+      // Phase 3 inversion-quality filter: tier is derived from
+      // qualityAdjustedScore (combined_score + per-ticker inversion
+      // bonus) using V2 cutoffs (Tier 1 >= 24 / Tier 2 >= 22 from the
+      // Phase 2 simulation). Raw `score` stays as the combined_score
+      // value; `qualityAdjustedScore` is exposed as an additional
+      // field on the row.
+      const inversionQuintile =
+        r.ticker_inversion_quintile != null
+          ? Number(r.ticker_inversion_quintile)
+          : null;
+      const qas = qualityAdjustedScore(score ?? 0, inversionQuintile);
+      const rawTier: LotteryScoreTier = tierFromQualityScore(qas);
       const tier: LotteryScoreTier = directionGated ? 'tier3' : rawTier;
       const tickerStats =
         r.ticker_n_fires == null
@@ -1155,6 +1188,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ? null
             : (r.takeit_top_features as Record<string, unknown>),
         takeitModelVersion: r.takeit_model_version,
+        // Phase 3 inversion-quality filter outputs. `qualityAdjustedScore`
+        // is `score + inversionQualityBonus(quintile)`; `scoreTier` above
+        // is derived from it. The four `inversion*` fields surface the
+        // raw refit columns from lottery_ticker_stats so the UI can show
+        // the per-ticker quintile pill + sample-size hover.
+        qualityAdjustedScore: qas,
+        inversionQuintile,
+        inversionBlend:
+          r.ticker_inversion_blend != null
+            ? Number(r.ticker_inversion_blend)
+            : null,
+        inversionN21d:
+          r.ticker_inversion_n_21d != null
+            ? Number(r.ticker_inversion_n_21d)
+            : null,
+        inversionN90d:
+          r.ticker_inversion_n_90d != null
+            ? Number(r.ticker_inversion_n_90d)
+            : null,
         scoreTier: tier,
         directionGated,
         forecastHighPeakPct: forecastForTier(tier),
@@ -1280,11 +1332,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
     };
 
-    const fires = rows.map(toLotteryFire);
+    // Phase 3 inversion-quality filter: drop fires whose ticker is in
+    // inversion quintile 1 or 2 unless ?showAll=true is passed. NULL
+    // quintile (cold-start tickers) is never filtered. The filter is
+    // applied post-SELECT in JS — the SQL COUNT(*) `total` does NOT
+    // include this filter, so `hasMore` is recomputed from the
+    // post-filter page length to keep prev/next controls honest at
+    // the page boundary (a best-effort heuristic; the worst-case
+    // user impact is one redundant "next" click that returns an
+    // empty page when the next page is entirely Q1/Q2).
+    const passesQuintileFilter = (
+      f: ReturnType<typeof toLotteryFire>,
+    ): boolean =>
+      showAll || f.inversionQuintile == null || f.inversionQuintile > 2;
+    const fires = rows.map(toLotteryFire).filter(passesQuintileFilter);
     // Pinned reignited rows ride alongside the page slice, independent
     // of pagination. The SQL already orders by trigger_time_ct DESC, so
     // the array is freshest-first ready for ReignitionSection.
-    const reignitedFires = reignitedRows.map(toLotteryFire);
+    const reignitedFires = reignitedRows
+      .map(toLotteryFire)
+      .filter(passesQuintileFilter);
 
     // No CDN cache — the feed is an alert surface and the UI polls
     // every 30s. Caching at the edge means most polls land on a stale

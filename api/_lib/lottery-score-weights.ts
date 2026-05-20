@@ -69,6 +69,13 @@ export const LOTTERY_TIER_THRESHOLDS = {
   tier2MinScore: 12,
 } as const;
 
+/**
+ * @deprecated Use `tierFromQualityScore` from './lottery-tier.js' for
+ * new call sites. This function still tiers on bare combined_score
+ * (Tier 1 >= 18 / Tier 2 >= 12), NOT on quality_adjusted_score
+ * (Tier 1 >= 24 / Tier 2 >= 22 per Phase 2 cutoffs). Kept exported
+ * for any external caller until they migrate.
+ */
 export function lotteryScoreTier(score: number | null): LotteryScoreTier {
   if (score == null) return 'tier3';
   if (score >= LOTTERY_TIER_THRESHOLDS.tier1MinScore) return 'tier1';

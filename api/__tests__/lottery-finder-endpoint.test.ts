@@ -112,6 +112,15 @@ const ROW = {
   ticker_ci_upper: 68.4,
   ticker_ci_width: 2.0,
   ticker_tier: 'reliable',
+  // Phase 3 inversion-quality fields (refit columns on
+  // lottery_ticker_stats, populated by Phase 2A's nightly job).
+  // Default ROW gets quintile 5 (top performer, +5 bonus) so the
+  // baseline `score: 20` keeps qualityAdjustedScore at 25 → tier1
+  // under the V2 cutoffs.
+  ticker_inversion_blend: '0.42',
+  ticker_inversion_quintile: 5,
+  ticker_inversion_n_21d: 18,
+  ticker_inversion_n_90d: 64,
   // realized_flow_inversion_pct (4th exit policy) — null when not yet
   // enriched, mirroring the other realized_* columns above.
   realized_flow_inversion_pct: null,
@@ -1411,6 +1420,182 @@ describe('lottery-finder endpoint', () => {
     expect(body.fires[0]!.roundTripScoreDeduct).toBe(-2);
     expect(body.fires[0]!.fireCountScoreAdjustment).toBe(1);
     expect(body.fires[0]!.score).toBe(19);
+  });
+
+  // ============================================================
+  // Phase 3 — inversion-quality filter
+  // ============================================================
+  //
+  // Default behaviour: suppress fires whose ticker is in inversion
+  // quintile 1 or 2. `?showAll=true` bypasses the filter. NULL quintile
+  // (cold-start tickers without 21-day inversion history) is never
+  // filtered. `qualityAdjustedScore` = combined_score + bonus(quintile)
+  // and `scoreTier` is derived from it under the V2 cutoffs
+  // (Tier 1 >= 24, Tier 2 >= 22).
+  describe('inversion-quality filter', () => {
+    const rowWithQuintile = (
+      id: number,
+      ticker: string,
+      quintile: number | null,
+    ): typeof ROW => ({
+      ...ROW,
+      id,
+      underlying_symbol: ticker,
+      option_chain_id: `${ticker}260501C01175000`,
+      ticker_inversion_quintile: quintile as never,
+    });
+
+    it('suppresses Q1 and Q2 by default; Q3 + null pass through', async () => {
+      const rows = [
+        rowWithQuintile(1, 'AAA', 1),
+        rowWithQuintile(2, 'BBB', 2),
+        rowWithQuintile(3, 'CCC', 3),
+        rowWithQuintile(4, 'DDD', null),
+      ];
+      mockSql.mockResolvedValueOnce(rows).mockResolvedValueOnce([{ total: 4 }]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const body = res._json as {
+        count: number;
+        fires: Array<{ id: number; underlyingSymbol: string }>;
+      };
+      const tickers = body.fires.map((f) => f.underlyingSymbol).sort();
+      expect(tickers).toEqual(['CCC', 'DDD']);
+      expect(body.count).toBe(2);
+    });
+
+    it('?showAll=true returns all rows including Q1 and Q2', async () => {
+      const rows = [
+        rowWithQuintile(1, 'AAA', 1),
+        rowWithQuintile(2, 'BBB', 2),
+        rowWithQuintile(3, 'CCC', 3),
+        rowWithQuintile(4, 'DDD', null),
+      ];
+      mockSql.mockResolvedValueOnce(rows).mockResolvedValueOnce([{ total: 4 }]);
+
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-01', showAll: 'true' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const body = res._json as {
+        count: number;
+        fires: Array<{ id: number; underlyingSymbol: string }>;
+      };
+      expect(body.fires.map((f) => f.underlyingSymbol).sort()).toEqual([
+        'AAA',
+        'BBB',
+        'CCC',
+        'DDD',
+      ]);
+      expect(body.count).toBe(4);
+    });
+
+    it('NULL quintile is never filtered (cold-start protection)', async () => {
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(99, 'NEWT', null)])
+        .mockResolvedValueOnce([{ total: 1 }]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const body = res._json as {
+        count: number;
+        fires: Array<{
+          underlyingSymbol: string;
+          inversionQuintile: number | null;
+        }>;
+      };
+      expect(body.count).toBe(1);
+      expect(body.fires[0]).toMatchObject({
+        underlyingSymbol: 'NEWT',
+        inversionQuintile: null,
+      });
+    });
+
+    it('qualityAdjustedScore = score + inversionQualityBonus(quintile)', async () => {
+      // score = 20, quintile = 4 (+3) → qas = 23 → tier2
+      const row = {
+        ...ROW,
+        score: 20,
+        ticker_inversion_quintile: 4,
+      };
+      mockSql
+        .mockResolvedValueOnce([row])
+        .mockResolvedValueOnce([{ total: 1 }]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const body = res._json as {
+        fires: Array<{
+          score: number;
+          qualityAdjustedScore: number;
+          inversionQuintile: number;
+          scoreTier: string;
+        }>;
+      };
+      expect(body.fires[0]).toMatchObject({
+        score: 20,
+        qualityAdjustedScore: 23,
+        inversionQuintile: 4,
+        scoreTier: 'tier2',
+      });
+    });
+
+    it('scoreTier reflects V2 cutoffs: 24→tier1, 22→tier2, 21→tier3', async () => {
+      // Use quintile 3 (bonus 0) so qas == score for direct cutoff verification.
+      const t1 = { ...ROW, id: 101, score: 24, ticker_inversion_quintile: 3 };
+      const t2 = { ...ROW, id: 102, score: 22, ticker_inversion_quintile: 3 };
+      const t3 = { ...ROW, id: 103, score: 21, ticker_inversion_quintile: 3 };
+      mockSql
+        .mockResolvedValueOnce([t1, t2, t3])
+        .mockResolvedValueOnce([{ total: 3 }]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const body = res._json as {
+        fires: Array<{ id: number; scoreTier: string }>;
+      };
+      const byId = new Map(body.fires.map((f) => [f.id, f.scoreTier]));
+      expect(byId.get(101)).toBe('tier1');
+      expect(byId.get(102)).toBe('tier2');
+      expect(byId.get(103)).toBe('tier3');
+    });
+
+    it('exposes inversionBlend, inversionN21d, inversionN90d on the row', async () => {
+      mockSql
+        .mockResolvedValueOnce([ROW])
+        .mockResolvedValueOnce([{ total: 1 }]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const body = res._json as {
+        fires: Array<{
+          inversionBlend: number | null;
+          inversionN21d: number | null;
+          inversionN90d: number | null;
+          inversionQuintile: number | null;
+        }>;
+      };
+      expect(body.fires[0]).toMatchObject({
+        inversionBlend: 0.42,
+        inversionN21d: 18,
+        inversionN90d: 64,
+        inversionQuintile: 5,
+      });
+    });
   });
 });
 
