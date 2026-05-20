@@ -47,3 +47,37 @@
 **/__pycache__/
 **/.venv/
 **/.pytest_cache/
+
+# Claude Code plugin installs — ~800 MB of locally-installed skills,
+# resources, and references that don't belong on Vercel. Mirrors the
+# pattern in .gitignore so `vercel deploy` from the CLI ships only
+# what git would ship: the 4 committed SKILL.md files plus the
+# periscope/references/** tree (loaded via `includeFiles` for the
+# api/periscope-auto-playbook.ts function).
+#
+# Git-triggered deploys never saw this bloat — Vercel clones the
+# tracked git tree directly. CLI deploys upload the local working
+# tree and need this filter explicitly.
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/charm-pressure/
+!/.claude/skills/delta-pressure/
+!/.claude/skills/gamma/
+!/.claude/skills/periscope/
+/.claude/skills/charm-pressure/*
+/.claude/skills/delta-pressure/*
+/.claude/skills/gamma/*
+/.claude/skills/periscope/*
+!/.claude/skills/charm-pressure/SKILL.md
+!/.claude/skills/delta-pressure/SKILL.md
+!/.claude/skills/gamma/SKILL.md
+!/.claude/skills/periscope/SKILL.md
+!/.claude/skills/periscope/references/
+!/.claude/skills/periscope/references/**
+
+# Test coverage reports — local + CI only
+/coverage/
+
+# Local frontend build output — Vercel generates this fresh from src/
+/dist/
