@@ -1,27 +1,55 @@
 /**
- * Compact magnitude formatters for the Greek Heatmap section.
+ * Compact magnitude formatters — the canonical home for K/M/B helpers
+ * across the app.
  *
- * Three closely-related conventions:
+ * Several closely-related conventions live here. Pairs that look similar
+ * (e.g. `formatPremium` vs `formatPremiumShort`) are intentionally
+ * distinct: input scale, billions branch, and null/zero handling differ
+ * subtly enough that consumers can't be swapped without re-checking the
+ * exact column the formatter feeds.
  *
  * - `formatSignedShort` — Greek-style values. Always sign-prefixed
  *   (+/-), K/M/B suffixes, no currency. Zero renders as plain "0".
  *   Used by GreekHeatmapTable cells (gamma/charm/vanna) and the
  *   TopStrikesCallout chip labels.
  *
- * - `formatPremiumShort` — Premium-style $ values. Leading "$" and
- *   negative gets a "-" prefix; positives have no "+" since "$1.7M"
- *   already reads positive. Used by NetFlowRow.
+ * - `formatPremiumShort` — Premium-style $ values with billions branch
+ *   and two-decimal M/B. Leading "$" and negative gets a "-" prefix;
+ *   positives have no "+". Used by NetFlowRow.
+ *
+ * - `formatPremium` — Options-flow premium formatter. Positive-only
+ *   (negative / non-finite coalesce to "$0"), no billions branch,
+ *   single-decimal M / parameterized K decimals. Consumed by the
+ *   options-flow tables via `flow-formatters` re-export.
+ *
+ * - `formatGex` — Signed dollar GEX with K/M/B. Null/non-finite render
+ *   as em dash. Consumed via `flow-formatters` re-export.
  *
  * - `formatNetGexShort` — Aggregate-GEX values where the input is
  *   already in thousands of dollars (the `netGexK` snapshot field).
  *   Always sign-prefixed, "$" suffix, K/M/B scaling against the
  *   K-scaled input. Used by RegimeChip.
  *
+ * - `formatOI` — Open-interest compact formatter. Unsigned, K suffix
+ *   at >= 1000. Used by the Pin Risk surface.
+ *
  * Centralized here because every previous copy of these helpers was
  * subtly different (one omitted "+" sign, another emitted "+0" for
  * zero, a third divided differently because of the netGexK scale)
  * and the divergence was a real audit finding.
  */
+
+// ============================================================
+// SCALE THRESHOLDS — explicit names so consumers and tests can refer
+// to the same boundaries the formatters use internally.
+// ============================================================
+
+/** Lowest "billion" boundary — used by `formatGex`. */
+export const BILLION = 1_000_000_000;
+/** Lowest "million" boundary — used by `formatPremium`, `formatGex`. */
+export const MILLION = 1_000_000;
+/** Lowest "thousand" boundary — used by `formatPremium`, `formatGex`. */
+export const THOUSAND = 1_000;
 
 function divideByScale(abs: number, scale: number, decimals: number): string {
   return (abs / scale).toFixed(decimals);
@@ -70,4 +98,55 @@ export function formatNetGexShort(netGexK: number): string {
 export function formatOI(oi: number): string {
   if (oi >= 1000) return (oi / 1000).toFixed(1) + 'K';
   return String(oi);
+}
+
+// ============================================================
+// OPTIONS-FLOW CURRENCY (PREMIUM)
+// ============================================================
+
+export interface FormatPremiumOptions {
+  /**
+   * Decimals to keep in the `$NK` branch. Whale-flow tables prefer `0`
+   * (`"$850K"`) for column density; intraday flow prefers `1` (`"$850.0K"`)
+   * for finer-grained reads on smaller premium prints. Defaults to `1` —
+   * the more common case across the codebase.
+   */
+  kDigits?: 0 | 1;
+}
+
+/**
+ * Compact dollar premium: `"$206.5M"`, `"$1.4M"`, `"$850K"`, `"$0"`.
+ * Negative or non-finite inputs render as `"$0"` — premium magnitudes are
+ * always non-negative in the underlying flow data, so a negative value
+ * indicates upstream corruption that's safer to coalesce than to render.
+ */
+export function formatPremium(
+  value: number,
+  opts: FormatPremiumOptions = {},
+): string {
+  const { kDigits = 1 } = opts;
+  if (!Number.isFinite(value) || value <= 0) return '$0';
+  if (value >= MILLION) return `$${(value / MILLION).toFixed(1)}M`;
+  if (value >= THOUSAND) return `$${(value / THOUSAND).toFixed(kDigits)}K`;
+  return `$${Math.round(value)}`;
+}
+
+// ============================================================
+// SIGNED DEALER GAMMA EXPOSURE (GEX)
+// ============================================================
+
+/**
+ * Compact signed-dollar formatter for dealer GEX exposure. Matches the
+ * sign-leading convention used in `GexTarget`: `"+$120M"`, `"-$80M"`.
+ * The leading `+` / `-` is the text affordance so color is never the
+ * sole signal. Null / non-finite renders as `'—'`.
+ */
+export function formatGex(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  const abs = Math.abs(value);
+  const sign = value >= 0 ? '+' : '-';
+  if (abs >= BILLION) return `${sign}$${(abs / BILLION).toFixed(1)}B`;
+  if (abs >= MILLION) return `${sign}$${(abs / MILLION).toFixed(0)}M`;
+  if (abs >= THOUSAND) return `${sign}$${(abs / THOUSAND).toFixed(0)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
 }

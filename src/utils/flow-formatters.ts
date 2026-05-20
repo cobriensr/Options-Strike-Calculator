@@ -14,6 +14,11 @@
  * we parameterize via an options object; where it was cosmetic we
  * collapsed onto a single canonical form.
  *
+ * `formatPremium`, `formatGex`, and the `BILLION` / `MILLION` / `THOUSAND`
+ * scale constants now live in `format-magnitude.ts` (the canonical home
+ * for K/M/B helpers). They're re-exported below so existing flow-formatter
+ * imports continue to work without change.
+ *
  * Conventions:
  *   - Null / non-finite inputs → `'—'` (em dash) for displayed values that
  *     could legitimately be missing data, and `'$0'` only for `formatPremium`
@@ -23,48 +28,14 @@
  *     readers see the sign without depending on color.
  */
 
-// ============================================================
-// SCALE THRESHOLDS — explicit names so consumers and tests can refer to
-// the same boundaries the formatters use internally.
-// ============================================================
-
-/** Lowest "billion" boundary — used by `formatGex`. */
-export const BILLION = 1_000_000_000;
-/** Lowest "million" boundary — used by `formatPremium`, `formatGex`. */
-export const MILLION = 1_000_000;
-/** Lowest "thousand" boundary — used by `formatPremium`, `formatGex`. */
-export const THOUSAND = 1_000;
-
-// ============================================================
-// CURRENCY: PREMIUM (positive-only, no billions branch)
-// ============================================================
-
-export interface FormatPremiumOptions {
-  /**
-   * Decimals to keep in the `$NK` branch. Whale-flow tables prefer `0`
-   * (`"$850K"`) for column density; intraday flow prefers `1` (`"$850.0K"`)
-   * for finer-grained reads on smaller premium prints. Defaults to `1` —
-   * the more common case across the codebase.
-   */
-  kDigits?: 0 | 1;
-}
-
-/**
- * Compact dollar premium: `"$206.5M"`, `"$1.4M"`, `"$850K"`, `"$0"`.
- * Negative or non-finite inputs render as `"$0"` — premium magnitudes are
- * always non-negative in the underlying flow data, so a negative value
- * indicates upstream corruption that's safer to coalesce than to render.
- */
-export function formatPremium(
-  value: number,
-  opts: FormatPremiumOptions = {},
-): string {
-  const { kDigits = 1 } = opts;
-  if (!Number.isFinite(value) || value <= 0) return '$0';
-  if (value >= MILLION) return `$${(value / MILLION).toFixed(1)}M`;
-  if (value >= THOUSAND) return `$${(value / THOUSAND).toFixed(kDigits)}K`;
-  return `$${Math.round(value)}`;
-}
+export {
+  BILLION,
+  MILLION,
+  THOUSAND,
+  formatGex,
+  formatPremium,
+  type FormatPremiumOptions,
+} from './format-magnitude.js';
 
 // ============================================================
 // PERCENT
@@ -104,26 +75,6 @@ export function formatPct(
 export function formatAskPct(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return '—';
   return `${(value * 100).toFixed(1)}%`;
-}
-
-// ============================================================
-// GEX (signed dealer gamma exposure dollars)
-// ============================================================
-
-/**
- * Compact signed-dollar formatter for dealer GEX exposure. Matches the
- * sign-leading convention used in `GexTarget`: `"+$120M"`, `"-$80M"`.
- * The leading `+` / `-` is the text affordance so color is never the
- * sole signal. Null / non-finite renders as `'—'`.
- */
-export function formatGex(value: number | null): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  const abs = Math.abs(value);
-  const sign = value >= 0 ? '+' : '-';
-  if (abs >= BILLION) return `${sign}$${(abs / BILLION).toFixed(1)}B`;
-  if (abs >= MILLION) return `${sign}$${(abs / MILLION).toFixed(0)}M`;
-  if (abs >= THOUSAND) return `${sign}$${(abs / THOUSAND).toFixed(0)}K`;
-  return `${sign}$${abs.toFixed(0)}`;
 }
 
 // ============================================================
