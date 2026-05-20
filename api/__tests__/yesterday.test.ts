@@ -14,10 +14,7 @@ vi.mock('../_lib/guest-auth.js', () => ({
 }));
 
 import handler from '../yesterday.js';
-import {
-  schwabFetch,
-  isMarketOpen,
-} from '../_lib/api-helpers.js';
+import { schwabFetch, isMarketOpen } from '../_lib/api-helpers.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
 
 function makeDailyCandle(

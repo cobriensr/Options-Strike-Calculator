@@ -20,7 +20,9 @@ describe('useIvInputs', () => {
       const { result } = renderHook(() => useIvInputs());
       expect(result.current.ivMode).toBe(IV_MODES.VIX);
       expect(result.current.vixInput).toBe('19');
-      expect(result.current.multiplier).toBe(String(DEFAULTS.IV_PREMIUM_FACTOR));
+      expect(result.current.multiplier).toBe(
+        String(DEFAULTS.IV_PREMIUM_FACTOR),
+      );
       expect(result.current.directIVInput).toBe('');
     });
   });

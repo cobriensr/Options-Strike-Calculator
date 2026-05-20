@@ -19,7 +19,9 @@ vi.mock('../_lib/schwab.js', () => ({
 
 const mockCaptureException = vi.fn();
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: (...args: unknown[]) => mockCaptureException(...args) },
+  Sentry: {
+    captureException: (...args: unknown[]) => mockCaptureException(...args),
+  },
 }));
 
 import handler from '../health.js';

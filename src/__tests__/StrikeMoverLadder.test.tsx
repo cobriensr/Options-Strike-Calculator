@@ -29,7 +29,9 @@ describe('<StrikeMoverLadder>', () => {
       freshestAt: null,
     });
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
-    expect(screen.getByTestId('strike-mover-ladder-loading')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('strike-mover-ladder-loading'),
+    ).toBeInTheDocument();
   });
 
   it('renders error tile when hook reports an error', () => {
@@ -96,10 +98,14 @@ describe('<StrikeMoverLadder>', () => {
     });
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
     // Default = GEX → shows strike 6750.
-    expect(screen.getByTestId('strike-mover-ladder-row-6750')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('strike-mover-ladder-row-6750'),
+    ).toBeInTheDocument();
     // Switch to γ tab → shows strike 6700.
     fireEvent.click(screen.getByRole('button', { name: /^γ$/ }));
-    expect(screen.getByTestId('strike-mover-ladder-row-6700')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('strike-mover-ladder-row-6700'),
+    ).toBeInTheDocument();
     // Also assert the previous tab's row (6750 / GEX) is no longer rendered.
     expect(
       screen.queryByTestId('strike-mover-ladder-row-6750'),
@@ -125,7 +131,9 @@ describe('<StrikeMoverLadder>', () => {
       freshestAt: '2026-05-19T17:00:00Z',
     });
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
-    expect(screen.getByTestId('strike-mover-ladder-spot-divider')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('strike-mover-ladder-spot-divider'),
+    ).toBeInTheDocument();
   });
 
   it('falls back gracefully when spxSpot is null and no winners exist', () => {

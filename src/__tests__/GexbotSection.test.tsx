@@ -27,9 +27,7 @@ describe('<GexbotSection>', () => {
   });
 
   it('renders without crashing with marketOpen=true', () => {
-    const { container } = render(
-      <GexbotSection marketOpen spxSpot={6750} />,
-    );
+    const { container } = render(<GexbotSection marketOpen spxSpot={6750} />);
     expect(container.firstChild).not.toBeNull();
   });
 
@@ -47,9 +45,7 @@ describe('<GexbotSection>', () => {
 
   it('mounts all 7 child components (drives empty-state testids)', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
-    expect(
-      screen.getByTestId('strike-mover-ladder-empty'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
     expect(
       screen.getByTestId('vix-dealer-state-badge-empty'),
     ).toBeInTheDocument();
@@ -71,8 +67,6 @@ describe('<GexbotSection>', () => {
 
   it('renders the trial-context footnote', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
-    expect(
-      screen.getByText(/GEXBot Orderflow-tier data/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/GEXBot Orderflow-tier data/i)).toBeInTheDocument();
   });
 });

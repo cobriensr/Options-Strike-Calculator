@@ -296,8 +296,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // pill renders client-side, recomputed in SQL so the gate can use
       // it in WHERE without redundant client filtering.
       const rawRows = await withDbRetry(
-        () => optionType
-        ? sql`
+        () =>
+          optionType
+            ? sql`
             WITH base AS (
               SELECT a.*,
                 COALESCE(a.underlying_price, spx.close)::numeric AS effective_spot
@@ -353,7 +354,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ORDER BY fired_at DESC
             LIMIT ${MAX_ROWS}
           `
-        : sql`
+            : sql`
             WITH base AS (
               SELECT a.*,
                 COALESCE(a.underlying_price, spx.close)::numeric AS effective_spot

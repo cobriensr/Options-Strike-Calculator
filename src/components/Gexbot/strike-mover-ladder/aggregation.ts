@@ -115,7 +115,7 @@ export function buildLadderRows(
       }
       maxKeyInBucket = key;
     } else {
-      merged.set(key, [...bins.get(key) ?? []]);
+      merged.set(key, [...(bins.get(key) ?? [])]);
       activeKey = key;
       maxKeyInBucket = key;
     }
@@ -185,9 +185,7 @@ export function sortAndCapRows(
     (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
   );
   floors.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
-  atm.sort(
-    (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
-  );
+  atm.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
   const trimmedCeilings = ceilings.slice(0, MAX_ROWS_PER_SIDE);
   const trimmedFloors = floors.slice(0, MAX_ROWS_PER_SIDE);
   // Cap ATM at the same per-side budget. With ATM_BAND_BPS = 25 (±0.25%

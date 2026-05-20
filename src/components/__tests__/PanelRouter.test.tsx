@@ -11,9 +11,7 @@ import type { PanelGroup } from '../../constants/panel-registry';
  * mirroring the way App.tsx will use it in production.
  */
 
-function mkPanelMap(
-  ids: readonly string[],
-): Map<string, () => ReactNode> {
+function mkPanelMap(ids: readonly string[]): Map<string, () => ReactNode> {
   const map = new Map<string, () => ReactNode>();
   for (const id of ids) {
     map.set(id, () => <div data-testid={`panel-${id}`}>{id}</div>);

@@ -18,7 +18,10 @@
 import { memo, useMemo, useState } from 'react';
 
 import { useGexbotData } from '../../hooks/useGexbotData';
-import { buildLadderRows, sortAndCapRows } from './strike-mover-ladder/aggregation';
+import {
+  buildLadderRows,
+  sortAndCapRows,
+} from './strike-mover-ladder/aggregation';
 import { classifyRow } from './strike-mover-ladder/colors';
 import {
   CATEGORY_LABEL,
@@ -34,7 +37,13 @@ interface StrikeMoverLadderProps {
 }
 
 const SPEC = { view: 'maxchange-winners' as const };
-const TABS: readonly CategoryTab[] = ['gex', 'gamma', 'delta', 'vanna', 'charm'];
+const TABS: readonly CategoryTab[] = [
+  'gex',
+  'gamma',
+  'delta',
+  'vanna',
+  'charm',
+];
 
 function formatChange(value: number): string {
   const abs = Math.abs(value);
@@ -52,7 +61,10 @@ function formatSpot(spot: number): string {
   return `${sign}${Number.parseFloat(abs.toFixed(2)).toString()}`;
 }
 
-function StrikeMoverLadderInner({ marketOpen, spxSpot }: StrikeMoverLadderProps) {
+function StrikeMoverLadderInner({
+  marketOpen,
+  spxSpot,
+}: StrikeMoverLadderProps) {
   const { rows: rawRows, loading, error } = useGexbotData(SPEC, marketOpen);
   const [activeTab, setActiveTab] = useState<CategoryTab>('gex');
 
@@ -63,8 +75,7 @@ function StrikeMoverLadderInner({ marketOpen, spxSpot }: StrikeMoverLadderProps)
   }, [rawRows, activeTab, spxSpot]);
 
   const maxAbsChange = useMemo(
-    () =>
-      visibleRows.reduce((m, r) => Math.max(m, Math.abs(r.change)), 0),
+    () => visibleRows.reduce((m, r) => Math.max(m, Math.abs(r.change)), 0),
     [visibleRows],
   );
 
@@ -165,9 +176,7 @@ const LadderBody = memo(function LadderBody({
     <div className="px-3 py-2">
       {rows.map((row, idx) => (
         <div key={row.strike}>
-          {idx === dividerIdx && (
-            <SpotDivider spot={spot} />
-          )}
+          {idx === dividerIdx && <SpotDivider spot={spot} />}
           <LadderRow row={row} spot={spot} maxAbsChange={maxAbsChange} />
         </div>
       ))}
@@ -221,9 +230,7 @@ const LadderRow = memo(function LadderRow({
       <span className="w-12 font-medium">{row.strike}</span>
 
       {classified.marker === '◈ ATM' && (
-        <span className="text-[10px] font-semibold tracking-wide">
-          ◈ ATM
-        </span>
+        <span className="text-[10px] font-semibold tracking-wide">◈ ATM</span>
       )}
 
       <span className="text-tertiary flex gap-1">

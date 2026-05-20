@@ -112,7 +112,12 @@ function loadPeriscopeReferences(): string | null {
   _periscopeReferencesLoaded = true;
   try {
     _periscopeReferencesCache = readFileSync(
-      join(SKILLS_DIR, 'periscope', 'references', 'vol-signals-mm-heuristics.md'),
+      join(
+        SKILLS_DIR,
+        'periscope',
+        'references',
+        'vol-signals-mm-heuristics.md',
+      ),
       'utf8',
     );
   } catch (err) {
