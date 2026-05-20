@@ -13,20 +13,28 @@ const TIME_FORMATTER_CT = new Intl.DateTimeFormat('en-US', {
 });
 
 /**
- * Format an ISO timestamp as a Central Time wall-clock time
- * (e.g. "2:45 PM"). Returns the optional fallback (default '') for
- * null/undefined input or unparseable strings.
+ * Format a timestamp as a Central Time wall-clock time (e.g. "2:45 PM").
+ *
+ * Accepts either an ISO 8601 string OR a numeric epoch in milliseconds.
+ * The number overload exists because hook freshness state is canonically
+ * `fetchedAt: number | null` (epoch ms) — see useFetchedData. Returns
+ * the optional fallback (default '') for null/undefined/empty input or
+ * unparseable strings, and for non-finite numbers.
  *
  * Use this anywhere a component currently rolls its own
  * `new Date(iso).toLocaleTimeString('en-US', { ..., timeZone: 'America/Chicago' })`.
  */
 export function formatTimeCT(
-  iso: string | null | undefined,
+  value: string | number | null | undefined,
   options?: { fallback?: string },
 ): string {
   const fallback = options?.fallback ?? '';
-  if (!iso) return fallback;
-  const d = new Date(iso);
+  if (value == null || value === '') return fallback;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return fallback;
+    return TIME_FORMATTER_CT.format(new Date(value));
+  }
+  const d = new Date(value);
   if (Number.isNaN(d.getTime())) return fallback;
   return TIME_FORMATTER_CT.format(d);
 }

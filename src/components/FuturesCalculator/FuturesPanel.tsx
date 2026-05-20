@@ -24,11 +24,10 @@ import FuturesGrid from './FuturesGrid';
 import VixTermStructure from './VixTermStructure';
 import FuturesCalculator from '.';
 
-function formatUpdatedAt(iso: string | null): string | null {
-  if (!iso) return null;
+function formatFetchedAt(epochMs: number | null): string | null {
+  if (epochMs == null || !Number.isFinite(epochMs)) return null;
   try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString('en-US', {
+    return new Date(epochMs).toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
       timeZone: 'America/Chicago',
@@ -109,14 +108,14 @@ export default function FuturesPanel({
     vxTermSpread,
     vxTermStructure,
     esSpxBasis,
-    updatedAt,
+    fetchedAt,
     oldestTs,
     loading,
     error,
     refresh,
   } = useFuturesData(at, marketOpen);
 
-  const timeLabel = formatUpdatedAt(updatedAt);
+  const timeLabel = formatFetchedAt(fetchedAt);
   const isHistorical = pickerValue !== '';
 
   // `max` = now. Computed each render (not memoized) so a dashboard left

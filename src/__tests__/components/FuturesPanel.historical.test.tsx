@@ -20,7 +20,7 @@ function mockState(overrides: Partial<FuturesDataState> = {}) {
     vxTermSpread: null,
     vxTermStructure: null,
     esSpxBasis: null,
-    updatedAt: null,
+    fetchedAt: null,
     oldestTs: '2026-03-01T13:30:00.000Z',
     loading: false,
     error: null,

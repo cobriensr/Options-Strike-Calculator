@@ -102,7 +102,8 @@ describe('useFuturesData', () => {
     expect(result.current.vxTermSpread).toBe(-1.5);
     expect(result.current.vxTermStructure).toBe('CONTANGO');
     expect(result.current.esSpxBasis).toBe(2.5);
-    expect(result.current.updatedAt).toBe('2026-04-05T15:30:00Z');
+    // Server returns ISO; hook coerces to canonical epoch ms.
+    expect(result.current.fetchedAt).toBe(Date.parse('2026-04-05T15:30:00Z'));
     expect(result.current.error).toBeNull();
 
     expect(mockFetch).toHaveBeenCalledWith(
@@ -195,7 +196,7 @@ describe('useFuturesData', () => {
 
     expect(result.current.snapshots).toHaveLength(1);
     expect(result.current.snapshots[0]!.price).toBe(5750);
-    expect(result.current.updatedAt).toBe('2026-04-05T16:00:00Z');
+    expect(result.current.fetchedAt).toBe(Date.parse('2026-04-05T16:00:00Z'));
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 

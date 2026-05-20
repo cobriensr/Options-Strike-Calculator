@@ -16,7 +16,7 @@ function mockState(overrides: Partial<FuturesDataState> = {}) {
     vxTermSpread: null,
     vxTermStructure: null,
     esSpxBasis: null,
-    updatedAt: null,
+    fetchedAt: null,
     oldestTs: null,
     loading: false,
     error: null,
@@ -26,34 +26,33 @@ function mockState(overrides: Partial<FuturesDataState> = {}) {
 }
 
 // ============================================================
-// formatUpdatedAt edge branches (line 27 uncovered = catch block)
+// formatFetchedAt edge branches — epoch ms input
 // ============================================================
 
-describe('FuturesPanel — formatUpdatedAt edge cases', () => {
-  it('renders panel when updatedAt is null (guard returns null early)', () => {
-    mockState({ updatedAt: null });
+describe('FuturesPanel — formatFetchedAt edge cases', () => {
+  it('renders panel when fetchedAt is null (guard returns null early)', () => {
+    mockState({ fetchedAt: null });
     render(<FuturesPanel />);
     // Panel still renders; badge is absent
     expect(screen.getByRole('region', { name: 'Futures' })).toBeInTheDocument();
   });
 
-  it('renders panel when updatedAt is an invalid ISO string (catch fallback)', () => {
-    // Triggers the try/catch path where toLocaleTimeString throws or Date is
-    // Invalid — the function returns null and no badge is shown.
-    mockState({ updatedAt: 'completely-invalid-date-string' });
+  it('renders panel when fetchedAt is non-finite (NaN)', () => {
+    // Non-finite numbers fail the Number.isFinite guard — no badge shown.
+    mockState({ fetchedAt: Number.NaN });
     render(<FuturesPanel />);
     expect(screen.getByRole('region', { name: 'Futures' })).toBeInTheDocument();
   });
 
-  it('renders panel when updatedAt is a valid ISO string', () => {
-    mockState({ updatedAt: '2026-04-02T15:30:00.000Z' });
+  it('renders panel when fetchedAt is a valid epoch ms', () => {
+    mockState({ fetchedAt: Date.parse('2026-04-02T15:30:00.000Z') });
     render(<FuturesPanel />);
     expect(screen.getByRole('region', { name: 'Futures' })).toBeInTheDocument();
   });
 
-  it('still renders panel structure when updatedAt is an empty string', () => {
-    // Empty string is falsy → formatUpdatedAt early-returns null
-    mockState({ updatedAt: '' });
+  it('renders panel when fetchedAt is Infinity (non-finite branch)', () => {
+    // Both NaN and ±Infinity should fail Number.isFinite identically.
+    mockState({ fetchedAt: Number.POSITIVE_INFINITY });
     render(<FuturesPanel />);
     expect(screen.getByRole('region', { name: 'Futures' })).toBeInTheDocument();
   });

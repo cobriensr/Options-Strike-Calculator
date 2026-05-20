@@ -19,7 +19,7 @@ function mockState(overrides: Partial<FuturesDataState> = {}) {
     vxTermSpread: null,
     vxTermStructure: null,
     esSpxBasis: null,
-    updatedAt: null,
+    fetchedAt: null,
     oldestTs: null,
     loading: false,
     error: null,
@@ -246,32 +246,32 @@ describe('FuturesPanel: section structure', () => {
 });
 
 // ============================================================
-// UPDATED AT BADGE (formatUpdatedAt)
+// FETCHED AT BADGE (formatFetchedAt — epoch ms input)
 // ============================================================
 
-describe('FuturesPanel: updatedAt badge', () => {
-  it('shows no badge when updatedAt is null', () => {
-    mockState({ updatedAt: null });
+describe('FuturesPanel: fetchedAt badge', () => {
+  it('shows no badge when fetchedAt is null', () => {
+    mockState({ fetchedAt: null });
     render(<FuturesPanel />);
 
     // The badge should not render any time text — just confirm panel is there
     expect(screen.getByRole('region', { name: 'Futures' })).toBeInTheDocument();
   });
 
-  it('shows formatted time when updatedAt is a valid ISO string', () => {
+  it('shows formatted time when fetchedAt is a valid epoch ms', () => {
     // Use a known timestamp so we can assert time is displayed
-    mockState({ updatedAt: '2025-03-01T15:30:00.000Z' });
+    mockState({ fetchedAt: Date.parse('2025-03-01T15:30:00.000Z') });
     render(<FuturesPanel />);
 
-    // formatUpdatedAt converts to CT — 15:30 UTC = 9:30 AM CT (CST, UTC-6)
-    // The exact string depends on system locale but it should be a non-null string
-    // rendered in the badge. We just verify the panel still renders correctly.
+    // formatFetchedAt converts to CT — 15:30 UTC = 9:30 AM CT (CST, UTC-6)
+    // The exact string depends on system locale but it should be a non-null
+    // string rendered in the badge. We just verify the panel still renders.
     expect(screen.getByRole('region', { name: 'Futures' })).toBeInTheDocument();
   });
 
-  it('shows no badge when updatedAt is an invalid ISO string', () => {
-    // formatUpdatedAt returns null on invalid ISO; badge should be absent
-    mockState({ updatedAt: 'not-a-date' });
+  it('shows no badge when fetchedAt is non-finite (NaN)', () => {
+    // formatFetchedAt returns null on non-finite input; badge should be absent
+    mockState({ fetchedAt: Number.NaN });
     render(<FuturesPanel />);
 
     expect(screen.getByRole('region', { name: 'Futures' })).toBeInTheDocument();

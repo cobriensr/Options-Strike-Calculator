@@ -43,7 +43,13 @@ export interface FuturesDataState {
   vxTermSpread: number | null;
   vxTermStructure: VxTermStructure | null;
   esSpxBasis: number | null;
-  updatedAt: string | null;
+  /**
+   * Epoch milliseconds when the snapshot was produced server-side.
+   * Canonical freshness field per the project's `fetchedAt` convention —
+   * derived from the response's ISO `updatedAt` via `Date.parse` and
+   * coerced to `null` when the parse yields a non-finite value.
+   */
+  fetchedAt: number | null;
   oldestTs: string | null;
   loading: boolean;
   error: string | null;
@@ -59,7 +65,7 @@ export function useFuturesData(
   const [vxTermStructure, setVxTermStructure] =
     useState<VxTermStructure | null>(null);
   const [esSpxBasis, setEsSpxBasis] = useState<number | null>(null);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const [oldestTs, setOldestTs] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,7 +113,14 @@ export function useFuturesData(
       setVxTermSpread(data.vxTermSpread ?? null);
       setVxTermStructure(data.vxTermStructure ?? null);
       setEsSpxBasis(data.esSpxBasis ?? null);
-      setUpdatedAt(data.updatedAt ?? null);
+      // Convert the server's ISO timestamp into canonical epoch ms.
+      // Bad input (missing field, unparseable string) yields NaN from
+      // Date.parse — coalesce to null so consumers can render a clean
+      // "no time" state instead of "Invalid Date".
+      const parsedUpdatedAt = data.updatedAt
+        ? Date.parse(data.updatedAt)
+        : Number.NaN;
+      setFetchedAt(Number.isFinite(parsedUpdatedAt) ? parsedUpdatedAt : null);
       setOldestTs(data.oldestTs ?? null);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -143,7 +156,7 @@ export function useFuturesData(
     vxTermSpread,
     vxTermStructure,
     esSpxBasis,
-    updatedAt,
+    fetchedAt,
     oldestTs,
     loading,
     error,
