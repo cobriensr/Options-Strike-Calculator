@@ -22,11 +22,12 @@
  * churn (theme toggle, time picker, etc.).
  */
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { DEFAULTS, IV_MODES } from '../constants';
 import type { AmPm, IVMode, Timezone } from '../types';
 import { getCTTime, getETTime } from '../utils/timezone';
 import { useDebounced } from './useDebounced';
+import { useSpotInputs } from './useSpotInputs';
 import { useTheme } from './useTheme';
 
 /**
@@ -53,11 +54,10 @@ export function useAppState() {
   // Phase 2P-2 deletes the facade entirely.
   const { darkMode, setDarkMode } = useTheme();
 
-  // Spot price state — seeded with reasonable defaults so UI renders fully;
-  // overwritten by live/historical data via useAutoFill on load.
-  const [spotPrice, setSpotPrice] = useState('572');
-  const [spxDirect, setSpxDirect] = useState('5720');
-  const [spxRatio, setSpxRatio] = useState(10);
+  // Spot inputs — Phase 2P-1b moved this to the dedicated `useSpotInputs`
+  // hook. useAppState stays the facade so consumers don't churn until
+  // Phase 2P-2 deletes the facade entirely.
+  const spotInputs = useSpotInputs();
 
   // IV state — seeded with default VIX so term structure + regime cards
   // render immediately; overwritten by live/historical data on load.
@@ -112,40 +112,18 @@ export function useAppState() {
   const [portfolioRiskThresholdPct, setPortfolioRiskThresholdPct] =
     useState(12);
 
-  // Debounced values
-  const dSpot = useDebounced(spotPrice);
-  const dSpx = useDebounced(spxDirect);
+  // Debounced values (spot/spx now live in `useSpotInputs`).
   const dVix = useDebounced(vixInput);
   const dIV = useDebounced(directIVInput);
   const dMult = useDebounced(multiplier);
-
-  // Derived SPX ratio — memoized against its true dependencies only so
-  // unrelated state changes (theme, time, IC settings) don't re-compute.
-  const derived = useMemo(() => {
-    const spyVal = Number.parseFloat(dSpot);
-    const spxVal = Number.parseFloat(dSpx);
-    const spxDirectActive =
-      !!dSpx &&
-      !Number.isNaN(spxVal) &&
-      spxVal > 0 &&
-      !Number.isNaN(spyVal) &&
-      spyVal > 0;
-    const effectiveRatio = spxDirectActive ? spxVal / spyVal : spxRatio;
-    return { spyVal, spxVal, spxDirectActive, effectiveRatio };
-  }, [dSpot, dSpx, spxRatio]);
 
   return {
     // Theme
     darkMode,
     setDarkMode,
 
-    // Spot
-    spotPrice,
-    setSpotPrice,
-    spxDirect,
-    setSpxDirect,
-    spxRatio,
-    setSpxRatio,
+    // Spot — sourced from `useSpotInputs` (also provides dSpot, dSpx,
+    // spyVal, spxVal, spxDirectActive, effectiveRatio below).
 
     // IV
     ivMode,
@@ -195,15 +173,15 @@ export function useAppState() {
     portfolioRiskThresholdPct,
     setPortfolioRiskThresholdPct,
 
-    // Debounced
-    dSpot,
-    dSpx,
+    // Debounced (non-spot — dSpot/dSpx come from spotInputs spread below).
     dVix,
     dIV,
     dMult,
 
-    // Derived
-    ...derived,
+    // Spot inputs + their debounced/derived values (spotPrice,
+    // setSpotPrice, spxDirect, setSpxDirect, spxRatio, setSpxRatio,
+    // dSpot, dSpx, spyVal, spxVal, spxDirectActive, effectiveRatio).
+    ...spotInputs,
   };
 }
 
