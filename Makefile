@@ -156,10 +156,14 @@ enrich:
 	@echo "════════════════════════════════════════════════════════════════"
 	@# Auto-detects the date from the latest *-trades.parquet so this
 	@# still works after `ingest` has deleted the source CSV (which makes
-	@# `$(DATE)` resolve to empty here). Two passes:
+	@# `$(DATE)` resolve to empty here). Three passes:
 	@#   1. trail/hard/tier50/peak/eod/min_to_peak from parquet
 	@#   2. flow_inversion from parquet NBBO mids + net_flow_per_ticker_history
-	$(PYTHON) scripts/enrich_lottery_outcomes.py
+	@#   3. per-ticker inversion-quality refit (Wilson LCB + quintile) into
+	@#      lottery_ticker_stats. Gated by WRITE_DB=1; staleness >3 days
+	@#      raises a Sentry warning from the next /api/cron/refresh-vix1d
+	@#      run (see spec lottery-inversion-quality-filter-2026-05-19.md).
+	WRITE_DB=1 $(PYTHON) scripts/enrich_lottery_outcomes.py
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  STEP 5/5 (cont.) — enrich_silent_boom_outcomes.py"
