@@ -538,3 +538,18 @@ export const GAMMA_BONUS_EXCLUDED_TICKERS: readonly string[] = ['SPY', 'USO'];
  *  top bracket (+2 for ≥16 fires, +1 for 8-15 fires); +1 keeps the
  *  bonus from dominating the displayed tier. */
 export const GAMMA_HIGH_BONUS_POINTS = 1;
+
+// ============================================================
+// MACRO WINDOW
+// ============================================================
+
+/**
+ * Days after a fire's trigger time during which a high-impact economic
+ * event is considered "in the window" for macro context lookup. Used
+ * by api/lottery-finder.ts to query economic_events for items scheduled
+ * within MACRO_WINDOW_DAYS of any fire in the current batch.
+ */
+export const MACRO_WINDOW_DAYS = 7;
+
+/** MACRO_WINDOW_DAYS expressed as milliseconds for Date arithmetic. */
+export const MACRO_WINDOW_MS = MACRO_WINDOW_DAYS * 24 * 3600 * 1000;

@@ -4,20 +4,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  rejectIfNotOwnerOrGuest: vi.fn(),
   schwabFetch: vi.fn(),
   setCacheHeaders: vi.fn(),
   isMarketOpen: vi.fn(),
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+}));
+
+vi.mock('../_lib/guest-auth.js', () => ({
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
 import handler from '../yesterday.js';
 import {
-  rejectIfNotOwnerOrGuest,
   schwabFetch,
   isMarketOpen,
-  checkBot,
 } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
 
 function makeDailyCandle(
   dateStr: string,
@@ -43,17 +44,19 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns 401 for non-owner', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockImplementation((_req, res) => {
-      res.status(401).json({ error: 'Not authenticated' });
-      return true;
-    });
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const res = mockResponse();
     await handler(mockRequest(), res);
     expect(res._status).toBe(401);
   });
 
   it('forwards schwabFetch errors', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: false,
       error: 'Token expired',
@@ -68,7 +71,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns null when no candles', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockResolvedValue({
       ok: true,
       data: { symbol: '$SPX', empty: true, candles: [] },
@@ -84,7 +87,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns yesterday and twoDaysAgo summaries', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(true);
 
     const candles = [
@@ -114,8 +117,15 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns 403 when bot detected', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
-    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+    // Bot detection now lives inside guardOwnerOrGuestEndpoint — the
+    // helper writes the 403 response and returns true to signal
+    // "handled, exit early."
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+      async (_req, res) => {
+        res.status(403).json({ error: 'Access denied' });
+        return true;
+      },
+    );
 
     const res = mockResponse();
     await handler(mockRequest(), res);
@@ -124,7 +134,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns 500 when handler throws unexpected error', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(schwabFetch).mockImplementation(() => {
       throw new Error('Crash');
     });
@@ -136,7 +146,7 @@ describe('GET /api/yesterday', () => {
   });
 
   it('returns only yesterday when single candle', async () => {
-    vi.mocked(rejectIfNotOwnerOrGuest).mockReturnValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
     vi.mocked(isMarketOpen).mockReturnValue(false);
 
     vi.mocked(schwabFetch).mockResolvedValue({

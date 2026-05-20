@@ -28,6 +28,7 @@ import {
 } from './_lib/lottery-score-weights.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import {
+  MACRO_WINDOW_MS,
   MEGA_CLUSTER_MIN_DISTINCT_TICKERS,
   MIN_ALERT_ENTRY_PRICE,
   REIGNITION_MIN_FIRES,
@@ -1000,7 +1001,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const maxTrigger = new Date(
         Math.max(...triggerTimes.map((d) => d.getTime())),
       );
-      const windowEnd = new Date(maxTrigger.getTime() + 7 * 24 * 3600 * 1000);
+      const windowEnd = new Date(maxTrigger.getTime() + MACRO_WINDOW_MS);
       const eventRows = (await withDbRetry(
         () => db`
         SELECT event_time

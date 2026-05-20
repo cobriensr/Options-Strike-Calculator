@@ -17,6 +17,11 @@ vi.mock('../_lib/schwab.js', () => ({
   getAccessToken: (...args: unknown[]) => mockGetAccessToken(...args),
 }));
 
+const mockCaptureException = vi.fn();
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: (...args: unknown[]) => mockCaptureException(...args) },
+}));
+
 import handler from '../health.js';
 
 // ── Tests ─────────────────────────────────────────────────────
@@ -26,6 +31,7 @@ describe('GET /api/health', () => {
     mockDbFn.mockReset();
     mockPing.mockReset();
     mockGetAccessToken.mockReset();
+    mockCaptureException.mockReset();
   });
 
   it('returns 200 healthy when all services are up', async () => {
@@ -62,7 +68,7 @@ describe('GET /api/health', () => {
     expect(res._json).toMatchObject({
       status: 'degraded',
       services: {
-        postgres: { status: 'error', error: 'connection refused' },
+        postgres: { status: 'error' },
         redis: { status: 'ok' },
         schwab: { status: 'ok' },
       },
@@ -83,7 +89,7 @@ describe('GET /api/health', () => {
       status: 'degraded',
       services: {
         postgres: { status: 'ok' },
-        redis: { status: 'error', error: 'ECONNREFUSED' },
+        redis: { status: 'error' },
         schwab: { status: 'ok' },
       },
     });
@@ -106,7 +112,7 @@ describe('GET /api/health', () => {
       services: {
         postgres: { status: 'ok' },
         redis: { status: 'ok' },
-        schwab: { status: 'error', error: 'Refresh token expired' },
+        schwab: { status: 'error' },
       },
     });
   });
@@ -124,7 +130,7 @@ describe('GET /api/health', () => {
     expect(res._json).toMatchObject({
       status: 'degraded',
       services: {
-        schwab: { status: 'error', error: 'Network failure' },
+        schwab: { status: 'error' },
       },
     });
   });
@@ -142,9 +148,9 @@ describe('GET /api/health', () => {
     expect(res._json).toMatchObject({
       status: 'degraded',
       services: {
-        postgres: { status: 'error', error: 'DB down' },
-        redis: { status: 'error', error: 'Redis down' },
-        schwab: { status: 'error', error: 'Schwab down' },
+        postgres: { status: 'error' },
+        redis: { status: 'error' },
+        schwab: { status: 'error' },
       },
     });
   });
@@ -183,7 +189,7 @@ describe('GET /api/health', () => {
     expect(json.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it('handles non-Error throws gracefully', async () => {
+  it('handles non-Error throws without leaking the value into the response', async () => {
     mockDbFn.mockRejectedValueOnce('string error');
     mockPing.mockRejectedValueOnce(42);
     mockGetAccessToken.mockRejectedValueOnce(null);
@@ -195,13 +201,20 @@ describe('GET /api/health', () => {
     expect(res._status).toBe(503);
     const json = res._json as {
       services: {
-        postgres: { error?: string };
-        redis: { error?: string };
-        schwab: { error?: string };
+        postgres: Record<string, unknown>;
+        redis: Record<string, unknown>;
+        schwab: Record<string, unknown>;
       };
     };
-    expect(json.services.postgres.error).toBe('Unknown error');
-    expect(json.services.redis.error).toBe('Unknown error');
-    expect(json.services.schwab.error).toBe('Unknown error');
+    // Public response surfaces only status/latencyMs — no error field
+    // (would leak Schwab token state, DB connection info, etc.).
+    expect(json.services.postgres).not.toHaveProperty('error');
+    expect(json.services.redis).not.toHaveProperty('error');
+    expect(json.services.schwab).not.toHaveProperty('error');
+    expect(json.services.postgres.status).toBe('error');
+    expect(json.services.redis.status).toBe('error');
+    expect(json.services.schwab.status).toBe('error');
+    // The actual errors are captured to Sentry for internal triage
+    expect(mockCaptureException).toHaveBeenCalledTimes(3);
   });
 });

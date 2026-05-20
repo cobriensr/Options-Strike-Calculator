@@ -24,9 +24,8 @@ import {
   schwabFetch,
   setCacheHeaders,
   isMarketOpen,
-  rejectIfNotOwnerOrGuest,
-  checkBot,
 } from './_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 // ============================================================
@@ -101,18 +100,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     scope.setTransactionName('GET /api/yesterday');
     const done = metrics.request('/api/yesterday');
     try {
-      // Owner-only: public visitors get 401, frontend falls back to manual input
-      if (rejectIfNotOwnerOrGuest(req, res)) {
-        done({ status: 401 });
-        return;
-      }
-
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        done({ status: 403 });
-        res.status(403).json({ error: 'Access denied' });
-        return;
-      }
+      // Standard guard order (bot check → auth check) via the shared
+      // helper. Swapped from manual two-step on 2026-05-19 for
+      // consistency with the rest of api/ — also avoids wasting a
+      // botid credit on unauthenticated requests by bot-checking first.
+      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
       const params = new URLSearchParams({
         symbol: '$SPX',
