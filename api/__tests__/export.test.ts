@@ -14,8 +14,8 @@ vi.mock('../_lib/sentry.js', () => ({
 
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
-  getDb: () => mockSql,  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-
+  getDb: () => mockSql,
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 import handler from '../ml/export.js';

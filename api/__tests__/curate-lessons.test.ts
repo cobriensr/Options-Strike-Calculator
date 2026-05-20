@@ -13,8 +13,8 @@ const mockSql = Object.assign(
   { transaction: mockTransaction },
 );
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-
+  getDb: vi.fn(() => mockSql),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/lessons.js', () => ({

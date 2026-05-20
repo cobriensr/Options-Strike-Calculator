@@ -109,7 +109,9 @@ describe('<VixDealerStateBadge>', () => {
       freshestAt: '2026-05-19T14:00:00Z',
     });
     render(<VixDealerStateBadge marketOpen />);
-    expect(screen.getByText(/partial data \(missing spot\)/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/partial data \(missing spot\)/i),
+    ).toBeInTheDocument();
   });
 
   it('surfaces a partial-data message when zero_gamma is null but VIX row exists', () => {

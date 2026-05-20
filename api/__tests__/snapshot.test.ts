@@ -10,8 +10,8 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 vi.mock('../_lib/db.js', () => ({
-  saveSnapshot: vi.fn(),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-
+  saveSnapshot: vi.fn(),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 import handler from '../snapshot.js';

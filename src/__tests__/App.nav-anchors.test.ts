@@ -28,24 +28,23 @@ function allRegistryIds(): string[] {
 }
 
 /**
- * Pulls every renderer key out of the `panelRenderers` Record literal
- * in App.tsx. The map is the source of truth for what App actually
- * renders post-Phase-3-refactor (spec: panel-reordering-2026-05-17.md).
- * Quoted keys (`'sec-x':`) and bare keys (`results:`) both supported.
+ * Pulls every renderer key out of the `panelMap` useMemo body in
+ * App.tsx (Phase 2O refactor: the old `panelRenderers` Record literal
+ * was lifted into a `useMemo<Map<string, () => ReactNode>>(...)` whose
+ * body is `new Map<...>([ ['id', () => ...], ... ])`). The map is the
+ * source of truth for what App actually renders.
+ * Spec: panel-reordering-2026-05-17.md; extraction: Phase 2O.
  */
 function extractRendererKeys(source: string): Set<string> {
-  const mapMatch = source.match(
-    /panelRenderers:\s*Record<string,\s*\(\)\s*=>\s*ReactNode>\s*=\s*\{([\s\S]*?)^\s{18}\};/m,
-  );
+  const mapRe =
+    /new Map<string,\s*\(\)\s*=>\s*ReactNode>\(\[([\s\S]*?)\]\),\s*$\s*\[/m;
+  const mapMatch = mapRe.exec(source);
   if (!mapMatch) {
-    throw new Error('Could not locate panelRenderers map in App.tsx');
+    throw new Error('Could not locate panelMap initializer in App.tsx');
   }
   const body = mapMatch[1]!;
   const keys = new Set<string>();
-  for (const m of body.matchAll(/^\s+'([^']+)':\s*\(\)\s*=>/gm)) {
-    keys.add(m[1]!);
-  }
-  for (const m of body.matchAll(/^\s+(results):\s*\(\)\s*=>/gm)) {
+  for (const m of body.matchAll(/^\s+'([^']+)',\s*$/gm)) {
     keys.add(m[1]!);
   }
   return keys;

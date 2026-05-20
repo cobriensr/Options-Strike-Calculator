@@ -73,7 +73,9 @@ function DexoflowVelocityTapeInner({ marketOpen }: DexoflowVelocityTapeProps) {
         // makes the tape harder to scan. Magnitude-sum > 0 keeps any
         // row with at least one meaningful scalar.
         (r: SnapshotsLatestRow) =>
-          magnitude(r.dexoflow) + magnitude(r.gexoflow) + magnitude(r.cvroflow) >
+          magnitude(r.dexoflow) +
+            magnitude(r.gexoflow) +
+            magnitude(r.cvroflow) >
           0,
       )
       .map((r) => ({

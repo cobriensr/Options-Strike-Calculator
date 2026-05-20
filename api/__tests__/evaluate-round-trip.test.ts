@@ -9,8 +9,8 @@ const { mockSql } = vi.hoisted(() => ({
 }));
 
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-
+  getDb: vi.fn(() => mockSql),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/logger.js', () => ({

@@ -6,8 +6,8 @@ import { mockRequest, mockResponse } from './helpers';
 // ── Mocks ─────────────────────────────────────────────────────
 const mockDbFn = vi.fn();
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockDbFn),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-
+  getDb: vi.fn(() => mockDbFn),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 vi.mock('../_lib/logger.js', () => ({

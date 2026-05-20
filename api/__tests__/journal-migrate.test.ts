@@ -13,8 +13,8 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 vi.mock('../_lib/db.js', () => ({
-  migrateDb: vi.fn(),  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-
+  migrateDb: vi.fn(),
+  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
 import handler from '../journal/migrate.js';
