@@ -145,12 +145,20 @@ export interface MarketDataState {
   needsAuth: boolean;
   /** Manually trigger a refresh */
   refresh: () => Promise<void>;
-  /** Timestamp of last successful fetch (any endpoint) */
-  lastUpdated: string | null;
+  /**
+   * Epoch milliseconds of the last successful fetch on any endpoint.
+   * Canonical freshness field per the project's `fetchedAt` convention -
+   * the old `lastUpdated: string | null` (ISO) was renamed to align with
+   * `useFuturesData` / `useDarkPoolLevels` / `useMLInsights`. Consumers
+   * that previously called `new Date(lastUpdated)` can now drop the wrap.
+   */
+  fetchedAt: number | null;
   /**
    * Timestamp of last successful fetch of the /api/quotes endpoint
-   * specifically. Distinct from `lastUpdated` because events/movers/
-   * yesterday have their own cadences and shouldn't affect quote freshness.
+   * specifically. Distinct from `fetchedAt` because events/movers/
+   * yesterday have their own cadences and shouldn't affect quote
+   * freshness. Kept as ISO string for backward compatibility - the
+   * staleness math inside the hook already wraps it with `new Date()`.
    * FE-STATE-001.
    */
   quotesLastUpdated: string | null;
@@ -246,8 +254,8 @@ export function useMarketData(): MarketDataState {
   });
   const [loading, setLoading] = useState(true);
   const [needsAuth, setNeedsAuth] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
-  // FE-STATE-001: track quotes-endpoint freshness independently. `lastUpdated`
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
+  // FE-STATE-001: track quotes-endpoint freshness independently. `fetchedAt`
   // reflects ANY successful endpoint; the staleness badge needs to reflect
   // the /api/quotes endpoint specifically since that's what drives hedge
   // pricing and calculator inputs.
@@ -301,7 +309,7 @@ export function useMarketData(): MarketDataState {
       }
 
       if (anySuccess) {
-        setLastUpdated(new Date().toISOString());
+        setFetchedAt(Date.now());
       }
       // FE-STATE-001: track quote-specific freshness independently.
       if (quotesSuccess) {
@@ -342,7 +350,7 @@ export function useMarketData(): MarketDataState {
   usePolling(
     () => {
       // Track whether the quotes fetch specifically succeeded so we can
-      // update `quotesLastUpdated` independently of `lastUpdated`.
+      // update `quotesLastUpdated` independently of `fetchedAt`.
       let quotesSucceeded = false;
       const fetches: Promise<void>[] = [
         fetchJson<QuotesResponse>('/api/quotes').then((result) => {
@@ -370,10 +378,12 @@ export function useMarketData(): MarketDataState {
       }
 
       Promise.all(fetches).then(() => {
-        const now = new Date().toISOString();
-        setLastUpdated(now);
+        // `fetchedAt` is epoch ms (canonical), `quotesLastUpdated` stays
+        // ISO because the staleness math downstream wraps it with
+        // `new Date()` and changing that is out of scope for this rename.
+        setFetchedAt(Date.now());
         if (quotesSucceeded) {
-          setQuotesLastUpdated(now);
+          setQuotesLastUpdated(new Date().toISOString());
         }
       });
     },
@@ -464,7 +474,7 @@ export function useMarketData(): MarketDataState {
     hasData,
     needsAuth,
     refresh: fetchAll,
-    lastUpdated,
+    fetchedAt,
     quotesLastUpdated,
     isStale,
     isVeryStale,

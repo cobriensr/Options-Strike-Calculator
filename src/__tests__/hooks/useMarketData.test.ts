@@ -199,12 +199,16 @@ describe('useMarketData: basic behavior', () => {
     expect(result.current.needsAuth).toBe(false);
   });
 
-  it('sets lastUpdated after successful fetch', async () => {
+  it('sets fetchedAt after successful fetch', async () => {
     globalThis.fetch = mockFetchResponses() as unknown as typeof fetch;
+    const before = Date.now();
     const { result } = renderHook(() => useMarketData());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.lastUpdated).not.toBeNull();
+    expect(result.current.fetchedAt).not.toBeNull();
+    // Epoch ms: must be a finite number from the recent past.
+    expect(result.current.fetchedAt!).toBeGreaterThanOrEqual(before);
+    expect(result.current.fetchedAt!).toBeLessThanOrEqual(Date.now());
   });
 });
 
@@ -838,7 +842,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
 
   it('quote-specific: events-only updates do NOT reset stale flag', async () => {
     // Scenario: /api/quotes 401s, /api/events succeeds. The whole-state
-    // lastUpdated advances (because events came through), but
+    // fetchedAt advances (because events came through), but
     // quotesLastUpdated does NOT, and `isStale` should still flip true
     // once 90s pass since the last quotes success. This is the Decision 4
     // "quotes-specific staleness" behavior — events/movers freshness
@@ -864,7 +868,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
       vi.advanceTimersByTime(95_000);
     });
 
-    // lastUpdated may have advanced (events are still fetching), but
+    // fetchedAt may have advanced (events are still fetching), but
     // quotesLastUpdated is pinned, so isStale fires.
     expect(result.current.isStale).toBe(true);
   });
