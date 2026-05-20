@@ -107,6 +107,32 @@ if (webhookConfig.baseUrl == null || webhookConfig.secret == null) {
 let intervalHandle: NodeJS.Timeout | null = null;
 let tickInFlight = false;
 
+// Monotonic token assigned to each in-flight tick. Used by the watchdog
+// + finally block to release the lock only if the owner hasn't already
+// rolled over. Prevents a stale-finally from a watchdog-killed tick
+// from clobbering a newer tick that has since acquired the lock.
+let tickOwnerToken = 0;
+
+// Watchdog timeout — ANY tick that doesn't complete within this is
+// considered stuck. Releases the lock so subsequent ticks can run,
+// fires a Sentry error so the failure is visible. The healthy tick
+// duration is ~10-30s (Playwright scrape + DB insert + webhook); 5
+// minutes is generous but bounded.
+//
+// Added 2026-05-20 after a stuck tick during a Neon outage left the
+// scraper paper-pushing for 22 hours with no recovery. The bare
+// `tickInFlight` boolean had no escape valve when an `await` inside
+// the try-block (Playwright deadlock, hung network call) never
+// resolved — `finally` never ran, lock stayed true forever.
+const TICK_WATCHDOG_MS = 5 * 60 * 1000;
+
+// Consecutive "previous tick still running" skip counter. Fires a
+// single Sentry alert at the threshold so a wedged scraper surfaces
+// well BEFORE the 5-min watchdog kills it. Resets when a tick
+// actually runs.
+let consecutiveTickSkips = 0;
+const TICK_SKIP_ALERT_THRESHOLD = 3;
+
 // Dedup state: the end-time (HH:MM) of the last UW slot we successfully
 // captured (e.g. "08:30" after capturing "08:20 - 08:30"). Reset to null
 // when we leave the active polling window so the next trading day
@@ -124,9 +150,22 @@ async function runTick(
   opts: { bypassMarketHours?: boolean } = {},
 ): Promise<void> {
   if (tickInFlight) {
-    logger.warn('previous tick still running, skipping');
+    consecutiveTickSkips += 1;
+    logger.warn({ consecutiveTickSkips }, 'previous tick still running, skipping');
+    if (consecutiveTickSkips === TICK_SKIP_ALERT_THRESHOLD) {
+      // One-shot Sentry alert. Resets when a tick actually runs OR
+      // when the watchdog releases the lock below.
+      Sentry.captureMessage(
+        `periscope-scraper: ${TICK_SKIP_ALERT_THRESHOLD} consecutive ticks skipped — previous tick may be stuck`,
+        {
+          level: 'warning',
+          tags: { service: 'periscope-scraper', stage: 'tick-stuck' },
+        },
+      );
+    }
     return;
   }
+  consecutiveTickSkips = 0;
 
   const now = new Date();
   const bypass = opts.bypassMarketHours === true;
@@ -164,7 +203,31 @@ async function runTick(
   }
 
   tickInFlight = true;
+  const thisTickToken = ++tickOwnerToken;
   const startedAt = Date.now();
+  // Watchdog: if this tick doesn't release the lock in `finally` within
+  // TICK_WATCHDOG_MS, force-release it so subsequent ticks can run.
+  // Only releases if we still own the lock (token still matches) —
+  // prevents a stale watchdog from clobbering a newer tick.
+  const watchdog = setTimeout(() => {
+    if (tickInFlight && tickOwnerToken === thisTickToken) {
+      tickInFlight = false;
+      consecutiveTickSkips = 0;
+      const elapsedMs = Date.now() - startedAt;
+      Sentry.captureMessage(
+        `periscope-scraper: tick exceeded ${TICK_WATCHDOG_MS}ms watchdog — lock released`,
+        {
+          level: 'error',
+          tags: { service: 'periscope-scraper', stage: 'tick-watchdog' },
+          extra: { elapsedMs, tickToken: thisTickToken },
+        },
+      );
+      logger.error(
+        { elapsedMs, watchdogMs: TICK_WATCHDOG_MS, tickToken: thisTickToken },
+        'tick exceeded watchdog timeout — lock released, in-flight work will leak',
+      );
+    }
+  }, TICK_WATCHDOG_MS);
   try {
     const rows = await scrapeAllPanels();
 
@@ -317,7 +380,13 @@ async function runTick(
     Sentry.captureException(err);
     logger.error({ err, ms: Date.now() - startedAt }, 'tick failed');
   } finally {
-    tickInFlight = false;
+    clearTimeout(watchdog);
+    // Only release if we still own the lock. If the watchdog fired
+    // first (work hung past TICK_WATCHDOG_MS) the lock was already
+    // released and reassigned to a newer tick — don't clobber it.
+    if (tickOwnerToken === thisTickToken) {
+      tickInFlight = false;
+    }
   }
 }
 
