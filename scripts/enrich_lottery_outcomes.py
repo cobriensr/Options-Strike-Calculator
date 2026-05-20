@@ -866,6 +866,7 @@ def _write_tune_csv(
     daily_passes: dict[tuple[int, int], dict] = defaultdict(
         lambda: defaultdict(int)
     )
+    all_fire_dates: set = set()
     with out_path.open('w', newline='') as f:
         w = csv.writer(f)
         w.writerow([
@@ -874,6 +875,7 @@ def _write_tune_csv(
             'quality_adjusted_score', 'would_be_filtered',
         ])
         for fid, ticker, fire_date, score in fires:
+            all_fire_dates.add(fire_date)
             q = quintiles.get(ticker)
             bonus = (
                 INVERSION_BONUS_BY_QUINTILE.get(q, 0)
@@ -886,18 +888,25 @@ def _write_tune_csv(
                 fid, ticker, fire_date, score, q, bonus, qas, int(filtered)
             ])
             if not filtered:
-                for t1 in range(20, 25):
-                    for t2 in range(14, 18):
+                for t1 in range(22, 31):
+                    for t2 in range(18, 27):
                         if t2 >= t1:
                             continue
                         if qas >= t2:
                             daily_passes[(t1, t2)][fire_date] += 1
 
+    # Median must be computed over ALL trading dates with 0 as default —
+    # otherwise stricter thresholds (which exclude low-count days) show
+    # inflated medians because the low-count days are silently dropped.
     print(f'[ticker-quality] wrote simulation CSV to {out_path}')
-    print('[ticker-quality] median daily Tier 1+2 count by cutoff:')
+    print(
+        f'[ticker-quality] median daily Tier 1+2 count by cutoff '
+        f'(over {len(all_fire_dates)} trading days in window):'
+    )
     print('  tier1  tier2  median/day')
     for (t1, t2), per_day in sorted(daily_passes.items()):
-        med = statistics.median(per_day.values()) if per_day else 0
+        values = [per_day.get(d, 0) for d in all_fire_dates]
+        med = statistics.median(values) if values else 0
         marker = '  <-- target' if 40 <= med <= 50 else ''
         print(f'  >={t1:>2}   >={t2:>2}     {med:>5.1f}{marker}')
 
