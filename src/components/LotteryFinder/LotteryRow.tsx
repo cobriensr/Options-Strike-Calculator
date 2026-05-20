@@ -157,6 +157,42 @@ const todBadge = (tod: string): string => {
 };
 
 /**
+ * Inversion-quality quintile chip palette (Phase 4 — spec
+ * lottery-inversion-quality-filter-2026-05-19.md). Lower quintile = worse
+ * per-ticker inversion-win rate; Q1/Q2 are the cohort filtered server-side
+ * by default. Colour gradient runs red (Q1) → amber (Q2) → neutral (Q3)
+ * → emerald (Q4/Q5).
+ */
+const quintileChipClass = (quintile: number): string => {
+  if (quintile === 1) return 'bg-red-900/40 text-red-300';
+  if (quintile === 2) return 'bg-amber-900/40 text-amber-300';
+  if (quintile === 3) return 'bg-neutral-800 text-neutral-400';
+  if (quintile === 4) return 'bg-emerald-900/40 text-emerald-300';
+  return 'bg-emerald-800 text-emerald-200';
+};
+
+/**
+ * Quintile-chip tooltip body. When `inversionBlend` is populated, surface
+ * the Wilson 95% LCB as a percentage plus the 21d/90d sample sizes. When
+ * it's null (no sample passed the N>=10 floor) we fall back to a quintile-
+ * only label so the chip still explains itself.
+ */
+const quintileChipTooltip = (
+  fire: Pick<
+    LotteryFire,
+    'inversionQuintile' | 'inversionBlend' | 'inversionN21d' | 'inversionN90d'
+  >,
+): string => {
+  if (fire.inversionBlend == null) {
+    return `Q${fire.inversionQuintile} ticker — no sample-size data`;
+  }
+  const pct = (fire.inversionBlend * 100).toFixed(1);
+  const n21 = fire.inversionN21d ?? 0;
+  const n90 = fire.inversionN90d ?? 0;
+  return `Inversion-win rate: ${pct}% (Wilson 95% LCB)\nSample: n=${n21} (21d) / n=${n90} (90d)`;
+};
+
+/**
  * Tier badge: fire emojis sized to convey conviction. Tier 1 = 🔥🔥🔥
  * (top ~5/day, ~80% high-peak rate), Tier 2 = 🔥🔥 (the bulk of the
  * day, ~63% high-peak rate), Tier 3 = 🔥 (long tail, ~32%).
@@ -498,6 +534,7 @@ export const LotteryRow = memo(function LotteryRow({
 
   return (
     <div
+      data-testid="lottery-row"
       className={`rounded border p-3 text-sm ${rowContainerClass(fire.optionType)}`}
     >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -510,6 +547,25 @@ export const LotteryRow = memo(function LotteryRow({
         >
           {tier.label}
         </span>
+        {/* Inversion-quality quintile chip (Phase 4 — spec
+            lottery-inversion-quality-filter-2026-05-19.md). Q1=worst /
+            Q5=best per-ticker Wilson LCB on flow-inversion-win rate;
+            hidden for cold-start tickers (NULL quintile). Tooltip
+            surfaces the blended LCB + 21d/90d sample sizes so the user
+            can sanity-check small-n cases. The Q1/Q2 cohort is filtered
+            out server-side by default; the chip is mostly a Q3-Q5
+            ranking surface unless the "Show filtered tickers" toggle is
+            on. */}
+        {fire.inversionQuintile != null && (
+          <span
+            data-testid="lottery-quintile-chip"
+            className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] leading-none font-medium ${quintileChipClass(fire.inversionQuintile)}`}
+            title={quintileChipTooltip(fire)}
+            aria-label={quintileChipTooltip(fire)}
+          >
+            Q{fire.inversionQuintile}
+          </span>
+        )}
         {/* Phase 4 direction-gate pill — surfaces the demote reason
             so the user can distinguish "low score" from "counter-trend
             macro context flagged it down." Sits right after the tier

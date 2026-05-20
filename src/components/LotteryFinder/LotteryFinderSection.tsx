@@ -342,6 +342,15 @@ export function LotteryFinderSection({
   );
   const [reloadOnly, setReloadOnly] = useState<boolean>(false);
   const [cheapCallPmOnly, setCheapCallPmOnly] = useState<boolean>(false);
+  // Phase 4 inversion-quality filter escape hatch (spec
+  // lottery-inversion-quality-filter-2026-05-19.md). When ON, the URL
+  // builder appends `showAll=true` and the server bypasses the Q1/Q2
+  // suppression. Off by default — the narrowed feed is the intentional
+  // default. Not persisted; flips back off on reload so the user can't
+  // accidentally leave themselves staring at the noisy feed across
+  // sessions.
+  const [showFilteredTickers, setShowFilteredTickers] =
+    useState<boolean>(false);
   const [modeFilter, setModeFilter] = useState<LotteryMode | null>(null);
   const [tickerFilter, setTickerFilter] = useState<string | null>(null);
   const [optionTypeFilter, setOptionTypeFilter] = useState<OptionType | null>(
@@ -442,6 +451,7 @@ export function LotteryFinderSection({
     aggressivePremium,
     moneynessMode,
     minPremiumK,
+    showFilteredTickers,
   ]);
 
   const lotteryFinder = useLotteryFinder({
@@ -457,6 +467,7 @@ export function LotteryFinderSection({
     sort: sortMode,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
+    showAll: showFilteredTickers,
     page,
     pageSize: PAGE_SIZE,
   });
@@ -1116,6 +1127,23 @@ export function LotteryFinderSection({
             >
               Cheap-call-PM only{' '}
               <span className="text-[10px] opacity-70">{cheapPmCount}</span>
+            </FilterChip>
+            {/* Phase 4 inversion-quality escape hatch (spec
+              lottery-inversion-quality-filter-2026-05-19.md). When ON,
+              flips ?showAll=true on the lottery feed URL and the server
+              stops suppressing Q1/Q2 tickers. Off by default — the
+              narrowed feed is the intentional default; the toggle is a
+              debug / spot-check surface, not a daily-use chip. Reverts
+              to OFF on reload (local useState, not persisted). */}
+            <FilterChip
+              active={showFilteredTickers}
+              activeColor="amber"
+              testId="lottery-show-filtered-toggle"
+              onClick={() => setShowFilteredTickers(!showFilteredTickers)}
+              title="Show filtered tickers — bypass the server-side Q1/Q2 inversion-quality suppression and include the bottom-quintile tickers. Off by default."
+              ariaPressed={showFilteredTickers}
+            >
+              Show filtered tickers
             </FilterChip>
             <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
             {MODE_FILTERS.map((m) => (

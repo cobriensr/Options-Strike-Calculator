@@ -100,6 +100,11 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
     },
     hoursToNextMacroEvent: null,
     rangePosAtTrigger: null,
+    qualityAdjustedScore: 15,
+    inversionQuintile: null,
+    inversionBlend: null,
+    inversionN21d: null,
+    inversionN90d: null,
     insertedAt: '2026-05-14T19:31:00Z',
     ...overrides,
   };

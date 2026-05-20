@@ -343,6 +343,30 @@ export interface LotteryFire {
    */
   rangePosAtTrigger: number | null;
 
+  /**
+   * Inversion-quality bonus integrated into the score. Server computes
+   * qualityAdjustedScore = score + inversionQualityBonus(quintile)
+   * at SELECT time (Phase 3 — Path A in spec
+   * lottery-inversion-quality-filter-2026-05-19.md). scoreTier on this
+   * row is already derived from qualityAdjustedScore server-side.
+   */
+  qualityAdjustedScore: number;
+  /**
+   * Inversion-quality quintile 1..5 for the row's ticker (lower = worse).
+   * NULL for cold-start tickers (no inversion history yet); those are
+   * never filtered and receive 0 bonus.
+   */
+  inversionQuintile: number | null;
+  /**
+   * Wilson 95% LCB on P(realized_flow_inversion_pct >= 50%) for the
+   * ticker, blended 0.6 * 21d + 0.4 * 90d (or whichever window has N>=10).
+   * Used for the row's quintile-chip tooltip ('inversion-win rate').
+   */
+  inversionBlend: number | null;
+  /** Sample sizes for the LCB above — surfaced on the chip tooltip. */
+  inversionN21d: number | null;
+  inversionN90d: number | null;
+
   insertedAt: string;
 }
 

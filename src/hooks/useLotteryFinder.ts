@@ -55,6 +55,13 @@ interface UseLotteryFinderArgs {
    * post-filter result. Mirrors the SilentBoom feed param.
    */
   minPremium?: number | null;
+  /**
+   * Phase 4 inversion-quality escape hatch. When `true`, the URL
+   * builder appends `showAll=true` and the server bypasses the bottom-
+   * quintile (Q1/Q2) inversion-quality suppression. Off by default —
+   * the lottery feed is intentionally narrowed.
+   */
+  showAll?: boolean;
   /** 0-based page index (offset = page * limit). */
   page?: number;
   /** Page size. Default 50. */
@@ -74,6 +81,7 @@ export function useLotteryFinder({
   sort = 'chronological',
   minScore = null,
   minPremium = null,
+  showAll = false,
   page = 0,
   pageSize = 50,
 }: UseLotteryFinderArgs): UseFetchedDataResult<LotteryFinderResponse> {
@@ -93,6 +101,7 @@ export function useLotteryFinder({
   if (minScore != null) params.set('minScore', String(minScore));
   if (minPremium != null && minPremium > 0)
     params.set('minPremium', String(minPremium));
+  if (showAll) params.set('showAll', 'true');
   const url = `/api/lottery-finder?${params.toString()}`;
 
   // Original gates were `[marketOpen, !minute, page === 0]` — fold the
