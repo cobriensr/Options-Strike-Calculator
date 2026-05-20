@@ -806,8 +806,14 @@ def refit_ticker_inversion_stats(
     )
 
     if not write_db:
-        print('[ticker-quality] WRITE_DB not set — skipping UPSERT')
+        print('[ticker-quality] WRITE_DB not set — skipping UPDATE')
     else:
+        # UPDATE-only — lottery_ticker_stats has legacy NOT NULL columns
+        # (n_fires, high_peak_rate, ci_*, tier) that this refit doesn't
+        # populate. New tickers (in 90d window but not yet in the table)
+        # are seeded separately by api/_lib/lottery-ticker-stats-seed.ts;
+        # until that runs they keep NULL inversion_quintile, which the
+        # API treats as cold-start (bonus 0, never filtered).
         with conn.cursor() as cur:
             batch_size = 500
             for i in range(0, len(upsert_rows), batch_size):
@@ -815,28 +821,32 @@ def refit_ticker_inversion_stats(
                 execute_values(
                     cur,
                     """
-                    INSERT INTO lottery_ticker_stats (
-                      ticker, inversion_lcb_21d, inversion_lcb_90d,
-                      inversion_blend, inversion_quintile,
-                      inversion_n_21d, inversion_n_90d, updated_at
-                    )
-                    VALUES %s
-                    ON CONFLICT (ticker) DO UPDATE SET
-                      inversion_lcb_21d = EXCLUDED.inversion_lcb_21d,
-                      inversion_lcb_90d = EXCLUDED.inversion_lcb_90d,
-                      inversion_blend = EXCLUDED.inversion_blend,
-                      inversion_quintile = EXCLUDED.inversion_quintile,
-                      inversion_n_21d = EXCLUDED.inversion_n_21d,
-                      inversion_n_90d = EXCLUDED.inversion_n_90d,
+                    UPDATE lottery_ticker_stats AS t SET
+                      inversion_lcb_21d = u.lcb_21d,
+                      inversion_lcb_90d = u.lcb_90d,
+                      inversion_blend = u.blend,
+                      inversion_quintile = u.quintile,
+                      inversion_n_21d = u.n_21d,
+                      inversion_n_90d = u.n_90d,
                       updated_at = NOW()
+                    FROM (VALUES %s) AS u(
+                      ticker, lcb_21d, lcb_90d, blend, quintile, n_21d, n_90d
+                    )
+                    WHERE t.ticker = u.ticker
                     """,
                     batch,
-                    template='(%s, %s, %s, %s, %s, %s, %s, NOW())',
+                    template='(%s, %s, %s, %s, %s, %s, %s)',
                 )
+            cur.execute(
+                'SELECT COUNT(*) FROM lottery_ticker_stats '
+                'WHERE inversion_quintile IS NOT NULL'
+            )
+            updated_count = cur.fetchone()[0]
         conn.commit()
+        skipped = len(upsert_rows) - updated_count
         print(
-            f'[ticker-quality] UPSERTed {len(upsert_rows)} rows '
-            f'into lottery_ticker_stats'
+            f'[ticker-quality] UPDATED {updated_count} existing rows; '
+            f'{skipped} new tickers skipped (not yet in lottery_ticker_stats)'
         )
 
     if sim_csv_path is not None:
