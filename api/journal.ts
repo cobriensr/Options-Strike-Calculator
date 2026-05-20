@@ -18,7 +18,7 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -66,58 +66,82 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let rows;
 
     if (date) {
-      rows = await sql`
-        SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
-               spx, vix, vix1d, hedge, full_response, created_at
-        FROM analyses
-        WHERE date = ${String(date)}
-        ORDER BY created_at DESC
-        LIMIT ${lim}
-      `;
+      rows = await withDbRetry(
+        () => sql`
+          SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
+                 spx, vix, vix1d, hedge, full_response, created_at
+          FROM analyses
+          WHERE date = ${String(date)}
+          ORDER BY created_at DESC
+          LIMIT ${lim}
+        `,
+        2,
+        10_000,
+      );
     } else if (from && to) {
-      rows = await sql`
-        SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
-               spx, vix, vix1d, hedge, full_response, created_at
-        FROM analyses
-        WHERE date >= ${String(from)} AND date <= ${String(to)}
-        ORDER BY date DESC, created_at DESC
-        LIMIT ${lim}
-      `;
+      rows = await withDbRetry(
+        () => sql`
+          SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
+                 spx, vix, vix1d, hedge, full_response, created_at
+          FROM analyses
+          WHERE date >= ${String(from)} AND date <= ${String(to)}
+          ORDER BY date DESC, created_at DESC
+          LIMIT ${lim}
+        `,
+        2,
+        10_000,
+      );
     } else if (structure) {
-      rows = await sql`
-        SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
-               spx, vix, vix1d, hedge, full_response, created_at
-        FROM analyses
-        WHERE structure = ${String(structure)}
-        ORDER BY date DESC, created_at DESC
-        LIMIT ${lim}
-      `;
+      rows = await withDbRetry(
+        () => sql`
+          SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
+                 spx, vix, vix1d, hedge, full_response, created_at
+          FROM analyses
+          WHERE structure = ${String(structure)}
+          ORDER BY date DESC, created_at DESC
+          LIMIT ${lim}
+        `,
+        2,
+        10_000,
+      );
     } else if (confidence) {
-      rows = await sql`
-        SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
-               spx, vix, vix1d, hedge, full_response, created_at
-        FROM analyses
-        WHERE confidence = ${String(confidence)}
-        ORDER BY date DESC, created_at DESC
-        LIMIT ${lim}
-      `;
+      rows = await withDbRetry(
+        () => sql`
+          SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
+                 spx, vix, vix1d, hedge, full_response, created_at
+          FROM analyses
+          WHERE confidence = ${String(confidence)}
+          ORDER BY date DESC, created_at DESC
+          LIMIT ${lim}
+        `,
+        2,
+        10_000,
+      );
     } else if (mode) {
-      rows = await sql`
-        SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
-               spx, vix, vix1d, hedge, full_response, created_at
-        FROM analyses
-        WHERE mode = ${String(mode)}
-        ORDER BY date DESC, created_at DESC
-        LIMIT ${lim}
-      `;
+      rows = await withDbRetry(
+        () => sql`
+          SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
+                 spx, vix, vix1d, hedge, full_response, created_at
+          FROM analyses
+          WHERE mode = ${String(mode)}
+          ORDER BY date DESC, created_at DESC
+          LIMIT ${lim}
+        `,
+        2,
+        10_000,
+      );
     } else {
-      rows = await sql`
-        SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
-               spx, vix, vix1d, hedge, full_response, created_at
-        FROM analyses
-        ORDER BY date DESC, created_at DESC
-        LIMIT ${lim}
-      `;
+      rows = await withDbRetry(
+        () => sql`
+          SELECT id, date, entry_time, mode, structure, confidence, suggested_delta,
+                 spx, vix, vix1d, hedge, full_response, created_at
+          FROM analyses
+          ORDER BY date DESC, created_at DESC
+          LIMIT ${lim}
+        `,
+        2,
+        10_000,
+      );
     }
 
     done({ status: 200 });

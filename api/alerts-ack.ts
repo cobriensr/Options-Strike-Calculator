@@ -8,7 +8,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerEndpoint } from './_lib/api-helpers.js';
 import logger from './_lib/logger.js';
@@ -38,12 +38,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { id } = parsed.data;
 
       const sql = getDb();
-      const result = await sql`
-        UPDATE market_alerts
-        SET acknowledged = TRUE
-        WHERE id = ${id}
-        RETURNING id
-      `;
+      const result = await withDbRetry(
+        () => sql`
+          UPDATE market_alerts
+          SET acknowledged = TRUE
+          WHERE id = ${id}
+          RETURNING id
+        `,
+        2,
+        10_000,
+      );
 
       if (result.length === 0) {
         done({ status: 404 });

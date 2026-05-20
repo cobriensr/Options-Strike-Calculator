@@ -8,7 +8,7 @@
 import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 
 // Public diagnostic surface — list every table whose row count is safe
 // to expose to a guest cookie. Anything not on this list gets dropped
@@ -66,16 +66,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sql = getDb();
 
     // Test connection
-    const timeResult = await sql`SELECT NOW() as now`;
+    const timeResult = await withDbRetry(
+      () => sql`SELECT NOW() as now`,
+      2,
+      10_000,
+    );
 
     // Get row counts for all tables via a single query against pg_stat_user_tables.
     // This uses PostgreSQL's statistics (updated by autovacuum) — fast and avoids
     // 16 separate COUNT(*) queries. Values are approximate but good for diagnostics.
-    const tableRows = await sql`
-      SELECT relname AS name, n_live_tup::int AS count
-      FROM pg_stat_user_tables
-      ORDER BY relname
-    `;
+    const tableRows = await withDbRetry(
+      () => sql`
+        SELECT relname AS name, n_live_tup::int AS count
+        FROM pg_stat_user_tables
+        ORDER BY relname
+      `,
+      2,
+      10_000,
+    );
     const tables: Record<string, number> = {};
     for (const row of tableRows) {
       const name = row.name as string;
@@ -87,8 +95,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Latest applied migration
     let latestMigration: number | null = null;
     try {
-      const migRows =
-        await sql`SELECT MAX(id)::int as latest FROM schema_migrations`;
+      const migRows = await withDbRetry(
+        () => sql`SELECT MAX(id)::int as latest FROM schema_migrations`,
+        2,
+        10_000,
+      );
       latestMigration = migRows[0]?.latest ?? null;
     } catch {
       // schema_migrations doesn't exist yet
