@@ -6,9 +6,9 @@ export type {
   ChartSignal,
   EntryStep,
   AnalysisResult,
-} from '../../types/analysis';
+} from '../../types/analysis.js';
 
-import type { AnalysisMode, AnalysisResult } from '../../types/analysis';
+import type { AnalysisMode, AnalysisResult } from '../../types/analysis.js';
 
 export interface AnalysisContext {
   selectedDate?: string;

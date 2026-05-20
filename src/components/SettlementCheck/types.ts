@@ -5,4 +5,4 @@
  * src/utils/settlement.ts was importing from src/components/.
  */
 
-export type { SettlementResult } from '../../types/settlement';
+export type { SettlementResult } from '../../types/settlement.js';
