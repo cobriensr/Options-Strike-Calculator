@@ -10,8 +10,14 @@ vi.mock('../_lib/sentry.js', () => ({
     ),
     setTag: vi.fn(),
     captureException: vi.fn(),
+    captureMessage: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()) },
+}));
+
+const mockSql = vi.fn();
+vi.mock('../_lib/db.js', () => ({
+  getDb: vi.fn(() => mockSql),
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -114,6 +120,11 @@ beforeEach(() => {
       text: () => Promise.resolve(SAMPLE_CSV),
     }),
   );
+  // Default the staleness query to fresh so non-staleness tests don't
+  // accidentally trip the warning. Individual tests can override.
+  mockSql.mockReset();
+  mockSql.mockResolvedValue([{ days: '0.5' }]);
+  vi.mocked(Sentry.captureMessage).mockReset();
 });
 
 describe('refresh-vix1d handler', () => {
@@ -174,5 +185,65 @@ describe('refresh-vix1d handler', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(500);
+  });
+});
+
+// ── lottery_ticker_stats staleness guard ──────────────────────
+
+describe('lottery_ticker_stats staleness guard', () => {
+  it('does NOT capture Sentry warning when stats are fresh (<=3 days)', async () => {
+    mockSql.mockResolvedValueOnce([{ days: '0.5' }]);
+    const req = makeCronReq();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const staleCalls = vi
+      .mocked(Sentry.captureMessage)
+      .mock.calls.filter((c) => String(c[0]).includes('lottery_ticker_stats'));
+    expect(staleCalls).toHaveLength(0);
+  });
+
+  it('captures Sentry warning when lottery_ticker_stats is stale (>3 days)', async () => {
+    mockSql.mockResolvedValueOnce([{ days: '4.5' }]);
+    const req = makeCronReq();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(vi.mocked(Sentry.captureMessage)).toHaveBeenCalledWith(
+      expect.stringContaining('lottery_ticker_stats'),
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({ ageDays: 4.5 }),
+      }),
+    );
+  });
+
+  it('does NOT fail the cron when the staleness DB query throws', async () => {
+    mockSql.mockRejectedValueOnce(new Error('neon transient'));
+    const req = makeCronReq();
+    const res = mockResponse();
+    await handler(req, res);
+
+    // vix1d refresh already succeeded — staleness probe failure is bolt-on
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ success: true });
+    // The error is still surfaced to Sentry as an exception, not warning
+    expect(vi.mocked(Sentry.captureException)).toHaveBeenCalled();
+  });
+
+  it('treats empty lottery_ticker_stats table as not-stale (no warning)', async () => {
+    // MAX(updated_at) on empty table → null → days coerces to 0
+    mockSql.mockResolvedValueOnce([{ days: null }]);
+    const req = makeCronReq();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const staleCalls = vi
+      .mocked(Sentry.captureMessage)
+      .mock.calls.filter((c) => String(c[0]).includes('lottery_ticker_stats'));
+    expect(staleCalls).toHaveLength(0);
   });
 });

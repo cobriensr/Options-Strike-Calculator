@@ -18,6 +18,7 @@
 
 import { Sentry, metrics } from '../_lib/sentry.js';
 import { redis } from '../_lib/schwab.js';
+import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
@@ -148,6 +149,34 @@ export default withCronCheckin('refresh-vix1d', async (req, res) => {
         { dayCount, durationMs: Date.now() - startTime },
         'refresh-vix1d: stored VIX1D daily map in Redis',
       );
+
+      // Phase 5 of the lottery inversion-quality filter
+      // (docs/superpowers/specs/lottery-inversion-quality-filter-2026-05-19.md).
+      // The per-ticker inversion refit runs manually via
+      // scripts/enrich_lottery_outcomes.py. If the operator skips several
+      // days, lottery_ticker_stats.updated_at goes stale and the Q1/Q2
+      // filter starts working off outdated quintile assignments. Warn via
+      // Sentry so the operator knows to re-run the refit. Wrapped in its
+      // own try/catch so a transient DB hiccup here doesn't fail the
+      // vix1d refresh that already succeeded above.
+      try {
+        const sql = getDb();
+        const ageRows = await sql`
+          SELECT EXTRACT(EPOCH FROM (NOW() - MAX(updated_at))) / 86400 AS days
+          FROM lottery_ticker_stats
+        `;
+        const days = Number(ageRows[0]?.days ?? 0);
+        if (days > 3) {
+          Sentry.captureMessage('lottery_ticker_stats stale', {
+            level: 'warning',
+            extra: { ageDays: days },
+          });
+        }
+      } catch (err) {
+        Sentry.captureException(err, {
+          tags: { source: 'lottery-ticker-stats-staleness-check' },
+        });
+      }
 
       await reportCronRun('refresh-vix1d', {
         status: 'ok',
