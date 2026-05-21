@@ -149,6 +149,150 @@ The `trade_*` columns are manually filled by the trader via a journal entry, so 
 2. Should the pre-day filter status be checked at Friday close and displayed as "Monday is MAXIMUM tomorrow" the night before, or only revealed when Monday opens?
 3. Live data lag: the periscope scraper runs every 10 min. Setup detection therefore has 10-min lag on gamma nodes. Acceptable since 1-min candle data is faster than the dealer-rebalance dynamic anyway.
 
+## Frontend integration (reviewed 2026-05-21)
+
+### Placement in layout
+
+The frontend uses a single-page `App.tsx` with a panel registry (`src/constants/panel-registry.ts`). Tiles are grouped into: Inputs, Market Context, Futures, Charts & History, Trading, Results.
+
+**Add new panel between `sec-gexbot` and `sec-periscope-exposure`** in the **Market Context** group. Rationale:
+- The tile is conceptually adjacent to Periscope (both about +γ floor/ceiling)
+- Keeps gamma-related tiles contiguous
+- Fire-list structure aligns with sibling alert tiles (LotteryFinder, SilentBoom) already in Market Context group
+- **SilentBoom precedent**: already implements per-DOW confidence badges — read its source as the closest UI reference before building
+
+**Registry entry** (`src/constants/panel-registry.ts`):
+```ts
+{ id: 'sec-gamma-node-detector', label: 'Gamma-Node Composite Detector', group: 'Market Context' }
+```
+
+**App.tsx panelMap entry** (around line 1188): wire `sec-gamma-node-detector` → `<GammaNodeDetectorPanel />`.
+
+### Component structure
+
+```
+src/components/GammaNodeDetector/
+  index.tsx              ← exports GammaNodeDetectorPanel
+  GammaNodeDetectorPanel.tsx  ← outer SectionBox + header + day banner + fire list
+  DayConfidenceBanner.tsx ← banner: DOW + confidence tier + filter status + anti-filter warnings
+  FireRow.tsx            ← single fire entry (time + signal type + strike + ret_30m if past)
+  hooks/
+    useGammaSetups.ts    ← polls /api/gamma-setups/active
+```
+
+### Styling — match existing visual language EXACTLY
+
+The frontend uses semantic CSS tokens (`--color-success`, `--color-danger`, `--color-caution`, `--color-accent`) from `src/themes/` with a `.dark` class override. Use the existing components, not hand-rolled wrappers.
+
+**Outer tile wrapper** — use the `SectionBox` component (`src/components/ui/SectionBox.tsx`):
+```tsx
+<SectionBox id="sec-gamma-node-detector" title="GAMMA-NODE COMPOSITE DETECTOR">
+  {/* contents */}
+</SectionBox>
+```
+SectionBox handles all the standard styling (border-t-accent, rounded-[14px], border-[1.5px], p-[18px], shadow, animate-fade-in-up, dark-mode tokens). DO NOT roll a custom wrapper.
+
+**Header** — handled by SectionBox `title` prop, which renders:
+```
+text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase
+```
+
+**Confidence badge** — use the `StatusBadge` component (`src/components/ui/StatusBadge.tsx`) with semantic color mapping. Reference implementation at `src/components/GexTarget/TargetTile.tsx:44-54`:
+```tsx
+import { StatusBadge } from '../ui/StatusBadge';
+import { theme } from '../../themes';
+
+function ConfidenceBadge({ tier }: { tier: 'MAXIMUM' | 'HIGH' | 'MEDIUM' }) {
+  const color =
+    tier === 'MAXIMUM' || tier === 'HIGH' ? theme.green : theme.caution;
+  return <StatusBadge label={tier} color={color} />;
+}
+```
+The StatusBadge uses `color-mix(in srgb, ${color} 9%, transparent)` for the tint — matches the existing visual.
+
+**Anti-filter warning badge** — use the EventDayWarning pattern (`src/components/EventDayWarning.tsx:120-134`):
+```tsx
+<span
+  className="shrink-0 rounded-full px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.06em] uppercase"
+  style={{ backgroundColor: tint(warningColor, '18'), color: warningColor }}
+>
+  FOMC DAY
+</span>
+```
+Color mapping for warnings:
+- `FOMC day` → `theme.caution` (amber/yellow)
+- `DOM 1-5` → `theme.red` (anti-filter for E5)
+- `DOM 16-20` → `theme.red` (anti-filter for E1)
+
+**Fire-row layout** — mirror EventDayWarning's row pattern:
+```tsx
+<div className="flex items-center gap-2.5 py-1.5">
+  <span
+    className="shrink-0 rounded-full px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.06em] uppercase"
+    style={{ backgroundColor: tint(signalColor, '18'), color: signalColor }}
+  >
+    {signalType /* E1 / E5 / PCS */}
+  </span>
+  <span className="text-primary font-sans text-xs font-medium">
+    Strike {nodeStrike} | {/* description */}
+  </span>
+  <span className="text-muted ml-auto shrink-0 font-mono text-[11px]">
+    {fireTimeCT} CT
+  </span>
+</div>
+```
+
+**Color semantics for signal type:**
+- E1 long call → `theme.green` (bullish breakthrough)
+- E5 long put → `theme.red` (bearish breakdown)
+- PCS Monday → `theme.accent` (blue, premium-sell setup)
+
+**Loading state** — use the `SkeletonSection` component (`src/components/SkeletonSection.tsx`). Matches the SectionBox dimensions.
+
+**Empty state** — when no fires today:
+```tsx
+<div className="rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px] text-neutral-500">
+  No setups detected yet today.
+</div>
+```
+
+### Typography reference (for any custom text in the tile)
+
+| Element | Classes |
+|---|---|
+| Section header (handled by SectionBox) | `text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase` |
+| Sub-header / row label | `text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase` |
+| Card title | `text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase` |
+| Card subtitle | `text-muted font-sans text-[10px]` |
+| Body text | `text-primary font-sans text-xs font-medium` |
+| Numeric value | `font-mono text-[13px] font-semibold` |
+| Timestamp | `text-muted font-mono text-[11px]` |
+| Badge text | `font-mono text-[10px] font-bold tracking-[0.06em] uppercase` |
+
+### Day banner mockup
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ GAMMA-NODE COMPOSITE DETECTOR                                         │
+├──────────────────────────────────────────────────────────────────────┤
+│ ┌──────────────────────────────────────────────────────────────────┐ │
+│ │ MONDAY    [ MAXIMUM ]   pre-day filter active                     │ │
+│ │           [ FOMC DAY ]  — display anti-filter warnings here       │ │
+│ └──────────────────────────────────────────────────────────────────┘ │
+│ ┌──────────────────────────────────────────────────────────────────┐ │
+│ │ [E1] Strike 7445 | breakthrough confirmed, 3-bar hold   10:22 CT  │ │
+│ │ [E5] Strike 7420 | failed-bounce breakdown               11:47 CT  │ │
+│ │ [PCS] Strike 7415 | ES basis ↑, gap +0.6%                10:08 CT  │ │
+│ └──────────────────────────────────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### Don't forget
+
+- Authenticated only? Probably yes — matches GexbotSection gating (CLAUDE.md memory: only Claude API calls are owner-gated; data reads are public for guests, so this tile could be public).
+- Add to panel-prefs modal automatically (uses Market Context group default).
+- Mobile layout: SectionBox uses `max-w-[660px]` mobile container; fire rows wrap naturally.
+
 ## Validation done
 
 See [project_gamma_node_rejection_signal.md](../../../../.claude/projects/-Users-charlesobrien-Documents-Workspace-strike-calculator/memory/project_gamma_node_rejection_signal.md) for the full 30+ hypothesis validation chain. The composite framework survived walk-forward; the per-DOW labels are derived from the actual statistical edge in our 82-day sample (2026-02-27 → 2026-05-19).
