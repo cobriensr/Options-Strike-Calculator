@@ -12,17 +12,34 @@
 
 ## Goal
 
-Replace the per-slice Claude `runPeriscopeAutoPlaybook` call (intraday mode only) with a deterministic analyzer that produces a structured "trader's map" — entry triggers, stops, targets, trade structures — updated every minute from GEXBot 1-min state endpoints. Sub-60-second latency, zero Claude calls during the trading day's intraday slices.
+Replace the per-slice Periscope-scraper + Claude pipeline with a deterministic analyzer fed by **GEXBot's 1-min state endpoints**. Output: a structured "trader's map" — entry triggers, stops, targets, trade structures — updated every minute. Zero Claude calls during the trading day's intraday slices.
 
 `pre_trade` (one call/day before open) and `debrief` (one call/day after close) keep Claude — those modes have no latency pressure and benefit from cross-context synthesis.
 
 ## Why
 
-Current pipeline: Periscope scraper captures a 10-min slice (2-3 min lag) → backend triggers Claude with the slice payload (2-3 min lag) → panel updates. Total 4-6 min stale.
+**This is a latency-reduction project, full stop.** The current pipeline is:
 
-Replacement: GEXBot polls per-strike Greeks every minute → analyzer computes the map in <1 sec → panel polls the map endpoint every ~10 sec. Total ~60 sec stale.
+```
+Periscope scrape (10-min slot cadence)    = up to 10 min
+  → scraper lag (2-3 min)                 = +2-3 min
+  → Claude auto-playbook call (2-3 min)   = +2-3 min
+  → panel displays                        = 13-15 min stale
+```
+
+GEXBot replacement:
+
+```
+GEXBot poll (1-min cadence, already running) = up to 1 min
+  → analyzer compute (<1 sec)                = ~negligible
+  → panel polls map endpoint (10 sec)        = ~10 sec
+  → panel displays                           = ~1 min stale
+```
+
+**13-15 min → ~1 min.** The Claude call latency goes to zero because the analyzer is deterministic. The 10-min cadence goes to 1-min because GEXBot polls every minute.
 
 User direction from 2026-05-21:
+- *"The whole point of this is to replace Periscope with Gexbot so I go from 13-15 minutes of latency to 1 minute response"*
 - *"I just need a map to know where to go during the day based on gamma, delta, charm, vanna, etc."*
 - *"This be based on dealer mechanics and price action not just an arbitrary number"*
 - *"Whatever the data says"* (the rules study's job; already done)
@@ -82,7 +99,7 @@ export interface PeriscopeMap {
 
   // Freshness
   ageSec: number;
-  source: 'periscope_snapshots' | 'gexbot_state';
+  source: 'gexbot_state' | 'periscope_snapshots'; // gexbot primary; snapshots fallback
 }
 ```
 
@@ -157,7 +174,7 @@ api/
 
 ### `periscope-data-source.ts` — input abstraction
 
-Two readers behind a common interface so we can swap data sources without touching the analyzer:
+GEXBot is the primary source from day 1. `periscope_snapshots` becomes a fallback when GEXBot is delayed or unavailable, plus the source for the historical replay sanity test.
 
 ```ts
 export interface PerStrikeSnapshot {
@@ -165,14 +182,29 @@ export interface PerStrikeSnapshot {
   spot: number;
   expiry: string;
   strikes: { strike: number; gamma: number; charm: number; vanna: number; positions?: number }[];
-  source: 'periscope_snapshots' | 'gexbot_state';
+  source: 'gexbot_state' | 'periscope_snapshots';
 }
 
-export function loadLatestFromPeriscope(): Promise<PerStrikeSnapshot>;
+// PRIMARY — used by /api/periscope-map and the cron.
 export function loadLatestFromGexbot(ticker: GexbotTicker): Promise<PerStrikeSnapshot>;
+
+// FALLBACK — used when the latest gexbot_api_capture row is > 3 min old.
+// Also used by the replay test for historical days where GEXBot wasn't
+// being captured yet (pre-2026-05-16).
+export function loadLatestFromPeriscope(): Promise<PerStrikeSnapshot>;
 ```
 
-Phase 1 implements `loadLatestFromPeriscope`. Phase 5 swap to `loadLatestFromGexbot` after the 1-min cadence + ticker coverage is proven sufficient.
+#### GEXBot payload decoding
+
+GEXBot's `state/{gamma,charm,vanna,delta}_{zero,one}` endpoints return responses with a `mini_contracts` array. Each row is:
+
+```text
+[strike, call_value, put_value, total_dealer_value, [t-1m, t-5m, t-10m], reserved, null]
+```
+
+Position-3 (`total_dealer_value`) is the signed MM-attributed value at that strike — gamma when reading `state/gamma_zero`, charm when reading `state/charm_zero`, etc. Position-4 is the time-series for slice-over-slice deltas (used by the inventory-drop rules even though they didn't make it into the validated rule set).
+
+Data source reader joins three `gexbot_api_capture` rows per snapshot (gamma_zero + charm_zero + vanna_zero, or `_one` for 1DTE), unifies on (capturedAt, strike), and returns a single `PerStrikeSnapshot`.
 
 ### `periscope-analyzer.ts` — pure function
 
@@ -268,16 +300,16 @@ Polls `/api/periscope-map` every 10 s during market hours.
 
 ## Migration plan
 
+The original draft included a 5-day A/B soak validating analyzer-vs-Claude agreement. That's the wrong objective — the user's goal is **latency reduction**, not signal parity. Removed. Replaced with a direct cut-over behind a feature flag.
+
 | Phase | Action | User-visible? |
 |---|---|---|
-| 1 | Build analyzer + endpoint + cron in shadow mode (computes + persists, panel still shows Claude) | No |
-| 2 | A/B query: compare `periscope_maps` vs `periscope_analyses` on the same slice (gamma_floor / ceiling / magnet match? regime tag match? trade types overlap?). Report agreement % per field. | No |
-| 3 | UI toggle: a setting that switches the panel between Claude-mode and map-mode | Owner only |
-| 4 | Default the toggle to map-mode after 5+ trading days of high agreement | Yes (user sees map) |
-| 5 | Retire intraday `runPeriscopeAutoPlaybook` calls; remove auto-playbook webhook for intraday slices | No (it's already dark) |
-| 6 (optional) | Swap data source from `periscope_snapshots` to `gexbot_state` for 1-min cadence | No (latency improves) |
+| 1 | Build analyzer + GEXBot data source + endpoint + cron + cache. Map persists every minute. Panel still shows Claude output. | No |
+| 2 | Frontend: ship the new map panel behind a feature flag, default OFF. Owner toggles it on for their own session. | Owner only |
+| 3 | Owner uses map for a few live sessions, eyeball-validates against current Periscope reads. If happy, flip flag default to ON. | Yes |
+| 4 | Retire intraday `runPeriscopeAutoPlaybook` Claude calls. Keep `pre_trade` + `debrief`. | No |
 
-Stop and re-evaluate after Phase 2 if agreement < 80% on key_levels or regime tag.
+If the map looks wrong in live use, fall back to flag OFF and fix. The cost of being wrong is one wrong-map-driven trade decision; the cost of dragging out the migration is real latency the user is paying every day.
 
 ## Testing
 
@@ -291,12 +323,17 @@ Stop and re-evaluate after Phase 2 if agreement < 80% on key_levels or regime ta
 - Mock the data source, hit the endpoint, assert the response shape matches `PeriscopeMap`
 - Cache hit/miss path
 
-### Replay test (`scripts/replay-periscope-analyzer-2026-05-21.ts`)
-- For every slice in `periscope_snapshots` between 2026-04-01 and 2026-05-19:
-  - Run the analyzer
-  - Compare to the corresponding `periscope_analyses` row
-  - Record per-field agreement (regime, long_trigger, short_trigger, gamma_floor, gamma_ceiling, magnet, charm_zero)
-- Output: an agreement-rate table, plus a list of slices with >$10 pt divergence in trigger/stop levels (those are the bugs to fix)
+### Replay sanity test (`scripts/replay-periscope-analyzer-2026-05-21.ts`)
+
+NOT an agreement test against Claude — the spec deliberately drops that. Replaced with a sanity check:
+
+- For every `periscope_snapshots` slice between 2026-05-01 and 2026-05-19 (full coverage window):
+  - Run the analyzer with `source: 'periscope_snapshots'` (fallback path)
+  - Record `PeriscopeMap` output
+
+- Output: a single-page summary of "did the analyzer produce a usable map?" — frequency of `null` fields, regime distribution, trigger-level distance from spot distribution. Owner spot-checks 10 random sampled slices manually.
+
+If the analyzer is producing null gamma_floor on 80% of slices, the magnitude threshold is wrong. If regime tag is "other" on 50% of slices, the classifier needs work. Eyeball, not agreement-rate.
 
 ## Open questions
 
@@ -335,31 +372,26 @@ Total ~1,625 LOC net add (after the frontend deletion).
 
 | Phase | Scope | Time |
 |---|---|---|
-| 1 | Types + analyzer-rules constants (already done) + analyzer + unit tests | 1.5 days |
-| 2 | Endpoint + cron + Upstash caching + migration #N for `periscope_maps` | 0.5 day |
-| 3 | Replay test + agreement-rate analysis vs `periscope_analyses` | 0.5 day |
-| 4 | Frontend hook + panel refactor + UI toggle | 1 day |
-| 5 | A/B for 5 trading days, monitor agreement, fix divergences | 5 trading days |
-| 6 | Default to map-mode, retire intraday Claude calls in `runPeriscopeAutoPlaybook` | 0.5 day |
-| 7 (later) | Swap data source to GEXBot state endpoints | 1 day |
+| 1 | Types + GEXBot data source (decoder for `mini_contracts` array) + analyzer + unit tests | 1.5 days |
+| 2 | Endpoint + cron + Upstash cache + migration #N for `periscope_maps` + replay sanity test | 1 day |
+| 3 | Frontend hook + panel refactor + feature-flag toggle | 1 day |
+| 4 | Owner enables flag, validates in 1-2 live sessions, flips default on | 1-2 trading days passive |
+| 5 | Retire intraday `runPeriscopeAutoPlaybook` Claude calls | 0.5 day |
 
-Calendar total: ~4 build days + 5 trading days of soak.
+Calendar total: **~3.5 build days + 1-2 owner-validation sessions.** No multi-week soak.
 
 ## Non-goals
 
 - Replacing `pre_trade` and `debrief` Claude calls. These have no latency pressure and benefit from cross-context synthesis.
 - New signals beyond the validated rules. This is re-platforming, not research.
-- Multi-ticker analyzer beyond SPX/NDX.
+- Multi-ticker analyzer beyond SPX (NDX is a later add — GEXBot covers it, but frontend integration is its own scope).
 - Paper-trading harness.
-- Real-time WebSocket updates to the panel (polling is fine at 10-s cadence).
+- Real-time WebSocket updates to the panel (10-sec polling is fine; sub-1-min latency target is already met).
 - Frontend redesign beyond the MM Exposure panel.
+- Multi-week A/B soak against Claude's prior output. The agreement-rate framing was solving for the wrong objective.
 
 ## Risk to flag
 
-The study's honest finding (F1 < 0.6 on all rule families, base rate 0.1%) means the analyzer's signal quality matches Claude's already-mechanical output — no edge over current state. **The build is justified by latency and cost, not by signal lift.** If during Phase 3 the agreement rate vs Claude's output is *very high* (say > 95%), that *confirms* the value proposition. If it's low (< 80%), one of two things is true: (a) Claude is doing more than mechanical rule application (in which case the analyzer is a regression and we should not cut over) or (b) the rule thresholds need re-tuning. Re-evaluate at Phase 2.5 before committing to UI changes.
+The study's honest finding (F1 < 0.6 on all rule families, base rate 0.1%) means the analyzer's signal quality matches Claude's already-mechanical output — no edge over current state. **The build is justified by latency reduction (13-15 min → 1 min) and cost (Claude calls → 0), not by signal lift.**
 
-## Open question for the user before Phase 1 starts
-
-**Single decision needed:** do we start by sourcing from `periscope_snapshots` (10-min cadence, exact equivalence to current data path) and swap to GEXBot in Phase 7, OR do we go direct to GEXBot from the start (1-min cadence, no equivalence baseline)?
-
-Recommendation: **start with periscope_snapshots** so the Phase 3 agreement test has a clean baseline. Once analyzer ≈ Claude is validated, the GEXBot swap is independent and risk-free.
+The user is the validator. Phase 4 owner-validation in 1-2 live sessions catches anything Phase 3 sanity-check missed. If the map looks wrong in live use, the feature flag flips off and the spec needs revision before retrying. The cost of "wrong map for one session" is small; the cost of dragging out validation while paying 13-15 min latency every day is large.
