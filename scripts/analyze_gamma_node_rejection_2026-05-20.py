@@ -42,11 +42,12 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 # === Configuration ===
 PERCENTILE_LO = 75  # range floor (drop noise)
-PERCENTILE_HI = 99  # range ceiling (drop news-spike outliers)
+PERCENTILE_HI = 100  # 100 = no ceiling (include all large bars)
 LOOKBACK_PERISCOPE_MIN = 10
 HORIZONS_MIN = [15, 30, 60]
 TOUCHED_AGAIN_HORIZON_MIN = 30
 LATEST_EVENT_CT_MINUTES = 14 * 60  # before 14:00 CT
+OUTPUT_SUFFIX = '_no-ceiling'  # appended to CSV/MD filenames; '' for v1
 
 
 # === DB helpers ===
@@ -173,12 +174,17 @@ def forward_metrics(candles, event_ts, event_close, node_strike, direction):
 # === Findings writer ===
 
 def write_findings(df, lo, hi, candle_count, peri_snap_count, peri_dates):
-    md_path = OUT / 'gamma_node_rejection_findings_2026-05-20.md'
+    md_path = OUT / f'gamma_node_rejection_findings_2026-05-20{OUTPUT_SUFFIX}.md'
     lines = []
     lines.append('# Gamma-Node Rejection Historical Study (2026-05-20)\n')
     lines.append('## Setup\n')
-    lines.append(f'- Bar range filter: p{PERCENTILE_LO} = {lo:.2f}pts, '
-                 f'p{PERCENTILE_HI} = {hi:.2f}pts\n')
+    if PERCENTILE_HI >= 100:
+        lines.append(f'- Bar range filter: range >= p{PERCENTILE_LO} '
+                     f'({lo:.2f}pts), no upper ceiling '
+                     f'(max observed: {hi:.2f}pts)\n')
+    else:
+        lines.append(f'- Bar range filter: p{PERCENTILE_LO} = {lo:.2f}pts, '
+                     f'p{PERCENTILE_HI} = {hi:.2f}pts\n')
     lines.append(f'- 1-min candles loaded: {candle_count:,}\n')
     lines.append(f'- Periscope snapshots loaded: {peri_snap_count:,} unique\n')
     lines.append(f'- Periscope date coverage: {peri_dates[0]} → {peri_dates[1]} '
@@ -351,7 +357,7 @@ def main():
     df = pd.DataFrame(rows)
     print(f'(event, node) rows: {len(df):,}')
 
-    csv_path = OUT / 'gamma_node_rejection_2026-05-20.csv'
+    csv_path = OUT / f'gamma_node_rejection_2026-05-20{OUTPUT_SUFFIX}.csv'
     df.to_csv(csv_path, index=False)
     print(f'Wrote CSV → {csv_path}')
 
