@@ -122,7 +122,7 @@ export default withCronInstrumentation(
            AND bucket_ct >= NOW() - (${CATCHUP_FLOOR_HOURS}::int * INTERVAL '1 hour')
       `,
       2,
-      10_000,
+      30_000, // bumped 10s→30s 2026-05-21 — heavy LATERAL agg on ws_option_trades was hitting the 10s cap chronically (Sentry 7J, 8S)
     )) as EligibleAlert[];
 
     if (eligible.length === 0) {
@@ -171,7 +171,7 @@ export default withCronInstrumentation(
                ) f ON TRUE
       `,
       2,
-      10_000,
+      30_000, // bumped 10s→30s 2026-05-21 — heavy LATERAL agg on ws_option_trades was hitting the 10s cap chronically (Sentry 7J, 8S)
     )) as AggRow[];
 
     let evaluated = 0;
@@ -228,7 +228,7 @@ export default withCronInstrumentation(
              AND l.round_trip_net_pct IS NULL
         `,
         2,
-        10_000,
+        30_000, // bumped 10s→30s 2026-05-21 — heavy LATERAL agg on ws_option_trades was hitting the 10s cap chronically (Sentry 7J, 8S)
       );
     }
     if (sbUpdates.length > 0) {
@@ -246,7 +246,7 @@ export default withCronInstrumentation(
              AND s.round_trip_net_pct IS NULL
         `,
         2,
-        10_000,
+        30_000, // bumped 10s→30s 2026-05-21 — heavy LATERAL agg on ws_option_trades was hitting the 10s cap chronically (Sentry 7J, 8S)
       );
     }
 

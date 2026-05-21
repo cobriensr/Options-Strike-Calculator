@@ -251,7 +251,15 @@ export async function degradeOnTimeout<T>(
   fallback: T,
   context: string,
   retries = 2,
-  perAttemptTimeoutMs = 10_000,
+  // Bumped 10s→20s 2026-05-21. chainExtras + reignitedRows CTEs over a
+  // full trading day's lottery_finder_fires were hitting the 10s cap
+  // ~258 times/day (SENTRY-EMERALD-DESERT-9J, 9H — 517+ events in 2 days)
+  // and degrading the response to its empty-fallback. The 5-minute cron
+  // refresh on the frontend masks the user impact, but the alert noise
+  // was real. 20s gives the slowest reignition CTEs (window funcs over
+  // 5k+ fires) room to complete while still capping the user-facing
+  // request budget. Don't push past 20s on the user path.
+  perAttemptTimeoutMs = 20_000,
 ): Promise<T> {
   try {
     return await withDbRetry(fn, retries, perAttemptTimeoutMs);

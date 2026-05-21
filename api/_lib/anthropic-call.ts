@@ -159,6 +159,26 @@ function isClientErrorThatWontRetry(err: unknown): boolean {
 }
 
 /**
+ * True when the streaming connection was dropped mid-response by undici
+ * (Node's HTTP client) — e.g. `TypeError: terminated`, `SocketError:
+ * other side closed`. These bubble up through the SDK as `Error` with
+ * `message === 'terminated'` and a `.cause` that is a `SocketError`.
+ * Worth one retry on the same model — the upstream just disconnected.
+ */
+function isSocketTerminatedError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.message === 'terminated') return true;
+  const cause = (err as { cause?: unknown }).cause;
+  if (
+    cause instanceof Error &&
+    (cause.name === 'SocketError' || cause.message === 'other side closed')
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Streams an Anthropic message call, transparently falling back to a
  * secondary model on availability errors, accumulating the final text
  * + usage, and reporting cache-hit information for cost monitoring.
@@ -252,11 +272,30 @@ export async function runCachedAnthropicCall(
     });
     metrics.increment(fallbackMetric);
     modelUsed = fallbackModel;
-    response = await buildStream(
-      fallbackModel,
-      fallbackMaxTokens ?? maxTokens,
-      fallbackEffort ?? effort,
-    ).finalMessage();
+    // One-shot retry on undici TCP socket close mid-stream
+    // (`TypeError: terminated` / `SocketError: other side closed`).
+    // Anthropic occasionally drops the streaming connection on long
+    // responses — the SDK's `finalMessage()` doesn't retry these
+    // automatically. We retry exactly once before giving up.
+    // SENTRY-EMERALD-DESERT-41 (2026-05-21).
+    try {
+      response = await buildStream(
+        fallbackModel,
+        fallbackMaxTokens ?? maxTokens,
+        fallbackEffort ?? effort,
+      ).finalMessage();
+    } catch (fallbackErr) {
+      if (!isSocketTerminatedError(fallbackErr)) throw fallbackErr;
+      logger.info(
+        { err: fallbackErr, fallbackModel },
+        'Anthropic fallback stream terminated mid-response — retrying once',
+      );
+      response = await buildStream(
+        fallbackModel,
+        fallbackMaxTokens ?? maxTokens,
+        fallbackEffort ?? effort,
+      ).finalMessage();
+    }
   }
 
   const text = response.content
