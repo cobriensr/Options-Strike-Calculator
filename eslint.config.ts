@@ -11,6 +11,7 @@ export default [
   {
     ignores: [
       'dist',
+      '.vercel',
       'coverage',
       'ml/.venv',
       '.claude/skills',
