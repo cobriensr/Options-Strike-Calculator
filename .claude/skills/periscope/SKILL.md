@@ -301,13 +301,14 @@ Distinguish from charm: charm flow is gradual delta drift over time. Unwind flow
 
 ### Long-skew regime watchout
 
-The standard read above assumes the **normal regime** — customers long stock + long puts + short calls, dealers as the inverse counterparty (short puts + long calls), with suppressive +γ hedging above price. In a **long-skew regime** the dealer book inverts (customers chasing calls instead of selling them; 3M 25Δ skew at historical lows), and the same chart reads differently:
+The standard read above assumes the **normal regime** — customers long stock + long puts + short calls, dealers as the inverse counterparty (short puts + long calls), with suppressive +γ hedging above price. In a **long-skew regime** the dealer book inverts (customers chasing calls instead of selling them; 3M 25Δ skew at historical lows), and the same chart reads differently. **Vanna and charm sign-flip alongside gamma** at the dealer-short strike — every Greek that normally produces suppressive hedging above the dealer-long strike now produces procyclical hedging in this regime.
 
 - **Red-bar clusters above price become fade fuel, not breakout fuel.** Rallies into them extend in the moment (forced MM chasing UP) but tend to fade as IV later decays and the same /ES purchases reverse into passive selling.
 - **Vol-decay forced selling is a third drift mechanism** alongside delta (price moves) and charm (time decay). Price stalled below short-call strikes with rich IV produces passive MM /ES selling as IV bleeds — even with no directional move.
 - **Live fingerprint, no infra required: spot/vol positive correlation.** If VIX is rising with SPX (not against it), treat ceiling reads with extra caution; the structural defense above may be inverted.
+- **Exit timer is the vol flatline, not the price reversal.** Vol can't climb forever — once daily fixed-strike IV change rolls to zero with spot still elevated, the mechanical unwind is imminent (the /ES bought to hedge the short-call book gets sold back regardless of news). Switch long-side reads from "drift target" to "exit watch" at the flatline, not when candles turn.
 
-This is an interpretive overlay, not a quantitative regime gate. The 25Δ-90D skew percentile is not yet ingested in this codebase, and the relationship has not been validated against SPX 0DTE outcomes here. See `references/vol-signals-mm-heuristics.md` Section 1 ("Long skew" regime: inverted dealer book makes tops unstable) for the full mechanic. When the spot/vol fingerprint is visible live, downgrade confidence on red-bar-cluster breakout reads above spot and flag the "chase-and-fade" pattern as a possibility.
+This is an interpretive overlay, not a quantitative regime gate. The 25Δ-90D skew percentile is not yet ingested in this codebase, and the relationship has not been validated against SPX 0DTE outcomes here. See `references/vol-signals-mm-heuristics.md` Section 1 ("Long skew" regime: inverted dealer book makes tops unstable) for the full mechanic plus the live 2026-04-14 → 2026-05-13 example and the trade frame. When the spot/vol fingerprint is visible live, downgrade confidence on red-bar-cluster breakout reads above spot and flag the "chase-and-fade" pattern as a possibility.
 
 ### Futures execution — the permission/prohibition framing
 

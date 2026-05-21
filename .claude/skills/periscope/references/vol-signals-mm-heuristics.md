@@ -46,14 +46,22 @@ When citing a heuristic in a Periscope read, include the tag in parentheses, e.g
 
 ### "Long skew" regime: inverted dealer book makes tops unstable [plausible]
 
-**Source:** 22.md (VolSignals "Are positions telling us the top is in?" 2026-05-13) | quote-keyword: "long skew" / "customers chasing calls" / "inverse spot V correlation"
-**Mechanic:** The normal risk-reversal book (above) inverts when customers chase calls instead of selling them and stop buying puts. Dealer book flips to long puts / short calls. Above-spot positioning is now SHORT gamma instead of long — so rallies into red-bar (short-γ) clusters force MM /ES buying (procyclical chase UP), the same way short-γ below spot procyclically sells dips in the normal regime. The diagnostic tells: (a) 3-month 25Δ normalized skew compressed to historical lows (put IV − call IV abnormally narrow), (b) **inverse spot/vol correlation** — VIX rising WITH SPX, not against it. The second is eyeball-able live with no infra.
+**Source:** 22.md (VolSignals "Are positions telling us the top is in?" 2026-05-13) | quote-keyword: "long skew" / "customers chasing calls" / "inverse spot V correlation" / "vanna and charm are literally inverted"
+**Mechanic:** The normal risk-reversal book (above) inverts when customers chase calls instead of selling them and stop buying puts. Dealer book flips to long puts / short calls. Above-spot positioning is now SHORT gamma instead of long — so rallies into red-bar (short-γ) clusters force MM /ES buying (procyclical chase UP), the same way short-γ below spot procyclically sells dips in the normal regime. **Vanna and charm sign-flip alongside gamma** — every Greek that normally produces suppressive hedging at and above the dealer-long strike now produces procyclical hedging at the dealer-short strike. The diagnostic tells: (a) 3-month 25Δ normalized skew compressed to historical lows (put IV − call IV abnormally narrow), (b) **inverse spot/vol correlation** — VIX rising WITH SPX, not against it. The second is eyeball-able live with no infra.
+**Preconditions (how the regime starts):** Two are required and observable in order. **(1)** Fixed-strike IV bleeds out sharply — straight-line decline through several sessions until "vol just got too low." **(2)** Customers begin buying upside calls instead of selling them, forcing MMs out of their normal long-call hedge into a short-call book. Both are visible from outside any dealer-positioning feed: a sharp IV bleed followed by call-chase prints with spot/vol going same-sign is the regime forming in real time.
+**Live example:** 2026-04-14 → 2026-05-13. Vol bottomed mid-April, spot/vol went positive immediately after, regime persisted ~5 weeks.
 **Implication:** Three behaviors break the standard model in this regime:
 
 1. **Rallies into red bars above price become fade fuel, not breakout fuel.** The chase extends the move in the moment, but as IV later decays the same forced /ES purchases reverse into passive selling — the rally retraces from its own mechanics, no news needed.
 2. **Vol-decay forced selling is a third drift driver** alongside delta and charm. Price stalled below short-call strikes with rich IV will see passive MM /ES selling as IV bleeds — directional movement not required.
 3. **Resolution paths:** either the market pulls back to reset positioning, or customers rehedge (re-engage long stock + long puts + short calls) and the normal regime resumes. There is no third path; the inverted state is unstable by construction.
-   **Periscope mapping:** This is an interpretive overlay, not a quantitative gate. When the spot/vol correlation fingerprint is visible live, downgrade the confidence of red-bar-cluster breakout reads above spot, and flag the "chase-and-fade" pattern as a possibility instead of trend continuation. The 25Δ-90D skew percentile is not yet ingested in this codebase — see scrapped 2026-05-13 regime-gate exploration; the dataset/baseline to make this threshold-driven doesn't exist yet.
+
+**Trade frame while the regime persists:**
+
+- **Rally half (long-side):** long calls outperform their delta expectation because vol reprices in the trader's favor as spot climbs — what would normally be a +$50 outcome on a delta-only basis comes in closer to +$65. Equity replacement (move some long stock to long calls) is the cleanest expression; naked premium-selling above spot is the trap.
+- **Exit signal (mean-reversion timing):** **the trade ends the moment fixed-strike IV stops climbing**, not when price reverses. Vol can't keep rising forever — the market has to move further every day to sustain a higher implied level. When the daily IV change finally flattens with spot still elevated, the unwind is mechanically imminent: every recent /ES purchase that hedged the short-call book gets sold back, and there are "thousands of futures for sale" at one of the riskiest moments because everybody just bought the top. Plan the mean-reversion expression (debit put, put credit spread short side, or just flatten longs) for that flatline, not for a candle reversal.
+
+**Periscope mapping:** This is an interpretive overlay, not a quantitative gate. When the spot/vol correlation fingerprint is visible live, downgrade the confidence of red-bar-cluster breakout reads above spot, and flag the "chase-and-fade" pattern as a possibility instead of trend continuation. The 25Δ-90D skew percentile is not yet ingested in this codebase — see scrapped 2026-05-13 regime-gate exploration; the dataset/baseline to make this threshold-driven doesn't exist yet.
 
 ### Long-gamma absorbs; short-gamma chases [plausible]
 
@@ -420,6 +428,13 @@ When citing a heuristic in a Periscope read, include the tag in parentheses, e.g
 **Source:** 4.md | quote-keyword: "if you're selling options now, be careful"
 **Mechanic:** Premium sellers depend on IV>RV risk premium. When inverted, daily theta collected < daily realized hedging cost.
 **Implication:** Avoid iron condors, credit spreads, naked premium sales during IV<RV regimes — switch to debit structures or equity replacement.
+
+### Don't ride a long-skew rally past the vol-flatline [plausible]
+
+**Source:** 22.md (VolSignals 2026-05-13) | quote-keyword: "as soon as V stops going up, which it eventually will, you should think about what comes next"
+**Mechanic:** In a long-skew regime, upside drift is sustained by MM /ES buying that hedges a growing short-call book as IV climbs. Vol can't climb forever — the market has to move further every day to keep IV expanding. The moment IV flattens, those /ES purchases become unrequired; mean-reversion is mechanical, not narrative.
+**Implication:** Treat fixed-strike IV's daily change as the trade timer, not the candle pattern. Riding past a vol flatline turns an asymmetric long into a coin-flip with mechanical headwinds. Switching to mean-reversion expressions (debit puts, put credit spreads, flatten longs) at the IV flatline beats waiting for a price reversal — by the time price confirms, the hedge unwind is well underway.
+**Periscope mapping:** Cross-reference the spot/vol fingerprint (§1 long-skew entry) with daily fixed-strike IV change. When same-sign correlation persists for weeks and then daily IV change rolls toward zero, downgrade long-side reads from "drift target" to "exit watch" even if the gamma topology hasn't flipped.
 
 ### Don't size puts expecting a flush through long-gamma support [plausible]
 
