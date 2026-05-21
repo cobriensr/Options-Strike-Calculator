@@ -19,11 +19,6 @@
  */
 
 import type { LotteryMode, TimeOfDay } from './lottery-finder.js';
-import {
-  GAMMA_BONUS_EXCLUDED_TICKERS,
-  GAMMA_HIGH_BONUS_POINTS,
-  GAMMA_HIGH_BONUS_THRESHOLD,
-} from './constants.js';
 
 export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
   RKLB: 10,
@@ -46,10 +41,7 @@ export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {
 /** ($ entry price ≤ threshold → points). Evaluated in order; first match wins. */
 export const LOTTERY_PRICE_THRESHOLDS: ReadonlyArray<
   readonly [number, number]
-> = [
-  [0.5, 5],
-  [1.0, 3],
-];
+> = [[0.5, 5], [1.0, 3]];
 
 const MODE_WEIGHTS: Readonly<Record<LotteryMode, number>> = {
   A_intraday_0DTE: 5,
@@ -72,48 +64,11 @@ export const LOTTERY_TIER_THRESHOLDS = {
   tier2MinScore: 12,
 } as const;
 
-/**
- * @deprecated Use `tierFromQualityScore` from './lottery-tier.js' for
- * new call sites. This function still tiers on bare combined_score
- * (Tier 1 >= 18 / Tier 2 >= 12), NOT on quality_adjusted_score
- * (Tier 1 >= 24 / Tier 2 >= 22 per Phase 2 cutoffs). Kept exported
- * for any external caller until they migrate.
- */
 export function lotteryScoreTier(score: number | null): LotteryScoreTier {
   if (score == null) return 'tier3';
   if (score >= LOTTERY_TIER_THRESHOLDS.tier1MinScore) return 'tier1';
   if (score >= LOTTERY_TIER_THRESHOLDS.tier2MinScore) return 'tier2';
   return 'tier3';
-}
-
-/**
- * Gamma-at-trigger score bonus. Mirrors the SQL CASE expression baked
- * into `combined_score` by migration #168 — TS helper used by the
- * lottery-finder serializer so the per-fire `gammaScoreAdjustment`
- * field rendered on the row can be computed without re-reading
- * combined_score's component breakdown.
- *
- * Returns GAMMA_HIGH_BONUS_POINTS (=1) when:
- *   - gamma is non-null and finite AND >= GAMMA_HIGH_BONUS_THRESHOLD (0.025)
- *   - ticker is NOT in GAMMA_BONUS_EXCLUDED_TICKERS (SPY, USO)
- *
- * Empirical basis: docs/tmp/gamma-deep-dive-findings-2026-05-17.md.
- * Threshold is the LF decile-5 inflection; excluded tickers SPY/USO
- * showed -7pp/-16pp lift reversal in the same study.
- *
- * Restored 2026-05-19 after a parallel-session prettier sweep
- * silently dropped this export, breaking api/lottery-finder.ts and
- * api/__tests__/lottery-score-weights.test.ts at build time.
- */
-export function gammaScoreAdjustment(
-  gamma: number | null,
-  ticker: string,
-): number {
-  if (gamma == null) return 0;
-  if (!Number.isFinite(gamma)) return 0;
-  if (GAMMA_BONUS_EXCLUDED_TICKERS.includes(ticker)) return 0;
-  if (gamma < GAMMA_HIGH_BONUS_THRESHOLD) return 0;
-  return GAMMA_HIGH_BONUS_POINTS;
 }
 
 /**
