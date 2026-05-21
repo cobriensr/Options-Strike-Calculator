@@ -47,8 +47,10 @@ LOOKBACK_PERISCOPE_MIN = 10
 HORIZONS_MIN = [15, 30, 60]
 TOUCHED_AGAIN_HORIZON_MIN = 30
 LATEST_EVENT_CT_MINUTES = 14 * 60  # before 14:00 CT
-OUTPUT_SUFFIX = '_v3-controls'  # appended to CSV/MD filenames; '' for v1
+OUTPUT_SUFFIX = '_v4-vol-crush'  # appended to CSV/MD filenames; '' for v1
 CONTROL_SEED = 42  # reproducible random control selection
+IV_ATM_BAND_PTS = 5  # ATM = within ±5 pts of spot
+IV_LOOKUP_WINDOW_MIN = 2  # IV snapshot must be within ±2 min of target ts
 
 
 # === DB helpers ===
@@ -95,6 +97,65 @@ def load_periscope(conn):
     df['value'] = df['value'].astype(float)
     df['strike'] = df['strike'].astype(int)
     return df
+
+
+def load_atm_iv(conn):
+    """Per-minute SPXW ATM call IV series.
+
+    For each (ts_minute, expiry=ts_date) we pick the strike closest to spot
+    within ATM band. Returns a DataFrame indexed by ts_minute (UTC) with
+    columns: iv_mid, spot, strike.
+
+    Coverage: starts ~2026-04-13 (when fetch-strike-iv cron came online).
+    Pre-event_ts events outside coverage will have NaN IV.
+    """
+    q = """
+        SELECT ts, strike, spot, iv_mid
+        FROM strike_iv_snapshots
+        WHERE ticker = 'SPXW'
+          AND side = 'call'
+          AND expiry = (ts AT TIME ZONE 'UTC')::date
+          AND iv_mid IS NOT NULL
+          AND spot IS NOT NULL
+          AND ABS(strike - spot) <= %s
+        ORDER BY ts
+    """
+    with conn.cursor() as cur:
+        cur.execute(q, (IV_ATM_BAND_PTS,))
+        cols = [d[0] for d in cur.description]
+        rows = cur.fetchall()
+    df = pd.DataFrame(rows, columns=cols)
+    if df.empty:
+        return df
+    df['ts'] = pd.to_datetime(df['ts'], utc=True)
+    df['spot'] = df['spot'].astype(float)
+    df['iv_mid'] = df['iv_mid'].astype(float)
+    df['strike'] = df['strike'].astype(int)
+    df['dist'] = (df['strike'] - df['spot']).abs()
+    df['ts_minute'] = df['ts'].dt.floor('min')
+    # For each minute, pick the row whose strike is closest to spot.
+    atm = (df.sort_values(['ts_minute', 'dist'])
+             .groupby('ts_minute', as_index=False).first())
+    atm = atm[['ts_minute', 'iv_mid', 'spot', 'strike']].copy()
+    atm.set_index('ts_minute', inplace=True)
+    return atm
+
+
+def iv_at(atm_iv, target_ts):
+    """Look up ATM IV at target_ts (UTC), within ±IV_LOOKUP_WINDOW_MIN."""
+    if atm_iv.empty:
+        return np.nan
+    target_min = target_ts.floor('min')
+    window = atm_iv.loc[
+        (atm_iv.index >= target_min - pd.Timedelta(minutes=IV_LOOKUP_WINDOW_MIN))
+        & (atm_iv.index <= target_min + pd.Timedelta(minutes=IV_LOOKUP_WINDOW_MIN))
+    ]
+    if window.empty:
+        return np.nan
+    # Pick the closest minute
+    diffs = np.abs((window.index - target_min).total_seconds())
+    closest = window.index[int(np.argmin(diffs))]
+    return float(window.loc[closest, 'iv_mid'])
 
 
 # === Event detection ===
@@ -289,6 +350,47 @@ def write_findings(df, lo, hi, candle_count, peri_snap_count, peri_dates):
         lines.append(f'\n- Touched-again-within-30m rate: '
                      f'{sub["touched_again_30m"].mean():.1%}\n\n')
 
+    # Vol crush analysis
+    if 'event_iv_crush' in df.columns:
+        lines.append('## Vol crush — event vs control\n\n')
+        lines.append('Crush = ATM IV at t0 − ATM IV at t+30m. Positive = IV '
+                     'decayed. Pre-IV column shows the absolute IV level at t0; '
+                     'events should sit at HIGHER pre-IV than controls because '
+                     'the wick inflated short-dated IV.\n\n')
+        valid = df.dropna(subset=['event_iv_crush', 'control_iv_crush'])
+        coverage_pct = len(valid) / max(1, len(df)) * 100
+        lines.append(f'IV coverage: {len(valid):,}/{len(df):,} rows '
+                     f'({coverage_pct:.1f}%) — bounded by `strike_iv_snapshots` '
+                     'date range (started ~2026-04-13).\n\n')
+        for d in ('up', 'down'):
+            sub = valid[valid['direction'] == d]
+            if len(sub) < 10:
+                lines.append(f'### {d}-wick: n={len(sub)} too sparse\n\n')
+                continue
+            ev_t0 = sub['event_iv_t0'].mean()
+            ct_t0 = sub['control_iv_t0'].mean()
+            ev_cr = sub['event_iv_crush'].mean()
+            ct_cr = sub['control_iv_crush'].mean()
+            delta = ev_cr - ct_cr
+            diffs = sub['event_iv_crush'] - sub['control_iv_crush']
+            t_stat, p_paired = stats.ttest_1samp(diffs, 0)
+            try:
+                _, p_mw = stats.mannwhitneyu(
+                    sub['event_iv_crush'], sub['control_iv_crush'],
+                    alternative='two-sided')
+            except ValueError:
+                p_mw = np.nan
+            lines.append(f'### {d}-wick: n={len(sub)}\n\n')
+            lines.append('| Metric | Event | Control | Δ |\n')
+            lines.append('|---|---:|---:|---:|\n')
+            lines.append(f'| Pre-IV (t0) | {ev_t0:.4f} | {ct_t0:.4f} '
+                         f'| {ev_t0 - ct_t0:+.4f} |\n')
+            lines.append(f'| Crush (t0 − t+30m) | {ev_cr:.4f} | {ct_cr:.4f} '
+                         f'| {delta:+.4f} |\n')
+            lines.append(f'\n- Paired t-test on (event_crush − control_crush): '
+                         f't={t_stat:+.2f}, p={p_paired:.4f}\n')
+            lines.append(f'- Mann-Whitney unpaired: p={p_mw:.4f}\n\n')
+
     # Dose-response: node GEX magnitude (with control delta — best pocket finder)
     lines.append('## Dose-response: node GEX magnitude (drift-adjusted)\n\n')
     lines.append('Quartile of |node_gex| within direction. `Δ30m` = event '
@@ -411,6 +513,16 @@ def main():
               f'{unique_snaps:,} unique snapshots, '
               f'dates {peri_dates[0]} → {peri_dates[1]}')
 
+        print('Loading SPXW ATM IV snapshots...')
+        atm_iv = load_atm_iv(conn)
+        if atm_iv.empty:
+            print('  (no IV data found — vol crush analysis skipped)')
+            iv_dates = None
+        else:
+            iv_dates = (atm_iv.index.min().date(), atm_iv.index.max().date())
+            print(f'  {len(atm_iv):,} per-minute ATM IV rows, '
+                  f'dates {iv_dates[0]} → {iv_dates[1]}')
+
         events, lo, hi = detect_events(candles)
         print(f'Event detection: p{PERCENTILE_LO}={lo:.2f}pts, '
               f'p{PERCENTILE_HI}={hi:.2f}pts → {len(events):,} candidate bars')
@@ -449,6 +561,35 @@ def main():
                                            ctrl['close'], direction)
         else:
             ctrl_metrics = {f'control_ret_{h}m': np.nan for h in HORIZONS_MIN}
+
+        # Vol crush: trader sells premium AT THE BAR'S CLOSE (post-spike, IV
+        # elevated). Sell IV ≈ iv_at(event_ts + 1m) — first IV snapshot
+        # after the spike-bar finished. Close IV ≈ iv_at(event_ts + 31m).
+        # crush = sell - close; positive = IV decayed (good for short premium).
+        if not atm_iv.empty:
+            sell_ts = bar['timestamp'] + pd.Timedelta(minutes=1)
+            close_ts = bar['timestamp'] + pd.Timedelta(minutes=31)
+            event_iv_t0 = iv_at(atm_iv, sell_ts)
+            event_iv_t30 = iv_at(atm_iv, close_ts)
+            event_iv_crush = (event_iv_t0 - event_iv_t30
+                              if not (np.isnan(event_iv_t0)
+                                      or np.isnan(event_iv_t30))
+                              else np.nan)
+            if ctrl is not None:
+                ctrl_sell_ts = ctrl['timestamp'] + pd.Timedelta(minutes=1)
+                ctrl_close_ts = ctrl['timestamp'] + pd.Timedelta(minutes=31)
+                ctrl_iv_t0 = iv_at(atm_iv, ctrl_sell_ts)
+                ctrl_iv_t30 = iv_at(atm_iv, ctrl_close_ts)
+                ctrl_iv_crush = (ctrl_iv_t0 - ctrl_iv_t30
+                                 if not (np.isnan(ctrl_iv_t0)
+                                         or np.isnan(ctrl_iv_t30))
+                                 else np.nan)
+            else:
+                ctrl_iv_t0 = ctrl_iv_t30 = ctrl_iv_crush = np.nan
+        else:
+            event_iv_t0 = event_iv_t30 = event_iv_crush = np.nan
+            ctrl_iv_t0 = ctrl_iv_t30 = ctrl_iv_crush = np.nan
+
         rows.append({
             'event_ts': bar['timestamp'],
             'direction': direction,
@@ -465,6 +606,12 @@ def main():
             'control_ts': ctrl['timestamp'] if ctrl is not None else pd.NaT,
             **metrics,
             **ctrl_metrics,
+            'event_iv_t0': event_iv_t0,
+            'event_iv_t30': event_iv_t30,
+            'event_iv_crush': event_iv_crush,
+            'control_iv_t0': ctrl_iv_t0,
+            'control_iv_t30': ctrl_iv_t30,
+            'control_iv_crush': ctrl_iv_crush,
         })
 
     df = pd.DataFrame(rows)
