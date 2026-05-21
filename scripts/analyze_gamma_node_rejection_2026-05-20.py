@@ -47,7 +47,8 @@ LOOKBACK_PERISCOPE_MIN = 10
 HORIZONS_MIN = [15, 30, 60]
 TOUCHED_AGAIN_HORIZON_MIN = 30
 LATEST_EVENT_CT_MINUTES = 14 * 60  # before 14:00 CT
-OUTPUT_SUFFIX = '_no-ceiling'  # appended to CSV/MD filenames; '' for v1
+OUTPUT_SUFFIX = '_v3-controls'  # appended to CSV/MD filenames; '' for v1
+CONTROL_SEED = 42  # reproducible random control selection
 
 
 # === DB helpers ===
@@ -143,6 +144,53 @@ def pierced_nodes_down(bar, snap):
                & (bar['close'] >= pos['strike'])]
 
 
+# === Control bars ===
+
+def build_controls(candles, event_ts_set, range_threshold, rng_seed=CONTROL_SEED):
+    """Map each event_ts → a random non-event in-band same-day bar.
+
+    Controls are bars from the SAME trading day that meet the same range
+    floor (>= p75) and time-of-day cutoff but were NOT classified as
+    events (i.e., didn't pierce a +γ node with a close-back). One control
+    per unique event_ts; multi-node-pierce rows from the same event share
+    a control. Deterministic via rng_seed.
+    """
+    in_band = candles[candles['range'] >= range_threshold].copy()
+    ct = in_band['timestamp'].dt.tz_convert('America/Chicago')
+    minutes = ct.dt.hour * 60 + ct.dt.minute
+    in_band = in_band[(minutes < LATEST_EVENT_CT_MINUTES)
+                      & (~in_band['timestamp'].isin(event_ts_set))].copy()
+    in_band['ct_date'] = in_band['timestamp'].dt.tz_convert(
+        'America/Chicago').dt.date
+
+    rng = np.random.default_rng(rng_seed)
+    mapping = {}
+    for ev_ts in event_ts_set:
+        ev_date = ev_ts.tz_convert('America/Chicago').date()
+        pool = in_band[in_band['ct_date'] == ev_date]
+        if pool.empty:
+            continue
+        idx = int(rng.integers(0, len(pool)))
+        mapping[ev_ts] = pool.iloc[idx]
+    return mapping
+
+
+def control_returns(candles, ctrl_ts, ctrl_close, direction):
+    """Forward returns for a control bar, signed by the paired event's direction."""
+    out = {}
+    for h in HORIZONS_MIN:
+        target_ts = ctrl_ts + pd.Timedelta(minutes=h)
+        fwd = candles[(candles['timestamp'] > ctrl_ts)
+                      & (candles['timestamp'] <= target_ts)]
+        if fwd.empty:
+            out[f'control_ret_{h}m'] = np.nan
+            continue
+        end_close = fwd.iloc[-1]['close']
+        out[f'control_ret_{h}m'] = (ctrl_close - end_close) if direction == 'up' \
+            else (end_close - ctrl_close)
+    return out
+
+
 # === Forward metrics ===
 
 def forward_metrics(candles, event_ts, event_close, node_strike, direction):
@@ -200,31 +248,53 @@ def write_findings(df, lo, hi, candle_count, peri_snap_count, peri_dates):
         md_path.write_text(''.join(lines))
         return
 
-    # Headline by direction
-    lines.append('## Headline by direction\n\n')
+    # Headline by direction (with control comparison)
+    lines.append('## Headline by direction — event vs matched control\n\n')
+    lines.append('Control = random non-event in-band bar from same day, same '
+                 'time-of-day window, signed by the event\'s direction. Δ = '
+                 'event − control mean. Paired t-test on (event − control) '
+                 'per row; Mann-Whitney unpaired on distributions.\n\n')
     for d in ('up', 'down'):
-        sub = df[df['direction'] == d]
+        sub = df[df['direction'] == d].copy()
         if sub.empty:
             lines.append(f'### {d}-wick: n=0\n\n')
             continue
-        valid = sub['ret_30m'].dropna()
-        t_stat, p_val = (stats.ttest_1samp(valid, 0)
-                         if len(valid) > 5 else (np.nan, np.nan))
-        lines.append(f'### {d}-wick: n={len(sub)}\n')
-        lines.append(f'- Mean +15m return: {sub["ret_15m"].mean():+.2f} pts\n')
-        lines.append(f'- Mean +30m return: {sub["ret_30m"].mean():+.2f} pts\n')
-        lines.append(f'- Mean +60m return: {sub["ret_60m"].mean():+.2f} pts\n')
-        lines.append('- Touched-again-within-30m rate: '
-                     f'{sub["touched_again_30m"].mean():.1%}\n')
-        if not np.isnan(p_val):
-            lines.append(f'- t-test on +30m return vs 0: '
-                         f't={t_stat:+.2f}, p={p_val:.4f}\n')
-        lines.append('\n')
+        lines.append(f'### {d}-wick: n={len(sub)}\n\n')
+        lines.append('| Horizon | Event mean | Control mean | Δ (event-ctrl) '
+                     '| paired t / p | MW p |\n')
+        lines.append('|---------|-----------:|-------------:|-------------:'
+                     '|:--------------|:------|\n')
+        for h in HORIZONS_MIN:
+            ev_col = f'ret_{h}m'
+            ct_col = f'control_ret_{h}m'
+            paired = sub[[ev_col, ct_col]].dropna()
+            if len(paired) < 5:
+                lines.append(f'| +{h}m | n/a | n/a | n/a | n/a | n/a |\n')
+                continue
+            ev_mean = paired[ev_col].mean()
+            ct_mean = paired[ct_col].mean()
+            delta = ev_mean - ct_mean
+            diffs = paired[ev_col] - paired[ct_col]
+            t_stat, p_paired = stats.ttest_1samp(diffs, 0)
+            try:
+                _, p_mw = stats.mannwhitneyu(
+                    paired[ev_col], paired[ct_col], alternative='two-sided')
+            except ValueError:
+                p_mw = np.nan
+            lines.append(
+                f'| +{h}m | {ev_mean:+.2f} | {ct_mean:+.2f} | '
+                f'{delta:+.2f} | t={t_stat:+.2f}, p={p_paired:.4f} '
+                f'| {p_mw:.4f} |\n'
+            )
+        lines.append(f'\n- Touched-again-within-30m rate: '
+                     f'{sub["touched_again_30m"].mean():.1%}\n\n')
 
-    # Dose-response: node GEX magnitude
-    lines.append('## Dose-response: node GEX magnitude\n\n')
-    lines.append('Quartile of |node_gex| within direction. Higher quartile = '
-                 'bigger gamma wall.\n\n')
+    # Dose-response: node GEX magnitude (with control delta — best pocket finder)
+    lines.append('## Dose-response: node GEX magnitude (drift-adjusted)\n\n')
+    lines.append('Quartile of |node_gex| within direction. `Δ30m` = event '
+                 'mean − control mean at +30m. Larger positive Δ for down-wick '
+                 'or larger negative Δ for up-wick = stronger signal **vs '
+                 'drift**.\n\n')
     df = df.copy()
     df['abs_gex'] = df['node_gex'].abs()
     for d in ('up', 'down'):
@@ -241,21 +311,33 @@ def write_findings(df, lo, hi, candle_count, peri_snap_count, peri_dates):
             lines.append(f'### {d}-wick: GEX values too uniform for quartile '
                          'binning\n\n')
             continue
+        sub['delta_30m'] = sub['ret_30m'] - sub['control_ret_30m']
         agg = sub.groupby('gex_q', observed=True).agg(
             n=('event_ts', 'count'),
-            mean_ret_15m=('ret_15m', 'mean'),
-            mean_ret_30m=('ret_30m', 'mean'),
-            mean_ret_60m=('ret_60m', 'mean'),
+            ev_30m=('ret_30m', 'mean'),
+            ctrl_30m=('control_ret_30m', 'mean'),
+            delta_30m=('delta_30m', 'mean'),
             touched_30m=('touched_again_30m', 'mean'),
             median_abs_gex=('abs_gex', 'median'),
         ).round(3)
+        # Per-quartile paired t-test on delta
+        p_vals = []
+        for q in agg.index:
+            diffs = sub.loc[sub['gex_q'] == q, 'delta_30m'].dropna()
+            if len(diffs) < 5:
+                p_vals.append(np.nan)
+            else:
+                _, p = stats.ttest_1samp(diffs, 0)
+                p_vals.append(p)
+        agg['p_paired'] = [f'{p:.4f}' if not np.isnan(p) else 'n/a'
+                           for p in p_vals]
         lines.append(f'### {d}-wick\n')
         lines.append('```\n' + agg.to_string() + '\n```\n\n')
 
-    # Dose-response: pierce depth
-    lines.append('## Dose-response: pierce depth\n\n')
+    # Dose-response: pierce depth (drift-adjusted)
+    lines.append('## Dose-response: pierce depth (drift-adjusted)\n\n')
     lines.append('How far past the node the wick reached. Quartile within '
-                 'direction.\n\n')
+                 'direction. `Δ30m` = event − control at +30m.\n\n')
     for d in ('up', 'down'):
         sub = df[df['direction'] == d].copy()
         if len(sub) < 8:
@@ -269,13 +351,25 @@ def write_findings(df, lo, hi, candle_count, peri_snap_count, peri_dates):
             lines.append(f'### {d}-wick: depths too uniform for quartile '
                          'binning\n\n')
             continue
+        sub['delta_30m'] = sub['ret_30m'] - sub['control_ret_30m']
         agg = sub.groupby('depth_q', observed=True).agg(
             n=('event_ts', 'count'),
-            mean_ret_15m=('ret_15m', 'mean'),
-            mean_ret_30m=('ret_30m', 'mean'),
+            ev_30m=('ret_30m', 'mean'),
+            ctrl_30m=('control_ret_30m', 'mean'),
+            delta_30m=('delta_30m', 'mean'),
             touched_30m=('touched_again_30m', 'mean'),
             median_depth_pts=('pierce_depth', 'median'),
         ).round(3)
+        p_vals = []
+        for q in agg.index:
+            diffs = sub.loc[sub['depth_q'] == q, 'delta_30m'].dropna()
+            if len(diffs) < 5:
+                p_vals.append(np.nan)
+            else:
+                _, p = stats.ttest_1samp(diffs, 0)
+                p_vals.append(p)
+        agg['p_paired'] = [f'{p:.4f}' if not np.isnan(p) else 'n/a'
+                           for p in p_vals]
         lines.append(f'### {d}-wick\n')
         lines.append('```\n' + agg.to_string() + '\n```\n\n')
 
@@ -323,7 +417,9 @@ def main():
     finally:
         conn.close()
 
-    rows = []
+    # First pass: collect event_ts so we can build controls excluding them.
+    event_ts_set = set()
+    event_rows_pending = []
     matched = 0
     for _, bar in events.iterrows():
         snap = latest_snapshot_strikes(periscope, bar['timestamp'])
@@ -334,26 +430,43 @@ def main():
                                   ('down', pierced_nodes_down)):
             pierced = finder(bar, snap)
             for _, node in pierced.iterrows():
-                metrics = forward_metrics(candles, bar['timestamp'],
-                                          bar['close'], node['strike'],
-                                          direction)
-                rows.append({
-                    'event_ts': bar['timestamp'],
-                    'direction': direction,
-                    'bar_range': bar['range'],
-                    'bar_open': bar['open'],
-                    'bar_high': bar['high'],
-                    'bar_low': bar['low'],
-                    'bar_close': bar['close'],
-                    'node_strike': int(node['strike']),
-                    'node_gex': float(node['value']),
-                    'pierce_depth': (bar['high'] - node['strike'])
-                    if direction == 'up'
-                    else (node['strike'] - bar['low']),
-                    **metrics,
-                })
+                event_ts_set.add(bar['timestamp'])
+                event_rows_pending.append((bar, direction, node))
 
     print(f'Event bars with a matched periscope snapshot: {matched:,}')
+    print(f'Building controls for {len(event_ts_set):,} unique event timestamps...')
+    controls = build_controls(candles, event_ts_set, lo)
+    print(f'Controls matched: {len(controls):,} / {len(event_ts_set):,} '
+          f'unique event_ts ({len(controls) / max(1, len(event_ts_set)):.1%})')
+
+    rows = []
+    for bar, direction, node in event_rows_pending:
+        metrics = forward_metrics(candles, bar['timestamp'], bar['close'],
+                                  node['strike'], direction)
+        ctrl = controls.get(bar['timestamp'])
+        if ctrl is not None:
+            ctrl_metrics = control_returns(candles, ctrl['timestamp'],
+                                           ctrl['close'], direction)
+        else:
+            ctrl_metrics = {f'control_ret_{h}m': np.nan for h in HORIZONS_MIN}
+        rows.append({
+            'event_ts': bar['timestamp'],
+            'direction': direction,
+            'bar_range': bar['range'],
+            'bar_open': bar['open'],
+            'bar_high': bar['high'],
+            'bar_low': bar['low'],
+            'bar_close': bar['close'],
+            'node_strike': int(node['strike']),
+            'node_gex': float(node['value']),
+            'pierce_depth': (bar['high'] - node['strike'])
+            if direction == 'up'
+            else (node['strike'] - bar['low']),
+            'control_ts': ctrl['timestamp'] if ctrl is not None else pd.NaT,
+            **metrics,
+            **ctrl_metrics,
+        })
+
     df = pd.DataFrame(rows)
     print(f'(event, node) rows: {len(df):,}')
 
