@@ -26,7 +26,17 @@ import {
 } from '../_lib/cron-instrumentation.js';
 import { Sentry } from '../_lib/sentry.js';
 
-const BATCH_SIZE = 500;
+// 100 (down from 500 on 2026-05-21). 500-row batches drove the
+// Railway sidecar's /takeit/explain past the edge-proxy timeout —
+// each call ran shap.TreeExplainer on the full batch and produced
+// recurring `takeit.shap_fill.sidecar_non_2xx` 502s with no
+// matching sidecar Sentry exception. With explainer caching now
+// in place (see sidecar/src/takeit_server.py:_load_bundle) the
+// remaining per-batch cost is `explainer.shap_values(X)` itself,
+// which scales with N_rows — 100 keeps a single call well under
+// the edge-proxy budget while the 2-minute cron cadence drains
+// any backlog inside a few ticks.
+const BATCH_SIZE = 100;
 // Phase 3d follow-up: read the persisted `takeit_features` JSONB written
 // by the detect crons (scoreLottery / scoreSilentBoom return the same
 // feature dict they used to score the prob). The sidecar consumes it

@@ -61,8 +61,16 @@ def _list_blob(prefix: str, token: str) -> list[dict]:
         return json.loads(resp.read())["blobs"]
 
 
-def _fetch_blob(url: str) -> bytes:
-    req = urllib.request.Request(url)
+def _fetch_blob(url: str, token: str) -> bytes:
+    # Vercel private Blob URLs (the `.private.blob.vercel-storage.com`
+    # subdomain returned by `_list_blob()`) require the same bearer token
+    # used to list — without it the GET returns 403. Earlier revisions
+    # omitted the header and relied on the URL being public; that produced
+    # the recurring `HTTPError 403` on cold start each time the in-process
+    # bundle cache was empty.
+    req = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {token}"}
+    )
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted)
         return resp.read()
 
@@ -84,7 +92,9 @@ def _load_bundle(alert_type: str) -> dict:
         )
         if not manifest_entry:
             raise RuntimeError(f"manifest not found at {MANIFEST_PATH}")
-        manifest = json.loads(_fetch_blob(manifest_entry["url"]).decode("utf-8"))
+        manifest = json.loads(
+            _fetch_blob(manifest_entry["url"], token).decode("utf-8")
+        )
         target_path = manifest[alert_type]
         # The Blob does store the JSON form, but for SHAP we need the joblib
         # (which contains the XGBClassifier + IsotonicRegression objects).
@@ -104,8 +114,18 @@ def _load_bundle(alert_type: str) -> dict:
                 f"uploader pushes JSON + joblib in lock-step under the same "
                 f"version string."
             )
-        joblib_bytes = _fetch_blob(joblib_entry["url"])
+        joblib_bytes = _fetch_blob(joblib_entry["url"], token)
         bundle = joblib.load(io.BytesIO(joblib_bytes))
+        # Build the SHAP TreeExplainer once at bundle load. Reconstructing
+        # it per request walked every tree path in the XGBoost ensemble
+        # — measurably heavy CPU + transient memory work that compounded
+        # at 500 rows/batch and produced the Railway 502s observed on
+        # /takeit/explain. We import shap lazily so the bundle loader
+        # still works when ML deps are missing (the dep check happens
+        # earlier in `is_enabled()`).
+        import shap  # noqa: PLC0415
+
+        bundle["explainer"] = shap.TreeExplainer(bundle["model"])
         _bundle_cache[alert_type] = bundle
         return bundle
 
@@ -114,11 +134,10 @@ def _explain_rows(alert_type: str, rows: list[dict]) -> list[dict]:
     """Compute SHAP top-K per row. Returns the JSON-serializable payload."""
     import numpy as np  # noqa: PLC0415
     import pandas as pd  # noqa: PLC0415
-    import shap  # noqa: PLC0415
 
     bundle = _load_bundle(alert_type)
     feature_cols: list[str] = bundle["feature_cols"]
-    model = bundle["model"]
+    explainer = bundle["explainer"]
 
     # Build the feature matrix in bundle column order.
     matrix = []
@@ -127,7 +146,6 @@ def _explain_rows(alert_type: str, rows: list[dict]) -> list[dict]:
         matrix.append([feats.get(c, np.nan) for c in feature_cols])
     X = pd.DataFrame(matrix, columns=feature_cols).astype(float)
 
-    explainer = shap.TreeExplainer(model)
     shap_values = np.asarray(explainer.shap_values(X))
 
     out = []
