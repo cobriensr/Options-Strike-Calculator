@@ -228,7 +228,7 @@ describe('LotteryRow: smoke', () => {
     expect(screen.getByText('+22.5%')).toBeInTheDocument();
   });
 
-  it('renders RE-LOAD and cheap-call-PM badges when the matching tags are set', () => {
+  it('renders the cheap-call-PM badge when the tag is set', () => {
     render(
       <LotteryRow
         fire={makeFire({
@@ -246,8 +246,275 @@ describe('LotteryRow: smoke', () => {
         marketOpen={false}
       />,
     );
-    expect(screen.getByText('RE-LOAD')).toBeInTheDocument();
     expect(screen.getByText('cheap-call-PM')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// RELOAD delta badge (lottery-reload-deltas-2026-05-21.md)
+// ============================================================
+
+describe('LotteryRow: RELOAD delta badge', () => {
+  it('omits the badge on the first fire of a chain (no historicalFires)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 1.5,
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 1,
+            minutesSincePrevFire: 0,
+          },
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-row-reload-delta'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders green strict badge with option AND spx deltas when strict tag fires + opt drop ≥30%', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 0.58, // 0.58 / 1.0 - 1 = -42%
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 201, // 201 / 200 - 1 = +0.5% (rounds to +1%)
+            alertSeq: 3,
+            minutesSincePrevFire: 15,
+          },
+          tags: {
+            flowQuad: 'call_ask',
+            tod: 'PM',
+            mode: 'A_intraday_0DTE',
+            reload: true,
+            cheapCallPm: false,
+            burstRatioVsPrev: 2.5,
+            entryDropPctVsPrev: -42,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const badge = screen.getByTestId('lottery-row-reload-delta');
+    // U+2212 minus for negative; round-to-int; literal "spx" segment per spec.
+    expect(badge).toHaveTextContent('RELOAD opt −42% · spx +1%');
+    expect(badge.className).toContain('emerald');
+  });
+
+  it('renders amber soft badge when option drop is -18% and strict tag is false', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 0.82, // -18% from 1.00
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 4,
+            minutesSincePrevFire: 20,
+          },
+          tags: {
+            flowQuad: 'call_ask',
+            tod: 'PM',
+            mode: 'A_intraday_0DTE',
+            reload: false,
+            cheapCallPm: false,
+            burstRatioVsPrev: 1.2,
+            entryDropPctVsPrev: -18,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const badge = screen.getByTestId('lottery-row-reload-delta');
+    expect(badge).toHaveTextContent('RELOAD opt −18%');
+    expect(badge.className).toContain('amber');
+    expect(badge.getAttribute('title')).toMatch(/Soft reload/);
+  });
+
+  it('renders neutral badge when option drop is shallow (-5%)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 0.95, // -5% from 1.00
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 2,
+            minutesSincePrevFire: 10,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const badge = screen.getByTestId('lottery-row-reload-delta');
+    expect(badge).toHaveTextContent('RELOAD opt −5%');
+    expect(badge.className).toContain('neutral');
+  });
+
+  it('renders green strict badge when backend reload tag is set even if display Δ is only -20%', () => {
+    // Spec amendment: fire.tags.reload is the backend cohort gate
+    // (validated vs prior fire). optPct is the display delta vs FIRST
+    // fire of the day. These legitimately diverge — a late-day re-fire
+    // can pass the backend gate but only be -20% vs first fire. The
+    // strict tag should always win the tier.
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 0.8, // -20% from 1.00 — NOT meeting the -30% display threshold
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 5,
+            minutesSincePrevFire: 60,
+          },
+          tags: {
+            flowQuad: 'call_ask',
+            tod: 'PM',
+            mode: 'A_intraday_0DTE',
+            reload: true, // backend gate IS set
+            cheapCallPm: false,
+            burstRatioVsPrev: 2.5,
+            entryDropPctVsPrev: -35,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const badge = screen.getByTestId('lottery-row-reload-delta');
+    expect(badge.className).toContain('emerald');
+    expect(badge.getAttribute('title')).toMatch(/RE-LOAD cohort/);
+  });
+
+  it('suppresses the badge when |rounded optPct| < 1 (e.g. -0.3% rounds to 0)', () => {
+    // formatDeltaWhole guard: a re-fire entry within ±1% of the first
+    // fire has no reload opportunity to surface, and the label would
+    // read "0%" which is misleading. Suppress entirely.
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 0.997, // -0.3% from 1.00 — rounds to 0
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 2,
+            minutesSincePrevFire: 10,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-row-reload-delta'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('suppresses the badge entirely when re-fire entry is flat or higher (+3%)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 1.03, // +3% from 1.00
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 2,
+            minutesSincePrevFire: 10,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-row-reload-delta'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('omits the spx segment when the first fire has no spotAtTrigger (pre-#176 row)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 0.6, // -40% from 1.00
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 201,
+            alertSeq: 2,
+            minutesSincePrevFire: 10,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 1.0,
+              spotAtTrigger: null,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const badge = screen.getByTestId('lottery-row-reload-delta');
+    expect(badge).toHaveTextContent('RELOAD opt −40%');
+    expect(badge.textContent).not.toMatch(/spx/);
   });
 });
 

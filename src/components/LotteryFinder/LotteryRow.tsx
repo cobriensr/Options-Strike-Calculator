@@ -68,6 +68,19 @@ const formatPct = (n: number | null): string => {
   return `${sign}${n.toFixed(1)}%`;
 };
 
+/**
+ * Whole-percent delta with sign-explicit, U+2212 minus for negatives.
+ * Used by the RELOAD badge (see reload-deltas spec 2026-05-21). When the
+ * rounded magnitude is 0, we emit '0%' with no sign to avoid the visually
+ * wrong '−0%' (e.g. -0.4 → '0%', not '−0%').
+ */
+const formatDeltaWhole = (n: number): string => {
+  const rounded = Math.round(Math.abs(n));
+  if (rounded === 0) return '0%';
+  const sign = n >= 0 ? '+' : '−';
+  return `${sign}${rounded}%`;
+};
+
 const formatDollar = (n: number): string => {
   if (n >= 100) return `$${n.toFixed(0)}`;
   if (n >= 10) return `$${n.toFixed(1)}`;
@@ -539,6 +552,100 @@ export const LotteryRow = memo(function LotteryRow({
     return tapeStats.total * tapeStats.avgFill * 100;
   }, [tapeStats]);
 
+  /**
+   * Reload deltas vs the FIRST fire on this chain today.
+   * `historicalFires` is oldest → newest and EXCLUDES the latest fire
+   * (the row itself), so `[0]` is the first-ever fire of the chain-day.
+   * Returns null on the first fire of a chain so downstream rendering
+   * can short-circuit. `underlyingDeltaPct` degrades to null when either
+   * end of the spot pair is missing (pre-#176 rows).
+   * Spec: docs/superpowers/specs/lottery-reload-deltas-2026-05-21.md
+   */
+  const reloadDelta = useMemo<{
+    firstFireTimeCt: string;
+    optionDeltaPct: number;
+    underlyingDeltaPct: number | null;
+  } | null>(() => {
+    if (fire.entry.alertSeq <= 1) return null;
+    const firstFire = fire.historicalFires?.[0] ?? null;
+    if (firstFire == null) return null;
+    if (!Number.isFinite(firstFire.entryPrice) || firstFire.entryPrice <= 0) {
+      return null;
+    }
+    const optionDeltaPct =
+      ((fire.entry.price - firstFire.entryPrice) / firstFire.entryPrice) * 100;
+    const underlyingDeltaPct =
+      firstFire.spotAtTrigger != null &&
+      firstFire.spotAtTrigger > 0 &&
+      fire.entry.spotAtTrigger != null
+        ? ((fire.entry.spotAtTrigger - firstFire.spotAtTrigger) /
+            firstFire.spotAtTrigger) *
+          100
+        : null;
+    return {
+      firstFireTimeCt: firstFire.triggerTimeCt,
+      optionDeltaPct,
+      underlyingDeltaPct,
+    };
+  }, [
+    fire.entry.alertSeq,
+    fire.entry.price,
+    fire.entry.spotAtTrigger,
+    fire.historicalFires,
+  ]);
+
+  /**
+   * Display-ready reload-badge derived state — null when suppressed
+   * (first fire, no historical fires, option Δ >= 0, or rounded option Δ
+   * is 0 — i.e. within ±1% of first fire, no reload opportunity to
+   * surface). Tiers:
+   *   strict  → green  (fire.tags.reload === true; backend cohort gate)
+   *   soft    → amber  (opt ≤ -15%)
+   *   neutral → gray   (opt < 0)
+   *
+   * Important: fire.tags.reload is the backend's validated cohort gate
+   * (computed vs IMMEDIATELY PRIOR fire), while optPct is the display
+   * delta vs FIRST fire of the day. These can legitimately diverge — a
+   * late-day re-fire can pass the backend gate but only be -20% vs
+   * first fire. The strict tag always wins regardless of optPct.
+   */
+  const reloadBadge = useMemo<{
+    label: string;
+    className: string;
+    title: string;
+  } | null>(() => {
+    if (reloadDelta == null) return null;
+    const { optionDeltaPct: optPct, underlyingDeltaPct: spxPct } = reloadDelta;
+    if (optPct >= 0) return null;
+    // Suppress when rounded magnitude < 1 (within ±1% of first fire —
+    // no reload opportunity to surface and the label would read "0%").
+    if (Math.round(Math.abs(optPct)) === 0) return null;
+    const strict = fire.tags.reload === true;
+    const soft = !strict && optPct <= -15;
+    const className = strict
+      ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200'
+      : soft
+        ? 'border-amber-500/40 bg-amber-950/30 text-amber-200'
+        : 'border-neutral-600/50 bg-neutral-900/40 text-neutral-300';
+    const firstFireCt = formatTimeCT(reloadDelta.firstFireTimeCt);
+    const optStr = formatDeltaWhole(optPct);
+    const spxStr = spxPct == null ? null : formatDeltaWhole(spxPct);
+    const label =
+      spxStr == null
+        ? `RELOAD opt ${optStr}`
+        : `RELOAD opt ${optStr} · spx ${spxStr}`;
+    const deltaSentence =
+      spxStr == null
+        ? `option ${optStr} vs first fire at ${firstFireCt} CT (no underlying spot)`
+        : `option ${optStr}, underlying ${spxStr} vs first fire at ${firstFireCt} CT`;
+    const title = strict
+      ? `RE-LOAD cohort (backend tag): this fire's burst is ≥2× the prior fire AND entry price dropped ≥30% since prior. 9.1% historical lottery rate vs 1.4% non-RE-LOAD. Display delta below is vs first fire today (${firstFireCt} CT), distinct from the backend gate's reference. ${deltaSentence}.`
+      : soft
+        ? `Soft reload — option is meaningfully cheaper since first fire on this chain today. Display-only; not yet validated as a score input. ${deltaSentence}.`
+        : `Cheaper than first fire on this chain — small option-price drop. ${deltaSentence}.`;
+    return { label, className, title };
+  }, [reloadDelta, fire.tags.reload]);
+
   return (
     <div
       data-testid="lottery-row"
@@ -837,12 +944,14 @@ export const LotteryRow = memo(function LotteryRow({
               hot
             </span>
           )}
-        {fire.tags.reload && (
+        {reloadBadge != null && (
           <span
-            className="rounded border border-amber-500/40 bg-amber-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200"
-            title="RE-LOAD: this fire's burst is ≥2× the prior fire on the same chain AND entry price dropped ≥30% since prior. 9.1% historical lottery rate vs 1.4% non-RE-LOAD."
+            data-testid="lottery-row-reload-delta"
+            className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${reloadBadge.className}`}
+            title={reloadBadge.title}
+            aria-label={reloadBadge.title}
           >
-            RE-LOAD
+            {reloadBadge.label}
           </span>
         )}
         {fire.tags.cheapCallPm && (
