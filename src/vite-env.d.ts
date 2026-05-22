@@ -1,3 +1,5 @@
 /// <reference types="vite/client" />
 /// <reference types="vitest/globals" />
 /// <reference types="vite-plugin-pwa/client" />
+
+declare const __BUILD_SHA__: string;

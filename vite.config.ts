@@ -92,6 +92,13 @@ export default defineConfig({
     'import.meta.env.VITE_SENTRY_DSN': JSON.stringify(
       process.env.SENTRY_DSN ?? '',
     ),
+    // Build-SHA canary: lets us detect if Vercel's build cache served a
+    // stale function bundle by comparing the live console/footer SHA to
+    // the commit that was actually pushed. Vercel injects
+    // VERCEL_GIT_COMMIT_SHA on every build; local dev falls back to 'local'.
+    __BUILD_SHA__: JSON.stringify(
+      (process.env.VERCEL_GIT_COMMIT_SHA ?? 'local').slice(0, 7),
+    ),
   },
   build: {
     sourcemap: 'hidden',

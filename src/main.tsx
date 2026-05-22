@@ -28,10 +28,12 @@ if (import.meta.env.DEV) {
 // and notifies useAccessSession so the public-mode UI surfaces immediately.
 installAuthInterceptor();
 
+console.log('[build]', __BUILD_SHA__);
+
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN || undefined,
   environment: import.meta.env.PROD ? 'production' : 'development',
-  initialScope: { tags: { service: 'frontend' } },
+  initialScope: { tags: { service: 'frontend', commit: __BUILD_SHA__ } },
   integrations: [Sentry.browserTracingIntegration()],
   sendDefaultPii: false,
   tracesSampleRate: 0.2,
@@ -173,5 +175,11 @@ ReactDOM.createRoot(rootEl).render(
         <StrikeCalculator />
       </ToastProvider>
     </ErrorBoundary>
+    <div
+      aria-hidden="true"
+      className="pointer-events-none fixed bottom-1 right-2 font-mono text-[10px] text-slate-500 opacity-40"
+    >
+      v{__BUILD_SHA__}
+    </div>
   </React.StrictMode>,
 );
