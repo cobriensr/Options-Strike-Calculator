@@ -48,9 +48,12 @@ def render_ts(w: dict) -> str:  # noqa: PLR0914 — intentionally flat render fu
         f"  {k}: {v}," for k, v in f["ticker_weights"].items()
     )
 
-    # DTE weights — keys are strings "0".."3" in JSON
-    dte = f["dte_weights"]
-    dte_body = f"  '0': {dte['0']},\n  '1': {dte['1']},\n  '2': {dte['2']},\n  '3': {dte['3']},"
+    # DTE weights — iterate JSON keys so a future model with DTE 4+ doesn't
+    # silently drop entries. Quote keys (TS object literal needs strings since
+    # numeric-string keys go through Record<string, number>).
+    dte_body = "\n".join(
+        f"  '{k}': {v}," for k, v in f["dte_weights"].items()
+    )
 
     # TOD weights
     tod = f["tod_weights"]
@@ -330,6 +333,21 @@ def main() -> None:
     weights = json.loads(JSON_PATH.read_text())
     rendered = render_ts(weights)
     TS_PATH.write_text(rendered)
+
+    # Run prettier on the output so re-runs don't churn the working tree.
+    # Without this step, Prettier reformats the long array literals on the
+    # first `npm run review` after a sync, producing a permanent diff that
+    # gets undone by the next sync. The infinite loop is silent and ugly.
+    import subprocess
+    result = subprocess.run(
+        ["npx", "prettier", "--write", str(TS_PATH)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"[sync_v2] WARNING: prettier failed (returncode={result.returncode})")
+        print(f"  stdout: {result.stdout.strip()}")
+        print(f"  stderr: {result.stderr.strip()}")
 
     print(f"[sync_v2] wrote {TS_PATH}")
     print(f"[sync_v2] tickers: {len(weights['features']['ticker_weights'])}")

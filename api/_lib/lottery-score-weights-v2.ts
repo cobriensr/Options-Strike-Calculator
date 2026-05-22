@@ -142,21 +142,31 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
  * Quintile k : boundaries[k-1] <= value < boundaries[k]
  * Quintile 4 : value >= boundaries[3]
  */
-export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [0.05964214711729622, 0.09565217391304348, 0.1543981570905453, 0.3783801646987372];
+export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
+  0.05964214711729622, 0.09565217391304348, 0.1543981570905453,
+  0.3783801646987372,
+];
 
 // ---------------------------------------------------------------------------
 // Gamma-at-trigger quintile weights + boundaries
 // ---------------------------------------------------------------------------
 
 export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [3, -2, -2, -2, 0];
-export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [0.012324876801251189, 0.025442619069240443, 0.042202206604267926, 0.06821011318181819];
+export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
+  0.012324876801251189, 0.025442619069240443, 0.042202206604267926,
+  0.06821011318181819,
+];
 
 // ---------------------------------------------------------------------------
 // Ask-pct quintile weights + boundaries
 // ---------------------------------------------------------------------------
 
-export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [-1, 1, 1, 2, -4];
-export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [0.5333333333333333, 0.5714285714285714, 0.625, 0.746268656716418];
+export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
+  -1, 1, 1, 2, -4,
+];
+export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
+  0.5333333333333333, 0.5714285714285714, 0.625, 0.746268656716418,
+];
 
 // ---------------------------------------------------------------------------
 // Option type weights
