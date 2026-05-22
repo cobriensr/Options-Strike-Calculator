@@ -103,7 +103,9 @@ export type RegimeTag =
 export const TARGET_ORDER_RULE: {
   defaultT1: TargetKind;
   defaultT2: TargetKind;
-  regimeOverrides: Partial<Record<RegimeTag, { t1: TargetKind; t2: TargetKind }>>;
+  regimeOverrides: Partial<
+    Record<RegimeTag, { t1: TargetKind; t2: TargetKind }>
+  >;
 } = {
   defaultT1: 'gamma_wall',
   defaultT2: 'magnet',

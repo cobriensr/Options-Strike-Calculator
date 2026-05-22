@@ -123,9 +123,7 @@ describe('useDarkPoolLevels: fetching', () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
 
     await waitFor(() =>
-      expect(result.current.fetchedAt).toBe(
-        Date.parse('2026-04-02T17:00:00Z'),
-      ),
+      expect(result.current.fetchedAt).toBe(Date.parse('2026-04-02T17:00:00Z')),
     );
   });
 
@@ -153,9 +151,7 @@ describe('useDarkPoolLevels: fetching', () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
 
     await waitFor(() =>
-      expect(result.current.fetchedAt).toBe(
-        Date.parse('2026-04-02T19:58:00Z'),
-      ),
+      expect(result.current.fetchedAt).toBe(Date.parse('2026-04-02T19:58:00Z')),
     );
   });
 });
@@ -219,9 +215,7 @@ describe('useDarkPoolLevels: polling', () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
 
     await waitFor(() =>
-      expect(result.current.fetchedAt).toBe(
-        Date.parse(`${todayET}T19:58:00Z`),
-      ),
+      expect(result.current.fetchedAt).toBe(Date.parse(`${todayET}T19:58:00Z`)),
     );
 
     // Next poll: the cron has written a newer block. The displayed
@@ -239,9 +233,7 @@ describe('useDarkPoolLevels: polling', () => {
     });
 
     await waitFor(() =>
-      expect(result.current.fetchedAt).toBe(
-        Date.parse(`${todayET}T19:59:00Z`),
-      ),
+      expect(result.current.fetchedAt).toBe(Date.parse(`${todayET}T19:59:00Z`)),
     );
   });
 

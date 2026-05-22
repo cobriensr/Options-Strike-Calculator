@@ -711,9 +711,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
-    await waitFor(() =>
-      expect(result.current.quotesFetchedAt).not.toBeNull(),
-    );
+    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
     // Freshly fetched → not stale.
     expect(result.current.isStale).toBe(false);
     expect(result.current.isVeryStale).toBe(false);
@@ -725,9 +723,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
-    await waitFor(() =>
-      expect(result.current.quotesFetchedAt).not.toBeNull(),
-    );
+    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
 
     // Hijack the next poll by making the quotes endpoint return stale data
     // (same timestamps) AND prevent the auto-refresh from touching
@@ -758,9 +754,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
-    await waitFor(() =>
-      expect(result.current.quotesFetchedAt).not.toBeNull(),
-    );
+    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
 
     // Subsequent polls 401 so quotesFetchedAt stays pinned.
     globalThis.fetch = mockFetchResponses({
@@ -791,9 +785,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
       quotes: { status: 200, body: mockQuotesClosed },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
-    await waitFor(() =>
-      expect(result.current.quotesFetchedAt).not.toBeNull(),
-    );
+    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
 
     // Advance way past both thresholds.
     await act(async () => {
@@ -810,9 +802,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
-    await waitFor(() =>
-      expect(result.current.quotesFetchedAt).not.toBeNull(),
-    );
+    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
 
     // Drift into stale territory by letting the interval polls 401.
     globalThis.fetch = mockFetchResponses({
@@ -852,9 +842,7 @@ describe('useMarketData: FE-STATE-001 staleness flags', () => {
       quotes: { status: 200, body: mockQuotesOpen },
     }) as unknown as typeof fetch;
     const { result } = renderHook(() => useMarketData());
-    await waitFor(() =>
-      expect(result.current.quotesFetchedAt).not.toBeNull(),
-    );
+    await waitFor(() => expect(result.current.quotesFetchedAt).not.toBeNull());
 
     // Now quotes 401 but events keep succeeding.
     globalThis.fetch = mockFetchResponses({

@@ -21,9 +21,9 @@ console.log(`\nSilent Boom AMZN fires 2026-05-21: ${sb.length}`);
 for (const r of sb) {
   console.log(
     ` ${r.option_chain_id} ${r.strike}${r.option_type} ${r.expiry}` +
-    ` @ ${new Date(r.bucket_ct).toISOString()}` +
-    ` size=${r.spike_volume} ask=${(Number(r.ask_pct) * 100).toFixed(0)}%` +
-    ` volOi=${(Number(r.vol_oi) * 100).toFixed(0)}% entry=$${r.entry_price}`,
+      ` @ ${new Date(r.bucket_ct).toISOString()}` +
+      ` size=${r.spike_volume} ask=${(Number(r.ask_pct) * 100).toFixed(0)}%` +
+      ` volOi=${(Number(r.vol_oi) * 100).toFixed(0)}% entry=$${r.entry_price}`,
   );
 }
 
@@ -38,7 +38,7 @@ console.log(`\nLottery Finder AMZN fires 2026-05-21: ${lf.length}`);
 for (const r of lf) {
   console.log(
     ` ${r.option_chain_id} ${r.strike}${r.option_type} ${r.expiry}` +
-    ` @ ${new Date(r.trigger_time_ct).toISOString()}` +
-    ` seq=${r.alert_seq} entry=$${r.entry_price}`,
+      ` @ ${new Date(r.trigger_time_ct).toISOString()}` +
+      ` seq=${r.alert_seq} entry=$${r.entry_price}`,
   );
 }

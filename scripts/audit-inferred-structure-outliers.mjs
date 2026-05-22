@@ -77,12 +77,16 @@ function flag(row) {
   const peak = row.peak_ceiling_pct;
   const flowInv = row.realized_flow_inversion_pct;
   const entry = row.entry_price;
-  if (peak != null && flowInv != null && Number(flowInv) > Number(peak) * 1.05) {
+  if (
+    peak != null &&
+    flowInv != null &&
+    Number(flowInv) > Number(peak) * 1.05
+  ) {
     flags.push('FLOW_INV_EXCEEDS_PEAK');
   }
   if (row.realized_eod_pct == null) flags.push('NO_EOD');
-  if (entry != null && Number(entry) < 0.10) flags.push('cheap_otm');
-  if (row.dte === 0 && entry != null && Number(entry) < 0.20) {
+  if (entry != null && Number(entry) < 0.1) flags.push('cheap_otm');
+  if (row.dte === 0 && entry != null && Number(entry) < 0.2) {
     flags.push('cheap_0dte');
   }
   return flags;
@@ -91,16 +95,28 @@ function flag(row) {
 const lines = [];
 lines.push('# Inferred Structure Outlier Audit — 2026-05-22');
 lines.push('');
-lines.push('Trigger: EDA Phase 4D found structure-tagged rows have median outcomes 17-59%');
-lines.push(`vs null -3%, but means of 3,000-4,000% driven by a p99 of 20-40k%. Verifying`);
-lines.push('whether the tail is legitimate deep-OTM-hit math or an enrichment artifact.');
+lines.push(
+  'Trigger: EDA Phase 4D found structure-tagged rows have median outcomes 17-59%',
+);
+lines.push(
+  `vs null -3%, but means of 3,000-4,000% driven by a p99 of 20-40k%. Verifying`,
+);
+lines.push(
+  'whether the tail is legitimate deep-OTM-hit math or an enrichment artifact.',
+);
 lines.push('');
-lines.push(`**Method:** pull last 90 days × inferred_structure NOT NULL × flow_inv ≥ ${THRESHOLD_FLOW_INV_PCT}%,`);
-lines.push(`sort desc, top ${SAMPLE_LIMIT}. Flag suspicious patterns (flow_inv > peak, missing eod).`);
+lines.push(
+  `**Method:** pull last 90 days × inferred_structure NOT NULL × flow_inv ≥ ${THRESHOLD_FLOW_INV_PCT}%,`,
+);
+lines.push(
+  `sort desc, top ${SAMPLE_LIMIT}. Flag suspicious patterns (flow_inv > peak, missing eod).`,
+);
 lines.push('');
 lines.push('## Summary by structure');
 lines.push('');
-lines.push('| structure | n (90d) | n outliers (≥1000%) | n cheap entries (<$0.10) | n cheap AND outlier |');
+lines.push(
+  '| structure | n (90d) | n outliers (≥1000%) | n cheap entries (<$0.10) | n cheap AND outlier |',
+);
 lines.push('|---|---|---|---|---|');
 for (const row of summary) {
   lines.push(
@@ -110,15 +126,25 @@ for (const row of summary) {
 lines.push('');
 lines.push('## Verdict guidance');
 lines.push('');
-lines.push('- **If most outlier rows have `cheap_otm` flag and NO `FLOW_INV_EXCEEDS_PEAK`** → tail is');
-lines.push('  legitimate (deep-OTM hits). Include inferred_structure in v1 with median-derived weight.');
-lines.push('- **If many rows have `FLOW_INV_EXCEEDS_PEAK`** → enrichment math is broken. Don\'t include');
+lines.push(
+  '- **If most outlier rows have `cheap_otm` flag and NO `FLOW_INV_EXCEEDS_PEAK`** → tail is',
+);
+lines.push(
+  '  legitimate (deep-OTM hits). Include inferred_structure in v1 with median-derived weight.',
+);
+lines.push(
+  "- **If many rows have `FLOW_INV_EXCEEDS_PEAK`** → enrichment math is broken. Don't include",
+);
 lines.push('  in v1; file a separate enrichment bug.');
-lines.push('- **If outliers are NOT concentrated in `cheap_otm`** → tail is suspicious; drop from v1.');
+lines.push(
+  '- **If outliers are NOT concentrated in `cheap_otm`** → tail is suspicious; drop from v1.',
+);
 lines.push('');
 lines.push(`## Top ${SAMPLE_LIMIT} outlier rows`);
 lines.push('');
-lines.push('| date | symbol | strike | type | exp | dte | entry $ | flow_inv % | peak % | eod % | structure | flags |');
+lines.push(
+  '| date | symbol | strike | type | exp | dte | entry $ | flow_inv % | peak % | eod % | structure | flags |',
+);
 lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
 
 let flagFlowInvExceedsPeak = 0;
@@ -129,7 +155,8 @@ for (const row of outlierRows) {
   const flags = flag(row);
   if (flags.includes('FLOW_INV_EXCEEDS_PEAK')) flagFlowInvExceedsPeak++;
   if (flags.includes('cheap_otm')) flagCheapOtm++;
-  if (flags.includes('cheap_otm') && !flags.includes('FLOW_INV_EXCEEDS_PEAK')) flagBoth++;
+  if (flags.includes('cheap_otm') && !flags.includes('FLOW_INV_EXCEEDS_PEAK'))
+    flagBoth++;
 
   const entryFmt =
     row.entry_price != null ? `$${Number(row.entry_price).toFixed(2)}` : '—';
@@ -153,23 +180,35 @@ for (const row of outlierRows) {
 lines.push('');
 lines.push('## Flag tally');
 lines.push('');
-lines.push(`- Rows with FLOW_INV_EXCEEDS_PEAK: ${flagFlowInvExceedsPeak} / ${outlierRows.length}`);
+lines.push(
+  `- Rows with FLOW_INV_EXCEEDS_PEAK: ${flagFlowInvExceedsPeak} / ${outlierRows.length}`,
+);
 lines.push(`- Rows with cheap_otm: ${flagCheapOtm} / ${outlierRows.length}`);
-lines.push(`- Rows with cheap_otm AND NO peak-violation: ${flagBoth} / ${outlierRows.length}`);
+lines.push(
+  `- Rows with cheap_otm AND NO peak-violation: ${flagBoth} / ${outlierRows.length}`,
+);
 lines.push('');
 lines.push('## Auto-verdict');
 lines.push('');
 const peakViolationRate = flagFlowInvExceedsPeak / outlierRows.length;
 const cheapOtmRate = flagCheapOtm / outlierRows.length;
 if (peakViolationRate > 0.3) {
-  lines.push(`⚠️  **VERDICT: HOLD** — ${(peakViolationRate * 100).toFixed(0)}% of outliers have flow_inv exceeding peak ceiling. Likely enrichment math bug. **Drop inferred_structure from v1**; file enrichment fix as separate spec.`);
+  lines.push(
+    `⚠️  **VERDICT: HOLD** — ${(peakViolationRate * 100).toFixed(0)}% of outliers have flow_inv exceeding peak ceiling. Likely enrichment math bug. **Drop inferred_structure from v1**; file enrichment fix as separate spec.`,
+  );
 } else if (cheapOtmRate > 0.6) {
-  lines.push(`✅  **VERDICT: SHIP** — ${(cheapOtmRate * 100).toFixed(0)}% of outliers are cheap-OTM entries where 1000%+ returns are mathematically legitimate. **Include inferred_structure in v1** with median-derived weight (per Phase 1 design).`);
+  lines.push(
+    `✅  **VERDICT: SHIP** — ${(cheapOtmRate * 100).toFixed(0)}% of outliers are cheap-OTM entries where 1000%+ returns are mathematically legitimate. **Include inferred_structure in v1** with median-derived weight (per Phase 1 design).`,
+  );
 } else {
-  lines.push(`🟡  **VERDICT: INCONCLUSIVE** — ${(cheapOtmRate * 100).toFixed(0)}% cheap-OTM, ${(peakViolationRate * 100).toFixed(0)}% peak-violations. Pattern is mixed. **Drop inferred_structure from v1** out of conservatism; revisit in v2 after manual inspection of a sample.`);
+  lines.push(
+    `🟡  **VERDICT: INCONCLUSIVE** — ${(cheapOtmRate * 100).toFixed(0)}% cheap-OTM, ${(peakViolationRate * 100).toFixed(0)}% peak-violations. Pattern is mixed. **Drop inferred_structure from v1** out of conservatism; revisit in v2 after manual inspection of a sample.`,
+  );
 }
 
 mkdirSync('docs/tmp', { recursive: true });
 const outPath = 'docs/tmp/inferred-structure-audit-2026-05-22.md';
 writeFileSync(outPath, lines.join('\n') + '\n');
-console.log(`Wrote ${outPath} (${outlierRows.length} outlier rows, ${summary.length} structure types)`);
+console.log(
+  `Wrote ${outPath} (${outlierRows.length} outlier rows, ${summary.length} structure types)`,
+);
