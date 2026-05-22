@@ -270,6 +270,8 @@ export interface LotteryFire {
   openInterest: number;
   /** Underlying spot at the chain's first qualifying print. */
   spotAtFirst: number;
+  /** Underlying spot at this fire's trigger tick (matches triggerTimeCt). */
+  spotAtTrigger: number;
 
   /** 1 = first fire on this chain today, 2 = second, ... */
   alertSeq: number;
@@ -568,6 +570,13 @@ export function detectChainFires(
     const entry = ticks[entryIdx]!;
     if (entry.price <= 0) continue;
 
+    // Per-fire spot — captured from the trigger tick so successive
+    // fires on the same chain carry their own underlying anchor for
+    // cross-fire Δ computations. Mirrors the firstTick null-guard
+    // (line 481) so a tick without a spot can't emit a fire.
+    if (cur.underlyingPrice == null || cur.underlyingPrice <= 0) continue;
+    const spotAtTrigger = cur.underlyingPrice;
+
     fires.push({
       triggerTimeCt: cur.executedAt,
       entryTimeCt: entry.executedAt,
@@ -586,6 +595,7 @@ export function detectChainFires(
       triggerWindowSize: sizeSum,
       openInterest: oi,
       spotAtFirst,
+      spotAtTrigger,
       alertSeq: 0, // tagged below
       minutesSincePrevFire: 0,
     });

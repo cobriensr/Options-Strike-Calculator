@@ -931,10 +931,26 @@ describe('lottery-finder endpoint', () => {
       option_type: 'C',
       expiry: '2026-05-01',
       fires_json: [
-        { triggerTimeCt: '2026-05-01T14:00:00Z', entryPrice: '0.40' },
-        { triggerTimeCt: '2026-05-01T14:10:00Z', entryPrice: '0.42' },
-        { triggerTimeCt: '2026-05-01T19:00:00Z', entryPrice: '0.55' },
-        { triggerTimeCt: '2026-05-01T19:30:00Z', entryPrice: '0.55' },
+        {
+          triggerTimeCt: '2026-05-01T14:00:00Z',
+          entryPrice: '0.40',
+          spotAtTrigger: '1170.25',
+        },
+        {
+          triggerTimeCt: '2026-05-01T14:10:00Z',
+          entryPrice: '0.42',
+          spotAtTrigger: '1170.50',
+        },
+        {
+          triggerTimeCt: '2026-05-01T19:00:00Z',
+          entryPrice: '0.55',
+          spotAtTrigger: '1171.10',
+        },
+        {
+          triggerTimeCt: '2026-05-01T19:30:00Z',
+          entryPrice: '0.55',
+          spotAtTrigger: '1171.40',
+        },
       ],
       reignited: true,
     };
@@ -951,14 +967,30 @@ describe('lottery-finder endpoint', () => {
     const body = res._json as {
       fires: Array<{
         reignited: boolean;
-        historicalFires?: Array<{ triggerTimeCt: string; entryPrice: number }>;
+        historicalFires?: Array<{
+          triggerTimeCt: string;
+          entryPrice: number;
+          spotAtTrigger: number | null;
+        }>;
       }>;
     };
     expect(body.fires[0]!.reignited).toBe(true);
     expect(body.fires[0]!.historicalFires).toEqual([
-      { triggerTimeCt: '2026-05-01T14:00:00Z', entryPrice: 0.4 },
-      { triggerTimeCt: '2026-05-01T14:10:00Z', entryPrice: 0.42 },
-      { triggerTimeCt: '2026-05-01T19:00:00Z', entryPrice: 0.55 },
+      {
+        triggerTimeCt: '2026-05-01T14:00:00Z',
+        entryPrice: 0.4,
+        spotAtTrigger: 1170.25,
+      },
+      {
+        triggerTimeCt: '2026-05-01T14:10:00Z',
+        entryPrice: 0.42,
+        spotAtTrigger: 1170.5,
+      },
+      {
+        triggerTimeCt: '2026-05-01T19:00:00Z',
+        entryPrice: 0.55,
+        spotAtTrigger: 1171.1,
+      },
     ]);
   });
 
@@ -1017,8 +1049,14 @@ describe('lottery-finder endpoint', () => {
       }>;
     };
     expect(body.fires[0]!.reignited).toBe(false);
+    // Fixture omits spotAtTrigger on each fires_json item — verifies the
+    // NULL-tolerant pass-through path for rows inserted before migration #176.
     expect(body.fires[0]!.historicalFires).toEqual([
-      { triggerTimeCt: '2026-05-01T14:00:00Z', entryPrice: 0.4 },
+      {
+        triggerTimeCt: '2026-05-01T14:00:00Z',
+        entryPrice: 0.4,
+        spotAtTrigger: null,
+      },
     ]);
   });
 

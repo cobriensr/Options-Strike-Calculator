@@ -5010,4 +5010,13 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS inversion_n_90d INTEGER`,
     ],
   },
+  {
+    id: 176,
+    description:
+      'Add spot_at_trigger NUMERIC(12,4) to lottery_finder_fires for per-fire underlying spot. Captured by detect-lottery-fires cron from the trigger-tick underlyingPrice (matches triggerTimeCt). Used by the LotteryRow reload-delta badge to compute Δ underlying between successive fires on the same chain today. NULL on pre-existing rows; no backfill.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS spot_at_trigger NUMERIC(12,4)`,
+    ],
+  },
 ];

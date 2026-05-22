@@ -67,6 +67,7 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
       price: 1.5,
       openInterest: 5000,
       spotAtFirst: 198,
+      spotAtTrigger: 198,
       alertSeq: 1,
       minutesSincePrevFire: 30,
     },

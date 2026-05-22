@@ -219,6 +219,7 @@ describe('detectChainFires', () => {
     expect(f.minutesSincePrevFire).toBe(0);
     expect(f.openInterest).toBe(1000);
     expect(f.spotAtFirst).toBe(1170);
+    expect(f.spotAtTrigger).toBe(1170);
     expect(f.entryPrice).toBe(0.5);
     expect(f.triggerWindowPrints).toBeGreaterThanOrEqual(
       LOTTERY_SPEC_V4.cntWindowMin,
@@ -279,6 +280,33 @@ describe('detectChainFires', () => {
     const stream = fireableStream();
     const first = stream[0]!;
     const ticks = [{ ...first, underlyingPrice: null }, ...stream.slice(1)];
+    expect(detectChainFires(ticks, 1000, 0)).toHaveLength(0);
+  });
+
+  it('captures the per-fire trigger-tick spot distinct from spotAtFirst', () => {
+    // Spot drifts from 1170 (first tick) to 1175 by the trigger tick (i=4).
+    // The 5th tick is the trigger; the 6th is the entry. The cumulative-since-open
+    // vol/OI gate fires at i=4 here because all five ticks are in-window.
+    const stream = fireableStream();
+    const ticks = stream.map((t, i) =>
+      i >= 3 ? { ...t, underlyingPrice: 1175 } : t,
+    );
+    const fires = detectChainFires(ticks, 1000, 0);
+    expect(fires).toHaveLength(1);
+    const f = fires[0]!;
+    expect(f.spotAtFirst).toBe(1170);
+    expect(f.spotAtTrigger).toBe(1175);
+  });
+
+  it('skips the fire when the trigger tick has null underlying price', () => {
+    // The first 4 ticks carry valid spot; ticks 4 and 5 (the only
+    // candidates that can satisfy cntWindowMin in this 6-tick stream)
+    // have null spot — fire must be skipped on both, matching the
+    // firstTick null guard.
+    const stream = fireableStream();
+    const ticks = stream.map((t, i) =>
+      i >= 4 ? { ...t, underlyingPrice: null } : t,
+    );
     expect(detectChainFires(ticks, 1000, 0)).toHaveLength(0);
   });
 
@@ -357,6 +385,32 @@ describe('detectChainFires — cooldown', () => {
     const fires = detectChainFires(ticks, 1000, 0);
     expect(fires).toHaveLength(1);
   });
+
+  it('captures per-fire spotAtTrigger from each trigger tick across cooldown-separated bursts', () => {
+    // Two cooldown-separated bursts on the same chain at different
+    // underlying prices. spotAtFirst stays anchored to the chain's
+    // first tick; spotAtTrigger must reflect each fire's own trigger
+    // tick. Validates that the per-fire spot survives the two-pointer
+    // window loop and isn't reused across bursts.
+    const firstBurst = fireableStream(); // underlyingPrice = 1170 on all ticks
+    const secondBurst = [
+      makeTick(400, { size: 50, price: 0.3, underlyingPrice: 1185 }),
+      makeTick(420, { size: 30, price: 0.3, underlyingPrice: 1185 }),
+      makeTick(440, { size: 30, price: 0.3, underlyingPrice: 1185 }),
+      makeTick(460, { size: 30, price: 0.3, underlyingPrice: 1185 }),
+      makeTick(480, { size: 30, price: 0.3, underlyingPrice: 1185 }),
+      makeTick(500, { size: 30, price: 0.3, underlyingPrice: 1185 }),
+    ];
+    const fires = detectChainFires([...firstBurst, ...secondBurst], 1000, 0);
+    expect(fires.length).toBeGreaterThanOrEqual(2);
+    // First fire's trigger tick has underlyingPrice = 1170.
+    expect(fires[0]!.spotAtTrigger).toBe(1170);
+    // Second fire's trigger tick has underlyingPrice = 1185.
+    expect(fires[1]!.spotAtTrigger).toBe(1185);
+    // spotAtFirst stays anchored to the chain's first tick on both.
+    expect(fires[0]!.spotAtFirst).toBe(1170);
+    expect(fires[1]!.spotAtFirst).toBe(1170);
+  });
 });
 
 // ============================================================
@@ -405,6 +459,7 @@ describe('enrichFires', () => {
         triggerWindowSize: 100,
         openInterest: 1000,
         spotAtFirst: 1170,
+        spotAtTrigger: 1170,
         alertSeq: 1,
         minutesSincePrevFire: 0,
       },
@@ -422,6 +477,7 @@ describe('enrichFires', () => {
         triggerWindowSize: 250, // 2.5× the prior burst
         openInterest: 1000,
         spotAtFirst: 1170,
+        spotAtTrigger: 1182,
         alertSeq: 2,
         minutesSincePrevFire: 330,
       },
@@ -442,5 +498,23 @@ describe('enrichFires', () => {
     // PM + call + entry < 1 → cheap-call-PM
     expect(records[1]!.tod).toBe('PM');
     expect(records[1]!.cheapCallPmTagged).toBe(true);
+    // spotAtTrigger flows through enrichFires untouched.
+    expect(records[0]!.spotAtTrigger).toBe(1170);
+    expect(records[1]!.spotAtTrigger).toBe(1182);
+  });
+
+  it('flows spotAtTrigger end-to-end from detectChainFires through enrichFires', () => {
+    const fires = detectChainFires(fireableStream(), 1000, 0);
+    const records = enrichFires(fires, {
+      date: '2026-05-01',
+      optionChainId: 'SNDK260501C01175000',
+      underlyingSymbol: 'SNDK',
+      optionType: 'C',
+      strike: 1175,
+      expiry: '2026-05-01',
+      dte: 0,
+    });
+    expect(records).toHaveLength(1);
+    expect(records[0]!.spotAtTrigger).toBe(1170);
   });
 });

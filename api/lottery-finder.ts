@@ -71,6 +71,7 @@ interface FireRow {
   entry_price: DbNumeric;
   open_interest: number;
   spot_at_first: DbNumeric;
+  spot_at_trigger: DbNullableNumeric;
   alert_seq: number;
   minutes_since_prev_fire: DbNumeric;
 
@@ -209,7 +210,11 @@ interface ChainExtrasRow {
   strike: DbNumeric;
   option_type: DbOptionType;
   expiry: string | Date;
-  fires_json: Array<{ triggerTimeCt: string; entryPrice: DbNumeric }> | null;
+  fires_json: Array<{
+    triggerTimeCt: string;
+    entryPrice: DbNumeric;
+    spotAtTrigger: DbNullableNumeric;
+  }> | null;
   reignited: boolean;
 }
 
@@ -441,7 +446,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
           f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
           f.trigger_window_size, f.trigger_window_prints,
-          f.entry_price, f.open_interest, f.spot_at_first,
+          f.entry_price, f.open_interest, f.spot_at_first, f.spot_at_trigger,
           f.alert_seq, f.minutes_since_prev_fire,
           f.flow_quad, f.tod, f.mode,
           f.reload_tagged, f.cheap_call_pm_tagged,
@@ -520,7 +525,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
           f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
           f.trigger_window_size, f.trigger_window_prints,
-          f.entry_price, f.open_interest, f.spot_at_first,
+          f.entry_price, f.open_interest, f.spot_at_first, f.spot_at_trigger,
           f.alert_seq, f.minutes_since_prev_fire,
           f.flow_quad, f.tod, f.mode,
           f.reload_tagged, f.cheap_call_pm_tagged,
@@ -598,7 +603,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
           f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
           f.trigger_window_size, f.trigger_window_prints,
-          f.entry_price, f.open_interest, f.spot_at_first,
+          f.entry_price, f.open_interest, f.spot_at_first, f.spot_at_trigger,
           f.alert_seq, f.minutes_since_prev_fire,
           f.flow_quad, f.tod, f.mode,
           f.reload_tagged, f.cheap_call_pm_tagged,
@@ -686,7 +691,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WITH ordered AS (
           SELECT
             underlying_symbol, strike, option_type, expiry,
-            trigger_time_ct, entry_price,
+            trigger_time_ct, entry_price, spot_at_trigger,
             EXTRACT(EPOCH FROM trigger_time_ct - LAG(trigger_time_ct) OVER w) / 60.0 AS gap_min,
             ROW_NUMBER() OVER w AS fire_seq,
             COUNT(*) OVER w_total AS fire_count
@@ -719,7 +724,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             jsonb_agg(
               jsonb_build_object(
                 'triggerTimeCt', o.trigger_time_ct,
-                'entryPrice', o.entry_price
+                'entryPrice', o.entry_price,
+                'spotAtTrigger', o.spot_at_trigger
               ) ORDER BY o.trigger_time_ct ASC
             ) AS fires_json
           FROM ordered o
@@ -891,7 +897,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
           f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
           f.trigger_window_size, f.trigger_window_prints,
-          f.entry_price, f.open_interest, f.spot_at_first,
+          f.entry_price, f.open_interest, f.spot_at_first, f.spot_at_trigger,
           f.alert_seq, f.minutes_since_prev_fire,
           f.flow_quad, f.tod, f.mode,
           f.reload_tagged, f.cheap_call_pm_tagged,
@@ -978,7 +984,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const chainExtraByKey = new Map<
       string,
       {
-        historicalFires: Array<{ triggerTimeCt: string; entryPrice: number }>;
+        historicalFires: Array<{
+          triggerTimeCt: string;
+          entryPrice: number;
+          spotAtTrigger: number | null;
+        }>;
         reignited: boolean;
       }
     >();
@@ -998,6 +1008,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ? f.triggerTimeCt
             : new Date(f.triggerTimeCt as string).toISOString(),
         entryPrice: Number(f.entryPrice),
+        spotAtTrigger: f.spotAtTrigger != null ? Number(f.spotAtTrigger) : null,
       }));
       const key = `${ce.underlying_symbol}|${Number(ce.strike)}|${ce.option_type}|${expiryStr}`;
       chainExtraByKey.set(key, {
@@ -1271,6 +1282,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           price: Number(r.entry_price),
           openInterest: Number(r.open_interest),
           spotAtFirst: Number(r.spot_at_first),
+          spotAtTrigger:
+            r.spot_at_trigger != null ? Number(r.spot_at_trigger) : null,
           alertSeq: Number(r.alert_seq),
           minutesSincePrevFire: Number(r.minutes_since_prev_fire),
         },

@@ -54,6 +54,11 @@ export interface LotteryFireEntry {
   price: number;
   openInterest: number;
   spotAtFirst: number;
+  /**
+   * Underlying spot at this fire's trigger tick (matches `triggerTimeCt`).
+   * NULL on rows inserted before migration #176 added the column.
+   */
+  spotAtTrigger: number | null;
   alertSeq: number;
   minutesSincePrevFire: number;
 }
@@ -269,6 +274,11 @@ export interface LotteryFire {
     triggerTimeCt: string;
     /** Entry price ($/contract) snapshotted at that fire. */
     entryPrice: number;
+    /**
+     * Underlying spot at the prior fire's trigger tick. NULL on rows
+     * inserted before migration #176 (no backfill).
+     */
+    spotAtTrigger: number | null;
   }>;
 
   /**
