@@ -177,7 +177,7 @@ ReactDOM.createRoot(rootEl).render(
     </ErrorBoundary>
     <div
       aria-hidden="true"
-      className="pointer-events-none fixed bottom-1 right-2 font-mono text-[10px] text-slate-500 opacity-40"
+      className="pointer-events-none fixed right-2 bottom-1 font-mono text-[10px] text-slate-300"
     >
       v{__BUILD_SHA__}
     </div>
