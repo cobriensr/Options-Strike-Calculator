@@ -53,7 +53,6 @@ import {
   classifyAlertMultileg,
   type MultilegClassifyCache,
 } from '../_lib/multileg-classify-batch.js';
-import { withRetry } from '../_lib/uw-fetch.js';
 import { Sentry } from '../_lib/sentry.js';
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
@@ -194,39 +193,53 @@ export default withCronInstrumentation(
     // expiry is cast to ::text so the wire value is a stable YYYY-MM-DD
     // string — bypasses any driver-side Date<->TZ round-trip that could
     // shift the date by an offset.
-    // withRetry covers transient Neon HTTP failures (ECONNRESET / fetch
-    // failed / socket hang up) — see SENTRY-EMERALD-DESERT-8X (2026-05-18,
-    // 2h Neon connectivity blip that silently zeroed out detect output
-    // for hours 18-20 UTC).
-    const rows = (await withRetry(
-      () => db`
-      SELECT
-        ticker, option_chain, option_type, strike, expiry::text AS expiry,
-        executed_at, price, size, underlying_price, side,
-        implied_volatility, delta,
-        -- Gamma extracted from raw_payload JSONB (migration #168).
-        -- UW's option_trades wire format includes 'gamma' alongside
-        -- delta in the payload; the uw-stream daemon currently only
-        -- promotes delta to a typed column, so we pull gamma from the
-        -- JSONB envelope here. NULL when the payload lacks the field
-        -- (older rows from before UW's wire format included it) OR
-        -- when UW sends the literal empty string (~0.3% of recent
-        -- rows) — NULLIF coerces both to SQL NULL so the ::numeric
-        -- cast never sees "".
-        NULLIF(raw_payload->>'gamma', '')::numeric AS gamma,
-        open_interest
-      FROM ws_option_trades
-      WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
-        AND canceled = FALSE
-        AND price > 0
-      ORDER BY option_chain, executed_at ASC
-    `,
-    )) as TickRow[];
+    //
+    // Hash-partitioned into TICK_QUERY_BATCHES parallel queries by
+    // ticker. The single-shot SELECT used to hit Neon's HTTP 64MB
+    // response cap during the 8:30-9:00 CT volume spike — see
+    // SENTRY-EMERALD-DESERT-CB (2026-05-22). hashtext is deterministic
+    // so every chain lands in exactly one batch; cross-batch ordering
+    // doesn't matter because the downstream chain-keyed Map only
+    // requires executed_at ordering WITHIN each chain, which the
+    // per-batch ORDER BY preserves. Gamma extracted from raw_payload
+    // JSONB (migration #168) — uw-stream only promotes delta to a
+    // typed column; NULLIF guards against UW's literal empty-string
+    // payloads (~0.3%) before the ::numeric cast.
+    //
+    // withDbRetry covers transient Neon HTTP failures (ECONNRESET /
+    // fetch failed / socket hang up) — see SENTRY-EMERALD-DESERT-8X
+    // (2026-05-18, 2h Neon blip that silently zeroed out hours 18-20
+    // UTC). 10s per-attempt timeout matches the secondary
+    // lottery_finder_fires query below.
+    const TICK_QUERY_BATCHES = 3;
+    const tickBatches = await Promise.all(
+      Array.from({ length: TICK_QUERY_BATCHES }, (_, batchIdx) =>
+        withDbRetry(
+          () => db`
+            SELECT
+              ticker, option_chain, option_type, strike, expiry::text AS expiry,
+              executed_at, price, size, underlying_price, side,
+              implied_volatility, delta,
+              NULLIF(raw_payload->>'gamma', '')::numeric AS gamma,
+              open_interest
+            FROM ws_option_trades
+            WHERE executed_at >= NOW() - (${SCAN_WINDOW_MIN}::int * INTERVAL '1 minute')
+              AND canceled = FALSE
+              AND price > 0
+              AND mod(abs(hashtextextended(ticker, 0)), ${TICK_QUERY_BATCHES}::int) = ${batchIdx}::int
+            ORDER BY option_chain, executed_at ASC
+          `,
+          2,
+          10_000,
+        ),
+      ),
+    );
+    const rows = tickBatches.flat() as TickRow[];
 
     if (rows.length === 0) {
       // We're inside the market-hours-gated handler, so an empty trade
       // window is anomalous — ws_option_trades fills continuously during
-      // open hours. Most likely cause: a Neon read failure that withRetry
+      // open hours. Most likely cause: a Neon read failure that withDbRetry
       // exhausted, or upstream ws-stream daemon stalling. Capture as a
       // warning so the silent-skip pattern from 2026-05-18 (where hours
       // 18-20 UTC showed zero fires with no Sentry event) can't recur

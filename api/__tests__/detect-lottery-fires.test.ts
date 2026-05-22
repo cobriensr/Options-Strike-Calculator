@@ -5,6 +5,18 @@ import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
 
+// detect-lottery-fires batches the ticks SELECT into 3 hash-partitioned
+// parallel queries (Promise.all) to stay under Neon's 64MB HTTP cap.
+// Tests stage the ticks data via this helper — batch 0 returns `rows`,
+// batches 1-2 return empty. Returns the mockSql instance so callers can
+// chain the remaining .mockResolvedValueOnce(...) calls in sequence.
+function mockTicks(rows: unknown) {
+  return mockSql
+    .mockResolvedValueOnce(rows)
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([]);
+}
+
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
@@ -191,10 +203,11 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('returns skipped when no ticks are in the scan window', async () => {
-    // Single SQL call: the SELECT returns []. The handler short-circuits
-    // and never reaches macro / insert queries.
+    // Three SQL calls (one per ticks batch), all returning []. The
+    // handler short-circuits on rows.length === 0 and never reaches
+    // macro / insert queries.
     mockSentryCaptureMessage.mockClear();
-    mockSql.mockResolvedValueOnce([]);
+    mockTicks([]);
 
     const req = mockRequest({
       method: 'GET',
@@ -209,7 +222,7 @@ describe('detect-lottery-fires handler', () => {
       message: 'no ticks in scan window',
     });
     // Only the initial SELECT — no macro lookups, no inserts.
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockSql).toHaveBeenCalledTimes(3);
     // Empty trade window during market hours is anomalous (the cron-
     // instrumentation gate guarantees we're inside open hours) — emit
     // a Sentry warning so silent stalls like the 2026-05-18 Neon blip
@@ -238,8 +251,7 @@ describe('detect-lottery-fires handler', () => {
     // mode-classifier returns A_intraday_0DTE; the strike-exposures
     // query is gated on TICKERS_WITH_GEX_STRIKE which excludes SNDK,
     // so it is NOT called.
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream()) // ticks
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
@@ -271,8 +283,7 @@ describe('detect-lottery-fires handler', () => {
     // entryPrice=0.5 (≤$0.50 → 5), tod=AM_open (13:30Z = 9:30 ET → 3),
     // optionType=C (2) → score 25. Pinning this guards the score
     // column wiring against future field renames in the INSERT.
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream())
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -355,8 +366,7 @@ describe('detect-lottery-fires handler', () => {
       },
     ];
     mockFetchStockCandles1m.mockResolvedValue(stockCandles);
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream())
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -402,8 +412,7 @@ describe('detect-lottery-fires handler', () => {
       },
     ];
     mockFetchStockCandles1m.mockResolvedValue(stockCandles);
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream())
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -433,8 +442,7 @@ describe('detect-lottery-fires handler', () => {
     // form computed otm.otmNcp - otm.otmNpp and produced NULL on every
     // historical lottery fire (verified 0/96,781 coverage). This test
     // pins the correct read so the bug cannot reappear silently.
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream()) // ticks
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([
         { source: 'market_tide_otm', ncp: '4000', npp: '1000' },
@@ -473,8 +481,7 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream()) // ticks
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([
         { source: 'market_tide', ncp: '500', npp: '300' },
@@ -510,8 +517,7 @@ describe('detect-lottery-fires handler', () => {
     // 5 queries for non-strike tickers, 6 for strike tickers (extra
     // strike_exposures lookup): ticks, prior fires, flow_data,
     // spot_exposures, strike_exposures, insert.
-    mockSql
-      .mockResolvedValueOnce(spyStream) // ticks
+    mockTicks(spyStream)
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
@@ -530,14 +536,16 @@ describe('detect-lottery-fires handler', () => {
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
     // Migration #158 added a per-fire ticker_flow_snapshot query between
     // spot_exposures and INSERT — bumps the SPY path from 6 to 7 calls.
-    expect(mockSql).toHaveBeenCalledTimes(7);
+    // 2026-05-22: ticks SELECT now batched into 3 parallel queries
+    // (SENTRY-EMERALD-DESERT-CB), so total = 7 + 2 extra ticks calls = 9.
+    expect(mockSql).toHaveBeenCalledTimes(9);
   });
 
   it('skips chains with fewer than the per-chain min prints', async () => {
     // Only 4 ticks — below PER_CHAIN_MIN_PRINTS (5). Handler bails
     // before macro lookups.
     const shortStream = fireableSndkStream().slice(0, 4);
-    mockSql.mockResolvedValueOnce(shortStream);
+    mockTicks(shortStream);
 
     const req = mockRequest({
       method: 'GET',
@@ -562,9 +570,7 @@ describe('detect-lottery-fires handler', () => {
       option_chain: 'FAKE260501C00100000',
       strike: 100,
     }));
-    mockSql
-      .mockResolvedValueOnce(fakeStream) // ticks
-      .mockResolvedValueOnce([]); // prior fires (chain passes min-prints)
+    mockTicks(fakeStream).mockResolvedValueOnce([]); // prior fires (chain passes min-prints)
 
     const req = mockRequest({
       method: 'GET',
@@ -579,9 +585,10 @@ describe('detect-lottery-fires handler', () => {
       totalFires: 1,
       inserted: 0,
     });
-    // Ticks SELECT + prior-fires lookup — fire was detected but mode
-    // classifier dropped it as OUT_OF_UNIVERSE so no macro lookups happen.
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // 3-batch ticks SELECT + prior-fires lookup — fire was detected but
+    // mode classifier dropped it as OUT_OF_UNIVERSE so no macro lookups
+    // happen. (Ticks SELECT split into 3 parallel batches 2026-05-22.)
+    expect(mockSql).toHaveBeenCalledTimes(4);
   });
 
   it('continues with EMPTY_MACRO when the macro snapshot lookup throws', async () => {
@@ -590,8 +597,7 @@ describe('detect-lottery-fires handler', () => {
     // errors. The other two parallel macro queries are scheduled but
     // the .then chain on flow_data rejects first inside Promise.all,
     // so we only need one mocked query to drive the failure path.
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream())
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockRejectedValueOnce(new Error('flow_data ECONNRESET'))
       // Promise.all evaluates all three macro queries in parallel; the
@@ -620,8 +626,7 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('honors ON CONFLICT (returns 0 inserted when DB returns no rows)', async () => {
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream())
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -653,14 +658,12 @@ describe('detect-lottery-fires handler', () => {
     // first tick → within the 5-min cooldown). detectChainFires must
     // suppress the fire entirely. No flow_data / spot / insert calls.
     const priorMs = Date.parse('2026-05-01T13:28:00Z');
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream()) // ticks
-      .mockResolvedValueOnce([
-        {
-          option_chain_id: 'SNDK260501C01175000',
-          last_ms: String(priorMs),
-        },
-      ]); // prior fires — cooldown active
+    mockTicks(fireableSndkStream()).mockResolvedValueOnce([
+      {
+        option_chain_id: 'SNDK260501C01175000',
+        last_ms: String(priorMs),
+      },
+    ]); // prior fires — cooldown active
 
     const req = mockRequest({
       method: 'GET',
@@ -677,9 +680,9 @@ describe('detect-lottery-fires handler', () => {
       inserted: 0,
       priorSeeds: 1,
     });
-    // Exactly two SQL calls: the ticks SELECT and the prior-fires
-    // lookup. No macro queries, no insert.
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // Four SQL calls: 3 ticks-batch SELECTs (split 2026-05-22) + the
+    // prior-fires lookup. No macro queries, no insert.
+    expect(mockSql).toHaveBeenCalledTimes(4);
   });
 
   it('flags direction_gated=true on a counter-trend put fire (mkt_tide_otm_diff > +150M)', async () => {
@@ -697,8 +700,7 @@ describe('detect-lottery-fires handler', () => {
       option_chain: 'SNDK260501P01175000',
       delta: -0.18, // puts have negative delta
     }));
-    mockSql
-      .mockResolvedValueOnce(putStream) // ticks
+    mockTicks(putStream)
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([
         { source: 'market_tide_otm', ncp: '300000000', npp: '100000000' },
@@ -747,8 +749,7 @@ describe('detect-lottery-fires handler', () => {
       matchConfidence: 0.83,
       patternGroupId: 'pg-abc-123',
     });
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream())
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // flow_data
       .mockResolvedValueOnce([]) // spot_exposures
@@ -786,8 +787,7 @@ describe('detect-lottery-fires handler', () => {
     // outage does NOT block alert insertion (the columns are NULLABLE
     // by migration #160 design).
     mockClassifyAlertMultileg.mockResolvedValue(null);
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream())
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -815,8 +815,7 @@ describe('detect-lottery-fires handler', () => {
     // tick — outside the cooldown window. detectChainFires lets the
     // current trigger through as if no prior had been recorded.
     const priorMs = Date.parse('2026-05-01T13:24:00Z');
-    mockSql
-      .mockResolvedValueOnce(fireableSndkStream())
+    mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([
         {
           option_chain_id: 'SNDK260501C01175000',
