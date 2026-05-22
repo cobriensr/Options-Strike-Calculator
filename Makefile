@@ -57,7 +57,7 @@ DATE        ?= $(lastword $(PENDING_DATES))
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape
+.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version
 
 help:
 	@echo "EOD options-flow pipeline targets:"
@@ -395,3 +395,22 @@ dry-run: check
 
 clean:
 	@echo "Nothing to clean (parquets are tracked in git, plots are tracked in git)."
+
+# Build-cache canary: compare the deployed API's baked-in SHA to the
+# local git HEAD. A mismatch means Vercel served a stale Function
+# bundle (see feat(observability) commits 08da74f9 / 03e34fd4).
+# Override the domain with PROD_URL=https://...
+PROD_URL ?= https://theta-options.com
+
+version:
+	@local_sha=$$(git rev-parse --short=7 HEAD); \
+	api_sha=$$(curl -fsS $(PROD_URL)/api/version | sed -nE 's/.*"sha":"([^"]+)".*/\1/p'); \
+	echo ""; \
+	echo "  local HEAD : $$local_sha"; \
+	echo "  api SHA    : $$api_sha"; \
+	if [[ "$$local_sha" == "$$api_sha" ]]; then \
+	  echo "  ✅ match"; \
+	else \
+	  echo "  ⚠️  mismatch — either pre-deploy or Vercel served a stale Function bundle"; \
+	fi; \
+	echo "  PROD_URL=$(PROD_URL) (override with PROD_URL=https://...)"
