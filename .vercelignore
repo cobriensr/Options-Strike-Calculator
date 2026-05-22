@@ -31,8 +31,12 @@
 # Pine Script (TradingView) — not deployed anywhere
 /pine/
 
-# Operational scripts (backfills, probes, audits) — local-only
-/scripts/
+# Operational scripts (backfills, probes, audits) — local-only.
+# write-build-info.mjs is the one exception: it runs during Vercel's
+# build to inject the commit SHA into api/_lib/build-info.ts, so it
+# MUST be uploaded. Exclude everything else in scripts/.
+/scripts/*
+!/scripts/write-build-info.mjs
 
 # Documentation — not needed at runtime
 /docs/
