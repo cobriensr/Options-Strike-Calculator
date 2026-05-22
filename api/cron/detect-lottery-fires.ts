@@ -26,7 +26,10 @@ import {
   type LotteryFireRecord,
   type OptionTradeTick,
 } from '../_lib/lottery-finder.js';
-import { computeLotteryScoreV2 } from '../_lib/lottery-score-weights-v2.js';
+import {
+  computeLotteryScoreV2,
+  LOTTERY_TIER_THRESHOLDS_V2,
+} from '../_lib/lottery-score-weights-v2.js';
 import {
   computeRangePos,
   fetchStockCandles1m,
@@ -305,6 +308,16 @@ export default withCronInstrumentation(
 
     let totalFires = 0;
     let inserted = 0;
+    // Phase 6 observability: per-tier counts on each cron run. Lets us
+    // detect "zero tier1+ for N consecutive runs" without re-querying
+    // the DB. Tracked at insert time so the totals reflect only rows
+    // that actually landed (ON CONFLICT DO NOTHING dedupes idempotent
+    // re-runs out of the count). See spec
+    // docs/superpowers/specs/lottery-rescore-2026-05-22.md Phase 6.
+    let insertedTier1 = 0;
+    let insertedTier2 = 0;
+    let insertedTier3 = 0;
+    let insertedGated = 0;
     let skippedNoOi = 0;
     let skippedShort = 0;
 
@@ -718,10 +731,25 @@ export default withCronInstrumentation(
           2,
           10_000,
         )) as { id: number }[];
-        if (result.length > 0) inserted += 1;
+        if (result.length > 0) {
+          inserted += 1;
+          // Bucket by V2 tier for the per-run structured log + Sentry metrics.
+          if (score == null) insertedGated += 1;
+          else if (score >= LOTTERY_TIER_THRESHOLDS_V2.t1) insertedTier1 += 1;
+          else if (score >= LOTTERY_TIER_THRESHOLDS_V2.t2) insertedTier2 += 1;
+          else insertedTier3 += 1;
+        }
       }
     }
 
+    // Phase 6: per-tier counts live in the structured log payload below.
+    // Sentry alert for "zero tier1 fires for 3 consecutive trading days"
+    // is configured in the Sentry UI to alert on log queries against
+    // `message:"detect-lottery-fires completed" insertedTier1:0` —
+    // matching the JSON structure logged by ctx.logger.info just below.
+    // The failure mode the alert catches: the original 2026-05-19 +
+    // 2026-05-21 days that triggered this rescore project, when the v1
+    // cutoffs returned zero visible fires for two of three trading days.
     ctx.logger.info(
       {
         scanned: rows.length,
@@ -730,6 +758,10 @@ export default withCronInstrumentation(
         skippedNoOi,
         totalFires,
         inserted,
+        insertedTier1,
+        insertedTier2,
+        insertedTier3,
+        insertedGated,
         priorSeeds: priorByChain.size,
       },
       'detect-lottery-fires completed',
@@ -745,6 +777,10 @@ export default withCronInstrumentation(
         skippedNoOi,
         totalFires,
         inserted,
+        insertedTier1,
+        insertedTier2,
+        insertedTier3,
+        insertedGated,
         priorSeeds: priorByChain.size,
       },
     };
