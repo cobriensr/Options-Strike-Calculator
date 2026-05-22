@@ -339,6 +339,51 @@ describe('detect-lottery-fires handler', () => {
     expect(gammaAtTrigger).toBeNull();
   });
 
+  it('persists a non-null integer V2 score when ticker_flow_snapshot makes a CALL fire aligned (Phase 3 wiring guard)', async () => {
+    // Happy-path guard for the computeLotteryScoreV2 wiring in
+    // detect-lottery-fires.ts (Phase 3 cutover, commit ae0ab12c). The
+    // surrounding default mocks return [] for ticker_flow_snapshot,
+    // which forces isAligned=false and short-circuits V2 to null BEFORE
+    // any of the cron's input mapping (tod, dte, volOiWindow,
+    // gammaAtTrigger, triggerAskPct, optionType) is exercised — so a
+    // bug like passing rec.triggerGamma into the volOiWindow slot would
+    // never surface.
+    //
+    // Here we stage a single cumulative-flow row at 13:29:30Z (just
+    // before the fixture's 13:30:00Z first tick) with cum_ncp > cum_npp.
+    // For the CALL fixture this makes isAligned=true and V2 returns a
+    // real integer sum of weights. We don't pin the exact integer (model
+    // retrains shift weights and that test would constantly break) —
+    // type + non-null is enough to lock the wiring.
+    const flowTs = '2026-05-01T13:29:30Z';
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([
+        // CALL fire + cum_ncp > cum_npp → isAligned=true → V2 returns
+        // a real integer score instead of short-circuiting to null.
+        { ts: flowTs, cum_ncp: '5000000', cum_npp: '1000000' },
+      ]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    // Score is at bind position -13 (see surrounding tests for layout).
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    const score = insertCall.at(-13);
+    expect(score).not.toBeNull();
+    expect(typeof score).toBe('number');
+    expect(Number.isInteger(score)).toBe(true);
+  });
+
   it('computes range_pos_at_trigger from UW stock candles for display use', async () => {
     // SNDK fixture's spot_at_first is 1170 (per the tick fixture).
     // Build a session where high=1200, low=1150 BEFORE trigger time —
