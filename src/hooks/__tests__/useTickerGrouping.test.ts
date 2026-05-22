@@ -396,6 +396,105 @@ describe('useTickerGrouping', () => {
     });
   });
 
+  describe('wasConvictionAt past-tense conviction window', () => {
+    function extractMultiStrike(item: Fix, idx: number): TickerGroupingExtract {
+      const base = extract(item);
+      return {
+        ...base,
+        rollupSummary: { ...base.rollupSummary, strike: 100 + idx },
+      };
+    }
+
+    it('exposes the earliest qualifying window first-fire ms when conviction has since dropped', () => {
+      // 3 same-side puts in the first 6 minutes (qualifying window),
+      // then a 4th fire ~30 minutes later — pushes spreadMinutes past
+      // the 15-min cap → live conviction false, but wasConvictionAt
+      // points at the early cluster's first fire.
+      const baseMs = 1_700_000_000_000;
+      const items: Fix[] = [
+        fix({ ticker: 'MSFT', side: 'put', ms: baseMs, premium: 100_000 }),
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs + 60_000,
+          premium: 100_000,
+        }),
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs + 360_000,
+          premium: 100_000,
+        }),
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs + 30 * 60_000,
+          premium: 100_000,
+        }),
+      ];
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items,
+          unfilteredItems: items,
+          sortMode: 'default',
+          extract: (item) => extractMultiStrike(item, items.indexOf(item)),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      const g = result.current[0];
+      expect(g?.conviction).toBe(false);
+      expect(g?.wasConvictionAt).toBe(baseMs);
+      expect(g?.wasConvictionFireCount).toBe(3);
+    });
+
+    it('is null when the ticker never met the conviction gate', () => {
+      const baseMs = 1_700_000_000_000;
+      const items: Fix[] = [
+        fix({ ticker: 'AAPL', ms: baseMs, premium: 1_000 }),
+        fix({ ticker: 'AAPL', ms: baseMs + 60_000, premium: 1_000 }),
+      ];
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items,
+          unfilteredItems: items,
+          sortMode: 'default',
+          extract: (item) => extractMultiStrike(item, items.indexOf(item)),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      expect(result.current[0]?.wasConvictionAt).toBeNull();
+      expect(result.current[0]?.wasConvictionFireCount).toBe(0);
+    });
+
+    it('is null when unfilteredItems is omitted (back-compat)', () => {
+      const baseMs = 1_700_000_000_000;
+      const items: Fix[] = [
+        fix({ ticker: 'MSFT', side: 'put', ms: baseMs, premium: 100_000 }),
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs + 60_000,
+          premium: 100_000,
+        }),
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs + 360_000,
+          premium: 100_000,
+        }),
+      ];
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items,
+          sortMode: 'default',
+          extract: (item) => extractMultiStrike(item, items.indexOf(item)),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      expect(result.current[0]?.wasConvictionAt).toBeNull();
+    });
+  });
+
   describe('stable extract identity is not required', () => {
     it('does not rerun the memo when extract changes ref but items/sortMode stay', () => {
       // Without the extractRef trick, a new `extract` ref each render

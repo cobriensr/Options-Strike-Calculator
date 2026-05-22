@@ -3,6 +3,7 @@ import {
   BURST_STORM_BADGE_LABEL,
   BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
+  findEarliestConvictionWindow,
   formatBiasLabel,
   formatFlowLabel,
   formatPremiumAmount,
@@ -654,6 +655,90 @@ describe('isHighConviction', () => {
 
   it('exports a label constant for chip rendering', () => {
     expect(HIGH_CONVICTION_BADGE_LABEL).toBe('✦ conviction');
+  });
+});
+
+describe('findEarliestConvictionWindow', () => {
+  // Helper to build a clean-bias multi-strike row sequence at the
+  // given epoch-ms offsets from a base time.
+  const baseMs = Date.parse('2026-05-15T13:30:00Z');
+  function rowAt(offsetMin: number, strike: number): RollupAlertSummary {
+    return makeRow({
+      optionType: 'C',
+      strike,
+      triggeredAt: new Date(baseMs + offsetMin * 60_000).toISOString(),
+    });
+  }
+
+  it('returns null when fewer than MIN_FIRES (=3) rows', () => {
+    expect(findEarliestConvictionWindow([])).toBeNull();
+    expect(findEarliestConvictionWindow([rowAt(0, 100)])).toBeNull();
+    expect(
+      findEarliestConvictionWindow([rowAt(0, 100), rowAt(1, 101)]),
+    ).toBeNull();
+  });
+
+  it('returns null when no 15-min window has 3+ qualifying fires', () => {
+    // 3 fires but spread over 30 min — no window contains all 3
+    const rows = [rowAt(0, 100), rowAt(16, 101), rowAt(30, 102)];
+    expect(findEarliestConvictionWindow(rows)).toBeNull();
+  });
+
+  it('returns the earliest qualifying window when one exists', () => {
+    // First 3 are inside 15 min (qualifies). The 4th is far away and
+    // would push the spread past 15 min if the whole set were used,
+    // but the earliest 3-fire window still qualifies on its own.
+    const rows = [rowAt(0, 100), rowAt(2, 101), rowAt(6, 102), rowAt(40, 103)];
+    const result = findEarliestConvictionWindow(rows);
+    expect(result?.firstFireMs).toBe(baseMs);
+    expect(result?.fireCount).toBe(3);
+  });
+
+  it('returns null when the only window has mixed bias', () => {
+    const rows = [
+      rowAt(0, 100),
+      { ...rowAt(2, 101), optionType: 'P' as const },
+      rowAt(6, 102),
+    ];
+    expect(findEarliestConvictionWindow(rows)).toBeNull();
+  });
+
+  it('returns null when the only window has a single strike', () => {
+    const rows = [rowAt(0, 100), rowAt(2, 100), rowAt(6, 100)];
+    expect(findEarliestConvictionWindow(rows)).toBeNull();
+  });
+
+  it('sorts unsorted input by timestamp before scanning', () => {
+    const rows = [rowAt(6, 102), rowAt(0, 100), rowAt(2, 101)];
+    const result = findEarliestConvictionWindow(rows);
+    expect(result?.firstFireMs).toBe(baseMs);
+    expect(result?.fireCount).toBe(3);
+  });
+
+  it('drops rows with non-finite triggeredAt', () => {
+    const rows = [
+      makeRow({ triggeredAt: 'not-a-date' }),
+      rowAt(0, 100),
+      rowAt(2, 101),
+      rowAt(6, 102),
+    ];
+    const result = findEarliestConvictionWindow(rows);
+    expect(result?.firstFireMs).toBe(baseMs);
+    expect(result?.fireCount).toBe(3);
+  });
+
+  it('reports the FULL count when the qualifying window spans more than MIN_FIRES', () => {
+    // 5 fires inside 12 minutes — fireCount on the window is 5
+    const rows = [
+      rowAt(0, 100),
+      rowAt(2, 101),
+      rowAt(5, 102),
+      rowAt(8, 103),
+      rowAt(12, 104),
+    ];
+    const result = findEarliestConvictionWindow(rows);
+    expect(result?.firstFireMs).toBe(baseMs);
+    expect(result?.fireCount).toBe(5);
   });
 });
 

@@ -780,6 +780,82 @@ describe('LotteryFinderTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
+    it('renders the was-conviction pill when conviction is off but wasConvictionAt is set', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'MSFT260521P00420000',
+          underlyingSymbol: 'MSFT',
+          strike: 420,
+          optionType: 'P',
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="MSFT"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={false}
+          wasConvictionAt={Date.parse('2026-05-21T13:40:00Z')}
+          wasConvictionFireCount={4}
+        />,
+      );
+      const pill = screen.getByTestId('lottery-ticker-was-conviction-MSFT');
+      expect(pill.textContent).toContain('was ✦');
+      expect(pill.textContent).toContain('(4f)');
+    });
+
+    it('suppresses the was-conviction pill when live conviction is true', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'MSFT260521P00420000',
+          underlyingSymbol: 'MSFT',
+          strike: 420,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="MSFT"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={true}
+          wasConvictionAt={Date.parse('2026-05-21T13:40:00Z')}
+          wasConvictionFireCount={4}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-was-conviction-MSFT'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('omits the was-conviction pill when wasConvictionAt is null', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'XOM260521C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-was-conviction-XOM'),
+      ).not.toBeInTheDocument();
+    });
+
     it('renders the aggregate premium chip with $K/$M formatting', () => {
       // 2 fires, entry $1.22 × windowSize 100 × 100 = $12,200 each
       const fire1 = makeFire({

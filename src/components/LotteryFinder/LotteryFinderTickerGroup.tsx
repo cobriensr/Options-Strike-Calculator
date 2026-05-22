@@ -72,6 +72,18 @@ interface LotteryFinderTickerGroupProps {
   conviction?: boolean;
   storm?: boolean;
   /**
+   * Past-tense "was conviction" surface: epoch ms of the first fire
+   * in the earliest qualifying 15-min window today. When present and
+   * `conviction === false`, the component renders a small "was ✦
+   * HH:MM (Nf)" pill so the trader keeps the mental anchor on a
+   * ticker that had a clean early-day footprint. Null when the
+   * ticker never met the gate, or when `unfilteredItems` was not
+   * piped into the grouping hook.
+   */
+  wasConvictionAt?: number | null;
+  /** Fire count inside the qualifying past-conviction window. */
+  wasConvictionFireCount?: number;
+  /**
    * Live cumulative ticker NCP/NPP from useTickerNetFlowBatch. Null
    * before the first poll resolves or when the ticker isn't yet in the
    * WS subscription. Optional so existing test fixtures continue to
@@ -156,6 +168,8 @@ function LotteryFinderTickerGroupBase({
   exitPolicy,
   conviction = false,
   storm = false,
+  wasConvictionAt = null,
+  wasConvictionFireCount = 0,
   liveFlowSnapshot,
 }: LotteryFinderTickerGroupProps) {
   const handleToggle = useCallback(() => onToggle(ticker), [onToggle, ticker]);
@@ -248,6 +262,20 @@ function LotteryFinderTickerGroupBase({
               {HIGH_CONVICTION_BADGE_LABEL}
             </span>
           )}
+          {!showConvictionBadge &&
+            wasConvictionAt != null &&
+            wasConvictionFireCount > 0 && (
+              <span
+                className="rounded bg-amber-900/20 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-200/80 ring-1 ring-amber-600/40"
+                title={`Earliest 15-min window of conviction-qualifying fires today began at ${CT_TIME_FMT.format(
+                  new Date(wasConvictionAt),
+                )} CT with ${wasConvictionFireCount} fires. Live ✦ conviction has since dropped (likely because later scattered fires pushed the spread past 15 min).`}
+                data-testid={`lottery-ticker-was-conviction-${ticker}`}
+              >
+                was ✦ {CT_TIME_FMT.format(new Date(wasConvictionAt))} (
+                {wasConvictionFireCount}f)
+              </span>
+            )}
           {showStormBadge && (
             <span
               className="rounded bg-rose-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-rose-300 ring-1 ring-rose-400/60"

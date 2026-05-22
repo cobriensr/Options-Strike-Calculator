@@ -42,6 +42,16 @@ interface SilentBoomTickerGroupProps {
   conviction?: boolean;
   storm?: boolean;
   /**
+   * Past-tense "was conviction" surface: epoch ms of the first alert
+   * in the earliest qualifying 15-min window today. When present and
+   * `conviction === false`, the component renders a "was ✦ HH:MM
+   * (Nf)" pill. Null when the ticker never met the gate or
+   * `unfilteredItems` wasn't piped into the grouping hook.
+   */
+  wasConvictionAt?: number | null;
+  /** Alert count inside the qualifying past-conviction window. */
+  wasConvictionFireCount?: number;
+  /**
    * Live cumulative ticker NCP/NPP from useTickerNetFlowBatch. Null
    * before the first poll resolves or when the ticker isn't yet in the
    * WS subscription. Optional so existing test fixtures continue to
@@ -127,6 +137,8 @@ function SilentBoomTickerGroupBase({
   exitPolicy,
   conviction = false,
   storm = false,
+  wasConvictionAt = null,
+  wasConvictionFireCount = 0,
   liveFlowSnapshot,
 }: SilentBoomTickerGroupProps) {
   const handleToggle = useCallback(() => onToggle(ticker), [onToggle, ticker]);
@@ -216,6 +228,20 @@ function SilentBoomTickerGroupBase({
               {HIGH_CONVICTION_BADGE_LABEL}
             </span>
           )}
+          {!showConvictionBadge &&
+            wasConvictionAt != null &&
+            wasConvictionFireCount > 0 && (
+              <span
+                className="rounded bg-amber-900/20 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-200/80 ring-1 ring-amber-600/40"
+                title={`Earliest 15-min window of conviction-qualifying alerts today began at ${CT_TIME_FMT.format(
+                  new Date(wasConvictionAt),
+                )} CT with ${wasConvictionFireCount} alerts. Live ✦ conviction has since dropped (likely because later scattered alerts pushed the spread past 15 min).`}
+                data-testid={`silent-boom-ticker-was-conviction-${ticker}`}
+              >
+                was ✦ {CT_TIME_FMT.format(new Date(wasConvictionAt))} (
+                {wasConvictionFireCount}a)
+              </span>
+            )}
           {showStormBadge && (
             <span
               className="rounded bg-rose-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-rose-300 ring-1 ring-rose-400/60"

@@ -1578,6 +1578,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 exitPolicy={exitPolicy}
                 conviction={g.conviction}
                 storm={g.storm}
+                wasConvictionAt={g.wasConvictionAt}
+                wasConvictionFireCount={g.wasConvictionFireCount}
                 liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}
               />
             ))}

@@ -15,6 +15,7 @@ import { useMemo, useRef } from 'react';
 
 import {
   computeRollupAggregates,
+  findEarliestConvictionWindow,
   isBurstStorm,
   isHighConviction,
   type RollupAlertSummary,
@@ -44,6 +45,21 @@ export interface TickerGroup<T> {
   storm: boolean;
   peakBest: number | null;
   latestTriggerMs: number;
+  /**
+   * Epoch ms of the FIRST fire in the earliest 15-min sliding window
+   * that satisfied the conviction predicate, or null if the ticker
+   * never had a conviction footprint. Derived from `unfilteredItems`
+   * (when provided) so it survives the spread-cap drop that erases
+   * the live ✦ conviction badge later in the session. Always null
+   * when `unfilteredItems` is omitted (back-compat).
+   */
+  wasConvictionAt: number | null;
+  /**
+   * Fire count inside the qualifying past-conviction window. 0 when
+   * `wasConvictionAt` is null. Surfaces in the "was ✦ HH:MM (Nf)"
+   * tooltip.
+   */
+  wasConvictionFireCount: number;
 }
 
 /**
@@ -101,12 +117,21 @@ export function useTickerGrouping<T>(
       else groups.set(ticker, [item]);
     }
 
-    // Per-ticker conviction/storm computed from the UNFILTERED set
-    // (when provided). Filter chips shrink the visible items but the
-    // badge state should reflect the ticker's true day-footprint.
+    // Per-ticker conviction/storm + earliest-conviction-window
+    // computed from the UNFILTERED set (when provided). Filter chips
+    // shrink the visible items but the badge state should reflect the
+    // ticker's true day-footprint. The `wasConvictionAt` field
+    // backstops the past-tense "was ✦" pill so the trader doesn't
+    // lose track of a ticker that DID have a clean conviction
+    // footprint earlier in the session.
     const unfilteredFlags = new Map<
       string,
-      { conviction: boolean; storm: boolean }
+      {
+        conviction: boolean;
+        storm: boolean;
+        wasConvictionAt: number | null;
+        wasConvictionFireCount: number;
+      }
     >();
     if (unfilteredItems) {
       const fullByTicker = new Map<string, T[]>();
@@ -121,9 +146,14 @@ export function useTickerGrouping<T>(
         const agg = computeRollupAggregates(
           summaries.map((s) => s.rollupSummary),
         );
+        const window = findEarliestConvictionWindow(
+          summaries.map((s) => s.rollupSummary),
+        );
         unfilteredFlags.set(ticker, {
           conviction: isHighConviction(agg, list.length),
           storm: isBurstStorm(agg, list.length, stormIntensityThreshold),
+          wasConvictionAt: window?.firstFireMs ?? null,
+          wasConvictionFireCount: window?.fireCount ?? 0,
         });
       }
     }
@@ -168,6 +198,8 @@ export function useTickerGrouping<T>(
           isBurstStorm(agg, orderedItems.length, stormIntensityThreshold),
         peakBest,
         latestTriggerMs,
+        wasConvictionAt: unfiltered?.wasConvictionAt ?? null,
+        wasConvictionFireCount: unfiltered?.wasConvictionFireCount ?? 0,
       };
     }).sort((a, b) => {
       if (sortMode === 'peak') {

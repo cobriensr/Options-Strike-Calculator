@@ -287,6 +287,85 @@ export function isHighConviction(
 /** Display label for the high-conviction badge chip. */
 export const HIGH_CONVICTION_BADGE_LABEL = '✦ conviction';
 
+/**
+ * One past-tense conviction window's metadata. Surfaced by
+ * {@link findEarliestConvictionWindow} so the UI can render a
+ * "was-conviction at HH:MM (Nf)" pill once the live ✦ conviction
+ * state has dropped (typically because later fires pushed
+ * `spreadMinutes` past {@link HIGH_CONVICTION_MAX_SPREAD_MINUTES}).
+ */
+export interface ConvictionWindow {
+  /** Epoch ms of the FIRST fire in the qualifying window. */
+  firstFireMs: number;
+  /** Number of fires inside the qualifying window. */
+  fireCount: number;
+}
+
+/**
+ * Returns the EARLIEST 15-min sliding window in `rows` whose contained
+ * fires would have triggered {@link isHighConviction}, or null if no
+ * such window exists. `rows` may be in any order — internally sorted by
+ * `triggeredAt` ms ascending.
+ *
+ * Trader motivation (2026-05-21 session): when MSFT had a string of
+ * conviction puts at the open, the ✦ badge correctly turned on. Later
+ * scattered puts pushed `spreadMinutes` past the 15-min cap and the
+ * badge dropped — losing the trader's mental anchor on which ticker
+ * had a clean early-day footprint. This helper backstops a past-tense
+ * "was-conviction" badge that survives the drop.
+ *
+ * Implementation: two-pointer sliding window. O(n × w) worst-case
+ * where w is the per-window aggregate cost; n × 15-min windows is
+ * trivial for typical N (50-100 fires/ticker/day).
+ */
+export function findEarliestConvictionWindow(
+  rows: readonly RollupAlertSummary[],
+): ConvictionWindow | null {
+  if (rows.length < HIGH_CONVICTION_MIN_FIRES) return null;
+
+  // Annotate each row with its parsed timestamp once. Non-finite
+  // timestamps (defensive against malformed feed rows) are dropped
+  // — they can't participate in a time-window check.
+  type Stamped = { row: RollupAlertSummary; ms: number };
+  const stamped: Stamped[] = [];
+  for (const r of rows) {
+    const ms = Date.parse(r.triggeredAt);
+    if (Number.isFinite(ms)) stamped.push({ row: r, ms });
+  }
+  if (stamped.length < HIGH_CONVICTION_MIN_FIRES) return null;
+  stamped.sort((a, b) => a.ms - b.ms);
+
+  const windowMs = HIGH_CONVICTION_MAX_SPREAD_MINUTES * 60_000;
+
+  // For each candidate `lo`, count the maximal contiguous run
+  // [lo, hi] such that ms[hi] - ms[lo] <= 15 min. If that maximal
+  // window passes the conviction gates, return it — we want the
+  // FULL cluster count, not the smallest-qualifying subwindow, so
+  // the badge tooltip says "(5 fires)" not "(3 fires)" when the
+  // cluster is 5.
+  let hi = -1;
+  for (let lo = 0; lo < stamped.length; lo++) {
+    if (hi < lo) hi = lo - 1;
+    while (
+      hi + 1 < stamped.length &&
+      stamped[hi + 1]!.ms - stamped[lo]!.ms <= windowMs
+    ) {
+      hi += 1;
+    }
+    const count = hi - lo + 1;
+    if (count < HIGH_CONVICTION_MIN_FIRES) continue;
+    const slice = stamped.slice(lo, hi + 1).map((s) => s.row);
+    const subAgg = computeRollupAggregates(slice);
+    if (isHighConviction(subAgg, count)) {
+      return {
+        firstFireMs: stamped[lo]!.ms,
+        fireCount: count,
+      };
+    }
+  }
+  return null;
+}
+
 // ============================================================
 // Burst-storm badge — the "LOOK AT ME" tier.
 // ============================================================

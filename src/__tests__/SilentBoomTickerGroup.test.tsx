@@ -611,6 +611,82 @@ describe('SilentBoomTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
+    it('renders the was-conviction pill when conviction is off but wasConvictionAt is set', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'MSFT260521P00420000',
+          underlyingSymbol: 'MSFT',
+          strike: 420,
+          optionType: 'P',
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="MSFT"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={false}
+          wasConvictionAt={Date.parse('2026-05-21T13:40:00Z')}
+          wasConvictionFireCount={3}
+        />,
+      );
+      const pill = screen.getByTestId('silent-boom-ticker-was-conviction-MSFT');
+      expect(pill.textContent).toContain('was ✦');
+      expect(pill.textContent).toContain('(3a)');
+    });
+
+    it('suppresses the was-conviction pill when live conviction is true', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'MSFT260521P00420000',
+          underlyingSymbol: 'MSFT',
+          strike: 420,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="MSFT"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={true}
+          wasConvictionAt={Date.parse('2026-05-21T13:40:00Z')}
+          wasConvictionFireCount={3}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-was-conviction-MSFT'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('omits the was-conviction pill when wasConvictionAt is null', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="XOM"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-was-conviction-XOM'),
+      ).not.toBeInTheDocument();
+    });
+
     it('renders the aggregate premium chip with $K/$M formatting', () => {
       // 2 alerts, entryPrice $1.22 × spikeVolume 100 × 100 = $12,200 each
       const alert1 = makeAlert({
