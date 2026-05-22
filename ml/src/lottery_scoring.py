@@ -1,334 +1,607 @@
 """
-Lottery fire scoring model and ticker statistics computation.
+Lottery fire scoring model — rescore-v1 (2026-05-22).
 
-Analyzes historical lottery_otm_fires data to:
-1. Compute per-ticker high-peak rates and confidence intervals
-2. Define composite score weights for ranking fires
-3. Output ticker stats JSON for database seeding
+Trains a linear per-feature uplift model on the last 90 days of aligned
+lottery fires and emits ml/output/lottery_score_weights.json.
+
+Outcome metric: COALESCE(realized_flow_inversion_pct, realized_eod_pct)
+  → "flow-inversion exit or held-to-EOD proxy" per spec decision 2.
+
+Alignment gate (spec decision 6): only fires where option direction agrees
+  with the cum_ncp/npp flow at trigger time are included in training.
+  Call = ncp > npp, Put = npp > ncp.
+
+Drops (spec decisions 3, 7):
+  - inferred_structure IS NOT NULL (35% enrichment bug in structure rows)
+  - rows where realized_flow_inversion_pct > peak_ceiling_pct * 1.05 (0.5%
+    bug tail in non-structure rows)
+  - reload_tagged (UI badge only, negative EV found in EDA)
+  - range_pos_at_trigger (no signal)
+  - trigger_iv (outlier data quality issue, defer)
+
+Features modeled (in order of EDA lift concentration):
+  1. tod (categorical: AM_open, MID, LUNCH, PM)
+  2. dte (categorical: 0, 1, 2, 3)
+  3. trigger_vol_to_oi_window (quintile, inverted-U, Q3 sweet spot)
+  4. gamma_at_trigger (quintile, Q4 highest mean)
+  5. trigger_ask_pct (quintile, monotonic-decreasing)
+  6. option_type (C vs P)
+  7. underlying_symbol (per-ticker, clamped [-5, +10])
 
 Run: ml/.venv/bin/python ml/src/lottery_scoring.py
+     (DATABASE_URL sourced from repo-root .env)
+
+WARNING — Phase 2 of the rescore project (`scripts/sync_lottery_score_weights.py`)
+is not yet updated to read this new schema or output path. Until Phase 2 ships:
+  - Output writes to `ml/output/` (new path) — NOT `ml/data/` where the current
+    sync script reads.
+  - Nightly `make refit` will keep regenerating the OLD `ml/data/` weights via
+    the unchanged sync script — which currently re-reads its own stale input.
+  - There is no regression: production scoring keeps using the existing TS
+    weights file until Phase 2-5 wires this new model in.
 """
 
 from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
-# Add ml/src to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+# conftest.py at repo root adds ml/src/ to sys.path for pytest; running
+# directly, we need it in place for `from utils import ...`
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils import get_connection
 
 
-def compute_confidence_interval(
-    successes: int, trials: int, confidence: float = 0.95
-) -> tuple[float, float, float]:
-    """
-    Compute Wilson score confidence interval for binomial proportion.
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
-    Returns (point_estimate, lower_bound, upper_bound).
-    """
-    if trials == 0:
-        return 0.0, 0.0, 0.0
+# Weight normalization: max contribution per feature is ~6-8 pts to stay
+# within the existing magnitude conventions (MODE_WEIGHTS / TOD_WEIGHTS were
+# 0-5 range in v0).  Scale is chosen per-feature to hit that target.
+TOD_SCALE = 8.0
+DTE_SCALE = 6.0
+VOL_OI_SCALE = 5.0
+GAMMA_SCALE = 5.0
+ASK_PCT_SCALE = 6.0
+OPT_TYPE_SCALE = 4.0
+TICKER_CLAMP_MIN = -5
+TICKER_CLAMP_MAX = 10
 
-    p_hat = successes / trials
-    z = stats.norm.ppf((1 + confidence) / 2)
+# Minimum observations required for a bucket / ticker to get a real weight
+# instead of falling back to 0 (global mean). Bucket gets 30 (small categorical
+# / quintile populations); ticker gets 100 (we have ~80 tickers across 150k
+# fires, so a typical ticker has ~1.8k fires — 100 is a conservative floor).
+MIN_OBS_BUCKET = 30
+MIN_OBS_TICKER = 100
 
-    denominator = 1 + z**2 / trials
-    center = (p_hat + z**2 / (2 * trials)) / denominator
-    margin = (
-        z * np.sqrt((p_hat * (1 - p_hat) + z**2 / (4 * trials)) / trials) / denominator
+
+# ---------------------------------------------------------------------------
+# Data fetch
+# ---------------------------------------------------------------------------
+
+FETCH_QUERY = """
+SELECT
+    underlying_symbol,
+    option_type,
+    tod,
+    dte,
+    trigger_vol_to_oi_window,
+    gamma_at_trigger,
+    trigger_ask_pct,
+    realized_flow_inversion_pct,
+    realized_eod_pct,
+    peak_ceiling_pct,
+    cum_ncp_at_fire,
+    cum_npp_at_fire,
+    inferred_structure,
+    date
+FROM lottery_finder_fires
+WHERE
+    date >= CURRENT_DATE - INTERVAL '90 days'
+    -- alignment gate (cum_ncp/npp must both be non-null)
+    AND cum_ncp_at_fire IS NOT NULL
+    AND cum_npp_at_fire IS NOT NULL
+    -- hard alignment filter (spec decision 6)
+    AND (
+        (option_type = 'C' AND cum_ncp_at_fire > cum_npp_at_fire)
+        OR (option_type = 'P' AND cum_npp_at_fire > cum_ncp_at_fire)
+    )
+    -- drop structure rows (enrichment bug; spec decision 7)
+    AND inferred_structure IS NULL
+    -- require at least one outcome column to be non-null
+    AND COALESCE(realized_flow_inversion_pct, realized_eod_pct) IS NOT NULL
+ORDER BY date
+"""
+
+
+def fetch_training_data() -> pd.DataFrame:
+    """Fetch aligned, filtered fires and return as DataFrame with outcome_pct."""
+    print("Connecting to database...")
+    conn = get_connection()
+    print("Fetching training data...")
+    df = pd.read_sql_query(FETCH_QUERY, conn)
+    conn.close()
+    print(f"Fetched {len(df):,} rows before final filters")
+
+    # Compute outcome column (spec decision 2)
+    df["outcome_pct"] = df["realized_flow_inversion_pct"].combine_first(
+        df["realized_eod_pct"]
     )
 
-    return p_hat, max(0, center - margin), min(1, center + margin)
+    # Drop the 0.5% of non-structure rows with the enrichment bug
+    # (flow_inv > peak_ceiling * 1.05 is mathematically impossible for clean data)
+    pre_len = len(df)
+    mask_bug = (
+        df["realized_flow_inversion_pct"].notna()
+        & df["peak_ceiling_pct"].notna()
+        & (df["realized_flow_inversion_pct"] > df["peak_ceiling_pct"] * 1.05)
+    )
+    df = df[~mask_bug].copy()
+    dropped = pre_len - len(df)
+    if dropped > 0:
+        print(f"Dropped {dropped:,} rows with flow_inv > peak*1.05 (enrichment bug)")
 
-
-def fetch_fire_data() -> pd.DataFrame:
-    """Fetch all lottery fires from database."""
-    conn = get_connection()
-
-    query = """
-    SELECT
-        underlying_symbol AS ticker,
-        mode,
-        entry_price,
-        tod,
-        option_type,
-        peak_ceiling_pct AS peak_pct,
-        date AS fired_at
-    FROM lottery_finder_fires
-    WHERE peak_ceiling_pct IS NOT NULL
-    ORDER BY date DESC
-    """
-
-    df = pd.read_sql_query(query, conn)
-    conn.close()
-
+    print(f"Final training sample: {len(df):,} rows")
     return df
 
 
-def compute_ticker_stats(df: pd.DataFrame) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# Feature bucket helpers
+# ---------------------------------------------------------------------------
+
+def quintile_boundaries(series: pd.Series) -> list[float]:
+    """Compute the 4 quintile cut-points (Q1/Q2/Q3/Q4/Q5 boundaries)."""
+    clean = series.dropna()
+    return [float(np.percentile(clean, p)) for p in [20, 40, 60, 80]]
+
+
+def assign_quintile(series: pd.Series, boundaries: list[float]) -> pd.Series:
+    """Map series values to quintile labels 0-4 (Q1=0 ... Q5=4)."""
+    return pd.cut(
+        series,
+        bins=[-np.inf] + boundaries + [np.inf],
+        labels=[0, 1, 2, 3, 4],
+        right=True,
+    ).astype(float)
+
+
+# ---------------------------------------------------------------------------
+# Weight computation
+# ---------------------------------------------------------------------------
+
+def compute_categorical_weights(
+    df: pd.DataFrame,
+    feature_col: str,
+    categories: list[str | int],
+    scale: float,
+    global_mean: float,
+) -> dict[str, int]:
     """
-    Compute per-ticker statistics with confidence intervals.
+    Per-bucket mean uplift, normalized by spread, scaled, rounded to int.
 
-    Returns DataFrame with columns:
-    - ticker
-    - n_fires
-    - high_peak_rate (% of fires with peak ≥50%)
-    - ci_lower, ci_upper, ci_width
-    - tier ('reliable' if CI width <10%, 'uncertain' if >15%, else '')
+    weight_bucket = round(scale * (mean_bucket - global_mean) / spread)
+
+    where spread = max_mean - min_mean across the valid buckets.
+    Returns dict {str(category): int_weight}.
     """
-    # Define high-peak threshold
-    HIGH_PEAK_THRESHOLD = 50.0
-
-    ticker_groups = df.groupby("ticker")
-
-    stats_list = []
-    for ticker, group in ticker_groups:
-        n_fires = len(group)
-        high_peak_fires = (group["peak_pct"] >= HIGH_PEAK_THRESHOLD).sum()
-
-        rate, ci_lower, ci_upper = compute_confidence_interval(high_peak_fires, n_fires)
-        ci_width = (ci_upper - ci_lower) * 100  # Convert to percentage points
-
-        # Determine tier
-        if ci_width < 10:
-            tier = "reliable"
-        elif ci_width > 15:
-            tier = "uncertain"
+    bucket_means: dict[str, float] = {}
+    for cat in categories:
+        subset = df[df[feature_col] == cat]["outcome_pct"]
+        if len(subset) >= MIN_OBS_BUCKET:
+            bucket_means[str(cat)] = float(subset.mean())
         else:
-            tier = ""
+            bucket_means[str(cat)] = global_mean  # fallback to global
 
-        stats_list.append(
-            {
-                "ticker": ticker,
-                "n_fires": n_fires,
-                "high_peak_rate": rate * 100,  # Convert to percentage
-                "ci_lower": ci_lower * 100,
-                "ci_upper": ci_upper * 100,
-                "ci_width": ci_width,
-                "tier": tier,
-            }
-        )
+    spread = max(bucket_means.values()) - min(bucket_means.values())
+    if spread < 1e-6:
+        return {k: 0 for k in bucket_means}
 
-    return pd.DataFrame(stats_list).sort_values("n_fires", ascending=False)
+    weights: dict[str, int] = {}
+    for cat, mean_val in bucket_means.items():
+        raw = scale * (mean_val - global_mean) / spread
+        weights[cat] = int(round(raw))
+
+    return weights
 
 
-def define_score_weights(ticker_stats: pd.DataFrame) -> dict:
+def compute_quintile_weights(
+    df: pd.DataFrame,
+    quintile_col: str,
+    scale: float,
+    global_mean: float,
+) -> list[int]:
     """
-    Define scoring weights based on ticker stats distribution.
-
-    Returns dict with weight mappings for each factor.
+    Same logic as compute_categorical_weights, but for quintile features
+    stored as integer labels 0-4. Returns list of 5 ints [Q1_w, ..., Q5_w].
     """
-    # Ticker boost: 0-10 points based on high-peak rate.
-    # CRITICAL: filter to statistically reliable tickers BEFORE ranking.
-    # Without this, tickers with 50-80 fires can land at the top by
-    # chance (CI width 20pp+) and crowd out high-volume names whose
-    # smaller raw rate is a much more reliable edge. The `tier` column
-    # is set to 'reliable' when Wilson CI width <10pp.
-    reliable = ticker_stats[ticker_stats["tier"] == "reliable"]
-    if len(reliable) < 15:
-        # Fall back to widening the bar if we don't have 15 reliable
-        # tickers yet (early-history case). Include 'borderline' (no
-        # label, 10≤CI<15) before going to 'uncertain'.
-        reliable = ticker_stats[ticker_stats["tier"] != "uncertain"]
-    # Top 5 tickers get 10, next 5 get 7, next 5 get 5, rest get 0
-    top_tickers = reliable.nlargest(5, "high_peak_rate")["ticker"].tolist()
-    mid_tickers = reliable.nlargest(10, "high_peak_rate").tail(5)["ticker"].tolist()
-    good_tickers = reliable.nlargest(15, "high_peak_rate").tail(5)["ticker"].tolist()
+    bucket_means: dict[int, float] = {}
+    for q in range(5):
+        subset = df[df[quintile_col] == float(q)]["outcome_pct"]
+        if len(subset) >= MIN_OBS_BUCKET:
+            bucket_means[q] = float(subset.mean())
+        else:
+            bucket_means[q] = global_mean
 
-    ticker_weights = {}
-    for ticker in top_tickers:
-        ticker_weights[ticker] = 10
-    for ticker in mid_tickers:
-        ticker_weights[ticker] = 7
-    for ticker in good_tickers:
-        ticker_weights[ticker] = 5
+    spread = max(bucket_means.values()) - min(bucket_means.values())
+    if spread < 1e-6:
+        return [0, 0, 0, 0, 0]
 
-    return {
-        "ticker": ticker_weights,
-        "mode": {"0DTE": 5, "multi-day": 0},
-        "price": {
-            # Entry price ≤ $0.50 gets 5 points, $0.50-1.00 gets 3, >$1.00 gets 0
-            "thresholds": [(0.50, 5), (1.00, 3)]
-        },
-        "tod": {"AM_open": 3, "MID": 2, "LUNCH": 0, "PM": 0},
-        "option_type": {"call": 2, "put": 0},
-    }
+    weights: list[int] = []
+    for q in range(5):
+        raw = scale * (bucket_means[q] - global_mean) / spread
+        weights.append(int(round(raw)))
+
+    return weights
 
 
-def compute_score(
-    ticker: str, mode: str, price: float, tod: str, option_type: str, weights: dict
-) -> int:
-    """Compute composite score for a fire."""
-    score = 0
+def compute_ticker_weights(
+    df: pd.DataFrame,
+    global_mean: float,
+    min_obs: int = MIN_OBS_TICKER,
+) -> dict[str, int]:
+    """
+    Per-ticker: clamp mean-uplift weights to [TICKER_CLAMP_MIN, TICKER_CLAMP_MAX].
 
-    # Ticker boost
-    score += weights["ticker"].get(ticker, 0)
+    Scale: use ASK_PCT_SCALE (6) so a ticker at +2× global_mean gets ~+6 pts.
+    Tickers with < min_obs fires fall back to 0.
+    """
+    ticker_stats = (
+        df.groupby("underlying_symbol")["outcome_pct"]
+        .agg(["mean", "count"])
+        .rename(columns={"mean": "mean_outcome", "count": "n"})
+    )
 
-    # Mode boost
-    score += weights["mode"].get(mode, 0)
+    # Compute global spread (max ticker mean - min ticker mean among reliable tickers)
+    reliable = ticker_stats[ticker_stats["n"] >= min_obs]
+    if len(reliable) < 2:
+        # Fall back to a fixed spread if not enough reliable tickers
+        spread = max(global_mean, 10.0)
+    else:
+        spread = float(reliable["mean_outcome"].max() - reliable["mean_outcome"].min())
+        if spread < 1e-6:
+            spread = max(global_mean, 10.0)
 
-    # Price boost
-    for threshold, points in weights["price"]["thresholds"]:
-        if price <= threshold:
-            score += points
-            break
+    weights: dict[str, int] = {}
+    for ticker, row in ticker_stats.iterrows():
+        if row["n"] < min_obs:
+            weights[str(ticker)] = 0
+            continue
+        raw = ASK_PCT_SCALE * (row["mean_outcome"] - global_mean) / spread
+        clamped = int(round(max(TICKER_CLAMP_MIN, min(TICKER_CLAMP_MAX, raw))))
+        weights[str(ticker)] = clamped
 
-    # TOD boost
-    score += weights["tod"].get(tod, 0)
+    return weights
 
-    # Option type boost
-    score += weights["option_type"].get(option_type, 0)
+
+# ---------------------------------------------------------------------------
+# Score application
+# ---------------------------------------------------------------------------
+
+def apply_weights(
+    df: pd.DataFrame,
+    weights: dict,
+    vol_oi_boundaries: list[float],
+    gamma_boundaries: list[float],
+    ask_pct_boundaries: list[float],
+) -> pd.Series:
+    """Apply the full additive weight model to df, return score Series."""
+    score = pd.Series(0.0, index=df.index)
+
+    # TOD
+    tod_w = weights["features"]["tod_weights"]
+    score += df["tod"].map(tod_w).fillna(0)
+
+    # DTE (capped at 3)
+    dte_w = weights["features"]["dte_weights"]
+    score += df["dte"].clip(upper=3).astype(str).map(dte_w).fillna(0)
+
+    # Vol/OI quintile
+    vol_q = assign_quintile(df["trigger_vol_to_oi_window"], vol_oi_boundaries)
+    vol_w = weights["features"]["vol_oi_quintile_weights"]
+    score += vol_q.map(lambda q: vol_w[int(q)] if not pd.isna(q) else 0)
+
+    # Gamma quintile (drops NULLs → 0 contribution)
+    gamma_q = assign_quintile(df["gamma_at_trigger"], gamma_boundaries)
+    gamma_w = weights["features"]["gamma_quintile_weights"]
+    score += gamma_q.map(lambda q: gamma_w[int(q)] if not pd.isna(q) else 0)
+
+    # Ask pct quintile
+    ask_q = assign_quintile(df["trigger_ask_pct"], ask_pct_boundaries)
+    ask_w = weights["features"]["ask_pct_quintile_weights"]
+    score += ask_q.map(lambda q: ask_w[int(q)] if not pd.isna(q) else 0)
+
+    # Option type
+    opt_w = weights["features"]["option_type_weights"]
+    score += df["option_type"].map(opt_w).fillna(0)
+
+    # Ticker
+    ticker_w = weights["features"]["ticker_weights"]
+    score += df["underlying_symbol"].map(ticker_w).fillna(0)
 
     return score
 
 
-def validate_score_distribution(df: pd.DataFrame, weights: dict) -> dict:
-    """
-    Compute scores for all fires and validate distribution.
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
-    Returns dict with tier counts and sample fires per tier.
-    """
-    df["score"] = df.apply(
-        lambda row: compute_score(
-            row["ticker"],
-            row["mode"],
-            row["entry_price"],
-            row["tod"],
-            row["option_type"],
-            weights,
-        ),
-        axis=1,
+def main() -> None:
+    df = fetch_training_data()
+
+    global_mean = float(df["outcome_pct"].mean())
+    print(f"\nGlobal mean outcome_pct: {global_mean:.2f}")
+    print(f"Sample: {len(df):,} rows | date range: {df['date'].min()} → {df['date'].max()}")
+
+    # ---- Quintile boundaries (computed from training set) ----
+    vol_oi_boundaries = quintile_boundaries(df["trigger_vol_to_oi_window"])
+    gamma_boundaries = quintile_boundaries(df["gamma_at_trigger"])
+    ask_pct_boundaries = quintile_boundaries(df["trigger_ask_pct"])
+
+    print(f"\nVol/OI quintile boundaries: {[round(b,4) for b in vol_oi_boundaries]}")
+    print(f"Gamma quintile boundaries:  {[round(b,4) for b in gamma_boundaries]}")
+    print(f"Ask_pct quintile boundaries:{[round(b,4) for b in ask_pct_boundaries]}")
+
+    # ---- Add quintile columns to df ----
+    df["vol_q"] = assign_quintile(df["trigger_vol_to_oi_window"], vol_oi_boundaries)
+    df["gamma_q"] = assign_quintile(df["gamma_at_trigger"], gamma_boundaries)
+    df["ask_q"] = assign_quintile(df["trigger_ask_pct"], ask_pct_boundaries)
+
+    # ---- TOD weights ----
+    tod_weights = compute_categorical_weights(
+        df, "tod", ["AM_open", "MID", "LUNCH", "PM"], TOD_SCALE, global_mean
     )
+    print(f"\nTOD weights: {tod_weights}")
 
-    # Count fires per tier
-    tier1_count = (df["score"] >= 18).sum()
-    tier2_count = ((df["score"] >= 12) & (df["score"] < 18)).sum()
-    tier3_count = (df["score"] < 12).sum()
-
-    # Compute high-peak rates per tier
-    tier1_fires = df[df["score"] >= 18]
-    tier2_fires = df[(df["score"] >= 12) & (df["score"] < 18)]
-    tier3_fires = df[df["score"] < 12]
-
-    tier1_rate = (
-        (tier1_fires["peak_pct"] >= 50).sum() / len(tier1_fires) * 100
-        if len(tier1_fires) > 0
-        else 0
+    # ---- DTE weights ----
+    df["dte_str"] = df["dte"].clip(upper=3).astype(int).astype(str)
+    dte_weights_raw = compute_categorical_weights(
+        df, "dte_str", ["0", "1", "2", "3"], DTE_SCALE, global_mean
     )
-    tier2_rate = (
-        (tier2_fires["peak_pct"] >= 50).sum() / len(tier2_fires) * 100
-        if len(tier2_fires) > 0
-        else 0
-    )
-    tier3_rate = (
-        (tier3_fires["peak_pct"] >= 50).sum() / len(tier3_fires) * 100
-        if len(tier3_fires) > 0
-        else 0
-    )
+    dte_weights = {k: dte_weights_raw[k] for k in ["0", "1", "2", "3"]}
+    print(f"DTE weights: {dte_weights}")
 
-    total_days = (df["fired_at"].max() - df["fired_at"].min()).days
+    # ---- Vol/OI quintile weights ----
+    vol_oi_weights = compute_quintile_weights(df, "vol_q", VOL_OI_SCALE, global_mean)
+    print(f"Vol/OI quintile weights (Q1→Q5): {vol_oi_weights}")
 
-    return {
-        "total_fires": len(df),
-        "total_days": total_days,
-        "tier1": {
-            "count": int(tier1_count),
-            "per_day": tier1_count / total_days if total_days > 0 else 0,
-            "high_peak_rate": tier1_rate,
+    # ---- Gamma quintile weights ----
+    # Gamma has ~40k NULLs — quintiles computed on non-null subset only;
+    # NULL gamma rows contribute 0 to score (no gamma signal).
+    gamma_weights = compute_quintile_weights(df, "gamma_q", GAMMA_SCALE, global_mean)
+    print(f"Gamma quintile weights (Q1→Q5): {gamma_weights}")
+
+    # ---- Ask pct quintile weights ----
+    ask_pct_weights = compute_quintile_weights(df, "ask_q", ASK_PCT_SCALE, global_mean)
+    print(f"Ask_pct quintile weights (Q1→Q5): {ask_pct_weights}")
+
+    # ---- Option type weights ----
+    opt_type_weights = compute_categorical_weights(
+        df, "option_type", ["C", "P"], OPT_TYPE_SCALE, global_mean
+    )
+    print(f"Option type weights: {opt_type_weights}")
+
+    # ---- Ticker weights ----
+    ticker_weights = compute_ticker_weights(df, global_mean, min_obs=100)
+    print(f"Ticker weights ({len(ticker_weights)} tickers): "
+          f"min={min(ticker_weights.values())}, max={max(ticker_weights.values())}")
+
+    # ---- Build weights dict ----
+    weights = {
+        "model_version": "rescore-v1-2026-05-22",
+        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "training_sample": {
+            "n": int(len(df)),
+            "date_range": [
+                str(df["date"].min()),
+                str(df["date"].max()),
+            ],
+            "filters_applied": [
+                "last 90 days",
+                "aligned only (cum_ncp > cum_npp for calls, vice versa for puts)",
+                "inferred_structure IS NULL (enrichment bug on structure rows)",
+                "realized_flow_inversion_pct <= peak_ceiling_pct * 1.05",
+                "outcome_pct = COALESCE(realized_flow_inversion_pct, realized_eod_pct)",
+            ],
         },
-        "tier2": {
-            "count": int(tier2_count),
-            "per_day": tier2_count / total_days if total_days > 0 else 0,
-            "high_peak_rate": tier2_rate,
-        },
-        "tier3": {
-            "count": int(tier3_count),
-            "per_day": tier3_count / total_days if total_days > 0 else 0,
-            "high_peak_rate": tier3_rate,
-        },
-        "score_distribution": {
-            "min": int(df["score"].min()),
-            "max": int(df["score"].max()),
-            "mean": float(df["score"].mean()),
-            "median": float(df["score"].median()),
+        "features": {
+            "tod_weights": {k: int(v) for k, v in tod_weights.items()},
+            "dte_weights": {k: int(v) for k, v in dte_weights.items()},
+            "vol_oi_quintile_weights": [int(w) for w in vol_oi_weights],
+            "vol_oi_quintile_boundaries": [float(b) for b in vol_oi_boundaries],
+            "gamma_quintile_weights": [int(w) for w in gamma_weights],
+            "gamma_quintile_boundaries": [float(b) for b in gamma_boundaries],
+            "ask_pct_quintile_weights": [int(w) for w in ask_pct_weights],
+            "ask_pct_quintile_boundaries": [float(b) for b in ask_pct_boundaries],
+            "option_type_weights": {k: int(v) for k, v in opt_type_weights.items()},
+            "ticker_weights": {k: int(v) for k, v in ticker_weights.items()},
         },
     }
 
+    # ---- Compute scores on training set ----
+    print("\nApplying weights to training set to derive cutoffs and validation...")
+    scores = apply_weights(
+        df, weights, vol_oi_boundaries, gamma_boundaries, ask_pct_boundaries
+    )
+    df["score"] = scores
 
-def main():
-    """Run scoring analysis and output results."""
-    print("Fetching lottery fire data...")
-    df = fetch_fire_data()
-    print(f"Loaded {len(df)} fires")
+    # ---- Cutoffs: t1 = 95th percentile, t2 = 85th percentile ----
+    t1 = int(round(np.percentile(scores, 95)))
+    t2 = int(round(np.percentile(scores, 85)))
+    weights["cutoffs"] = {
+        "t1": t1,
+        "t2": t2,
+        "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift.",
+    }
+    print(f"\nCutoffs: t1={t1} (95th pct), t2={t2} (85th pct) — PLACEHOLDER, Phase 5 will re-derive")
 
-    print("\nComputing ticker statistics...")
-    ticker_stats = compute_ticker_stats(df)
-    print(f"Analyzed {len(ticker_stats)} tickers")
+    # ---- Validation metrics ----
+    tier1 = df[df["score"] >= t1]
+    tier2 = df[(df["score"] >= t2) & (df["score"] < t1)]
+    tier3 = df[df["score"] < t2]
 
-    print("\nDefining score weights...")
-    weights = define_score_weights(ticker_stats)
+    spearman_r, spearman_p = stats.spearmanr(df["score"], df["outcome_pct"])
 
-    print("\nValidating score distribution...")
-    distribution = validate_score_distribution(df, weights)
+    weights["validation"] = {
+        "tier1_count": int(len(tier1)),
+        "tier2_count": int(len(tier2)),
+        "tier3_count": int(len(tier3)),
+        "tier1_mean_outcome_pct": float(tier1["outcome_pct"].mean()) if len(tier1) > 0 else 0.0,
+        "tier2_mean_outcome_pct": float(tier2["outcome_pct"].mean()) if len(tier2) > 0 else 0.0,
+        "tier3_mean_outcome_pct": float(tier3["outcome_pct"].mean()) if len(tier3) > 0 else 0.0,
+        "spearman_score_outcome": float(spearman_r),
+        "spearman_p_value": float(spearman_p),
+    }
 
-    # Output results
-    output_dir = Path(__file__).parent.parent / "data"
+    # ---- Write output ----
+    output_dir = Path(__file__).resolve().parent.parent / "output"
     output_dir.mkdir(exist_ok=True)
+    output_path = output_dir / "lottery_score_weights.json"
 
-    # Save ticker stats
-    ticker_stats_path = output_dir / "lottery_ticker_stats.json"
-    ticker_stats.to_json(ticker_stats_path, orient="records", indent=2)
-    print(f"\nSaved ticker stats to {ticker_stats_path}")
-
-    # Save score weights
-    weights_path = output_dir / "lottery_score_weights.json"
-    with open(weights_path, "w") as f:
+    with open(output_path, "w") as f:
         json.dump(weights, f, indent=2)
-    print(f"Saved score weights to {weights_path}")
 
-    # Save distribution analysis
-    distribution_path = output_dir / "lottery_score_distribution.json"
-    with open(distribution_path, "w") as f:
-        json.dump(distribution, f, indent=2)
-    print(f"Saved distribution analysis to {distribution_path}")
+    print(f"\nWrote weights to: {output_path}")
 
-    # Print summary
-    print("\n" + "=" * 60)
-    print("SCORING MODEL SUMMARY")
-    print("=" * 60)
-    print(f"\nTotal fires analyzed: {distribution['total_fires']:,}")
-    print(f"Date range: {distribution['total_days']} days")
-    print(
-        f"\nTier 1 (score ≥18): {distribution['tier1']['count']:,} fires ({distribution['tier1']['per_day']:.1f}/day)"
-    )
-    print(f"  High-peak rate: {distribution['tier1']['high_peak_rate']:.1f}%")
-    print(
-        f"\nTier 2 (score 12-17): {distribution['tier2']['count']:,} fires ({distribution['tier2']['per_day']:.1f}/day)"
-    )
-    print(f"  High-peak rate: {distribution['tier2']['high_peak_rate']:.1f}%")
-    print(
-        f"\nTier 3 (score <12): {distribution['tier3']['count']:,} fires ({distribution['tier3']['per_day']:.1f}/day)"
-    )
-    print(f"  High-peak rate: {distribution['tier3']['high_peak_rate']:.1f}%")
-    print(
-        f"\nScore range: {distribution['score_distribution']['min']}-{distribution['score_distribution']['max']}"
-    )
-    print(f"Mean score: {distribution['score_distribution']['mean']:.1f}")
-    print(f"Median score: {distribution['score_distribution']['median']:.1f}")
+    # ---- Summary table (printed to stdout) ----
+    print("\n" + "=" * 70)
+    print("RESCORE-V1 MODEL SUMMARY")
+    print("=" * 70)
+    print(f"\nTraining sample: {len(df):,} rows  |  global mean outcome_pct: {global_mean:.1f}%")
+    print(f"\nTOD weights (target: AM_open > PM):")
+    for k, v in tod_weights.items():
+        bar = "#" * (v + 5)
+        print(f"  {k:10s}: {v:+4d}  {bar}")
 
-    print("\nTop 10 tickers by high-peak rate:")
-    print(
-        ticker_stats.head(10)[
-            ["ticker", "n_fires", "high_peak_rate", "ci_width", "tier"]
-        ].to_string(index=False)
-    )
+    print(f"\nDTE weights (target: '1' > '0'):")
+    for k in ["0", "1", "2", "3"]:
+        v = dte_weights[k]
+        bar = "#" * (v + 5)
+        print(f"  DTE {k}: {v:+4d}  {bar}")
+
+    print(f"\nVol/OI quintile weights (target: Q3 highest):")
+    for i, w in enumerate(vol_oi_weights):
+        lo = vol_oi_boundaries[i - 1] if i > 0 else 0
+        hi = vol_oi_boundaries[i] if i < 4 else float("inf")
+        bar = "#" * (w + 5)
+        print(f"  Q{i+1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
+
+    print(f"\nGamma quintile weights (target: Q4 highest or near-top):")
+    for i, w in enumerate(gamma_weights):
+        lo = gamma_boundaries[i - 1] if i > 0 else 0
+        hi = gamma_boundaries[i] if i < 4 else float("inf")
+        bar = "#" * (w + 5)
+        print(f"  Q{i+1} [{lo:.4f},{hi:.4f}): {w:+4d}  {bar}")
+
+    print(f"\nAsk_pct quintile weights (target: Q1 highest, monotonic-decreasing):")
+    for i, w in enumerate(ask_pct_weights):
+        lo = ask_pct_boundaries[i - 1] if i > 0 else 0.0
+        hi = ask_pct_boundaries[i] if i < 4 else 1.0
+        bar = "#" * (w + 5)
+        print(f"  Q{i+1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
+
+    print(f"\nOption type weights: C={opt_type_weights.get('C', 0):+d}, P={opt_type_weights.get('P', 0):+d}")
+    print(f"\nTicker weights (non-zero only):")
+    nonzero = {k: v for k, v in sorted(ticker_weights.items(), key=lambda x: -x[1]) if v != 0}
+    for ticker, w in nonzero.items():
+        bar = "#" * (w + 6)
+        print(f"  {ticker:8s}: {w:+4d}  {bar}")
+
+    print(f"\nCutoffs: t1={t1}, t2={t2}")
+    print(f"\nTier distribution (training set):")
+    print(f"  Tier 1 (score >= {t1}): {len(tier1):6,}  | mean outcome: {weights['validation']['tier1_mean_outcome_pct']:.1f}%")
+    print(f"  Tier 2 (score >= {t2}): {len(tier2):6,}  | mean outcome: {weights['validation']['tier2_mean_outcome_pct']:.1f}%")
+    print(f"  Tier 3 (score <  {t2}): {len(tier3):6,}  | mean outcome: {weights['validation']['tier3_mean_outcome_pct']:.1f}%")
+
+    print(f"\nSpearman(score, outcome_pct): r={spearman_r:.4f}, p={spearman_p:.2e}")
+
+    # ---- Verification assertions ----
+    print("\n" + "=" * 70)
+    print("VERIFICATION CHECKS")
+    print("=" * 70)
+
+    checks: list[tuple[str, bool, str]] = [
+        (
+            "TOD: AM_open > PM",
+            tod_weights.get("AM_open", 0) > tod_weights.get("PM", 0),
+            f"AM_open={tod_weights.get('AM_open')}, PM={tod_weights.get('PM')}",
+        ),
+        (
+            "DTE: '1' > '0'",
+            dte_weights.get("1", 0) > dte_weights.get("0", 0),
+            f"DTE1={dte_weights.get('1')}, DTE0={dte_weights.get('0')}",
+        ),
+        (
+            "Vol/OI: Q3 is highest weight",
+            vol_oi_weights[2] == max(vol_oi_weights),
+            f"weights={vol_oi_weights}",
+        ),
+        (
+            "Ask_pct: Q1 >= Q5 (monotonic start)",
+            ask_pct_weights[0] >= ask_pct_weights[4],
+            f"Q1={ask_pct_weights[0]}, Q5={ask_pct_weights[4]}",
+        ),
+        (
+            "Option type: C > P",
+            opt_type_weights.get("C", 0) > opt_type_weights.get("P", 0),
+            f"C={opt_type_weights.get('C')}, P={opt_type_weights.get('P')}",
+        ),
+        (
+            "All ticker weights numeric (no NaN)",
+            all(isinstance(v, int) and not pd.isna(v) for v in ticker_weights.values()),
+            f"{len(ticker_weights)} tickers checked",
+        ),
+        (
+            "Spearman r > 0.05 (some signal)",
+            spearman_r > 0.05,
+            f"r={spearman_r:.4f}",
+        ),
+    ]
+
+    all_passed = True
+    for label, passed, detail in checks:
+        status = "PASS" if passed else "FAIL"
+        print(f"  [{status}] {label}  ({detail})")
+        if not passed:
+            all_passed = False
+
+    if all_passed:
+        print("\nAll verification checks passed.")
+    else:
+        print("\nSome checks FAILED — review weights before using in production.")
+        sys.exit(1)
+
+    # ---- EDA-vs-clean inversion warnings ----
+    # The EDA memo (docs/tmp/lottery-rescore-eda-2026-05-22.md) was run against
+    # data that included structure-tagged rows with a 35% enrichment bug. Some
+    # feature lifts shift when we train on the clean (non-structure) subset.
+    # Flag any inversions here so a human reviewer can decide whether the
+    # clean-data signal is real or an artifact of the enrichment fix.
+    print("\nEDA vs clean-data sign check:")
+    if gamma_weights[3] != max(gamma_weights):
+        # EDA said Q4 (0.041-0.066) had highest mean (267). Clean data may differ.
+        best_q = gamma_weights.index(max(gamma_weights)) + 1
+        print(
+            f"  WARNING: Gamma highest weight is at Q{best_q}, not Q4 as the EDA "
+            f"memo predicted. Clean data shows weights={gamma_weights}. The EDA "
+            f"was on contaminated data; the clean signal is what gets trained. "
+            f"Worth verifying in Phase 7."
+        )
+    if ask_pct_weights[0] != max(ask_pct_weights):
+        # EDA said Q1 (0.52-0.53) had highest mean (108). Clean data may differ.
+        best_q = ask_pct_weights.index(max(ask_pct_weights)) + 1
+        print(
+            f"  WARNING: Ask_pct highest weight is at Q{best_q}, not Q1 as the EDA "
+            f"memo predicted. Clean data shows weights={ask_pct_weights}. Same "
+            f"caveat as gamma above."
+        )
 
 
 if __name__ == "__main__":

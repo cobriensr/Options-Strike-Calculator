@@ -1,0 +1,177 @@
+{
+  "model_version": "rescore-v1-2026-05-22",
+  "trained_at": "2026-05-22T19:14:54.548296+00:00",
+  "training_sample": {
+    "n": 164230,
+    "date_range": [
+      "2026-02-24",
+      "2026-05-21"
+    ],
+    "filters_applied": [
+      "last 90 days",
+      "aligned only (cum_ncp > cum_npp for calls, vice versa for puts)",
+      "inferred_structure IS NULL (enrichment bug on structure rows)",
+      "realized_flow_inversion_pct <= peak_ceiling_pct * 1.05",
+      "outcome_pct = COALESCE(realized_flow_inversion_pct, realized_eod_pct)"
+    ]
+  },
+  "features": {
+    "tod_weights": {
+      "AM_open": 4,
+      "MID": 0,
+      "LUNCH": -4,
+      "PM": -4
+    },
+    "dte_weights": {
+      "0": -2,
+      "1": 4,
+      "2": 0,
+      "3": 1
+    },
+    "vol_oi_quintile_weights": [
+      1,
+      0,
+      2,
+      0,
+      -3
+    ],
+    "vol_oi_quintile_boundaries": [
+      0.05964214711729622,
+      0.09565217391304348,
+      0.1543981570905453,
+      0.3783801646987372
+    ],
+    "gamma_quintile_weights": [
+      3,
+      -2,
+      -2,
+      -2,
+      0
+    ],
+    "gamma_quintile_boundaries": [
+      0.012324876801251189,
+      0.025442619069240443,
+      0.042202206604267926,
+      0.06821011318181819
+    ],
+    "ask_pct_quintile_weights": [
+      -1,
+      1,
+      1,
+      2,
+      -4
+    ],
+    "ask_pct_quintile_boundaries": [
+      0.5333333333333333,
+      0.5714285714285714,
+      0.625,
+      0.746268656716418
+    ],
+    "option_type_weights": {
+      "C": 2,
+      "P": -2
+    },
+    "ticker_weights": {
+      "AAOI": 2,
+      "AAPL": 0,
+      "AMD": 0,
+      "AMZN": 0,
+      "APLD": 0,
+      "APP": -1,
+      "ARM": 0,
+      "ASTS": 0,
+      "AVGO": 0,
+      "BA": 2,
+      "BABA": 0,
+      "BE": 0,
+      "CAR": 0,
+      "COIN": 0,
+      "CRCL": 0,
+      "CRWD": 0,
+      "CRWV": 0,
+      "CSCO": 0,
+      "CVNA": -1,
+      "DELL": 1,
+      "GME": 0,
+      "GOOG": 1,
+      "GOOGL": 0,
+      "HIMS": 0,
+      "HOOD": 0,
+      "IBIT": 0,
+      "IBM": 0,
+      "INTC": 0,
+      "IONQ": 0,
+      "IREN": 0,
+      "IWM": -1,
+      "LITE": 0,
+      "LLY": 0,
+      "META": 0,
+      "MRVL": 0,
+      "MSFT": 0,
+      "MSTR": 0,
+      "MU": 0,
+      "NBIS": 1,
+      "NFLX": 0,
+      "NOW": 0,
+      "NVDA": 0,
+      "NVTS": 0,
+      "OKLO": 0,
+      "ORCL": 0,
+      "PLTR": 0,
+      "POET": 0,
+      "QCOM": 1,
+      "QQQ": 0,
+      "RBLX": -1,
+      "RDDT": 1,
+      "RGTI": 0,
+      "RIOT": -1,
+      "RIVN": 0,
+      "RKLB": 3,
+      "RUTW": -1,
+      "SHOP": 0,
+      "SLV": -1,
+      "SMCI": 1,
+      "SMH": 0,
+      "SNDK": 1,
+      "SNOW": 0,
+      "SOFI": -1,
+      "SOUN": 5,
+      "SOXL": 0,
+      "SOXS": -1,
+      "SPXW": 0,
+      "SPY": 0,
+      "SQQQ": 0,
+      "STX": 1,
+      "TEAM": 0,
+      "TLT": 0,
+      "TNA": -1,
+      "TQQQ": 0,
+      "TSLA": 0,
+      "TSLL": 1,
+      "TSM": 1,
+      "UBER": -1,
+      "UNH": 1,
+      "USAR": -1,
+      "USO": -1,
+      "WDC": -1,
+      "WMT": 0,
+      "WULF": -1,
+      "XOM": 0
+    }
+  },
+  "cutoffs": {
+    "t1": 9,
+    "t2": 7,
+    "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift."
+  },
+  "validation": {
+    "tier1_count": 11866,
+    "tier2_count": 13111,
+    "tier3_count": 139253,
+    "tier1_mean_outcome_pct": 34.78032385102423,
+    "tier2_mean_outcome_pct": 26.785468704445435,
+    "tier3_mean_outcome_pct": 4.357988055620761,
+    "spearman_score_outcome": 0.18289728139169661,
+    "spearman_p_value": 0.0
+  }
+}
