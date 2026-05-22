@@ -48,6 +48,11 @@ def render_ts(weights: dict) -> str:
  */
 
 import type {{ LotteryMode, TimeOfDay }} from './lottery-finder.js';
+import {{
+  GAMMA_BONUS_EXCLUDED_TICKERS,
+  GAMMA_HIGH_BONUS_POINTS,
+  GAMMA_HIGH_BONUS_THRESHOLD,
+}} from './constants.js';
 
 export const LOTTERY_TICKER_WEIGHTS: Readonly<Record<string, number>> = {{
 {chr(10).join(ticker_lines)}
@@ -111,6 +116,38 @@ export function computeLotteryScore(args: {{
   score += TOD_WEIGHTS[tod] ?? 0;
   if (optionType === 'C') score += {weights['option_type']['call']};
   return score;
+}}
+
+/**
+ * Gamma-at-trigger score bonus. Mirrors the SQL CASE expression baked
+ * into `combined_score` by migration #168 — TS helper used by the
+ * lottery-finder serializer so the per-fire `gammaScoreAdjustment`
+ * field rendered on the row can be computed without re-reading
+ * combined_score's component breakdown.
+ *
+ * Returns GAMMA_HIGH_BONUS_POINTS (=1) when:
+ *   - gamma is non-null and finite AND >= GAMMA_HIGH_BONUS_THRESHOLD (0.025)
+ *   - ticker is NOT in GAMMA_BONUS_EXCLUDED_TICKERS (SPY, USO)
+ *
+ * Empirical basis: docs/tmp/gamma-deep-dive-findings-2026-05-17.md.
+ * Threshold is the LF decile-5 inflection; excluded tickers SPY/USO
+ * showed -7pp/-16pp lift reversal in the same study.
+ *
+ * NOTE: This block is baked into render_ts() in
+ * scripts/sync_lottery_score_weights.py because callers
+ * (api/lottery-finder.ts, api/__tests__/lottery-score-weights.test.ts)
+ * depend on it. Do NOT remove from the template — `make refit` will
+ * regenerate this file from the template every night.
+ */
+export function gammaScoreAdjustment(
+  gamma: number | null,
+  ticker: string,
+): number {{
+  if (gamma == null) return 0;
+  if (!Number.isFinite(gamma)) return 0;
+  if (GAMMA_BONUS_EXCLUDED_TICKERS.includes(ticker)) return 0;
+  if (gamma < GAMMA_HIGH_BONUS_THRESHOLD) return 0;
+  return GAMMA_HIGH_BONUS_POINTS;
 }}
 '''
 
