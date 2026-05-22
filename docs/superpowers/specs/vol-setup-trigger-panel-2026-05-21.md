@@ -209,24 +209,52 @@ No new env vars. No new external API.
 4. **Alert mode**. Visual-only (toast + badge) vs visual + audio. Default: **visual + soft audio for FIRED transitions only**, no sound for ARMED.
 5. **Backfill.** Should the cron also backfill the last hour on cold start? Default: **no**. Polling at 30s + 5-min computation window self-heals within 5 minutes.
 
-## Thresholds (Phase 1 baseline — pending Phase 0 validation)
+## Thresholds (locked 2026-05-21 from Phase 0 sweep)
 
-These are first-pass values derived from today (2026-05-21) only and
-**must be re-derived in Phase 0** against ≥ 30 days of historical CSVs.
-Listed here so Phase 1 code has placeholders:
+Phase 0 swept the candidate thresholds against the full 96-day UW
+full-tape archive (37,440 bars, 417 labeled run-up starts, 1.11% base
+rate). Full results in [docs/tmp/vol-setup-tuning-2026-05-21.json](../../tmp/vol-setup-tuning-2026-05-21.json).
+
+**Honest finding**: no single signal hit the original lock criterion of
+precision ≥ 0.5 AND ≤ 3 fires/session. The best train→test precision
+across the three signals is 5–20% — real edge over the 1.1% base rate
+(5–18× lift), but not alert-grade. The panel ships as a **visual /
+descriptive** tool with a single low-frequency audio alert; not as a
+loud signal generator.
+
+**Locked thresholds for Phase 1**:
 
 ```typescript
 export const VOL_SETUP_THRESHOLDS = {
-  VOLUME_BURST_MULTIPLIER: 3.0,        // 1-min count > k × trailing-20m
+  // Volume Burst — only audio-armed signal. Train prec 17.9% @ 1.0
+  // fires/session. Treat each fire as "something is happening RIGHT
+  // NOW" — bet direction confirmed by spot + delta-bar polarity, not
+  // by this signal alone.
+  VOLUME_BURST_MULTIPLIER: 4.0,        // 1-min count > 4 × trailing-20m
+
+  // Vol Crush — visual chart marker only, NO audio. Any threshold
+  // fires 15–80× per session at 5–8% precision. The signal is
+  // descriptive of regime, not predictive of any specific minute.
   VOL_CRUSH_IV_DROP_PCT: 5.0,           // ATM IV down ≥ 5% relative in 30m
-  VOL_CRUSH_RANGE_MAX_PCT: 0.15,        // AND SPY 30-min range < 0.15%
-  DELTA_INFLECTION_MIN_ABS_D: 500_000_000, // |30-min cum| ≥ $500M after sign flip
+  VOL_CRUSH_RANGE_MAX_PCT: 0.20,        // AND SPY 30-min range < 0.20%
+                                         // (loosened from 0.15 to surface more setups)
+
+  // Delta Inflection — visual chart marker only. Use the $1B threshold
+  // for the panel; below that fires too often to read.
+  DELTA_INFLECTION_MIN_ABS_D: 1_000_000_000, // 30-min cum delta crosses 0 with |cum| ≥ $1B
   DELTA_INFLECTION_PRIOR_MIN_DURATION_MIN: 20, // prior sign sustained ≥ 20m
 } as const;
 ```
 
 These live in `api/_lib/constants.ts` and are imported by both the cron
 and the frontend hook so the panel and the alerts use identical math.
+
+**Implication for Phase 3 alerts**: only Volume Burst fires audio. Vol
+Crush and Delta Inflection render as on-chart markers (color-coded
+bands or dots) but do not page. Spec the COMPOSITE signal experiment in
+Phase 4: "Volume Burst armed AND Vol Crush armed within prior 30 min"
+is the high-precision combo from today's tape; back-test it after the
+30-day soak.
 
 ## Success criteria
 
