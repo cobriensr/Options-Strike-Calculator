@@ -285,6 +285,117 @@ describe('useTickerGrouping', () => {
     });
   });
 
+  describe('unfilteredItems preserves conviction/storm under filtering', () => {
+    // Bug repro from the 2026-05-21 trader feedback session:
+    // chip filters used to silently drop the ✦ conviction badge
+    // once `fires.length` slipped below 3, even though the underlying
+    // ticker had ≥3 clean fires within 15 min earlier in the day.
+
+    function convictionFixture(): Fix[] {
+      // 4 same-side fires across distinct strikes within 6 min — clean
+      // conviction footprint. Different strikes are required by
+      // computeRollupAggregates (single-strike groups have null
+      // strikeRange and fail isHighConviction).
+      const baseMs = 1_700_000_000_000;
+      return [
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs,
+          intensity: 1,
+          premium: 100_000,
+          peak: 30,
+        }),
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs + 60_000,
+          intensity: 1,
+          premium: 100_000,
+          peak: 25,
+        }),
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs + 180_000,
+          intensity: 1,
+          premium: 100_000,
+          peak: 20,
+        }),
+        fix({
+          ticker: 'MSFT',
+          side: 'put',
+          ms: baseMs + 360_000,
+          intensity: 1,
+          premium: 100_000,
+          peak: 15,
+        }),
+      ].map((f, i) => ({ ...f, premium: f.premium + i }));
+    }
+
+    function extractMultiStrike(item: Fix, idx: number): TickerGroupingExtract {
+      // Override strike so the 4-fire fixture has multiple distinct
+      // strikes (required for the strikeRange gate inside
+      // isHighConviction). The default extract pins strike=100.
+      const base = extract(item);
+      return {
+        ...base,
+        rollupSummary: {
+          ...base.rollupSummary,
+          strike: 100 + idx,
+        },
+      };
+    }
+
+    it('keeps conviction=true when the displayed subset is filtered below the threshold', () => {
+      const full = convictionFixture();
+      const filtered = full.slice(0, 1); // 1-of-4 visible — below MIN_FIRES=3
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items: filtered,
+          unfilteredItems: full,
+          sortMode: 'default',
+          extract: (item) => extractMultiStrike(item, full.indexOf(item)),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      expect(result.current[0]?.ticker).toBe('MSFT');
+      expect(result.current[0]?.items).toHaveLength(1);
+      expect(result.current[0]?.conviction).toBe(true);
+    });
+
+    it('drops conviction when unfilteredItems is omitted (back-compat)', () => {
+      const full = convictionFixture();
+      const filtered = full.slice(0, 1);
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items: filtered,
+          // unfilteredItems intentionally omitted
+          sortMode: 'default',
+          extract: (item) => extractMultiStrike(item, full.indexOf(item)),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      expect(result.current[0]?.conviction).toBe(false);
+    });
+
+    it('peakBest + latestTriggerMs still reflect the FILTERED set, not the unfiltered', () => {
+      const full = convictionFixture(); // peaks 30, 25, 20, 15
+      const filtered = [full[3]!]; // only the last fire (peak=15)
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items: filtered,
+          unfilteredItems: full,
+          sortMode: 'default',
+          extract: (item) => extractMultiStrike(item, full.indexOf(item)),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      // peakBest reflects the visible subset, not unfiltered max
+      expect(result.current[0]?.peakBest).toBe(15);
+    });
+  });
+
   describe('stable extract identity is not required', () => {
     it('does not rerun the memo when extract changes ref but items/sortMode stay', () => {
       // Without the extractRef trick, a new `extract` ref each render

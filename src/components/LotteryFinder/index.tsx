@@ -706,6 +706,9 @@ export function LotteryFinderSection({
   // shape projection is panel-specific.
   const groupedByTicker = useTickerGrouping({
     items: tickerGroupFires,
+    // The full unfiltered fire list — drives conviction/storm so chip
+    // filters don't silently erase a ticker's true-footprint badges.
+    unfilteredItems: fires,
     sortMode: sortMode === 'peak' ? 'peak' : 'default',
     stormIntensityThreshold: BURST_STORM_INTENSITY_THRESHOLDS.lottery,
     extract: (f) => {
@@ -1498,6 +1501,8 @@ export function LotteryFinderSection({
                 onToggle={handleTickerToggle}
                 marketOpen={marketOpen}
                 exitPolicy={exitPolicy}
+                conviction={g.conviction}
+                storm={g.storm}
                 liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}
               />
             ))}

@@ -61,6 +61,21 @@ export interface UseTickerGroupingOptions<T> {
   extract: (item: T) => TickerGroupingExtract;
   /** Intensity threshold passed to isBurstStorm. */
   stormIntensityThreshold: number;
+  /**
+   * Optional full-day unfiltered item set. When provided, the
+   * `conviction` and `storm` flags on each displayed group are
+   * computed from the unfiltered set, so chip filters that hide
+   * rows do not erase a ticker's true-footprint badge state.
+   * Trader complaint that motivated the option: filtering used to
+   * silently drop the ✦ conviction badge once `fires.length` slipped
+   * below 3 even though the underlying ticker had ≥3 clean fires
+   * within 15 min earlier in the day.
+   *
+   * `peakBest` and `latestTriggerMs` stay filtered (they should
+   * reflect what's visible). When this option is omitted, behavior
+   * is unchanged from the pre-fix code path.
+   */
+  unfilteredItems?: readonly T[];
 }
 
 export function useTickerGrouping<T>(
@@ -74,7 +89,7 @@ export function useTickerGrouping<T>(
   const extractRef = useRef(opts.extract);
   extractRef.current = opts.extract;
 
-  const { items, sortMode, stormIntensityThreshold } = opts;
+  const { items, sortMode, stormIntensityThreshold, unfilteredItems } = opts;
 
   return useMemo(() => {
     const extract = extractRef.current;
@@ -84,6 +99,33 @@ export function useTickerGrouping<T>(
       const arr = groups.get(ticker);
       if (arr) arr.push(item);
       else groups.set(ticker, [item]);
+    }
+
+    // Per-ticker conviction/storm computed from the UNFILTERED set
+    // (when provided). Filter chips shrink the visible items but the
+    // badge state should reflect the ticker's true day-footprint.
+    const unfilteredFlags = new Map<
+      string,
+      { conviction: boolean; storm: boolean }
+    >();
+    if (unfilteredItems) {
+      const fullByTicker = new Map<string, T[]>();
+      for (const item of unfilteredItems) {
+        const { ticker } = extract(item);
+        const arr = fullByTicker.get(ticker);
+        if (arr) arr.push(item);
+        else fullByTicker.set(ticker, [item]);
+      }
+      for (const [ticker, list] of fullByTicker) {
+        const summaries = list.map(extract);
+        const agg = computeRollupAggregates(
+          summaries.map((s) => s.rollupSummary),
+        );
+        unfilteredFlags.set(ticker, {
+          conviction: isHighConviction(agg, list.length),
+          storm: isBurstStorm(agg, list.length, stormIntensityThreshold),
+        });
+      }
     }
 
     return Array.from(groups, ([ticker, list]) => {
@@ -115,11 +157,15 @@ export function useTickerGrouping<T>(
           Number.isFinite(s.triggerMs) && s.triggerMs > max ? s.triggerMs : max,
         0,
       );
+      const unfiltered = unfilteredFlags.get(ticker);
       return {
         ticker,
         items: orderedItems,
-        conviction: isHighConviction(agg, orderedItems.length),
-        storm: isBurstStorm(agg, orderedItems.length, stormIntensityThreshold),
+        conviction:
+          unfiltered?.conviction ?? isHighConviction(agg, orderedItems.length),
+        storm:
+          unfiltered?.storm ??
+          isBurstStorm(agg, orderedItems.length, stormIntensityThreshold),
         peakBest,
         latestTriggerMs,
       };
@@ -140,5 +186,5 @@ export function useTickerGrouping<T>(
       }
       return b.latestTriggerMs - a.latestTriggerMs;
     });
-  }, [items, sortMode, stormIntensityThreshold]);
+  }, [items, sortMode, stormIntensityThreshold, unfilteredItems]);
 }

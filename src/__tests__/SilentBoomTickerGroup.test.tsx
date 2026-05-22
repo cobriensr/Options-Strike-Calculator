@@ -511,25 +511,17 @@ describe('SilentBoomTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('renders the conviction badge when criteria are met', () => {
+    it('renders the conviction badge when the conviction prop is true', () => {
+      // The conviction/storm flags are now computed by
+      // `useTickerGrouping` against the unfiltered set and pushed in
+      // as props. Component-level tests assert the badge wiring; the
+      // selection logic is covered in `useTickerGrouping.test.ts` +
+      // `ticker-rollup-aggregates.test.ts`.
       const alerts = [
         makeAlert({
           optionChainId: 'XOM260515C00150000',
           underlyingSymbol: 'XOM',
           strike: 150,
-          bucketCt: '2026-05-15T13:32:00Z',
-        }),
-        makeAlert({
-          optionChainId: 'XOM260515C00152500',
-          underlyingSymbol: 'XOM',
-          strike: 152.5,
-          bucketCt: '2026-05-15T13:33:00Z',
-        }),
-        makeAlert({
-          optionChainId: 'XOM260515C00155000',
-          underlyingSymbol: 'XOM',
-          strike: 155,
-          bucketCt: '2026-05-15T13:39:00Z',
         }),
       ];
       render(
@@ -540,6 +532,7 @@ describe('SilentBoomTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
+          conviction={true}
         />,
       );
       expect(
@@ -547,23 +540,12 @@ describe('SilentBoomTickerGroup', () => {
       ).toHaveTextContent('conviction');
     });
 
-    it('renders the storm badge on a ×221 spike (MSFT golden case)', () => {
-      // MSFT 2026-05-15 had 9 alerts with one ×221 spike — fails
-      // conviction (mixed-direction-resistant) but the spikeRatio
-      // alone trips the burst-storm intensity arm.
+    it('renders the storm badge when the storm prop is true', () => {
       const alerts = [
         makeAlert({
           optionChainId: 'MSFT260518C00550000',
           underlyingSymbol: 'MSFT',
           strike: 550,
-          spikeRatio: 221,
-        }),
-        makeAlert({
-          optionChainId: 'MSFT260518P00415000',
-          underlyingSymbol: 'MSFT',
-          strike: 415,
-          optionType: 'P',
-          spikeRatio: 10,
         }),
       ];
       render(
@@ -574,6 +556,7 @@ describe('SilentBoomTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
+          storm={true}
         />,
       );
       expect(
@@ -581,15 +564,12 @@ describe('SilentBoomTickerGroup', () => {
       ).toHaveTextContent('storm');
     });
 
-    it('omits the storm badge when none of the three gates pass', () => {
+    it('omits the storm badge when the storm prop is false', () => {
       const alerts = [
         makeAlert({
           optionChainId: 'XOM260515C00150000',
           underlyingSymbol: 'XOM',
           strike: 150,
-          spikeRatio: 8,
-          entryPrice: 0.5,
-          spikeVolume: 200,
         }),
       ];
       render(
@@ -607,26 +587,13 @@ describe('SilentBoomTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('omits the conviction badge when bias is mixed', () => {
+    it('omits the conviction badge when the conviction prop is false', () => {
       const alerts = [
         makeAlert({
           optionChainId: 'SNDK260515P01295000',
           underlyingSymbol: 'SNDK',
           optionType: 'P',
           strike: 1295,
-          bucketCt: '2026-05-15T13:38:00Z',
-        }),
-        makeAlert({
-          optionChainId: 'SNDK260515C01320000',
-          underlyingSymbol: 'SNDK',
-          strike: 1320,
-          bucketCt: '2026-05-15T13:35:00Z',
-        }),
-        makeAlert({
-          optionChainId: 'SNDK260515C01360000',
-          underlyingSymbol: 'SNDK',
-          strike: 1360,
-          bucketCt: '2026-05-15T13:32:00Z',
         }),
       ];
       render(

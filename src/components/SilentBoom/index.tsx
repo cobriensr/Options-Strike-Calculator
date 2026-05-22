@@ -760,6 +760,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   // mapping a SilentBoomAlert to the hook's normalized shape.
   const groupedByTicker = useTickerGrouping({
     items: displayedAlerts,
+    // The full unfiltered alert list — drives conviction/storm so chip
+    // filters don't silently erase a ticker's true-footprint badges.
+    unfilteredItems: alerts,
     sortMode: sortMode === 'peak' ? 'peak' : 'default',
     stormIntensityThreshold: BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
     extract: (a) => {
@@ -1573,6 +1576,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 onToggle={handleTickerToggle}
                 marketOpen={marketOpen}
                 exitPolicy={exitPolicy}
+                conviction={g.conviction}
+                storm={g.storm}
                 liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}
               />
             ))}

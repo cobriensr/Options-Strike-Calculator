@@ -12,7 +12,6 @@ import { LotteryRow } from './LotteryRow.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 import {
   BURST_STORM_BADGE_LABEL,
-  BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
   formatBiasLabel,
   formatFlowLabel,
@@ -20,8 +19,6 @@ import {
   formatSpreadDuration,
   formatTideLabel,
   HIGH_CONVICTION_BADGE_LABEL,
-  isBurstStorm,
-  isHighConviction,
   type Bias,
   type RollupAlertSummary,
   type TideAggregate,
@@ -66,6 +63,14 @@ interface LotteryFinderTickerGroupProps {
   onToggle: (ticker: string) => void;
   marketOpen: boolean;
   exitPolicy: ExitPolicy;
+  /**
+   * Conviction / storm flags computed by `useTickerGrouping` against
+   * the UNFILTERED full-day fire set, so chip filters that shrink
+   * `fires` don't silently drop the badges. Defaults to false when
+   * omitted (legacy/test fixtures).
+   */
+  conviction?: boolean;
+  storm?: boolean;
   /**
    * Live cumulative ticker NCP/NPP from useTickerNetFlowBatch. Null
    * before the first poll resolves or when the ticker isn't yet in the
@@ -149,6 +154,8 @@ function LotteryFinderTickerGroupBase({
   onToggle,
   marketOpen,
   exitPolicy,
+  conviction = false,
+  storm = false,
   liveFlowSnapshot,
 }: LotteryFinderTickerGroupProps) {
   const handleToggle = useCallback(() => onToggle(ticker), [onToggle, ticker]);
@@ -194,12 +201,12 @@ function LotteryFinderTickerGroupBase({
     [fires],
   );
 
-  const showConvictionBadge = isHighConviction(agg, fires.length);
-  const showStormBadge = isBurstStorm(
-    agg,
-    fires.length,
-    BURST_STORM_INTENSITY_THRESHOLDS.lottery,
-  );
+  // Badge state comes from the parent (useTickerGrouping), which
+  // computes it against the UNFILTERED full-day set so chip filters
+  // don't silently erase a ticker's true-footprint badges. See the
+  // hook's `unfilteredItems` option for the source of truth.
+  const showConvictionBadge = conviction;
+  const showStormBadge = storm;
 
   const strikesWithSpread =
     agg.strikeRange != null && strikesSummary

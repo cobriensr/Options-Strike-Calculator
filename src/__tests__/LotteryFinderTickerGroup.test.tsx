@@ -680,26 +680,17 @@ describe('LotteryFinderTickerGroup', () => {
       );
     });
 
-    it('renders the conviction badge when criteria are met', () => {
-      // 3 fires, all calls, 3 distinct strikes, within 15min
+    it('renders the conviction badge when the conviction prop is true', () => {
+      // The conviction/storm flags are now computed by
+      // `useTickerGrouping` against the unfiltered set and pushed in
+      // as props. Component-level tests assert the badge wiring; the
+      // selection logic is covered in `useTickerGrouping.test.ts` +
+      // `ticker-rollup-aggregates.test.ts`.
       const fires = [
         makeFire({
           optionChainId: 'XOM260515C00150000',
           underlyingSymbol: 'XOM',
           strike: 150,
-          triggerTimeCt: '2026-05-15T13:32:00Z',
-        }),
-        makeFire({
-          optionChainId: 'XOM260515C00152500',
-          underlyingSymbol: 'XOM',
-          strike: 152.5,
-          triggerTimeCt: '2026-05-15T13:33:00Z',
-        }),
-        makeFire({
-          optionChainId: 'XOM260515C00155000',
-          underlyingSymbol: 'XOM',
-          strike: 155,
-          triggerTimeCt: '2026-05-15T13:39:00Z',
         }),
       ];
       render(
@@ -710,6 +701,7 @@ describe('LotteryFinderTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
+          conviction={true}
         />,
       );
       expect(
@@ -717,23 +709,12 @@ describe('LotteryFinderTickerGroup', () => {
       ).toHaveTextContent('conviction');
     });
 
-    it('renders the storm badge when a chain has ≥20 fireCount', () => {
-      // Mixed-bias multi-chain rollup that fails conviction but the
-      // one chain has fireCount=22 (matches NVDA 2026-05-15 golden).
+    it('renders the storm badge when the storm prop is true', () => {
       const fires = [
         makeFire({
           optionChainId: 'NVDA260518C00227500',
           underlyingSymbol: 'NVDA',
-          optionType: 'C',
           strike: 227.5,
-          fireCount: 22,
-        }),
-        makeFire({
-          optionChainId: 'NVDA260518P00227500',
-          underlyingSymbol: 'NVDA',
-          optionType: 'P',
-          strike: 227.5,
-          fireCount: 1,
         }),
       ];
       render(
@@ -744,6 +725,7 @@ describe('LotteryFinderTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
+          storm={true}
         />,
       );
       expect(screen.getByTestId('lottery-ticker-storm-NVDA')).toHaveTextContent(
@@ -751,13 +733,12 @@ describe('LotteryFinderTickerGroup', () => {
       );
     });
 
-    it('omits the storm badge when none of the three gates pass', () => {
+    it('omits the storm badge when the storm prop is false', () => {
       const fires = [
         makeFire({
           optionChainId: 'XOM260515C00150000',
           underlyingSymbol: 'XOM',
           strike: 150,
-          fireCount: 1,
         }),
       ];
       render(
@@ -775,27 +756,13 @@ describe('LotteryFinderTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('omits the conviction badge when bias is mixed', () => {
-      // 5 fires, but a put among calls → mixed bias → no badge
+    it('omits the conviction badge when the conviction prop is false', () => {
       const fires = [
         makeFire({
           optionChainId: 'SNDK260515P01295000',
           underlyingSymbol: 'SNDK',
           optionType: 'P',
           strike: 1295,
-          triggerTimeCt: '2026-05-15T13:38:00Z',
-        }),
-        makeFire({
-          optionChainId: 'SNDK260515C01320000',
-          underlyingSymbol: 'SNDK',
-          strike: 1320,
-          triggerTimeCt: '2026-05-15T13:35:00Z',
-        }),
-        makeFire({
-          optionChainId: 'SNDK260515C01360000',
-          underlyingSymbol: 'SNDK',
-          strike: 1360,
-          triggerTimeCt: '2026-05-15T13:32:00Z',
         }),
       ];
       render(

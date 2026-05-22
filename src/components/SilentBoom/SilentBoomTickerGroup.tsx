@@ -13,7 +13,6 @@ import { SilentBoomRow } from './SilentBoomRow.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 import {
   BURST_STORM_BADGE_LABEL,
-  BURST_STORM_INTENSITY_THRESHOLDS,
   computeRollupAggregates,
   formatBiasLabel,
   formatFlowLabel,
@@ -21,8 +20,6 @@ import {
   formatSpreadDuration,
   formatTideLabel,
   HIGH_CONVICTION_BADGE_LABEL,
-  isBurstStorm,
-  isHighConviction,
   type Bias,
   type RollupAlertSummary,
   type TideAggregate,
@@ -36,6 +33,14 @@ interface SilentBoomTickerGroupProps {
   onToggle: (ticker: string) => void;
   marketOpen: boolean;
   exitPolicy: SilentBoomExitPolicy;
+  /**
+   * Conviction / storm flags computed by `useTickerGrouping` against
+   * the UNFILTERED full-day alert set, so chip filters don't silently
+   * erase the badges. Defaults to false when omitted (legacy/test
+   * fixtures).
+   */
+  conviction?: boolean;
+  storm?: boolean;
   /**
    * Live cumulative ticker NCP/NPP from useTickerNetFlowBatch. Null
    * before the first poll resolves or when the ticker isn't yet in the
@@ -120,6 +125,8 @@ function SilentBoomTickerGroupBase({
   onToggle,
   marketOpen,
   exitPolicy,
+  conviction = false,
+  storm = false,
   liveFlowSnapshot,
 }: SilentBoomTickerGroupProps) {
   const handleToggle = useCallback(() => onToggle(ticker), [onToggle, ticker]);
@@ -163,12 +170,11 @@ function SilentBoomTickerGroupBase({
     [alerts],
   );
 
-  const showConvictionBadge = isHighConviction(agg, alerts.length);
-  const showStormBadge = isBurstStorm(
-    agg,
-    alerts.length,
-    BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
-  );
+  // Badge state comes from the parent (useTickerGrouping), which
+  // computes it against the UNFILTERED full-day set so chip filters
+  // don't silently erase a ticker's true-footprint badges.
+  const showConvictionBadge = conviction;
+  const showStormBadge = storm;
 
   const strikesWithSpread =
     agg.strikeRange != null && strikesSummary
