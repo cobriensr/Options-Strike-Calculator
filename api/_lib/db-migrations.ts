@@ -5019,4 +5019,17 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS spot_at_trigger NUMERIC(12,4)`,
     ],
   },
+  {
+    id: 177,
+    description:
+      'Create lottery_finder_fires_with_outcome view for the rescore project (spec: docs/superpowers/specs/lottery-rescore-2026-05-22.md). Exposes outcome_pct = COALESCE(realized_flow_inversion_pct, realized_eod_pct) so the ~23% of fires where flow never inverted (alert direction stayed correct all day, so no exit signal fired) contribute their held-to-EOD return to model training instead of being excluded entirely. Also surfaces is_aligned (call AND ncp>npp OR put AND npp>ncp) so Phase 1 training queries can gate on alignment without repeating the CASE expression. View materializes on read — no separate storage, no extra cron. CREATE OR REPLACE is idempotent.',
+    statements: (sql) => [
+      sql`CREATE OR REPLACE VIEW lottery_finder_fires_with_outcome AS
+            SELECT *,
+              COALESCE(realized_flow_inversion_pct, realized_eod_pct) AS outcome_pct,
+              ((option_type = 'C' AND cum_ncp_at_fire > cum_npp_at_fire)
+                OR (option_type = 'P' AND cum_npp_at_fire > cum_ncp_at_fire)) AS is_aligned
+            FROM lottery_finder_fires`,
+    ],
+  },
 ];
