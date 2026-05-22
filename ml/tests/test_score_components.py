@@ -1,0 +1,232 @@
+"""
+Tests for ml/src/score_components.py — V2 score component recovery.
+
+Unit tests use synthetic fire rows + a stub weights dict. The
+sum-invariant against the live DB is exercised separately (and only
+runs when DATABASE_URL is set) so CI stays self-contained.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from score_components import assign_quintile, compute_components
+
+
+# ---------------------------------------------------------------------------
+# Synthetic weights — mirror the JSON shape from ml/output/
+# ---------------------------------------------------------------------------
+
+STUB_WEIGHTS = {
+    "model_version": "test-stub-v0",
+    "features": {
+        "ticker_weights": {"AMD": 5, "QQQ": -3, "SOUN": 7},
+        "tod_weights": {"AM_open": 4, "MID": 0, "LUNCH": -4, "PM": -4},
+        "dte_weights": {"0": -2, "1": 4, "2": 0, "3": 1},
+        "option_type_weights": {"C": 2, "P": -2},
+        "vol_oi_quintile_weights": [1, 0, 2, 0, -3],
+        "vol_oi_quintile_boundaries": [0.06, 0.10, 0.15, 0.38],
+        "gamma_quintile_weights": [3, -2, -2, -2, 0],
+        "gamma_quintile_boundaries": [0.012, 0.025, 0.042, 0.068],
+        "ask_pct_quintile_weights": [-1, 1, 1, 2, -4],
+        "ask_pct_quintile_boundaries": [0.53, 0.57, 0.625, 0.75],
+    },
+    "cutoffs": {"t1": 9, "t2": 7},
+}
+
+
+# ---------------------------------------------------------------------------
+# assign_quintile — boundary semantics
+# ---------------------------------------------------------------------------
+
+
+def test_assign_quintile_handles_null():
+    assert assign_quintile(None, [0.1, 0.2, 0.3, 0.4]) is None
+
+
+def test_assign_quintile_below_first_boundary_is_q0():
+    assert assign_quintile(-1.0, [0.1, 0.2, 0.3, 0.4]) == 0
+    assert assign_quintile(0.05, [0.1, 0.2, 0.3, 0.4]) == 0
+
+
+def test_assign_quintile_equal_to_boundary_is_right_inclusive():
+    # pd.cut(right=True) semantics: value == b0 lands in bin 0 (NOT bin 1)
+    assert assign_quintile(0.1, [0.1, 0.2, 0.3, 0.4]) == 0
+    assert assign_quintile(0.2, [0.1, 0.2, 0.3, 0.4]) == 1
+    assert assign_quintile(0.4, [0.1, 0.2, 0.3, 0.4]) == 3
+
+
+def test_assign_quintile_above_last_boundary_is_q4():
+    assert assign_quintile(100.0, [0.1, 0.2, 0.3, 0.4]) == 4
+    assert assign_quintile(0.5, [0.1, 0.2, 0.3, 0.4]) == 4
+
+
+def test_assign_quintile_each_bucket_reachable():
+    boundaries = [10.0, 20.0, 30.0, 40.0]
+    assert assign_quintile(5.0, boundaries) == 0
+    assert assign_quintile(15.0, boundaries) == 1
+    assert assign_quintile(25.0, boundaries) == 2
+    assert assign_quintile(35.0, boundaries) == 3
+    assert assign_quintile(45.0, boundaries) == 4
+
+
+# ---------------------------------------------------------------------------
+# compute_components — sum invariant
+# ---------------------------------------------------------------------------
+
+
+def test_compute_components_sums_correctly():
+    # AMD (5) + AM_open (4) + DTE 1 (4) + vol_oi 0.12 → Q2 (2)
+    # + gamma 0.05 → Q3 (-2) + ask_pct 0.55 → Q1 (1) + C (2)
+    # = 5 + 4 + 4 + 2 - 2 + 1 + 2 = 16
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": 0.12,
+        "gamma": 0.05,
+        "ask_pct": 0.55,
+    }
+    components = compute_components(fire, STUB_WEIGHTS)
+    assert components["ticker"] == 5
+    assert components["tod"] == 4
+    assert components["dte"] == 4
+    assert components["vol_oi_q"] == 2
+    assert components["gamma_q"] == -2
+    assert components["ask_pct_q"] == 1
+    assert components["option_type"] == 2
+    assert components["total"] == 16
+    # Sum invariant
+    component_sum = sum(v for k, v in components.items() if k != "total")
+    assert components["total"] == component_sum
+
+
+def test_compute_components_handles_null_continuous_features():
+    # All null continuous → those components contribute 0
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS)
+    assert components["vol_oi_q"] == 0
+    assert components["gamma_q"] == 0
+    assert components["ask_pct_q"] == 0
+    assert components["total"] == 5 + 4 + 4 + 0 + 0 + 0 + 2  # = 15
+
+
+def test_compute_components_unknown_ticker_is_zero():
+    fire = {
+        "ticker": "UNKNOWN_NEWS_TICKER",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": 0.12,
+        "gamma": 0.05,
+        "ask_pct": 0.55,
+    }
+    components = compute_components(fire, STUB_WEIGHTS)
+    assert components["ticker"] == 0
+
+
+def test_compute_components_dte_keyed_as_string():
+    # DTE in the DB is an int but the JSON keys are strings — verify the
+    # str cast inside the helper handles this without an extra coerce.
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 3,  # int
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS)
+    assert components["dte"] == 1  # weights["dte_weights"]["3"] = 1
+
+
+# ---------------------------------------------------------------------------
+# Optional integration: live-DB sum invariant. Only runs when DATABASE_URL
+# is set and the live ml/output/lottery_score_weights.json exists. Skipped
+# in CI / fresh clones so the unit tests above don't depend on infra.
+# ---------------------------------------------------------------------------
+
+
+def test_live_db_sum_invariant():
+    if "DATABASE_URL" not in os.environ:
+        pytest.skip("DATABASE_URL not set — skipping live-DB integration test")
+    weights_path = (
+        Path(__file__).resolve().parent.parent
+        / "output"
+        / "lottery_score_weights.json"
+    )
+    if not weights_path.exists():
+        pytest.skip(f"Weights JSON not found at {weights_path}")
+
+    try:
+        import psycopg2  # noqa: PLC0415
+    except ImportError:
+        pytest.skip("psycopg2 not available")
+
+    weights = json.loads(weights_path.read_text())
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT underlying_symbol, tod, dte, option_type,
+                   trigger_vol_to_oi_window, gamma_at_trigger, trigger_ask_pct,
+                   score
+            FROM lottery_finder_fires
+            WHERE score IS NOT NULL
+            ORDER BY random()
+            LIMIT 100
+            """
+        )
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    mismatches: list[dict] = []
+    for ticker, tod, dte, ot, vol_oi, gamma, ask_pct, score in rows:
+        fire = {
+            "ticker": ticker,
+            "tod": tod,
+            "dte": int(dte),
+            "option_type": ot,
+            "vol_oi_window": (
+                float(vol_oi) if vol_oi is not None else None
+            ),
+            "gamma": float(gamma) if gamma is not None else None,
+            "ask_pct": float(ask_pct) if ask_pct is not None else None,
+        }
+        components = compute_components(fire, weights)
+        if components["total"] != int(score):
+            mismatches.append(
+                {
+                    "expected": int(score),
+                    "got": components["total"],
+                    "diff": components["total"] - int(score),
+                    "fire": {**fire, "components": components},
+                }
+            )
+
+    # Allow up to 5% mismatch rate. The bulk-fix invariant (Phase 4 backfill)
+    # already proves the formula is right; small drift can come from fires
+    # written by the live cron between when we snapshot the weights JSON and
+    # when we query the DB (the cron writes new fires every 5 min). Systemic
+    # drift (>5%) would mean the helper is structurally wrong.
+    mismatch_rate = len(mismatches) / max(len(rows), 1)
+    assert mismatch_rate <= 0.05, (
+        f"{len(mismatches)}/{len(rows)} fires mismatch component-sum vs score "
+        f"(rate {mismatch_rate:.1%}). First 3 mismatches: {mismatches[:3]}"
+    )
