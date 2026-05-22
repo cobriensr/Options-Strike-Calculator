@@ -51,17 +51,6 @@ const SPEC = {
   multiLegShareMax: 0.7,
 };
 
-const MULTI_LEG_CODES = new Set([
-  'mlat',
-  'mlet',
-  'mlft',
-  'mfto',
-  'masl',
-  'mesl',
-  'mfsl',
-  'mlct',
-]);
-
 function median(arr) {
   if (arr.length === 0) return 0;
   const sorted = [...arr].sort((a, b) => a - b);
@@ -69,10 +58,6 @@ function median(arr) {
   return sorted.length % 2 === 0
     ? (sorted[mid - 1] + sorted[mid]) / 2
     : sorted[mid];
-}
-
-function fmt(n, places = 2) {
-  return Number.isFinite(n) ? n.toFixed(places) : '—';
 }
 
 console.log(
@@ -119,7 +104,6 @@ let lastFireMs = null;
 const fires = [];
 const blocked = [];
 
-const COL_FMT = '%-13s %6s %5s %5s %5s %5s %6s %5s | %-10s';
 console.log(
   'bucket(CT)    size  ask% mlSh maxOI volOi spike base | result/why',
 );
