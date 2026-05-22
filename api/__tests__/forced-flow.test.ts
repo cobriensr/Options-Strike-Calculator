@@ -35,6 +35,7 @@ function lotteryRow(overrides: Partial<LotteryAlertRow> = {}): LotteryAlertRow {
     entry_price: null,
     open_interest: null,
     spot_at_first: null,
+    spot_at_trigger: null,
     alert_seq: null,
     minutes_since_prev_fire: null,
     flow_quad: null,

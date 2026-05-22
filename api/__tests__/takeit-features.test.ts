@@ -440,6 +440,7 @@ function lotteryRow(overrides: Partial<LotteryAlertRow> = {}): LotteryAlertRow {
     entry_price: 1.0,
     open_interest: 100,
     spot_at_first: 505,
+    spot_at_trigger: 505,
     alert_seq: 1,
     minutes_since_prev_fire: 60,
     flow_quad: 'Q1',

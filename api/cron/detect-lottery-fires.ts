@@ -606,6 +606,7 @@ export default withCronInstrumentation(
           entry_price: rec.entryPrice,
           open_interest: rec.openInterest,
           spot_at_first: rec.spotAtFirst,
+          spot_at_trigger: rec.spotAtTrigger,
           alert_seq: rec.alertSeq,
           minutes_since_prev_fire: rec.minutesSincePrevFire,
           flow_quad: rec.flowQuad,

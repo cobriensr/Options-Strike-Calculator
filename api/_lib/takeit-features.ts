@@ -55,6 +55,7 @@ export interface LotteryAlertRow {
   entry_price: number | null;
   open_interest: number | null;
   spot_at_first: number | null;
+  spot_at_trigger: number | null;
   alert_seq: number | null;
   minutes_since_prev_fire: number | null;
   flow_quad: string | null;
