@@ -190,3 +190,10 @@ docs/tmp/periscope-probe/
 # when an analysis becomes worth keeping under version control.
 docs/tmp/
 .claude/codebase-map.json
+
+# Local-only market data (Databento exports, ad-hoc CSVs). Keep
+# raw bars out of git; large CSVs balloon the repo. The existing
+# vix_family_daily.parquet stays tracked because gitignore does
+# not affect already-committed files. Use `git add -f` to opt in.
+data/*.csv
+data/*.parquet
