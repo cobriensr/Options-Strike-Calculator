@@ -22,7 +22,7 @@ import json
 import os
 import re
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from itertools import combinations
 from pathlib import Path
 
@@ -168,10 +168,6 @@ def build_feature_tuples(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
     gamma_bounds = f["gamma_quintile_boundaries"]
     ask_pct_bounds = f["ask_pct_quintile_boundaries"]
 
-    def _quintile_str(val) -> str:
-        q = assign_quintile(val if pd.notna(val) else None, vol_bounds)
-        return "null" if q is None else str(q)
-
     out["vol_oi_q"] = df["trigger_vol_to_oi_window"].apply(
         lambda v: _quintile_str_with(v, vol_bounds)
     )
@@ -201,7 +197,11 @@ FEATURE_KEYS = ["ticker", "tod", "dte", "vol_oi_q", "gamma_q", "ask_pct_q", "opt
 WIN_THRESHOLD = 50.0   # outcome_pct >= 50 => winner
 LOSS_THRESHOLD = -50.0  # outcome_pct <= -50 => loser
 MIN_SUPPORT = 10        # minimum n_winners OR n_losers for a combo to qualify
-MARGINAL_DELTA = 0.3    # combo must beat best singleton net_score by at least this
+MARGINAL_DELTA = 1.0    # combo must beat the appropriate singleton by at least this much
+# Raised from 0.3 → 1.0 after first run: the 0.3 threshold passed 2,055
+# candidates but the top picks were 14/14-winner overfits where the ticker
+# singleton was already very high-lift. 1.0 requires a substantial
+# interaction-effect lift on top of the best-singleton component.
 
 
 def _label_flags(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
@@ -211,45 +211,28 @@ def _label_flags(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     return is_winner, is_loser
 
 
-def compute_singleton_net_scores(
-    df: pd.DataFrame,
-    is_winner: pd.Series,
-    is_loser: pd.Series,
-    p_win: float,
-    p_loss: float,
-) -> dict[tuple, float]:
-    """
-    Compute net_score = lift_win - lift_loss for every single-feature value.
-
-    Keys are (feature_name, value) tuples.
-    """
-    n_total = len(df)
-    singleton_scores: dict[tuple, float] = {}
-
-    for feat in FEATURE_KEYS:
-        for val, grp_idx in df.groupby(feat).groups.items():
-            n_combo = len(grp_idx)
-            n_win = int(is_winner.iloc[grp_idx].sum()) if isinstance(grp_idx[0], int) else int(is_winner[grp_idx].sum())
-            n_loss = int(is_loser.iloc[grp_idx].sum()) if isinstance(grp_idx[0], int) else int(is_loser[grp_idx].sum())
-
-            lift_win = (n_win / n_combo) / p_win if p_win > 0 else 0.0
-            lift_loss = (n_loss / n_combo) / p_loss if p_loss > 0 else 0.0
-            net = lift_win - lift_loss
-            singleton_scores[(feat, str(val))] = net
-
-    return singleton_scores
-
-
-def _best_singleton_net(
+def _singleton_extremes(
     combo_keys: tuple[str, ...],
     combo_vals: tuple[str, ...],
     singleton_scores: dict[tuple, float],
-) -> float:
-    """Return the max singleton net_score among the components of a combo."""
-    return max(
+) -> tuple[float, float]:
+    """
+    Return (max_singleton_net, min_singleton_net) over the combo's components.
+
+    Used for the directional marginal filter:
+      - Winning combos must exceed max_singleton_net + MARGINAL_DELTA
+      - Losing combos must fall below min_singleton_net - MARGINAL_DELTA
+
+    Without the directional split, losing combos can never pass because
+    `combo_net - max_singleton_net` is always negative when combo_net is
+    very negative — the bug that produced "0 losing candidates" in the
+    first run.
+    """
+    nets = [
         singleton_scores.get((k, v), 0.0)
         for k, v in zip(combo_keys, combo_vals)
-    )
+    ]
+    return max(nets), min(nets)
 
 
 def scan_combos(
@@ -260,12 +243,13 @@ def scan_combos(
     p_loss: float,
     singleton_scores: dict[tuple, float],
     combo_size: int,
-) -> list[dict]:
+) -> tuple[list[dict], int, int]:
     """
     Scan all sub-tuples of `combo_size` features.
 
-    Returns a list of result dicts for combos that pass both the support
-    threshold and the marginal-above-singleton threshold.
+    Returns (results, n_scanned, n_passed_support) — results is the list of
+    dicts for combos that pass both support and the directional marginal
+    threshold.
     """
     results = []
     feature_pairs = list(combinations(FEATURE_KEYS, combo_size))
@@ -296,9 +280,15 @@ def scan_combos(
             lift_loss = (n_loss / n_combo) / p_loss if p_loss > 0 else 0.0
             net_score = lift_win - lift_loss
 
-            best_single = _best_singleton_net(feat_tuple, val_strs, singleton_scores)
-            marginal = net_score - best_single
-
+            best_single, worst_single = _singleton_extremes(
+                feat_tuple, val_strs, singleton_scores
+            )
+            # Directional marginal filter: winning combos must beat the best
+            # singleton; losing combos must fall below the worst singleton.
+            if net_score >= 0:
+                marginal = net_score - best_single
+            else:
+                marginal = worst_single - net_score
             if marginal < MARGINAL_DELTA:
                 continue
 
@@ -390,7 +380,7 @@ def render_report(
     lines: list[str] = [
         f"# Lottery composite candidates — {date_str}",
         "",
-        f"Trigger: nightly mine_outcome_patterns.py",
+        "Trigger: nightly mine_outcome_patterns.py",
         f"Sample: last 90d aligned non-structure (n={n_total:,}) | "
         f"winners (>=50%) = {n_winners:,} | losers (<=-50%) = {n_losers:,}",
         f"Mining threshold: support >= {MIN_SUPPORT}, "
