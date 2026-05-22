@@ -368,6 +368,56 @@ export const LotteryRow = memo(function LotteryRow({
     ),
   );
   const tier = tierBadge(fire.scoreTier, fire.score);
+  // Reload badge: surfaces the % change in option entry (and underlying)
+  // versus the FIRST fire on this chain today, so the user can spot
+  // reload opportunities at a glance. Spec:
+  // docs/superpowers/specs/lottery-reload-deltas-2026-05-21.md (Phase 1B).
+  // Renders only on cheaper re-fires (alertSeq > 1 AND optionDelta < 0);
+  // flat / pricier re-fires aren't reload opportunities so we suppress.
+  const reload = useMemo(() => {
+    if (fire.entry.alertSeq <= 1) return null;
+    const firstFire = fire.historicalFires?.[0] ?? null;
+    if (firstFire == null || firstFire.entryPrice <= 0) return null;
+    const optionDeltaPct =
+      ((fire.entry.price - firstFire.entryPrice) / firstFire.entryPrice) * 100;
+    if (optionDeltaPct >= 0) return null;
+    const underlyingDeltaPct =
+      firstFire.spotAtTrigger != null &&
+      firstFire.spotAtTrigger > 0 &&
+      fire.entry.spotAtTrigger != null
+        ? ((fire.entry.spotAtTrigger - firstFire.spotAtTrigger) /
+            firstFire.spotAtTrigger) *
+          100
+        : null;
+    const reloadTagged = fire.tags.reload;
+    const cls = reloadTagged
+      ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200'
+      : optionDeltaPct <= -15
+        ? 'border-amber-500/40 bg-amber-950/30 text-amber-200'
+        : 'border-neutral-700 bg-neutral-900 text-neutral-300';
+    const optRounded = Math.round(optionDeltaPct);
+    const optSign = optRounded < 0 ? '−' : '+';
+    let label = `RELOAD opt ${optSign}${Math.abs(optRounded)}%`;
+    if (underlyingDeltaPct != null) {
+      const undRounded = Math.round(underlyingDeltaPct);
+      const undSign = undRounded < 0 ? '−' : '+';
+      label += ` · und ${undSign}${Math.abs(undRounded)}%`;
+    }
+    const firstFireTime = formatTimeCT(firstFire.triggerTimeCt);
+    const undFragment =
+      underlyingDeltaPct != null
+        ? `; underlying is ${formatPct(underlyingDeltaPct)} in the same window`
+        : '';
+    const strictFragment = reloadTagged ? 'set' : 'not set';
+    const tooltip = `RELOAD: option entry is ${formatPct(optionDeltaPct)} vs first fire at ${firstFireTime} CT${undFragment}. Strict RE-LOAD tag ${strictFragment}: requires ≥2× burst AND ≤-30% entry drop vs prior fire.`;
+    return { label, cls, tooltip };
+  }, [
+    fire.entry.alertSeq,
+    fire.entry.price,
+    fire.entry.spotAtTrigger,
+    fire.historicalFires,
+    fire.tags.reload,
+  ]);
   const ci = ciIndicator(fire.tickerStats, fire.underlyingSymbol);
   const gated = fire.directionGated ? gatedPill() : null;
   const flowMatch = flowMatchBadge(fire.optionType, liveFlowSnapshot ?? null);
@@ -837,12 +887,14 @@ export const LotteryRow = memo(function LotteryRow({
               hot
             </span>
           )}
-        {fire.tags.reload && (
+        {reload && (
           <span
-            className="rounded border border-amber-500/40 bg-amber-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-amber-200"
-            title="RE-LOAD: this fire's burst is ≥2× the prior fire on the same chain AND entry price dropped ≥30% since prior. 9.1% historical lottery rate vs 1.4% non-RE-LOAD."
+            data-testid="lottery-reload-badge"
+            className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${reload.cls}`}
+            title={reload.tooltip}
+            aria-label={reload.tooltip}
           >
-            RE-LOAD
+            {reload.label}
           </span>
         )}
         {fire.tags.cheapCallPm && (
