@@ -26,8 +26,7 @@ import {
   type LotteryFireRecord,
   type OptionTradeTick,
 } from '../_lib/lottery-finder.js';
-import { computeLotteryScore } from '../_lib/lottery-score-weights.js';
-import { applyEmpiricalBonuses } from '../_lib/lottery-score-bonuses.js';
+import { computeLotteryScoreV2 } from '../_lib/lottery-score-weights-v2.js';
 import {
   computeRangePos,
   fetchStockCandles1m,
@@ -494,24 +493,23 @@ export default withCronInstrumentation(
           macro = EMPTY_MACRO;
         }
         // Score is computed from the same fields persisted on the row
-        // (ticker, mode, entry price, TOD, option type) so the column
-        // is fully derivable for backfills via UPDATE; storing it
-        // avoids a JOIN on every read and lets `?sort=score` use the
-        // (date, score DESC) index from migration #126.
-        const baseScore = computeLotteryScore({
-          ticker: rec.underlyingSymbol,
-          mode: rec.mode,
-          entryPrice: rec.entryPrice,
-          tod: rec.tod,
-          optionType: rec.optionType,
-        });
-        // Range Kill — Finding 1 of the 2026-05-15 cross-section EDA.
-        // Fetch 1-min stock candles for the underlying × fire date
-        // (cached across fires on the same chain), then compute the
-        // fire's position in the session range up to its trigger time.
-        // Used both as a score bonus (-3 for bottom-10%) and a UI
-        // filter signal. On UW failure or insufficient data, range_pos
-        // stays null and the score bonus is skipped.
+        // so the column is fully derivable for backfills via UPDATE;
+        // storing it avoids a JOIN on every read and lets `?sort=score`
+        // use the (date, score DESC) index from migration #126.
+        //
+        // Phase 3 (2026-05-22): switched from computeLotteryScore (V1)
+        // to computeLotteryScoreV2. isAligned is derived from the
+        // cumulative net call/put premium already fetched above.
+        // V2 returns null for misaligned or out-of-universe fires (DTE
+        // outside 0-3); null score is stored as-is — the DB column is
+        // nullable and the UI treats null as tier3 via lotteryScoreTierV2.
+
+        // Range position — fetch 1-min stock candles for the underlying
+        // × fire date (cached across fires on the same chain) and compute
+        // spot position in the session range up to trigger time. Written
+        // to the row for the display-only "NEW HIGH" badge; not used in
+        // V2 scoring. On UW failure or insufficient data, range_pos stays
+        // null.
         const cacheKey = `${rec.underlyingSymbol}_${rec.date}`;
         let candles = candleCache.get(cacheKey);
         if (candles == null) {
@@ -527,13 +525,6 @@ export default withCronInstrumentation(
           rec.triggerTimeCt,
           rec.spotAtFirst,
         );
-        // rangePosAtTrigger is written to the row for the display-only
-        // "NEW HIGH" badge (range_pos ≥ 1.0 = spot punched above
-        // session high during the spike). It is NOT passed to
-        // applyEmpiricalBonuses — the original -3 bottom-10% penalty
-        // was retired after the 2026-05-16 EDA rerun showed no edge
-        // at either tail. See ml/findings/eda-rerun-2026-05-16/.
-
         // Snapshot the ticker cumulative net call/put premium at fire
         // time. Replaces the per-row LATERAL the feed used to run
         // (caused ~30s page loads). Cached per (ticker, date) so
@@ -571,9 +562,25 @@ export default withCronInstrumentation(
         const matchConfidence = multilegResult?.matchConfidence ?? null;
         const patternGroupId = multilegResult?.patternGroupId ?? null;
 
-        const score = applyEmpiricalBonuses({
-          baseScore,
-          triggerVolToOiWindow: rec.triggerVolToOiWindow,
+        // V2 score — null for misaligned fires or DTE > 3.
+        // applyEmpiricalBonuses is NOT called: V2's quintile weights for
+        // vol/OI already encode the same population signal; calling
+        // applyEmpiricalBonuses on top would double-count the vol/OI
+        // bonus and inflate scores systematically.
+        const isAligned =
+          cumNcpAtFire != null &&
+          cumNppAtFire != null &&
+          ((rec.optionType === 'C' && cumNcpAtFire > cumNppAtFire) ||
+            (rec.optionType === 'P' && cumNppAtFire > cumNcpAtFire));
+        const score = computeLotteryScoreV2({
+          ticker: rec.underlyingSymbol,
+          tod: rec.tod,
+          dte: rec.dte,
+          volOiWindow: rec.triggerVolToOiWindow ?? null,
+          gammaAtTrigger: rec.triggerGamma ?? null,
+          triggerAskPct: rec.triggerAskPct ?? null,
+          optionType: rec.optionType,
+          isAligned,
         });
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).

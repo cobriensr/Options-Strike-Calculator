@@ -277,12 +277,14 @@ describe('detect-lottery-fires handler', () => {
     });
   });
 
-  it('persists computeLotteryScore() output on the inserted row', async () => {
-    // Same fixture as the basic insert test. The detector pulls
-    // ticker=SNDK (weight 10), mode=A_intraday_0DTE (5),
-    // entryPrice=0.5 (≤$0.50 → 5), tod=AM_open (13:30Z = 9:30 ET → 3),
-    // optionType=C (2) → score 25. Pinning this guards the score
-    // column wiring against future field renames in the INSERT.
+  it('persists computeLotteryScoreV2() output on the inserted row', async () => {
+    // Same fixture as the basic insert test. V2 score is null here
+    // because the ticker_flow_snapshot returns [] → cumNcpAtFire and
+    // cumNppAtFire are both null → isAligned=false → V2 returns null.
+    // Pinning null guards the score column wiring (nullable DB column,
+    // UI treats null as tier3) against future field renames in the INSERT.
+    // Tests that need a non-null score must mock the ticker_flow_snapshot
+    // with actual cumulative flow data.
     mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([])
@@ -298,21 +300,14 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // The INSERT is the last mockSql call. Bind order now ends with
-    // `score, direction_gated, range_pos_at_trigger,
-    //  cum_ncp_at_fire, cum_npp_at_fire,
-    //  inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
-    //  takeit_prob, takeit_model_version, takeit_features` after the
-    // Phase 2 multileg migration #160 tail-insert. Indices shifted by
-    // -4 from the prior layout.
-    // tail-from-end (12 args):
-    //   takeit_features=-1, takeit_model_version=-2, takeit_prob=-3,
-    //   pattern_group_id=-4, match_confidence=-5, is_isolated_leg=-6,
-    //   inferred_structure=-7, cum_npp_at_fire=-8, cum_ncp_at_fire=-9,
-    //   range_pos_at_trigger=-10, direction_gated=-11, score=-12.
+    // The INSERT is the last mockSql call. Bind order (post-#168 gamma
+    // tail-append):
+    //   gamma_at_trigger=-1, takeit_features=-2, takeit_model_version=-3,
+    //   takeit_prob=-4, pattern_group_id=-5, match_confidence=-6,
+    //   is_isolated_leg=-7, inferred_structure=-8, cum_npp_at_fire=-9,
+    //   cum_ncp_at_fire=-10, range_pos_at_trigger=-11,
+    //   direction_gated=-12, score=-13.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Migration #168 appended gamma_at_trigger to the INSERT tail, so
-    // every prior positional index shifted by −1 (more negative).
     const gammaAtTrigger = insertCall.at(-1);
     const takeitFeatures = insertCall.at(-2);
     const takeitVersion = insertCall.at(-3);
@@ -324,7 +319,8 @@ describe('detect-lottery-fires handler', () => {
     const rangePos = insertCall.at(-11);
     const directionGated = insertCall.at(-12);
     const score = insertCall.at(-13);
-    expect(score).toBe(25);
+    // Empty ticker_flow_snapshot → isAligned=false → V2 returns null.
+    expect(score).toBeNull();
     // SNDK call with no OTM tide tick → ungated.
     expect(directionGated).toBe(false);
     // No UW candle data in default fixture → range_pos null.
@@ -387,8 +383,9 @@ describe('detect-lottery-fires handler', () => {
     const score = insertCall.at(-13);
     // Spot 1170 between low 1150 and high 1200 → 0.4
     expect(rangePos).toBeCloseTo(0.4, 5);
-    // No penalty applied; base 25 unchanged.
-    expect(score).toBe(25);
+    // V2 score: ticker_flow_snapshot returns [] → isAligned=false → null.
+    // range_pos is written for display only; V2 scoring ignores it.
+    expect(score).toBeNull();
   });
 
   it('does NOT penalize the score even when range_pos lands in the bottom-10% (Range Kill retired 2026-05-16)', async () => {
@@ -431,8 +428,9 @@ describe('detect-lottery-fires handler', () => {
     const rangePos = insertCall.at(-11);
     const score = insertCall.at(-13);
     expect(rangePos).toBe(0);
-    // No penalty applied — Range Kill retired. Base 25 unchanged.
-    expect(score).toBe(25);
+    // V2 score: ticker_flow_snapshot returns [] → isAligned=false → null.
+    // range_pos is written for display only (NEW HIGH badge); not scored.
+    expect(score).toBeNull();
   });
 
   it('binds mkt_tide_otm_diff from market_tide_otm ncp/npp (regression for vestigial otm_ncp bug, spec: silent-boom-otm-tide-and-trail-2026-05-13.md)', async () => {
@@ -734,9 +732,10 @@ describe('detect-lottery-fires handler', () => {
     // The direction gate must NOT mutate the score value — only the
     // boolean column flips.
     expect(insertCall.at(-12)).toBe(true);
-    // Score remains the computed value (not zeroed / not demoted).
-    expect(typeof insertCall.at(-13)).toBe('number');
-    expect(insertCall.at(-13) as number).toBeGreaterThan(0);
+    // V2: ticker_flow_snapshot returns [] → cumNcp/cumNpp null →
+    // isAligned=false → score=null. The direction gate does NOT mutate
+    // the score — it only flips the direction_gated boolean on the row.
+    expect(insertCall.at(-13)).toBeNull();
   });
 
   it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
@@ -804,10 +803,14 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-7)).toBeNull(); // inferred_structure
-    expect(insertCall.at(-6)).toBeNull(); // is_isolated_leg
-    expect(insertCall.at(-5)).toBeNull(); // match_confidence
-    expect(insertCall.at(-4)).toBeNull(); // pattern_group_id
+    // Post-#168 gamma tail-append positional layout:
+    //   inferred_structure=-8, is_isolated_leg=-7, match_confidence=-6,
+    //   pattern_group_id=-5, takeit_prob=-4, takeit_version=-3,
+    //   takeit_features=-2, gamma_at_trigger=-1.
+    expect(insertCall.at(-8)).toBeNull(); // inferred_structure
+    expect(insertCall.at(-7)).toBeNull(); // is_isolated_leg
+    expect(insertCall.at(-6)).toBeNull(); // match_confidence
+    expect(insertCall.at(-5)).toBeNull(); // pattern_group_id
   });
 
   it('still fires when prior-fire is older than the 5-min cooldown', async () => {
