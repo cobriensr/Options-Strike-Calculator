@@ -213,12 +213,20 @@ update: refit
 	$(PYTHON) scripts/feature_audit.py
 	$(PYTHON) scripts/flow_inversion_timing.py
 	$(PYTHON) scripts/daily_tracker.py
+	@# Outcome-mining + score-lineage feedback loop (spec: lottery-
+	@# outcome-mining-and-lineage-2026-05-22). Surfaces interaction
+	@# composites and per-component DOW attribution. Read-only: writes
+	@# only to docs/tmp/, never touches the score column. Adds ~2 min.
+	$(PYTHON) scripts/mine_outcome_patterns.py
+	$(PYTHON) scripts/score_lineage_audit.py
 	@echo ""
 	@echo "  ✅ daily research artifacts:"
 	@echo "     docs/tmp/lottery-exit-policy-search-YYYY-MM-DD.md"
 	@echo "     docs/tmp/lottery-feature-audit-YYYY-MM-DD.md"
 	@echo "     docs/tmp/flow-inversion-timing-YYYY-MM-DD.md"
 	@echo "     docs/tmp/lottery-tracking.csv  (cumulative one-row-per-day)"
+	@echo "     docs/tmp/lottery-composite-candidates-YYYY-MM-DD.md  (mining)"
+	@echo "     docs/tmp/lottery-score-lineage-YYYY-MM-DD.md  (attribution)"
 
 tune:
 	@echo ""
