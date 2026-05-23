@@ -128,6 +128,8 @@ if (import.meta.env.PROD)
       { path: '/api/interval-ba-alerts', method: 'GET' },
       { path: '/api/interval-ba-alerts-ack', method: 'POST' },
       { path: '/api/gamma-setups/active', method: 'GET' },
+      { path: '/api/gamma-setups/weekly-stats', method: 'GET' },
+      { path: '/api/gamma-setups/export', method: 'GET' },
       { path: '/api/interval-ba-feed', method: 'GET' },
       { path: '/api/push/subscribe', method: 'POST' },
       { path: '/api/push/unsubscribe', method: 'POST' },
