@@ -194,13 +194,18 @@ def run_attribution(df: pd.DataFrame, weights: dict) -> tuple[pd.DataFrame, pd.D
         full_table — one row per (DOW, component) with all stats
         flagged    — subset where gap < 0 AND support >= MIN_SUPPORT
     """
-    # Build one row per fire with all 7 components + metadata
+    # Build one row per fire with all 7 components + metadata. Pass dow
+    # into compute_components so the Monday TOD override (and any future
+    # DOW overrides) is reflected in the attribution analysis — without
+    # this, the audit would report stale TOD gaps that pre-date the
+    # override fix.
     records = []
     for _, row in df.iterrows():
         fire_input = _fire_to_input(row)
-        comps = compute_components(fire_input, weights)
         outcome_class = classify_outcome(float(row["outcome_pct"]))
         dow = int(row["day_of_week"])
+        dow_name = DOW_NAMES.get(dow)
+        comps = compute_components(fire_input, weights, dow=dow_name)
         for comp_key in COMPONENT_KEYS:
             records.append(
                 {
