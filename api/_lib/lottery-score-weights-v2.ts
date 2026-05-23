@@ -499,23 +499,27 @@ export function computeLotteryScoreV2(args: {
   }
 
   // Composite bonuses/penalties — iterate every entry and sum matching ones.
-  for (const entry of COMPOSITE_BONUSES_V2) {
-    const m = entry.match;
-    if (m.ticker !== undefined && m.ticker !== args.ticker) continue;
-    if (m.tod !== undefined && m.tod !== args.tod) continue;
-    if (m.gamma_q !== undefined) {
-      const label = gammaQ === null ? 'null' : String(gammaQ);
-      if (m.gamma_q !== label) continue;
+  // Guard on length so SonarJS doesn't flag an always-empty-collection loop
+  // when the model has no composite entries (as is the case pre-Phase-B).
+  if (COMPOSITE_BONUSES_V2.length > 0) {
+    for (const entry of COMPOSITE_BONUSES_V2) {
+      const m = entry.match;
+      if (m.ticker !== undefined && m.ticker !== args.ticker) continue;
+      if (m.tod !== undefined && m.tod !== args.tod) continue;
+      if (m.gamma_q !== undefined) {
+        const label = gammaQ === null ? 'null' : String(gammaQ);
+        if (m.gamma_q !== label) continue;
+      }
+      if (m.vol_oi_q !== undefined) {
+        const label = volOiQ === null ? 'null' : String(volOiQ);
+        if (m.vol_oi_q !== label) continue;
+      }
+      if (m.ask_pct_q !== undefined) {
+        const label = askPctQ === null ? 'null' : String(askPctQ);
+        if (m.ask_pct_q !== label) continue;
+      }
+      score += entry.bonus;
     }
-    if (m.vol_oi_q !== undefined) {
-      const label = volOiQ === null ? 'null' : String(volOiQ);
-      if (m.vol_oi_q !== label) continue;
-    }
-    if (m.ask_pct_q !== undefined) {
-      const label = askPctQ === null ? 'null' : String(askPctQ);
-      if (m.ask_pct_q !== label) continue;
-    }
-    score += entry.bonus;
   }
 
   return score;
