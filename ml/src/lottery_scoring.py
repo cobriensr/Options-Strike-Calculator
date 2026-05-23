@@ -75,6 +75,11 @@ OPT_TYPE_SCALE = 4.0
 TICKER_CLAMP_MIN = -5
 TICKER_CLAMP_MAX = 10
 
+# V2.2 Phase D — context feature scale cap.
+# Smaller than per-fire feature scales (5-6) so that 7 context features
+# together don't collectively dominate the score vs per-fire signals.
+CONTEXT_SCALE = 3.0
+
 # Minimum observations required for a bucket / ticker to get a real weight
 # instead of falling back to 0 (global mean). Bucket gets 30 (small categorical
 # / quintile populations); ticker gets 100 (we have ~80 tickers across 150k
@@ -102,7 +107,14 @@ SELECT
     cum_ncp_at_fire,
     cum_npp_at_fire,
     inferred_structure,
-    date
+    date,
+    spx_spot_charm_oi,
+    spx_spot_vanna_oi,
+    spx_spot_gamma_oi,
+    mkt_tide_ncp,
+    mkt_tide_npp,
+    mkt_tide_diff,
+    mkt_tide_otm_diff
 FROM lottery_finder_fires
 WHERE
     date >= CURRENT_DATE - INTERVAL '90 days'
@@ -294,37 +306,57 @@ def apply_weights(
 ) -> pd.Series:
     """Apply the full additive weight model to df, return score Series."""
     score = pd.Series(0.0, index=df.index)
+    f = weights["features"]
 
     # TOD
-    tod_w = weights["features"]["tod_weights"]
+    tod_w = f["tod_weights"]
     score += df["tod"].map(tod_w).fillna(0)
 
     # DTE (capped at 3)
-    dte_w = weights["features"]["dte_weights"]
+    dte_w = f["dte_weights"]
     score += df["dte"].clip(upper=3).astype(str).map(dte_w).fillna(0)
 
     # Vol/OI quintile
     vol_q = assign_quintile(df["trigger_vol_to_oi_window"], vol_oi_boundaries)
-    vol_w = weights["features"]["vol_oi_quintile_weights"]
+    vol_w = f["vol_oi_quintile_weights"]
     score += vol_q.map(lambda q: vol_w[int(q)] if not pd.isna(q) else 0)
 
     # Gamma quintile (drops NULLs → 0 contribution)
     gamma_q = assign_quintile(df["gamma_at_trigger"], gamma_boundaries)
-    gamma_w = weights["features"]["gamma_quintile_weights"]
+    gamma_w = f["gamma_quintile_weights"]
     score += gamma_q.map(lambda q: gamma_w[int(q)] if not pd.isna(q) else 0)
 
     # Ask pct quintile
     ask_q = assign_quintile(df["trigger_ask_pct"], ask_pct_boundaries)
-    ask_w = weights["features"]["ask_pct_quintile_weights"]
+    ask_w = f["ask_pct_quintile_weights"]
     score += ask_q.map(lambda q: ask_w[int(q)] if not pd.isna(q) else 0)
 
     # Option type
-    opt_w = weights["features"]["option_type_weights"]
+    opt_w = f["option_type_weights"]
     score += df["option_type"].map(opt_w).fillna(0)
 
     # Ticker
-    ticker_w = weights["features"]["ticker_weights"]
+    ticker_w = f["ticker_weights"]
     score += df["underlying_symbol"].map(ticker_w).fillna(0)
+
+    # V2.2 Phase D — context features (7)
+    # Each is NULL-safe: rows missing the context value contribute 0.
+    _CONTEXT_COLS = [
+        ("spx_spot_charm_oi",  "spx_spot_charm_oi_quintile_boundaries",  "spx_spot_charm_oi_quintile_weights"),
+        ("spx_spot_vanna_oi",  "spx_spot_vanna_oi_quintile_boundaries",  "spx_spot_vanna_oi_quintile_weights"),
+        ("spx_spot_gamma_oi",  "spx_spot_gamma_oi_quintile_boundaries",  "spx_spot_gamma_oi_quintile_weights"),
+        ("mkt_tide_ncp",       "mkt_tide_ncp_quintile_boundaries",        "mkt_tide_ncp_quintile_weights"),
+        ("mkt_tide_npp",       "mkt_tide_npp_quintile_boundaries",        "mkt_tide_npp_quintile_weights"),
+        ("mkt_tide_diff",      "mkt_tide_diff_quintile_boundaries",       "mkt_tide_diff_quintile_weights"),
+        ("mkt_tide_otm_diff",  "mkt_tide_otm_diff_quintile_boundaries",   "mkt_tide_otm_diff_quintile_weights"),
+    ]
+    for df_col, b_key, w_key in _CONTEXT_COLS:
+        if b_key not in f or w_key not in f:
+            continue
+        bounds = f[b_key]
+        wts = f[w_key]
+        ctx_q = assign_quintile(df[df_col], bounds)
+        score += ctx_q.map(lambda q, wts=wts: wts[int(q)] if not pd.isna(q) else 0)
 
     return score
 
@@ -409,6 +441,43 @@ def main() -> None:
     ask_pct_weights = compute_quintile_weights(df, "ask_q", ASK_PCT_SCALE, global_mean)
     print(f"Ask_pct quintile weights (Q1→Q5): {ask_pct_weights}")
 
+    # ---- V2.2 Phase D — 7 context features ----
+    # Each feature is bucketed into quintiles from the training set and
+    # scored with CONTEXT_SCALE=3.0 (cap ±3 per feature). Shape-aware:
+    # humped features (vanna_oi, ncp, diff, gamma_oi, npp, otm_diff) will
+    # naturally produce non-monotonic weight arrays through compute_quintile_weights,
+    # which reads the actual per-bucket means and normalises by spread.
+    # NULL inputs contribute 0 to the score (no imputation).
+
+    CONTEXT_FEATURE_COLS = [
+        ("spx_spot_charm_oi", "charm_oi_q"),
+        ("spx_spot_vanna_oi", "vanna_oi_q"),
+        ("spx_spot_gamma_oi", "gamma_oi_q"),
+        ("mkt_tide_ncp",      "mkt_ncp_q"),
+        ("mkt_tide_npp",      "mkt_npp_q"),
+        ("mkt_tide_diff",     "mkt_diff_q"),
+        ("mkt_tide_otm_diff", "mkt_otm_diff_q"),
+    ]
+
+    context_boundaries: dict[str, list[float]] = {}
+    context_weights: dict[str, list[int]] = {}
+
+    print("\n---- V2.2 Phase D: Context Feature Weights ----")
+    for feat_col, q_col in CONTEXT_FEATURE_COLS:
+        # Compute boundaries on the non-null subset
+        boundaries = quintile_boundaries(df[feat_col])
+        df[q_col] = assign_quintile(df[feat_col], boundaries)
+        # Compute weights against the global_mean (entire training set)
+        weights_vec = compute_quintile_weights(df.dropna(subset=[feat_col]), q_col, CONTEXT_SCALE, global_mean)
+        context_boundaries[feat_col] = boundaries
+        context_weights[feat_col] = weights_vec
+        print(f"  {feat_col}:")
+        print(f"    boundaries: {[round(b, 4) for b in boundaries]}")
+        print(f"    weights:    {weights_vec}")
+        # Signal sanity: at least one non-zero weight
+        if all(w == 0 for w in weights_vec):
+            print(f"    WARNING: all-zero weights for {feat_col} — no signal detected")
+
     # ---- Option type weights ----
     opt_type_weights = compute_categorical_weights(
         df, "option_type", ["C", "P"], OPT_TYPE_SCALE, global_mean
@@ -453,6 +522,21 @@ def main() -> None:
             "ask_pct_quintile_boundaries": [float(b) for b in ask_pct_boundaries],
             "option_type_weights": {k: int(v) for k, v in opt_type_weights.items()},
             "ticker_weights": {k: int(v) for k, v in ticker_weights.items()},
+            # V2.2 Phase D — context features (7)
+            "spx_spot_charm_oi_quintile_boundaries": [float(b) for b in context_boundaries["spx_spot_charm_oi"]],
+            "spx_spot_charm_oi_quintile_weights": [int(w) for w in context_weights["spx_spot_charm_oi"]],
+            "spx_spot_vanna_oi_quintile_boundaries": [float(b) for b in context_boundaries["spx_spot_vanna_oi"]],
+            "spx_spot_vanna_oi_quintile_weights": [int(w) for w in context_weights["spx_spot_vanna_oi"]],
+            "spx_spot_gamma_oi_quintile_boundaries": [float(b) for b in context_boundaries["spx_spot_gamma_oi"]],
+            "spx_spot_gamma_oi_quintile_weights": [int(w) for w in context_weights["spx_spot_gamma_oi"]],
+            "mkt_tide_ncp_quintile_boundaries": [float(b) for b in context_boundaries["mkt_tide_ncp"]],
+            "mkt_tide_ncp_quintile_weights": [int(w) for w in context_weights["mkt_tide_ncp"]],
+            "mkt_tide_npp_quintile_boundaries": [float(b) for b in context_boundaries["mkt_tide_npp"]],
+            "mkt_tide_npp_quintile_weights": [int(w) for w in context_weights["mkt_tide_npp"]],
+            "mkt_tide_diff_quintile_boundaries": [float(b) for b in context_boundaries["mkt_tide_diff"]],
+            "mkt_tide_diff_quintile_weights": [int(w) for w in context_weights["mkt_tide_diff"]],
+            "mkt_tide_otm_diff_quintile_boundaries": [float(b) for b in context_boundaries["mkt_tide_otm_diff"]],
+            "mkt_tide_otm_diff_quintile_weights": [int(w) for w in context_weights["mkt_tide_otm_diff"]],
         },
     }
 
@@ -593,6 +677,18 @@ def main() -> None:
             "Spearman r > 0.05 (some signal)",
             spearman_r > 0.05,
             f"r={spearman_r:.4f}",
+        ),
+        # V2.2 Phase D — at least one non-zero weight per context feature
+        *(
+            (
+                f"Context {feat}: at least one non-zero weight",
+                any(w != 0 for w in context_weights[feat]),
+                f"weights={context_weights[feat]}",
+            )
+            for feat in [
+                "spx_spot_charm_oi", "spx_spot_vanna_oi", "spx_spot_gamma_oi",
+                "mkt_tide_ncp", "mkt_tide_npp", "mkt_tide_diff", "mkt_tide_otm_diff",
+            ]
         ),
     ]
 
