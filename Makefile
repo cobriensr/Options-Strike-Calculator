@@ -219,6 +219,14 @@ update: refit
 	@# only to docs/tmp/, never touches the score column. Adds ~2 min.
 	$(PYTHON) scripts/mine_outcome_patterns.py
 	$(PYTHON) scripts/score_lineage_audit.py
+	@# Online ticker weight EMA update (V2.2 Phase E.8, spec: lottery-v2-2-
+	@# profitability-improvements-2026-05-22). Blends today's per-ticker
+	@# outcomes into ticker_weights via exponential smoothing (alpha=0.05,
+	@# ±1 cap/night). Writes updated JSON back to ml/output/ then re-syncs
+	@# the TS mirror so detect-lottery-fires picks up the new weights on the
+	@# next cron tick. Skip guard: < 100 enriched fires → no-op.
+	$(PYTHON) scripts/online_ticker_update.py
+	$(PYTHON) scripts/sync_lottery_score_weights_v2.py
 	@echo ""
 	@echo "  ✅ daily research artifacts:"
 	@echo "     docs/tmp/lottery-exit-policy-search-YYYY-MM-DD.md"
@@ -227,6 +235,8 @@ update: refit
 	@echo "     docs/tmp/lottery-tracking.csv  (cumulative one-row-per-day)"
 	@echo "     docs/tmp/lottery-composite-candidates-YYYY-MM-DD.md  (mining)"
 	@echo "     docs/tmp/lottery-score-lineage-YYYY-MM-DD.md  (attribution)"
+	@echo "     docs/tmp/lottery-ticker-weight-history.csv  (EMA update log)"
+	@echo "     ml/output/lottery_score_weights.json  (ticker_weights updated)"
 
 tune:
 	@echo ""
