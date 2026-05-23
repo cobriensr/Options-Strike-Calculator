@@ -1,6 +1,6 @@
 {
-  "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-05-23T04:51:28.276154+00:00",
+  "model_version": "rescore-v1-2026-05-23-no-context",
+  "trained_at": "2026-05-23T01:30:00.000000+00:00",
   "training_sample": {
     "n": 164940,
     "date_range": [
@@ -166,97 +166,6 @@
       "WULF": -1,
       "XOM": 0
     },
-    "spx_spot_charm_oi_quintile_boundaries": [
-      -29528641098120.07,
-      -19611960547605.07,
-      -15433464342276.68,
-      -12950119474939.72
-    ],
-    "spx_spot_charm_oi_quintile_weights": [
-      -2,
-      -1,
-      0,
-      1,
-      1
-    ],
-    "spx_spot_vanna_oi_quintile_boundaries": [
-      405295448.4928,
-      688821606.3173,
-      1324795003.992,
-      2026181597.3998
-    ],
-    "spx_spot_vanna_oi_quintile_weights": [
-      0,
-      1,
-      0,
-      -2,
-      -1
-    ],
-    "spx_spot_gamma_oi_quintile_boundaries": [
-      -43090757765.16,
-      12409690851.49,
-      55236262808.53,
-      92758162435.96
-    ],
-    "spx_spot_gamma_oi_quintile_weights": [
-      -1,
-      -1,
-      -2,
-      1,
-      1
-    ],
-    "mkt_tide_ncp_quintile_boundaries": [
-      -68796483.0,
-      1899398.0,
-      61638531.0,
-      155035892.0
-    ],
-    "mkt_tide_ncp_quintile_weights": [
-      -2,
-      0,
-      0,
-      0,
-      1
-    ],
-    "mkt_tide_npp_quintile_boundaries": [
-      -45531091.0,
-      -6931816.0,
-      17729728.0,
-      55641044.0
-    ],
-    "mkt_tide_npp_quintile_weights": [
-      -2,
-      1,
-      1,
-      1,
-      -2
-    ],
-    "mkt_tide_diff_quintile_boundaries": [
-      -111967280.0,
-      -6085438.0,
-      54661710.5,
-      164716479.0
-    ],
-    "mkt_tide_diff_quintile_weights": [
-      -2,
-      0,
-      1,
-      0,
-      1
-    ],
-    "mkt_tide_otm_diff_quintile_boundaries": [
-      -136308101.5,
-      -60541546.0,
-      -5119983.0,
-      38399437.5
-    ],
-    "mkt_tide_otm_diff_quintile_weights": [
-      -2,
-      -1,
-      0,
-      1,
-      1
-    ],
     "composite_bonuses": [
       {
         "match": {
