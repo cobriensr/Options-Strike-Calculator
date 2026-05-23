@@ -26,7 +26,7 @@ export interface CronMonitorConfig {
   recoveryThreshold?: number;
 }
 
-const DEFAULT_MARGIN = 2;
+const DEFAULT_MARGIN = 5;
 const DEFAULT_MAX_RUNTIME = 5;
 const LONG_RUNNER_MAX_RUNTIME = 10;
 

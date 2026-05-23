@@ -151,7 +151,11 @@ export function useIntervalBAFeed(
           const body = (await res.json().catch(() => ({}))) as {
             error?: string;
           };
-          throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+          const error = new Error(
+            body.error ?? `${res.status} ${res.statusText}`,
+          ) as Error & { status?: number };
+          error.status = res.status;
+          throw error;
         }
         return res.json();
       })
@@ -179,9 +183,14 @@ export function useIntervalBAFeed(
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
         if (msg === 'The operation was aborted') return;
-        Sentry.captureException(err, {
-          tags: { context: 'interval_ba_feed' },
-        });
+        // 401 = guest hitting owner-gated endpoint, by design per
+        // project_auth_policy. Surface to UI but don't ship to Sentry.
+        const status = (err as Error & { status?: number }).status;
+        if (status !== 401) {
+          Sentry.captureException(err, {
+            tags: { context: 'interval_ba_feed' },
+          });
+        }
         setError(msg);
         setLoading(false);
       });
