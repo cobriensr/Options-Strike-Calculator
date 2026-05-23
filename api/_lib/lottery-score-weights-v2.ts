@@ -295,7 +295,57 @@ export interface CompositeBonus {
   note: string;
 }
 
-export const COMPOSITE_BONUSES_V2: ReadonlyArray<CompositeBonus> = [];
+export const COMPOSITE_BONUSES_V2: ReadonlyArray<CompositeBonus> = [
+  {
+    match: { ticker: 'SNDK', tod: 'AM_open', gamma_q: '0' },
+    bonus: 3,
+    support: 278,
+    winRate: 0.953,
+    note: '265/278 winners (2026-05-22 mining report); strongest-support winning composite',
+  },
+  {
+    match: { ticker: 'RKLB', tod: 'AM_open', gamma_q: '1' },
+    bonus: 3,
+    support: 21,
+    winRate: 0.952,
+    note: '20/21 winners (2026-05-22 mining report)',
+  },
+  {
+    match: { ticker: 'TQQQ', tod: 'AM_open', gamma_q: '4' },
+    bonus: 3,
+    support: 43,
+    winRate: 0.953,
+    note: '41/43 winners (2026-05-22 mining report)',
+  },
+  {
+    match: { ticker: 'WDC', ask_pct_q: '0' },
+    bonus: -5,
+    support: 12,
+    winRate: 0.0,
+    note: '12/12 losers (2026-05-22 mining report); -5 penalty',
+  },
+  {
+    match: { ticker: 'SHOP', gamma_q: '4' },
+    bonus: -4,
+    support: 17,
+    winRate: 0.0,
+    note: '16/17 losers (2026-05-22 mining report); -4 penalty',
+  },
+  {
+    match: { ticker: 'RGTI', tod: 'LUNCH', vol_oi_q: '4' },
+    bonus: -3,
+    support: 31,
+    winRate: 0.0,
+    note: '27/31 losers (2026-05-22 mining report); -3 penalty; largest-n losing composite',
+  },
+  {
+    match: { ticker: 'POET', vol_oi_q: '4' },
+    bonus: -3,
+    support: 13,
+    winRate: 0.0,
+    note: '12/13 losers (2026-05-22 mining report); -3 penalty',
+  },
+];
 
 // ---------------------------------------------------------------------------
 // Tier cutoffs

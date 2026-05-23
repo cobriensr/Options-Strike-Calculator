@@ -576,9 +576,28 @@ def main() -> None:
     }
 
     # ---- Write output ----
+    # Preserve manually-curated fields from any prior weights JSON so
+    # retraining doesn't nuke them. This is the recovery path for the
+    # Phase D step 1 regression where retraining wiped the Phase B
+    # composite_bonuses block (caught by failing tests in commit
+    # b9315b73 follow-up). Fields preserved:
+    #   - features.composite_bonuses (human-curated mining-derived overrides)
+    # If you add more human-curated fields, list them here too.
     output_dir = Path(__file__).resolve().parent.parent / "output"
     output_dir.mkdir(exist_ok=True)
     output_path = output_dir / "lottery_score_weights.json"
+
+    PRESERVED_FEATURE_KEYS = ["composite_bonuses"]
+    if output_path.exists():
+        try:
+            prior = json.loads(output_path.read_text())
+            prior_features = prior.get("features", {})
+            for k in PRESERVED_FEATURE_KEYS:
+                if k in prior_features:
+                    weights["features"][k] = prior_features[k]
+                    print(f"[preserve] carried over features.{k} from prior JSON")
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[preserve] couldn't read prior JSON ({e}); skipping preservation")
 
     with open(output_path, "w") as f:
         json.dump(weights, f, indent=2)
