@@ -118,7 +118,7 @@ If you're unsure whether a change needs a test: it does. The cost of writing one
 
 **1. Implement** — Write the failing test first (see "Tests Are Mandatory" above), then the code. Investigate first, understand existing patterns, then make changes.
 
-**2. Verify** — Run `npm run review`. Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
+**2. Verify** — Run `npm run review` (which chains `tsc --noEmit && eslint . && prettier --write && vitest run --coverage`). **NEVER report a task as finished without running this full pipeline first.** Running tests on the files you touched is not enough — type errors and lint violations from your changes regularly surface in unrelated files (transitive type narrowing, prettier reformatting, etc.). Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
 
 **3. Self-Review** — Launch a **reviewer subagent** to evaluate the implementation with fresh eyes. The subagent must:
 

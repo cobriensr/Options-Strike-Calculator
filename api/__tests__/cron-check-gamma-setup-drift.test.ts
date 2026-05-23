@@ -138,10 +138,12 @@ describe('cron check-gamma-setup-drift', () => {
       stats as unknown as ReturnType<typeof aggregateFireStats>,
     );
     vi.mocked(detectDrift).mockReturnValueOnce({
+      fired: true,
       reasons: [
         'composite win rate 0.42 < 0.55',
         'edge ratio collapse on e1_long_call (0.18 < 0.5)',
       ],
+      stats: stats as unknown as ReturnType<typeof aggregateFireStats>,
     });
 
     const res = mockResponse();
