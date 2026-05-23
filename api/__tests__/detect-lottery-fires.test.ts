@@ -728,15 +728,17 @@ describe('detect-lottery-fires handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(4);
   });
 
-  it('flags direction_gated=true on a counter-trend put fire (mkt_tide_otm_diff > +150M)', async () => {
-    // Phase 4 direction gate (spec
-    // silent-boom-direction-gate-and-trail-ui-2026-05-14.md): a PUT
-    // fire with OTM tide diff > +150M is bullish-counter-trend and
-    // should be gated. The fixture replaces every tick with a P-side
-    // print so the detector emits a put fire; the flow_data macro mock
-    // returns OTM ncp=300M, npp=100M → otm_diff = +200M (above T).
-    // Score is preserved (gate is read-time / display-only); only the
-    // boolean column flips.
+  it('does NOT gate a counter-trend put fire even when mkt_tide_otm_diff > +150M (V2.2 C.9)', async () => {
+    // V2.2 Phase C.9 asymmetric gate fix: the PUT side of the direction
+    // gate was removed after a 30-day audit found gated puts had a mean
+    // outcome of +1950% vs +47% for ungated puts — the "bull OTM tide →
+    // demote counter-trend puts" assumption was exactly backwards.
+    // (See docs/tmp/v22-direction-gate-audit-2026-05-22.md.)
+    //
+    // This test verifies that a PUT fire with otm_diff = +200M (above
+    // the old +150M threshold) is now stored with direction_gated=FALSE.
+    // The fixture is identical to the old "flags=true" test; only the
+    // assertion flips.
     const putStream = fireableSndkStream().map((t) => ({
       ...t,
       option_type: 'P' as const,
@@ -774,12 +776,45 @@ describe('detect-lottery-fires handler', () => {
     //   match_confidence(-6), pattern_group_id(-5),
     //   takeit_prob(-4), takeit_model_version(-3), takeit_features(-2),
     //   gamma_at_trigger(-1).
-    // The direction gate must NOT mutate the score value — only the
-    // boolean column flips.
-    expect(insertCall.at(-12)).toBe(true);
+    // PUT fires are NEVER gated regardless of otm_diff (C.9 fix).
+    expect(insertCall.at(-12)).toBe(false);
     // V2: ticker_flow_snapshot returns [] → cumNcp/cumNpp null →
-    // isAligned=false → score=null. The direction gate does NOT mutate
-    // the score — it only flips the direction_gated boolean on the row.
+    // isAligned=false → score=null. Direction gate does NOT mutate score.
+    expect(insertCall.at(-13)).toBeNull();
+  });
+
+  it('flags direction_gated=true on a counter-trend CALL fire (mkt_tide_otm_diff < -150M)', async () => {
+    // Call-side gate is preserved after V2.2 Phase C.9: gated calls had
+    // mean +21.9% vs ungated calls +83.1% in the 30-day audit — the gate
+    // correctly demotes them. This test drives a CALL fire with
+    // otm_diff = -200M (below the -150M threshold).
+    // flow_data mock: ncp=100M, npp=300M → otm_diff = -200_000_000.
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { source: 'market_tide_otm', ncp: '100000000', npp: '300000000' },
+      ]) // flow_data → otm_diff -200_000_000
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      totalFires: 1,
+      inserted: 1,
+    });
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    // CALL fires with otm_diff < -150M → direction_gated=true (gate kept).
+    expect(insertCall.at(-12)).toBe(true);
     expect(insertCall.at(-13)).toBeNull();
   });
 

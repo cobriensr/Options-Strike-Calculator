@@ -73,6 +73,15 @@ const PER_CHAIN_MIN_PRINTS = 5;
 // pulling it would just be wasted bytes.
 const PRIOR_FIRE_LOOKBACK_MIN = 10;
 
+// Cluster bonus constants — V2.2 Phase C.4
+// (spec: docs/tmp/v22-co-fire-analysis-2026-05-22.md).
+// Non-monotonic: peak lift at 2-4 tickers; 5+ dilutes back toward baseline.
+const CLUSTER_WINDOW_MS = 5 * 60 * 1_000; // 5 minutes in milliseconds
+const CLUSTER_BONUS_ISOLATED = 0; // cluster_size 1
+const CLUSTER_BONUS_PAIR = 1; // cluster_size 2
+const CLUSTER_BONUS_SMALL = 2; // cluster_size 3-4 (peak empirical lift)
+const CLUSTER_BONUS_LARGE = 1; // cluster_size 5+ (signal dilutes)
+
 type DbNumeric = string | number;
 type DbNullableNumeric = DbNumeric | null;
 type DbTimestamp = string | Date;
@@ -601,20 +610,26 @@ export default withCronInstrumentation(
         });
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
-        // Counter-trend fires get flagged with direction_gated=TRUE so
-        // the feed endpoint can override the displayed score tier to
-        // tier3. The lottery score itself is NOT mutated — the raw
-        // score is preserved on the row and the gate is the read-time
-        // override. Threshold is the OTM-only mkt_tide_otm_diff per
-        // Phase 4 result (vs. all-in for silent boom). STRICT > / < per
-        // spec — exactly ±T is NOT gated.
+        // V2.2 Phase C.9 ASYMMETRIC FIX (2026-05-22, audit memo:
+        // docs/tmp/v22-direction-gate-audit-2026-05-22.md):
+        //
+        // Original gate flagged BOTH counter-trend puts (otm > +150M)
+        // AND counter-trend calls (otm < -150M). The 30-day audit
+        // revealed the put side was catastrophically wrong:
+        //   Gated puts (otm > +150M): mean +1950% — BEST cohort
+        //   Gated calls (otm < -150M): mean +21.9% vs ungated +83.1%
+        //                              — gate correctly demotes calls
+        //
+        // Put gate removed. Call gate kept. See audit memo for full
+        // bucket-level breakdown. STRICT < per spec — exactly -T is NOT
+        // gated.
         const LOTTERY_DIRECTION_GATE_T = 150_000_000;
         const directionGated = (() => {
           const otm = macro.mkt_tide_otm_diff;
           if (otm == null) return false;
-          if (rec.optionType === 'P' && otm > LOTTERY_DIRECTION_GATE_T) {
-            return true;
-          }
+          // Put gate intentionally removed (V2.2 Phase C.9): gated puts
+          // outperformed ungated by +1900pp mean in 30-day audit.
+          // Call gate kept: gated calls underperform ungated by -61pp.
           if (rec.optionType === 'C' && otm < -LOTTERY_DIRECTION_GATE_T) {
             return true;
           }
@@ -791,6 +806,59 @@ export default withCronInstrumentation(
   },
   { requireApiKey: false },
 );
+
+// ============================================================
+// Cluster bonus helpers — V2.2 Phase C.4
+// ============================================================
+
+interface CommittedFireEntry {
+  ticker: string;
+  triggerTimeMs: number;
+  score: number | null;
+}
+
+/**
+ * Count distinct other tickers (not `thisTicker`) that scored tier1
+ * (score >= LOTTERY_TIER_THRESHOLDS_V2.t1) within CLUSTER_WINDOW_MS of
+ * `triggerTimeMs` in the current cron run's committed-fires list.
+ *
+ * Uses the in-memory `committedFires` list — no DB round-trip. The list
+ * only contains fires already processed in this cron invocation so the
+ * window is naturally bounded to the current scan pass.
+ */
+function computeClusterSize(
+  committedFires: CommittedFireEntry[],
+  thisTicker: string,
+  triggerTimeMs: number,
+): number {
+  const otherTickers = new Set<string>();
+  for (const fire of committedFires) {
+    if (fire.ticker === thisTicker) continue;
+    if (fire.score == null) continue;
+    if (fire.score < LOTTERY_TIER_THRESHOLDS_V2.t1) continue;
+    if (Math.abs(fire.triggerTimeMs - triggerTimeMs) <= CLUSTER_WINDOW_MS) {
+      otherTickers.add(fire.ticker);
+    }
+  }
+  // +1 for this fire itself → total distinct tickers in cluster including self
+  return otherTickers.size + 1;
+}
+
+/**
+ * Map a cluster size (total distinct tickers including self) to the
+ * tiered bonus value per the V2.2 Phase C.4 spec.
+ *
+ * isolated (1)  → 0
+ * pair (2)      → +1
+ * small (3-4)   → +2  (peak empirical lift: +79% mean vs +10% baseline)
+ * large (5+)    → +1  (signal dilutes back toward baseline)
+ */
+function applyClusterBonus(clusterSize: number): number {
+  if (clusterSize >= 5) return CLUSTER_BONUS_LARGE;
+  if (clusterSize >= 3) return CLUSTER_BONUS_SMALL;
+  if (clusterSize === 2) return CLUSTER_BONUS_PAIR;
+  return CLUSTER_BONUS_ISOLATED;
+}
 
 // ============================================================
 // Macro snapshot lookup — asof, NULLs tolerated.
