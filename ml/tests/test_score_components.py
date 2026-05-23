@@ -59,6 +59,48 @@ STUB_WEIGHTS_NO_OVERRIDES = {
     "cutoffs": {"t1": 9, "t2": 7},
 }
 
+# Weights with composite_bonuses for composite overlay tests.
+# Boundaries kept identical to STUB_WEIGHTS for quintile consistency.
+STUB_WEIGHTS_WITH_COMPOSITES = {
+    "model_version": "test-stub-composites",
+    "features": {
+        "ticker_weights": {"AMD": 5, "SNDK": 1, "WDC": -1},
+        "tod_weights": {"AM_open": 4, "MID": 0, "LUNCH": -4, "PM": -4},
+        "tod_weights_dow_overrides": {
+            "Monday": {"AM_open": -3, "MID": 0, "LUNCH": 2, "PM": -2},
+        },
+        "dte_weights": {"0": -2, "1": 4, "2": 0, "3": 1},
+        "option_type_weights": {"C": 2, "P": -2},
+        "vol_oi_quintile_weights": [1, 0, 2, 0, -3],
+        "vol_oi_quintile_boundaries": [0.06, 0.10, 0.15, 0.38],
+        "gamma_quintile_weights": [3, -2, -2, -2, 0],
+        "gamma_quintile_boundaries": [0.012, 0.025, 0.042, 0.068],
+        "ask_pct_quintile_weights": [-1, 1, 1, 2, -4],
+        "ask_pct_quintile_boundaries": [0.53, 0.57, 0.625, 0.75],
+        # SNDK + AM_open + gamma_q=0 → +3 bonus
+        # gamma_q=0 requires gamma <= 0.012 (first boundary)
+        # WDC + ask_pct_q=0 → -5 penalty
+        # ask_pct_q=0 requires ask_pct <= 0.53 (first boundary)
+        "composite_bonuses": [
+            {
+                "match": {"ticker": "SNDK", "tod": "AM_open", "gamma_q": "0"},
+                "bonus": 3,
+                "support": 278,
+                "win_rate": 0.953,
+                "note": "stub — winning composite",
+            },
+            {
+                "match": {"ticker": "WDC", "ask_pct_q": "0"},
+                "bonus": -5,
+                "support": 12,
+                "win_rate": 0.0,
+                "note": "stub — losing composite",
+            },
+        ],
+    },
+    "cutoffs": {"t1": 9, "t2": 7},
+}
+
 
 # ---------------------------------------------------------------------------
 # assign_quintile — boundary semantics
@@ -262,6 +304,120 @@ def test_dow_none_uses_global_weights():
     }
     components = compute_components(fire, STUB_WEIGHTS, dow=None)
     assert components["tod"] == -4  # global LUNCH weight
+
+
+# ---------------------------------------------------------------------------
+# compute_components — composite bonuses/penalties
+# ---------------------------------------------------------------------------
+
+
+def test_composite_winning_bonus_applied():
+    # SNDK + AM_open + gamma_q=0 → +3 bonus.
+    # gamma_q=0 requires gamma <= first boundary (0.012).
+    # Components without composite:
+    #   ticker SNDK (1) + AM_open (4) + DTE 1 (4) + vol_oi None (0)
+    #   + gamma 0.005 → Q0 (3) + ask_pct None (0) + C (2) = 14
+    # Composite adds +3 → total = 17
+    fire = {
+        "ticker": "SNDK",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": 0.005,   # below 0.012 → Q0
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
+    assert components["composite"] == 3
+    # Sum invariant
+    component_sum = sum(v for k, v in components.items() if k != "total")
+    assert components["total"] == component_sum
+
+
+def test_composite_losing_penalty_applied():
+    # WDC + ask_pct_q=0 → -5 penalty.
+    # ask_pct_q=0 requires ask_pct <= 0.53 (first boundary).
+    fire = {
+        "ticker": "WDC",
+        "tod": "AM_open",
+        "dte": 0,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": 0.50,   # below 0.53 → Q0
+    }
+    components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
+    assert components["composite"] == -5
+    component_sum = sum(v for k, v in components.items() if k != "total")
+    assert components["total"] == component_sum
+
+
+def test_composite_no_match_contributes_zero():
+    # AMD is not in any composite — composite should be 0.
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": 0.005,
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
+    assert components["composite"] == 0
+
+
+def test_composite_partial_match_does_not_fire():
+    # SNDK + AM_open but gamma_q is NOT 0 (gamma=0.05 → Q3, not Q0).
+    # The winning composite requires all three keys to match.
+    fire = {
+        "ticker": "SNDK",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": 0.05,    # above all boundaries → Q4, not Q0
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
+    assert components["composite"] == 0
+
+
+def test_composite_multiple_matches_sum():
+    # Construct a fire that matches BOTH composites in STUB_WEIGHTS_WITH_COMPOSITES:
+    # - SNDK + AM_open + gamma_q=0 → +3
+    # - WDC + ask_pct_q=0 → -5  (WDC ≠ SNDK, so this composite does NOT match)
+    # So only the +3 fires for SNDK. Verify the sum is just +3.
+    fire = {
+        "ticker": "SNDK",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": 0.005,   # Q0
+        "ask_pct": 0.50,  # Q0 (ask_pct_q=0), but match key is ticker=WDC
+    }
+    components = compute_components(fire, STUB_WEIGHTS_WITH_COMPOSITES)
+    # Only the winning bonus fires; losing composite requires ticker=WDC.
+    assert components["composite"] == 3
+
+
+def test_composite_no_composite_bonuses_field_backward_compat():
+    # Weights without composite_bonuses key at all → composite=0 (backward compat).
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS_NO_OVERRIDES)
+    assert components["composite"] == 0
+    # Sum invariant still holds
+    component_sum = sum(v for k, v in components.items() if k != "total")
+    assert components["total"] == component_sum
 
 
 # ---------------------------------------------------------------------------

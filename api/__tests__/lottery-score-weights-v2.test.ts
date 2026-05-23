@@ -11,10 +11,13 @@ import {
   assignQuintile,
   computeLotteryScoreV2,
   lotteryScoreTierV2,
+  COMPOSITE_BONUSES_V2,
   LOTTERY_TIER_THRESHOLDS_V2,
+  GAMMA_QUINTILE_BOUNDARIES,
+  ASK_PCT_QUINTILE_BOUNDARIES,
+  VOL_OI_QUINTILE_BOUNDARIES,
   TOD_WEIGHTS_DOW_OVERRIDES_V2,
   TOD_WEIGHTS_V2,
-  VOL_OI_QUINTILE_BOUNDARIES,
 } from '../_lib/lottery-score-weights-v2.js';
 
 describe('computeLotteryScoreV2 — hard alignment gate', () => {
@@ -237,5 +240,134 @@ describe('computeLotteryScoreV2 — Monday DOW override', () => {
       dayOfWeek: 'Tuesday',
     });
     expect(withoutDow).toBe(withTuesday);
+  });
+});
+
+describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
+  // Base args that are definitely aligned and in-universe.
+  const aligned = {
+    dte: 1,
+    optionType: 'C' as const,
+    isAligned: true,
+    volOiWindow: null,
+    gammaAtTrigger: null,
+    triggerAskPct: null,
+  };
+
+  it('COMPOSITE_BONUSES_V2 has the expected 7 entries from the 2026-05-22 mining report', () => {
+    expect(COMPOSITE_BONUSES_V2).toHaveLength(7);
+  });
+
+  it('winning composites all have positive bonus', () => {
+    const winners = COMPOSITE_BONUSES_V2.filter((e) => e.winRate >= 0.9);
+    expect(winners.length).toBeGreaterThan(0);
+    for (const w of winners) {
+      expect(w.bonus).toBeGreaterThan(0);
+    }
+  });
+
+  it('losing composites all have negative bonus', () => {
+    const losers = COMPOSITE_BONUSES_V2.filter((e) => e.winRate === 0);
+    expect(losers.length).toBeGreaterThan(0);
+    for (const l of losers) {
+      expect(l.bonus).toBeLessThan(0);
+    }
+  });
+
+  it('SNDK + AM_open + gamma_q=0 fire scores higher than an identical non-matching fire', () => {
+    // gamma_q=0 requires gammaAtTrigger < GAMMA_QUINTILE_BOUNDARIES[0]
+    const gammaQ0 = GAMMA_QUINTILE_BOUNDARIES[0]! * 0.5; // safely inside Q0
+    const sndkScore = computeLotteryScoreV2({
+      ...aligned,
+      ticker: 'SNDK',
+      tod: 'AM_open',
+      gammaAtTrigger: gammaQ0,
+    });
+    // Same fire but different ticker — composite does not fire.
+    const noMatchScore = computeLotteryScoreV2({
+      ...aligned,
+      ticker: 'AMZN',
+      tod: 'AM_open',
+      gammaAtTrigger: gammaQ0,
+    });
+    expect(sndkScore).not.toBeNull();
+    expect(noMatchScore).not.toBeNull();
+    // SNDK gets the +3 composite bonus on top of the same per-feature weights.
+    const sndkBonus = COMPOSITE_BONUSES_V2.find(
+      (e) => e.match.ticker === 'SNDK',
+    )!.bonus;
+    expect(sndkScore! - noMatchScore!).toBe(
+      // SNDK ticker weight (1) vs AMZN (0) = +1, plus the composite (+3) = +4 delta
+      // Use the actual bonus from the array rather than hardcoding 3.
+      1 + sndkBonus,
+    );
+  });
+
+  it('WDC + ask_pct_q=0 fire scores lower than an identical non-matching fire', () => {
+    // ask_pct_q=0 requires triggerAskPct < ASK_PCT_QUINTILE_BOUNDARIES[0]
+    const askQ0 = ASK_PCT_QUINTILE_BOUNDARIES[0]! * 0.5;
+    const wdcScore = computeLotteryScoreV2({
+      ...aligned,
+      ticker: 'WDC',
+      tod: 'AM_open',
+      triggerAskPct: askQ0,
+    });
+    const noMatchScore = computeLotteryScoreV2({
+      ...aligned,
+      ticker: 'AMZN',
+      tod: 'AM_open',
+      triggerAskPct: askQ0,
+    });
+    expect(wdcScore).not.toBeNull();
+    expect(noMatchScore).not.toBeNull();
+    // WDC gets the -5 composite penalty on top of the same per-feature weights.
+    const wdcPenalty = COMPOSITE_BONUSES_V2.find(
+      (e) => e.match.ticker === 'WDC',
+    )!.bonus;
+    // WDC ticker weight (-1) vs AMZN (0) = -1, plus the composite (-5) = -6 delta
+    expect(wdcScore! - noMatchScore!).toBe(-1 + wdcPenalty);
+  });
+
+  it('composite does not fire when only some match keys agree', () => {
+    // SNDK + AM_open but gamma is Q4, not Q0 — composite must NOT fire.
+    const gammaQ4 = GAMMA_QUINTILE_BOUNDARIES[3]! * 2; // safely in Q4
+    const withoutComposite = computeLotteryScoreV2({
+      ...aligned,
+      ticker: 'SNDK',
+      tod: 'AM_open',
+      gammaAtTrigger: gammaQ4,
+    });
+    // Same fire but AMZN — definitely no composite.
+    const baselineScore = computeLotteryScoreV2({
+      ...aligned,
+      ticker: 'AMZN',
+      tod: 'AM_open',
+      gammaAtTrigger: gammaQ4,
+    });
+    expect(withoutComposite).not.toBeNull();
+    expect(baselineScore).not.toBeNull();
+    // Only ticker weight differs (SNDK=1 vs AMZN=0); no composite bonus.
+    expect(withoutComposite! - baselineScore!).toBe(1);
+  });
+
+  it('null quintile features do not spuriously match a string-keyed composite', () => {
+    // A fire with null gammaAtTrigger: gamma_q label is "null".
+    // The SNDK composite requires gamma_q="0" — must not match.
+    const sndkNullGamma = computeLotteryScoreV2({
+      ...aligned,
+      ticker: 'SNDK',
+      tod: 'AM_open',
+      gammaAtTrigger: null,
+    });
+    const amznNullGamma = computeLotteryScoreV2({
+      ...aligned,
+      ticker: 'AMZN',
+      tod: 'AM_open',
+      gammaAtTrigger: null,
+    });
+    expect(sndkNullGamma).not.toBeNull();
+    expect(amznNullGamma).not.toBeNull();
+    // Only ticker weight difference — no composite.
+    expect(sndkNullGamma! - amznNullGamma!).toBe(1);
   });
 });

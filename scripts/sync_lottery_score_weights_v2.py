@@ -37,6 +37,34 @@ def fmt_array(values: list[object]) -> str:
     return "[" + ", ".join(str(v) for v in values) + "]"
 
 
+def _ts_string(v: object) -> str:
+    """Render a Python value as a TS literal (string → quoted, else as-is)."""
+    if isinstance(v, str):
+        return f'"{v}"'
+    return str(v).lower() if isinstance(v, bool) else str(v)
+
+
+def render_composite_bonuses(composites: list[dict]) -> str:
+    """Render the composite_bonuses array as a TS ReadonlyArray literal."""
+    if not composites:
+        return "[]"
+    lines: list[str] = []
+    for entry in composites:
+        match_pairs = ", ".join(
+            f"{k}: {_ts_string(v)}" for k, v in entry["match"].items()
+        )
+        lines.append(
+            f"  {{\n"
+            f"    match: {{ {match_pairs} }},\n"
+            f"    bonus: {entry['bonus']},\n"
+            f"    support: {entry['support']},\n"
+            f"    winRate: {entry['win_rate']},\n"
+            f'    note: "{entry.get("note", "")}",\n'
+            f"  }},"
+        )
+    return "[\n" + "\n".join(lines) + "\n]"
+
+
 def render_ts(w: dict) -> str:  # noqa: PLR0914 — intentionally flat render function
     f = w["features"]
     cutoffs = w["cutoffs"]
@@ -88,6 +116,10 @@ def render_ts(w: dict) -> str:  # noqa: PLR0914 — intentionally flat render fu
     gb = fmt_array(f["gamma_quintile_boundaries"])
     aw = fmt_array(f["ask_pct_quintile_weights"])
     ab = fmt_array(f["ask_pct_quintile_boundaries"])
+
+    # Composite bonuses
+    composites = f.get("composite_bonuses", [])
+    composite_bonuses_ts = render_composite_bonuses(composites)
 
     t1 = cutoffs["t1"]
     t2 = cutoffs["t2"]
@@ -193,6 +225,37 @@ export const OPT_TYPE_WEIGHTS_V2: Readonly<Record<'C' | 'P', number>> = {{
 }};
 
 // ---------------------------------------------------------------------------
+// Composite bonuses / penalties  (Phase B — 2026-05-22 mining report)
+//
+// Each entry fires when ALL keys in `match` agree with a fire's feature
+// values. Missing keys are wildcards. Quintile fields use string keys
+// ("0".."4"). Multiple entries can match the same fire; their bonuses sum.
+//
+// Positive bonus  → winning composite (add to score).
+// Negative bonus  → losing composite / penalty (subtract from score).
+//
+// Schema mirrors ml/output/lottery_score_weights.json composite_bonuses[].
+// ---------------------------------------------------------------------------
+
+export interface CompositeBonus {{
+  match: Readonly<
+    Partial<{{
+      ticker: string;
+      tod: TimeOfDay;
+      gamma_q: string;
+      vol_oi_q: string;
+      ask_pct_q: string;
+    }}>
+  >;
+  bonus: number;
+  support: number;
+  winRate: number;
+  note: string;
+}}
+
+export const COMPOSITE_BONUSES_V2: ReadonlyArray<CompositeBonus> = {composite_bonuses_ts};
+
+// ---------------------------------------------------------------------------
 // Tier cutoffs
 // ---------------------------------------------------------------------------
 
@@ -243,7 +306,7 @@ export function assignQuintile(
  *
  * Otherwise returns an integer sum of per-feature weights:
  *   ticker + tod + dte + vol_oi_quintile + gamma_quintile +
- *   ask_pct_quintile + option_type
+ *   ask_pct_quintile + option_type + composite
  *
  * Null-safe features (volOiWindow, gammaAtTrigger, triggerAskPct) contribute
  * 0 when the value is unavailable rather than invalidating the whole score.
@@ -253,6 +316,11 @@ export function assignQuintile(
  * provided and a matching entry exists in TOD_WEIGHTS_DOW_OVERRIDES_V2, the
  * override table is used for the tod component; otherwise falls back to the
  * global TOD_WEIGHTS_V2. Currently only "Monday" has an override.
+ *
+ * Composite bonuses from COMPOSITE_BONUSES_V2 are applied last: every entry
+ * whose `match` keys all agree with the fire's features contributes its
+ * `bonus` (positive = winning pattern, negative = losing pattern). Multiple
+ * matches sum.
  */
 export function computeLotteryScoreV2(args: {{
   ticker: string;
@@ -295,22 +363,45 @@ export function computeLotteryScoreV2(args: {{
   score += todWeights[args.tod];
   score += DTE_WEIGHTS_V2[dteKey] ?? 0;
 
+  let volOiQ: number | null = null;
   if (args.volOiWindow !== null) {{
-    const q = assignQuintile(args.volOiWindow, VOL_OI_QUINTILE_BOUNDARIES);
-    score += VOL_OI_QUINTILE_WEIGHTS[q] ?? 0;
+    volOiQ = assignQuintile(args.volOiWindow, VOL_OI_QUINTILE_BOUNDARIES);
+    score += VOL_OI_QUINTILE_WEIGHTS[volOiQ] ?? 0;
   }}
 
+  let gammaQ: number | null = null;
   if (args.gammaAtTrigger !== null) {{
-    const q = assignQuintile(args.gammaAtTrigger, GAMMA_QUINTILE_BOUNDARIES);
-    score += GAMMA_QUINTILE_WEIGHTS[q] ?? 0;
+    gammaQ = assignQuintile(args.gammaAtTrigger, GAMMA_QUINTILE_BOUNDARIES);
+    score += GAMMA_QUINTILE_WEIGHTS[gammaQ] ?? 0;
   }}
 
+  let askPctQ: number | null = null;
   if (args.triggerAskPct !== null) {{
-    const q = assignQuintile(args.triggerAskPct, ASK_PCT_QUINTILE_BOUNDARIES);
-    score += ASK_PCT_QUINTILE_WEIGHTS[q] ?? 0;
+    askPctQ = assignQuintile(args.triggerAskPct, ASK_PCT_QUINTILE_BOUNDARIES);
+    score += ASK_PCT_QUINTILE_WEIGHTS[askPctQ] ?? 0;
   }}
 
   score += OPT_TYPE_WEIGHTS_V2[args.optionType];
+
+  // Composite bonuses/penalties — iterate every entry and sum matching ones.
+  for (const entry of COMPOSITE_BONUSES_V2) {{
+    const m = entry.match;
+    if (m.ticker !== undefined && m.ticker !== args.ticker) continue;
+    if (m.tod !== undefined && m.tod !== args.tod) continue;
+    if (m.gamma_q !== undefined) {{
+      const label = gammaQ === null ? 'null' : String(gammaQ);
+      if (m.gamma_q !== label) continue;
+    }}
+    if (m.vol_oi_q !== undefined) {{
+      const label = volOiQ === null ? 'null' : String(volOiQ);
+      if (m.vol_oi_q !== label) continue;
+    }}
+    if (m.ask_pct_q !== undefined) {{
+      const label = askPctQ === null ? 'null' : String(askPctQ);
+      if (m.ask_pct_q !== label) continue;
+    }}
+    score += entry.bonus;
+  }}
 
   return score;
 }}
@@ -454,7 +545,7 @@ def main() -> None:
     print(f"  5. gamma_quintile (Q{gq})            : {gw}  [gamma={gamma_at_trigger} -> Q{gq}]")
     print(f"  6. ask_pct_quintile (Q{aq})          : {aw}  [askPct={trigger_ask_pct} -> Q{aq}]")
     print(f"  7. option_type ({option_type})              : {ot_w}")
-    print(f"  8. is_aligned gate               : PASS (score not null)")
+    print("  8. is_aligned gate               : PASS (score not null)")
     print(f"  9. TOTAL score                   : {score}")
     t1, t2 = cutoffs["t1"], cutoffs["t2"]
     tier = "tier1" if score >= t1 else ("tier2" if score >= t2 else "tier3")

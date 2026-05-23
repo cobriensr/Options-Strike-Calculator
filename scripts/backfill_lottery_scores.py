@@ -90,6 +90,11 @@ def resolve_tod_weights(features: dict, fire_date: date_type | None) -> dict:
     return features['tod_weights']
 
 
+def _q_label(q: int | None) -> str:
+    """Convert a quintile int (or None) to its string key as stored in match dicts."""
+    return 'null' if q is None else str(q)
+
+
 def compute_score_v2(
     ticker: str,
     option_type: str,
@@ -137,31 +142,49 @@ def compute_score_v2(
     score += features['dte_weights'].get(dte_key, 0)
 
     # Vol/OI quintile
+    vol_oi_q: int | None = None
     if trigger_vol_to_oi_window is not None:
-        q = assign_quintile(
+        vol_oi_q = assign_quintile(
             trigger_vol_to_oi_window,
             features['vol_oi_quintile_boundaries'],
         )
-        score += features['vol_oi_quintile_weights'][q]
+        score += features['vol_oi_quintile_weights'][vol_oi_q]
 
     # Gamma quintile
+    gamma_q: int | None = None
     if gamma_at_trigger is not None:
-        q = assign_quintile(
+        gamma_q = assign_quintile(
             gamma_at_trigger,
             features['gamma_quintile_boundaries'],
         )
-        score += features['gamma_quintile_weights'][q]
+        score += features['gamma_quintile_weights'][gamma_q]
 
     # Ask pct quintile
+    ask_pct_q: int | None = None
     if trigger_ask_pct is not None:
-        q = assign_quintile(
+        ask_pct_q = assign_quintile(
             trigger_ask_pct,
             features['ask_pct_quintile_boundaries'],
         )
-        score += features['ask_pct_quintile_weights'][q]
+        score += features['ask_pct_quintile_weights'][ask_pct_q]
 
     # Option type
     score += features['option_type_weights'].get(option_type, 0)
+
+    # Composite bonuses/penalties — sum all matching entries.
+    for entry in features.get('composite_bonuses', []):
+        match = entry['match']
+        if 'ticker' in match and match['ticker'] != ticker:
+            continue
+        if 'tod' in match and match['tod'] != tod:
+            continue
+        if 'gamma_q' in match and match['gamma_q'] != _q_label(gamma_q):
+            continue
+        if 'vol_oi_q' in match and match['vol_oi_q'] != _q_label(vol_oi_q):
+            continue
+        if 'ask_pct_q' in match and match['ask_pct_q'] != _q_label(ask_pct_q):
+            continue
+        score += int(entry['bonus'])
 
     return score
 

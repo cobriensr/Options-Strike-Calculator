@@ -39,6 +39,50 @@ def assign_quintile(value: float | None, boundaries: list[float]) -> int | None:
     return 4
 
 
+def _fire_matches_composite(
+    fire_row: dict,
+    match: dict,
+    vol_oi_q: int | None,
+    gamma_q: int | None,
+    ask_pct_q: int | None,
+) -> bool:
+    """
+    Return True when all keys in `match` agree with the fire's feature values.
+
+    `match` keys:
+      ticker      — compared against fire_row["ticker"] (string equality)
+      tod         — compared against fire_row["tod"] (string equality)
+      gamma_q     — compared against gamma_q label ("0".."4" or "null")
+      vol_oi_q    — compared against vol_oi_q label ("0".."4" or "null")
+      ask_pct_q   — compared against ask_pct_q label ("0".."4" or "null")
+
+    Quintile values in `match` are stored as strings ("0".."4"). A None
+    quintile is represented as the string "null" in the match dict. Missing
+    keys in `match` are wildcards.
+    """
+    def _q_label(q: int | None) -> str:
+        return "null" if q is None else str(q)
+
+    for key, expected in match.items():
+        if key == "ticker":
+            if fire_row.get("ticker") != expected:
+                return False
+        elif key == "tod":
+            if fire_row.get("tod") != expected:
+                return False
+        elif key == "gamma_q":
+            if _q_label(gamma_q) != str(expected):
+                return False
+        elif key == "vol_oi_q":
+            if _q_label(vol_oi_q) != str(expected):
+                return False
+        elif key == "ask_pct_q":
+            if _q_label(ask_pct_q) != str(expected):
+                return False
+        # Unknown match keys are silently ignored (forward-compat).
+    return True
+
+
 def compute_components(
     fire_row: dict, weights: dict, dow: str | None = None
 ) -> dict[str, int]:
@@ -46,10 +90,10 @@ def compute_components(
     Recover the per-component score contributions for a fire.
 
     Returns a dict with keys: ticker, tod, dte, vol_oi_q, gamma_q,
-    ask_pct_q, option_type, total. All ints. `total` equals the sum
-    of the other components and should match the stored `score`
-    column on lottery_finder_fires (verified by the sum-invariant
-    test in ml/tests/test_score_components.py).
+    ask_pct_q, option_type, composite, total. All ints. `total` equals the
+    sum of the other components and should match the stored `score` column on
+    lottery_finder_fires (verified by the sum-invariant test in
+    ml/tests/test_score_components.py).
 
     fire_row expected keys (all required EXCEPT vol_oi_window /
     gamma / ask_pct, which may be None):
@@ -112,6 +156,15 @@ def compute_components(
         if ask_pct_q is not None
         else 0
     )
+
+    # Composite bonuses/penalties — sum all matching entries.
+    composite_total = 0
+    for entry in f.get("composite_bonuses", []):
+        if _fire_matches_composite(
+            fire_row, entry["match"], vol_oi_q, gamma_q, ask_pct_q
+        ):
+            composite_total += int(entry["bonus"])
+    components["composite"] = composite_total
 
     components["total"] = sum(
         v for k, v in components.items() if k != "total"

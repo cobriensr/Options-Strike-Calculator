@@ -205,6 +205,87 @@ export const OPT_TYPE_WEIGHTS_V2: Readonly<Record<'C' | 'P', number>> = {
 };
 
 // ---------------------------------------------------------------------------
+// Composite bonuses / penalties  (Phase B — 2026-05-22 mining report)
+//
+// Each entry fires when ALL keys in `match` agree with a fire's feature
+// values. Missing keys are wildcards. Quintile fields use string keys
+// ("0".."4"). Multiple entries can match the same fire; their bonuses sum.
+//
+// Positive bonus  → winning composite (add to score).
+// Negative bonus  → losing composite / penalty (subtract from score).
+//
+// Schema mirrors ml/output/lottery_score_weights.json composite_bonuses[].
+// ---------------------------------------------------------------------------
+
+export interface CompositeBonus {
+  match: Readonly<
+    Partial<{
+      ticker: string;
+      tod: TimeOfDay;
+      gamma_q: string;
+      vol_oi_q: string;
+      ask_pct_q: string;
+    }>
+  >;
+  bonus: number;
+  support: number;
+  winRate: number;
+  note: string;
+}
+
+export const COMPOSITE_BONUSES_V2: ReadonlyArray<CompositeBonus> = [
+  {
+    match: { ticker: 'SNDK', tod: 'AM_open', gamma_q: '0' },
+    bonus: 3,
+    support: 278,
+    winRate: 0.953,
+    note: '265/278 winners (2026-05-22 mining report); strongest-support winning composite',
+  },
+  {
+    match: { ticker: 'RKLB', tod: 'AM_open', gamma_q: '1' },
+    bonus: 3,
+    support: 21,
+    winRate: 0.952,
+    note: '20/21 winners (2026-05-22 mining report)',
+  },
+  {
+    match: { ticker: 'TQQQ', tod: 'AM_open', gamma_q: '4' },
+    bonus: 3,
+    support: 43,
+    winRate: 0.953,
+    note: '41/43 winners (2026-05-22 mining report)',
+  },
+  {
+    match: { ticker: 'WDC', ask_pct_q: '0' },
+    bonus: -5,
+    support: 12,
+    winRate: 0.0,
+    note: '12/12 losers (2026-05-22 mining report); -5 penalty',
+  },
+  {
+    match: { ticker: 'SHOP', gamma_q: '4' },
+    bonus: -4,
+    support: 17,
+    winRate: 0.0,
+    note: '16/17 losers (2026-05-22 mining report); -4 penalty',
+  },
+  {
+    match: { ticker: 'RGTI', tod: 'LUNCH', vol_oi_q: '4' },
+    bonus: -3,
+    support: 31,
+    winRate: 0.0,
+    note: '27/31 losers (2026-05-22 mining report); -3 penalty; largest-n losing composite',
+  },
+  {
+    match: { ticker: 'POET', vol_oi_q: '4' },
+    bonus: -3,
+    support: 13,
+    winRate: 0.0,
+    note: '12/13 losers (2026-05-22 mining report); -3 penalty',
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Tier cutoffs
 // ---------------------------------------------------------------------------
 
@@ -255,7 +336,7 @@ export function assignQuintile(
  *
  * Otherwise returns an integer sum of per-feature weights:
  *   ticker + tod + dte + vol_oi_quintile + gamma_quintile +
- *   ask_pct_quintile + option_type
+ *   ask_pct_quintile + option_type + composite
  *
  * Null-safe features (volOiWindow, gammaAtTrigger, triggerAskPct) contribute
  * 0 when the value is unavailable rather than invalidating the whole score.
@@ -265,6 +346,11 @@ export function assignQuintile(
  * provided and a matching entry exists in TOD_WEIGHTS_DOW_OVERRIDES_V2, the
  * override table is used for the tod component; otherwise falls back to the
  * global TOD_WEIGHTS_V2. Currently only "Monday" has an override.
+ *
+ * Composite bonuses from COMPOSITE_BONUSES_V2 are applied last: every entry
+ * whose `match` keys all agree with the fire's features contributes its
+ * `bonus` (positive = winning pattern, negative = losing pattern). Multiple
+ * matches sum.
  */
 export function computeLotteryScoreV2(args: {
   ticker: string;
@@ -308,22 +394,45 @@ export function computeLotteryScoreV2(args: {
   score += todWeights[args.tod];
   score += DTE_WEIGHTS_V2[dteKey] ?? 0;
 
+  let volOiQ: number | null = null;
   if (args.volOiWindow !== null) {
-    const q = assignQuintile(args.volOiWindow, VOL_OI_QUINTILE_BOUNDARIES);
-    score += VOL_OI_QUINTILE_WEIGHTS[q] ?? 0;
+    volOiQ = assignQuintile(args.volOiWindow, VOL_OI_QUINTILE_BOUNDARIES);
+    score += VOL_OI_QUINTILE_WEIGHTS[volOiQ] ?? 0;
   }
 
+  let gammaQ: number | null = null;
   if (args.gammaAtTrigger !== null) {
-    const q = assignQuintile(args.gammaAtTrigger, GAMMA_QUINTILE_BOUNDARIES);
-    score += GAMMA_QUINTILE_WEIGHTS[q] ?? 0;
+    gammaQ = assignQuintile(args.gammaAtTrigger, GAMMA_QUINTILE_BOUNDARIES);
+    score += GAMMA_QUINTILE_WEIGHTS[gammaQ] ?? 0;
   }
 
+  let askPctQ: number | null = null;
   if (args.triggerAskPct !== null) {
-    const q = assignQuintile(args.triggerAskPct, ASK_PCT_QUINTILE_BOUNDARIES);
-    score += ASK_PCT_QUINTILE_WEIGHTS[q] ?? 0;
+    askPctQ = assignQuintile(args.triggerAskPct, ASK_PCT_QUINTILE_BOUNDARIES);
+    score += ASK_PCT_QUINTILE_WEIGHTS[askPctQ] ?? 0;
   }
 
   score += OPT_TYPE_WEIGHTS_V2[args.optionType];
+
+  // Composite bonuses/penalties — iterate every entry and sum matching ones.
+  for (const entry of COMPOSITE_BONUSES_V2) {
+    const m = entry.match;
+    if (m.ticker !== undefined && m.ticker !== args.ticker) continue;
+    if (m.tod !== undefined && m.tod !== args.tod) continue;
+    if (m.gamma_q !== undefined) {
+      const label = gammaQ === null ? 'null' : String(gammaQ);
+      if (m.gamma_q !== label) continue;
+    }
+    if (m.vol_oi_q !== undefined) {
+      const label = volOiQ === null ? 'null' : String(volOiQ);
+      if (m.vol_oi_q !== label) continue;
+    }
+    if (m.ask_pct_q !== undefined) {
+      const label = askPctQ === null ? 'null' : String(askPctQ);
+      if (m.ask_pct_q !== label) continue;
+    }
+    score += entry.bonus;
+  }
 
   return score;
 }
