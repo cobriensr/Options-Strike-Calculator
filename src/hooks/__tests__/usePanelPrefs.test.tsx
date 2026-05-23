@@ -24,8 +24,11 @@ function flushDebounce(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 600));
 }
 
+const STORAGE_KEY = 'sc-panel-prefs-v1';
+
 beforeEach(() => {
   fetchMock.mockReset();
+  window.localStorage.clear();
 });
 
 describe('usePanelPrefs — public visitor', () => {
@@ -352,5 +355,146 @@ describe('usePanelPrefs — owner', () => {
     expect(result.current.isHidden('sec-darkpool')).toBe(true);
     expect(result.current.order).toEqual(['sec-spot-price', 'sec-datetime']);
     expect(result.current.groupOrder).toEqual(['Trading', 'Inputs']);
+  });
+});
+
+describe('usePanelPrefs — localStorage cache', () => {
+  it('seeds initial state synchronously from localStorage on first render', () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        hiddenPanels: ['sec-darkpool', 'sec-greek-flow'],
+        panelOrder: ['sec-spot-price', 'sec-datetime'],
+        groupOrder: ['Trading', 'Inputs'],
+      }),
+    );
+
+    const { result } = renderHook(() => usePanelPrefs());
+
+    // First render — no waitFor — values must already be populated.
+    expect(result.current.isHidden('sec-darkpool')).toBe(true);
+    expect(result.current.isHidden('sec-greek-flow')).toBe(true);
+    expect(result.current.order).toEqual(['sec-spot-price', 'sec-datetime']);
+    expect(result.current.groupOrder).toEqual(['Trading', 'Inputs']);
+  });
+
+  it('writes to localStorage when a panel is toggled (public visitor)', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    const { result } = renderHook(() => usePanelPrefs());
+
+    act(() => {
+      result.current.toggle('sec-darkpool');
+    });
+
+    const stored = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY) ?? '{}',
+    ) as { hiddenPanels: string[] };
+    expect(stored.hiddenPanels).toEqual(['sec-darkpool']);
+    // Public path still doesn't PUT — localStorage is the only store.
+    await flushDebounce();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('writes to localStorage when panel order changes', () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    const { result } = renderHook(() => usePanelPrefs());
+
+    act(() => {
+      result.current.setOrder(['sec-spot-price', 'sec-datetime']);
+    });
+
+    const stored = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY) ?? '{}',
+    ) as { panelOrder: string[] };
+    expect(stored.panelOrder).toEqual(['sec-spot-price', 'sec-datetime']);
+  });
+
+  it('writes to localStorage when group order changes', () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    const { result } = renderHook(() => usePanelPrefs());
+
+    act(() => {
+      result.current.setGroupOrder(['Trading', 'Inputs']);
+    });
+
+    const stored = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY) ?? '{}',
+    ) as { groupOrder: string[] };
+    expect(stored.groupOrder).toEqual(['Trading', 'Inputs']);
+  });
+
+  it('owner: server GET overwrites localStorage cache for untouched axes', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        hiddenPanels: ['sec-stale'],
+        panelOrder: [],
+        groupOrder: [],
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        hiddenPanels: ['sec-fresh-from-server'],
+        panelOrder: ['sec-spot-price'],
+        groupOrder: ['Trading'],
+      }),
+    );
+
+    const { result } = renderHook(() => usePanelPrefs());
+
+    // Pre-GET: localStorage cache is visible.
+    expect(result.current.isHidden('sec-stale')).toBe(true);
+
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    // Post-GET: server state wins on untouched axes (cross-device sync).
+    expect(result.current.isHidden('sec-stale')).toBe(false);
+    expect(result.current.isHidden('sec-fresh-from-server')).toBe(true);
+    expect(result.current.order).toEqual(['sec-spot-price']);
+    expect(result.current.groupOrder).toEqual(['Trading']);
+
+    // localStorage is updated to match the server state, so the next
+    // refresh paints the right thing from cache.
+    const stored = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY) ?? '{}',
+    ) as { hiddenPanels: string[]; panelOrder: string[]; groupOrder: string[] };
+    expect(stored.hiddenPanels).toEqual(['sec-fresh-from-server']);
+    expect(stored.panelOrder).toEqual(['sec-spot-price']);
+    expect(stored.groupOrder).toEqual(['Trading']);
+  });
+
+  it('falls back to empty state when localStorage has corrupt JSON', () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    window.localStorage.setItem(STORAGE_KEY, '{ this is not valid json');
+
+    const { result } = renderHook(() => usePanelPrefs());
+
+    expect(result.current.hidden.size).toBe(0);
+    expect(result.current.order).toEqual([]);
+    expect(result.current.groupOrder).toEqual([]);
+  });
+
+  it('ignores malformed entries inside the stored payload', () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        hiddenPanels: ['sec-ok', 42, null, 'sec-also-ok'],
+        panelOrder: 'not-an-array',
+        groupOrder: ['Trading', { nope: true }],
+      }),
+    );
+
+    const { result } = renderHook(() => usePanelPrefs());
+
+    expect(result.current.isHidden('sec-ok')).toBe(true);
+    expect(result.current.isHidden('sec-also-ok')).toBe(true);
+    expect(result.current.hidden.size).toBe(2);
+    expect(result.current.order).toEqual([]);
+    expect(result.current.groupOrder).toEqual(['Trading']);
   });
 });

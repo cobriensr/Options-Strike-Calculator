@@ -5,13 +5,24 @@
  *   2. panel order — drag-reordered ids within each group (`panel_order`)
  *   3. group order — drag-reordered group names (`group_order`)
  *
- * Reads all three from `GET /api/panel-prefs` on mount (skipped for
- * public visitors who have no server-side row). Mutations are optimistic:
- * setters update local state synchronously and schedule a debounced
- * `PUT` that bundles per-axis changes — only the axes the user actually
- * touched get sent. The server merges via partial-update semantics
- * (api/panel-prefs.ts) so untouched axes stay untouched. This matters
- * for two scenarios:
+ * State is seeded synchronously from localStorage on mount so refreshes
+ * (incl. cmd+shift+r) don't flash default visibility/order before the
+ * async server GET resolves. Without that cache, App.tsx briefly renders
+ * every panel in registry order, which reads to the user as "selection
+ * lost and random other panels showing".
+ *
+ * Owner/guest sessions also `GET /api/panel-prefs` on mount and apply
+ * server state to axes the user hasn't touched since mount, keeping the
+ * "follows you across devices" guarantee — localStorage is just the
+ * paint-on-mount cache. Public visitors skip the server round-trip
+ * entirely; localStorage is their only store.
+ *
+ * Mutations are optimistic: setters update local state synchronously,
+ * write to localStorage via the `[hidden, order, groupOrder]` effect,
+ * and schedule a debounced `PUT` that bundles per-axis changes — only
+ * the axes the user actually touched get sent. The server merges via
+ * partial-update semantics (api/panel-prefs.ts) so untouched axes stay
+ * untouched. This matters for two scenarios:
  *
  *   - A toggle followed by a drag both land in one PUT body, both
  *     axes touched, both persisted.
@@ -43,6 +54,60 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAccessMode } from '../utils/auth.js';
 
 const DEBOUNCE_MS = 500;
+const STORAGE_KEY = 'sc-panel-prefs-v1';
+
+interface StoredPrefs {
+  hiddenPanels: string[];
+  panelOrder: string[];
+  groupOrder: string[];
+}
+
+const EMPTY_STORED: StoredPrefs = {
+  hiddenPanels: [],
+  panelOrder: [],
+  groupOrder: [],
+};
+
+/**
+ * Synchronously read panel preferences from localStorage. Returning a
+ * fully-populated `StoredPrefs` (with empty arrays as the fallback)
+ * keeps the `useState` initializer call sites trivial.
+ */
+function readStoredPrefs(): StoredPrefs {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return EMPTY_STORED;
+  }
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return EMPTY_STORED;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return EMPTY_STORED;
+    const p = parsed as Partial<StoredPrefs>;
+    return {
+      hiddenPanels: Array.isArray(p.hiddenPanels)
+        ? p.hiddenPanels.filter((x): x is string => typeof x === 'string')
+        : [],
+      panelOrder: Array.isArray(p.panelOrder)
+        ? p.panelOrder.filter((x): x is string => typeof x === 'string')
+        : [],
+      groupOrder: Array.isArray(p.groupOrder)
+        ? p.groupOrder.filter((x): x is string => typeof x === 'string')
+        : [],
+    };
+  } catch {
+    // corrupt JSON, quota inspection, or disabled storage — fall back
+    return EMPTY_STORED;
+  }
+}
+
+function writeStoredPrefs(prefs: StoredPrefs): void {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    // quota exceeded, private mode, or storage disabled — best-effort
+  }
+}
 
 export interface PanelPrefs {
   // Visibility (axis 1)
@@ -83,10 +148,20 @@ interface PartialBody {
 
 export function usePanelPrefs(): PanelPrefs {
   const initialMode = useRef(getAccessMode()).current;
-  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
-  const [order, setOrderState] = useState<readonly string[]>(() => []);
+  // Synchronous localStorage seed — paints last-known visibility/order
+  // before the async server GET resolves. `useMemo` with empty deps
+  // runs once per mount so we don't re-parse on every render. The
+  // initializer is idempotent (pure localStorage read), so React's
+  // freedom to drop the memo result is harmless.
+  const cached = useMemo(() => readStoredPrefs(), []);
+  const [hidden, setHidden] = useState<Set<string>>(
+    () => new Set(cached.hiddenPanels),
+  );
+  const [order, setOrderState] = useState<readonly string[]>(
+    () => cached.panelOrder,
+  );
   const [groupOrder, setGroupOrderState] = useState<readonly string[]>(
-    () => [],
+    () => cached.groupOrder,
   );
   const [isLoaded, setIsLoaded] = useState(() => initialMode === 'public');
   const pendingPutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -97,6 +172,20 @@ export function usePanelPrefs(): PanelPrefs {
   // pre-load. Keys present = "user touched this axis"; cleared after a
   // successful send.
   const pendingBodyRef = useRef<PartialBody>({});
+
+  // Mirror state to localStorage on every change so the next mount can
+  // paint synchronously. Runs for all access modes (incl. public) — the
+  // server PUT is still gated to owner/guest by `persist()`. The effect
+  // also fires once on mount, re-writing the cached values back to
+  // localStorage with normalized JSON, which fixes any partially-valid
+  // payloads that `readStoredPrefs()` already coerced.
+  useEffect(() => {
+    writeStoredPrefs({
+      hiddenPanels: [...hidden],
+      panelOrder: [...order],
+      groupOrder: [...groupOrder],
+    });
+  }, [hidden, order, groupOrder]);
 
   useEffect(() => {
     if (initialMode === 'public') return;

@@ -332,8 +332,8 @@ export function PanelPrefsModal({
             </h2>
             <p className="text-secondary mt-1 text-sm">
               Pick which sections appear and drag the grip handles to reorder.
-              Your selection is saved server-side and follows you across
-              devices.
+              Your selection is saved across refreshes — and synced across
+              devices when signed in.
             </p>
           </div>
           <span className="text-tertiary shrink-0 font-mono text-xs whitespace-nowrap">
