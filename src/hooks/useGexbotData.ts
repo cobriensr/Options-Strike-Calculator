@@ -142,7 +142,9 @@ function freshestFrom(rows: unknown[]): string | null {
 // is shared. The slot is released on settle so the next poll tick
 // starts a fresh request rather than reusing a stale one.
 
-type GexbotFetchResult = Awaited<ReturnType<typeof fetchJson<{ rows: unknown }>>>;
+type GexbotFetchResult = Awaited<
+  ReturnType<typeof fetchJson<{ rows: unknown }>>
+>;
 const inflight = new Map<string, Promise<GexbotFetchResult>>();
 
 function fetchDeduped(url: string): Promise<GexbotFetchResult> {

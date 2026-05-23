@@ -846,10 +846,7 @@ export default function StrikeCalculator() {
           'sec-premarket-futures',
           () => (
             <>
-              <span
-                id="sec-premarket-futures"
-                className="block scroll-mt-28"
-              />
+              <span id="sec-premarket-futures" className="block scroll-mt-28" />
               {market.hasData && (
                 <PreMarketInput
                   date={vix.selectedDate}
