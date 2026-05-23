@@ -130,6 +130,34 @@ function freshestFrom(rows: unknown[]): string | null {
 }
 
 // ────────────────────────────────────────────────────────────
+// In-flight request dedupe
+// ────────────────────────────────────────────────────────────
+//
+// Five Gexbot components subscribe to `view=snapshots-latest` and mount
+// simultaneously on pageload. Without dedupe each issues its own
+// fetch → 5× identical hits + Sentry's N+1 detector firing on every
+// session (SENTRY-EMERALD-DESERT-8J). Dedupe collapses concurrent
+// hits for the same URL into a single in-flight promise; per-component
+// state (rows/loading/error) stays independent, only the network call
+// is shared. The slot is released on settle so the next poll tick
+// starts a fresh request rather than reusing a stale one.
+
+type GexbotFetchResult = Awaited<ReturnType<typeof fetchJson<{ rows: unknown }>>>;
+const inflight = new Map<string, Promise<GexbotFetchResult>>();
+
+function fetchDeduped(url: string): Promise<GexbotFetchResult> {
+  const existing = inflight.get(url);
+  if (existing) return existing;
+  const p = fetchJson<{ rows: unknown }>(url).finally(() => {
+    // Race-safe cleanup: only clear the slot if WE are still the
+    // tracked promise. A late re-entry could have replaced us.
+    if (inflight.get(url) === p) inflight.delete(url);
+  });
+  inflight.set(url, p);
+  return p;
+}
+
+// ────────────────────────────────────────────────────────────
 // Hook
 // ────────────────────────────────────────────────────────────
 
@@ -156,7 +184,9 @@ export function useGexbotData<V extends GexbotView['view']>(
       view === 'sibling-confirm'
         ? buildUrl({ view, ticker: ticker!, side: side! })
         : buildUrl({ view } as GexbotView);
-    const result = await fetchJson<{ rows: ViewPayload[V] }>(url);
+    const result = (await fetchDeduped(url)) as
+      | { data: { rows?: ViewPayload[V] } }
+      | { error: string; status: number };
     if ('error' in result) {
       setError(`${result.error} (HTTP ${result.status})`);
       setLoading(false);
