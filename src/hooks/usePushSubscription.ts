@@ -22,7 +22,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 
 export interface PushSubscriptionState {
   /**
@@ -80,7 +80,11 @@ async function postSubscription(subscription: PushSubscription): Promise<void> {
     }),
   });
   if (!res.ok) {
-    throw new Error(`Server rejected subscription: ${res.status}`);
+    const error = new Error(
+      `Server rejected subscription: ${res.status}`,
+    ) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
   }
 }
 
@@ -96,7 +100,11 @@ async function postUnsubscribe(endpoint: string): Promise<void> {
     body: JSON.stringify({ endpoint }),
   });
   if (!res.ok) {
-    throw new Error(`Server rejected unsubscribe: ${res.status}`);
+    const error = new Error(
+      `Server rejected unsubscribe: ${res.status}`,
+    ) as Error & { status?: number };
+    error.status = res.status;
+    throw error;
   }
 }
 
@@ -159,7 +167,7 @@ export function usePushSubscription(): PushSubscriptionState {
       await postSubscription(subscription);
       if (mountedRef.current) setSubscribed(true);
     } catch (e) {
-      Sentry.captureException(e, { tags: { context: 'push_subscription' } });
+      captureUnlessAuth(e, { tags: { context: 'push_subscription' } });
       const msg = e instanceof Error ? e.message : String(e);
       if (mountedRef.current) setError(msg);
     }
@@ -183,7 +191,7 @@ export function usePushSubscription(): PushSubscriptionState {
       await postUnsubscribe(endpoint);
       if (mountedRef.current) setSubscribed(false);
     } catch (e) {
-      Sentry.captureException(e, { tags: { context: 'push_subscription' } });
+      captureUnlessAuth(e, { tags: { context: 'push_subscription' } });
       const msg = e instanceof Error ? e.message : String(e);
       if (mountedRef.current) setError(msg);
     }

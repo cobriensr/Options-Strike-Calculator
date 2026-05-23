@@ -11,8 +11,8 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import * as Sentry from '@sentry/react';
 import { POLL_INTERVALS } from '../constants';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { checkIsOwner } from '../utils/auth';
 import { usePolling } from './usePolling';
 
@@ -202,7 +202,7 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
       // event per poll tick × every open tab; the next interval retries
       // unconditionally regardless of sampling.
       if (Math.random() < POLL_FAILURE_SAMPLE_RATE) {
-        Sentry.captureException(err, {
+        captureUnlessAuth(err, {
           level: 'warning',
           tags: { context: 'alerts_poll', sampled: '10%' },
         });
@@ -237,7 +237,7 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
       // User-initiated, low-frequency — capture every time so a broken
       // ack endpoint surfaces immediately rather than waiting for the
       // user to notice the chime won't stop.
-      Sentry.captureException(err, { tags: { context: 'alerts_ack' } });
+      captureUnlessAuth(err, { tags: { context: 'alerts_ack' } });
     }
   }, []);
 

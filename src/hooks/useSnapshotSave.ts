@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import type { CalculationResults } from '../types';
 import type { ComputedSignals } from './useComputedSignals';
 
@@ -139,7 +139,7 @@ export function useSnapshotSave(
       // Network/server error — capture so persistent snapshot-save
       // failures are visible (the next-render retry hides the symptom
       // from the UI), then remove from saved set so it retries.
-      Sentry.captureException(err, {
+      captureUnlessAuth(err, {
         tags: { context: 'snapshot_save' },
       });
       savedRef.current.delete(key);

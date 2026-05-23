@@ -15,7 +15,7 @@
  * Saves to /api/pre-market endpoint and stores in AnalysisContext.
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { SectionBox, ErrorMsg } from './ui';
 import { tinyLbl, inputCls } from '../utils/ui-utils';
 import type { PreMarketData } from '../types/api';
@@ -127,7 +127,11 @@ export default function PreMarketInput({
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `Save failed (${res.status})`);
+        const error = new Error(
+          body.error || `Save failed (${res.status})`,
+        ) as Error & { status?: number };
+        error.status = res.status;
+        throw error;
       }
 
       setSaved(true);
@@ -135,7 +139,7 @@ export default function PreMarketInput({
     } catch (err) {
       // Surface to Sentry so persistent pre-market save failures show
       // up in dashboards even when the user dismisses the inline error.
-      Sentry.captureException(err, {
+      captureUnlessAuth(err, {
         tags: { context: 'pre_market_save' },
         extra: { date },
       });

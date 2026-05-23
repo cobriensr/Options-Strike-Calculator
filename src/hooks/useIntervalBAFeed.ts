@@ -16,8 +16,8 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import * as Sentry from '@sentry/react';
 import { POLL_INTERVALS } from '../constants';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { usePolling } from './usePolling';
 
 export interface IntervalBAFeedAlert {
@@ -183,14 +183,9 @@ export function useIntervalBAFeed(
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
         if (msg === 'The operation was aborted') return;
-        // 401 = guest hitting owner-gated endpoint, by design per
-        // project_auth_policy. Surface to UI but don't ship to Sentry.
-        const status = (err as Error & { status?: number }).status;
-        if (status !== 401) {
-          Sentry.captureException(err, {
-            tags: { context: 'interval_ba_feed' },
-          });
-        }
+        captureUnlessAuth(err, {
+          tags: { context: 'interval_ba_feed' },
+        });
         setError(msg);
         setLoading(false);
       });

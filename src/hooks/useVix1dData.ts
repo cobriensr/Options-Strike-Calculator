@@ -15,7 +15,7 @@
  */
 
 import { useState, useCallback, useRef } from 'react';
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
 
 interface Vix1dEntry {
@@ -63,7 +63,7 @@ export function useVix1dData(): UseVix1dDataReturn {
         setLoaded(true);
       })
       .catch((err: unknown) => {
-        Sentry.captureException(err, {
+        captureUnlessAuth(err, {
           tags: { context: 'vix1d_load' },
         });
         console.warn('Failed to load VIX1D daily data:', getErrorMessage(err));

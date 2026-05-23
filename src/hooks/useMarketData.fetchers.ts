@@ -6,7 +6,7 @@
  * dependencies.
  */
 
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
 
 // Sample rate for malformed-error-body capture. Most non-2xx responses
@@ -64,7 +64,7 @@ export async function fetchJson<T>(
     if (!res.ok) {
       const body = await res.json().catch((err: unknown) => {
         if (Math.random() < ERROR_BODY_PARSE_SAMPLE_RATE) {
-          Sentry.captureException(err, {
+          captureUnlessAuth(err, {
             level: 'info',
             tags: { context: 'fetch_error_body_parse', sampled: '5%' },
             extra: { status: res.status },

@@ -9,7 +9,7 @@
  * prop-drilling.
  */
 
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from './sentry-helpers';
 
 type UpdateSW = (reloadPage?: boolean) => Promise<void>;
 
@@ -69,7 +69,7 @@ export function applyUpdate(): void {
   // path keeps the UX usable, but persistent SW update failures across
   // users would indicate a real PWA regression worth investigating.
   updateSWFn(true).catch((err: unknown) => {
-    Sentry.captureException(err, {
+    captureUnlessAuth(err, {
       level: 'warning',
       tags: { context: 'sw_update_apply' },
     });

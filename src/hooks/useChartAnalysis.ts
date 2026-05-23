@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import type { CalculationResults } from '../types';
 import type {
   AnalysisMode,
@@ -260,7 +260,7 @@ export function useChartAnalysis(opts: {
           // Stream corruption — server returned malformed NDJSON. Surface
           // to Sentry so we can see if it's a server-side serialization
           // bug or a transit truncation issue.
-          Sentry.captureException(parseErr, {
+          captureUnlessAuth(parseErr, {
             tags: { context: 'analyze_ndjson_parse' },
             extra: {
               status: res.status,

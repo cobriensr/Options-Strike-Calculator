@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import type { VIXDayData, VIXDataMap, IVMode } from '../types';
 import { IV_MODES } from '../constants';
 import { parseVixCSV } from '../utils/csvParser';
@@ -131,7 +131,7 @@ export function useVixData(
         if (controller.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('401')) return;
-        Sentry.captureException(err, {
+        captureUnlessAuth(err, {
           level: 'warning',
           tags: { context: 'vix_ohlc_fetch' },
         });

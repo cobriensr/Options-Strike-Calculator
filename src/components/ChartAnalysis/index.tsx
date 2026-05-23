@@ -13,7 +13,7 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import * as Sentry from '@sentry/react';
+import { captureUnlessAuth } from '../../lib/sentry-helpers';
 import type { CalculationResults } from '../../types';
 import { SectionBox } from '../ui';
 import type { AnalysisMode } from './types';
@@ -155,7 +155,7 @@ export default function ChartAnalysis({
 
         if (!res.ok) {
           const body = await res.json().catch((err: unknown) => {
-            Sentry.captureException(err, {
+            captureUnlessAuth(err, {
               tags: { context: 'positions_upload_body_parse' },
               extra: { status: res.status },
             });
