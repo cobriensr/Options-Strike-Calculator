@@ -177,24 +177,18 @@ enrich:
 refit:
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  REFIT — recompute ticker weights + backfill scores"
+	@echo "  REFIT — recompute V2 ticker weights + backfill scores"
 	@echo "════════════════════════════════════════════════════════════════"
-	@# TEMPORARY GUARD (2026-05-22): the lottery rescore project is mid-flight
-	@# (see docs/superpowers/specs/lottery-rescore-2026-05-22.md). Phase 1 ships
-	@# a new lottery_scoring.py that emits a NEW schema to ml/output/, but Phase 2
-	@# (sync_lottery_score_weights.py) and Phase 3 (computeLotteryScore signature)
-	@# are not yet complete. Running the unchanged sync script against the old
-	@# ml/data/ JSON would silently regenerate the OLD TS weights every night,
-	@# undoing any in-flight Phase 2/3 work. Set LOTTERY_REFIT=1 to re-enable
-	@# once the full rescore lands.
-	@if [[ "$(LOTTERY_REFIT)" != "1" ]]; then \
-	  echo "  ⏭  SKIPPING refit — set LOTTERY_REFIT=1 to enable."; \
-	  echo "     Spec: docs/superpowers/specs/lottery-rescore-2026-05-22.md"; \
-	else \
-	  $(PYTHON) ml/src/lottery_scoring.py && \
-	  $(PYTHON) scripts/sync_lottery_score_weights.py && \
-	  $(PYTHON) scripts/backfill_lottery_scores.py; \
-	fi
+	@# Guard removed 2026-05-23 — V2 rescore + V2.2 improvements fully landed
+	@# (composites, cluster, direction-gate fix, context features, online ticker
+	@# EMA). lottery_scoring.py now preserves composite_bonuses across retrains
+	@# (commit 808e7927) so the nightly refit doesn't lose human-curated
+	@# overrides. Sync script swapped from the legacy sync_lottery_score_weights.py
+	@# (which still reads ml/data/) to sync_lottery_score_weights_v2.py (reads
+	@# the live ml/output/ JSON and renders lottery-score-weights-v2.ts).
+	$(PYTHON) ml/src/lottery_scoring.py
+	$(PYTHON) scripts/sync_lottery_score_weights_v2.py
+	$(PYTHON) scripts/backfill_lottery_scores.py
 
 update: refit
 	@echo ""
