@@ -107,6 +107,13 @@ def compute_score_v2(
     cum_npp_at_fire: float | None,
     weights: dict,
     fire_date: date_type | None = None,
+    spx_spot_charm_oi: float | None = None,
+    spx_spot_vanna_oi: float | None = None,
+    mkt_tide_ncp: float | None = None,
+    mkt_tide_otm_diff: float | None = None,
+    mkt_tide_diff: float | None = None,
+    spx_spot_gamma_oi: float | None = None,
+    mkt_tide_npp: float | None = None,
 ) -> int | None:
     """Compute V2 score for a single fire. Returns None for gated rows."""
     # --- Alignment gate ---
@@ -170,6 +177,24 @@ def compute_score_v2(
 
     # Option type
     score += features['option_type_weights'].get(option_type, 0)
+
+    # Context features (V2.2 Phase D) — 7 macro-level quintile features.
+    # Each contributes 0 when the value is None (no macro snapshot on the row).
+    _ctx = [
+        (spx_spot_charm_oi, 'spx_spot_charm_oi'),
+        (spx_spot_vanna_oi, 'spx_spot_vanna_oi'),
+        (mkt_tide_ncp,      'mkt_tide_ncp'),
+        (mkt_tide_otm_diff, 'mkt_tide_otm_diff'),
+        (mkt_tide_diff,     'mkt_tide_diff'),
+        (spx_spot_gamma_oi, 'spx_spot_gamma_oi'),
+        (mkt_tide_npp,      'mkt_tide_npp'),
+    ]
+    for val, feat in _ctx:
+        bk = f'{feat}_quintile_boundaries'
+        wk = f'{feat}_quintile_weights'
+        if val is not None and bk in features and wk in features:
+            q = assign_quintile(val, features[bk])
+            score += features[wk][q]
 
     # Composite bonuses/penalties — sum all matching entries.
     for entry in features.get('composite_bonuses', []):
@@ -261,7 +286,14 @@ def main() -> None:
                 cum_ncp_at_fire,
                 cum_npp_at_fire,
                 score,
-                date
+                date,
+                spx_spot_charm_oi,
+                spx_spot_vanna_oi,
+                mkt_tide_ncp,
+                mkt_tide_otm_diff,
+                mkt_tide_diff,
+                spx_spot_gamma_oi,
+                mkt_tide_npp
             FROM lottery_finder_fires
             ORDER BY id
             """
@@ -292,6 +324,13 @@ def main() -> None:
             cum_npp,
             cur_score,
             fire_date,
+            charm_oi,
+            vanna_oi,
+            tide_ncp,
+            tide_otm_diff,
+            tide_diff,
+            gamma_oi,
+            tide_npp,
         ) in rows:
             # psycopg2 returns Postgres DATE columns as Python date objects.
             # Normalise: keep as date if already one, convert from string otherwise.
@@ -314,6 +353,13 @@ def main() -> None:
                 cum_npp_at_fire=float(cum_npp) if cum_npp is not None else None,
                 weights=weights,
                 fire_date=fire_date_obj,
+                spx_spot_charm_oi=float(charm_oi) if charm_oi is not None else None,
+                spx_spot_vanna_oi=float(vanna_oi) if vanna_oi is not None else None,
+                mkt_tide_ncp=float(tide_ncp) if tide_ncp is not None else None,
+                mkt_tide_otm_diff=float(tide_otm_diff) if tide_otm_diff is not None else None,
+                mkt_tide_diff=float(tide_diff) if tide_diff is not None else None,
+                spx_spot_gamma_oi=float(gamma_oi) if gamma_oi is not None else None,
+                mkt_tide_npp=float(tide_npp) if tide_npp is not None else None,
             )
 
             current_scores.append(cur_score)
