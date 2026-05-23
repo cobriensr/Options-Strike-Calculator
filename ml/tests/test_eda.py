@@ -373,16 +373,19 @@ class TestStructureAnalysis:
         out = capsys.readouterr().out
         assert "Phase 2 Baseline" in out or "majority" in out.lower()
 
-    def test_no_labeled_rows_raises(self, capsys):
-        """Crashes with IndexError when no structures are labeled.
-
-        This is a known gap in eda.py: the Phase 2 Baseline section
-        indexes into an empty value_counts() without a guard.
+    def test_no_labeled_rows_skips_baseline_gracefully(self, capsys):
+        """Skips the Phase 2 Baseline block without crashing when no
+        structures are labeled. eda.py guards the empty value_counts()
+        before indexing, so an all-NaN recommended_structure column should
+        print the skip message rather than raise IndexError.
         """
         df = _make_eda_df()
         df["recommended_structure"] = np.nan
-        with pytest.raises(IndexError):
-            structure_analysis(df)
+        # Must not raise.
+        structure_analysis(df)
+        out = capsys.readouterr().out
+        assert "No labeled rows" in out
+        assert "skipping baseline" in out
 
     def test_no_failures(self, capsys):
         """Should not crash when every labeled row is correct."""
