@@ -172,6 +172,8 @@ export default defineConfig({
         'src/utils/gex-target/index.ts',
         'src/components/ui/index.tsx',
         'api/_lib/validation.ts',
+        'api/_lib/api-helpers.ts', // re-exports auth-helpers, uw-fetch, cron-helpers, schwab-fetch
+        'api/_lib/csv-parser.ts', // re-exports csv-parser/parse + csv-parser/summary
         'api/bwb-anchor.ts', // integration-tested via API
       ],
     },
