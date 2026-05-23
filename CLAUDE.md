@@ -92,9 +92,31 @@ Skip the plan doc only for:
 
 When in doubt, write the plan. A plan doc is ~10 minutes; rediscovering scope is much more.
 
+### Tests Are Mandatory (TDD Preferred)
+
+Every new feature, endpoint, hook, component, cron, or pure utility ships with tests **in the same commit**. No exceptions for "I'll add tests later" — later never comes, and untested code masquerading as shipped code is how silent failures land in production.
+
+**Prefer TDD when feasible.** Write the failing test first, watch it fail, then make it pass. TDD is required when:
+
+- Adding a new endpoint (`api/**/*.ts`) — write the request/response shape test first.
+- Adding a new hook (`src/hooks/*.ts`) — write the state-transition test first.
+- Adding a new cron handler (`api/cron/*.ts`) — write the auth-guard + happy-path test first.
+- Adding a pure utility in `src/utils/` or `api/_lib/` — write the input/output table test first.
+
+TDD is **optional but encouraged** for UI components and refactors. For pure styling/layout work where the behavior under test is "it renders", a single smoke test is fine.
+
+**When tests are not required:**
+
+- `.md` doc edits
+- `.json` config tweaks (ESLint, Prettier, Vercel routes that don't add code)
+- Comment-only changes
+- Strict refactors with zero behavior change AND existing test coverage that exercises the refactored path
+
+If you're unsure whether a change needs a test: it does. The cost of writing one is ~10 minutes; the cost of a silent production regression is much more.
+
 ### The Loop
 
-**1. Implement** — Write the code. Investigate first, understand existing patterns, then make changes.
+**1. Implement** — Write the failing test first (see "Tests Are Mandatory" above), then the code. Investigate first, understand existing patterns, then make changes.
 
 **2. Verify** — Run `npm run review`. Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
 
@@ -170,6 +192,7 @@ When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/_
 
 ### Testing
 
+- **Tests ship with the feature** — see "Tests Are Mandatory (TDD Preferred)" above. Code without tests is not done.
 - **Unit tests** — Vitest with `@testing-library/react`. Frontend tests in `src/__tests__/`, backend tests in `api/__tests__/`.
 - **E2E tests** — Playwright with `@axe-core/playwright` for accessibility. Specs in `e2e/`. Use semantic selectors (`getByRole`, `getByLabel`, `data-testid`).
 - **Coverage** — `npm run test:coverage` for V8 coverage.
