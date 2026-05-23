@@ -181,6 +181,11 @@ const PeriscopeLotteryPanel = lazy(() =>
     .then((m) => ({ default: m.PeriscopeLotteryPanel }))
     .catch(handleStaleChunk),
 );
+const GammaNodeDetectorPanel = lazy(() =>
+  import('./components/GammaNodeDetector')
+    .then((m) => ({ default: m.GammaNodeDetectorPanel }))
+    .catch(handleStaleChunk),
+);
 const TrackerSection = lazy(() =>
   import('./components/Tracker')
     .then((m) => ({ default: m.TrackerSection }))
@@ -1181,6 +1186,21 @@ export default function StrikeCalculator() {
               <GexbotSection
                 marketOpen={market.data.quotes?.marketOpen ?? false}
                 spxSpot={market.data.quotes?.spx?.price ?? null}
+              />
+            </GatedSection>
+          ),
+        ],
+        [
+          'sec-gamma-node-detector',
+          () => (
+            <GatedSection
+              gate={hasMarketContext}
+              id="sec-gamma-node-detector"
+              label="Gamma-Node Composite Detector"
+              fallback={<SkeletonSection lines={4} />}
+            >
+              <GammaNodeDetectorPanel
+                marketOpen={market.data.quotes?.marketOpen ?? false}
               />
             </GatedSection>
           ),

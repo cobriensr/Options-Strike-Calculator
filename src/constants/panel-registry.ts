@@ -112,6 +112,11 @@ export function getPanelRegistry(
         label: 'GEXBot Dealer State',
         group: 'Market Context',
       },
+      {
+        id: 'sec-gamma-node-detector',
+        label: 'Gamma-Node Composite Detector',
+        group: 'Market Context',
+      },
     );
   }
   if (isAuthenticated) {

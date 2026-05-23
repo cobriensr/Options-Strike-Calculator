@@ -84,6 +84,7 @@ describe('getPanelRegistry', () => {
       'sec-silent-boom',
       'sec-periscope-lottery',
       'sec-gexbot',
+      'sec-gamma-node-detector',
       'sec-futures',
       'sec-charts',
       'sec-history',
