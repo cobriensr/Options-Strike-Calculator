@@ -594,6 +594,10 @@ export default withCronInstrumentation(
           triggerAskPct: rec.triggerAskPct ?? null,
           optionType: rec.optionType,
           isAligned,
+          dayOfWeek: new Date(`${rec.date}T12:00:00Z`).toLocaleDateString(
+            'en-US',
+            { weekday: 'long' },
+          ),
         });
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).

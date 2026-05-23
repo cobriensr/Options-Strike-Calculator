@@ -12,6 +12,8 @@ import {
   computeLotteryScoreV2,
   lotteryScoreTierV2,
   LOTTERY_TIER_THRESHOLDS_V2,
+  TOD_WEIGHTS_DOW_OVERRIDES_V2,
+  TOD_WEIGHTS_V2,
   VOL_OI_QUINTILE_BOUNDARIES,
 } from '../_lib/lottery-score-weights-v2.js';
 
@@ -154,5 +156,86 @@ describe('LOTTERY_TIER_THRESHOLDS_V2 shape', () => {
     expect(LOTTERY_TIER_THRESHOLDS_V2.t1).toBeGreaterThan(
       LOTTERY_TIER_THRESHOLDS_V2.t2,
     );
+  });
+});
+
+describe('computeLotteryScoreV2 — Monday DOW override', () => {
+  const baseArgs = {
+    ticker: 'AMZN',
+    dte: 1,
+    volOiWindow: null,
+    gammaAtTrigger: null,
+    triggerAskPct: null,
+    optionType: 'C' as const,
+    isAligned: true,
+  };
+
+  it('Monday override exists in TOD_WEIGHTS_DOW_OVERRIDES_V2', () => {
+    expect('Monday' in TOD_WEIGHTS_DOW_OVERRIDES_V2).toBe(true);
+    const mon = TOD_WEIGHTS_DOW_OVERRIDES_V2['Monday']!;
+    // Lineage finding: LUNCH should be positive, AM_open should be lower
+    // than global (global AM_open=+4; Monday AM_open must be < that).
+    expect(mon.LUNCH).toBeGreaterThan(0);
+    expect(mon.AM_open).toBeLessThan(TOD_WEIGHTS_V2.AM_open);
+  });
+
+  it('Monday AM_open score differs from non-Monday AM_open score', () => {
+    const mondayScore = computeLotteryScoreV2({
+      ...baseArgs,
+      tod: 'AM_open',
+      dayOfWeek: 'Monday',
+    });
+    const tuesdayScore = computeLotteryScoreV2({
+      ...baseArgs,
+      tod: 'AM_open',
+      dayOfWeek: 'Tuesday',
+    });
+    // Tuesday has no override → uses global AM_open weight → scores differ
+    expect(mondayScore).not.toBeNull();
+    expect(tuesdayScore).not.toBeNull();
+    expect(mondayScore).not.toBe(tuesdayScore);
+  });
+
+  it('Monday LUNCH score differs from non-Monday LUNCH score', () => {
+    const mondayScore = computeLotteryScoreV2({
+      ...baseArgs,
+      tod: 'LUNCH',
+      dayOfWeek: 'Monday',
+    });
+    const globalScore = computeLotteryScoreV2({
+      ...baseArgs,
+      tod: 'LUNCH',
+    });
+    expect(mondayScore).not.toBeNull();
+    expect(globalScore).not.toBeNull();
+    // Monday LUNCH is positive; global LUNCH is negative → Monday scores higher
+    expect(mondayScore!).toBeGreaterThan(globalScore!);
+  });
+
+  it('falls back to global TOD weights when dayOfWeek is not in overrides', () => {
+    const wednesdayScore = computeLotteryScoreV2({
+      ...baseArgs,
+      tod: 'AM_open',
+      dayOfWeek: 'Wednesday',
+    });
+    const noOverrideScore = computeLotteryScoreV2({
+      ...baseArgs,
+      tod: 'AM_open',
+    });
+    // Both use the global TOD table → identical score
+    expect(wednesdayScore).toBe(noOverrideScore);
+  });
+
+  it('falls back to global TOD weights when dayOfWeek is omitted', () => {
+    const withoutDow = computeLotteryScoreV2({
+      ...baseArgs,
+      tod: 'PM',
+    });
+    const withTuesday = computeLotteryScoreV2({
+      ...baseArgs,
+      tod: 'PM',
+      dayOfWeek: 'Tuesday',
+    });
+    expect(withoutDow).toBe(withTuesday);
   });
 });

@@ -34,6 +34,7 @@ import os
 import re
 import sys
 import time
+from datetime import date as date_type, datetime
 from pathlib import Path
 
 import psycopg2
@@ -74,6 +75,21 @@ def assign_quintile(value: float, boundaries: list[float]) -> int:
     return 4
 
 
+def resolve_tod_weights(features: dict, fire_date: date_type | None) -> dict:
+    """Return the appropriate TOD weights dict for a given date.
+
+    Uses the per-DOW override from tod_weights_dow_overrides when the fire's
+    day-of-week has an entry; falls back to the global tod_weights otherwise.
+    Monday is currently the only overridden DOW.
+    """
+    overrides = features.get('tod_weights_dow_overrides', {})
+    if fire_date is not None and overrides:
+        day_name = fire_date.strftime('%A')  # e.g. "Monday"
+        if day_name in overrides:
+            return overrides[day_name]
+    return features['tod_weights']
+
+
 def compute_score_v2(
     ticker: str,
     option_type: str,
@@ -85,6 +101,7 @@ def compute_score_v2(
     cum_ncp_at_fire: float | None,
     cum_npp_at_fire: float | None,
     weights: dict,
+    fire_date: date_type | None = None,
 ) -> int | None:
     """Compute V2 score for a single fire. Returns None for gated rows."""
     # --- Alignment gate ---
@@ -112,8 +129,9 @@ def compute_score_v2(
     # Ticker
     score += features['ticker_weights'].get(ticker, 0)
 
-    # TOD
-    score += features['tod_weights'].get(tod, 0)
+    # TOD — use per-DOW override when available (Monday is the only current override)
+    tod_weights = resolve_tod_weights(features, fire_date)
+    score += tod_weights.get(tod, 0)
 
     # DTE
     score += features['dte_weights'].get(dte_key, 0)
@@ -219,7 +237,8 @@ def main() -> None:
                 trigger_ask_pct,
                 cum_ncp_at_fire,
                 cum_npp_at_fire,
-                score
+                score,
+                date
             FROM lottery_finder_fires
             ORDER BY id
             """
@@ -249,7 +268,17 @@ def main() -> None:
             cum_ncp,
             cum_npp,
             cur_score,
+            fire_date,
         ) in rows:
+            # psycopg2 returns Postgres DATE columns as Python date objects.
+            # Normalise: keep as date if already one, convert from string otherwise.
+            if isinstance(fire_date, date_type):
+                fire_date_obj: date_type | None = fire_date
+            elif isinstance(fire_date, str):
+                fire_date_obj = datetime.strptime(fire_date, '%Y-%m-%d').date()
+            else:
+                fire_date_obj = None
+
             new_score = compute_score_v2(
                 ticker=ticker,
                 option_type=option_type,
@@ -261,6 +290,7 @@ def main() -> None:
                 cum_ncp_at_fire=float(cum_ncp) if cum_ncp is not None else None,
                 cum_npp_at_fire=float(cum_npp) if cum_npp is not None else None,
                 weights=weights,
+                fire_date=fire_date_obj,
             )
 
             current_scores.append(cur_score)

@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-05-22T19:31:54.430243+00:00
+ * Trained at    : 2026-05-23T00:51:55.337222+00:00
  *
  * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
  * Until then the old lottery-score-weights.ts continues to drive production.
@@ -69,7 +69,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   QQQ: 0,
   RBLX: -1,
   RDDT: 1,
-  RGTI: 0,
+  RGTI: -1,
   RIOT: -1,
   RIVN: 0,
   RKLB: 3,
@@ -82,7 +82,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   SNOW: 0,
   SOFI: -1,
   SOUN: 5,
-  SOXL: 0,
+  SOXL: -1,
   SOXS: -1,
   SPXW: 0,
   SPY: 0,
@@ -119,6 +119,31 @@ export const TOD_WEIGHTS_V2: Readonly<
 };
 
 // ---------------------------------------------------------------------------
+// TOD DOW overrides  (per-day-of-week override tables; only Monday for now)
+//
+// 90-day lineage finding (2026-05-22): Monday TOD outcome pattern is fully
+// inverted vs Tue-Fri — LUNCH is the only positive Monday slot, AM_open is
+// the worst. The global weights (AM_open=+4, LUNCH=-4) work backwards on
+// Mondays. This map corrects that without touching the global table.
+//
+// Schema: { [dayName: string]: Record<TimeOfDay, number> }
+// dayName matches `new Date(...).toLocaleDateString('en-US', {weekday:'long'})`
+// ---------------------------------------------------------------------------
+
+type TimeOfDay = 'AM_open' | 'MID' | 'LUNCH' | 'PM';
+
+export const TOD_WEIGHTS_DOW_OVERRIDES_V2: Readonly<
+  Record<string, Readonly<Record<TimeOfDay, number>>>
+> = {
+  Monday: {
+    AM_open: -1,
+    MID: -3,
+    LUNCH: 5,
+    PM: 2,
+  },
+};
+
+// ---------------------------------------------------------------------------
 // DTE weights  (keys are string-encoded integers to survive JSON round-trips)
 // ---------------------------------------------------------------------------
 
@@ -143,18 +168,20 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
  * Quintile 4 : value >= boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.05964214711729622, 0.09565217391304348, 0.1543981570905453,
-  0.3783801646987372,
+  0.05972558514931396, 0.09594891893354361, 0.1548051590316375,
+  0.37964843216675015,
 ];
 
 // ---------------------------------------------------------------------------
 // Gamma-at-trigger quintile weights + boundaries
 // ---------------------------------------------------------------------------
 
-export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [3, -2, -2, -2, 0];
+export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
+  3, -2, -2, -2, -1,
+];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.012324876801251189, 0.025442619069240443, 0.042202206604267926,
-  0.06821011318181819,
+  0.012354732666666668, 0.02561910331064694, 0.04267619413483657,
+  0.06927210280434017,
 ];
 
 // ---------------------------------------------------------------------------
@@ -165,7 +192,7 @@ export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
   -1, 1, 1, 2, -4,
 ];
 export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.5333333333333333, 0.5714285714285714, 0.625, 0.746268656716418,
+  0.5333333333333333, 0.5714285714285714, 0.625, 0.75,
 ];
 
 // ---------------------------------------------------------------------------
@@ -232,6 +259,12 @@ export function assignQuintile(
  *
  * Null-safe features (volOiWindow, gammaAtTrigger, triggerAskPct) contribute
  * 0 when the value is unavailable rather than invalidating the whole score.
+ *
+ * `dayOfWeek` (optional): full day name matching
+ * `toLocaleDateString('en-US', {weekday:'long'})` (e.g. "Monday"). When
+ * provided and a matching entry exists in TOD_WEIGHTS_DOW_OVERRIDES_V2, the
+ * override table is used for the tod component; otherwise falls back to the
+ * global TOD_WEIGHTS_V2. Currently only "Monday" has an override.
  */
 export function computeLotteryScoreV2(args: {
   ticker: string;
@@ -250,16 +283,29 @@ export function computeLotteryScoreV2(args: {
    * call + cum_ncp > cum_npp, OR put + cum_npp > cum_ncp.
    */
   isAligned: boolean;
+  /**
+   * Full day name (e.g. "Monday"). When provided and an override exists in
+   * TOD_WEIGHTS_DOW_OVERRIDES_V2, that table replaces the global TOD weights
+   * for this fire's tod component.
+   */
+  dayOfWeek?: string;
 }): number | null {
   if (!args.isAligned) return null;
 
   const dteKey = String(args.dte);
   if (!(dteKey in DTE_WEIGHTS_V2)) return null;
 
+  // Resolve TOD weights: use DOW override when present, else global.
+  const todWeights: Readonly<Record<TimeOfDay, number>> =
+    args.dayOfWeek !== undefined &&
+    args.dayOfWeek in TOD_WEIGHTS_DOW_OVERRIDES_V2
+      ? TOD_WEIGHTS_DOW_OVERRIDES_V2[args.dayOfWeek]!
+      : TOD_WEIGHTS_V2;
+
   let score = 0;
 
   score += LOTTERY_TICKER_WEIGHTS_V2[args.ticker] ?? 0;
-  score += TOD_WEIGHTS_V2[args.tod];
+  score += todWeights[args.tod];
   score += DTE_WEIGHTS_V2[dteKey] ?? 0;
 
   if (args.volOiWindow !== null) {

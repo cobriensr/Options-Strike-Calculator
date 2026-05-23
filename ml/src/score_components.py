@@ -40,7 +40,7 @@ def assign_quintile(value: float | None, boundaries: list[float]) -> int | None:
 
 
 def compute_components(
-    fire_row: dict, weights: dict
+    fire_row: dict, weights: dict, dow: str | None = None
 ) -> dict[str, int]:
     """
     Recover the per-component score contributions for a fire.
@@ -60,15 +60,30 @@ def compute_components(
     weights is the loaded JSON from ml/output/lottery_score_weights.json
     (or its sync_lottery_score_weights_v2.py-rendered TS mirror).
 
+    dow (optional): day-of-week name (e.g. "Monday"). When provided AND
+    the weights JSON contains a matching tod_weights_dow_overrides[dow]
+    entry, that override table is used for the tod component instead of
+    the global tod_weights. Falls back to global tod_weights when dow is
+    None, when the overrides key is absent, or when dow has no entry.
+
     Returns 0 contributions for null continuous features. Does NOT
     enforce the alignment gate — callers must filter to aligned
     in-universe fires before relying on `total` matching the
     stored score.
     """
     f = weights["features"]
+
+    # Resolve TOD weights: use DOW override if available, else global.
+    overrides = f.get("tod_weights_dow_overrides", {})
+    tod_weights_to_use = (
+        overrides[dow]
+        if dow is not None and dow in overrides
+        else f["tod_weights"]
+    )
+
     components: dict[str, int] = {
         "ticker": int(f["ticker_weights"].get(fire_row["ticker"], 0)),
-        "tod": int(f["tod_weights"].get(fire_row["tod"], 0)),
+        "tod": int(tod_weights_to_use.get(fire_row["tod"], 0)),
         "dte": int(f["dte_weights"].get(str(fire_row["dte"]), 0)),
         "option_type": int(
             f["option_type_weights"].get(fire_row["option_type"], 0)

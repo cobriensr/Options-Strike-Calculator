@@ -64,6 +64,20 @@ def render_ts(w: dict) -> str:  # noqa: PLR0914 — intentionally flat render fu
         f"  PM: {tod['PM']},"
     )
 
+    # TOD DOW overrides — rendered as nested object. Each inner object uses the
+    # same TimeOfDay keys as TOD_WEIGHTS_V2 so the call site can index directly.
+    dow_overrides: dict[str, dict[str, int]] = f.get("tod_weights_dow_overrides", {})
+    dow_override_lines: list[str] = []
+    for dow_name, dow_tod in dow_overrides.items():
+        inner = (
+            f"    AM_open: {dow_tod['AM_open']},\n"
+            f"    MID: {dow_tod['MID']},\n"
+            f"    LUNCH: {dow_tod['LUNCH']},\n"
+            f"    PM: {dow_tod['PM']},"
+        )
+        dow_override_lines.append(f"  {dow_name}: {{\n{inner}\n  }},")
+    dow_override_body = "\n".join(dow_override_lines)
+
     # Option type weights
     ot = f["option_type_weights"]
 
@@ -110,6 +124,26 @@ export const TOD_WEIGHTS_V2: Readonly<
   Record<'AM_open' | 'MID' | 'LUNCH' | 'PM', number>
 > = {{
 {tod_body}
+}};
+
+// ---------------------------------------------------------------------------
+// TOD DOW overrides  (per-day-of-week override tables; only Monday for now)
+//
+// 90-day lineage finding (2026-05-22): Monday TOD outcome pattern is fully
+// inverted vs Tue-Fri — LUNCH is the only positive Monday slot, AM_open is
+// the worst. The global weights (AM_open=+4, LUNCH=-4) work backwards on
+// Mondays. This map corrects that without touching the global table.
+//
+// Schema: {{ [dayName: string]: Record<TimeOfDay, number> }}
+// dayName matches `new Date(...).toLocaleDateString('en-US', {{weekday:'long'}})`
+// ---------------------------------------------------------------------------
+
+type TimeOfDay = 'AM_open' | 'MID' | 'LUNCH' | 'PM';
+
+export const TOD_WEIGHTS_DOW_OVERRIDES_V2: Readonly<
+  Record<string, Readonly<Record<TimeOfDay, number>>>
+> = {{
+{dow_override_body}
 }};
 
 // ---------------------------------------------------------------------------
@@ -213,6 +247,12 @@ export function assignQuintile(
  *
  * Null-safe features (volOiWindow, gammaAtTrigger, triggerAskPct) contribute
  * 0 when the value is unavailable rather than invalidating the whole score.
+ *
+ * `dayOfWeek` (optional): full day name matching
+ * `toLocaleDateString('en-US', {{weekday:'long'}})` (e.g. "Monday"). When
+ * provided and a matching entry exists in TOD_WEIGHTS_DOW_OVERRIDES_V2, the
+ * override table is used for the tod component; otherwise falls back to the
+ * global TOD_WEIGHTS_V2. Currently only "Monday" has an override.
  */
 export function computeLotteryScoreV2(args: {{
   ticker: string;
@@ -231,16 +271,28 @@ export function computeLotteryScoreV2(args: {{
    * call + cum_ncp > cum_npp, OR put + cum_npp > cum_ncp.
    */
   isAligned: boolean;
+  /**
+   * Full day name (e.g. "Monday"). When provided and an override exists in
+   * TOD_WEIGHTS_DOW_OVERRIDES_V2, that table replaces the global TOD weights
+   * for this fire's tod component.
+   */
+  dayOfWeek?: string;
 }}): number | null {{
   if (!args.isAligned) return null;
 
   const dteKey = String(args.dte);
   if (!(dteKey in DTE_WEIGHTS_V2)) return null;
 
+  // Resolve TOD weights: use DOW override when present, else global.
+  const todWeights: Readonly<Record<TimeOfDay, number>> =
+    args.dayOfWeek !== undefined && args.dayOfWeek in TOD_WEIGHTS_DOW_OVERRIDES_V2
+      ? TOD_WEIGHTS_DOW_OVERRIDES_V2[args.dayOfWeek]!
+      : TOD_WEIGHTS_V2;
+
   let score = 0;
 
   score += LOTTERY_TICKER_WEIGHTS_V2[args.ticker] ?? 0;
-  score += TOD_WEIGHTS_V2[args.tod];
+  score += todWeights[args.tod];
   score += DTE_WEIGHTS_V2[dteKey] ?? 0;
 
   if (args.volOiWindow !== null) {{

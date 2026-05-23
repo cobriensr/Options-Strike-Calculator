@@ -360,6 +360,33 @@ def main() -> None:
     )
     print(f"\nTOD weights: {tod_weights}")
 
+    # ---- Monday-specific TOD weights (per lineage finding 2026-05-22) ----
+    # 90-day data shows Monday's TOD outcome pattern is fully inverted from
+    # Tue-Fri: AM_open is the WORST Monday slot (-22.4 mean) while LUNCH is
+    # the only positive Monday slot (+5.2). The global weights assign +4 to
+    # AM_open and -4 to LUNCH, which is backwards on Mondays.
+    # Only Monday is added here — other DOWs may follow once more data
+    # accumulates (the lineage spec calls for a 10-day re-validation window).
+    df["date"] = pd.to_datetime(df["date"])
+    df["day_of_week"] = df["date"].dt.day_name()
+    monday_df = df[df["day_of_week"] == "Monday"].copy()
+    monday_global_mean = float(monday_df["outcome_pct"].mean()) if len(monday_df) > 0 else global_mean
+    print(f"\nMonday subset: {len(monday_df):,} rows | mean outcome_pct: {monday_global_mean:.2f}")
+    if len(monday_df) >= MIN_OBS_BUCKET * 2:
+        monday_tod_weights = compute_categorical_weights(
+            monday_df, "tod", ["AM_open", "MID", "LUNCH", "PM"],
+            TOD_SCALE, monday_global_mean
+        )
+        print(f"Monday TOD weights: {monday_tod_weights}")
+        print(f"  (vs global TOD weights: {tod_weights})")
+        tod_weights_dow_overrides: dict[str, dict[str, int]] = {"Monday": monday_tod_weights}
+    else:
+        print(
+            f"WARNING: Monday subset too small ({len(monday_df)} rows < {MIN_OBS_BUCKET * 2} "
+            f"minimum) — skipping Monday TOD override. Falling back to global weights."
+        )
+        tod_weights_dow_overrides = {}
+
     # ---- DTE weights ----
     df["dte_str"] = df["dte"].clip(upper=3).astype(int).astype(str)
     dte_weights_raw = compute_categorical_weights(
@@ -413,6 +440,10 @@ def main() -> None:
         },
         "features": {
             "tod_weights": {k: int(v) for k, v in tod_weights.items()},
+            "tod_weights_dow_overrides": {
+                dow: {k: int(v) for k, v in w.items()}
+                for dow, w in tod_weights_dow_overrides.items()
+            },
             "dte_weights": {k: int(v) for k, v in dte_weights.items()},
             "vol_oi_quintile_weights": [int(w) for w in vol_oi_weights],
             "vol_oi_quintile_boundaries": [float(b) for b in vol_oi_boundaries],

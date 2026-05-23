@@ -26,6 +26,27 @@ STUB_WEIGHTS = {
     "features": {
         "ticker_weights": {"AMD": 5, "QQQ": -3, "SOUN": 7},
         "tod_weights": {"AM_open": 4, "MID": 0, "LUNCH": -4, "PM": -4},
+        "tod_weights_dow_overrides": {
+            "Monday": {"AM_open": -3, "MID": 0, "LUNCH": 2, "PM": -2},
+        },
+        "dte_weights": {"0": -2, "1": 4, "2": 0, "3": 1},
+        "option_type_weights": {"C": 2, "P": -2},
+        "vol_oi_quintile_weights": [1, 0, 2, 0, -3],
+        "vol_oi_quintile_boundaries": [0.06, 0.10, 0.15, 0.38],
+        "gamma_quintile_weights": [3, -2, -2, -2, 0],
+        "gamma_quintile_boundaries": [0.012, 0.025, 0.042, 0.068],
+        "ask_pct_quintile_weights": [-1, 1, 1, 2, -4],
+        "ask_pct_quintile_boundaries": [0.53, 0.57, 0.625, 0.75],
+    },
+    "cutoffs": {"t1": 9, "t2": 7},
+}
+
+# Weights without the overrides key at all — for fallback tests.
+STUB_WEIGHTS_NO_OVERRIDES = {
+    "model_version": "test-stub-no-overrides",
+    "features": {
+        "ticker_weights": {"AMD": 5},
+        "tod_weights": {"AM_open": 4, "MID": 0, "LUNCH": -4, "PM": -4},
         "dte_weights": {"0": -2, "1": 4, "2": 0, "3": 1},
         "option_type_weights": {"C": 2, "P": -2},
         "vol_oi_quintile_weights": [1, 0, 2, 0, -3],
@@ -152,6 +173,95 @@ def test_compute_components_dte_keyed_as_string():
     }
     components = compute_components(fire, STUB_WEIGHTS)
     assert components["dte"] == 1  # weights["dte_weights"]["3"] = 1
+
+
+# ---------------------------------------------------------------------------
+# compute_components — DOW override behaviour
+# ---------------------------------------------------------------------------
+
+
+def test_dow_override_applies_when_present_and_dow_matches():
+    # Monday override: AM_open=-3, LUNCH=2 (inverted vs global 4/-4).
+    # assign_quintile uses right-inclusive (<=) semantics matching pd.cut(right=True):
+    #   vol_oi=0.12, boundaries=[0.06,0.10,0.15,0.38]: 0.12<=0.15 → Q2(idx 2), weight=2
+    #   gamma=0.05, boundaries=[0.012,0.025,0.042,0.068]: 0.05<=0.068 → Q3(idx 3), weight=-2
+    #   ask_pct=0.55, boundaries=[0.53,0.57,0.625,0.75]: 0.55<=0.57 → Q1(idx 1), weight=1
+    # AMD(5) + AM_open_Monday(-3) + DTE1(4) + vol_oi(2) + gamma(-2) + ask_pct(1) + C(2) = 9
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": 0.12,
+        "gamma": 0.05,
+        "ask_pct": 0.55,
+    }
+    components = compute_components(fire, STUB_WEIGHTS, dow="Monday")
+    # TOD uses Monday override: AM_open → -3, not global +4
+    assert components["tod"] == -3
+    assert components["total"] == 9
+
+
+def test_dow_override_lunch_is_positive_on_monday():
+    # LUNCH in Monday override is +2; global is -4. Confirms the inversion.
+    fire = {
+        "ticker": "AMD",
+        "tod": "LUNCH",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+    }
+    components_monday = compute_components(fire, STUB_WEIGHTS, dow="Monday")
+    components_global = compute_components(fire, STUB_WEIGHTS, dow=None)
+    assert components_monday["tod"] == 2    # Monday override
+    assert components_global["tod"] == -4   # global
+
+
+def test_dow_override_falls_back_to_global_when_dow_not_in_overrides():
+    # Wednesday is not in tod_weights_dow_overrides → falls back to global.
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS, dow="Wednesday")
+    assert components["tod"] == 4  # global AM_open weight
+
+
+def test_dow_override_falls_back_to_global_when_no_overrides_field():
+    # Weights JSON without the tod_weights_dow_overrides key at all.
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS_NO_OVERRIDES, dow="Monday")
+    assert components["tod"] == 4  # global fallback
+
+
+def test_dow_none_uses_global_weights():
+    # Explicit dow=None must use the global tod_weights.
+    fire = {
+        "ticker": "AMD",
+        "tod": "LUNCH",
+        "dte": 0,
+        "option_type": "P",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS, dow=None)
+    assert components["tod"] == -4  # global LUNCH weight
 
 
 # ---------------------------------------------------------------------------
