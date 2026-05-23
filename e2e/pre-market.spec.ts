@@ -41,7 +41,7 @@ test.describe('Pre-Market Input', () => {
   });
 
   test('pre-market section renders with mocked quotes', async ({ page }) => {
-    const section = page.locator('section[aria-label="Pre-Market"]');
+    const section = page.locator('section[aria-label="Pre-Market Futures"]');
     await expect(section).toBeVisible({ timeout: 15000 });
 
     // Core ES overnight inputs
@@ -61,7 +61,7 @@ test.describe('Pre-Market Input', () => {
   test('entering globex data shows overnight range preview', async ({
     page,
   }) => {
-    const section = page.locator('section[aria-label="Pre-Market"]');
+    const section = page.locator('section[aria-label="Pre-Market Futures"]');
     await expect(section).toBeVisible({ timeout: 15000 });
 
     await section.getByLabel('Globex High').fill('6555.25');
@@ -76,7 +76,7 @@ test.describe('Pre-Market Input', () => {
   test('entering globex close shows ES vs SPX gap preview', async ({
     page,
   }) => {
-    const section = page.locator('section[aria-label="Pre-Market"]');
+    const section = page.locator('section[aria-label="Pre-Market Futures"]');
     await expect(section).toBeVisible({ timeout: 15000 });
 
     // Globex close vs prevClose from mocked /api/yesterday (6790)
@@ -92,7 +92,7 @@ test.describe('Pre-Market Input', () => {
   });
 
   test('validation requires high, low, and close', async ({ page }) => {
-    const section = page.locator('section[aria-label="Pre-Market"]');
+    const section = page.locator('section[aria-label="Pre-Market Futures"]');
     await expect(section).toBeVisible({ timeout: 15000 });
 
     // Mock the POST response so the save attempt goes through the mock
@@ -119,7 +119,7 @@ test.describe('Pre-Market Input', () => {
   });
 
   test('validation rejects high less than low', async ({ page }) => {
-    const section = page.locator('section[aria-label="Pre-Market"]');
+    const section = page.locator('section[aria-label="Pre-Market Futures"]');
     await expect(section).toBeVisible({ timeout: 15000 });
 
     // Fill with High < Low (invalid)
@@ -135,7 +135,7 @@ test.describe('Pre-Market Input', () => {
   });
 
   test('cone inputs show range as percentage of cone', async ({ page }) => {
-    const section = page.locator('section[aria-label="Pre-Market"]');
+    const section = page.locator('section[aria-label="Pre-Market Futures"]');
     await expect(section).toBeVisible({ timeout: 15000 });
 
     await section.getByLabel('Globex High').fill('6555');

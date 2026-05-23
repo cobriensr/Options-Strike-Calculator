@@ -41,9 +41,9 @@ describe('PreMarketInput', () => {
     expect(screen.getByRole('button', { name: /Save/i })).toBeInTheDocument();
   });
 
-  it('renders Pre-Market section heading', () => {
+  it('renders Pre-Market Futures section heading', () => {
     render(<PreMarketInput date="2026-03-28" />);
-    expect(screen.getByText('Pre-Market')).toBeInTheDocument();
+    expect(screen.getByText('Pre-Market Futures')).toBeInTheDocument();
   });
 
   // ── Loading existing data ─────────────────────────────────

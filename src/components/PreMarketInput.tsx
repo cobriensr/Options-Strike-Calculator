@@ -175,7 +175,7 @@ export default function PreMarketInput({
 
   return (
     <SectionBox
-      label="Pre-Market"
+      label="Pre-Market Futures"
       badge={autoFilled ? 'Auto-filled \u2713' : saved ? '\u2713 Saved' : null}
       collapsible
       headerRight={

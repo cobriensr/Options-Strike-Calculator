@@ -45,10 +45,11 @@ describe('Default-order panel render contract', () => {
       sequence.push(...resolvePanelOrder([], registry, group));
     }
     // First few should be Inputs in registry order
-    expect(sequence.slice(0, 6)).toEqual([
+    expect(sequence.slice(0, 7)).toEqual([
       'sec-datetime',
       'sec-spot-price',
       'sec-premarket',
+      'sec-premarket-futures',
       'sec-advanced',
       'sec-iv',
       'sec-risk',
@@ -118,6 +119,7 @@ describe('Default-order panel render contract', () => {
       'sec-iv',
       'sec-datetime',
       'sec-premarket', // unspecified, registry order from here
+      'sec-premarket-futures',
       'sec-advanced',
       'sec-risk',
     ]);

@@ -47,6 +47,11 @@ export function getPanelRegistry(
     { id: 'sec-datetime', label: 'Date & Time', group: 'Inputs' },
     { id: 'sec-spot-price', label: 'Spot Price', group: 'Inputs' },
     { id: 'sec-premarket', label: 'Pre-Market Signals', group: 'Inputs' },
+    {
+      id: 'sec-premarket-futures',
+      label: 'Pre-Market Futures Inputs',
+      group: 'Inputs',
+    },
     { id: 'sec-advanced', label: 'Advanced', group: 'Inputs' },
     { id: 'sec-iv', label: 'Implied Volatility', group: 'Inputs' },
     { id: 'sec-risk', label: 'Risk Calculator', group: 'Inputs' },
