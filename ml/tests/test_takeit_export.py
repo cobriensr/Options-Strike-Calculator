@@ -14,18 +14,18 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
-from ml.src.takeit.export_model import (
+from takeit.export_model import (
     REQUIRED_KEYS,
     SUPPORTED_XGB_JSON_SCHEMA,
     build_bundle,
     export_bundle,
 )
-from ml.src.takeit.train import prepare_features, train_one_alert_type
+from takeit.train import prepare_features, train_one_alert_type
 
 
 def _fixture_lottery_frame(n: int = 600, seed: int = 42) -> pd.DataFrame:
     """Same synthetic shape used by test_takeit_train.py."""
-    from ml.tests.test_takeit_train import (
+    from test_takeit_train import (
         _synthetic_lottery_frame,  # type: ignore[attr-defined]
     )
     return _synthetic_lottery_frame(n=n, seed=seed)

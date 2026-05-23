@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import shap
-from ml.src.takeit.config import SHAP_TOP_K
+from .config import SHAP_TOP_K
 
 
 @dataclass(frozen=True)

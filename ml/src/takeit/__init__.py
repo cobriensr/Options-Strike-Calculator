@@ -6,7 +6,7 @@ Win label: peak_ceiling_pct >= WIN_LABEL_THRESHOLD_PCT (default 20).
 Rows where peak_ceiling_pct IS NULL are dropped from training.
 """
 
-from ml.src.takeit.config import (
+from .config import (
     AGGRESSIVE_ASK_PCT_THRESHOLD,
     BRIER_ALERT_THRESHOLD,
     BURST_STORM_MIN_COFIRES,

@@ -36,7 +36,7 @@ from typing import Final, Literal
 
 import pandas as pd
 import psycopg2
-from ml.src.takeit.config import (
+from .config import (
     AGGRESSIVE_ASK_PCT_THRESHOLD,
     BURST_STORM_MIN_COFIRES,
     BURST_STORM_WINDOW_MIN,

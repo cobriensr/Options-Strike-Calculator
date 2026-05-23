@@ -23,7 +23,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from ml.src.takeit.train import prepare_features
+from .train import prepare_features
 
 DATA_DIR = Path("ml/data/takeit")
 FIXTURE_DIR = Path("ml/tests/fixtures")

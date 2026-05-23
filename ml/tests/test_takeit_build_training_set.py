@@ -9,7 +9,7 @@ from datetime import date as date_type
 
 import pandas as pd
 import pytest
-from ml.src.takeit.build_training_set import (
+from takeit.build_training_set import (
     SESSION_PHASES,
     _is_quarter_end_last_hour_ct,
     _session_phase_cat_from_minute_ct,
@@ -22,7 +22,7 @@ from ml.src.takeit.build_training_set import (
     build_silentboom_from_raw,
     derive_common_features,
 )
-from ml.src.takeit.config import (
+from takeit.config import (
     AGGRESSIVE_ASK_PCT_THRESHOLD,
     BURST_STORM_MIN_COFIRES,
     COFIRE_WINDOW_MIN,

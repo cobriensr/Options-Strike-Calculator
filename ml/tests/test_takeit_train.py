@@ -11,8 +11,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from ml.src.takeit.shap_explainer import _json_safe, explain_batch, explain_row
-from ml.src.takeit.train import (
+from takeit.shap_explainer import _json_safe, explain_batch, explain_row
+from takeit.train import (
     prepare_features,
     select_top_tickers,
     train_final_with_calibration,

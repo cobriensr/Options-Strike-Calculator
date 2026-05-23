@@ -44,7 +44,7 @@ from typing import Any
 
 import numpy as np
 import xgboost as xgb
-from ml.src.takeit.config import (
+from .config import (
     AGGRESSIVE_ASK_PCT_THRESHOLD,
     BURST_STORM_MIN_COFIRES,
     BURST_STORM_WINDOW_MIN,

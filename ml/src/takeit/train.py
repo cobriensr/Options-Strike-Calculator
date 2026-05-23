@@ -31,11 +31,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from ml.src.takeit.build_training_set import (
+from .build_training_set import (
     INFERRED_STRUCTURE_LABELS,
     SESSION_PHASES,
 )
-from ml.src.takeit.config import (
+from .config import (
     BRIER_ALERT_THRESHOLD,
     ISOTONIC_HOLDOUT_FRAC,
     TOP_N_TICKERS,
@@ -411,7 +411,7 @@ def train_one_alert_type(
 
     # Phase 3a: also emit the JSON bundle the TS scorer + Vercel Blob need.
     # Lives next to the joblib; upload_to_blob.py (Phase 3e) pushes it.
-    from ml.src.takeit.export_model import export_bundle  # lazy: avoid circular import
+    from .export_model import export_bundle  # lazy: avoid circular import
 
     json_path = out_dir / f"{alert_type}_classifier.json"
     export_bundle(
