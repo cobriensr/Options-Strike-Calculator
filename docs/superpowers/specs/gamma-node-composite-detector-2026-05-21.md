@@ -1,7 +1,37 @@
 # Gamma-Node Composite Detector — Daily Alert Tile
 
-**Status:** Spec'd 2026-05-21. Awaiting implementation approval.
-**Author:** Charlie + Claude (overnight 2026-05-20 → 21 research session)
+**Status:** SHIPPED 2026-05-23. All three phases live in `main`.
+
+**Implementation commits:**
+
+- **Phase 1** — backend infrastructure: `3e64ff65`
+  Migration #179 (`ws_gamma_setup_fires`), `api/_lib/gamma-detector.ts`,
+  `api/cron/detect-gamma-setups.ts` (1-min RTH),
+  `api/cron/backfill-gamma-setup-outcomes.ts` (EOD 21:30 UTC),
+  `api/gamma-setups/active.ts` endpoint.
+- **Phase 2** — frontend tile: `3c691436`
+  `src/hooks/useGammaSetups.ts`, `src/components/GammaNodeDetector/`,
+  panel-registry + App.tsx wiring, BotID protect path.
+- **Phase 3a** — live stats backend: `ab9c7653`
+  `api/_lib/gamma-stats.ts` (`aggregateFireStats` + `detectDrift` +
+  `EXPECTED_EDGE_PTS`), `api/gamma-setups/weekly-stats.ts`,
+  `api/gamma-setups/export.ts`, `api/cron/check-gamma-setup-drift.ts`
+  (Friday 21:45 UTC drift alert).
+- **Phase 3b** — rolling stats UI: `bf982b83`
+  `src/hooks/useGammaWeeklyStats.ts`,
+  `src/components/GammaNodeDetector/RollingStatsBar.tsx` with window
+  buttons + CSV export link, integrated above the day banner.
+
+**Out of scope (final, per user 2026-05-23):** no journal UI. The user
+keeps their own broker P&L tracking elsewhere; the CSV export endpoint
+at `/api/gamma-setups/export` is the journal-replacement seam.
+
+**Next action:** 4-6 week analytical refresh once ~20-30 live trading
+days of fires + outcomes accumulate (~2026-07-01 onward). Re-run
+walk-forward against the live `ws_gamma_setup_fires` table and update
+`EXPECTED_EDGE_PTS` in `api/_lib/gamma-stats.ts` if expectations drift.
+
+**Author:** Charlie + Claude (overnight 2026-05-20 → 21 research session, shipped 2026-05-23)
 **Reference:** [project_gamma_node_rejection_signal.md](../../../../.claude/projects/-Users-charlesobrien-Documents-Workspace-strike-calculator/memory/project_gamma_node_rejection_signal.md) for full analytical history (30+ hypotheses, 20+ scripts, full validation chain)
 
 ## Goal
