@@ -919,12 +919,78 @@ describe('detect-lottery-fires handler', () => {
 
     // All-ask SOUN ticks with gamma=0.01 (< Q0 boundary 0.01235 → weight +3).
     const sounTicks = [
-      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:30:00Z', { size: 50 }), gamma: 0.01 },
-      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:30:30Z', { size: 20 }), gamma: 0.01 },
-      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:31:00Z', { size: 20 }), gamma: 0.01 },
-      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:31:30Z', { size: 20 }), gamma: 0.01 },
-      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:32:00Z', { size: 20 }), gamma: 0.01 },
-      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:32:30Z', { size: 20 }), gamma: 0.01 },
+      {
+        ...tick(
+          'SOUN260501C00010000',
+          'SOUN',
+          'C',
+          10,
+          '2026-05-01',
+          '2026-05-01T13:30:00Z',
+          { size: 50 },
+        ),
+        gamma: 0.01,
+      },
+      {
+        ...tick(
+          'SOUN260501C00010000',
+          'SOUN',
+          'C',
+          10,
+          '2026-05-01',
+          '2026-05-01T13:30:30Z',
+          { size: 20 },
+        ),
+        gamma: 0.01,
+      },
+      {
+        ...tick(
+          'SOUN260501C00010000',
+          'SOUN',
+          'C',
+          10,
+          '2026-05-01',
+          '2026-05-01T13:31:00Z',
+          { size: 20 },
+        ),
+        gamma: 0.01,
+      },
+      {
+        ...tick(
+          'SOUN260501C00010000',
+          'SOUN',
+          'C',
+          10,
+          '2026-05-01',
+          '2026-05-01T13:31:30Z',
+          { size: 20 },
+        ),
+        gamma: 0.01,
+      },
+      {
+        ...tick(
+          'SOUN260501C00010000',
+          'SOUN',
+          'C',
+          10,
+          '2026-05-01',
+          '2026-05-01T13:32:00Z',
+          { size: 20 },
+        ),
+        gamma: 0.01,
+      },
+      {
+        ...tick(
+          'SOUN260501C00010000',
+          'SOUN',
+          'C',
+          10,
+          '2026-05-01',
+          '2026-05-01T13:32:30Z',
+          { size: 20 },
+        ),
+        gamma: 0.01,
+      },
     ];
     // RKLB uses the standard fireable SNDK stream pattern (no gamma), remapped to RKLB.
     const rklbTicks = fireableSndkStream().map((t) => ({
@@ -935,7 +1001,9 @@ describe('detect-lottery-fires handler', () => {
     }));
     const flowTs = '2026-05-01T13:29:30Z';
     // Aligned flow: cum_ncp > cum_npp → isAligned=true for CALL fires.
-    const alignedFlow = [{ ts: flowTs, cum_ncp: '5000000', cum_npp: '1000000' }];
+    const alignedFlow = [
+      { ts: flowTs, cum_ncp: '5000000', cum_npp: '1000000' },
+    ];
     mockTicks([...sounTicks, ...rklbTicks])
       .mockResolvedValueOnce([]) // prior fires (both chains eligible)
       // SOUN fire (processed first by Map insertion order):
@@ -957,7 +1025,11 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success', rows: 2, inserted: 2 });
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 2,
+      inserted: 2,
+    });
 
     // cluster_bonus is at bind position -1 of each INSERT call.
     // Call sequence (post-prior-fires): SOUN [flow, spot, flow_snapshot, INSERT]

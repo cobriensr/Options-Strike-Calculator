@@ -190,6 +190,14 @@
       "schedule": "*/5 13-21 * * 1-5"
     },
     {
+      "path": "/api/cron/detect-gamma-setups",
+      "schedule": "* 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/backfill-gamma-setup-outcomes",
+      "schedule": "30 21 * * 1-5"
+    },
+    {
       "path": "/api/cron/evaluate-round-trip",
       "schedule": "*/10 14-21 * * 1-5"
     },
@@ -288,6 +296,8 @@
     "api/cron/detect-silent-boom.ts": { "maxDuration": 60 },
     "api/cron/detect-periscope-call-lottery.ts": { "maxDuration": 30 },
     "api/cron/detect-periscope-put-lottery.ts": { "maxDuration": 30 },
+    "api/cron/detect-gamma-setups.ts": { "maxDuration": 30 },
+    "api/cron/backfill-gamma-setup-outcomes.ts": { "maxDuration": 120 },
     "api/cron/enrich-periscope-lottery-outcomes.ts": { "maxDuration": 120 },
     "api/cron/evaluate-round-trip.ts": { "maxDuration": 60 },
     "api/cron/takeit-fill-shap.ts": { "maxDuration": 60 },
