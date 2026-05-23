@@ -60,6 +60,16 @@ export const E5_LOOKBACK_BARS = 10;
  *  below the wick low for a breakdown confirmation. */
 export const E5_BREAKDOWN_PTS = 1.0;
 
+/** Minimum bar range (high - low, in points) for a wick to qualify as
+ *  a "meaningful" setup. The brainstorm v4 analysis filtered to bars
+ *  with range >= p75 (~4 pts). Without this, the E5 detector fires on
+ *  every tiny wick that gets broken by 1pt, producing thousands of
+ *  false positives — the 2026-05-23 backfill showed n=1451 fires with
+ *  mean ret_30m = -2.61 (vs backtest +8.95) before this filter was added.
+ *  Applies to both E5 and PCS Monday wick filters. E1 has its own
+ *  3-bar-hold structural filter and doesn't need it. */
+export const MIN_WICK_RANGE_PTS = 4.0;
+
 /** Periscope snapshot freshness — only consider snapshots within this
  *  many minutes of NOW for live fires (matches periscope's 10-min cron). */
 export const PERISCOPE_MAX_AGE_MIN = 15;
@@ -579,46 +589,42 @@ export function detectE1(
 }
 
 /**
- * E5 long-put failed-reversal detector (Phase 1 conservative form).
+ * E5 long-put failed-reversal detector — DISABLED 2026-05-23.
  *
- * Scans the last E5_LOOKBACK_BARS bars for a down-wick at a +γ floor
- * (bar.open > node, bar.low < node, bar.close > node). Then checks the
- * CURRENT bar (last in `bars`) for low < wick.low - E5_BREAKDOWN_PTS.
- * If both conditions hold AND no intermediate bar reclaimed beyond the
- * wick high (which would mean the bounce DID work), fire E5.
+ * The brainstorm's E5 result (+8.95 pts mean, walk-forward stable) was
+ * measured on a sample pre-filtered by FORWARD-looking ret_30m < 0:
+ * only wicks whose bounce later failed got into the dataset. The
+ * brainstorm script then measured forward return from the breakdown
+ * bar within that already-conditioned sample.
  *
- * The "bounce failed" condition is implicit: if price had recovered, the
- * current bar's low wouldn't be below the wick low.
+ * A real-time detector cannot apply that filter — at the moment of
+ * breakdown, it does not know whether the bounce has truly failed.
+ * The 2026-05-23 backfill, even after adding range + first-break
+ * filters, showed mean ret_30m = -3.87 (n=179) — negative expected
+ * value. At +γ floors, breakdowns of small magnitude get bought back
+ * by dealers; the brainstorm's "failed bounce → breakdown
+ * continuation" only manifests on a subset selected with future
+ * information.
+ *
+ * E5 stays in the codebase (call sites + types) so a future iteration
+ * can swap in a real-time approximation of the failed-bounce condition
+ * (e.g., wick happened >=N minutes ago AND price has not reclaimed
+ * wick.high AND a slow grind has set in). Until that lands, this
+ * function returns null so the detector cron and backfill script
+ * don't fire E5 alerts.
+ *
+ * Refs:
+ * - docs/superpowers/specs/gamma-node-composite-detector-2026-05-21.md
+ * - backfill validation 2026-05-23 (see commit messages around d4fa331d)
  */
+/* eslint-disable @typescript-eslint/no-unused-vars, sonarjs/no-invariant-returns -- stub: args kept for call-site stability + future reactivation */
 export function detectE5(
-  bars: ReadonlyArray<Bar>,
-  nodes: ReadonlyArray<GammaNode>,
+  _bars: ReadonlyArray<Bar>,
+  _nodes: ReadonlyArray<GammaNode>,
 ): { wickBar: Bar; breakBar: Bar; node: GammaNode } | null {
-  if (bars.length < 2) return null;
-  const breakBar = bars.at(-1);
-  if (breakBar == null) return null;
-
-  // Scan oldest-to-newest within the lookback. Skip the current bar
-  // (already the "break" candidate) — wick must be in the past.
-  const startIdx = Math.max(0, bars.length - 1 - E5_LOOKBACK_BARS);
-  for (let i = startIdx; i < bars.length - 1; i += 1) {
-    const wickBar = bars[i];
-    if (wickBar == null) continue;
-    for (const node of nodes) {
-      const isWick =
-        wickBar.open > node.strike &&
-        wickBar.low < node.strike &&
-        wickBar.close > node.strike;
-      if (!isWick) continue;
-      // Break-of-low: current bar's low must be at least E5_BREAKDOWN_PTS
-      // below the wick low.
-      if (breakBar.low <= wickBar.low - E5_BREAKDOWN_PTS) {
-        return { wickBar, breakBar, node };
-      }
-    }
-  }
   return null;
 }
+/* eslint-enable @typescript-eslint/no-unused-vars, sonarjs/no-invariant-returns */
 
 /**
  * PCS Monday rejection detector.
@@ -646,6 +652,10 @@ export function detectPcsMonday(
   if (bars.length === 0) return null;
   const wickBar = bars.at(-1);
   if (wickBar == null) return null;
+
+  // Range filter — drop noise wicks (matches the v4 brainstorm
+  // event-set, which only considered bars with range >= p75 ~ 4pt).
+  if (wickBar.high - wickBar.low < MIN_WICK_RANGE_PTS) return null;
 
   for (const node of nodes) {
     if (Math.abs(node.value) > PCS_MAX_ABS_GEX) continue;

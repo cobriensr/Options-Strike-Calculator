@@ -2,6 +2,21 @@
 
 **Status:** SHIPPED 2026-05-23. All three phases live in `main`.
 
+> **2026-05-23 post-ship correction — E5 detector DISABLED.**
+> A historical backfill of ~90 RTH days exposed forward-looking selection
+> bias in the brainstorm's `+8.95 pt` E5 result: the original event set was
+> pre-filtered by `ret_30m < 0` (only failed-bounce wicks were included),
+> then forward returns were measured within that already-conditioned
+> sample. A real-time detector cannot apply that filter — it does not know
+> whether the bounce will fail at the moment it fires. Live backfill (n=179
+> after range + first-break filters) showed `mean ret_30m = -3.87`. E5 now
+> returns `null` in `api/_lib/gamma-detector.ts`; existing
+> `e5_long_put` rows were deleted from `ws_gamma_setup_fires`. The active
+> composite is E1 + PCS Monday only. Reactivation will require a
+> real-time approximation of "failed bounce" (e.g. wick happened ≥N min
+> ago AND wick.high not reclaimed AND a slow grind has set in) plus a
+> live walk-forward that does not condition on future returns.
+
 **Implementation commits:**
 
 - **Phase 1** — backend infrastructure: `3e64ff65`

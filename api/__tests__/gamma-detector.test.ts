@@ -174,48 +174,34 @@ describe('detectE1 — long-call breakthrough', () => {
   });
 });
 
-describe('detectE5 — long-put failed-reversal', () => {
+// E5 is disabled (returns null) — see api/_lib/gamma-detector.ts for the
+// rationale. The 2026-05-23 backfill exposed forward-looking selection bias
+// in the brainstorm's +8.95 result. These tests pin the disabled contract
+// so a future reactivation must consciously update them. E5_BREAKDOWN_PTS
+// is still exported (referenced here) so the surface stays stable for the
+// eventual real-time rewrite.
+describe('detectE5 — disabled (forward-looking selection bias)', () => {
   const node: GammaNode = { strike: 7400, value: 200_000 };
 
-  it('fires when a recent wick exists and current bar breaks below', () => {
-    // Wick bar 5 minutes ago at 7400 floor: low pierced (7398), close back above (7402).
-    // Current bar: low at 7396 = wick.low (7398) - 2 pts, beyond E5_BREAKDOWN_PTS.
+  it('exports E5_BREAKDOWN_PTS for future reactivation', () => {
+    expect(E5_BREAKDOWN_PTS).toBe(1.0);
+  });
+
+  it('always returns null even on a textbook wick + breakdown pattern', () => {
     const bars: Bar[] = [
       makeBar({ open: 7405, high: 7406, low: 7404, close: 7405 }),
-      makeBar({ open: 7405, high: 7405, low: 7398, close: 7402 }), // wick
+      makeBar({ open: 7405, high: 7405, low: 7398, close: 7402 }),
       makeBar({ open: 7402, high: 7403, low: 7400, close: 7401 }),
       makeBar({ open: 7401, high: 7402, low: 7398.5, close: 7399 }),
-      makeBar({ open: 7399, high: 7400, low: 7396, close: 7397 }), // breakdown
+      makeBar({ open: 7399, high: 7400, low: 7396, close: 7397 }),
     ];
-    const hit = detectE5(bars, [node]);
-    expect(hit).not.toBeNull();
-    expect(hit?.wickBar.low).toBe(7398);
-    expect(hit?.breakBar.low).toBe(7396);
+    expect(detectE5(bars, [node])).toBeNull();
   });
 
-  it('does not fire when current bar low is only marginally below wick low', () => {
-    const bars: Bar[] = [
-      makeBar({ open: 7405, high: 7405, low: 7398, close: 7402 }), // wick
-      makeBar({
-        open: 7402,
-        high: 7403,
-        low: 7397.5, // only 0.5 below — under E5_BREAKDOWN_PTS (1.0)
-        close: 7400,
-      }),
-    ];
-    expect(E5_BREAKDOWN_PTS).toBe(1.0);
-    const hit = detectE5(bars, [node]);
-    expect(hit).toBeNull();
-  });
-
-  it('does not fire without a qualifying wick in lookback', () => {
-    // No wick (all bars stay clear of the node).
-    const bars: Bar[] = [
-      makeBar({ open: 7405, high: 7406, low: 7404, close: 7405 }),
-      makeBar({ open: 7405, high: 7405, low: 7395, close: 7396 }), // close below = no wick
-    ];
-    const hit = detectE5(bars, [node]);
-    expect(hit).toBeNull();
+  it('returns null on empty bars and empty nodes', () => {
+    expect(detectE5([], [])).toBeNull();
+    expect(detectE5([makeBar()], [])).toBeNull();
+    expect(detectE5([], [node])).toBeNull();
   });
 });
 
