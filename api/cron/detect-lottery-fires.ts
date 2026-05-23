@@ -444,6 +444,14 @@ export default withCronInstrumentation(
     // POST /takeit/multileg-classify (commit ced5ff10).
     const multilegCache: MultilegClassifyCache = new Map();
 
+    // V2.2 Phase C.4 cluster bonus: running list of tier1 fires processed
+    // so far in this cron invocation. Used by computeClusterSize() below
+    // to count co-firing tickers without a DB round-trip. Includes ALL
+    // fires processed (scored, even those that hit ON CONFLICT); the
+    // cluster bonus is computed BEFORE the INSERT, so idempotent re-runs
+    // see the same bonus on retry.
+    const committedFires: CommittedFireEntry[] = [];
+
     for (const g of groups.values()) {
       if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
         skippedShort += 1;
@@ -608,6 +616,28 @@ export default withCronInstrumentation(
             { weekday: 'long' },
           ),
         });
+        // V2.2 Phase C.4 cluster bonus: count distinct other tier1 tickers
+        // that fired within ±5 min of this fire in the current cron batch,
+        // then apply the tiered bonus. The bonus is stored separately from
+        // `score` so audits can attribute the delta to clustering.
+        // Note: cluster bonus applies even to fires that may hit ON CONFLICT
+        // later — the idempotent re-run will see the same cluster window.
+        const clusterSize = computeClusterSize(
+          committedFires,
+          rec.underlyingSymbol,
+          rec.triggerTimeCt.getTime(),
+        );
+        const clusterBonus = applyClusterBonus(clusterSize);
+        // Register this fire in the in-cron list so subsequent fires can
+        // see it as a cluster peer. Registered before the INSERT so that
+        // two fires from the same cron run on different chains of the same
+        // ticker are correctly deduplicated by the Set inside computeClusterSize.
+        committedFires.push({
+          ticker: rec.underlyingSymbol,
+          triggerTimeMs: rec.triggerTimeCt.getTime(),
+          score,
+        });
+
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).
         // V2.2 Phase C.9 ASYMMETRIC FIX (2026-05-22, audit memo:
@@ -720,7 +750,7 @@ export default withCronInstrumentation(
             cum_ncp_at_fire, cum_npp_at_fire,
             inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
             takeit_prob, takeit_model_version, takeit_features,
-            gamma_at_trigger
+            gamma_at_trigger, cluster_bonus
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -742,7 +772,7 @@ export default withCronInstrumentation(
             ${cumNcpAtFire}, ${cumNppAtFire},
             ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
-            ${rec.triggerGamma}
+            ${rec.triggerGamma}, ${clusterBonus}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id

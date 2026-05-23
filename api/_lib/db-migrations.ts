@@ -5032,4 +5032,13 @@ export const MIGRATIONS: Migration[] = [
             FROM lottery_finder_fires`,
     ],
   },
+  {
+    id: 178,
+    description:
+      'Add cluster_bonus SMALLINT column to lottery_finder_fires. Populated at insert time by detect-lottery-fires cron: counts distinct other tickers that scored tier1 within ±5 min of this fire in the same cron batch, then maps to a tiered bonus (isolated=0, pair=+1, 3-4=+2, 5+=+1). Empirical basis: docs/tmp/v22-co-fire-analysis-2026-05-22.md — 30-day study shows 2-4-ticker cluster fires outperform isolated fires by +22pp mean outcome (79% vs 57% win-rate at cluster_size 3-4). The bonus is stored separately from score so audits can attribute the score delta. Older rows stay 0 (DEFAULT 0); backfill available via one-shot Python script. Part of V2.2 Phase C.4.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS cluster_bonus SMALLINT DEFAULT 0`,
+    ],
+  },
 ];

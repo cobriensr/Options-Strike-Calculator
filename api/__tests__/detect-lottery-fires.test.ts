@@ -300,25 +300,26 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // The INSERT is the last mockSql call. Bind order (post-#168 gamma
-    // tail-append):
-    //   gamma_at_trigger=-1, takeit_features=-2, takeit_model_version=-3,
-    //   takeit_prob=-4, pattern_group_id=-5, match_confidence=-6,
-    //   is_isolated_leg=-7, inferred_structure=-8, cum_npp_at_fire=-9,
-    //   cum_ncp_at_fire=-10, range_pos_at_trigger=-11,
-    //   direction_gated=-12, score=-13.
+    // The INSERT is the last mockSql call. Bind order (post-#178
+    // cluster_bonus tail-append):
+    //   cluster_bonus=-1, gamma_at_trigger=-2, takeit_features=-3,
+    //   takeit_model_version=-4, takeit_prob=-5, pattern_group_id=-6,
+    //   match_confidence=-7, is_isolated_leg=-8, inferred_structure=-9,
+    //   cum_npp_at_fire=-10, cum_ncp_at_fire=-11,
+    //   range_pos_at_trigger=-12, direction_gated=-13, score=-14.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const gammaAtTrigger = insertCall.at(-1);
-    const takeitFeatures = insertCall.at(-2);
-    const takeitVersion = insertCall.at(-3);
-    const takeitProb = insertCall.at(-4);
-    const patternGroupId = insertCall.at(-5);
-    const matchConfidence = insertCall.at(-6);
-    const isIsolatedLeg = insertCall.at(-7);
-    const inferredStructure = insertCall.at(-8);
-    const rangePos = insertCall.at(-11);
-    const directionGated = insertCall.at(-12);
-    const score = insertCall.at(-13);
+    const clusterBonus = insertCall.at(-1);
+    const gammaAtTrigger = insertCall.at(-2);
+    const takeitFeatures = insertCall.at(-3);
+    const takeitVersion = insertCall.at(-4);
+    const takeitProb = insertCall.at(-5);
+    const patternGroupId = insertCall.at(-6);
+    const matchConfidence = insertCall.at(-7);
+    const isIsolatedLeg = insertCall.at(-8);
+    const inferredStructure = insertCall.at(-9);
+    const rangePos = insertCall.at(-12);
+    const directionGated = insertCall.at(-13);
+    const score = insertCall.at(-14);
     // Empty ticker_flow_snapshot → isAligned=false → V2 returns null.
     expect(score).toBeNull();
     // SNDK call with no OTM tide tick → ungated.
@@ -337,6 +338,8 @@ describe('detect-lottery-fires handler', () => {
     expect(patternGroupId).toBeNull();
     // lottery-fires fixture doesn't set trigger_gamma → null at the tail.
     expect(gammaAtTrigger).toBeNull();
+    // Single SNDK fire, no prior tier1 fires in batch → isolated → cluster_bonus=0.
+    expect(clusterBonus).toBe(0);
   });
 
   it('persists a non-null integer V2 score when ticker_flow_snapshot makes a CALL fire aligned (Phase 3 wiring guard)', async () => {
@@ -376,9 +379,9 @@ describe('detect-lottery-fires handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    // Score is at bind position -13 (see surrounding tests for layout).
+    // Score is at bind position -14 (post-#178 cluster_bonus tail-append; see surrounding tests for layout).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const score = insertCall.at(-13);
+    const score = insertCall.at(-14);
     expect(score).not.toBeNull();
     expect(typeof score).toBe('number');
     expect(Number.isInteger(score)).toBe(true);
@@ -422,10 +425,10 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Post-#168 gamma tail-append: rangePos at(-11), score at(-13).
+    // Post-#178 cluster_bonus tail-append: rangePos at(-12), score at(-14).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-11);
-    const score = insertCall.at(-13);
+    const rangePos = insertCall.at(-12);
+    const score = insertCall.at(-14);
     // Spot 1170 between low 1150 and high 1200 → 0.4
     expect(rangePos).toBeCloseTo(0.4, 5);
     // V2 score: ticker_flow_snapshot returns [] → isAligned=false → null.
@@ -468,10 +471,10 @@ describe('detect-lottery-fires handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // Post-#168 gamma tail-append: rangePos at(-11), score at(-13).
+    // Post-#178 cluster_bonus tail-append: rangePos at(-12), score at(-14).
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    const rangePos = insertCall.at(-11);
-    const score = insertCall.at(-13);
+    const rangePos = insertCall.at(-12);
+    const score = insertCall.at(-14);
     expect(rangePos).toBe(0);
     // V2 score: ticker_flow_snapshot returns [] → isAligned=false → null.
     // range_pos is written for display only (NEW HIGH badge); not scored.
@@ -502,7 +505,7 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // INSERT bind order (post-#168 gamma tail-append):
+    // INSERT bind order (post-#178 cluster_bonus tail-append):
     //   ... mkt_tide_diff, mkt_tide_otm_diff, spx_flow_diff,
     //   spy_etf_diff, qqq_etf_diff, zero_dte_diff,
     //   spx_spot_gamma_oi, spx_spot_gamma_vol, spx_spot_charm_oi,
@@ -511,16 +514,17 @@ describe('detect-lottery-fires handler', () => {
     //   gex_strike_actual_strike, score, direction_gated, range_pos_at_trigger,
     //   cum_ncp_at_fire, cum_npp_at_fire,
     //   inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
-    //   takeit_prob, takeit_model_version, takeit_features, gamma_at_trigger
-    // → mkt_tide_otm_diff is the 26th-from-last bind position; #160
-    //   shifted by -4 and #168 added another -1.
+    //   takeit_prob, takeit_model_version, takeit_features, gamma_at_trigger,
+    //   cluster_bonus
+    // → mkt_tide_otm_diff is the 27th-from-last bind position; #160
+    //   shifted by -4, #168 added -1, #178 cluster_bonus adds another -1.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-26)).toBe(3000); // 4000 - 1000
+    expect(insertCall.at(-27)).toBe(3000); // 4000 - 1000
     // Sanity: mkt_tide_diff (no 'market_tide' source in the mock) is null
-    expect(insertCall.at(-27)).toBeNull();
+    expect(insertCall.at(-28)).toBeNull();
     // SNDK call with otm_diff = +3000 (well below the ±150M gate) → ungated.
-    // direction_gated at -12 after the gamma tail-append.
-    expect(insertCall.at(-12)).toBe(false);
+    // direction_gated at -13 after the cluster_bonus tail-append.
+    expect(insertCall.at(-13)).toBe(false);
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
@@ -541,12 +545,13 @@ describe('detect-lottery-fires handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Bind positions shifted by -4 (#160 multileg tail-insert) plus an
-    // additional -1 from migration #168's gamma_at_trigger tail-append.
+    // Bind positions shifted by -4 (#160 multileg tail-insert) plus -1
+    // from migration #168's gamma_at_trigger tail-append, plus -1 from
+    // migration #178's cluster_bonus tail-append.
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-27)).toBe(200); // mkt_tide_diff = 500 - 300
-    expect(insertCall.at(-26)).toBeNull(); // mkt_tide_otm_diff absent
-    expect(insertCall.at(-12)).toBe(false); // otm null → ungated
+    expect(insertCall.at(-28)).toBe(200); // mkt_tide_diff = 500 - 300
+    expect(insertCall.at(-27)).toBeNull(); // mkt_tide_otm_diff absent
+    expect(insertCall.at(-13)).toBe(false); // otm null → ungated
   });
 
   it('issues the strike_exposures query for SPY (in TICKERS_WITH_GEX_STRIKE)', async () => {
@@ -769,18 +774,18 @@ describe('detect-lottery-fires handler', () => {
       inserted: 1,
     });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Post-#168 gamma tail-append, tail (13 args) is:
-    //   score(-13), direction_gated(-12), range_pos(-11),
-    //   cum_ncp_at_fire(-10), cum_npp_at_fire(-9),
-    //   inferred_structure(-8), is_isolated_leg(-7),
-    //   match_confidence(-6), pattern_group_id(-5),
-    //   takeit_prob(-4), takeit_model_version(-3), takeit_features(-2),
-    //   gamma_at_trigger(-1).
+    // Post-#178 cluster_bonus tail-append, tail (14 args) is:
+    //   score(-14), direction_gated(-13), range_pos(-12),
+    //   cum_ncp_at_fire(-11), cum_npp_at_fire(-10),
+    //   inferred_structure(-9), is_isolated_leg(-8),
+    //   match_confidence(-7), pattern_group_id(-6),
+    //   takeit_prob(-5), takeit_model_version(-4), takeit_features(-3),
+    //   gamma_at_trigger(-2), cluster_bonus(-1).
     // PUT fires are NEVER gated regardless of otm_diff (C.9 fix).
-    expect(insertCall.at(-12)).toBe(false);
+    expect(insertCall.at(-13)).toBe(false);
     // V2: ticker_flow_snapshot returns [] → cumNcp/cumNpp null →
     // isAligned=false → score=null. Direction gate does NOT mutate score.
-    expect(insertCall.at(-13)).toBeNull();
+    expect(insertCall.at(-14)).toBeNull();
   });
 
   it('flags direction_gated=true on a counter-trend CALL fire (mkt_tide_otm_diff < -150M)', async () => {
@@ -814,8 +819,9 @@ describe('detect-lottery-fires handler', () => {
     });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
     // CALL fires with otm_diff < -150M → direction_gated=true (gate kept).
-    expect(insertCall.at(-12)).toBe(true);
-    expect(insertCall.at(-13)).toBeNull();
+    // Post-#178 cluster_bonus tail-append: direction_gated at -13, score at -14.
+    expect(insertCall.at(-13)).toBe(true);
+    expect(insertCall.at(-14)).toBeNull();
   });
 
   it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
@@ -845,14 +851,14 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Post-#168 tail layout: ..., inferred_structure(-8),
-    //              is_isolated_leg(-7), match_confidence(-6),
-    //              pattern_group_id(-5), takeit_*(-4..-2),
-    //              gamma_at_trigger(-1).
-    expect(insertCall.at(-8)).toBe('vertical');
-    expect(insertCall.at(-7)).toBe(false);
-    expect(insertCall.at(-6)).toBe(0.83);
-    expect(insertCall.at(-5)).toBe('pg-abc-123');
+    // Post-#178 tail layout: ..., inferred_structure(-9),
+    //              is_isolated_leg(-8), match_confidence(-7),
+    //              pattern_group_id(-6), takeit_*(-5..-3),
+    //              gamma_at_trigger(-2), cluster_bonus(-1).
+    expect(insertCall.at(-9)).toBe('vertical');
+    expect(insertCall.at(-8)).toBe(false);
+    expect(insertCall.at(-7)).toBe(0.83);
+    expect(insertCall.at(-6)).toBe('pg-abc-123');
     // Helper was called once with the alert's anchor coordinates.
     expect(mockClassifyAlertMultileg).toHaveBeenCalledTimes(1);
     const [, , ticker, optionChain] = mockClassifyAlertMultileg.mock.calls[0]!;
@@ -883,14 +889,82 @@ describe('detect-lottery-fires handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
     const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Post-#168 gamma tail-append positional layout:
-    //   inferred_structure=-8, is_isolated_leg=-7, match_confidence=-6,
-    //   pattern_group_id=-5, takeit_prob=-4, takeit_version=-3,
-    //   takeit_features=-2, gamma_at_trigger=-1.
-    expect(insertCall.at(-8)).toBeNull(); // inferred_structure
-    expect(insertCall.at(-7)).toBeNull(); // is_isolated_leg
-    expect(insertCall.at(-6)).toBeNull(); // match_confidence
-    expect(insertCall.at(-5)).toBeNull(); // pattern_group_id
+    // Post-#178 cluster_bonus tail-append positional layout:
+    //   inferred_structure=-9, is_isolated_leg=-8, match_confidence=-7,
+    //   pattern_group_id=-6, takeit_prob=-5, takeit_version=-4,
+    //   takeit_features=-3, gamma_at_trigger=-2, cluster_bonus=-1.
+    expect(insertCall.at(-9)).toBeNull(); // inferred_structure
+    expect(insertCall.at(-8)).toBeNull(); // is_isolated_leg
+    expect(insertCall.at(-7)).toBeNull(); // match_confidence
+    expect(insertCall.at(-6)).toBeNull(); // pattern_group_id
+  });
+
+  it('applies cluster_bonus=1 (pair) when two different tier1 tickers fire within 5 min (V2.2 Phase C.4)', async () => {
+    // Two chains — SOUN (DTE=0, gamma=0.01) and RKLB — fire in the same cron batch.
+    // SOUN scores tier1 via gamma Q0 boost + composite; RKLB gets the cluster bonus
+    // because SOUN lands in committedFires as a tier1 peer before RKLB is processed.
+    //
+    // SOUN score (Friday 2026-05-01, non-Monday, all-ask, gamma=0.01 → Q0):
+    //   ticker=+5, AM_open=+4, dte0=-2, C=+2, vol_oi_Q2=+2, gamma_Q0=+3, ask_pct_Q4=-4 → 10
+    //   + composite SOUN+AM_open+gamma_q='0' → +3 → total 13 (tier1, t1=9)
+    //
+    // RKLB's own score doesn't matter — its cluster_bonus is driven by SOUN's tier1 entry.
+
+    // All-ask SOUN ticks with gamma=0.01 (< Q0 boundary 0.01235 → weight +3).
+    const sounTicks = [
+      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:30:00Z', { size: 50 }), gamma: 0.01 },
+      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:30:30Z', { size: 20 }), gamma: 0.01 },
+      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:31:00Z', { size: 20 }), gamma: 0.01 },
+      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:31:30Z', { size: 20 }), gamma: 0.01 },
+      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:32:00Z', { size: 20 }), gamma: 0.01 },
+      { ...tick('SOUN260501C00010000', 'SOUN', 'C', 10, '2026-05-01', '2026-05-01T13:32:30Z', { size: 20 }), gamma: 0.01 },
+    ];
+    // RKLB uses the standard fireable SNDK stream pattern (no gamma), remapped to RKLB.
+    const rklbTicks = fireableSndkStream().map((t) => ({
+      ...t,
+      ticker: 'RKLB',
+      option_chain: 'RKLB260501C01175000',
+      expiry: '2026-05-01',
+    }));
+    const flowTs = '2026-05-01T13:29:30Z';
+    // Aligned flow: cum_ncp > cum_npp → isAligned=true for CALL fires.
+    const alignedFlow = [{ ts: flowTs, cum_ncp: '5000000', cum_npp: '1000000' }];
+    mockTicks([...sounTicks, ...rklbTicks])
+      .mockResolvedValueOnce([]) // prior fires (both chains eligible)
+      // SOUN fire (processed first by Map insertion order):
+      .mockResolvedValueOnce([]) // SOUN flow_data
+      .mockResolvedValueOnce([]) // SOUN spot_exposures
+      .mockResolvedValueOnce(alignedFlow) // SOUN ticker_flow_snapshot → isAligned=true
+      .mockResolvedValueOnce([{ id: 1 }]) // SOUN INSERT
+      // RKLB fire (processed second):
+      .mockResolvedValueOnce([]) // RKLB flow_data
+      .mockResolvedValueOnce([]) // RKLB spot_exposures
+      .mockResolvedValueOnce(alignedFlow) // RKLB ticker_flow_snapshot → isAligned=true
+      .mockResolvedValueOnce([{ id: 2 }]); // RKLB INSERT
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 2, inserted: 2 });
+
+    // cluster_bonus is at bind position -1 of each INSERT call.
+    // Call sequence (post-prior-fires): SOUN [flow, spot, flow_snapshot, INSERT]
+    // then RKLB [flow, spot, flow_snapshot, INSERT]. Total 8 per-fire calls.
+    // RKLB INSERT is at(-1); SOUN INSERT is at(-5) (4 RKLB calls separate them).
+    const allCalls = mockSql.mock.calls;
+    const rklbInsert = allCalls.at(-1) as unknown[];
+    const sounInsert = allCalls.at(-5) as unknown[];
+
+    // SOUN: first fire in batch, committedFires empty → isolated → cluster_bonus=0.
+    expect(sounInsert.at(-1)).toBe(0);
+    // RKLB: SOUN in committedFires with score=13 (>= tier1=9) at same trigger time
+    // → clusterSize=2 → pair bonus → cluster_bonus=1.
+    expect(rklbInsert.at(-1)).toBe(1);
   });
 
   it('still fires when prior-fire is older than the 5-min cooldown', async () => {
