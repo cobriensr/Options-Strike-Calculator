@@ -6,8 +6,8 @@
  * Spec: docs/superpowers/specs/lottery-rescore-2026-05-22.md
  * Source JSON: ml/output/lottery_score_weights.json
  *
- * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-05-23T04:51:28.276154+00:00
+ * Model version : rescore-v1-2026-05-23-no-context
+ * Trained at    : 2026-05-23T01:30:00.000000+00:00
  *
  * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
  * Until then the old lottery-score-weights.ts continues to drive production.
@@ -196,68 +196,6 @@ export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
 ];
 
 // ---------------------------------------------------------------------------
-// Context feature quintile weights + boundaries  (V2.2 Phase D — 7 features)
-//
-// spx_spot_charm_oi  — SPX charm OI at spot strike
-// spx_spot_vanna_oi  — SPX vanna OI at spot strike
-// mkt_tide_ncp       — net call premium (UW market tide)
-// mkt_tide_otm_diff  — OTM net call minus net put premium
-// mkt_tide_diff      — net call minus net put premium (all strikes)
-// spx_spot_gamma_oi  — SPX gamma OI at spot strike
-// mkt_tide_npp       — net put premium (UW market tide)
-// ---------------------------------------------------------------------------
-
-export const SPX_SPOT_CHARM_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -2, -1, 0, 1, 1,
-];
-export const SPX_SPOT_CHARM_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  -29528641098120.07, -19611960547605.07, -15433464342276.68,
-  -12950119474939.72,
-];
-
-export const SPX_SPOT_VANNA_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  0, 1, 0, -2, -1,
-];
-export const SPX_SPOT_VANNA_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  405295448.4928, 688821606.3173, 1324795003.992, 2026181597.3998,
-];
-
-export const MKT_TIDE_NCP_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -2, 0, 0, 0, 1,
-];
-export const MKT_TIDE_NCP_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  -68796483.0, 1899398.0, 61638531.0, 155035892.0,
-];
-
-export const MKT_TIDE_OTM_DIFF_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -2, -1, 0, 1, 1,
-];
-export const MKT_TIDE_OTM_DIFF_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  -136308101.5, -60541546.0, -5119983.0, 38399437.5,
-];
-
-export const MKT_TIDE_DIFF_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -2, 0, 1, 0, 1,
-];
-export const MKT_TIDE_DIFF_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  -111967280.0, -6085438.0, 54661710.5, 164716479.0,
-];
-
-export const SPX_SPOT_GAMMA_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -1, -1, -2, 1, 1,
-];
-export const SPX_SPOT_GAMMA_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  -43090757765.16, 12409690851.49, 55236262808.53, 92758162435.96,
-];
-
-export const MKT_TIDE_NPP_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -2, 1, 1, 1, -2,
-];
-export const MKT_TIDE_NPP_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  -45531091.0, -6931816.0, 17729728.0, 55641044.0,
-];
-
-// ---------------------------------------------------------------------------
 // Option type weights
 // ---------------------------------------------------------------------------
 
@@ -437,22 +375,6 @@ export function computeLotteryScoreV2(args: {
    * for this fire's tod component.
    */
   dayOfWeek?: string;
-  // Context features (V2.2 Phase D) — macro-level Greek/flow signals.
-  // Each is optional; null/undefined → 0 contribution (no macro snapshot).
-  /** spx_spot_charm_oi; null when macro snapshot unavailable. */
-  spxSpotCharmOi?: number | null;
-  /** spx_spot_vanna_oi; null when macro snapshot unavailable. */
-  spxSpotVannaOi?: number | null;
-  /** mkt_tide_ncp; null when macro snapshot unavailable. */
-  mktTideNcp?: number | null;
-  /** mkt_tide_otm_diff; null when macro snapshot unavailable. */
-  mktTideOtmDiff?: number | null;
-  /** mkt_tide_diff; null when macro snapshot unavailable. */
-  mktTideDiff?: number | null;
-  /** spx_spot_gamma_oi; null when macro snapshot unavailable. */
-  spxSpotGammaOi?: number | null;
-  /** mkt_tide_npp; null when macro snapshot unavailable. */
-  mktTideNpp?: number | null;
 }): number | null {
   if (!args.isAligned) return null;
 
@@ -491,62 +413,6 @@ export function computeLotteryScoreV2(args: {
   }
 
   score += OPT_TYPE_WEIGHTS_V2[args.optionType];
-
-  // Context features (V2.2 Phase D) — null/undefined → skip (0 contribution).
-  if (args.spxSpotCharmOi != null) {
-    score +=
-      SPX_SPOT_CHARM_OI_QUINTILE_WEIGHTS[
-        assignQuintile(
-          args.spxSpotCharmOi,
-          SPX_SPOT_CHARM_OI_QUINTILE_BOUNDARIES,
-        )
-      ] ?? 0;
-  }
-  if (args.spxSpotVannaOi != null) {
-    score +=
-      SPX_SPOT_VANNA_OI_QUINTILE_WEIGHTS[
-        assignQuintile(
-          args.spxSpotVannaOi,
-          SPX_SPOT_VANNA_OI_QUINTILE_BOUNDARIES,
-        )
-      ] ?? 0;
-  }
-  if (args.mktTideNcp != null) {
-    score +=
-      MKT_TIDE_NCP_QUINTILE_WEIGHTS[
-        assignQuintile(args.mktTideNcp, MKT_TIDE_NCP_QUINTILE_BOUNDARIES)
-      ] ?? 0;
-  }
-  if (args.mktTideOtmDiff != null) {
-    score +=
-      MKT_TIDE_OTM_DIFF_QUINTILE_WEIGHTS[
-        assignQuintile(
-          args.mktTideOtmDiff,
-          MKT_TIDE_OTM_DIFF_QUINTILE_BOUNDARIES,
-        )
-      ] ?? 0;
-  }
-  if (args.mktTideDiff != null) {
-    score +=
-      MKT_TIDE_DIFF_QUINTILE_WEIGHTS[
-        assignQuintile(args.mktTideDiff, MKT_TIDE_DIFF_QUINTILE_BOUNDARIES)
-      ] ?? 0;
-  }
-  if (args.spxSpotGammaOi != null) {
-    score +=
-      SPX_SPOT_GAMMA_OI_QUINTILE_WEIGHTS[
-        assignQuintile(
-          args.spxSpotGammaOi,
-          SPX_SPOT_GAMMA_OI_QUINTILE_BOUNDARIES,
-        )
-      ] ?? 0;
-  }
-  if (args.mktTideNpp != null) {
-    score +=
-      MKT_TIDE_NPP_QUINTILE_WEIGHTS[
-        assignQuintile(args.mktTideNpp, MKT_TIDE_NPP_QUINTILE_BOUNDARIES)
-      ] ?? 0;
-  }
 
   // Composite bonuses/penalties — iterate every entry and sum matching ones.
   // Guard on length so SonarJS doesn't flag an always-empty-collection loop
