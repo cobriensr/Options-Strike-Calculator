@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-23T03:48:23+00:00",
+  "generated_at": "2026-05-23T16:15:18+00:00",
   "dataset": {
     "total_days": 73,
     "labeled_days": 42,
@@ -192,7 +192,7 @@
     "status": "PASS",
     "warnings": [],
     "failures": [],
-    "run_time": "2026-05-22 22:48:13"
+    "run_time": "2026-05-23 11:15:07"
   },
   "pipeline_sections": [
     "health",
@@ -1180,7 +1180,7 @@
     "rows_singles": 15184
   },
   "calibration": {
-    "generated_at": "2026-05-23T03:48:08.955182+00:00",
+    "generated_at": "2026-05-23T16:15:02.238285+00:00",
     "total_rows": 49,
     "by_regime": {
       "ranging": {
