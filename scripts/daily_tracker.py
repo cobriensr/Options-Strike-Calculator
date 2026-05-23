@@ -98,15 +98,33 @@ def main() -> None:
     )
     today_df = df[df['date'] == latest]
 
-    df['tier'] = df['score'].apply(
-        lambda s: 'T1' if pd.notna(s) and s >= 18
-        else ('T2' if pd.notna(s) and s >= 12 else 'T3')
-    )
+    # Load V2 tier cutoffs from the weights JSON instead of hardcoding the
+    # legacy V1 thresholds (18/12). The V2 score distribution maxes out
+    # around 17, so V1 cutoffs would report ~0 tier1/tier2 every night and
+    # the tracker would be useless (caught by manual review 2026-05-22).
+    weights_path = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
+    if not weights_path.exists():
+        sys.exit(
+            f'[track] weights JSON not found at {weights_path} — '
+            f'run `make refit` first (or set LOTTERY_REFIT=1)'
+        )
+    import json as _json  # local: keep top-of-file imports stable
+    weights = _json.loads(weights_path.read_text())
+    t1_cutoff = int(weights['cutoffs']['t1'])
+    t2_cutoff = int(weights['cutoffs']['t2'])
+
+    def _classify(s):
+        if not pd.notna(s):
+            return 'T3'
+        if s >= t1_cutoff:
+            return 'T1'
+        if s >= t2_cutoff:
+            return 'T2'
+        return 'T3'
+
+    df['tier'] = df['score'].apply(_classify)
     today_df = today_df.copy()
-    today_df['tier'] = today_df['score'].apply(
-        lambda s: 'T1' if pd.notna(s) and s >= 18
-        else ('T2' if pd.notna(s) and s >= 12 else 'T3')
-    )
+    today_df['tier'] = today_df['score'].apply(_classify)
 
     n_total, fi_mean, fi_sharpe = stats(df['flow_inv'])
     t2plus = df[df['tier'].isin(['T1', 'T2'])]
