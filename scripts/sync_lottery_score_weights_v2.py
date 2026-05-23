@@ -65,6 +65,12 @@ def render_composite_bonuses(composites: list[dict]) -> str:
     return "[\n" + "\n".join(lines) + "\n]"
 
 
+def _camel(snake: str) -> str:
+    """Convert snake_case to camelCase (e.g. spx_spot_charm_oi → spxSpotCharmOi)."""
+    parts = snake.split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
 def render_ts(w: dict) -> str:  # noqa: PLR0914 — intentionally flat render function
     f = w["features"]
     cutoffs = w["cutoffs"]
@@ -120,6 +126,51 @@ def render_ts(w: dict) -> str:  # noqa: PLR0914 — intentionally flat render fu
     # Composite bonuses
     composites = f.get("composite_bonuses", [])
     composite_bonuses_ts = render_composite_bonuses(composites)
+
+    # Context feature quintile arrays (V2.2 Phase D — 7 macro features)
+    _ctx_features = [
+        ("spx_spot_charm_oi",  "SPX_SPOT_CHARM_OI"),
+        ("spx_spot_vanna_oi",  "SPX_SPOT_VANNA_OI"),
+        ("mkt_tide_ncp",       "MKT_TIDE_NCP"),
+        ("mkt_tide_otm_diff",  "MKT_TIDE_OTM_DIFF"),
+        ("mkt_tide_diff",      "MKT_TIDE_DIFF"),
+        ("spx_spot_gamma_oi",  "SPX_SPOT_GAMMA_OI"),
+        ("mkt_tide_npp",       "MKT_TIDE_NPP"),
+    ]
+    ctx_export_lines: list[str] = []
+    for feat_key, const_prefix in _ctx_features:
+        bk = f"{feat_key}_quintile_boundaries"
+        wk = f"{feat_key}_quintile_weights"
+        bv = fmt_array(f[bk])
+        wv = fmt_array(f[wk])
+        ctx_export_lines.append(
+            f"export const {const_prefix}_QUINTILE_WEIGHTS: ReadonlyArray<number> = {wv};\n"
+            f"export const {const_prefix}_QUINTILE_BOUNDARIES: ReadonlyArray<number> = {bv};"
+        )
+    ctx_exports_block = "\n\n".join(ctx_export_lines)
+
+    # Score function additions for context features
+    ctx_score_lines: list[str] = []
+    for feat_key, const_prefix in _ctx_features:
+        param = _camel(feat_key)
+        ctx_score_lines.append(
+            f"  if (args.{param} != null) {{\n"
+            f"    score += {const_prefix}_QUINTILE_WEIGHTS[\n"
+            f"      assignQuintile(args.{param}, {const_prefix}_QUINTILE_BOUNDARIES)\n"
+            f"    ] ?? 0;\n"
+            f"  }}"
+        )
+    ctx_score_block = "\n".join(ctx_score_lines)
+
+    # Signature additions for context features
+    ctx_param_lines: list[str] = []
+    for feat_key, _ in _ctx_features:
+        param = _camel(feat_key)
+        ctx_param_lines.append(
+            f"  /** {feat_key}; null when macro snapshot unavailable. */\n"
+            f"  {param}?: number | null;"
+        )
+    ctx_params_block = "\n".join(ctx_param_lines)
 
     t1 = cutoffs["t1"]
     t2 = cutoffs["t2"]
@@ -214,6 +265,20 @@ export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = {gb};
 
 export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = {aw};
 export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = {ab};
+
+// ---------------------------------------------------------------------------
+// Context feature quintile weights + boundaries  (V2.2 Phase D — 7 features)
+//
+// spx_spot_charm_oi  — SPX charm OI at spot strike
+// spx_spot_vanna_oi  — SPX vanna OI at spot strike
+// mkt_tide_ncp       — net call premium (UW market tide)
+// mkt_tide_otm_diff  — OTM net call minus net put premium
+// mkt_tide_diff      — net call minus net put premium (all strikes)
+// spx_spot_gamma_oi  — SPX gamma OI at spot strike
+// mkt_tide_npp       — net put premium (UW market tide)
+// ---------------------------------------------------------------------------
+
+{ctx_exports_block}
 
 // ---------------------------------------------------------------------------
 // Option type weights
@@ -345,6 +410,9 @@ export function computeLotteryScoreV2(args: {{
    * for this fire's tod component.
    */
   dayOfWeek?: string;
+  // Context features (V2.2 Phase D) — macro-level Greek/flow signals.
+  // Each is optional; null/undefined → 0 contribution (no macro snapshot).
+{ctx_params_block}
 }}): number | null {{
   if (!args.isAligned) return null;
 
@@ -382,6 +450,9 @@ export function computeLotteryScoreV2(args: {{
   }}
 
   score += OPT_TYPE_WEIGHTS_V2[args.optionType];
+
+  // Context features (V2.2 Phase D) — null/undefined → skip (0 contribution).
+{ctx_score_block}
 
   // Composite bonuses/penalties — iterate every entry and sum matching ones.
   for (const entry of COMPOSITE_BONUSES_V2) {{
@@ -435,6 +506,17 @@ def assign_quintile(value: float, boundaries: list[float]) -> int:
     return 4
 
 
+_CTX_FEATURES_PY = [
+    "spx_spot_charm_oi",
+    "spx_spot_vanna_oi",
+    "mkt_tide_ncp",
+    "mkt_tide_otm_diff",
+    "mkt_tide_diff",
+    "spx_spot_gamma_oi",
+    "mkt_tide_npp",
+]
+
+
 def compute_score_python(
     weights: dict,
     ticker: str,
@@ -445,6 +527,7 @@ def compute_score_python(
     trigger_ask_pct: float | None,
     option_type: str,
     is_aligned: bool,
+    ctx: dict[str, float | None] | None = None,
 ) -> int | None:
     if not is_aligned:
         return None
@@ -466,6 +549,16 @@ def compute_score_python(
         q = assign_quintile(trigger_ask_pct, f["ask_pct_quintile_boundaries"])
         score += f["ask_pct_quintile_weights"][q]
     score += f["option_type_weights"][option_type]
+    # Context features (V2.2 Phase D)
+    for feat in _CTX_FEATURES_PY:
+        bk = f"{feat}_quintile_boundaries"
+        wk = f"{feat}_quintile_weights"
+        if bk not in f or wk not in f:
+            continue
+        val = (ctx or {}).get(feat)
+        if val is not None:
+            q = assign_quintile(val, f[bk])
+            score += f[wk][q]
     return score
 
 

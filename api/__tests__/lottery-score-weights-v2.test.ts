@@ -18,6 +18,10 @@ import {
   VOL_OI_QUINTILE_BOUNDARIES,
   TOD_WEIGHTS_DOW_OVERRIDES_V2,
   TOD_WEIGHTS_V2,
+  MKT_TIDE_NCP_QUINTILE_BOUNDARIES,
+  MKT_TIDE_NCP_QUINTILE_WEIGHTS,
+  SPX_SPOT_GAMMA_OI_QUINTILE_BOUNDARIES,
+  SPX_SPOT_GAMMA_OI_QUINTILE_WEIGHTS,
 } from '../_lib/lottery-score-weights-v2.js';
 
 describe('computeLotteryScoreV2 — hard alignment gate', () => {
@@ -369,5 +373,82 @@ describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
     expect(amznNullGamma).not.toBeNull();
     // Only ticker weight difference — no composite.
     expect(sndkNullGamma! - amznNullGamma!).toBe(1);
+  });
+});
+
+describe('computeLotteryScoreV2 — Phase D context features', () => {
+  const base = {
+    ticker: 'AMZN',
+    tod: 'AM_open' as const,
+    dte: 1,
+    volOiWindow: null,
+    gammaAtTrigger: null,
+    triggerAskPct: null,
+    optionType: 'C' as const,
+    isAligned: true,
+  };
+
+  it('a non-null context feature contributes its quintile weight to the score', () => {
+    // Place mktTideNcp safely in Q4 (above the last boundary) → picks
+    // MKT_TIDE_NCP_QUINTILE_WEIGHTS[4]. Confirm score increases by that weight.
+    const lastBoundary =
+      MKT_TIDE_NCP_QUINTILE_BOUNDARIES[
+        MKT_TIDE_NCP_QUINTILE_BOUNDARIES.length - 1
+      ] ?? 0;
+    const ncpQ4Value = lastBoundary * 2; // safely above → Q4
+    const q4Weight = MKT_TIDE_NCP_QUINTILE_WEIGHTS[4] ?? 0;
+
+    const withCtx = computeLotteryScoreV2({ ...base, mktTideNcp: ncpQ4Value });
+    const withoutCtx = computeLotteryScoreV2({ ...base });
+
+    expect(withCtx).not.toBeNull();
+    expect(withoutCtx).not.toBeNull();
+    expect(withCtx! - withoutCtx!).toBe(q4Weight);
+  });
+
+  it('null context feature contributes 0 to the score', () => {
+    // Explicitly passing null for every context param must yield the same
+    // score as omitting them entirely (both → 0 contribution per param).
+    const withNulls = computeLotteryScoreV2({
+      ...base,
+      spxSpotCharmOi: null,
+      spxSpotVannaOi: null,
+      mktTideNcp: null,
+      mktTideOtmDiff: null,
+      mktTideDiff: null,
+      spxSpotGammaOi: null,
+      mktTideNpp: null,
+    });
+    const withOmitted = computeLotteryScoreV2({ ...base });
+
+    expect(withNulls).not.toBeNull();
+    expect(withOmitted).not.toBeNull();
+    expect(withNulls).toBe(withOmitted);
+  });
+
+  it('multiple context features stack additively', () => {
+    // Use Q4 for mktTideNcp and Q0 for spxSpotGammaOi, then check that the
+    // combined delta equals the sum of the two individual deltas.
+    const ncpLast =
+      MKT_TIDE_NCP_QUINTILE_BOUNDARIES[
+        MKT_TIDE_NCP_QUINTILE_BOUNDARIES.length - 1
+      ] ?? 0;
+    const gammaFirst = SPX_SPOT_GAMMA_OI_QUINTILE_BOUNDARIES[0] ?? 0;
+
+    const ncpQ4Val = ncpLast * 2;
+    const gammaQ0Val = gammaFirst - Math.abs(gammaFirst) - 1; // safely below Q0 boundary
+    const ncpWeight = MKT_TIDE_NCP_QUINTILE_WEIGHTS[4] ?? 0;
+    const gammaWeight = SPX_SPOT_GAMMA_OI_QUINTILE_WEIGHTS[0] ?? 0;
+
+    const baseline = computeLotteryScoreV2({ ...base });
+    const withBoth = computeLotteryScoreV2({
+      ...base,
+      mktTideNcp: ncpQ4Val,
+      spxSpotGammaOi: gammaQ0Val,
+    });
+
+    expect(baseline).not.toBeNull();
+    expect(withBoth).not.toBeNull();
+    expect(withBoth! - baseline!).toBe(ncpWeight + gammaWeight);
   });
 });
