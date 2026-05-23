@@ -27,6 +27,7 @@ import { SectionBox } from '../ui/SectionBox';
 import { useGammaSetups } from '../../hooks/useGammaSetups';
 import { DayConfidenceBanner } from './DayConfidenceBanner';
 import { FireRow } from './FireRow';
+import { RollingStatsBar } from './RollingStatsBar';
 
 interface GammaNodeDetectorPanelProps {
   marketOpen: boolean;
@@ -49,6 +50,7 @@ export const GammaNodeDetectorPanel = memo(function GammaNodeDetectorPanel({
       )}
       {data != null && (
         <>
+          <RollingStatsBar marketOpen={marketOpen} />
           <DayConfidenceBanner data={data} />
           {data.fires.length === 0 ? (
             <div className="border-edge bg-surface-alt rounded border p-2 text-[11px] text-neutral-500">
