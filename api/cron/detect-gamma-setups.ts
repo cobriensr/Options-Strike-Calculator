@@ -59,10 +59,12 @@ export default withCronInstrumentation(
     }
 
     // Parallel: candles, periscope nodes, ES basis. Each is independent.
+    // computeEsBasisChange5m defaults to NOW() — the live cron always wants
+    // the most recent window. The backfill script passes a referenceTime.
     const [bars, nodes, esBasis] = await Promise.all([
       loadRecentBars(sql, dayCtx.today, 20),
       loadPositiveGammaNodes(sql, dayCtx.today),
-      computeEsBasisChange5m(sql, dayCtx.today),
+      computeEsBasisChange5m(sql),
     ]);
 
     if (bars.length === 0 || nodes.length === 0) {

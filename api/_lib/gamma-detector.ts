@@ -427,32 +427,48 @@ interface EsBarRow {
  * Positive value = ES outperforming cash (holding bid). Returns null when
  * either ES or SPX history is missing.
  *
- * Phase 1: simple difference of last-bar minus 5-bars-ago for each, then
- * subtract. A more robust implementation would use rolling beta + spread
- * z-score but that's tuning, not infra.
+ * ES bars live in `futures_bars` with `symbol='ES'` (the Databento sidecar
+ * ingests front-month ES into that table — there is also an `es_bars`
+ * table in the schema but it's empty / deprecated). A naïve query of
+ * `es_bars` was the original Phase 1 bug: the table has no `date` or
+ * `interval_min` columns, the query threw, the catch swallowed it, and
+ * the PCS Monday detector's basis filter was silently disabled at deploy.
+ *
+ * `referenceTime` is the timestamp the 6-minute window is anchored to.
+ * Defaults to NOW() so the live cron is parameter-free; the historical
+ * backfill script passes the bar's `ts` to get cycle-accurate basis.
+ *
+ * Phase 1 simple form: last-bar close minus 5-bars-ago close for each
+ * series, then subtract. A more robust spread z-score is tuning, not infra.
  */
 export async function computeEsBasisChange5m(
   sql: Sql,
-  today: string,
+  referenceTime: Date = new Date(),
 ): Promise<number | null> {
+  const refIso = referenceTime.toISOString();
+
   const esRows = (await withDbRetry(
     () => sql`
       SELECT close
-      FROM es_bars
-      WHERE date = ${today}::date AND interval_min = 1
+      FROM futures_bars
+      WHERE symbol = 'ES'
+        AND ts >= ${refIso}::timestamptz - INTERVAL '6 minutes'
+        AND ts <= ${refIso}::timestamptz
       ORDER BY ts DESC
       LIMIT 6
     `,
     2,
     10_000,
-  ).catch(() => [] as EsBarRow[])) as EsBarRow[];
+  )) as EsBarRow[];
   if (esRows.length < 6) return null;
 
   const spxRows = (await withDbRetry(
     () => sql`
       SELECT close
       FROM index_candles_1m
-      WHERE symbol = 'SPX' AND market_time = 'r' AND date = ${today}::date
+      WHERE symbol = 'SPX' AND market_time = 'r'
+        AND timestamp >= ${refIso}::timestamptz - INTERVAL '6 minutes'
+        AND timestamp <= ${refIso}::timestamptz
       ORDER BY timestamp DESC
       LIMIT 6
     `,
