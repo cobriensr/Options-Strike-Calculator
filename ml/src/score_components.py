@@ -157,6 +157,29 @@ def compute_components(
         else 0
     )
 
+    # Context features (V2.2 Phase D) — 7 macro-level quintile features.
+    # Each contributes 0 when the input is None (missing macro snapshot).
+    _context_features = [
+        ("spx_spot_charm_oi", "spx_spot_charm_oi"),
+        ("spx_spot_vanna_oi", "spx_spot_vanna_oi"),
+        ("mkt_tide_ncp", "mkt_tide_ncp"),
+        ("mkt_tide_otm_diff", "mkt_tide_otm_diff"),
+        ("mkt_tide_diff", "mkt_tide_diff"),
+        ("spx_spot_gamma_oi", "spx_spot_gamma_oi"),
+        ("mkt_tide_npp", "mkt_tide_npp"),
+    ]
+    for fire_key, feature_prefix in _context_features:
+        boundaries_key = f"{feature_prefix}_quintile_boundaries"
+        weights_key = f"{feature_prefix}_quintile_weights"
+        if boundaries_key not in f or weights_key not in f:
+            # Weights JSON doesn't have this context block — skip (backward compat).
+            components[fire_key] = 0
+            continue
+        q = assign_quintile(fire_row.get(fire_key), f[boundaries_key])
+        components[fire_key] = (
+            int(f[weights_key][q]) if q is not None else 0
+        )
+
     # Composite bonuses/penalties — sum all matching entries.
     composite_total = 0
     for entry in f.get("composite_bonuses", []):

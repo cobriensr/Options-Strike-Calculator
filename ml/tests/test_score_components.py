@@ -37,6 +37,21 @@ STUB_WEIGHTS = {
         "gamma_quintile_boundaries": [0.012, 0.025, 0.042, 0.068],
         "ask_pct_quintile_weights": [-1, 1, 1, 2, -4],
         "ask_pct_quintile_boundaries": [0.53, 0.57, 0.625, 0.75],
+        # Context features (V2.2 Phase D) — stub boundaries/weights
+        "spx_spot_charm_oi_quintile_boundaries": [-30e12, -20e12, -15e12, -13e12],
+        "spx_spot_charm_oi_quintile_weights": [-2, -1, 0, 1, 1],
+        "spx_spot_vanna_oi_quintile_boundaries": [4e8, 7e8, 1.3e9, 2.0e9],
+        "spx_spot_vanna_oi_quintile_weights": [0, 1, 0, -2, -1],
+        "mkt_tide_ncp_quintile_boundaries": [-7e7, 2e6, 6e7, 1.5e8],
+        "mkt_tide_ncp_quintile_weights": [-2, 0, 0, 0, 1],
+        "mkt_tide_otm_diff_quintile_boundaries": [-1.4e8, -6e7, -5e6, 4e7],
+        "mkt_tide_otm_diff_quintile_weights": [-2, -1, 0, 1, 1],
+        "mkt_tide_diff_quintile_boundaries": [-1.1e8, -6e6, 5.5e7, 1.6e8],
+        "mkt_tide_diff_quintile_weights": [-2, 0, 1, 0, 1],
+        "spx_spot_gamma_oi_quintile_boundaries": [-4.3e10, 1.2e10, 5.5e10, 9.3e10],
+        "spx_spot_gamma_oi_quintile_weights": [-1, -1, -2, 1, 1],
+        "mkt_tide_npp_quintile_boundaries": [-4.6e7, -7e6, 1.8e7, 5.6e7],
+        "mkt_tide_npp_quintile_weights": [-2, 1, 1, 1, -2],
     },
     "cutoffs": {"t1": 9, "t2": 7},
 }
@@ -416,6 +431,99 @@ def test_composite_no_composite_bonuses_field_backward_compat():
     components = compute_components(fire, STUB_WEIGHTS_NO_OVERRIDES)
     assert components["composite"] == 0
     # Sum invariant still holds
+    component_sum = sum(v for k, v in components.items() if k != "total")
+    assert components["total"] == component_sum
+
+
+# ---------------------------------------------------------------------------
+# compute_components — V2.2 Phase D context features
+# ---------------------------------------------------------------------------
+
+
+def test_context_feature_contributes_correctly():
+    # mkt_tide_ncp=2e8 is above the last boundary (1.5e8) → Q4, weight=1
+    # mkt_tide_npp=-1e8 is below the first boundary (-4.6e7) → Q0, weight=-2
+    # All other context features set to None → 0 contribution each
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+        "mkt_tide_ncp": 2e8,       # Q4 → weight=+1
+        "mkt_tide_npp": -1e8,      # Q0 → weight=-2
+        "mkt_tide_diff": None,
+        "mkt_tide_otm_diff": None,
+        "spx_spot_charm_oi": None,
+        "spx_spot_vanna_oi": None,
+        "spx_spot_gamma_oi": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS)
+    # Base: AMD(5) + AM_open(4) + DTE1(4) + C(2) = 15
+    # Context: ncp(+1) + npp(-2) = -1 net
+    assert components["mkt_tide_ncp"] == 1
+    assert components["mkt_tide_npp"] == -2
+    assert components["mkt_tide_diff"] == 0
+    assert components["spx_spot_charm_oi"] == 0
+    assert components["total"] == 15 + 1 + (-2)
+    # Sum invariant
+    component_sum = sum(v for k, v in components.items() if k != "total")
+    assert components["total"] == component_sum
+
+
+def test_null_context_feature_contributes_zero():
+    # All 7 context features set to None → each contributes 0
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+        "mkt_tide_ncp": None,
+        "mkt_tide_npp": None,
+        "mkt_tide_diff": None,
+        "mkt_tide_otm_diff": None,
+        "spx_spot_charm_oi": None,
+        "spx_spot_vanna_oi": None,
+        "spx_spot_gamma_oi": None,
+    }
+    components = compute_components(fire, STUB_WEIGHTS)
+    for key in (
+        "mkt_tide_ncp", "mkt_tide_npp", "mkt_tide_diff", "mkt_tide_otm_diff",
+        "spx_spot_charm_oi", "spx_spot_vanna_oi", "spx_spot_gamma_oi",
+    ):
+        assert components[key] == 0, f"{key} should be 0 when None"
+    component_sum = sum(v for k, v in components.items() if k != "total")
+    assert components["total"] == component_sum
+
+
+def test_backward_compat_no_context_blocks_in_stub_weights_no_overrides():
+    # STUB_WEIGHTS_NO_OVERRIDES has no context feature keys → each contributes 0,
+    # but compute_components must not raise a KeyError (backward compat).
+    fire = {
+        "ticker": "AMD",
+        "tod": "AM_open",
+        "dte": 1,
+        "option_type": "C",
+        "vol_oi_window": None,
+        "gamma": None,
+        "ask_pct": None,
+        # Provide context values — should be silently ignored since the
+        # weights JSON has no corresponding boundary/weight keys.
+        "mkt_tide_ncp": 1e8,
+        "spx_spot_gamma_oi": 5e10,
+    }
+    components = compute_components(fire, STUB_WEIGHTS_NO_OVERRIDES)
+    # All context components are 0 because the weights block is absent.
+    for key in (
+        "mkt_tide_ncp", "mkt_tide_npp", "mkt_tide_diff", "mkt_tide_otm_diff",
+        "spx_spot_charm_oi", "spx_spot_vanna_oi", "spx_spot_gamma_oi",
+    ):
+        assert components[key] == 0, f"{key} should be 0 (no weights block)"
     component_sum = sum(v for k, v in components.items() if k != "total")
     assert components["total"] == component_sum
 
