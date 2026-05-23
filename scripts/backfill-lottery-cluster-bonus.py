@@ -254,7 +254,13 @@ def main() -> None:
     print(f"  tier1_min={TIER1_MIN_SCORE}, window={CLUSTER_WINDOW_SEC}s (5 min)")
     print()
 
-    conn = psycopg2.connect(database_url)
+    # psycopg2's URL parser can't handle Neon's query params (sslmode,
+    # channel_binding, etc.) when they contain "=" in their values.
+    # Strip the entire query string and pass sslmode as a keyword arg.
+    from urllib.parse import urlparse as _urlparse, urlunparse as _urlunparse
+    _parsed = _urlparse(database_url)
+    connect_url = _urlunparse(_parsed._replace(query=""))
+    conn = psycopg2.connect(connect_url, sslmode="require")
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
