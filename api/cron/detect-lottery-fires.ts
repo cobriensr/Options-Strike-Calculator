@@ -615,14 +615,12 @@ export default withCronInstrumentation(
             'en-US',
             { weekday: 'long' },
           ),
-          // Phase D context features — pulled from macro snapshot at fire time.
-          spxSpotCharmOi: macro.spx_spot_charm_oi,
-          spxSpotVannaOi: macro.spx_spot_vanna_oi,
-          mktTideNcp: macro.mkt_tide_ncp,
-          mktTideOtmDiff: macro.mkt_tide_otm_diff,
-          mktTideDiff: macro.mkt_tide_diff,
-          spxSpotGammaOi: macro.spx_spot_gamma_oi,
-          mktTideNpp: macro.mkt_tide_npp,
+          // NOTE: Phase D context features (spxSpotCharmOi, spxSpotVannaOi,
+          // mktTideNcp, mktTideNpp, mktTideDiff, mktTideOtmDiff,
+          // spxSpotGammaOi) removed 2026-05-23 — walk-forward found them
+          // systematically overfit (+0.099 OOS Sharpe gain from removal).
+          // The `macro` object is still fetched for other uses (logging,
+          // future re-evaluation); removing these params does not break it.
         });
         // V2.2 Phase C.4 cluster bonus: count distinct other tier1 tickers
         // that fired within ±5 min of this fire in the current cron batch,
