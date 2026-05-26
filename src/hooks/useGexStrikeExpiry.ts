@@ -1,6 +1,7 @@
 /**
- * useGexStrikeExpiry — fetches per-strike GEX for SPY + QQQ from
- * /api/gex-strike-expiry, one call per ticker, in parallel.
+ * useGexStrikeExpiry — fetches per-strike GEX for SPY, QQQ, SPX, NDX
+ * from /api/gex-strike-expiry, one call per ticker, in parallel via
+ * Promise.allSettled.
  *
  * Live mode (no `at` arg): polls every POLL_INTERVALS.STRIKE_BATTLE_MAP
  * during market hours. The uw-stream daemon UPSERTs WS pushes
@@ -13,6 +14,12 @@
  * Owner-or-guest: matches the API endpoint's auth tier. Public
  * visitors get 401 and the hook stays idle without surfacing a
  * user-visible error.
+ *
+ * StrikeBattleMap is the active consumer of the multi-ticker shape.
+ * The former SPX-only sibling (`useGexStrikeExpirySpx`) was retired
+ * in Phase 5 of the GEX Landscape 1-min GexBot rebuild — GexLandscape
+ * now reads from /api/gex-landscape via useGexLandscapeData and no
+ * longer needs a separate per-strike polling hook.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -267,91 +274,4 @@ export function useGexStrikeExpiry(
   }, [fetchAll]);
 
   return { data, loading, error, errors, refresh };
-}
-
-export interface UseGexStrikeExpirySpxReturn {
-  /** SPX-only payload, or null until first successful fetch / 401 / empty. */
-  data: GexStrikeExpiryResponse | null;
-  loading: boolean;
-  error: string | null;
-  refresh: () => void;
-}
-
-/**
- * SPX-only sibling of `useGexStrikeExpiry`. Fires a single
- * /api/gex-strike-expiry?ticker=SPX request per poll instead of
- * fanning out to all four tickers. Used by GexLandscape after the
- * MM-data swap (Phase 2 of
- * docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md), which
- * only consumes SPX for the vol reinforcement side channel — fetching
- * SPY/QQQ/NDX every 30s would be ~75% wasted bandwidth.
- *
- * StrikeBattleMap continues to use the multi-ticker `useGexStrikeExpiry`
- * — that's the other consumer that genuinely needs the full Record.
- */
-export function useGexStrikeExpirySpx(
-  marketOpen: boolean,
-  expiry: string,
-  at: string | null = null,
-): UseGexStrikeExpirySpxReturn {
-  const accessMode = getAccessMode();
-  const [data, setData] = useState<GexStrikeExpiryResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const mountedRef = useRef(true);
-  // Consecutive failure counter — only surface an error once SPX has
-  // missed FAIL_GRACE_COUNT polls in a row. Single-poll Neon hangs
-  // shouldn't render the "SPX vol reinforcement: signal timed out"
-  // banner; the previous payload (data state) stays sticky meanwhile.
-  const failCountRef = useRef(0);
-
-  const fetchSpx = useCallback(async () => {
-    try {
-      const result = await fetchOne('SPX', expiry, at);
-      if (!mountedRef.current) return;
-      // Sticky-on-empty: preserve the prior payload when the server
-      // returned null (401 anon path) so the panel doesn't blank out.
-      if (result !== null) setData(result);
-      failCountRef.current = 0;
-      setError(null);
-    } catch (err) {
-      if (!mountedRef.current) return;
-      failCountRef.current += 1;
-      if (failCountRef.current >= FAIL_GRACE_COUNT) {
-        setError(getErrorMessage(err));
-      }
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
-  }, [expiry, at]);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  // Eager mount fetch — usePolling only schedules the recurring tick.
-  useEffect(() => {
-    if (accessMode === 'public') {
-      setLoading(false);
-      return;
-    }
-    void fetchSpx();
-  }, [accessMode, fetchSpx]);
-
-  // Snapshot mode (`at`) is static — no polling. Public access stays idle.
-  usePolling(() => void fetchSpx(), POLL_INTERVALS.STRIKE_BATTLE_MAP, [
-    accessMode !== 'public',
-    marketOpen,
-    !at,
-  ]);
-
-  const refresh = useCallback(() => {
-    setLoading(true);
-    void fetchSpx();
-  }, [fetchSpx]);
-
-  return { data, loading, error, refresh };
 }

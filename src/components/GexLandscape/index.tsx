@@ -26,7 +26,8 @@
  *   deltas.ts                — computePriceTrend over a {ts, price}[] buffer
  *   bias.ts                  — computeBias (structural verdict synthesis)
  *   formatters.ts            — fmtGex / fmtPct / fmtTime / formatBiasForClaude
- *   (ScrubControls)          — shared scrub/date/status/refresh controls (../ScrubControls)
+ *   (ScrubControls)          — shared scrub/status/refresh controls (../ScrubControls);
+ *                              date picker is hidden here (today-only contract)
  *   BiasPanel.tsx            — verdict + gravity + drift targets + trends block
  *   StrikeTable.tsx          — sticky-header + scrollable row grid
  *   ClassificationLegend.tsx — bottom legend
@@ -119,8 +120,8 @@ const GexLandscape = memo(function GexLandscape({
   // hook polls live. As soon as the live response arrives, `timestamps`
   // populates and the user can scrub. Stepping back from live sets
   // `scrubTimestamp` to a real ts; the data hook's `at` flips, polling
-  // halts (per `useGexStrikeExpiry` semantics), and the API returns
-  // the at-or-before snapshot for that minute.
+  // halts (per useGexLandscapeData's `!at` poll gate), and the API
+  // returns the at-or-before snapshot for that minute.
   //
   // The data hook is called with the live `timestamps` driving
   // controller, then the controller's pin feeds back as `at`. This
@@ -148,9 +149,12 @@ const GexLandscape = memo(function GexLandscape({
   // a same-render circular dep (controller drives `at` → hook returns
   // timestamps → controller reads them). Mirroring through state breaks
   // the cycle: `timestamps` only update after the controller has
-  // already settled for this render. While scrubbed, the response's
-  // `timestamps` is just the single pinned minute, so we ignore it
-  // and keep the last live list.
+  // already settled for this render. The 1-min GexBot endpoint returns
+  // the full day's available minutes regardless of `?at=`, so this
+  // gate is no longer needed for correctness — it stays in place to
+  // avoid disrupting the scrub controller's input list mid-pin (the
+  // user would see prev/next jump around if a freshly-flushed minute
+  // landed during a scrub).
   useEffect(() => {
     if (scrubTimestamp != null) return;
     setLiveTimestamps(timestamps);
@@ -397,6 +401,11 @@ const GexLandscape = memo(function GexLandscape({
       onRefresh={refresh}
       loading={loading}
       sectionLabel="GEX landscape"
+      // Locked Decision #4: /api/gex-landscape scrubs today only against
+      // gexbot_api_capture — no `?date=` parameter is accepted. The
+      // shared ScrubControls would render a no-op picker otherwise, which
+      // silently lies to the user when the date is changed.
+      hideDatePicker
     />
   );
 

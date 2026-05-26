@@ -36,6 +36,16 @@ export interface ScrubControlsProps {
   lastDataAgeMs?: number | null;
   /** Threshold above which live data is considered stale. Default 5 min. */
   staleThresholdMs?: number;
+  /**
+   * When `true`, the date picker is not rendered. Used by panels that
+   * are pinned to today by a backend contract (e.g. GexLandscape — see
+   * Locked Decision #4 in
+   * `docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md`)
+   * so the picker can't lie to the user about cross-day navigation that
+   * the endpoint will silently ignore. Defaults to `false` to preserve
+   * the original behaviour for every other consumer.
+   */
+  hideDatePicker?: boolean;
 }
 
 const DEFAULT_STALE_THRESHOLD_MS = 5 * 60_000;
@@ -67,6 +77,7 @@ export function ScrubControls({
   sectionLabel,
   lastDataAgeMs,
   staleThresholdMs = DEFAULT_STALE_THRESHOLD_MS,
+  hideDatePicker = false,
 }: ScrubControlsProps) {
   const isStale =
     isLive && lastDataAgeMs != null && lastDataAgeMs >= staleThresholdMs;
@@ -137,14 +148,17 @@ export function ScrubControls({
         )}
       </div>
 
-      {/* Date picker */}
-      <DateInput
-        value={selectedDate}
-        onChange={onDateChange}
-        label="Select date"
-        labelVisible={false}
-        className="border-edge bg-surface text-secondary min-h-[44px] rounded border px-1.5 py-0.5 font-mono text-[11px] lg:min-h-0"
-      />
+      {/* Date picker — omitted for panels with a today-only backend
+          contract (see `hideDatePicker` doc on the props). */}
+      {!hideDatePicker && (
+        <DateInput
+          value={selectedDate}
+          onChange={onDateChange}
+          label="Select date"
+          labelVisible={false}
+          className="border-edge bg-surface text-secondary min-h-[44px] rounded border px-1.5 py-0.5 font-mono text-[11px] lg:min-h-0"
+        />
+      )}
 
       {/* Status badge */}
       {isLive && !isStale && (
