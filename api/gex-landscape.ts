@@ -26,7 +26,7 @@
  *      three at the same minute mark).
  *
  * Auth: owner OR guest (read-only). Identical to /api/periscope-map.
- * Cache: 30s live, 60s after-hours.
+ * Cache: edge 30s live / 300s after-hours, SWR 30s live / 60s after-hours.
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -243,6 +243,8 @@ export default async function handler(
     const marketOpen = isMarketOpen();
     const date = getETDateStr(new Date()); // today CT
 
+    // Edge TTL 30s live / 300s after-hours; SWR 30s live / 60s after-hours.
+    // Mirrors /api/periscope-map — same gexbot cadence on both endpoints.
     setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
 
     const scrubAt = parseScrubAt(req.query.at);

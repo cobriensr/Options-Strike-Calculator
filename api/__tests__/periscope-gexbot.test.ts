@@ -111,6 +111,17 @@ describe('decodeStrikesWithHistory', () => {
     ]);
   });
 
+  it('propagates literal 0 in position-4 as 0 (not null)', () => {
+    // Locks the null-vs-0 distinction: `Number(null)` is 0 and `0` is
+    // a perfectly valid prior value. We must not coalesce them.
+    const payload: GexbotStatePayload = {
+      mini_contracts: [[5950, 100, 100, 200, [0, 0, 0], 0, null]],
+    };
+    expect(decodeStrikesWithHistory(payload)).toEqual([
+      { strike: 5950, value: 200, prev1m: 0, prev5m: 0, prev10m: 0 },
+    ]);
+  });
+
   it('applies the same row-validity gates as decodeStrikes', () => {
     const payload: GexbotStatePayload = {
       mini_contracts: [

@@ -210,6 +210,23 @@ describe('/api/gex-landscape', () => {
       vannaPrev5m: 0.42,
       vannaPrev10m: 0.4,
     });
+    // Second-row assertion locks the per-row prev wiring so a regression
+    // that drops the join past the first strike fails the test.
+    expect(body.data.strikes[1]).toMatchObject({
+      strike: 5960,
+      gamma: 700,
+      charm: -5,
+      vanna: -0.2,
+      gammaPrev1m: 650,
+      gammaPrev5m: 600,
+      gammaPrev10m: 580,
+      charmPrev1m: -4.8,
+      charmPrev5m: -4.2,
+      charmPrev10m: -3.9,
+      vannaPrev1m: -0.19,
+      vannaPrev5m: -0.18,
+      vannaPrev10m: -0.17,
+    });
     expect(typeof body.ageSec).toBe('number');
     expect(body.ageSec).toBeGreaterThanOrEqual(0);
     expect(body.availableMinutes).toHaveLength(1);
