@@ -334,6 +334,13 @@ export default withCronInstrumentation(
     let insertedGated = 0;
     let skippedNoOi = 0;
     let skippedShort = 0;
+    // GexBot lookup counters (migration #181). Same observability shape
+    // as detect-silent-boom — a successful-but-null return is the silent
+    // failure mode, so without these counts we have no signal when
+    // GexBot polling regresses or the freshness window starts missing.
+    let gexHits = 0;
+    let gexMisses = 0;
+    let gexOutOfUniverse = 0;
 
     // Seed cooldown state from the DB so successive cron runs don't
     // re-qualify the next tick within the 5-min window. Without this,
@@ -746,7 +753,9 @@ export default withCronInstrumentation(
         // docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md.
         const gexbotTicker = mapToGexbotTicker(rec.underlyingSymbol);
         let gexSnapshot: FireTimeGexbotSnapshot | null = null;
-        if (gexbotTicker) {
+        if (gexbotTicker == null) {
+          gexOutOfUniverse += 1;
+        } else {
           try {
             gexSnapshot = await getLatestGexbotSnapshotAt(
               gexbotTicker,
@@ -761,6 +770,8 @@ export default withCronInstrumentation(
               },
             });
           }
+          if (gexSnapshot == null) gexMisses += 1;
+          else gexHits += 1;
         }
 
         const result = (await withDbRetry(
@@ -857,6 +868,9 @@ export default withCronInstrumentation(
         insertedTier3,
         insertedGated,
         priorSeeds: priorByChain.size,
+        gexHits,
+        gexMisses,
+        gexOutOfUniverse,
       },
       'detect-lottery-fires completed',
     );
@@ -876,6 +890,9 @@ export default withCronInstrumentation(
         insertedTier3,
         insertedGated,
         priorSeeds: priorByChain.size,
+        gexHits,
+        gexMisses,
+        gexOutOfUniverse,
       },
     };
   },

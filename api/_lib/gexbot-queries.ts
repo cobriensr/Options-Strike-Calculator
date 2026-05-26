@@ -10,6 +10,7 @@
  */
 
 import { getDb, withDbRetry } from './db.js';
+import { GEXBOT_TICKERS } from './gexbot-client.js';
 
 // Per-attempt timeout for read queries — same budget the rest of the
 // codebase uses. 3 attempts × 10s = 30s fail-fast, before Vercel's
@@ -354,39 +355,31 @@ export async function getSiblingConfirmation(
 // ────────────────────────────────────────────────────────────
 
 /**
- * The 16-ticker GexBot enum. detect crons should pass `underlying_symbol`
- * through `mapToGexbotTicker` before calling `getLatestGexbotSnapshotAt` —
- * the alert universe (UW Full Tape) is wider than GexBot's coverage.
+ * The 16-ticker GexBot enum, derived from the canonical list in
+ * `gexbot-client.ts` (`GEXBOT_TICKERS`) so adding a 17th ticker only
+ * requires updating one source. detect crons should pass
+ * `underlying_symbol` through `mapToGexbotTicker` before calling
+ * `getLatestGexbotSnapshotAt` — the alert universe (UW Full Tape) is
+ * wider than GexBot's coverage.
  */
-export const GEXBOT_TICKER_SET: ReadonlySet<string> = new Set([
-  'SPX',
-  'ES_SPX',
-  'NDX',
-  'NQ_NDX',
-  'RUT',
-  'VIX',
-  'SPY',
-  'QQQ',
-  'IWM',
-  'TLT',
-  'GLD',
-  'USO',
-  'TQQQ',
-  'UVXY',
-  'HYG',
-  'SLV',
-]);
+export const GEXBOT_TICKER_SET: ReadonlySet<string> = new Set<string>(
+  GEXBOT_TICKERS,
+);
 
 /**
- * Alert-table → GexBot ticker normalization. SPXW is the weekly-cash
- * symbol the Silent Boom / Lottery feeds carry; GexBot covers it under
- * the SPX cash-index row.
+ * Alert-table → GexBot ticker normalization. The Silent Boom / Lottery
+ * feeds use OPRA weekly-cash root symbols (SPXW / NDXP / RUTW); GexBot
+ * publishes per their cash-index root (SPX / NDX / RUT). The mapping
+ * ensures fires on those roots pick up the same dealer-state snapshot
+ * GexBot reports for the underlying cash index.
  *
  * Returns null when the input is outside the GexBot universe — callers
  * should skip the snapshot lookup and leave the gex_ columns NULL.
  */
 export function mapToGexbotTicker(underlying: string): string | null {
   if (underlying === 'SPXW') return 'SPX';
+  if (underlying === 'NDXP') return 'NDX';
+  if (underlying === 'RUTW') return 'RUT';
   return GEXBOT_TICKER_SET.has(underlying) ? underlying : null;
 }
 
@@ -425,12 +418,14 @@ interface RawFireTimeRow {
  * be prepared for that case (ticker outside cron coverage, cron miss,
  * weekend hour, etc.) and write NULL into the gex_ columns.
  *
- * Defaults: 120-second max age (one cron miss tolerated; 1-min cadence).
+ * Defaults: 180-second max age (tolerates 2 consecutive missed
+ * fetch-gexbot-fast runs at 1-min cadence — the prior 120s budget only
+ * survived a single cron miss, which is real in practice).
  */
 export async function getLatestGexbotSnapshotAt(
   gexbotTicker: string,
   asOf: Date,
-  maxAgeSeconds = 120,
+  maxAgeSeconds = 180,
 ): Promise<FireTimeGexbotSnapshot | null> {
   const sql = getDb();
   const lowerBoundMs = asOf.getTime() - maxAgeSeconds * 1000;

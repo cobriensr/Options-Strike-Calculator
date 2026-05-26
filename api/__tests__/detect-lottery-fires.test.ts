@@ -1098,4 +1098,72 @@ describe('detect-lottery-fires handler', () => {
       priorSeeds: 1,
     });
   });
+
+  it('skips GexBot lookup and binds NULL gex_* when ticker is outside the GexBot universe', async () => {
+    // Mirror of the Silent Boom out-of-universe test. mapToGexbotTicker
+    // returns null → lookup MUST NOT fire → all 8 gex_* binds (last 8
+    // positions of the INSERT) stay NULL.
+    mockMapToGexbotTicker.mockReturnValue(null);
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+
+    expect(mockGetLatestGexbotSnapshotAt).not.toHaveBeenCalled();
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    for (let i = 1; i <= 8; i += 1) {
+      expect(insertCall.at(-i)).toBeNull();
+    }
+  });
+
+  it('fails open and binds NULL gex_* when the snapshot lookup throws', async () => {
+    // Fail-open contract: a thrown error from getLatestGexbotSnapshotAt
+    // MUST NOT block the INSERT. Sentry should capture, and all 8 gex_*
+    // binds should resolve to NULL.
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
+    mockGetLatestGexbotSnapshotAt.mockRejectedValue(new Error('neon timeout'));
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          cron: 'detect-lottery-fires',
+          op: 'getLatestGexbotSnapshotAt',
+        }),
+      }),
+    );
+
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    for (let i = 1; i <= 8; i += 1) {
+      expect(insertCall.at(-i)).toBeNull();
+    }
+  });
 });

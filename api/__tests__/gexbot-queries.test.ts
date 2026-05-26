@@ -295,8 +295,13 @@ describe('gexbot-queries', () => {
   // ── mapToGexbotTicker ─────────────────────────────────────
 
   describe('mapToGexbotTicker', () => {
-    it('maps SPXW to SPX', () => {
+    it('maps the three OPRA weekly-cash roots to their GexBot cash-index ticker', () => {
+      // Both detect-cron universes carry SPXW/NDXP/RUTW; GexBot covers
+      // them under SPX/NDX/RUT. Without these mappings, every fire on
+      // those roots would silently bind NULL into the gex_* columns.
       expect(mapToGexbotTicker('SPXW')).toBe('SPX');
+      expect(mapToGexbotTicker('NDXP')).toBe('NDX');
+      expect(mapToGexbotTicker('RUTW')).toBe('RUT');
     });
 
     it('returns the same ticker when it is in the GexBot universe', () => {
@@ -308,7 +313,7 @@ describe('gexbot-queries', () => {
     it('returns null for tickers outside the GexBot universe', () => {
       expect(mapToGexbotTicker('AAPL')).toBeNull();
       expect(mapToGexbotTicker('TSLA')).toBeNull();
-      expect(mapToGexbotTicker('NDXP')).toBeNull(); // not in enum
+      expect(mapToGexbotTicker('NVDA')).toBeNull();
     });
   });
 

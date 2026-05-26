@@ -95,14 +95,47 @@ window (rare), (c) row pre-dates migration.
 **Endpoint update** (`api/silent-boom-feed.ts` or whichever serves rows):
 - Include the gex_* columns in the SELECT.
 
-### Phase 4 — Deferred
+### Phase 4 — Status
 
-- Same treatment for Lottery (`lottery_finder_fires` table). Defer until
-  Silent Boom validates the pattern with ~3-4 weeks of data.
-- Wire gex_* into `featuresForSilentBoom()` (the TS live-score feature
-  builder). Requires a retrained bundle that knows the new feature names.
-  Deferred — the bundle won't see GexBot features as useful until ~4 weeks
-  of training data exists.
+- **Lottery instrumentation: SHIPPED (commit 093208c5, 2026-05-26).**
+  Migration #181 mirrors #180 on `lottery_finder_fires`; detect-lottery-fires
+  uses the same `getLatestGexbotSnapshotAt` helper; `LOTTERY_SQL` in
+  `ml/src/takeit/build_training_set.py` pulls the new columns;
+  `LotteryRow.tsx` renders the same GEX badge.
+
+- **Live-feature wiring still deferred** — `LotteryAlertRow` /
+  `SilentBoomAlertRow` in `api/_lib/takeit-features.ts` and the TS
+  scorers (`scoreSilentBoom`, `scoreLottery`) do NOT consume the new
+  gex_* columns yet. The bundle would need a retrain that knows the
+  new feature names, and the training data needs ~3-4 weeks to
+  accumulate before that retrain has signal. Targets the **2026-06-16**
+  re-probe (see "Verification" below).
+
+### Follow-up audit findings (2026-05-26 review)
+
+After the initial commits a meta-review surfaced fixes that landed in a
+follow-up commit on the same day:
+
+- ML pipeline: `gex_captured_at` (TIMESTAMPTZ) + `gex_zero_gamma` /
+  `gex_spot` (absolute prices that don't generalize across SPX~6000 /
+  SPY~600 / VIX~20) were added to `NON_FEATURE_COLS` in
+  `ml/src/takeit/train.py`. Without this the nightly retrain would
+  crash on `X.astype(float)`.
+- `mapToGexbotTicker` extended with `NDXP → NDX` and `RUTW → RUT`
+  (both roots appear in the detect-cron universes; the original only
+  handled SPXW).
+- `GEXBOT_TICKER_SET` now derived from the canonical `GEXBOT_TICKERS`
+  list in `gexbot-client.ts` (was a hand-duplicated copy).
+- `getLatestGexbotSnapshotAt` default freshness window bumped from
+  120s → 180s (tolerates 2 consecutive missed `fetch-gexbot-fast` runs
+  instead of just 1).
+- Both detect crons now emit `gexHits` / `gexMisses` / `gexOutOfUniverse`
+  counters in the summary log — a successful-but-null lookup never
+  triggers Sentry, so without these counts a slow regression is
+  invisible.
+- The frontend `gexbotBadge` factory and the per-feed `gex` field type
+  are shared via `src/utils/gexbot-badge.ts` + `src/types/gexbot.ts`
+  (previously duplicated across SilentBoomRow and LotteryRow).
 
 ## Open questions
 

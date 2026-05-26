@@ -36,6 +36,17 @@ export type AlertType = 'lottery' | 'silentboom';
  * Normalised lottery alert row using the exact snake_case column names the
  * Phase 1 parquet exposes. The detect cron must build one of these before
  * calling featuresForLottery().
+ *
+ * Deferred live-feature wiring (target: 2026-06-16 re-probe — see
+ * docs/superpowers/specs/silent-boom-gexbot-instrumentation-2026-05-26.md):
+ * the GexBot context columns added by migration #181 (gex_one_cvroflow,
+ * gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow, gex_zcvr) flow
+ * through to the training parquet only. `featuresForLottery()` /
+ * `scoreLottery()` do not read them until a retrained bundle exists
+ * that knows the new feature names. Excluded from features in
+ * `train.py:NON_FEATURE_COLS`: gex_captured_at (TIMESTAMPTZ),
+ * gex_zero_gamma, gex_spot (absolute prices that don't generalize
+ * across the 16-ticker universe).
  */
 export interface LotteryAlertRow {
   fire_time: Date; // = trigger_time_ct, UTC
@@ -96,6 +107,15 @@ export interface LotteryAlertRow {
 /**
  * Normalised silent-boom alert row. Field names mirror the silent_boom_alerts
  * Postgres table + the Phase 1 silentboom_training.parquet column set.
+ *
+ * Deferred live-feature wiring (target: 2026-06-16 re-probe — see
+ * docs/superpowers/specs/silent-boom-gexbot-instrumentation-2026-05-26.md):
+ * the GexBot context columns added by migration #180 (gex_one_cvroflow,
+ * gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow, gex_zcvr) flow
+ * through to the training parquet only. `featuresForSilentBoom()` /
+ * `scoreSilentBoom()` do not read them until a retrained bundle exists
+ * that knows the new feature names. See `LotteryAlertRow` above for
+ * the matching note.
  */
 export interface SilentBoomAlertRow {
   fire_time: Date; // = bucket_ct, UTC

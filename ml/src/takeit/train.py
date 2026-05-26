@@ -88,6 +88,16 @@ NON_FEATURE_COLS: Final = {
     "wave2_status",
     "wave2_detected_at",
     "pattern_group_id",
+    # GexBot context (migrations #180 / #181). `gex_captured_at` is a
+    # TIMESTAMPTZ and would crash X.astype(float). `gex_zero_gamma` and
+    # `gex_spot` are absolute prices that don't generalize across the
+    # 16-ticker GexBot universe (SPX~6000, SPY~600, VIX~20) — same reason
+    # `gex_strike_actual_strike` is excluded above. The downstream
+    # featurizer should derive the normalized signal (e.g.
+    # `(gex_zero_gamma - gex_spot) / gex_spot`) when that work lands.
+    "gex_captured_at",
+    "gex_zero_gamma",
+    "gex_spot",
 }
 
 CATEGORICAL_COLS: Final = {

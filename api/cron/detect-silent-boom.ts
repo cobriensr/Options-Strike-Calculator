@@ -575,6 +575,13 @@ export default withCronInstrumentation(
     let inserted = 0;
     let skippedShort = 0;
     let skippedNoOi = 0;
+    // GexBot lookup counters (migration #180). Silent regression on the
+    // lookup never throws — a successful-but-null return is the failure
+    // mode — so without these counts we have no signal when the
+    // freshness window starts missing.
+    let gexHits = 0;
+    let gexMisses = 0;
+    let gexOutOfUniverse = 0;
 
     // Per-(ticker, date) cumulative net-flow series cache. Shared across
     // all chain groups so two TSLA chains in the same cron tick fetch
@@ -798,7 +805,9 @@ export default withCronInstrumentation(
       // docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md
       const gexbotTicker = mapToGexbotTicker(g.ticker);
       let gexSnapshot: FireTimeGexbotSnapshot | null = null;
-      if (gexbotTicker) {
+      if (gexbotTicker == null) {
+        gexOutOfUniverse += 1;
+      } else {
         try {
           gexSnapshot = await getLatestGexbotSnapshotAt(
             gexbotTicker,
@@ -813,6 +822,8 @@ export default withCronInstrumentation(
             },
           });
         }
+        if (gexSnapshot == null) gexMisses += 1;
+        else gexHits += 1;
       }
 
       const result = (await withDbRetry(
@@ -873,6 +884,9 @@ export default withCronInstrumentation(
         totalFires,
         inserted,
         priorSeeds: priorByChain.size,
+        gexHits,
+        gexMisses,
+        gexOutOfUniverse,
       },
       'detect-silent-boom completed',
     );
@@ -888,6 +902,9 @@ export default withCronInstrumentation(
         totalFires,
         inserted,
         priorSeeds: priorByChain.size,
+        gexHits,
+        gexMisses,
+        gexOutOfUniverse,
       },
     };
   },

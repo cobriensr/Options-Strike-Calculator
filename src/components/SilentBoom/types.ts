@@ -8,6 +8,7 @@
 // Re-export canonical OptionType from the shared module — kept
 // importable from this path so existing SB call sites don't churn.
 import type { OptionType, ScoreTier } from '../../types/index.js';
+import type { GexbotFireContext } from '../../types/gexbot.js';
 export type { OptionType };
 
 export type SilentBoomSortMode = 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
@@ -182,22 +183,12 @@ export interface SilentBoomAlert {
    */
   underlyingPriceAtSpike: number | null;
   /**
-   * GexBot context snapshot at fire time (migration #180). All fields
-   * nullable; the whole block is "absent" when capturedAt is null
-   * (ticker outside the 16-ticker GexBot enum, or freshness window
-   * missed at detect time). Surfaced as an informational badge — not a
+   * GexBot context snapshot at fire time (migration #180). Shared type
+   * with `LotteryFire.gex` — see `src/types/gexbot.ts`. Surfaced as an
+   * informational badge (via `src/utils/gexbot-badge.ts`) — not a
    * filter or sort input until the takeit retrain absorbs the features.
    */
-  gex: {
-    oneCvroflow: number | null;
-    netPutDex: number | null;
-    oneDexoflow: number | null;
-    oneGexoflow: number | null;
-    zcvr: number | null;
-    zeroGamma: number | null;
-    spot: number | null;
-    capturedAt: string | null;
-  };
+  gex: GexbotFireContext;
   /**
    * Cohort-derived "typical exit window" hint (P75 of minutes-to-peak
    * among historical winners for the (tier, ticker) cohort). Always

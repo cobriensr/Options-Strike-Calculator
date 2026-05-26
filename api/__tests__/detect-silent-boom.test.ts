@@ -560,6 +560,52 @@ describe('detect-silent-boom handler', () => {
     }
   });
 
+  it('fails open and binds NULL gex_* when the snapshot lookup throws', async () => {
+    // Fail-open contract: a thrown error from getLatestGexbotSnapshotAt
+    // MUST NOT block the INSERT. Sentry should capture, and all 8 gex_*
+    // binds should resolve to NULL.
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
+    mockGetLatestGexbotSnapshotAt.mockRejectedValue(new Error('neon timeout'));
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream())
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ cnt: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 42 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+
+    // Sentry capture invoked with the expected tags.
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          cron: 'detect-silent-boom',
+          op: 'getLatestGexbotSnapshotAt',
+        }),
+      }),
+    );
+
+    // INSERT still landed; gex_* binds are all NULL.
+    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
+    for (let i = 1; i <= 8; i += 1) {
+      expect(insertCall.at(-i)).toBeNull();
+    }
+  });
+
   it('binds null tide diff when the latest tick is older than 30 minutes', async () => {
     // Spike bucket at 13:20:00Z. Tide tick at 12:00Z — 80 min before,
     // outside the 30-min staleness window, so tide diff should be null.

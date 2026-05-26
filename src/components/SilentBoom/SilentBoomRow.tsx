@@ -22,6 +22,7 @@ import {
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import { computeExitNow } from '../../utils/exit-now.js';
+import { gexbotBadge } from '../../utils/gexbot-badge.js';
 import { CohortCountdown } from '../ui/CohortCountdown.js';
 import { computeCountdownRemaining } from '../ui/cohort-countdown-utils.js';
 import { useNowMinute } from '../../hooks/useNowMinute.js';
@@ -263,63 +264,6 @@ const spreadConfirmedBadge = (
     label: 'Spread-Confirmed',
     cls: 'border-emerald-500/60 bg-emerald-950/40 text-emerald-200',
     tooltip: `Multi-leg share ${pct}% — in the 10-50% sweet spot where institutional spread positioning confirms the spike. Historical lift: 2.08× win50, 2.73× win100 (EDA 2026-05-15). Display-only badge.`,
-  };
-};
-
-/**
- * GexBot context badge — informational only, shown when the detect
- * cron stashed a GexBot snapshot at fire time (migration #180). Uses
- * the top probe signal (1DTE+ convexity-flow rate) for the headline
- * direction; tooltip carries the full snapshot. Rendered NULL when
- * `gex.capturedAt` is absent (ticker outside the 16-ticker GexBot
- * universe, or freshness window missed).
- *
- * No filtering / no scoring — purely a forward-validation surface
- * until the nightly takeit-retrain incorporates the gex_* features.
- * See docs/superpowers/specs/silent-boom-gexbot-instrumentation-2026-05-26.md.
- */
-const gexbotBadge = (
-  gex: SilentBoomAlert['gex'],
-): {
-  label: string;
-  cls: string;
-  tooltip: string;
-  ariaLabel: string;
-} | null => {
-  if (gex.capturedAt == null) return null;
-  const cvr = gex.oneCvroflow;
-  const direction = cvr == null ? '·' : cvr > 1 ? '↑' : cvr < 1 ? '↓' : '·';
-  const arrowWord =
-    direction === '↑' ? 'up' : direction === '↓' ? 'down' : 'flat';
-  const cvrStr = cvr == null ? '—' : cvr.toFixed(2);
-  const zcvrStr = gex.zcvr == null ? '—' : gex.zcvr.toFixed(2);
-  const dexStr =
-    gex.netPutDex == null ? '—' : (gex.netPutDex / 1e6).toFixed(1) + 'M';
-  const dexoStr = gex.oneDexoflow == null ? '—' : gex.oneDexoflow.toFixed(2);
-  const gexoStr = gex.oneGexoflow == null ? '—' : gex.oneGexoflow.toFixed(2);
-  const zg =
-    gex.zeroGamma != null && gex.spot != null
-      ? `zero-γ ${gex.zeroGamma.toFixed(0)} vs spot ${gex.spot.toFixed(0)} (Δ ${(gex.zeroGamma - gex.spot).toFixed(0)})`
-      : 'zero-γ unavailable';
-  const tooltip = [
-    'GexBot snapshot at fire time (informational; not used in score yet).',
-    `1DTE+ cvroflow: ${cvrStr}  ${direction}  — +0.20 r vs hit-30 in 2026-05-26 probe`,
-    `0DTE cvroflow (zcvr): ${zcvrStr}`,
-    `Net put DEX: ${dexStr}  — +0.17 r vs hit-50`,
-    `1DTE+ dexoflow: ${dexoStr}  — +0.19 r vs hit-30`,
-    `1DTE+ gexoflow: ${gexoStr}  — −0.16 r (anti-signal)`,
-    zg,
-    `Snapshot at: ${gex.capturedAt} (UTC)`,
-  ].join('\n');
-  return {
-    label: `GEX ${direction}${cvrStr}`,
-    cls: 'border-sky-500/50 bg-sky-950/40 text-sky-200',
-    tooltip,
-    // Terse single-line for screen readers — newlines in aria-label
-    // tokenize unpredictably across SR engines, mangling the tooltip
-    // content. Match the single-line aria-label pattern used elsewhere
-    // on this row (spreadConfirmedBadge, gatedPill, etc.).
-    ariaLabel: `GexBot snapshot: 1DTE+ cvroflow ${cvrStr} ${arrowWord}`,
   };
 };
 
