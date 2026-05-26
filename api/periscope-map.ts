@@ -44,19 +44,20 @@ import {
   type PeriscopeRow,
   type PeriscopeView,
 } from './_lib/periscope-format.js';
-import { fetchSpxSpot } from './_lib/periscope-query.js';
+import { fetchAvailableSlots, fetchSpxSpot } from './_lib/periscope-query.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
-import { decodeStrikes } from './cron/populate-periscope-from-gexbot.js';
-
-type PanelName = 'gamma' | 'charm' | 'vanna';
-const PANELS: PanelName[] = ['gamma', 'charm', 'vanna'];
-const PANEL_TO_CATEGORY: Record<PanelName, string> = {
-  gamma: 'gamma_zero',
-  charm: 'charm_zero',
-  vanna: 'vanna_zero',
-};
-const TICKER = 'SPX';
+import {
+  PANELS,
+  PANEL_TO_CATEGORY,
+  PRIOR_LOOKBACK_FLOOR_MIN,
+  PRIOR_LOOKBACK_MIN,
+  STALENESS_CUTOFF_MS,
+  TICKER,
+  decodeStrikes,
+  type GexbotStatePayload,
+  type PanelName,
+} from './_lib/periscope-gexbot.js';
 
 /**
  * Fetch the latest gexbot_api_capture row per panel within the
@@ -66,7 +67,9 @@ async function fetchLatestGexbotSlot(
   date: string,
 ): Promise<PeriscopeSlot | null> {
   const sql = getDb();
-  const stalenessCutoff = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const stalenessCutoff = new Date(
+    Date.now() - STALENESS_CUTOFF_MS,
+  ).toISOString();
 
   const panelRows: Record<PanelName, PeriscopeRow[] | null> = {
     gamma: null,
@@ -90,15 +93,20 @@ async function fetchLatestGexbotSlot(
       `,
     )) as { captured_at: Date | string; raw_response: unknown }[];
 
-    if (rows.length === 0) return null;
+    if (rows.length === 0) {
+      // Surface which panel was stale so on-call can find the gap fast.
+      logger.warn(
+        { panel, ticker: TICKER, stalenessCutoff },
+        'periscope-map: no fresh gexbot row for panel — returning no_slot',
+      );
+      return null;
+    }
     const row = rows[0]!;
     const ts = new Date(row.captured_at);
     if (latestCapturedAt == null || ts > latestCapturedAt) {
       latestCapturedAt = ts;
     }
-    panelRows[panel] = decodeStrikes(
-      row.raw_response as { mini_contracts?: unknown[][] },
-    );
+    panelRows[panel] = decodeStrikes(row.raw_response as GexbotStatePayload);
   }
 
   if (
@@ -125,15 +133,17 @@ async function fetchLatestGexbotSlot(
  * sign-flip detection. Returns null if no qualifying rows exist
  * (e.g. cron just started for the day).
  */
-const PRIOR_LOOKBACK_MIN = 10;
-
 async function fetchPriorGexbotSlot(
   date: string,
   latestCapturedAt: string,
 ): Promise<PeriscopeSlot | null> {
   const sql = getDb();
+  const latestMs = new Date(latestCapturedAt).getTime();
   const priorCutoff = new Date(
-    new Date(latestCapturedAt).getTime() - PRIOR_LOOKBACK_MIN * 60_000,
+    latestMs - PRIOR_LOOKBACK_MIN * 60_000,
+  ).toISOString();
+  const priorFloor = new Date(
+    latestMs - PRIOR_LOOKBACK_FLOOR_MIN * 60_000,
   ).toISOString();
 
   const panelRows: Record<PanelName, PeriscopeRow[] | null> = {
@@ -153,9 +163,7 @@ async function fetchPriorGexbotSlot(
           AND endpoint = 'state'
           AND category = ${category}
           AND captured_at <= ${priorCutoff}
-          AND captured_at >= ${new Date(
-            new Date(latestCapturedAt).getTime() - 30 * 60_000,
-          ).toISOString()}
+          AND captured_at >= ${priorFloor}
         ORDER BY captured_at DESC
         LIMIT 1
       `,
@@ -167,9 +175,7 @@ async function fetchPriorGexbotSlot(
     if (priorCapturedAt == null || ts > priorCapturedAt) {
       priorCapturedAt = ts;
     }
-    panelRows[panel] = decodeStrikes(
-      row.raw_response as { mini_contracts?: unknown[][] },
-    );
+    panelRows[panel] = decodeStrikes(row.raw_response as GexbotStatePayload);
   }
 
   if (
@@ -203,9 +209,16 @@ export default async function handler(
     const marketOpen = isMarketOpen();
     const date = getETDateStr(new Date()); // today CT
 
-    // Cache: 30s live, 60s after-hours. Panel polls at 10s so SWR
-    // gives sub-minute freshness even with the cache layer.
+    // Cache: 30s live, 60s after-hours. Panel polls at POLL_INTERVALS.PERISCOPE
+    // (60s) so the cache + SWR keeps the worst-case rendered staleness around
+    // 30-90s even with the cache layer.
     setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
+
+    // Available slots backs the prev/next stepper. The stepper is meant
+    // for historical replay (date picker active) — for live mode we still
+    // return the day's slots so the user can step back into history without
+    // first manually changing the date selector.
+    const availableSlots = await fetchAvailableSlots(date);
 
     const latest = await fetchLatestGexbotSlot(date);
     if (latest == null) {
@@ -215,7 +228,7 @@ export default async function handler(
         asOf: new Date().toISOString(),
         data: null,
         reason: 'no_slot',
-        availableSlots: [],
+        availableSlots,
       });
       return;
     }
@@ -228,7 +241,7 @@ export default async function handler(
         asOf: new Date().toISOString(),
         data: null,
         reason: 'no_spot',
-        availableSlots: [],
+        availableSlots,
       });
       return;
     }
@@ -245,12 +258,23 @@ export default async function handler(
       breaches,
     });
 
+    // Staleness signal — `ageSec` is the gap between the gexbot capture
+    // timestamp and now. The panel can render a "stale" badge once this
+    // exceeds ~90s. `priorAvailable` tells the panel whether sign-flip
+    // detection had a valid prior slice (false during the first ~10
+    // minutes of session).
+    const ageSec = Math.round(
+      (Date.now() - new Date(latest.capturedAt).getTime()) / 1000,
+    );
+
     done({ status: 200 });
     res.status(200).json({
       marketOpen,
       asOf: new Date().toISOString(),
       data: view,
-      availableSlots: [],
+      ageSec,
+      priorAvailable: prior != null,
+      availableSlots,
     });
   } catch (error) {
     done({ status: 500, error: 'unhandled' });

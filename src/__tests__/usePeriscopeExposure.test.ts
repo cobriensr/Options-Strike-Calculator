@@ -267,6 +267,33 @@ describe('usePeriscopeExposure: spot hint', () => {
 });
 
 // ============================================================
+// URL routing — live vs. historical
+// ============================================================
+
+describe('usePeriscopeExposure: URL routing', () => {
+  it('routes historical reads (any selectedSlot) to /api/periscope-exposure', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        marketOpen: true,
+        asOf: '2026-05-08T13:30:00Z',
+        data: makeView(),
+        availableSlots: [],
+      }),
+    );
+    renderHook(() =>
+      usePeriscopeExposure({
+        marketOpen: false,
+        selectedSlot: { date: '2026-05-19', time: '13:30' },
+      }),
+    );
+    await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+    const url = mockFetch.mock.calls[0]![0] as string;
+    expect(url).toMatch(/\/api\/periscope-exposure/);
+    expect(url).toMatch(/time=13%3A30/);
+  });
+});
+
+// ============================================================
 // Polling
 // ============================================================
 

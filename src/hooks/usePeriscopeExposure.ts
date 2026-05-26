@@ -1,17 +1,22 @@
 /**
- * usePeriscopeExposure — fetches /api/periscope-exposure for the
- * Periscope MM-attributed exposure panel.
+ * usePeriscopeExposure — fetches the Periscope MM-attributed exposure
+ * view for the panel. Routes between two endpoints based on whether the
+ * user is in live or historical mode:
  *
- * Owner-only. Mirrors the live-polling pattern from `useNopeIntraday`.
+ *   - LIVE (no date/time picker): /api/periscope-map — GEXBot 1-min,
+ *     deterministic view computed from `gexbot_api_capture`. No Claude.
+ *   - HISTORICAL (any picker set): /api/periscope-exposure — reads
+ *     `periscope_snapshots`, which has the full ~6-month back-catalog
+ *     (the adapter cron `populate-periscope-from-gexbot` writes the
+ *     10-min slices).
  *
- * UW publishes Periscope slots every 10 min during RTH. We poll at
- * 60s so a fresh slot lands in the UI within ≤1 min of the scraper
- * inserting it. Outside market hours we keep the last-known view but
- * don't poll.
+ * Owner or guest. Mirrors the live-polling pattern from `useNopeIntraday`.
+ * Polls at POLL_INTERVALS.PERISCOPE (60s) during RTH; pauses outside
+ * market hours.
  *
  * Returns the structured view + loading + error + asOf timestamp.
- * The view is null when the scraper hasn't ingested any slot for
- * today's expiry yet — the panel renders a "waiting for first slot"
+ * The view is null when GEXBot has no fresh capture for today's expiry
+ * yet — the panel renders a "no GEXBot capture for today yet"
  * placeholder rather than crashing.
  */
 

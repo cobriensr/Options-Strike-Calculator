@@ -111,7 +111,7 @@ describe('PeriscopePanel: states', () => {
   it('renders the no_slot empty-state copy', () => {
     render(<PeriscopePanel {...baseProps} emptyReason="no_slot" />);
     expect(
-      screen.getByText(/Scraper has not inserted a Periscope slot/i),
+      screen.getByText(/No GEXBot capture for today yet/i),
     ).toBeInTheDocument();
   });
 
@@ -127,7 +127,7 @@ describe('PeriscopePanel: states', () => {
     // than a blank panel.
     render(<PeriscopePanel {...baseProps} />);
     expect(
-      screen.getByText(/Scraper has not inserted a Periscope slot/i),
+      screen.getByText(/No GEXBot capture for today yet/i),
     ).toBeInTheDocument();
   });
 });
