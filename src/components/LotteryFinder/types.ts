@@ -111,6 +111,29 @@ export interface LotteryFireMacro {
   gexStrikeActualStrike: number | null;
 }
 
+/**
+ * GexBot context snapshot at fire time (migration #181). Captured by
+ * detect-lottery-fires from the latest `gexbot_snapshots` row for the
+ * underlying. All fields nullable; the whole block is "absent" when
+ * `capturedAt` is null (ticker outside the 16-ticker GexBot enum, or
+ * snapshot freshness window missed at detect time). Surfaced as an
+ * informational badge — not a filter or sort input until the takeit
+ * retrain absorbs the features.
+ *
+ * Probe basis:
+ * `docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md`.
+ */
+export interface LotteryFireGex {
+  oneCvroflow: number | null;
+  netPutDex: number | null;
+  oneDexoflow: number | null;
+  oneGexoflow: number | null;
+  zcvr: number | null;
+  zeroGamma: number | null;
+  spot: number | null;
+  capturedAt: string | null;
+}
+
 export interface LotteryFireOutcomes {
   realizedTrail30_10Pct: number | null;
   realizedHard30mPct: number | null;
@@ -330,6 +353,7 @@ export interface LotteryFire {
   entry: LotteryFireEntry;
   tags: LotteryFireTags;
   macro: LotteryFireMacro;
+  gex: LotteryFireGex;
   outcomes: LotteryFireOutcomes;
 
   /**

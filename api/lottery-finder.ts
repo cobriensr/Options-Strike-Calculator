@@ -100,6 +100,19 @@ interface FireRow {
   gex_strike_put_ask_minus_bid: DbNullableNumeric;
   gex_strike_actual_strike: DbNullableNumeric;
 
+  // GexBot context snapshot at fire time (migration #181). NULL when
+  // ticker is outside the 16-ticker GexBot universe (single stocks
+  // beyond the index/ETF set) or when the snapshot lookup missed its
+  // 2-minute freshness window. Mirrors silent_boom_alerts.gex_* (#180).
+  gex_one_cvroflow: DbNullableNumeric;
+  gex_net_put_dex: DbNullableNumeric;
+  gex_one_dexoflow: DbNullableNumeric;
+  gex_one_gexoflow: DbNullableNumeric;
+  gex_zcvr: DbNullableNumeric;
+  gex_zero_gamma: DbNullableNumeric;
+  gex_spot: DbNullableNumeric;
+  gex_captured_at: DbTimestamp | null;
+
   realized_trail30_10_pct: DbNullableNumeric;
   realized_hard30m_pct: DbNullableNumeric;
   realized_tier50_holdeod_pct: DbNullableNumeric;
@@ -456,6 +469,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
           f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
           f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
+          f.gex_one_cvroflow, f.gex_net_put_dex, f.gex_one_dexoflow,
+          f.gex_one_gexoflow, f.gex_zcvr, f.gex_zero_gamma, f.gex_spot,
+          f.gex_captured_at,
           f.realized_trail30_10_pct, f.realized_hard30m_pct,
           f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
           f.realized_eod_pct,
@@ -535,6 +551,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
           f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
           f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
+          f.gex_one_cvroflow, f.gex_net_put_dex, f.gex_one_dexoflow,
+          f.gex_one_gexoflow, f.gex_zcvr, f.gex_zero_gamma, f.gex_spot,
+          f.gex_captured_at,
           f.realized_trail30_10_pct, f.realized_hard30m_pct,
           f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
           f.realized_eod_pct,
@@ -613,6 +632,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
           f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
           f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
+          f.gex_one_cvroflow, f.gex_net_put_dex, f.gex_one_dexoflow,
+          f.gex_one_gexoflow, f.gex_zcvr, f.gex_zero_gamma, f.gex_spot,
+          f.gex_captured_at,
           f.realized_trail30_10_pct, f.realized_hard30m_pct,
           f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
           f.realized_eod_pct,
@@ -907,6 +929,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
           f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
           f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
+          f.gex_one_cvroflow, f.gex_net_put_dex, f.gex_one_dexoflow,
+          f.gex_one_gexoflow, f.gex_zcvr, f.gex_zero_gamma, f.gex_spot,
+          f.gex_captured_at,
           f.realized_trail30_10_pct, f.realized_hard30m_pct,
           f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
           f.realized_eod_pct,
@@ -1320,6 +1345,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           gexStrikeCallAskMinusBid: num(r.gex_strike_call_ask_minus_bid),
           gexStrikePutAskMinusBid: num(r.gex_strike_put_ask_minus_bid),
           gexStrikeActualStrike: num(r.gex_strike_actual_strike),
+        },
+
+        gex: {
+          oneCvroflow: num(r.gex_one_cvroflow),
+          netPutDex: num(r.gex_net_put_dex),
+          oneDexoflow: num(r.gex_one_dexoflow),
+          oneGexoflow: num(r.gex_one_gexoflow),
+          zcvr: num(r.gex_zcvr),
+          zeroGamma: num(r.gex_zero_gamma),
+          spot: num(r.gex_spot),
+          capturedAt:
+            r.gex_captured_at == null ? null : toIso(r.gex_captured_at),
         },
 
         outcomes: {

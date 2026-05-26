@@ -287,6 +287,58 @@ const gatedPill = (): { label: string; cls: string; tooltip: string } => ({
 });
 
 /**
+ * GexBot context badge — informational only, shown when the detect
+ * cron stashed a GexBot snapshot at fire time (migration #181). Uses
+ * the top probe signal (1DTE+ convexity-flow rate) for the headline
+ * direction; tooltip carries the full snapshot. Rendered null when
+ * `gex.capturedAt` is absent (ticker outside the 16-ticker GexBot
+ * universe, or freshness window missed). Mirrors the Silent Boom
+ * implementation for cross-feed consistency. Probe basis:
+ * docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md.
+ */
+const gexbotBadge = (
+  gex: LotteryFire['gex'],
+): {
+  label: string;
+  cls: string;
+  tooltip: string;
+  ariaLabel: string;
+} | null => {
+  if (gex.capturedAt == null) return null;
+  const cvr = gex.oneCvroflow;
+  const direction = cvr == null ? '·' : cvr > 1 ? '↑' : cvr < 1 ? '↓' : '·';
+  const arrowWord =
+    direction === '↑' ? 'up' : direction === '↓' ? 'down' : 'flat';
+  const cvrStr = cvr == null ? '—' : cvr.toFixed(2);
+  const zcvrStr = gex.zcvr == null ? '—' : gex.zcvr.toFixed(2);
+  const dexStr =
+    gex.netPutDex == null ? '—' : (gex.netPutDex / 1e6).toFixed(1) + 'M';
+  const dexoStr = gex.oneDexoflow == null ? '—' : gex.oneDexoflow.toFixed(2);
+  const gexoStr = gex.oneGexoflow == null ? '—' : gex.oneGexoflow.toFixed(2);
+  const zg =
+    gex.zeroGamma != null && gex.spot != null
+      ? `zero-γ ${gex.zeroGamma.toFixed(0)} vs spot ${gex.spot.toFixed(0)} (Δ ${(gex.zeroGamma - gex.spot).toFixed(0)})`
+      : 'zero-γ unavailable';
+  const tooltip = [
+    'GexBot snapshot at fire time (informational; not used in score yet).',
+    `1DTE+ cvroflow: ${cvrStr}  ${direction}  — +0.20 r vs hit-30 in 2026-05-26 probe`,
+    `0DTE cvroflow (zcvr): ${zcvrStr}`,
+    `Net put DEX: ${dexStr}  — +0.17 r vs hit-50`,
+    `1DTE+ dexoflow: ${dexoStr}  — +0.19 r vs hit-30`,
+    `1DTE+ gexoflow: ${gexoStr}  — −0.16 r (anti-signal)`,
+    zg,
+    `Snapshot at: ${gex.capturedAt} (UTC)`,
+  ].join('\n');
+  return {
+    label: `GEX ${direction}${cvrStr}`,
+    cls: 'border-sky-500/50 bg-sky-950/40 text-sky-200',
+    tooltip,
+    // Terse single-line for screen readers; newlines tokenize unpredictably.
+    ariaLabel: `GexBot snapshot: 1DTE+ cvroflow ${cvrStr} ${arrowWord}`,
+  };
+};
+
+/**
  * Flow Match / Flow Mismatch badge — does the ticker's current
  * cumulative net flow agree with this alert's option type? Green when
  * the side that owns the tape (NCP for a call, NPP for a put) is
@@ -383,6 +435,7 @@ export const LotteryRow = memo(function LotteryRow({
   const tier = tierBadge(fire.scoreTier, fire.score);
   const ci = ciIndicator(fire.tickerStats, fire.underlyingSymbol);
   const gated = fire.directionGated ? gatedPill() : null;
+  const gexbot = gexbotBadge(fire.gex);
   const flowMatch = flowMatchBadge(fire.optionType, liveFlowSnapshot ?? null);
   const flowInverted = flowInvertedBadge(
     fire.optionType,
@@ -750,6 +803,21 @@ export const LotteryRow = memo(function LotteryRow({
           side={fire.optionType === 'C' ? 'call' : 'put'}
           marketOpen={marketOpen}
         />
+        {/* GexBot context badge — snapshot of the top probe signals
+            (1DTE+ cvroflow + net put DEX + 1DTE+ gexoflow) at fire
+            time. Informational only until enough data accumulates for
+            the nightly takeit retrain to pick up the new feature
+            columns. Spec: docs/superpowers/specs/silent-boom-gexbot-instrumentation-2026-05-26.md. */}
+        {gexbot && (
+          <span
+            data-testid="lottery-gex-badge"
+            className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${gexbot.cls}`}
+            title={gexbot.tooltip}
+            aria-label={gexbot.ariaLabel}
+          >
+            {gexbot.label}
+          </span>
+        )}
         {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
             winners for this (tier, ticker) cohort. Tells the user "if
             this fire is going to work, expect it to peak around this

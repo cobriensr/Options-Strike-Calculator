@@ -117,6 +117,16 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
       entryDropPctVsPrev: null,
     },
     macro: makeMacro(),
+    gex: {
+      oneCvroflow: null,
+      netPutDex: null,
+      oneDexoflow: null,
+      oneGexoflow: null,
+      zcvr: null,
+      zeroGamma: null,
+      spot: null,
+      capturedAt: null,
+    },
     outcomes: {
       realizedTrail30_10Pct: 42.9,
       realizedHard30mPct: null,

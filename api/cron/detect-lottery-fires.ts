@@ -55,6 +55,11 @@ import {
   classifyAlertMultileg,
   type MultilegClassifyCache,
 } from '../_lib/multileg-classify-batch.js';
+import {
+  getLatestGexbotSnapshotAt,
+  mapToGexbotTicker,
+  type FireTimeGexbotSnapshot,
+} from '../_lib/gexbot-queries.js';
 import { Sentry } from '../_lib/sentry.js';
 
 // 7-minute scan window — 5-min v4 window + 2-min slack so a slow cron
@@ -734,6 +739,30 @@ export default withCronInstrumentation(
         const takeitFeaturesJson =
           takeitFeatures === null ? null : JSON.stringify(takeitFeatures);
 
+        // GexBot context snapshot at fire time (migration #181). Fail-open:
+        // a lookup error must not block the alert insert — leave gex_*
+        // columns NULL and continue. Mirrors the Silent Boom integration
+        // (migration #180, commit 3c2069a0). Probe basis:
+        // docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md.
+        const gexbotTicker = mapToGexbotTicker(rec.underlyingSymbol);
+        let gexSnapshot: FireTimeGexbotSnapshot | null = null;
+        if (gexbotTicker) {
+          try {
+            gexSnapshot = await getLatestGexbotSnapshotAt(
+              gexbotTicker,
+              rec.triggerTimeCt,
+            );
+          } catch (err) {
+            Sentry.captureException(err, {
+              tags: {
+                cron: 'detect-lottery-fires',
+                op: 'getLatestGexbotSnapshotAt',
+                ticker: rec.underlyingSymbol,
+              },
+            });
+          }
+        }
+
         const result = (await withDbRetry(
           () => db`
           INSERT INTO lottery_finder_fires (
@@ -756,7 +785,9 @@ export default withCronInstrumentation(
             cum_ncp_at_fire, cum_npp_at_fire,
             inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
             takeit_prob, takeit_model_version, takeit_features,
-            gamma_at_trigger, cluster_bonus
+            gamma_at_trigger, cluster_bonus,
+            gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow,
+            gex_zcvr, gex_zero_gamma, gex_spot, gex_captured_at
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -778,7 +809,15 @@ export default withCronInstrumentation(
             ${cumNcpAtFire}, ${cumNppAtFire},
             ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
             ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
-            ${rec.triggerGamma}, ${clusterBonus}
+            ${rec.triggerGamma}, ${clusterBonus},
+            ${gexSnapshot?.oneCvroflow ?? null},
+            ${gexSnapshot?.netPutDex ?? null},
+            ${gexSnapshot?.oneDexoflow ?? null},
+            ${gexSnapshot?.oneGexoflow ?? null},
+            ${gexSnapshot?.zcvr ?? null},
+            ${gexSnapshot?.zeroGamma ?? null},
+            ${gexSnapshot?.spot ?? null},
+            ${gexSnapshot?.capturedAt?.toISOString() ?? null}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id

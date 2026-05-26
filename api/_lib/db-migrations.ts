@@ -5102,4 +5102,20 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS gex_captured_at TIMESTAMPTZ`,
     ],
   },
+  {
+    id: 181,
+    description:
+      'Add GexBot context columns to lottery_finder_fires so detect-lottery-fires can stash the top GexBot scalars at fire time. Mirrors migration #180 on silent_boom_alerts — same 8 columns, same fail-open semantics, same null-when-out-of-universe behavior. Distinct from the pre-existing `gex_strike_*` columns (added by migration #110 for periscope strike exposure) — those are per-strike snapshots, these are aggregate dealer-position scalars from the GexBot orderflow endpoint. The nightly takeit-retrain picks them up via LOTTERY_SQL once enough data accumulates.',
+    statements: (sql) => [
+      sql`ALTER TABLE lottery_finder_fires
+            ADD COLUMN IF NOT EXISTS gex_one_cvroflow NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_net_put_dex NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_one_dexoflow NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_one_gexoflow NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_zcvr NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_zero_gamma NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_spot NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_captured_at TIMESTAMPTZ`,
+    ],
+  },
 ];
