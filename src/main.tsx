@@ -116,6 +116,7 @@ if (import.meta.env.PROD)
       { path: '/api/ml/prediction', method: 'GET' },
       { path: '/api/bwb-anchor', method: 'GET' },
       { path: '/api/futures/snapshot', method: 'GET' },
+      { path: '/api/gex-landscape', method: 'GET' },
       { path: '/api/gex-target-history', method: 'GET' },
       { path: '/api/nope-intraday', method: 'GET' },
       { path: '/api/periscope-exposure', method: 'GET' },
