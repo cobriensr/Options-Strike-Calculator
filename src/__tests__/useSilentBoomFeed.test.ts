@@ -194,6 +194,16 @@ describe('useSilentBoomFeed', () => {
               multiLegShare: 0.25,
               tickerCumNcpAtFire: null,
               tickerCumNppAtFire: null,
+              gex: {
+                oneCvroflow: null,
+                netPutDex: null,
+                oneDexoflow: null,
+                oneGexoflow: null,
+                zcvr: null,
+                zeroGamma: null,
+                spot: null,
+                capturedAt: null,
+              },
               avgHoldMinutes: 144,
               outcomes: {
                 peakCeilingPct: 25,

@@ -105,6 +105,9 @@ SILENTBOOM_SQL: Final = """
         inferred_structure, is_isolated_leg, match_confidence,
         pattern_group_id,
         wave2_status, wave2_detected_at,
+        gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow,
+        gex_one_gexoflow, gex_zcvr, gex_zero_gamma, gex_spot,
+        gex_captured_at,
         peak_ceiling_pct
     FROM silent_boom_alerts
     WHERE peak_ceiling_pct IS NOT NULL

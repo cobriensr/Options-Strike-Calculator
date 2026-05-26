@@ -182,6 +182,23 @@ export interface SilentBoomAlert {
    */
   underlyingPriceAtSpike: number | null;
   /**
+   * GexBot context snapshot at fire time (migration #180). All fields
+   * nullable; the whole block is "absent" when capturedAt is null
+   * (ticker outside the 16-ticker GexBot enum, or freshness window
+   * missed at detect time). Surfaced as an informational badge — not a
+   * filter or sort input until the takeit retrain absorbs the features.
+   */
+  gex: {
+    oneCvroflow: number | null;
+    netPutDex: number | null;
+    oneDexoflow: number | null;
+    oneGexoflow: number | null;
+    zcvr: number | null;
+    zeroGamma: number | null;
+    spot: number | null;
+    capturedAt: string | null;
+  };
+  /**
    * Cohort-derived "typical exit window" hint (P75 of minutes-to-peak
    * among historical winners for the (tier, ticker) cohort). Always
    * populated by /api/silent-boom-feed. See api/_lib/silent-boom-hold.ts.

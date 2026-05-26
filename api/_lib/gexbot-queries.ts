@@ -348,3 +348,125 @@ export async function getSiblingConfirmation(
     return { ticker: r.ticker, zcvr, deltaRiskReversal: drr, verdict };
   });
 }
+
+// ────────────────────────────────────────────────────────────
+// Live lookup: most recent gexbot_snapshots row for a ticker at fire time
+// ────────────────────────────────────────────────────────────
+
+/**
+ * The 16-ticker GexBot enum. detect crons should pass `underlying_symbol`
+ * through `mapToGexbotTicker` before calling `getLatestGexbotSnapshotAt` —
+ * the alert universe (UW Full Tape) is wider than GexBot's coverage.
+ */
+export const GEXBOT_TICKER_SET: ReadonlySet<string> = new Set([
+  'SPX',
+  'ES_SPX',
+  'NDX',
+  'NQ_NDX',
+  'RUT',
+  'VIX',
+  'SPY',
+  'QQQ',
+  'IWM',
+  'TLT',
+  'GLD',
+  'USO',
+  'TQQQ',
+  'UVXY',
+  'HYG',
+  'SLV',
+]);
+
+/**
+ * Alert-table → GexBot ticker normalization. SPXW is the weekly-cash
+ * symbol the Silent Boom / Lottery feeds carry; GexBot covers it under
+ * the SPX cash-index row.
+ *
+ * Returns null when the input is outside the GexBot universe — callers
+ * should skip the snapshot lookup and leave the gex_ columns NULL.
+ */
+export function mapToGexbotTicker(underlying: string): string | null {
+  if (underlying === 'SPXW') return 'SPX';
+  return GEXBOT_TICKER_SET.has(underlying) ? underlying : null;
+}
+
+/**
+ * Top GexBot scalars stashed at fire time on alert tables. The set of
+ * eight matches the 2026-05-26 univariate probe's strongest predictors
+ * plus a freshness timestamp. See migration #180.
+ */
+export interface FireTimeGexbotSnapshot {
+  oneCvroflow: number | null;
+  netPutDex: number | null;
+  oneDexoflow: number | null;
+  oneGexoflow: number | null;
+  zcvr: number | null;
+  zeroGamma: number | null;
+  spot: number | null;
+  capturedAt: Date;
+}
+
+interface RawFireTimeRow {
+  captured_at: Date | string;
+  one_cvroflow: unknown;
+  net_put_dex: unknown;
+  one_dexoflow: unknown;
+  one_gexoflow: unknown;
+  zcvr: unknown;
+  zero_gamma: unknown;
+  spot: unknown;
+}
+
+/**
+ * Fetch the most recent `gexbot_snapshots` row for `gexbotTicker` whose
+ * `captured_at` is at-or-before `asOf` but no older than `maxAgeSeconds`.
+ *
+ * Returns `null` when no row matches the freshness window — callers MUST
+ * be prepared for that case (ticker outside cron coverage, cron miss,
+ * weekend hour, etc.) and write NULL into the gex_ columns.
+ *
+ * Defaults: 120-second max age (one cron miss tolerated; 1-min cadence).
+ */
+export async function getLatestGexbotSnapshotAt(
+  gexbotTicker: string,
+  asOf: Date,
+  maxAgeSeconds = 120,
+): Promise<FireTimeGexbotSnapshot | null> {
+  const sql = getDb();
+  const lowerBoundMs = asOf.getTime() - maxAgeSeconds * 1000;
+  const lowerBound = new Date(lowerBoundMs).toISOString();
+  const upperBound = asOf.toISOString();
+
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT
+        captured_at,
+        one_cvroflow, net_put_dex, one_dexoflow, one_gexoflow,
+        zcvr, zero_gamma, spot
+      FROM gexbot_snapshots
+      WHERE ticker = ${gexbotTicker}
+        AND captured_at >= ${lowerBound}::timestamptz
+        AND captured_at <= ${upperBound}::timestamptz
+      ORDER BY captured_at DESC
+      LIMIT 1
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as RawFireTimeRow[];
+
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    oneCvroflow: toNum(row.one_cvroflow),
+    netPutDex: toNum(row.net_put_dex),
+    oneDexoflow: toNum(row.one_dexoflow),
+    oneGexoflow: toNum(row.one_gexoflow),
+    zcvr: toNum(row.zcvr),
+    zeroGamma: toNum(row.zero_gamma),
+    spot: toNum(row.spot),
+    capturedAt:
+      row.captured_at instanceof Date
+        ? row.captured_at
+        : new Date(row.captured_at),
+  };
+}

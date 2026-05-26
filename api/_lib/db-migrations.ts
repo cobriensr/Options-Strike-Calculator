@@ -5086,4 +5086,20 @@ export const MIGRATIONS: Migration[] = [
             ON ws_gamma_setup_fires (signal_type)`,
     ],
   },
+  {
+    id: 180,
+    description:
+      'Add GexBot context columns to silent_boom_alerts so detect-silent-boom can stash the top GexBot scalars at fire time. Univariate probe (docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md) found tentative signal (r=0.15-0.20, p<0.01) on `one_cvroflow`, `net_put_dex`, `one_dexoflow`, `one_gexoflow` predicting hit-30 over 4 trading days / n=270. Capturing them now lets the nightly takeit-retrain pick them up via build_training_set.py once enough data has accumulated. NULL when ticker is outside the 16-ticker GexBot universe or when the snapshot window missed. `gex_captured_at` carries staleness for downstream gating.',
+    statements: (sql) => [
+      sql`ALTER TABLE silent_boom_alerts
+            ADD COLUMN IF NOT EXISTS gex_one_cvroflow NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_net_put_dex NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_one_dexoflow NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_one_gexoflow NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_zcvr NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_zero_gamma NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_spot NUMERIC,
+            ADD COLUMN IF NOT EXISTS gex_captured_at TIMESTAMPTZ`,
+    ],
+  },
 ];

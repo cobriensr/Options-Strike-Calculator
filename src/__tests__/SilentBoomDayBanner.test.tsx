@@ -33,6 +33,16 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
     multiLegShare: null,
     tickerCumNcpAtFire: null,
     tickerCumNppAtFire: null,
+    gex: {
+      oneCvroflow: null,
+      netPutDex: null,
+      oneDexoflow: null,
+      oneGexoflow: null,
+      zcvr: null,
+      zeroGamma: null,
+      spot: null,
+      capturedAt: null,
+    },
     avgHoldMinutes: 197,
     outcomes: {
       peakCeilingPct: null,

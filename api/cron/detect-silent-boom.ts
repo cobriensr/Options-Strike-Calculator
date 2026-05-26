@@ -49,6 +49,11 @@ import {
   classifyAlertMultileg,
   type MultilegClassifyCache,
 } from '../_lib/multileg-classify-batch.js';
+import {
+  getLatestGexbotSnapshotAt,
+  mapToGexbotTicker,
+  type FireTimeGexbotSnapshot,
+} from '../_lib/gexbot-queries.js';
 import { withRetry } from '../_lib/uw-fetch.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -787,6 +792,29 @@ export default withCronInstrumentation(
       const takeitFeaturesJson =
         takeitFeatures === null ? null : JSON.stringify(takeitFeatures);
 
+      // GexBot context snapshot at fire time (migration #180). Fail-open:
+      // a lookup error must not block the alert insert — leave gex_*
+      // columns NULL and continue. Probe basis:
+      // docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md
+      const gexbotTicker = mapToGexbotTicker(g.ticker);
+      let gexSnapshot: FireTimeGexbotSnapshot | null = null;
+      if (gexbotTicker) {
+        try {
+          gexSnapshot = await getLatestGexbotSnapshotAt(
+            gexbotTicker,
+            f.bucketTs,
+          );
+        } catch (err) {
+          Sentry.captureException(err, {
+            tags: {
+              cron: 'detect-silent-boom',
+              op: 'getLatestGexbotSnapshotAt',
+              ticker: g.ticker,
+            },
+          });
+        }
+      }
+
       const result = (await withDbRetry(
         () => db`
             INSERT INTO silent_boom_alerts (
@@ -801,7 +829,9 @@ export default withCronInstrumentation(
               inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
               takeit_prob, takeit_model_version, takeit_features,
               gamma_at_trigger, pre_trade_count, adj_cofire,
-              first_min_share, spread_in_bucket
+              first_min_share, spread_in_bucket,
+              gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow,
+              gex_zcvr, gex_zero_gamma, gex_spot, gex_captured_at
             ) VALUES (
               ${ctx.today}::date, ${f.bucketTs.toISOString()},
               ${g.optionChain}, ${g.ticker},
@@ -815,7 +845,15 @@ export default withCronInstrumentation(
               ${inferredStructure}, ${isIsolatedLeg}, ${matchConfidence}, ${patternGroupId},
               ${takeitProb}, ${takeitVersion}, ${takeitFeaturesJson}::jsonb,
               ${f.gammaAtSpike}, ${preTradeCount}, ${adjCofire},
-              ${f.firstMinShareAtSpike}, ${f.spreadInBucketAtSpike}
+              ${f.firstMinShareAtSpike}, ${f.spreadInBucketAtSpike},
+              ${gexSnapshot?.oneCvroflow ?? null},
+              ${gexSnapshot?.netPutDex ?? null},
+              ${gexSnapshot?.oneDexoflow ?? null},
+              ${gexSnapshot?.oneGexoflow ?? null},
+              ${gexSnapshot?.zcvr ?? null},
+              ${gexSnapshot?.zeroGamma ?? null},
+              ${gexSnapshot?.spot ?? null},
+              ${gexSnapshot?.capturedAt?.toISOString() ?? null}
             )
             ON CONFLICT (option_chain_id, bucket_ct) DO NOTHING
             RETURNING id

@@ -97,6 +97,16 @@ interface AlertRow {
   // the live snapshot from /api/ticker-net-flow-current.
   fire_time_cum_ncp: DbNullableNumeric;
   fire_time_cum_npp: DbNullableNumeric;
+  // GexBot context columns (migration #180). NULL on tickers outside the
+  // GexBot universe or when the freshness window missed at detect time.
+  gex_one_cvroflow: DbNullableNumeric;
+  gex_net_put_dex: DbNullableNumeric;
+  gex_one_dexoflow: DbNullableNumeric;
+  gex_one_gexoflow: DbNullableNumeric;
+  gex_zcvr: DbNullableNumeric;
+  gex_zero_gamma: DbNullableNumeric;
+  gex_spot: DbNullableNumeric;
+  gex_captured_at: DbTimestamp | null;
 }
 
 interface SilentBoomAlertResponse {
@@ -172,6 +182,25 @@ interface SilentBoomAlertResponse {
   tickerCumNcpAtFire: number | null;
   /** Ticker-level cumulative net put premium at bucket_ct. */
   tickerCumNppAtFire: number | null;
+  /**
+   * GexBot context snapshot at fire time (migration #180, spec:
+   * silent-boom-gexbot-instrumentation-2026-05-26). Null on rows whose
+   * ticker is outside the GexBot universe (single stocks, ETFs not in
+   * the 16-ticker enum) or when the snapshot lookup missed its
+   * 2-minute freshness window. Display-only at first; the nightly
+   * takeit retrain will pull these from the column once ~3-4 weeks of
+   * data accumulates.
+   */
+  gex: {
+    oneCvroflow: number | null;
+    netPutDex: number | null;
+    oneDexoflow: number | null;
+    oneGexoflow: number | null;
+    zcvr: number | null;
+    zeroGamma: number | null;
+    spot: number | null;
+    capturedAt: string | null;
+  };
   /**
    * Cohort-derived "typical exit window" hint (P75 of minutes-to-peak
    * among historical winners for the (tier, ticker) cohort). Always
@@ -695,6 +724,16 @@ export default async function handler(
         // cumulative NCP / NPP for THIS ticker through the alert.
         tickerCumNcpAtFire: toNumOrNull(r.fire_time_cum_ncp),
         tickerCumNppAtFire: toNumOrNull(r.fire_time_cum_npp),
+        gex: {
+          oneCvroflow: toNumOrNull(r.gex_one_cvroflow),
+          netPutDex: toNumOrNull(r.gex_net_put_dex),
+          oneDexoflow: toNumOrNull(r.gex_one_dexoflow),
+          oneGexoflow: toNumOrNull(r.gex_one_gexoflow),
+          zcvr: toNumOrNull(r.gex_zcvr),
+          zeroGamma: toNumOrNull(r.gex_zero_gamma),
+          spot: toNumOrNull(r.gex_spot),
+          capturedAt: toIsoOrNull(r.gex_captured_at),
+        },
         avgHoldMinutes: avgHoldMinutesFor({
           tier: effectiveTier,
           ticker: r.underlying_symbol,

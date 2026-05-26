@@ -13,9 +13,11 @@ vi.mock('../_lib/db.js', () => ({
 
 import {
   getConvexityTrend,
+  getLatestGexbotSnapshotAt,
   getLatestSnapshots,
   getMaxchangeWinners,
   getSiblingConfirmation,
+  mapToGexbotTicker,
   SIBLING_GROUPS,
 } from '../_lib/gexbot-queries.js';
 
@@ -287,6 +289,88 @@ describe('gexbot-queries', () => {
         'metals',
         'vol',
       ]);
+    });
+  });
+
+  // ── mapToGexbotTicker ─────────────────────────────────────
+
+  describe('mapToGexbotTicker', () => {
+    it('maps SPXW to SPX', () => {
+      expect(mapToGexbotTicker('SPXW')).toBe('SPX');
+    });
+
+    it('returns the same ticker when it is in the GexBot universe', () => {
+      expect(mapToGexbotTicker('SPY')).toBe('SPY');
+      expect(mapToGexbotTicker('QQQ')).toBe('QQQ');
+      expect(mapToGexbotTicker('VIX')).toBe('VIX');
+    });
+
+    it('returns null for tickers outside the GexBot universe', () => {
+      expect(mapToGexbotTicker('AAPL')).toBeNull();
+      expect(mapToGexbotTicker('TSLA')).toBeNull();
+      expect(mapToGexbotTicker('NDXP')).toBeNull(); // not in enum
+    });
+  });
+
+  // ── getLatestGexbotSnapshotAt ─────────────────────────────
+
+  describe('getLatestGexbotSnapshotAt', () => {
+    it('returns null when no row falls inside the freshness window', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      const result = await getLatestGexbotSnapshotAt(
+        'SPY',
+        new Date('2026-05-22T14:00:00Z'),
+      );
+      expect(result).toBeNull();
+    });
+
+    it('returns the most recent row coerced to numbers', async () => {
+      const captured = new Date('2026-05-22T13:59:30Z');
+      mockSql.mockResolvedValueOnce([
+        {
+          captured_at: captured,
+          one_cvroflow: '1.42',
+          net_put_dex: '-1500000',
+          one_dexoflow: '0.18',
+          one_gexoflow: '-0.05',
+          zcvr: '1.1',
+          zero_gamma: '5990',
+          spot: '5985.2',
+        },
+      ]);
+      const row = await getLatestGexbotSnapshotAt(
+        'SPX',
+        new Date('2026-05-22T14:00:00Z'),
+      );
+      expect(row).not.toBeNull();
+      expect(row!.oneCvroflow).toBe(1.42);
+      expect(row!.netPutDex).toBe(-1_500_000);
+      expect(row!.zcvr).toBe(1.1);
+      expect(row!.zeroGamma).toBe(5990);
+      expect(row!.spot).toBe(5985.2);
+      expect(row!.capturedAt.toISOString()).toBe(captured.toISOString());
+    });
+
+    it('coerces string captured_at to Date', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          captured_at: '2026-05-22T13:59:30.000Z',
+          one_cvroflow: null,
+          net_put_dex: null,
+          one_dexoflow: null,
+          one_gexoflow: null,
+          zcvr: null,
+          zero_gamma: null,
+          spot: null,
+        },
+      ]);
+      const row = await getLatestGexbotSnapshotAt(
+        'SPX',
+        new Date('2026-05-22T14:00:00Z'),
+      );
+      expect(row).not.toBeNull();
+      expect(row!.capturedAt).toBeInstanceOf(Date);
+      expect(row!.oneCvroflow).toBeNull();
     });
   });
 });
