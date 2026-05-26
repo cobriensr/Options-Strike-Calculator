@@ -9,7 +9,7 @@ will incorporate them once data is sufficient (~3–4 weeks).
 
 ## Why
 
-The 2026-05-26 univariate probe ([docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md](../../tmp/silent-boom-gexbot-probe-findings-2026-05-26.md))
+The 2026-05-26 univariate probe ([docs/superpowers/specs/silent-boom-gexbot-probe-findings-2026-05-26.md](../../tmp/silent-boom-gexbot-probe-findings-2026-05-26.md))
 found tentative evidence (r≈0.15–0.20, p<0.01 on the top 3 features) that
 GexBot 1DTE+ convexity and DEX scalars predict Silent Boom hit rates. n=270
 across 4 trading days is too thin to commit to a model change — but the

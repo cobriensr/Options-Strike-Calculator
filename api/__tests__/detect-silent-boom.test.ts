@@ -2,6 +2,11 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
+import {
+  expectAllGexBindsNull,
+  extractAllInsertBinds,
+  extractInsertBinds,
+} from './insert-binds';
 
 const mockSql = vi.fn();
 
@@ -417,69 +422,50 @@ describe('detect-silent-boom handler', () => {
     //   takeit_prob, takeit_model_version, takeit_features.
     // takeit_* indices unchanged; everything before the multileg insert
     // shifted by -4.
-    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Migration #168 appended gamma_at_trigger, #169 appended
-    // pre_trade_count, #170 appended adj_cofire, and #171 appended
-    // (first_min_share, spread_in_bucket). Combined shift from the
-    // pre-#168 layout is −5 (more negative).
-    const spreadInBucket = insertCall.at(-9);
-    const firstMinShare = insertCall.at(-10);
-    const adjCofire = insertCall.at(-11);
-    const preTradeCount = insertCall.at(-12);
-    const gammaAtTrigger = insertCall.at(-13);
-    const takeitFeatures = insertCall.at(-14);
-    const takeitVersion = insertCall.at(-15);
-    const takeitProb = insertCall.at(-16);
-    const patternGroupId = insertCall.at(-17);
-    const matchConfidence = insertCall.at(-18);
-    const isIsolatedLeg = insertCall.at(-19);
-    const inferredStructure = insertCall.at(-20);
-    const underlyingAtSpike = insertCall.at(-23);
-    const multiLegShare = insertCall.at(-24);
-    const spxGamma = insertCall.at(-25);
-    const zeroDteDiff = insertCall.at(-26);
-    const tideOtmDiff = insertCall.at(-27);
-    const tideDiff = insertCall.at(-28);
-    expect(takeitProb).toBeNull(); // mocked context returns null
-    expect(takeitVersion).toBeNull();
-    expect(takeitFeatures).toBeNull();
-    expect(tideDiff).toBe(6000);
-    expect(tideOtmDiff).toBe(3000);
-    expect(zeroDteDiff).toBe(300);
-    expect(spxGamma).toBe(12345);
+    // Named-bind extraction keeps the test stable across future column
+    // adds (see api/__tests__/insert-binds.ts). Earlier versions used
+    // `insertCall.at(-N)` which needed a coordinated shift every time
+    // a migration tacked another column onto the tail.
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('takeit_prob')).toBeNull();
+    expect(binds.get('takeit_model_version')).toBeNull();
+    expect(binds.get('takeit_features')).toBeNull();
+    expect(binds.get('mkt_tide_diff')).toBe(6000);
+    expect(binds.get('mkt_tide_otm_diff')).toBe(3000);
+    expect(binds.get('zero_dte_diff')).toBe(300);
+    expect(binds.get('spx_spot_gamma_oi')).toBe(12345);
     // Single-leg-only stream: multi_leg_size=0 → share=0.
-    expect(multiLegShare).toBe(0);
+    expect(binds.get('multi_leg_share')).toBe(0);
     // Fixture buckets don't set underlyingPrice → null at the boundary.
-    expect(underlyingAtSpike).toBeNull();
+    expect(binds.get('underlying_price_at_spike')).toBeNull();
     // Default mock returns null classification → all four multileg
     // columns bind as null.
-    expect(inferredStructure).toBeNull();
-    expect(isIsolatedLeg).toBeNull();
-    expect(matchConfidence).toBeNull();
-    expect(patternGroupId).toBeNull();
+    expect(binds.get('inferred_structure')).toBeNull();
+    expect(binds.get('is_isolated_leg')).toBeNull();
+    expect(binds.get('match_confidence')).toBeNull();
+    expect(binds.get('pattern_group_id')).toBeNull();
     // bucketRow fixture doesn't set bucket_gamma → null in INSERT.
-    expect(gammaAtTrigger).toBeNull();
+    expect(binds.get('gamma_at_trigger')).toBeNull();
     // pre_trade_count mock returned { cnt: 0 } → 0 propagates.
-    expect(preTradeCount).toBe(0);
+    expect(binds.get('pre_trade_count')).toBe(0);
     // Single-fire fixture → no adjacent strike fires this cron-tick →
     // adj_cofire stays false.
-    expect(adjCofire).toBe(false);
+    expect(binds.get('adj_cofire')).toBe(false);
     // bucketRow fixture doesn't set first_min_share / spread_in_bucket
     // (#171) → null in INSERT.
-    expect(firstMinShare).toBeNull();
-    expect(spreadInBucket).toBeNull();
+    expect(binds.get('first_min_share')).toBeNull();
+    expect(binds.get('spread_in_bucket')).toBeNull();
     // Migration #180: 8 gex_* binds at the tail. Default test mocks
     // return null from getLatestGexbotSnapshotAt, so every gex_* bind
-    // is null. Asserting the tail width prevents a regression where
-    // someone trims the INSERT without updating the schema.
-    expect(insertCall.at(-1)).toBeNull(); // gex_captured_at
-    expect(insertCall.at(-2)).toBeNull(); // gex_spot
-    expect(insertCall.at(-3)).toBeNull(); // gex_zero_gamma
-    expect(insertCall.at(-4)).toBeNull(); // gex_zcvr
-    expect(insertCall.at(-5)).toBeNull(); // gex_one_gexoflow
-    expect(insertCall.at(-6)).toBeNull(); // gex_one_dexoflow
-    expect(insertCall.at(-7)).toBeNull(); // gex_net_put_dex
-    expect(insertCall.at(-8)).toBeNull(); // gex_one_cvroflow
+    // is null.
+    expect(binds.get('gex_one_cvroflow')).toBeNull();
+    expect(binds.get('gex_net_put_dex')).toBeNull();
+    expect(binds.get('gex_one_dexoflow')).toBeNull();
+    expect(binds.get('gex_one_gexoflow')).toBeNull();
+    expect(binds.get('gex_zcvr')).toBeNull();
+    expect(binds.get('gex_zero_gamma')).toBeNull();
+    expect(binds.get('gex_spot')).toBeNull();
+    expect(binds.get('gex_captured_at')).toBeNull();
   });
 
   it('binds GexBot snapshot values when getLatestGexbotSnapshotAt returns a row', async () => {
@@ -519,15 +505,15 @@ describe('detect-silent-boom handler', () => {
     expect(mockMapToGexbotTicker).toHaveBeenCalledWith('SNDK');
     expect(mockGetLatestGexbotSnapshotAt).toHaveBeenCalled();
 
-    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-1)).toBe(capturedAt.toISOString());
-    expect(insertCall.at(-2)).toBe(5985.2);
-    expect(insertCall.at(-3)).toBe(5990);
-    expect(insertCall.at(-4)).toBe(1.1);
-    expect(insertCall.at(-5)).toBe(-0.05);
-    expect(insertCall.at(-6)).toBe(0.18);
-    expect(insertCall.at(-7)).toBe(-1_500_000);
-    expect(insertCall.at(-8)).toBe(1.42);
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('gex_one_cvroflow')).toBe(1.42);
+    expect(binds.get('gex_net_put_dex')).toBe(-1_500_000);
+    expect(binds.get('gex_one_dexoflow')).toBe(0.18);
+    expect(binds.get('gex_one_gexoflow')).toBe(-0.05);
+    expect(binds.get('gex_zcvr')).toBe(1.1);
+    expect(binds.get('gex_zero_gamma')).toBe(5990);
+    expect(binds.get('gex_spot')).toBe(5985.2);
+    expect(binds.get('gex_captured_at')).toBe(capturedAt.toISOString());
   });
 
   it('skips GexBot lookup when ticker is outside the GexBot universe', async () => {
@@ -554,10 +540,7 @@ describe('detect-silent-boom handler', () => {
     expect(res._status).toBe(200);
 
     expect(mockGetLatestGexbotSnapshotAt).not.toHaveBeenCalled();
-    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    for (let i = 1; i <= 8; i += 1) {
-      expect(insertCall.at(-i)).toBeNull();
-    }
+    expectAllGexBindsNull(extractInsertBinds(mockSql, 'silent_boom_alerts'));
   });
 
   it('fails open and binds NULL gex_* when the snapshot lookup throws', async () => {
@@ -600,10 +583,7 @@ describe('detect-silent-boom handler', () => {
     );
 
     // INSERT still landed; gex_* binds are all NULL.
-    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    for (let i = 1; i <= 8; i += 1) {
-      expect(insertCall.at(-i)).toBeNull();
-    }
+    expectAllGexBindsNull(extractInsertBinds(mockSql, 'silent_boom_alerts'));
   });
 
   it('binds null tide diff when the latest tick is older than 30 minutes', async () => {
@@ -636,23 +616,21 @@ describe('detect-silent-boom handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Bind tail layout post-#168/#169/#170 tail-appends: every
-    // pre-#168 index shifts by −3 vs the prior layout. Single-leg
-    // stream → multi_leg_share=0; all four macro fields are null
-    // (every tick stale); underlyingPrice not set in fixture → null
-    // at the boundary.
-    expect(insertCall.at(-9)).toBeNull(); // spread_in_bucket
-    expect(insertCall.at(-10)).toBeNull(); // first_min_share
-    expect(insertCall.at(-11)).toBe(false); // adj_cofire (single fire)
-    expect(insertCall.at(-12)).toBe(0); // pre_trade_count (mock cnt=0)
-    expect(insertCall.at(-13)).toBeNull(); // gamma_at_trigger
-    expect(insertCall.at(-23)).toBeNull(); // underlying_price_at_spike
-    expect(insertCall.at(-24)).toBe(0); // multi_leg_share
-    expect(insertCall.at(-25)).toBeNull(); // spx_spot_gamma_oi
-    expect(insertCall.at(-26)).toBeNull(); // zero_dte_diff
-    expect(insertCall.at(-27)).toBeNull(); // mkt_tide_otm_diff
-    expect(insertCall.at(-28)).toBeNull(); // mkt_tide_diff
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    // Single-leg stream → multi_leg_share=0; all four macro fields are
+    // null (every tick stale); underlyingPrice not set in fixture →
+    // null at the boundary.
+    expect(binds.get('spread_in_bucket')).toBeNull();
+    expect(binds.get('first_min_share')).toBeNull();
+    expect(binds.get('adj_cofire')).toBe(false); // single fire
+    expect(binds.get('pre_trade_count')).toBe(0); // mock cnt=0
+    expect(binds.get('gamma_at_trigger')).toBeNull();
+    expect(binds.get('underlying_price_at_spike')).toBeNull();
+    expect(binds.get('multi_leg_share')).toBe(0);
+    expect(binds.get('spx_spot_gamma_oi')).toBeNull();
+    expect(binds.get('zero_dte_diff')).toBeNull();
+    expect(binds.get('mkt_tide_otm_diff')).toBeNull();
+    expect(binds.get('mkt_tide_diff')).toBeNull();
   });
 
   it('flags direction_gated=true and demotes score_tier to tier3 on a counter-trend put fire (mkt_tide_diff > +100M)', async () => {
@@ -695,28 +673,10 @@ describe('detect-silent-boom handler', () => {
       totalFires: 1,
       inserted: 1,
     });
-    // Bind order ends with score, score_tier, direction_gated,
-    // mkt_tide_diff, mkt_tide_otm_diff, zero_dte_diff,
-    // spx_spot_gamma_oi, multi_leg_share, underlying_price_at_spike,
-    // cum_ncp_at_fire, cum_npp_at_fire,
-    // inferred_structure, is_isolated_leg, match_confidence, pattern_group_id,
-    // takeit_prob, takeit_model_version, takeit_features,
-    // gamma_at_trigger, pre_trade_count, adj_cofire,
-    // first_min_share, spread_in_bucket. Post-#171 layout:
-    //   at(-1) = spread_in_bucket  at(-2) = first_min_share
-    //   at(-3) = adj_cofire  at(-4) = pre_trade_count
-    //   at(-5) = gamma_at_trigger  at(-6) = takeit_features
-    //   at(-7) = takeit_model_version  at(-8) = takeit_prob
-    //   at(-9) = pattern_group_id  at(-10) = match_confidence
-    //   at(-11) = is_isolated_leg  at(-12) = inferred_structure
-    //   at(-13) = cum_npp_at_fire  at(-14) = cum_ncp_at_fire
-    //   at(-15) = underlying_price_at_spike
-    //   at(-20) = mkt_tide_diff  at(-21) = direction_gated
-    //   at(-22) = score_tier (demoted to 'tier3')
-    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    expect(insertCall.at(-28)).toBe(150_000_000);
-    expect(insertCall.at(-29)).toBe(true);
-    expect(insertCall.at(-30)).toBe('tier3');
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBe(150_000_000);
+    expect(binds.get('direction_gated')).toBe(true);
+    expect(binds.get('score_tier')).toBe('tier3');
   });
 
   it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
@@ -749,17 +709,11 @@ describe('detect-silent-boom handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Post-#171 tail layout: ..., inferred_structure(-12),
-    //              is_isolated_leg(-11), match_confidence(-10),
-    //              pattern_group_id(-9), takeit_*(-8..-6),
-    //              gamma_at_trigger(-5), pre_trade_count(-4),
-    //              adj_cofire(-3), first_min_share(-2),
-    //              spread_in_bucket(-1).
-    expect(insertCall.at(-20)).toBe('vertical');
-    expect(insertCall.at(-19)).toBe(false);
-    expect(insertCall.at(-18)).toBe(0.83);
-    expect(insertCall.at(-17)).toBe('pg-abc-123');
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('inferred_structure')).toBe('vertical');
+    expect(binds.get('is_isolated_leg')).toBe(false);
+    expect(binds.get('match_confidence')).toBe(0.83);
+    expect(binds.get('pattern_group_id')).toBe('pg-abc-123');
     // Helper was called once with the alert's anchor coordinates.
     expect(mockClassifyAlertMultileg).toHaveBeenCalledTimes(1);
     const [, , ticker, optionChain] = mockClassifyAlertMultileg.mock.calls[0]!;
@@ -793,13 +747,11 @@ describe('detect-silent-boom handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const insertCall = mockSql.mock.calls.at(-1) as unknown[];
-    // Post-#171 tail: inferred_structure(-12), is_isolated_leg(-11),
-    // match_confidence(-10), pattern_group_id(-9).
-    expect(insertCall.at(-20)).toBeNull(); // inferred_structure
-    expect(insertCall.at(-19)).toBeNull(); // is_isolated_leg
-    expect(insertCall.at(-18)).toBeNull(); // match_confidence
-    expect(insertCall.at(-17)).toBeNull(); // pattern_group_id
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('inferred_structure')).toBeNull();
+    expect(binds.get('is_isolated_leg')).toBeNull();
+    expect(binds.get('match_confidence')).toBeNull();
+    expect(binds.get('pattern_group_id')).toBeNull();
   });
 
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
@@ -881,18 +833,13 @@ describe('detect-silent-boom handler', () => {
       inserted: 2,
     });
 
-    // Both INSERTs should have adj_cofire=true. Filter to INSERT
-    // calls specifically — the pre_trade_count COUNT query
-    // interleaves with the INSERTs so slice(-2) picks up
-    // pre_trade_count #2 instead of the INSERTs. Post-#180,
-    // adj_cofire sits at at(-11): the 8 gex_* binds occupy -1..-8,
-    // then spread_in_bucket(-9), first_min_share(-10), adj_cofire(-11).
-    const insertCalls = mockSql.mock.calls.filter((c) => {
-      const strings = c[0] as readonly string[];
-      return strings[0]?.includes('INSERT INTO silent_boom_alerts');
-    });
-    expect(insertCalls).toHaveLength(2);
-    expect(insertCalls[0]!.at(-11)).toBe(true); // adj_cofire fire #1
-    expect(insertCalls[1]!.at(-11)).toBe(true); // adj_cofire fire #2
+    // Both INSERTs should have adj_cofire=true. Use the multi-call
+    // extractor (the pre_trade_count COUNT query interleaves with the
+    // INSERTs so a plain `mockSql.mock.calls.at(-N)` walk would catch
+    // the wrong row).
+    const allBinds = extractAllInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(allBinds).toHaveLength(2);
+    expect(allBinds[0]!.get('adj_cofire')).toBe(true);
+    expect(allBinds[1]!.get('adj_cofire')).toBe(true);
   });
 });

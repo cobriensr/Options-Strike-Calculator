@@ -12,7 +12,7 @@
  * or the snapshot freshness window missed at detect time).
  *
  * Probe basis:
- * `docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md`.
+ * `docs/superpowers/specs/silent-boom-gexbot-probe-findings-2026-05-26.md`.
  */
 export interface GexbotFireContext {
   oneCvroflow: number | null;

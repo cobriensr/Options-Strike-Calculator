@@ -750,7 +750,7 @@ export default withCronInstrumentation(
         // a lookup error must not block the alert insert — leave gex_*
         // columns NULL and continue. Mirrors the Silent Boom integration
         // (migration #180, commit 3c2069a0). Probe basis:
-        // docs/tmp/silent-boom-gexbot-probe-findings-2026-05-26.md.
+        // docs/superpowers/specs/silent-boom-gexbot-probe-findings-2026-05-26.md.
         const gexbotTicker = mapToGexbotTicker(rec.underlyingSymbol);
         let gexSnapshot: FireTimeGexbotSnapshot | null = null;
         if (gexbotTicker == null) {
@@ -828,7 +828,7 @@ export default withCronInstrumentation(
             ${gexSnapshot?.zcvr ?? null},
             ${gexSnapshot?.zeroGamma ?? null},
             ${gexSnapshot?.spot ?? null},
-            ${gexSnapshot?.capturedAt?.toISOString() ?? null}
+            ${gexSnapshot?.capturedAt.toISOString() ?? null}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id
