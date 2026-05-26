@@ -5,7 +5,8 @@
  *   • Verdict label + description with a positional regime badge
  *   • GEX Gravity (strike with the largest |GEX|)
  *   • Top 2 upside and downside drift targets with classification + vol flag
- *   • 10m and 30m ceiling/floor GEX trends (MM cadence)
+ *   • 1m / 5m / 10m floor + ceiling Δ% trend ladder (Phase 4: all three
+ *     windows at GexBot's native 1-min cadence)
  */
 
 import {
@@ -19,16 +20,38 @@ import type { BiasMetrics, DriftTarget } from './types';
 
 export interface BiasPanelProps {
   bias: BiasMetrics;
-  /** Strike with the largest |10m Δ%|; used for the ⚡ confluence marker. */
+  /** Strike with the largest |Δ1m|; used for the ⚡ confluence marker. */
+  maxChanged1mStrike: number | null;
+  /** Strike with the largest |Δ5m|; used for the ⚡ confluence marker. */
+  maxChanged5mStrike: number | null;
+  /** Strike with the largest |Δ10m|; used for the ⚡ confluence marker. */
   maxChanged10mStrike: number | null;
-  /** Strike with the largest |30m Δ%|; used for the ⚡ confluence marker. */
-  maxChanged30mStrike: number | null;
+}
+
+/**
+ * Pick the cell color for a floor-trend value. Floor growing (positive
+ * % Δ) is bullish — support is hardening; the gradient stays green.
+ */
+function floorTrendColor(v: number | null): string {
+  if (v === null) return 'var(--color-muted)';
+  return v >= 0 ? '#4ade80' : '#f87171';
+}
+
+/**
+ * Pick the cell color for a ceiling-trend value. Ceiling shrinking
+ * (negative % Δ) is bullish — overhead resistance is weakening; the
+ * positive direction is amber (resistance building).
+ */
+function ceilTrendColor(v: number | null): string {
+  if (v === null) return 'var(--color-muted)';
+  return v <= 0 ? '#4ade80' : '#fbbf24';
 }
 
 export function BiasPanel({
   bias,
+  maxChanged1mStrike,
+  maxChanged5mStrike,
   maxChanged10mStrike,
-  maxChanged30mStrike,
 }: BiasPanelProps) {
   const vm = VERDICT_META[bias.verdict];
   const isDrifting =
@@ -37,18 +60,6 @@ export function BiasPanel({
     isDrifting && bias.priceTrend
       ? ` (${bias.priceTrend.changePts > 0 ? '+' : ''}${bias.priceTrend.changePts.toFixed(1)} pts / 30m)`
       : '';
-  const floorTrend10mColor =
-    bias.floorTrend10m === null
-      ? 'var(--color-muted)'
-      : bias.floorTrend10m >= 0
-        ? '#4ade80'
-        : '#f87171';
-  const ceilTrend10mColor =
-    bias.ceilingTrend10m === null
-      ? 'var(--color-muted)'
-      : bias.ceilingTrend10m <= 0
-        ? '#4ade80'
-        : '#fbbf24';
 
   return (
     <div className={`mb-3 rounded-lg border p-3 ${vm.bg} ${vm.border}`}>
@@ -85,7 +96,7 @@ export function BiasPanel({
         </span>
       </div>
 
-      {/* Metrics row */}
+      {/* Metrics row — gravity, drift targets, and the 3-row trend ladder */}
       <div className="grid grid-cols-[auto_1px_1fr_1px_1fr_1px_auto] items-start gap-x-4">
         {/* GEX gravity */}
         <div
@@ -127,8 +138,9 @@ export function BiasPanel({
           title="Top 2 strikes above spot by absolute GEX — where the most MM hedging activity sits overhead. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
           targets={bias.upsideTargets}
           strikeColor="text-emerald-400"
+          maxChanged1mStrike={maxChanged1mStrike}
+          maxChanged5mStrike={maxChanged5mStrike}
           maxChanged10mStrike={maxChanged10mStrike}
-          maxChanged30mStrike={maxChanged30mStrike}
         />
 
         {/* Divider */}
@@ -140,22 +152,16 @@ export function BiasPanel({
           title="Top 2 strikes below spot by absolute GEX — where the most MM hedging activity sits below you. Positive regime: price gets pulled toward the first target. Negative regime: a break through can accelerate toward the second."
           targets={bias.downsideTargets}
           strikeColor="text-red-400"
+          maxChanged1mStrike={maxChanged1mStrike}
+          maxChanged5mStrike={maxChanged5mStrike}
           maxChanged10mStrike={maxChanged10mStrike}
-          maxChanged30mStrike={maxChanged30mStrike}
         />
 
         {/* Divider */}
         <div className="h-full w-px bg-white/10" />
 
-        {/* 10m Trend */}
-        <TrendColumn
-          label="10m Trend"
-          title="Average % change in MM dollar gamma for strikes above (Ceil) and below (Floor) spot vs. the prior 10-min slot. Floor growing (green) = support hardening. Ceiling growing (amber) = resistance building. Ceiling shrinking (green) = that overhead wall is weakening."
-          floorValue={bias.floorTrend10m}
-          ceilValue={bias.ceilingTrend10m}
-          floorColor={floorTrend10mColor}
-          ceilColor={ceilTrend10mColor}
-        />
+        {/* Trend ladder — 1m / 5m / 10m floor + ceiling */}
+        <TrendLadder bias={bias} />
       </div>
     </div>
   );
@@ -166,8 +172,9 @@ interface DriftTargetColumnProps {
   title: string;
   targets: DriftTarget[];
   strikeColor: string;
+  maxChanged1mStrike: number | null;
+  maxChanged5mStrike: number | null;
   maxChanged10mStrike: number | null;
-  maxChanged30mStrike: number | null;
 }
 
 function DriftTargetColumn({
@@ -175,8 +182,9 @@ function DriftTargetColumn({
   title,
   targets,
   strikeColor,
+  maxChanged1mStrike,
+  maxChanged5mStrike,
   maxChanged10mStrike,
-  maxChanged30mStrike,
 }: DriftTargetColumnProps) {
   return (
     <div title={title}>
@@ -196,8 +204,9 @@ function DriftTargetColumn({
       ) : (
         targets.map((t) => {
           const isConfluence =
-            t.strike === maxChanged10mStrike ||
-            t.strike === maxChanged30mStrike;
+            t.strike === maxChanged1mStrike ||
+            t.strike === maxChanged5mStrike ||
+            t.strike === maxChanged10mStrike;
           return (
             <div
               key={t.strike}
@@ -223,17 +232,17 @@ function DriftTargetColumn({
               {t.volReinforcement === 'reinforcing' && (
                 <span
                   className="font-mono text-[9px] text-emerald-400"
-                  title="Volume confirms OI structure here"
+                  title="Reinforcing — delta-trend agrees with the wall"
                 >
-                  ✓
+                  ↑↑
                 </span>
               )}
               {t.volReinforcement === 'opposing' && (
                 <span
                   className="font-mono text-[9px] text-red-400"
-                  title="Volume contradicts OI structure here"
+                  title="Opposing — delta-trend pushes against the wall"
                 >
-                  ✗
+                  ↓↓
                 </span>
               )}
               {isConfluence && (
@@ -252,59 +261,80 @@ function DriftTargetColumn({
   );
 }
 
-interface TrendColumnProps {
-  label: string;
-  title: string;
-  floorValue: number | null;
-  ceilValue: number | null;
-  floorColor: string;
-  ceilColor: string;
+interface TrendLadderProps {
+  bias: BiasMetrics;
 }
 
-function TrendColumn({
-  label,
-  title,
-  floorValue,
-  ceilValue,
-  floorColor,
-  ceilColor,
-}: TrendColumnProps) {
+/**
+ * Three-row trend ladder: 1m / 5m / 10m, each row showing both floor and
+ * ceiling Δ% averages. Replaces the legacy single 10m/30m display from
+ * the MM era.
+ */
+function TrendLadder({ bias }: TrendLadderProps) {
+  const rows: Array<{
+    label: string;
+    floor: number | null;
+    ceil: number | null;
+  }> = [
+    { label: '1m', floor: bias.floorTrend1m, ceil: bias.ceilingTrend1m },
+    { label: '5m', floor: bias.floorTrend5m, ceil: bias.ceilingTrend5m },
+    { label: '10m', floor: bias.floorTrend10m, ceil: bias.ceilingTrend10m },
+  ];
+
   return (
-    <div className="cursor-help" title={title}>
+    <div
+      className="cursor-help"
+      title="Average % change in MM dollar gamma for strikes above (Ceil) and below (Floor) spot vs. the slot N min ago. Floor growing (green) = support hardening. Ceiling growing (amber) = resistance building. Ceiling shrinking (green) = overhead wall weakening. Three rows at GexBot's native 1-min cadence."
+    >
       <div
         className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
         style={{ color: 'var(--color-tertiary)' }}
       >
-        {label}
+        Trend Ladder
       </div>
-      <div className="flex items-baseline gap-1.5">
-        <span
-          className="font-mono text-[9px]"
-          style={{ color: 'var(--color-muted)' }}
-        >
-          Floor
-        </span>
-        <span
-          className="font-mono text-[12px] font-semibold"
-          style={{ color: floorColor }}
-        >
-          {fmtPct(floorValue)}
-        </span>
-      </div>
-      <div className="flex items-baseline gap-1.5">
-        <span
-          className="font-mono text-[9px]"
-          style={{ color: 'var(--color-muted)' }}
-        >
-          Ceil
-        </span>
-        <span
-          className="font-mono text-[12px] font-semibold"
-          style={{ color: ceilColor }}
-        >
-          {fmtPct(ceilValue)}
-        </span>
+      <div className="grid grid-cols-[auto_auto_auto] items-baseline gap-x-2">
+        {rows.map((r) => (
+          <TrendRow
+            key={r.label}
+            label={r.label}
+            floor={r.floor}
+            ceil={r.ceil}
+          />
+        ))}
       </div>
     </div>
+  );
+}
+
+interface TrendRowProps {
+  label: string;
+  floor: number | null;
+  ceil: number | null;
+}
+
+function TrendRow({ label, floor, ceil }: TrendRowProps) {
+  return (
+    <>
+      <span
+        className="font-mono text-[9px] font-semibold"
+        style={{ color: 'var(--color-tertiary)' }}
+      >
+        {label}
+      </span>
+      <span
+        className="font-mono text-[11px] font-semibold"
+        style={{ color: floorTrendColor(floor) }}
+        title={`Floor (avg Δ${label} below spot)`}
+      >
+        F {fmtPct(floor)}
+      </span>
+      <span
+        className="font-mono text-[11px] font-semibold"
+        style={{ color: ceilTrendColor(ceil) }}
+        title={`Ceiling (avg Δ${label} above spot)`}
+      >
+        C {fmtPct(ceil)}
+      </span>
+    </>
   );
 }

@@ -1,200 +1,66 @@
 /**
- * Unit tests for GexLandscape deltas helpers (computeSmoothedStrikes,
- * computePriceTrend). Pure functions — no React.
+ * Unit tests for GexLandscape `computePriceTrend`. Pure function — no React.
  *
- * `computeDeltaMap` and `findClosestSnapshot` retired in Phase 4 — Δ%
- * computation moved server-side via SQL `LAG()`.
+ * Phase 4 of the 1-min GexBot rebuild dropped the 5-min snapshot
+ * smoothing buffer (`computeSmoothedStrikes`) and the `Snapshot` type.
+ * `computePriceTrend` now operates on a minimal `{ts, price}[]` buffer
+ * — see `src/components/GexLandscape/deltas.ts`.
  */
 
 import { describe, expect, it } from 'vitest';
-import {
-  computePriceTrend,
-  computeSmoothedStrikes,
-} from '../../components/GexLandscape/deltas';
-import type {
-  GexStrikeLevel,
-  Snapshot,
-} from '../../components/GexLandscape/types';
-
-function makeStrike(overrides: Partial<GexStrikeLevel> = {}): GexStrikeLevel {
-  return {
-    strike: 5800,
-    price: 5795,
-    callGammaOi: 5e11,
-    putGammaOi: -3e11,
-    netGamma: 2e11,
-    callGammaVol: 1e11,
-    putGammaVol: -5e10,
-    netGammaVol: 5e10,
-    volReinforcement: 'reinforcing',
-    callGammaAsk: -1e8,
-    callGammaBid: 2e8,
-    putGammaAsk: 5e7,
-    putGammaBid: -1.5e8,
-    callCharmOi: 1e9,
-    putCharmOi: -8e8,
-    netCharm: 2e8,
-    callCharmVol: 5e8,
-    putCharmVol: -4e8,
-    netCharmVol: 1e8,
-    callDeltaOi: 5e9,
-    putDeltaOi: -3e9,
-    netDelta: 2e9,
-    callVannaOi: 1e8,
-    putVannaOi: -6e7,
-    netVanna: 4e7,
-    callVannaVol: 5e7,
-    putVannaVol: -3e7,
-    netVannaVol: 2e7,
-    ...overrides,
-  };
-}
-
-describe('computeSmoothedStrikes', () => {
-  it('returns the current snapshot unchanged when no buffer entries are recent', () => {
-    const current = [makeStrike({ strike: 5800, netGamma: 100, netCharm: 50 })];
-    const out = computeSmoothedStrikes(current, [], 60_000);
-    expect(out).toEqual(current);
-  });
-
-  it('averages netGamma and netCharm across the current snapshot and recent buffer', () => {
-    const current = [makeStrike({ strike: 5800, netGamma: 300, netCharm: 90 })];
-    const buf: Snapshot[] = [
-      {
-        ts: 60_000,
-        strikes: [makeStrike({ strike: 5800, netGamma: 200, netCharm: 60 })],
-      },
-      {
-        ts: 120_000,
-        strikes: [makeStrike({ strike: 5800, netGamma: 100, netCharm: 30 })],
-      },
-    ];
-    const [out] = computeSmoothedStrikes(current, buf, 240_000);
-    // average of 300 + 200 + 100 over 3 = 200; 90 + 60 + 30 = 60
-    expect(out!.netGamma).toBeCloseTo(200, 5);
-    expect(out!.netCharm).toBeCloseTo(60, 5);
-  });
-
-  it('drops buffer snapshots outside the smoothing window', () => {
-    const current = [makeStrike({ strike: 5800, netGamma: 300, netCharm: 90 })];
-    const buf: Snapshot[] = [
-      {
-        ts: 1_000,
-        strikes: [makeStrike({ strike: 5800, netGamma: 100, netCharm: 30 })],
-      },
-    ];
-    // windowMs = 5min default; nowTs = 10min, buf is 9min old → outside window
-    const [out] = computeSmoothedStrikes(current, buf, 600_000);
-    expect(out!.netGamma).toBe(300);
-    expect(out!.netCharm).toBe(90);
-  });
-
-  it('drops future-relative buffer entries when scrubbing backward', () => {
-    // Regression for the bias/scrub coordination bug verified 2026-05-12:
-    // when the user scrubs to a past snapshot, the live-accumulated buffer
-    // still contains entries from BEFORE the scrub (relative to wall clock,
-    // these are FUTURE relative to the scrubbed `nowTs`). Those entries
-    // must NOT contribute to the smoothed value — otherwise the bias
-    // verdict, gravity strike, and drift targets reflect data the user
-    // can't see in the rest of the panel.
-    const current = [makeStrike({ strike: 5800, netGamma: 100, netCharm: 30 })];
-    const buf: Snapshot[] = [
-      // Scrubbed-into snapshot (matches nowTs)
-      {
-        ts: 600_000,
-        strikes: [makeStrike({ strike: 5800, netGamma: 100, netCharm: 30 })],
-      },
-      // Live-buffered entry from AFTER the scrubbed nowTs (-9K wall built
-      // up later in the session). Without the upper bound this would
-      // drag the smoothed netGamma deeply negative.
-      {
-        ts: 1_200_000,
-        strikes: [
-          makeStrike({ strike: 5800, netGamma: -9_000, netCharm: -1_000 }),
-        ],
-      },
-    ];
-    // nowTs = 600_000 (scrubbed). Smoothing window 5min, so >= 300_000.
-    // The 1_200_000 entry passes the lower bound but MUST be excluded
-    // by the upper bound (ts > nowTs).
-    const [out] = computeSmoothedStrikes(current, buf, 600_000);
-    // Should average ONLY the scrubbed-into snapshot (matches current)
-    // with the current. Both have netGamma=100 → smoothed stays at 100.
-    expect(out!.netGamma).toBe(100);
-    expect(out!.netCharm).toBe(30);
-  });
-
-  it('preserves a strike that has no history in the buffer', () => {
-    const current = [
-      makeStrike({ strike: 5800, netGamma: 100 }),
-      makeStrike({ strike: 5900, netGamma: 200 }),
-    ];
-    const buf: Snapshot[] = [
-      {
-        ts: 60_000,
-        strikes: [makeStrike({ strike: 5800, netGamma: 50 })],
-      },
-    ];
-    const out = computeSmoothedStrikes(current, buf, 120_000);
-    expect(out.find((s) => s.strike === 5900)?.netGamma).toBe(200);
-    expect(out.find((s) => s.strike === 5800)?.netGamma).toBeCloseTo(75, 5);
-  });
-});
+import { computePriceTrend } from '../../components/GexLandscape/deltas';
+import type { PricePoint } from '../../utils/price-trend';
 
 describe('computePriceTrend', () => {
   const NOW = 600_000; // 10 min in ms
   const WINDOW = 5 * 60 * 1000;
 
-  /** Create a snapshot at the given ms with a specific price. */
-  function priceSnap(ts: number, price: number): Snapshot {
-    return { ts, strikes: [makeStrike({ price })] };
+  /** Create a price point at the given ms. */
+  function pt(ts: number, price: number): PricePoint {
+    return { ts, price };
   }
 
-  it('returns flat when fewer than 3 snapshots in the window', () => {
-    const buf = [priceSnap(300_000, 7000), priceSnap(350_000, 6998)];
+  it('returns flat when fewer than 3 in-window points', () => {
+    const buf = [pt(300_000, 7000), pt(350_000, 6998)];
     const trend = computePriceTrend(6995, buf, NOW, WINDOW);
     expect(trend.direction).toBe('flat');
     expect(trend.changePts).toBe(0);
   });
 
-  it('returns flat when price change is below threshold despite high consistency', () => {
-    // 3+ snapshots, all going down, but only 1 pt total change
+  it('returns flat when price change is below threshold despite consistency', () => {
+    // 3+ points, all going down, but only ~1 pt total change
     const buf = [
-      priceSnap(300_000, 7000),
-      priceSnap(360_000, 6999.8),
-      priceSnap(420_000, 6999.5),
-      priceSnap(480_000, 6999.2),
+      pt(300_000, 7000),
+      pt(360_000, 6999.8),
+      pt(420_000, 6999.5),
+      pt(480_000, 6999.2),
     ];
     const trend = computePriceTrend(6999, buf, NOW, WINDOW);
     expect(trend.direction).toBe('flat');
   });
 
-  it('returns flat when consistency is below threshold despite large price change', () => {
-    // Large net change but choppy path (up-down-up-down with net down)
+  it('returns flat when consistency is below threshold despite large change', () => {
     const buf = [
-      priceSnap(300_000, 7000),
-      priceSnap(330_000, 6995), // down 5
-      priceSnap(360_000, 7002), // up 7
-      priceSnap(390_000, 6993), // down 9
-      priceSnap(420_000, 7001), // up 8
-      priceSnap(450_000, 6990), // down 11
-      priceSnap(480_000, 6998), // up 8
+      pt(300_000, 7000),
+      pt(330_000, 6995),
+      pt(360_000, 7002),
+      pt(390_000, 6993),
+      pt(420_000, 7001),
+      pt(450_000, 6990),
+      pt(480_000, 6998),
     ];
-    // currentPrice = 6994: net -6 pts. Intervals: D U D U D U D → 4 down, 3 up
-    // consistency = 4/7 = 0.57 → just above threshold
-    // But let's make it truly choppy:
+    // Net change is small + choppy → flat regardless.
     const trend = computePriceTrend(6998, buf, NOW, WINDOW);
-    // Net change is -2, below the 3-pt threshold → flat regardless
     expect(trend.direction).toBe('flat');
   });
 
   it('returns down for a sustained downward grind meeting both thresholds', () => {
     const buf = [
-      priceSnap(300_000, 7020),
-      priceSnap(330_000, 7018),
-      priceSnap(360_000, 7016),
-      priceSnap(390_000, 7013),
-      priceSnap(420_000, 7011),
+      pt(300_000, 7020),
+      pt(330_000, 7018),
+      pt(360_000, 7016),
+      pt(390_000, 7013),
+      pt(420_000, 7011),
     ];
     const trend = computePriceTrend(7010, buf, NOW, WINDOW);
     expect(trend.direction).toBe('down');
@@ -205,11 +71,11 @@ describe('computePriceTrend', () => {
 
   it('returns up for a sustained upward grind meeting both thresholds', () => {
     const buf = [
-      priceSnap(300_000, 7000),
-      priceSnap(330_000, 7002),
-      priceSnap(360_000, 7004),
-      priceSnap(390_000, 7005),
-      priceSnap(420_000, 7008),
+      pt(300_000, 7000),
+      pt(330_000, 7002),
+      pt(360_000, 7004),
+      pt(390_000, 7005),
+      pt(420_000, 7008),
     ];
     const trend = computePriceTrend(7010, buf, NOW, WINDOW);
     expect(trend.direction).toBe('up');
@@ -217,12 +83,12 @@ describe('computePriceTrend', () => {
     expect(trend.changePct).toBeGreaterThan(0);
   });
 
-  it('filters out snapshots outside the window', () => {
+  it('filters out points outside the window', () => {
     const buf = [
-      priceSnap(10_000, 6900), // way outside 5min window from NOW=600_000
-      priceSnap(300_000, 7000),
-      priceSnap(360_000, 7003),
-      priceSnap(420_000, 7005),
+      pt(10_000, 6900), // way outside 5min window from NOW=600_000
+      pt(300_000, 7000),
+      pt(360_000, 7003),
+      pt(420_000, 7005),
     ];
     const trend = computePriceTrend(7008, buf, NOW, WINDOW);
     // oldest in-window is 7000, not 6900
@@ -230,48 +96,28 @@ describe('computePriceTrend', () => {
     expect(trend.direction).toBe('up');
   });
 
-  it('filters out snapshots with empty strikes arrays', () => {
-    const buf = [
-      { ts: 300_000, strikes: [] }, // empty — should be skipped
-      priceSnap(360_000, 7000),
-      priceSnap(420_000, 6998),
-      priceSnap(480_000, 6995),
-    ];
-    const trend = computePriceTrend(6990, buf, NOW, WINDOW);
-    // oldest valid is 7000, current 6990 → -10 pts
-    expect(trend.changePts).toBeCloseTo(-10, 5);
-    expect(trend.direction).toBe('down');
-  });
-
   it('handles currentPrice of 0 without NaN in changePct', () => {
-    const buf = [
-      priceSnap(300_000, 0),
-      priceSnap(360_000, 0),
-      priceSnap(420_000, 0),
-    ];
+    const buf = [pt(300_000, 0), pt(360_000, 0), pt(420_000, 0)];
     const trend = computePriceTrend(0, buf, NOW, WINDOW);
     expect(trend.changePct).toBe(0);
     expect(Number.isNaN(trend.changePct)).toBe(false);
   });
 
-  it('drops future-relative buffer entries when scrubbing backward', () => {
+  it('drops future-relative points when scrubbing backward', () => {
     // Regression for the scrub coordination bug (2026-05-12). nowTs is
     // the scrubbed timestamp; the buffer holds live entries from AFTER
-    // that scrubbed moment. Without the upper bound `snap.ts <= nowTs`,
-    // those future entries would slip past the MIN_BUFFERED_SNAPSHOTS
+    // that scrubbed moment. Without the upper bound `pt.ts <= nowTs`,
+    // those future entries would slip past the MIN_BUFFERED_POINTS
     // gate and produce a directional trend reading that reflects the
     // post-scrub future, not what the trader is actually looking at.
     const scrubbedNow = 600_000;
     const buf = [
-      // Three flat-price snapshots at-or-before the scrub point — should
-      // qualify the buf for a trend reading.
-      priceSnap(300_000, 7000),
-      priceSnap(450_000, 7000),
-      priceSnap(600_000, 7000),
+      pt(300_000, 7000),
+      pt(450_000, 7000),
+      pt(600_000, 7000),
       // Future-relative-to-scrub entries with strong directional move.
-      // If these leaked in, the trend would read "up" with +25 pts.
-      priceSnap(900_000, 7015),
-      priceSnap(1_200_000, 7025),
+      pt(900_000, 7015),
+      pt(1_200_000, 7025),
     ];
     const trend = computePriceTrend(7000, buf, scrubbedNow, WINDOW);
     expect(trend.direction).toBe('flat');

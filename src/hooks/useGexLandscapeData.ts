@@ -3,19 +3,19 @@
  * 1-min GexBot-fed `/api/gex-landscape` endpoint and projects each row
  * into the `GexStrikeLevel` shape the GexLandscape renderer consumes.
  *
- * Phase 2 of the GEX Landscape 1-min GexBot rebuild
+ * Phase 4 of the GEX Landscape 1-min GexBot rebuild
  * (docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md).
- * Replaces the dual-source MM (`usePeriscopeStrikes`) + WS
- * (`useGexStrikeExpirySpx`) path with a single endpoint that already
- * carries the `[t-1m, t-5m, t-10m]` prior values per strike — no
- * client-side lookback fetches needed.
  *
- * Δ% maps (1m / 5m / 10m) are computed inline against each row's
- * `prevNm` field using the same `DELTA_NOISE_FLOOR` semantics the
- * legacy hook used (|prior| < 100 → null). The 15m / 30m maps and all
- * `naiveDelta*` maps are returned as empty `Map`s for backwards
- * compatibility with the Phase 2-pinned components (StrikeTable,
- * BiasPanel, bias.ts); Phases 3 and 4 drop those fields properly.
+ * The hook owns three responsibilities:
+ *   1. Single-source fetch against `/api/gex-landscape` (no WS, no MM
+ *      periscope fallback).
+ *   2. Build the 1m / 5m / 10m Δ% maps inline from each row's `prevNm`
+ *      fields — gated by `DELTA_NOISE_FLOOR` so near-zero priors don't
+ *      poison the table or the BiasPanel mean.
+ *   3. Compute the per-strike vol-reinforcement classification during
+ *      the same map-build pass — never recompute deltas downstream.
+ *      See `computeVolReinforcement` for the agreement rule (Locked
+ *      Decision #1 of the spec).
  *
  * Polling: live mode polls every POLL_INTERVALS.PERISCOPE (60s) while
  * `marketOpen` is true and we're not pinned to a scrubbed `at`.
@@ -27,6 +27,7 @@ import { POLL_INTERVALS } from '../constants';
 import { getAccessMode } from '../utils/auth';
 import { getErrorMessage } from '../utils/error';
 import { usePolling } from './usePolling';
+import { computeVolReinforcement } from '../components/GexLandscape/classify';
 import type { GexStrikeLevel } from '../components/GexLandscape/types';
 
 /** Shape of a single strike row returned by /api/gex-landscape. */
@@ -60,27 +61,9 @@ export interface UseGexLandscapeDataReturn {
   strikes: GexStrikeLevel[];
   timestamps: string[];
   /** Δ% maps populated from the per-row `prevNm` fields. */
-  gexDeltaMap: Map<number, number | null>;
+  gexDelta1mMap: Map<number, number | null>;
   gexDelta5mMap: Map<number, number | null>;
   gexDelta10mMap: Map<number, number | null>;
-  /**
-   * Phase 2 compat: returned as empty Maps. The 15m / 30m windows go
-   * away in Phase 3 (types + BiasPanel rebuild); until then bias.ts
-   * still reads `gexDelta30mMap` for `floorTrend30m` and the panel
-   * renders `—` for that row, which is the expected intermediate
-   * state per the spec.
-   */
-  gexDelta15mMap: Map<number, number | null>;
-  gexDelta30mMap: Map<number, number | null>;
-  /**
-   * Phase 2 compat: returned as empty Maps. The WS side-channel that
-   * fed these is gone; Phase 3 redefines `volReinforcement` as
-   * delta-trend agreement and drops the naive sub-line entirely.
-   */
-  naiveDelta1mMap: Map<number, number | null>;
-  naiveDelta5mMap: Map<number, number | null>;
-  naiveDelta10mMap: Map<number, number | null>;
-  naiveDelta30mMap: Map<number, number | null>;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -89,13 +72,20 @@ export interface UseGexLandscapeDataReturn {
 /**
  * Magnitude floor for the Δ% denominator. Strikes whose prior gamma
  * magnitude is below this floor produce huge meaningless percentages
- * (a +5 strike against a 0.01 prior reads 50,000% Δ); the floor maps
+ * (a +5 strike against a 0.1 prior reads 5,000% Δ); the floor maps
  * those to `null` so the BiasPanel mean and the StrikeTable cells
- * don't get poisoned. Same value the MM-era hook used — calibrated
- * against ATM gamma p10 ~112 at MM scale. The spec notes GexBot
- * scale may differ; revisit in Phase 4's threshold tune.
+ * don't get poisoned.
+ *
+ * Calibrated 2026-05-26 against 24h of `gexbot_api_capture` SPX data:
+ *   - p10 within ±50pt display window: 21.5
+ *   - p25 within ±50pt display window: 66.9
+ *   - p50 within ±50pt display window: 250.3
+ * Setting the floor at 50 mutes the bottom ~20% of in-window strikes
+ * (the noise source) while passing the median and above unscathed.
+ * Half the legacy MM-scale floor of 100, matching the magnitude drop
+ * from MM-attributed dealer math to GexBot's per-strike attribution.
  */
-const DELTA_NOISE_FLOOR = 100;
+const DELTA_NOISE_FLOOR = 50;
 
 /** Pure: compute one strike's Δ% against its own prev value. */
 function computeDelta(current: number, prev: number | null): number | null {
@@ -112,16 +102,24 @@ function computeDelta(current: number, prev: number | null): number | null {
  * - `price` ← top-level `spot` from the endpoint payload.
  * - All call/put split fields stay zero — WS side channel is gone and
  *   MM dealer math collapses call/put attribution anyway.
- * - `volReinforcement` is `'neutral'` for the entire Phase 2 window.
- *   Phase 3 redefines it as delta-trend agreement (sign(Δ1m) ===
- *   sign(Δ5m) === sign(Δ10m) === sign(netGamma) → 'reinforcing'); for
- *   now a placeholder keeps the StrikeTable column rendering without
- *   crashing.
+ * - `volReinforcement` is computed from the row's three pre-computed
+ *   deltas via `computeVolReinforcement` (delta-trend agreement per
+ *   Locked Decision #1). Caller supplies the three Δ% values so the
+ *   hook doesn't have to recompute them.
  */
 export function projectStrike(
   row: GexLandscapeStrikeRow,
   spot: number,
+  delta1m: number | null,
+  delta5m: number | null,
+  delta10m: number | null,
 ): GexStrikeLevel {
+  const volReinforcement = computeVolReinforcement({
+    netGamma: row.gamma,
+    delta1m,
+    delta5m,
+    delta10m,
+  });
   return {
     strike: row.strike,
     price: spot,
@@ -131,7 +129,7 @@ export function projectStrike(
     callGammaVol: 0,
     putGammaVol: 0,
     netGammaVol: 0,
-    volReinforcement: 'neutral',
+    volReinforcement,
     callGammaAsk: 0,
     callGammaBid: 0,
     putGammaAsk: 0,
@@ -154,11 +152,6 @@ export function projectStrike(
   };
 }
 
-/**
- * ISO timestamp → CT HH:MM (24h) — preserved here in case the endpoint
- * adopts a `?time` shape later. Currently /api/gex-landscape takes a
- * raw `?at=ISO` so we pass through the input directly.
- */
 async function fetchGexLandscape(
   at: string | null,
   signal: AbortSignal,
@@ -244,40 +237,35 @@ export function useGexLandscapeData(
 
   // Derived state — kept inline (no `useMemo`) because the dep is a
   // single `resp` reference and the work is O(N strikes), N≈40.
+  //
+  // The deltas are computed once per row and threaded into `projectStrike`
+  // so vol-reinforcement uses the SAME values that populate the maps —
+  // never recompute downstream.
   const sourceRows = resp?.data?.strikes ?? [];
   const spot = resp?.data?.spot ?? 0;
-  const strikes: GexStrikeLevel[] = sourceRows.map((row) =>
-    projectStrike(row, spot),
-  );
 
-  const gexDeltaMap = new Map<number, number | null>();
+  const gexDelta1mMap = new Map<number, number | null>();
   const gexDelta5mMap = new Map<number, number | null>();
   const gexDelta10mMap = new Map<number, number | null>();
+  const strikes: GexStrikeLevel[] = [];
   for (const row of sourceRows) {
-    gexDeltaMap.set(row.strike, computeDelta(row.gamma, row.gammaPrev1m));
-    gexDelta5mMap.set(row.strike, computeDelta(row.gamma, row.gammaPrev5m));
-    gexDelta10mMap.set(row.strike, computeDelta(row.gamma, row.gammaPrev10m));
+    const d1 = computeDelta(row.gamma, row.gammaPrev1m);
+    const d5 = computeDelta(row.gamma, row.gammaPrev5m);
+    const d10 = computeDelta(row.gamma, row.gammaPrev10m);
+    gexDelta1mMap.set(row.strike, d1);
+    gexDelta5mMap.set(row.strike, d5);
+    gexDelta10mMap.set(row.strike, d10);
+    strikes.push(projectStrike(row, spot, d1, d5, d10));
   }
-
-  // Phase 2 compat: empty Maps for fields owned by Phase 3 cleanup.
-  // Allocating fresh each render is cheap (empty Map) and matches the
-  // referential pattern of the populated maps above.
-  const emptyMap: Map<number, number | null> = new Map();
 
   const timestamps = resp?.availableMinutes ?? [];
 
   return {
     strikes,
     timestamps,
-    gexDeltaMap,
+    gexDelta1mMap,
     gexDelta5mMap,
     gexDelta10mMap,
-    gexDelta15mMap: emptyMap,
-    gexDelta30mMap: emptyMap,
-    naiveDelta1mMap: emptyMap,
-    naiveDelta5mMap: emptyMap,
-    naiveDelta10mMap: emptyMap,
-    naiveDelta30mMap: emptyMap,
     loading,
     error,
     refresh,

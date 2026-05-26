@@ -1,15 +1,19 @@
 /**
  * StrikeTable — sticky-header + scrollable grid of strikes within the
- * display window, with per-strike classification, signal, GEX, Δ%
- * windows, charm, and vol reinforcement cells. The ATM row is
- * ref-tagged so the parent can scroll it into view on initial load.
+ * display window, with per-strike classification, signal, GEX, NetCharm,
+ * NetVanna, three Δ% windows (1m / 5m / 10m), and a vol-reinforcement
+ * badge. The ATM row is ref-tagged so the parent can scroll it into
+ * view on initial load.
  *
- * Δ% windows are split into two groups:
- *   - MM Δ% (10m / 30m) — periscope-scraper cadence is 10 min, so
- *     faster windows have no signal for MM data.
- *   - Naive Δ% (1m / 5m / 10m) — WS feed is continuous, so the fast
- *     windows expose intraday OI rotation that MM cannot see between
- *     snapshots.
+ * All three Δ% windows share the same GexBot-native 1-min cadence —
+ * the prior values come from each row's `gammaPrev1m/5m/10m` fields
+ * that the endpoint already carries. Δ1m and Δ5m surface short-term
+ * acceleration; Δ10m surfaces session-scale build/unwind.
+ *
+ * Vol Reinforcement column is the new (Phase 4) delta-trend agreement
+ * signal — see `computeVolReinforcement` in `classify.ts`. ↑↑ = all
+ * three deltas push with the wall (reinforcing); ↓↓ = all three push
+ * against the wall (opposing); — = mixed / sparse data.
  */
 
 import type { Ref } from 'react';
@@ -24,26 +28,20 @@ import {
 import { fmtGex, fmtPct } from './formatters';
 
 /**
- * Strike | Class | Signal | MM Γ | MM 10m | MM 30m | Naive Γ | N 1m | N 5m | N 10m | Charm | Vol
- *
- * The Naive Γ + naive Δ% group sits together so MM and naive reads
- * can be compared at a glance without the eye jumping across the row.
+ * Strike | Class | Signal | NetGamma | NetCharm | NetVanna | Δ1m | Δ5m | Δ10m | Vol Reinf.
  */
-const COLS =
-  'grid-cols-[76px_130px_1fr_88px_72px_72px_88px_64px_64px_64px_76px_56px]';
+const COLS = 'grid-cols-[76px_130px_1fr_88px_76px_76px_64px_64px_64px_64px]';
 
 export interface StrikeTableProps {
   rows: GexStrikeLevel[];
   currentPrice: number;
   spotStrike: GexStrikeLevel | null;
+  maxChanged1mStrike: number | null;
+  maxChanged5mStrike: number | null;
   maxChanged10mStrike: number | null;
-  maxChanged30mStrike: number | null;
+  gexDelta1mMap: Map<number, number | null>;
+  gexDelta5mMap: Map<number, number | null>;
   gexDelta10mMap: Map<number, number | null>;
-  gexDelta30mMap: Map<number, number | null>;
-  /** Naive Δ% maps — fast-cadence WS feed (server-computed via SQL LAG). */
-  naiveDelta1mMap: Map<number, number | null>;
-  naiveDelta5mMap: Map<number, number | null>;
-  naiveDelta10mMap: Map<number, number | null>;
   spotRowRef: Ref<HTMLDivElement>;
   /**
    * When true, non-ATM rows render a signed point offset from spot beneath
@@ -61,13 +59,12 @@ export function StrikeTable({
   rows,
   currentPrice,
   spotStrike,
+  maxChanged1mStrike,
+  maxChanged5mStrike,
   maxChanged10mStrike,
-  maxChanged30mStrike,
+  gexDelta1mMap,
+  gexDelta5mMap,
   gexDelta10mMap,
-  gexDelta30mMap,
-  naiveDelta1mMap,
-  naiveDelta5mMap,
-  naiveDelta10mMap,
   spotRowRef,
   showAtmDistance = false,
   justEntered,
@@ -85,48 +82,46 @@ export function StrikeTable({
         <div className="px-3 py-2">Signal</div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="MM-attributed dollar gamma per strike, captured by the periscope-scraper every 10 min during RTH. This is what UW Periscope renders on the Net GEX heat map — the proprietary dealer-attribution number, NOT the naive call+put gamma OI sum."
+          title="MM-attributed dollar gamma per strike from the 1-min GexBot capture. This is what UW Periscope renders on the Net GEX heat map — the proprietary dealer-attribution number."
         >
-          MM Γ
+          NetGamma
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in MM dollar gamma vs. the prior 10-min slot. The fastest signal at MM cadence — captures sign flips and acceleration. Empty when no prior slot is available (first slot of the session)."
+          title="MM-attributed dollar charm per strike — how dealer hedge demand at this level decays into the close. Positive = pressure grows into close; negative = pressure fades."
         >
-          MM 10m
+          NetCharm
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in MM dollar gamma vs. the slot 30 min ago (3 slots back). Captures session-scale build/unwind. Empty until 3 slots of history exist."
+          title="MM-attributed dollar vanna per strike — sensitivity of dealer delta hedge to IV moves. Positive = vol crush forces dealers to buy; negative = vol expansion forces dealers to sell."
         >
-          MM 30m
+          NetVanna
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="Naive dollar gamma per strike — raw sum of call_gamma_oi + put_gamma_oi from the WS feed. Standing-position read with no dealer-attribution math, so it can disagree on sign with MM Γ at the same strike. That disagreement is itself signal."
+          title="% change in dollar gamma vs. the prior 1-min slot — captures the freshest sign flips and acceleration. Native cadence at GexBot's 1-min push rate."
         >
-          Naive Γ
+          Δ1m
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in naive (call+put OI) gamma vs. the prior 1-min slot. Fastest naive cadence — only useful intraday since WS pushes continuously. MM cannot expose 1m because periscope-scraper is 10-min cadence."
+          title="% change in dollar gamma vs. the slot 5 min ago. Smooths the 1-min noise; useful for setup detection between bigger windows."
         >
-          N 1m
+          Δ5m
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in naive gamma vs. the slot 5 min ago. Catches short-term OI rotation that's invisible to MM's 10-min cadence — useful for setup detection between MM snapshots."
+          title="% change in dollar gamma vs. the slot 10 min ago. Catches session-scale build/unwind."
         >
-          N 5m
+          Δ10m
         </div>
         <div
-          className="cursor-help px-3 py-2 text-right"
-          title="% change in naive gamma vs. the slot 10 min ago. Lines up time-wise with MM 10m — direct comparison: if MM 10m and N 10m disagree on sign, the dealer-attribution math is overriding the raw OI structure."
+          className="cursor-help px-3 py-2 text-center"
+          title="Vol Reinforcement — delta-trend agreement. ↑↑ (reinforcing): all three Δ% windows push with the netGamma sign; the wall is being added to. ↓↓ (opposing): all three push against; the wall is being unwound. — (neutral): mixed / sparse / no data."
         >
-          N 10m
+          Vol Reinf.
         </div>
-        <div className="px-3 py-2 text-right">Charm</div>
-        <div className="px-3 py-2 text-center">Vol</div>
       </div>
 
       {/* Scrollable rows */}
@@ -138,26 +133,18 @@ export function StrikeTable({
         {rows.map((s) => {
           const isSpot = s.strike === spotStrike?.strike;
           const isAboveSpot = s.strike > currentPrice;
+          const isMax1m = !isSpot && s.strike === maxChanged1mStrike;
+          const isMax5m = !isSpot && s.strike === maxChanged5mStrike;
           const isMax10m = !isSpot && s.strike === maxChanged10mStrike;
-          const isMax30m = !isSpot && s.strike === maxChanged30mStrike;
-          // Confluence: same strike leads BOTH timeframes — stronger signal.
-          const isConfluence = isMax10m && isMax30m;
-          const isHighlighted = isMax10m || isMax30m;
+          // Confluence: same strike leads ALL three timeframes — strongest signal.
+          const isConfluence = isMax1m && isMax5m && isMax10m;
+          const isHighlighted = isMax1m || isMax5m || isMax10m;
           const dir = getDirection(s.strike, currentPrice);
           const cls = classify(s.netGamma, s.netCharm);
           const meta = CLASS_META[cls];
+          const pct1m = gexDelta1mMap.get(s.strike) ?? null;
+          const pct5m = gexDelta5mMap.get(s.strike) ?? null;
           const pct10m = gexDelta10mMap.get(s.strike) ?? null;
-          const pct30m = gexDelta30mMap.get(s.strike) ?? null;
-          const naive1m = naiveDelta1mMap.get(s.strike) ?? null;
-          const naive5m = naiveDelta5mMap.get(s.strike) ?? null;
-          const naive10m = naiveDelta10mMap.get(s.strike) ?? null;
-          const naiveGamma = s.callGammaOi + s.putGammaOi;
-          const naiveGammaColor =
-            naiveGamma === 0
-              ? 'var(--color-muted)'
-              : naiveGamma > 0
-                ? '#4ade80'
-                : '#fbbf24';
           const isNew = justEntered?.has(s.strike) ?? false;
           const isAnchor = oldestStrike !== null && s.strike === oldestStrike;
 
@@ -260,7 +247,7 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* MM Γ — dealer-attributed dollar gamma */}
+              {/* NetGamma — dealer-attributed dollar gamma */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
@@ -270,7 +257,75 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* MM 10m Δ% */}
+              {/* NetCharm */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="cursor-help font-mono text-[11px]"
+                  style={{
+                    color:
+                      s.netCharm >= 0
+                        ? 'rgba(74,222,128,0.75)'
+                        : 'rgba(248,113,113,0.75)',
+                  }}
+                  title={charmTooltip(s.netCharm)}
+                >
+                  {fmtGex(s.netCharm)}
+                </span>
+              </div>
+
+              {/* NetVanna */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  data-testid={`net-vanna-cell-${s.strike}`}
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      s.netVanna === 0
+                        ? 'var(--color-muted)'
+                        : s.netVanna > 0
+                          ? 'rgba(74,222,128,0.75)'
+                          : 'rgba(248,113,113,0.75)',
+                  }}
+                >
+                  {s.netVanna === 0 ? '—' : fmtGex(s.netVanna)}
+                </span>
+              </div>
+
+              {/* Δ1m */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      pct1m === null
+                        ? 'var(--color-muted)'
+                        : pct1m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(pct1m)}
+                </span>
+              </div>
+
+              {/* Δ5m */}
+              <div className="flex items-center justify-end px-3 py-1.5">
+                <span
+                  className="font-mono text-[11px]"
+                  style={{
+                    color:
+                      pct5m === null
+                        ? 'var(--color-muted)'
+                        : pct5m >= 0
+                          ? 'rgba(74,222,128,0.85)'
+                          : 'rgba(248,113,113,0.85)',
+                  }}
+                >
+                  {fmtPct(pct5m)}
+                </span>
+              </div>
+
+              {/* Δ10m */}
               <div className="flex items-center justify-end px-3 py-1.5">
                 <span
                   className="font-mono text-[11px]"
@@ -287,134 +342,33 @@ export function StrikeTable({
                 </span>
               </div>
 
-              {/* MM 30m Δ% */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      pct30m === null
-                        ? 'var(--color-muted)'
-                        : pct30m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
-                >
-                  {fmtPct(pct30m)}
-                </span>
-              </div>
-
-              {/* Naive Γ — raw OI sum. Renders "—" when the sum is
-                  zero, which covers both (a) WS row absent (`projectMmStrike`
-                  zeros the OI fields) and (b) an exact call+put OI gamma
-                  cancellation. Case (b) is effectively impossible in
-                  real SPX data — call_gamma_oi and put_gamma_oi are
-                  computed dollar amounts that never coincide to the
-                  cent — so "—" reliably reads as "no WS data". */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  data-testid={`naive-gamma-cell-${s.strike}`}
-                  className="font-mono text-[11px]"
-                  style={{ color: naiveGammaColor }}
-                >
-                  {naiveGamma === 0 ? '—' : fmtGex(naiveGamma)}
-                </span>
-              </div>
-
-              {/* Naive 1m Δ% — fastest WS-cadence window */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      naive1m === null
-                        ? 'var(--color-muted)'
-                        : naive1m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
-                >
-                  {fmtPct(naive1m)}
-                </span>
-              </div>
-
-              {/* Naive 5m Δ% */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      naive5m === null
-                        ? 'var(--color-muted)'
-                        : naive5m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
-                >
-                  {fmtPct(naive5m)}
-                </span>
-              </div>
-
-              {/* Naive 10m Δ% — direct comparator to MM 10m for sign agreement */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="font-mono text-[11px]"
-                  style={{
-                    color:
-                      naive10m === null
-                        ? 'var(--color-muted)'
-                        : naive10m >= 0
-                          ? 'rgba(74,222,128,0.85)'
-                          : 'rgba(248,113,113,0.85)',
-                  }}
-                >
-                  {fmtPct(naive10m)}
-                </span>
-              </div>
-
-              {/* Charm */}
-              <div className="flex items-center justify-end px-3 py-1.5">
-                <span
-                  className="cursor-help font-mono text-[11px]"
-                  style={{
-                    color:
-                      s.netCharm >= 0
-                        ? 'rgba(74,222,128,0.75)'
-                        : 'rgba(248,113,113,0.75)',
-                  }}
-                  title={charmTooltip(s.netCharm)}
-                >
-                  {fmtGex(s.netCharm)}
-                </span>
-              </div>
-
-              {/* Vol reinforcement */}
+              {/* Vol reinforcement — delta-trend agreement (Phase 4) */}
               <div className="flex items-center justify-center px-3 py-1.5">
                 {s.volReinforcement === 'reinforcing' && (
                   <span
-                    className="font-mono text-[12px] text-emerald-400"
-                    title="Volume reinforcing OI structure"
-                    aria-label="Volume reinforcing"
+                    className="font-mono text-[12px] font-bold text-emerald-400"
+                    title="Reinforcing — all three Δ% windows push with the netGamma sign; the wall is being added to."
+                    aria-label="Vol reinforcing"
                   >
-                    ✓
+                    ↑↑
                   </span>
                 )}
                 {s.volReinforcement === 'opposing' && (
                   <span
-                    className="font-mono text-[12px] text-red-400"
-                    title="Volume opposing OI structure"
-                    aria-label="Volume opposing"
+                    className="font-mono text-[12px] font-bold text-red-400"
+                    title="Opposing — all three Δ% windows push against the netGamma sign; the wall is being unwound."
+                    aria-label="Vol opposing"
                   >
-                    ✗
+                    ↓↓
                   </span>
                 )}
                 {s.volReinforcement === 'neutral' && (
                   <span
                     className="text-muted font-mono text-[12px]"
-                    title="Volume neutral"
-                    aria-label="Volume neutral"
+                    title="Neutral — mixed direction across the three windows, or sparse data (any null / zero prior value)."
+                    aria-label="Vol neutral"
                   >
-                    ○
+                    —
                   </span>
                 )}
               </div>

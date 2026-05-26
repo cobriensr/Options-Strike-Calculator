@@ -1,109 +1,60 @@
 /**
- * Snapshot-buffer helpers used by the bias verdict: 5-minute strike
- * smoothing and price-trend detection.
+ * Price-trend helper for the GexLandscape drift override.
  *
- * Per-strike Δ% used to live here (`computeDeltaMap`,
- * `findClosestSnapshot`) but moved to a server-side SQL `LAG()` query
- * in Phase 4 of the GEX Landscape WebSocket-driven accuracy upgrade.
+ * Phase 4 of the 1-min GexBot rebuild dropped the 5-min snapshot
+ * smoothing buffer (`computeSmoothedStrikes`) — GexBot's native 1-min
+ * cadence is fast enough that single-snapshot bias is stable without
+ * smoothing. `computePriceTrend` is what's left: a thin adapter over
+ * the primitive in `src/utils/price-trend.ts` that takes a flat
+ * `{ts, price}[]` buffer instead of full `Snapshot[]`.
  *
  * Pure functions, no React — all state ownership lives in the component.
  */
 
-import { computePriceTrend as computePriceTrendPrimitive } from '../../utils/price-trend';
-import type { GexStrikeLevel, PriceTrend, Snapshot } from './types';
+import {
+  computePriceTrend as computePriceTrendPrimitive,
+  type PricePoint,
+} from '../../utils/price-trend';
+import type { PriceTrend } from './types';
+
+export type { PricePoint };
 
 /**
- * Average netGamma and netCharm for each strike across the current snapshot
- * and all buffer entries within `windowMs` (default 5 minutes).
- *
- * Smoothing makes the structural bias verdict stable: small minute-to-minute
- * GEX fluctuations won't flip the signal. The Δ% columns in the table still
- * show raw real-time changes — only the verdict inputs are smoothed.
- *
- * The filter has BOTH a lower AND an upper bound on `snap.ts`. The upper
- * bound (`<= nowTs`) is load-bearing for scrub correctness: the snapshot
- * buffer accumulates entries during live viewing and is NOT cleared when
- * the user scrubs backward. Without the upper bound, buffer entries
- * captured AFTER the scrubbed `nowTs` (i.e. still in the buffer from the
- * pre-scrub live state) would leak into the smoothed values — making
- * the bias verdict, gravity strike, and drift targets reflect data the
- * user can't see in the rest of the panel. Verified 2026-05-12: the
- * scrubbed panel rendered gravity=7405 with -8K when the actual
- * scrubbed slot had 7405 at +181 — fixed by this upper bound.
+ * Minimum buffered points required before emitting a directional trend.
+ * Sits one step above the primitive's own MIN_SNAPSHOTS = 3 because we
+ * append a synthesized "now" point — with 3 buffered + 1 current we
+ * get a real 3-interval consistency reading.
  */
-export function computeSmoothedStrikes(
-  current: GexStrikeLevel[],
-  buf: Snapshot[],
-  nowTs: number,
-  windowMs = 5 * 60 * 1000,
-): GexStrikeLevel[] {
-  const recent = buf.filter(
-    (snap) => snap.ts >= nowTs - windowMs && snap.ts <= nowTs,
-  );
-  if (recent.length === 0) return current;
-  return current.map((s) => {
-    const history = recent
-      .map((snap) => snap.strikes.find((r) => r.strike === s.strike))
-      .filter((r): r is GexStrikeLevel => r !== undefined);
-    if (history.length === 0) return s;
-    const all = [s, ...history];
-    const avgGamma = all.reduce((sum, r) => sum + r.netGamma, 0) / all.length;
-    const avgCharm = all.reduce((sum, r) => sum + r.netCharm, 0) / all.length;
-    return { ...s, netGamma: avgGamma, netCharm: avgCharm };
-  });
-}
+const MIN_BUFFERED_POINTS = 3;
 
 /**
- * Compute a price trend from the snapshot buffer.
+ * Compute a price trend from a minimal `{ts, price}` buffer.
  *
- * Thin adapter over `src/utils/price-trend.ts`'s primitive. Extracts
- * `strikes[0].price` from each buffered snapshot and appends the
- * caller's `currentPrice` as a synthesized "now" point. Keeping the
- * existing signature here means `GexLandscape/index.tsx` doesn't need
- * any changes.
+ * Filters to entries within `[nowTs - windowMs, nowTs]`, requires at
+ * least `MIN_BUFFERED_POINTS` in-window samples, then appends the
+ * caller's `currentPrice` as the "now" point and hands off to the
+ * primitive.
  *
- * Preserves the prior semantics: require at least 3 *buffered* points
- * (not 3 total) before emitting a directional trend. This is a
- * deliberately stricter gate than the primitive's own MIN_SNAPSHOTS
- * check — the extra buffered point ensures we have three
- * step-intervals when `currentPrice` is appended, giving the
- * consistency math real signal.
- *
- * Phase 4 of the MM swap widened the window from 5 min to 30 min:
- * MM data publishes at 10-min cadence, so a 5-min window can only
- * ever hold one snapshot and the drift override
- * (`rangebound` → `drifting-up` / `drifting-down`) was effectively
- * dormant. 30 min gives exactly 3 snapshots, the minimum that satisfies
- * `MIN_BUFFERED_SNAPSHOTS` and produces a real consistency reading.
- *
- * The primitive lives in `src/utils/` so the server-side regime cron
- * can import it without pulling in React / GexLandscape — see
- * `docs/superpowers/specs/futures-playbook-server-drift-override-2026-04-21.md`.
+ * The upper bound (`pt.ts <= nowTs`) is load-bearing for scrub
+ * correctness: live-accumulated buffer entries from after the scrubbed
+ * `nowTs` would otherwise leak into the trend reading. See the
+ * regression test in `GexLandscape-deltas.test.ts`.
  */
-const MIN_BUFFERED_SNAPSHOTS = 3;
-
 export function computePriceTrend(
   currentPrice: number,
-  buf: Snapshot[],
+  buf: PricePoint[],
   nowTs: number,
   windowMs = 30 * 60 * 1000,
 ): PriceTrend {
-  // Upper bound `snap.ts <= nowTs` is load-bearing for scrub correctness
-  // — see the same rationale in `computeSmoothedStrikes` above. Without
-  // it, future-relative-to-scrubbed buffer entries leak into the
-  // price-trend computation and the drift override fires on stale data.
   const inWindow = buf.filter(
-    (snap) =>
-      snap.ts >= nowTs - windowMs &&
-      snap.ts <= nowTs &&
-      snap.strikes.length > 0,
+    (pt) => pt.ts >= nowTs - windowMs && pt.ts <= nowTs,
   );
-  if (inWindow.length < MIN_BUFFERED_SNAPSHOTS) {
+  if (inWindow.length < MIN_BUFFERED_POINTS) {
     return { direction: 'flat', changePct: 0, changePts: 0, consistency: 0 };
   }
-  const points = inWindow.map((snap) => ({
-    price: snap.strikes[0]!.price,
-    ts: snap.ts,
+  const points: PricePoint[] = inWindow.map((pt) => ({
+    price: pt.price,
+    ts: pt.ts,
   }));
   points.push({ price: currentPrice, ts: nowTs });
   return computePriceTrendPrimitive(points, nowTs, windowMs);

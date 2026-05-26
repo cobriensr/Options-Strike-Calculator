@@ -9,19 +9,21 @@
  *   Weakening Pin    — pos gamma + neg charm  (wall losing grip as day ages)
  *
  * Direction context (Ceiling / Floor) is overlaid based on strike vs. spot.
- * GEX Δ% shows the % change in MM dollar gamma vs. the prior 10-min slot
- * (10m and 30m windows at MM cadence). Vol reinforcement signals whether
- * intraday flow confirms OI structure — sourced from the WS side channel
- * since MM-attribution data structurally cannot provide call/put split.
+ * The Δ1m / Δ5m / Δ10m columns show the % change in MM dollar gamma at each
+ * strike vs. the prior slot's value (all three windows native at GexBot's
+ * 1-min cadence). The Vol Reinforcement column reads as "reinforcing" when
+ * all three deltas align with the current netGamma sign — see
+ * `computeVolReinforcement` (Locked Decision #1).
  *
- * Primary data source is `/api/periscope-strikes` (MM-attributed,
- * 10-min cadence) — see docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md.
+ * Primary data source is `/api/gex-landscape` (GexBot-fed, 1-min cadence) —
+ * see docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md.
  *
  * Module layout:
  *   types.ts                 — shared TS types
  *   constants.ts             — thresholds, Tailwind class maps, tooltip tables
- *   classify.ts              — classify / getDirection / signalTooltip / charmTooltip
- *   deltas.ts                — snapshot Δ%, closest-snapshot lookup, 5m smoothing
+ *   classify.ts              — classify / getDirection / signal+charm tooltips,
+ *                              computeVolReinforcement
+ *   deltas.ts                — computePriceTrend over a {ts, price}[] buffer
  *   bias.ts                  — computeBias (structural verdict synthesis)
  *   formatters.ts            — fmtGex / fmtPct / fmtTime / formatBiasForClaude
  *   (ScrubControls)          — shared scrub/date/status/refresh controls (../ScrubControls)
@@ -57,9 +59,9 @@ import { ScrubControls } from '../ScrubControls';
 import { StrikeTable } from './StrikeTable';
 import { computeBias } from './bias';
 import { PRICE_WINDOW } from './constants';
-import { computePriceTrend, computeSmoothedStrikes } from './deltas';
+import { computePriceTrend, type PricePoint } from './deltas';
 import { formatBiasForClaude } from './formatters';
-import type { PriceTrend, Snapshot } from './types';
+import type { PriceTrend } from './types';
 
 const TOP5_MUTE_STORAGE_KEY = 'gex-landscape-top5-muted-v1';
 const TOP5_RANK_STORAGE_KEY = 'gex-landscape-top5-rank-by-v1';
@@ -92,6 +94,19 @@ const TAB_TITLE: Record<LandscapeTab, string> = {
   all: 'Strikes within ±50 pts of spot, sorted ceiling → floor',
   top5: 'Top 5 strikes across the entire chain, ranked by absolute dollar gamma',
 };
+
+/**
+ * Lookback window for the price-trend buffer (30 min in ms). Matches the
+ * legacy MM-era window — GexBot pushes minute-cadence so this gives ~30
+ * samples to detect a drift, well above the 3-sample MIN_SNAPSHOTS gate.
+ */
+const PRICE_TREND_WINDOW_MS = 30 * 60 * 1000;
+
+/**
+ * Buffer cutoff in ms — keep 1 extra minute beyond the trend window to
+ * absorb jitter at slot boundaries before old points get pruned.
+ */
+const PRICE_TREND_BUFFER_CUTOFF_MS = 31 * 60 * 1000;
 
 export interface GexLandscapeProps {
   /** Whether the equity market is currently open (drives polling + LIVE badge). */
@@ -135,13 +150,9 @@ const GexLandscape = memo(function GexLandscape({
   const {
     strikes,
     timestamps,
-    gexDeltaMap,
+    gexDelta1mMap,
     gexDelta5mMap,
     gexDelta10mMap,
-    gexDelta30mMap,
-    naiveDelta1mMap,
-    naiveDelta5mMap,
-    naiveDelta10mMap,
     loading,
     error,
     refresh,
@@ -188,19 +199,15 @@ const GexLandscape = memo(function GexLandscape({
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
   const hasScrolledRef = useRef(false);
-  // Rolling buffer of recent snapshots — retained ONLY for the bias
-  // verdict's smoothed-strikes computation and price-trend detection
-  // (drifting-up/down override). Per-strike Δ% no longer reads from
-  // this buffer; that moved to a server-side SQL `LAG()` query in
-  // Phase 4 of `docs/superpowers/specs/gex-landscape-ws-upgrade-2026-05-03.md`,
-  // surfaced via the `gex*DeltaMap` props from `useGexLandscapeData`.
-  // The buffer still warms up over the session but the table's Δ%
-  // columns are populated from first paint regardless.
-  const snapshotBufferRef = useRef<Snapshot[]>([]);
-  // 5-minute smoothed strikes — updated in the snapshot effect so the ref read
-  // happens inside an effect (not during render), satisfying react-hooks/purity.
-  const [smoothedRows, setSmoothedRows] = useState<GexStrikeLevel[]>([]);
-  // Price trend from the snapshot buffer — used to override rangebound verdict.
+  // Minimal price-trend buffer: just `{ts, price}` tuples, not full strike
+  // snapshots. This used to be a `Snapshot[]` so smoothing could read the
+  // strike rows — Phase 4 dropped the 5-min smoothing buffer because the
+  // 1-min GexBot cadence is fast enough that single-snapshot bias is
+  // already stable. The drift-override still benefits from a 30-min spot
+  // history, so we keep this thin buffer in-component.
+  const priceBufferRef = useRef<PricePoint[]>([]);
+  // Price trend over PRICE_TREND_WINDOW_MS — used to override the
+  // rangebound verdict when price is grinding in one direction.
   const [priceTrend, setPriceTrend] = useState<PriceTrend | null>(null);
   // Which view is showing in the table area — structural grid or top-5 walls.
   const [activeTab, setActiveTab] = useState<LandscapeTab>('all');
@@ -279,58 +286,40 @@ const GexLandscape = memo(function GexLandscape({
     );
   }, [rows, currentPrice]);
 
-  // Strike with the largest absolute 10m GEX Δ% (excludes ATM row).
-  const maxChanged10mStrike = useMemo(() => {
-    let maxAbs = 0;
-    let maxStrike: number | null = null;
-    for (const s of rows) {
-      const pct = gexDelta10mMap.get(s.strike) ?? null;
-      if (pct === null) continue;
-      const abs = Math.abs(pct);
-      if (abs > maxAbs) {
-        maxAbs = abs;
-        maxStrike = s.strike;
-      }
-    }
-    return maxAbs > 0 ? maxStrike : null;
-  }, [gexDelta10mMap, rows]);
-
-  // Strike with the largest absolute 30m GEX Δ% (excludes ATM row).
-  const maxChanged30mStrike = useMemo(() => {
-    let maxAbs = 0;
-    let maxStrike: number | null = null;
-    for (const s of rows) {
-      const pct = gexDelta30mMap.get(s.strike) ?? null;
-      if (pct === null) continue;
-      const abs = Math.abs(pct);
-      if (abs > maxAbs) {
-        maxAbs = abs;
-        maxStrike = s.strike;
-      }
-    }
-    return maxAbs > 0 ? maxStrike : null;
-  }, [gexDelta30mMap, rows]);
+  // Strikes with the largest absolute Δ% at 1m / 5m / 10m. Used for the
+  // confluence highlight in the bias panel and the row-level emphasis
+  // in the strike table.
+  const maxChanged1mStrike = useMemo(
+    () => findMaxAbsDeltaStrike(rows, gexDelta1mMap),
+    [rows, gexDelta1mMap],
+  );
+  const maxChanged5mStrike = useMemo(
+    () => findMaxAbsDeltaStrike(rows, gexDelta5mMap),
+    [rows, gexDelta5mMap],
+  );
+  const maxChanged10mStrike = useMemo(
+    () => findMaxAbsDeltaStrike(rows, gexDelta10mMap),
+    [rows, gexDelta10mMap],
+  );
 
   // Structural bias synthesis — directional verdict + key levels + trends.
-  // Uses smoothedRows (5-min avg) so small per-snapshot GEX fluctuations don't
-  // flip the verdict. Falls back to raw rows until enough history accumulates.
-  // Phase 3 of the 1-min GexBot rebuild: 1m/5m/10m delta maps replace the
-  // legacy 10m/30m pair (cadence is now 1 min native via /api/gex-landscape).
+  // Reads raw rows directly now that the 5-min smoothing buffer is gone:
+  // GexBot's 1-min native cadence is fast enough that single-snapshot
+  // verdicts don't flap. Re-evaluate only if jitter shows up in the wild.
   const bias = useMemo(
     () =>
       computeBias(
-        smoothedRows.length > 0 ? smoothedRows : rows,
+        rows,
         currentPrice,
-        gexDeltaMap,
+        gexDelta1mMap,
         gexDelta5mMap,
         gexDelta10mMap,
         priceTrend,
       ),
     [
-      smoothedRows,
       rows,
       currentPrice,
-      gexDeltaMap,
+      gexDelta1mMap,
       gexDelta5mMap,
       gexDelta10mMap,
       priceTrend,
@@ -373,14 +362,12 @@ const GexLandscape = memo(function GexLandscape({
     [],
   );
 
-  // When the viewed date changes, reset scroll and the smoothing /
-  // price-trend buffer so the new session gets a clean baseline. Δ%
-  // maps come straight from the hook and refresh automatically on each
-  // poll — no client-side reset needed for those.
+  // When the viewed date changes, reset scroll and the price-trend
+  // buffer so the new session gets a clean baseline. Δ% maps come
+  // straight from the hook and refresh automatically on each poll.
   useEffect(() => {
     hasScrolledRef.current = false;
-    snapshotBufferRef.current = [];
-    setSmoothedRows([]);
+    priceBufferRef.current = [];
     setPriceTrend(null);
   }, [selectedDate]);
 
@@ -396,39 +383,32 @@ const GexLandscape = memo(function GexLandscape({
     }
   }, [loading, rows.length]);
 
-  // Maintain the snapshot buffer for the bias verdict: 5-minute strike
-  // smoothing keeps the verdict stable across minor GEX fluctuations,
-  // and the price-trend computation drives the drifting-up/down override
-  // for the rangebound verdict. Per-strike Δ% used to be computed here
-  // too — Phase 4 moved that to a server-side SQL `LAG()` query so the
-  // table's Δ% columns populate immediately on first paint.
+  // Maintain the price-trend buffer: push the current `{ts, price}`
+  // tuple, prune older than the cutoff, and re-evaluate the trend.
+  // The buffer is intentionally minimal — no per-strike state — so it
+  // costs essentially nothing per render. See
+  // `docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md`
+  // for the rationale behind dropping the full snapshot buffer.
   useEffect(() => {
     if (!timestamp || strikes.length === 0) return;
     const now = new Date(timestamp).getTime();
 
-    // Guard: don't process the same snapshot twice (e.g. re-render with same data).
-    if (snapshotBufferRef.current.at(-1)?.ts === now) return;
+    // Guard: don't process the same timestamp twice (re-render with same data).
+    if (priceBufferRef.current.at(-1)?.ts === now) return;
 
-    // Prune entries older than 31 minutes — `computePriceTrend` (in
-    // deltas.ts) uses a 30-min window at MM cadence (Phase 4 widening),
-    // and 1 extra minute absorbs jitter at slot boundaries. Smoothing
-    // still works off the last 5 min internally, so widening the buffer
-    // here doesn't change that behaviour.
-    const cutoff = now - 31 * 60 * 1000;
-    const buf = snapshotBufferRef.current.filter((snap) => snap.ts >= cutoff);
+    const cutoff = now - PRICE_TREND_BUFFER_CUTOFF_MS;
+    const buf = priceBufferRef.current.filter((pt) => pt.ts >= cutoff);
+    buf.push({ ts: now, price: strikes[0]?.price ?? 0 });
+    priceBufferRef.current = buf;
 
-    // Push current snapshot and persist the updated buffer.
-    buf.push({ strikes, ts: now });
-    snapshotBufferRef.current = buf;
-
-    // Smooth only the strikes within the display window (same filter as rows)
-    // so the bias panel never shows out-of-range strikes.
-    const price = strikes[0]?.price ?? 0;
-    const windowStrikes = strikes.filter(
-      (s) => Math.abs(s.strike - price) <= PRICE_WINDOW,
+    setPriceTrend(
+      computePriceTrend(
+        strikes[0]?.price ?? 0,
+        buf,
+        now,
+        PRICE_TREND_WINDOW_MS,
+      ),
     );
-    setSmoothedRows(computeSmoothedStrikes(windowStrikes, buf, now));
-    setPriceTrend(computePriceTrend(price, buf, now));
   }, [strikes, timestamp]);
 
   const headerRight = (
@@ -485,8 +465,9 @@ const GexLandscape = memo(function GexLandscape({
     <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
       <BiasPanel
         bias={bias}
+        maxChanged1mStrike={maxChanged1mStrike}
+        maxChanged5mStrike={maxChanged5mStrike}
         maxChanged10mStrike={maxChanged10mStrike}
-        maxChanged30mStrike={maxChanged30mStrike}
       />
       <div
         ref={tablistRef}
@@ -555,13 +536,12 @@ const GexLandscape = memo(function GexLandscape({
             rows={rows}
             currentPrice={currentPrice}
             spotStrike={spotStrike}
+            maxChanged1mStrike={maxChanged1mStrike}
+            maxChanged5mStrike={maxChanged5mStrike}
             maxChanged10mStrike={maxChanged10mStrike}
-            maxChanged30mStrike={maxChanged30mStrike}
+            gexDelta1mMap={gexDelta1mMap}
+            gexDelta5mMap={gexDelta5mMap}
             gexDelta10mMap={gexDelta10mMap}
-            gexDelta30mMap={gexDelta30mMap}
-            naiveDelta1mMap={naiveDelta1mMap}
-            naiveDelta5mMap={naiveDelta5mMap}
-            naiveDelta10mMap={naiveDelta10mMap}
             spotRowRef={spotRowRef}
           />
         )}
@@ -616,13 +596,12 @@ const GexLandscape = memo(function GexLandscape({
               rows={topFive}
               currentPrice={currentPrice}
               spotStrike={spotStrike}
+              maxChanged1mStrike={maxChanged1mStrike}
+              maxChanged5mStrike={maxChanged5mStrike}
               maxChanged10mStrike={maxChanged10mStrike}
-              maxChanged30mStrike={maxChanged30mStrike}
+              gexDelta1mMap={gexDelta1mMap}
+              gexDelta5mMap={gexDelta5mMap}
               gexDelta10mMap={gexDelta10mMap}
-              gexDelta30mMap={gexDelta30mMap}
-              naiveDelta1mMap={naiveDelta1mMap}
-              naiveDelta5mMap={naiveDelta5mMap}
-              naiveDelta10mMap={naiveDelta10mMap}
               spotRowRef={spotRowRef}
               showAtmDistance
               justEntered={justEntered}
@@ -635,5 +614,30 @@ const GexLandscape = memo(function GexLandscape({
     </SectionBox>
   );
 });
+
+/**
+ * Find the strike with the largest absolute Δ% in `map`, scoped to the
+ * `rows` set. Returns `null` when no usable values exist. Excludes ATM
+ * implicitly — the caller passes the same row set the table renders, so
+ * the spot row is included but is the "natural" max only when there's
+ * an actual spot-anchored move worth flagging.
+ */
+function findMaxAbsDeltaStrike(
+  rows: GexStrikeLevel[],
+  map: Map<number, number | null>,
+): number | null {
+  let maxAbs = 0;
+  let maxStrike: number | null = null;
+  for (const s of rows) {
+    const pct = map.get(s.strike) ?? null;
+    if (pct === null) continue;
+    const abs = Math.abs(pct);
+    if (abs > maxAbs) {
+      maxAbs = abs;
+      maxStrike = s.strike;
+    }
+  }
+  return maxAbs > 0 ? maxStrike : null;
+}
 
 export default GexLandscape;

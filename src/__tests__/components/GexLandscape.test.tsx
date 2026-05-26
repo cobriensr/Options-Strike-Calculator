@@ -20,17 +20,12 @@ const dataMock = vi.hoisted(() =>
   vi.fn(() => ({
     strikes: [] as GexStrikeLevel[],
     timestamps: [] as string[],
-    // Δ% maps now arrive from the server-side LAG query (Phase 4) — stub
-    // them as empty per default so the consumer's `.get()` calls succeed.
-    gexDeltaMap: new Map<number, number | null>(),
+    // Δ% maps are computed inline by the hook from the endpoint's
+    // pre-baked `gammaPrevNm` fields. Empty maps by default so the
+    // consumer's `.get()` calls return undefined (rendered as `—`).
+    gexDelta1mMap: new Map<number, number | null>(),
     gexDelta5mMap: new Map<number, number | null>(),
     gexDelta10mMap: new Map<number, number | null>(),
-    gexDelta15mMap: new Map<number, number | null>(),
-    gexDelta30mMap: new Map<number, number | null>(),
-    naiveDelta1mMap: new Map<number, number | null>(),
-    naiveDelta5mMap: new Map<number, number | null>(),
-    naiveDelta10mMap: new Map<number, number | null>(),
-    naiveDelta30mMap: new Map<number, number | null>(),
     loading: false,
     error: null as string | null,
     refresh: vi.fn(),
@@ -140,17 +135,9 @@ function renderLandscape(opts: RenderOptions = {}) {
   dataMock.mockReturnValue({
     strikes,
     timestamps,
-    // Δ% maps now arrive from the server-side LAG query (Phase 4) — stub
-    // them as empty per default so the consumer's `.get()` calls succeed.
-    gexDeltaMap: new Map<number, number | null>(),
+    gexDelta1mMap: new Map<number, number | null>(),
     gexDelta5mMap: new Map<number, number | null>(),
     gexDelta10mMap: new Map<number, number | null>(),
-    gexDelta15mMap: new Map<number, number | null>(),
-    gexDelta30mMap: new Map<number, number | null>(),
-    naiveDelta1mMap: new Map<number, number | null>(),
-    naiveDelta5mMap: new Map<number, number | null>(),
-    naiveDelta10mMap: new Map<number, number | null>(),
-    naiveDelta30mMap: new Map<number, number | null>(),
     loading,
     error,
     refresh: vi.fn(),
@@ -234,57 +221,55 @@ describe('GexLandscape', () => {
     });
   });
 
-  describe('naive Γ column', () => {
-    it('renders MM Γ and Naive Γ as separate column headers', () => {
+  describe('column layout', () => {
+    it('renders NetGamma / NetCharm / NetVanna as separate column headers', () => {
       renderLandscape();
-      expect(screen.getByText('MM Γ')).toBeDefined();
-      expect(screen.getByText('Naive Γ')).toBeDefined();
+      expect(screen.getByText('NetGamma')).toBeDefined();
+      expect(screen.getByText('NetCharm')).toBeDefined();
+      expect(screen.getByText('NetVanna')).toBeDefined();
     });
 
-    it('renders "—" placeholder in the naive cell when WS OI is absent', () => {
+    it('renders "—" placeholder in the NetVanna cell when netVanna is 0', () => {
       const strikes: GexStrikeLevel[] = [
         {
           ...makeStrike(PRICE, PRICE, 50_000_000, 10_000_000, 'neutral'),
-          callGammaOi: 0,
-          putGammaOi: 0,
+          netVanna: 0,
         },
       ];
       renderLandscape({ strikes });
-      const naiveCell = screen.getByTestId(`naive-gamma-cell-${PRICE}`);
-      expect(naiveCell.textContent).toBe('—');
+      const cell = screen.getByTestId(`net-vanna-cell-${PRICE}`);
+      expect(cell.textContent).toBe('—');
     });
 
-    it('renders the formatted naive sum when WS OI is present', () => {
+    it('renders the formatted netVanna value when present', () => {
       const strikes: GexStrikeLevel[] = [
         {
           ...makeStrike(PRICE, PRICE, 50_000_000, 10_000_000, 'neutral'),
-          callGammaOi: 12_000_000,
-          putGammaOi: -3_000_000,
+          netVanna: 9_000_000,
         },
       ];
       renderLandscape({ strikes });
-      const naiveCell = screen.getByTestId(`naive-gamma-cell-${PRICE}`);
-      // fmtGex returns `+9.0M` for 9e6 (unicode '+' / unicode '−' minus).
-      expect(naiveCell.textContent).toBe('+9.0M');
+      const cell = screen.getByTestId(`net-vanna-cell-${PRICE}`);
+      expect(cell.textContent).toBe('+9.0M');
     });
   });
 
   describe('vol reinforcement', () => {
-    it('shows checkmark for reinforcing vol', () => {
+    it('shows ↑↑ for reinforcing strikes', () => {
       renderLandscape();
-      const checkmarks = screen.getAllByLabelText('Volume reinforcing');
-      expect(checkmarks.length).toBeGreaterThan(0);
+      const reinforcing = screen.getAllByLabelText('Vol reinforcing');
+      expect(reinforcing.length).toBeGreaterThan(0);
     });
 
-    it('shows X for opposing vol', () => {
+    it('shows ↓↓ for opposing strikes', () => {
       renderLandscape();
-      const opposing = screen.getAllByLabelText('Volume opposing');
+      const opposing = screen.getAllByLabelText('Vol opposing');
       expect(opposing.length).toBeGreaterThan(0);
     });
 
-    it('shows circle for neutral vol', () => {
+    it('shows — for neutral strikes', () => {
       renderLandscape();
-      const neutral = screen.getAllByLabelText('Volume neutral');
+      const neutral = screen.getAllByLabelText('Vol neutral');
       expect(neutral.length).toBeGreaterThan(0);
     });
   });
@@ -584,29 +569,23 @@ describe('GexLandscape', () => {
     });
   });
 
-  describe('MM-attributed Phase 3 surface', () => {
-    it('does NOT show the (calibrating) suffix after Phase 4 recalibration', () => {
-      // Phase 4 dropped the suffix after the bias verdict thresholds
-      // were validated against 5 days of periscope_snapshots history
-      // (scripts/probe-mm-bias-calibration.mjs). Asserting its absence
-      // guards against accidental re-introduction.
+  describe('1-min GexBot Δ% surface', () => {
+    it('renders Δ1m / Δ5m / Δ10m column headers (GexBot native cadence)', () => {
       renderLandscape();
-      expect(screen.queryByText(/\(calibrating\)/)).toBeNull();
+      expect(screen.getByText('Δ1m')).toBeDefined();
+      expect(screen.getByText('Δ5m')).toBeDefined();
+      expect(screen.getByText('Δ10m')).toBeDefined();
+      // Legacy MM / Naive split is gone.
+      expect(screen.queryByText('MM 10m')).toBeNull();
+      expect(screen.queryByText('MM 30m')).toBeNull();
+      expect(screen.queryByText('N 1m')).toBeNull();
+      expect(screen.queryByText('N 5m')).toBeNull();
+      expect(screen.queryByText('N 10m')).toBeNull();
     });
 
-    it('renders MM and Naive Δ% column headers in the post-Phase-5 split', () => {
-      // After Phase 5 the Δ% block is split: MM still has 10m / 30m
-      // (periscope cadence is 10 min), and Naive adds 1m / 5m / 10m
-      // (continuous WS feed). 15m is intentionally not surfaced.
+    it('renders the Vol Reinf. column header', () => {
       renderLandscape();
-      expect(screen.getByText('MM 10m')).toBeDefined();
-      expect(screen.getByText('MM 30m')).toBeDefined();
-      expect(screen.getByText('N 1m')).toBeDefined();
-      expect(screen.getByText('N 5m')).toBeDefined();
-      expect(screen.getByText('N 10m')).toBeDefined();
-      // 15m intentionally absent.
-      expect(screen.queryByText('N 15m')).toBeNull();
-      expect(screen.queryByText('15m Δ%')).toBeNull();
+      expect(screen.getByText('Vol Reinf.')).toBeDefined();
     });
   });
 });

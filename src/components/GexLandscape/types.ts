@@ -61,12 +61,6 @@ export interface GexStrikeLevel {
 export type GexClassification = GexClassificationInternal;
 export type Direction = DirectionInternal;
 
-export interface Snapshot {
-  strikes: GexStrikeLevel[];
-  /** Unix ms from snapshot timestamp. */
-  ts: number;
-}
-
 export interface DriftTarget {
   strike: number;
   cls: GexClassification;
