@@ -45,10 +45,10 @@ describe('<GexbotSection>', () => {
 
   it('mounts all 7 child components (drives empty-state testids)', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
-    expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
     expect(
-      screen.getByTestId('vix-dealer-state-badge-empty'),
+      screen.getByTestId('dealer-state-summary-strip-empty'),
     ).toBeInTheDocument();
+    expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
     expect(screen.getByTestId('charm-clock-empty')).toBeInTheDocument();
     expect(screen.getByTestId('gamma-compass-empty')).toBeInTheDocument();
     expect(screen.getByTestId('dexoflow-tape-empty')).toBeInTheDocument();

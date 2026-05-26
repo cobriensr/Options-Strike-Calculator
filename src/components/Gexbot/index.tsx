@@ -18,10 +18,10 @@ import { SectionBox } from '../ui';
 import { CharmClock } from './CharmClock';
 import { ConvexityMatrix } from './ConvexityMatrix';
 import { CrossAssetSkewDashboard } from './CrossAssetSkewDashboard';
+import { DealerStateSummaryStrip } from './DealerStateSummaryStrip';
 import { DexoflowVelocityTape } from './DexoflowVelocityTape';
 import { GammaCompass } from './GammaCompass';
 import { StrikeMoverLadder } from './StrikeMoverLadder';
-import { VixDealerStateBadge } from './VixDealerStateBadge';
 
 interface GexbotSectionProps {
   marketOpen: boolean;
@@ -36,8 +36,8 @@ function GexbotSectionInner({ marketOpen, spxSpot }: GexbotSectionProps) {
   return (
     <SectionBox label="GEXBot Dealer State" collapsible>
       <div className="flex flex-col gap-3">
+        <DealerStateSummaryStrip marketOpen={marketOpen} />
         <StrikeMoverLadder marketOpen={marketOpen} spxSpot={spxSpot} />
-        <VixDealerStateBadge marketOpen={marketOpen} />
         <CharmClock marketOpen={marketOpen} />
         <GammaCompass marketOpen={marketOpen} />
         <DexoflowVelocityTape marketOpen={marketOpen} />

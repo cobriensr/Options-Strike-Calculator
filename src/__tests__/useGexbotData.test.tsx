@@ -130,7 +130,7 @@ describe('useGexbotData', () => {
       mockFetchJson.mockReturnValueOnce(pending);
 
       // Five concurrent consumers — mirrors CharmClock + GammaCompass +
-      // VixDealerStateBadge + DexoflowVelocityTape + CrossAssetSkewDashboard
+      // DealerStateSummaryStrip + DexoflowVelocityTape + CrossAssetSkewDashboard
       // all requesting view=snapshots-latest on pageload.
       const consumers = Array.from({ length: 5 }, () =>
         renderHook(() => useGexbotData({ view: 'snapshots-latest' }, true)),
