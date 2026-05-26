@@ -241,6 +241,7 @@ export async function classifyMultilegBatch(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const startedAt = Date.now();
 
   let res: Response;
   try {
@@ -252,14 +253,15 @@ export async function classifyMultilegBatch(
     });
   } catch (err) {
     clearTimeout(timer);
+    const durationMs = Date.now() - startedAt;
     const message = err instanceof Error ? err.message : String(err);
     logger.warn(
-      { err, count: trades.length },
+      { err, count: trades.length, durationMs },
       'multileg-classify sidecar fetch failed',
     );
     Sentry.captureMessage('multileg.classify.sidecar_unreachable', {
       level: 'warning',
-      extra: { error: message, count: trades.length },
+      extra: { error: message, count: trades.length, durationMs },
     });
     throw new MultilegClassifyError('network', `network error: ${message}`, {
       cause: err,
@@ -269,6 +271,7 @@ export async function classifyMultilegBatch(
   }
 
   if (!res.ok) {
+    const durationMs = Date.now() - startedAt;
     const isServer = res.status >= 500;
     const kind: MultilegClassifyErrorKind = isServer ? 'http_5xx' : 'http_4xx';
     const sidecarStatus = res.status;
@@ -279,12 +282,22 @@ export async function classifyMultilegBatch(
       // ignore — body read failure is non-essential
     }
     logger.warn(
-      { status: sidecarStatus, body: bodyText, count: trades.length },
+      {
+        status: sidecarStatus,
+        body: bodyText,
+        count: trades.length,
+        durationMs,
+      },
       'multileg-classify sidecar non-2xx',
     );
     Sentry.captureMessage('multileg.classify.sidecar_non_2xx', {
       level: isServer ? 'warning' : 'error',
-      extra: { status: sidecarStatus, body: bodyText, count: trades.length },
+      extra: {
+        status: sidecarStatus,
+        body: bodyText,
+        count: trades.length,
+        durationMs,
+      },
     });
     throw new MultilegClassifyError(kind, `sidecar returned ${sidecarStatus}`, {
       status: sidecarStatus,
@@ -298,7 +311,7 @@ export async function classifyMultilegBatch(
     const message = err instanceof Error ? err.message : String(err);
     Sentry.captureMessage('multileg.classify.invalid_json', {
       level: 'error',
-      extra: { error: message },
+      extra: { error: message, durationMs: Date.now() - startedAt },
     });
     throw new MultilegClassifyError(
       'schema_mismatch',
@@ -311,7 +324,10 @@ export async function classifyMultilegBatch(
   if (!parsed.success) {
     Sentry.captureMessage('multileg.classify.schema_mismatch', {
       level: 'error',
-      extra: { issues: parsed.error.issues },
+      extra: {
+        issues: parsed.error.issues,
+        durationMs: Date.now() - startedAt,
+      },
     });
     throw new MultilegClassifyError(
       'schema_mismatch',
@@ -327,6 +343,7 @@ export async function classifyMultilegBatch(
       extra: {
         inputLength: trades.length,
         responseLength: classifications.length,
+        durationMs: Date.now() - startedAt,
       },
     });
     throw new MultilegClassifyError(
@@ -345,5 +362,9 @@ export async function classifyMultilegBatch(
       patternGroupId: row.pattern_group_id,
     });
   }
+  logger.info(
+    { count: trades.length, durationMs: Date.now() - startedAt },
+    'multileg-classify sidecar ok',
+  );
   return out;
 }

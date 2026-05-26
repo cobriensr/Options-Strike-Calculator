@@ -6,6 +6,8 @@ import {
   MultilegClassifyError,
   type MultilegTradeInput,
 } from '../_lib/multileg-client.js';
+import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
@@ -430,5 +432,76 @@ describe('classifyMultilegBatch', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(MultilegClassifyError);
     }
+  });
+
+  it('logs durationMs on successful classify call', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      makeJsonResponse({
+        classifications: [
+          {
+            id: TRADE_A.id,
+            inferred_structure: 'isolated_leg',
+            is_isolated_leg: true,
+            match_confidence: 0,
+            pattern_group_id: TRADE_A.id,
+          },
+        ],
+      }),
+    );
+
+    await classifyMultilegBatch([TRADE_A]);
+
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        count: 1,
+        durationMs: expect.any(Number),
+      }),
+      'multileg-classify sidecar ok',
+    );
+  });
+
+  it('includes durationMs in the sidecar_non_2xx Sentry extra', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        '{"status":"error","code":502,"message":"Application failed to respond"}',
+        { status: 502, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+      kind: 'http_5xx',
+      status: 502,
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'multileg.classify.sidecar_non_2xx',
+      expect.objectContaining({
+        extra: expect.objectContaining({
+          status: 502,
+          count: 1,
+          durationMs: expect.any(Number),
+        }),
+      }),
+    );
+  });
+
+  it('includes durationMs in the sidecar_unreachable Sentry extra', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(
+      new Error('socket hang up'),
+    );
+
+    await expect(classifyMultilegBatch([TRADE_A])).rejects.toMatchObject({
+      kind: 'network',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'multileg.classify.sidecar_unreachable',
+      expect.objectContaining({
+        extra: expect.objectContaining({
+          count: 1,
+          durationMs: expect.any(Number),
+        }),
+      }),
+    );
   });
 });

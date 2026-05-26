@@ -83,7 +83,7 @@ describe('classifyAlertMultileg', () => {
   });
 
   it('happy path: classifies the anchor trade among a populated ticker window', async () => {
-    // Five trades on AAPL inside the ±45s window. Two form a vertical
+    // Five trades on AAPL inside the ±30s window. Two form a vertical
     // including the largest-premium trade on optionChain (= anchor).
     const anchorId = 'anchor-uuid';
     const sibLegId = 'sibling-uuid';

@@ -7,9 +7,9 @@
  *
  *   1. Locate the alert's anchor trade in ws_option_trades — the
  *      highest-premium print on the alert's option_chain inside a
- *      ±45s window around the trigger.
+ *      ±30s window around the trigger.
  *   2. Pull the ticker-wide context window (all chains on the same
- *      underlying symbol within ±45s) — the matcher needs neighboring
+ *      underlying symbol within ±30s) — the matcher needs neighboring
  *      legs to detect verticals / strangles / risk-reversals.
  *   3. Call the sidecar classifier on the window.
  *   4. Return the anchor trade's classification.
@@ -55,24 +55,35 @@ export type MultilegClassifyCache = Map<string, MultilegClassification | null>;
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /**
- * Match the sidecar default `window_seconds=90` and the Python
- * multileg matcher's window. The anchor lookup uses ±45s and the
- * ticker-wide window uses the same span.
+ * Half-width of the trade window queried from `ws_option_trades` for
+ * each alert. Tightened 45 → 30 on 2026-05-26 after SENTRY-EMERALD-
+ * DESERT-8Q (762 events since 2026-05-18, regressed): the sidecar's
+ * Railway container hosts futures-relay + Theta Data Terminal + the
+ * classifier on a 3-vCPU box, so under contention the per-call polars
+ * matcher exceeds Railway's edge-proxy upstream-response timeout and
+ * the proxy returns a 502 ("Application failed to respond") before
+ * the sidecar can write its reply. Shrinking the input window from
+ * ±45s (90s span) to ±30s (60s span) reduces matcher input by ~33%
+ * with negligible recall loss — verticals/strangles execute in <1s.
+ * The sidecar's internal `window_seconds=90` matcher bucket default
+ * is unchanged; only the DB-side input span shrinks.
  */
-const HALF_WINDOW_SEC = 45;
+const HALF_WINDOW_SEC = 30;
 
 /**
  * Defensive size cap. The matcher scales fine up to ~600K rows per
- * ticker per day, but a single ±45s window with too many prints would
+ * ticker per day, but a single ±30s window with too many prints would
  * blow the cron's per-tick latency budget. Above this cap we return
  * `null` rather than calling the sidecar — matches the project's
  * flagged SPY/SPXW OOM follow-up.
  *
- * 10000 (raised from 5000 on 2026-05-19) — QQQ peak minutes routinely
- * post 6–8K trades in a ±45s window during high-vol opens; the old cap
- * was firing ~285 times/day on Sentry without classifier load actually
- * being a problem. If memory pressure returns post-deploy, drop back
- * to 7500 and add windowed chunking.
+ * 10000 (raised from 5000 on 2026-05-19) — sized against QQQ peak
+ * minutes that routinely posted 6–8K trades in the prior ±45s window
+ * during high-vol opens; the old cap was firing ~285 times/day on
+ * Sentry without classifier load actually being a problem. The 2026-
+ * 05-26 shrink to ±30s pushes peak windows to ~4–5K, so the cap is
+ * extra-defensive now. If memory pressure returns post-deploy, drop
+ * back to 7500 and add windowed chunking.
  */
 const MAX_WINDOW_TRADES = 10000;
 
