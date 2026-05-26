@@ -23,7 +23,7 @@ RUN npm prune --omit=dev
 
 FROM node:24-slim
 
-# Restart nudge: 2026-05-20
+# Restart nudge: 2026-05-26
 # OS packages required by Playwright's bundled Chromium.
 # Reference: https://playwright.dev/docs/docker
 #
@@ -34,8 +34,17 @@ FROM node:24-slim
 # Switching to the explicit list maintained by Playwright is more
 # reliable than hand-curating; if Chromium ever fails to launch with
 # another missing .so, add it here.
+#
+# 2026-05-26: tini added as PID 1 reaper. Node as PID 1 doesn't reap
+# zombie children, so Chromium subprocesses spawned by Playwright
+# accumulate under the cgroup pids.max limit until spawn() returns
+# EAGAIN and the scraper stops ticking entirely. Root cause of
+# SENTRY-EMERALD-DESERT-CQ (350+ events / 19h continuous failure
+# before 2026-05-26 restart). With tini as PID 1, zombies are reaped
+# on exit and the limit is not approached.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        tini \
         libnss3 \
         libnspr4 \
         libatk1.0-0 \
@@ -82,4 +91,5 @@ COPY --from=builder --chown=scraper:scraper /app/dist ./dist
 
 ENV NODE_ENV=production
 
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js"]
