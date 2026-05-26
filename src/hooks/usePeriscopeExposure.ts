@@ -116,9 +116,16 @@ export function usePeriscopeExposure({
       if (selectedDate != null) params.set('date', selectedDate);
       if (selectedTime != null) params.set('time', selectedTime);
       const qs = params.toString();
-      const url = qs
-        ? `/api/periscope-exposure?${qs}`
+      // Route: live "latest" reads (no date/time picker) hit the new
+      // GEXBot-fed /api/periscope-map endpoint for 1-min freshness.
+      // Historical replay (any date/time picker active) stays on
+      // /api/periscope-exposure which reads periscope_snapshots and
+      // has the full ~6-month back-catalog GEXBot capture doesn't.
+      const isLive = selectedDate == null && selectedTime == null;
+      const baseRoute = isLive
+        ? '/api/periscope-map'
         : '/api/periscope-exposure';
+      const url = qs ? `${baseRoute}?${qs}` : baseRoute;
       const res = await fetch(url, { method: 'GET' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as PeriscopeExposureResponse;

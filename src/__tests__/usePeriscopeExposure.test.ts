@@ -207,7 +207,7 @@ describe('usePeriscopeExposure: spot hint', () => {
     );
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
     expect(mockFetch.mock.calls[0]![0]).toBe(
-      '/api/periscope-exposure?spot=4500',
+      '/api/periscope-map?spot=4500',
     );
   });
 
@@ -223,7 +223,7 @@ describe('usePeriscopeExposure: spot hint', () => {
       usePeriscopeExposure({ marketOpen: false, spotHint: null }),
     );
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-exposure');
+    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-map');
   });
 
   it('omits spot param when spotHint is 0', async () => {
@@ -236,7 +236,7 @@ describe('usePeriscopeExposure: spot hint', () => {
     );
     renderHook(() => usePeriscopeExposure({ marketOpen: false, spotHint: 0 }));
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-exposure');
+    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-map');
   });
 
   it('omits spot param when spotHint is NaN', async () => {
@@ -251,7 +251,7 @@ describe('usePeriscopeExposure: spot hint', () => {
       usePeriscopeExposure({ marketOpen: false, spotHint: Number.NaN }),
     );
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-exposure');
+    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-map');
   });
 
   it('omits spot param when spotHint is negative', async () => {
@@ -264,7 +264,7 @@ describe('usePeriscopeExposure: spot hint', () => {
     );
     renderHook(() => usePeriscopeExposure({ marketOpen: false, spotHint: -1 }));
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-exposure');
+    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-map');
   });
 });
 

@@ -33,7 +33,6 @@ import {
   usePeriscopeExposure,
   type PeriscopeSelectedSlot,
 } from './hooks/usePeriscopeExposure';
-import { usePeriscopePlaybook } from './hooks/usePeriscopePlaybook';
 import { useAccessSession } from './hooks/useAccessSession';
 import { usePanelPrefs } from './hooks/usePanelPrefs';
 import {
@@ -345,16 +344,11 @@ export default function StrikeCalculator() {
   // panel_payload exists for the selected date, the panel renders it
   // above (and instead of) the deterministic TradePlanSection. When
   // viewing a historical slot, pass its date so the playbook lookup
-  // mirrors the time-travel selection. Also pin to the rendered exposure
-  // view's `capturedAt` so prev/next on the time picker refetches the
-  // matching playbook (otherwise the API returns the latest debrief row
-  // regardless of which slot the panel is showing).
-  const periscopePlaybook = usePeriscopePlaybook({
-    marketOpen: market.data.quotes?.marketOpen ?? false,
-    selectedDate: periscopeSlot?.date ?? null,
-    selectedSlotCapturedAt:
-      periscopeSlot != null ? (periscope.view?.capturedAt ?? null) : null,
-  });
+  // Periscope auto-playbook (Claude) is retired in favor of the
+  // deterministic GEXBot-fed map at /api/periscope-map. Panel no
+  // longer renders the prose layer. usePeriscopePlaybook hook left
+  // in the codebase for potential historical-replay reuse, but not
+  // called here.
   // GEX Landscape owns its own date / scrub state internally and pulls
   // MM-attributed per-strike data via `useGexLandscapeData` →
   // `/api/periscope-strikes` (with a WS side channel for vol
@@ -1232,7 +1226,9 @@ export default function StrikeCalculator() {
                 availableSlots={periscope.availableSlots}
                 selectedSlot={periscopeSlot}
                 onSelectSlot={setPeriscopeSlot}
-                playbook={periscopePlaybook}
+                /* playbook intentionally omitted: Claude auto-playbook
+                   call has been dropped in favor of the deterministic
+                   GEXBot-fed map from /api/periscope-map. */
               />
             </GatedSection>
           ),
@@ -1424,7 +1420,6 @@ export default function StrikeCalculator() {
       market,
       multiplier,
       periscope,
-      periscopePlaybook,
       periscopeSlot,
       portfolioRiskThresholdPct,
       results,
