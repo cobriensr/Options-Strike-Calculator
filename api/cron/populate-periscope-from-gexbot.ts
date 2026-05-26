@@ -128,7 +128,7 @@ export default withCronInstrumentation(
 
     for (const panel of PANELS) {
       const category = PANEL_TO_CATEGORY[panel];
-      const rows = await withDbRetry(
+      const rows = (await withDbRetry(
         () => sql`
           SELECT captured_at, raw_response
           FROM gexbot_api_capture
@@ -139,7 +139,7 @@ export default withCronInstrumentation(
           ORDER BY captured_at DESC
           LIMIT 1
         `,
-      ) as { captured_at: Date | string; raw_response: GexbotStatePayload }[];
+      )) as { captured_at: Date | string; raw_response: GexbotStatePayload }[];
 
       if (rows.length === 0) {
         errors.push(`no fresh ${category} row for ${TICKER}`);
@@ -160,7 +160,7 @@ export default withCronInstrumentation(
       // Build VALUES clause for batch insert.
       const strikes = decoded.map((d) => d.strike);
       const values = decoded.map((d) => d.value);
-      const inserted = await withDbRetry(
+      const inserted = (await withDbRetry(
         () => sql`
           INSERT INTO periscope_snapshots (captured_at, expiry, panel, strike, value, timeframe)
           SELECT
@@ -173,7 +173,7 @@ export default withCronInstrumentation(
           ON CONFLICT (captured_at, expiry, panel, strike) DO NOTHING
           RETURNING strike
         `,
-      ) as { strike: number }[];
+      )) as { strike: number }[];
 
       totalRows += inserted.length;
       panelsWritten += 1;

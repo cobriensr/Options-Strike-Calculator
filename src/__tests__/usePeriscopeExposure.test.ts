@@ -206,9 +206,7 @@ describe('usePeriscopeExposure: spot hint', () => {
       usePeriscopeExposure({ marketOpen: false, spotHint: 4500 }),
     );
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
-    expect(mockFetch.mock.calls[0]![0]).toBe(
-      '/api/periscope-map?spot=4500',
-    );
+    expect(mockFetch.mock.calls[0]![0]).toBe('/api/periscope-map?spot=4500');
   });
 
   it('omits spot param when spotHint is null', async () => {
