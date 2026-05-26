@@ -46,10 +46,7 @@ import { SectionBox } from '../ui';
 import type { GexStrikeLevel } from './types';
 import { useGexLandscapeData } from '../../hooks/useGexLandscapeData';
 import { boolPersistOpts } from '../../hooks/persist-encoding';
-import {
-  usePersistedState,
-  type UsePersistedStateOptions,
-} from '../../hooks/usePersistedState';
+import { usePersistedState } from '../../hooks/usePersistedState';
 import { useScrubController } from '../../hooks/useScrubController';
 import { useTopStrikesTracker } from '../../hooks/useTopStrikesTracker';
 import { getETToday } from '../../utils/timezone';
@@ -64,18 +61,6 @@ import { formatBiasForClaude } from './formatters';
 import type { PriceTrend } from './types';
 
 const TOP5_MUTE_STORAGE_KEY = 'gex-landscape-top5-muted-v1';
-const TOP5_RANK_STORAGE_KEY = 'gex-landscape-top5-rank-by-v1';
-
-/** Ranking basis for the Top 5 tab: MM-attributed netGamma or naive OI sum. */
-type Top5RankBy = 'mm' | 'naive';
-
-// File-local encoding shim. Boolean opts come from the shared
-// persist-encoding module; this one is Top5-specific.
-const top5RankByPersistOpts: UsePersistedStateOptions<Top5RankBy> = {
-  parse: (raw): Top5RankBy | undefined =>
-    raw === 'naive' || raw === 'mm' ? raw : undefined,
-  serialize: (v) => v,
-};
 
 /** View mode for the table area: full ±50pt grid or top 5 by |netGamma|. */
 type LandscapeTab = 'all' | 'top5';
@@ -223,14 +208,6 @@ const GexLandscape = memo(function GexLandscape({
     () => setTop5Muted((prev) => !prev),
     [setTop5Muted],
   );
-  // Top 5 ranking basis. Persisted to localStorage so the choice
-  // survives reloads — the trader's reading style typically settles
-  // on one of MM or Naive for the day.
-  const [top5RankBy, setTop5RankBy] = usePersistedState<Top5RankBy>(
-    TOP5_RANK_STORAGE_KEY,
-    'mm',
-    top5RankByPersistOpts,
-  );
 
   const currentPrice = strikes[0]?.price ?? 0;
 
@@ -245,33 +222,25 @@ const GexLandscape = memo(function GexLandscape({
 
   // Top 5 strikes across the entire chain — ignores PRICE_WINDOW so
   // distant institutional walls surface even when they're far from
-  // spot. Ranking basis switches between MM-attributed netGamma and
-  // naive callGammaOi + putGammaOi via the in-tab toggle. The two
-  // rankings can diverge significantly — that disagreement is the
-  // reason this toggle exists.
-  const topFive = useMemo(() => {
-    const rankKey = (s: GexStrikeLevel) =>
-      top5RankBy === 'naive' ? s.callGammaOi + s.putGammaOi : s.netGamma;
-    return [...strikes]
-      .sort((a, b) => Math.abs(rankKey(b)) - Math.abs(rankKey(a)))
-      .slice(0, TOP_GEX_COUNT);
-  }, [strikes, top5RankBy]);
+  // spot. Ranked by absolute MM-attributed netGamma.
+  const topFive = useMemo(
+    () =>
+      [...strikes]
+        .sort((a, b) => Math.abs(b.netGamma) - Math.abs(a.netGamma))
+        .slice(0, TOP_GEX_COUNT),
+    [strikes],
+  );
 
   // Track Top 5 composition across polls so the trader gets a chime on
   // any set change and can see which strike is the session anchor vs.
-  // which one just entered.
+  // which one just entered. Reset the tracker on date change so a new
+  // session starts with a clean slate.
   const { justEntered, oldestStrike } = useTopStrikesTracker({
     topFive,
     timestamp,
     isLive,
     muted: top5Muted,
-    // Reset the tracker on date change OR when the user flips the
-    // MM↔Naive ranking basis. Without the ranking key in the reset
-    // signal, flipping the toggle would fire a chime for every
-    // newly-ranked strike (user-initiated reranking is not flow
-    // signal). Strike "age" also stops being comparable across
-    // ranking bases, so wiping oldestStrike on toggle is correct.
-    resetKey: `${selectedDate}|${top5RankBy}`,
+    resetKey: selectedDate,
   });
 
   // Find the strike closest to spot for the ATM indicator.
@@ -553,61 +522,21 @@ const GexLandscape = memo(function GexLandscape({
         hidden={activeTab !== 'top5'}
       >
         {activeTab === 'top5' && (
-          <>
-            <div
-              role="radiogroup"
-              aria-label="Top 5 ranking basis"
-              className="mb-2 flex items-center gap-1.5"
-            >
-              <span
-                className="font-mono text-[10px] font-semibold tracking-wider uppercase"
-                style={{ color: 'var(--color-tertiary)' }}
-              >
-                Rank by
-              </span>
-              {(['mm', 'naive'] as const).map((key) => {
-                const selected = top5RankBy === key;
-                const label = key === 'mm' ? 'MM Γ' : 'Naive Γ';
-                const title =
-                  key === 'mm'
-                    ? 'Rank by absolute MM-attributed netGamma (UW dealer math).'
-                    : 'Rank by absolute naive call+put OI gamma sum (WS feed, unattributed). Can highlight strikes MM ranking misses.';
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() => setTop5RankBy(key)}
-                    title={title}
-                    className={[
-                      'rounded border px-2 py-0.5 font-mono text-[10px] font-semibold tracking-wider uppercase transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/50',
-                      selected
-                        ? 'border-sky-400/60 bg-sky-500/15 text-sky-300'
-                        : 'text-muted hover:text-secondary border-transparent',
-                    ].join(' ')}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-            <StrikeTable
-              rows={topFive}
-              currentPrice={currentPrice}
-              spotStrike={spotStrike}
-              maxChanged1mStrike={maxChanged1mStrike}
-              maxChanged5mStrike={maxChanged5mStrike}
-              maxChanged10mStrike={maxChanged10mStrike}
-              gexDelta1mMap={gexDelta1mMap}
-              gexDelta5mMap={gexDelta5mMap}
-              gexDelta10mMap={gexDelta10mMap}
-              spotRowRef={spotRowRef}
-              showAtmDistance
-              justEntered={justEntered}
-              oldestStrike={oldestStrike}
-            />
-          </>
+          <StrikeTable
+            rows={topFive}
+            currentPrice={currentPrice}
+            spotStrike={spotStrike}
+            maxChanged1mStrike={maxChanged1mStrike}
+            maxChanged5mStrike={maxChanged5mStrike}
+            maxChanged10mStrike={maxChanged10mStrike}
+            gexDelta1mMap={gexDelta1mMap}
+            gexDelta5mMap={gexDelta5mMap}
+            gexDelta10mMap={gexDelta10mMap}
+            spotRowRef={spotRowRef}
+            showAtmDistance
+            justEntered={justEntered}
+            oldestStrike={oldestStrike}
+          />
         )}
       </div>
       <ClassificationLegend />

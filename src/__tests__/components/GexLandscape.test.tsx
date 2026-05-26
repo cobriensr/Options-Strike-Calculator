@@ -516,56 +516,13 @@ describe('GexLandscape', () => {
       expect(within(panel).getAllByRole('listitem')).toHaveLength(2);
     });
 
-    it('renders MM / Naive rank-by toggle with MM as the default selection', () => {
+    it('does not render any rank-by toggle (Naive Γ removed with WS feed)', () => {
       const panel = openTop5();
-      const mmRadio = within(panel).getByRole('radio', { name: 'MM Γ' });
-      const naiveRadio = within(panel).getByRole('radio', { name: 'Naive Γ' });
-      expect(mmRadio.getAttribute('aria-checked')).toBe('true');
-      expect(naiveRadio.getAttribute('aria-checked')).toBe('false');
-    });
-
-    it('re-ranks the Top 5 list when the Naive toggle is selected', () => {
-      // Construct strikes where MM and naive rankings diverge:
-      //   - PRICE + 30 has biggest MM netGamma (1e9) but small naive (1k)
-      //   - PRICE - 40 has small MM (1e7) but biggest naive (5e8 + 4e8 = 9e8)
-      const divergent: GexStrikeLevel[] = [
-        {
-          ...makeStrike(PRICE + 30, PRICE, 1_000_000_000, 0),
-          callGammaOi: 500,
-          putGammaOi: 500,
-        },
-        {
-          ...makeStrike(PRICE - 40, PRICE, 10_000_000, 0),
-          callGammaOi: 500_000_000,
-          putGammaOi: 400_000_000,
-        },
-        {
-          ...makeStrike(PRICE + 10, PRICE, 100_000_000, 0),
-          callGammaOi: 10,
-          putGammaOi: 10,
-        },
-      ];
-      renderLandscape({ strikes: divergent });
-      fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
-      const panel = screen.getByRole('tabpanel', { name: 'Top 5 GEX' });
-
-      // MM default: PRICE + 30 (6910) ranks first.
-      const mmFirstRowStrike = within(
-        within(panel).getAllByRole('listitem')[0]!,
-      ).getByText('6,910');
-      expect(mmFirstRowStrike).toBeDefined();
-
-      // Flip to Naive — PRICE - 40 (6840) should now rank first.
-      fireEvent.click(within(panel).getByRole('radio', { name: 'Naive Γ' }));
-      const naiveFirstRowStrike = within(
-        within(panel).getAllByRole('listitem')[0]!,
-      ).getByText('6,840');
-      expect(naiveFirstRowStrike).toBeDefined();
+      expect(within(panel).queryByRole('radiogroup')).toBeNull();
+      expect(within(panel).queryByRole('radio', { name: 'MM Γ' })).toBeNull();
       expect(
-        within(panel)
-          .getByRole('radio', { name: 'Naive Γ' })
-          .getAttribute('aria-checked'),
-      ).toBe('true');
+        within(panel).queryByRole('radio', { name: 'Naive Γ' }),
+      ).toBeNull();
     });
   });
 

@@ -10,10 +10,11 @@ import type {
 } from '../../utils/gex-classification';
 
 /**
- * One per-strike row inside a GEX snapshot. Field shape matches the
- * `/api/gex-strike-expiry` projection in `useGexLandscapeData` and the
- * legacy `/api/gex-per-strike` payload — both write into the same canonical
- * row format the GexLandscape table consumes.
+ * One per-strike row inside a GEX snapshot. Built by `projectStrike` in
+ * `useGexLandscapeData` from the `/api/gex-landscape` per-strike payload
+ * (1-min GexBot capture). MM-attributed gamma/charm/vanna populate
+ * `netGamma`/`netCharm`/`netVanna`; the call/put split fields stay at 0
+ * because the 1-min GexBot feed doesn't expose attribution.
  */
 export interface GexStrikeLevel {
   strike: number;
