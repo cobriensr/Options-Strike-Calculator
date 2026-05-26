@@ -433,3 +433,249 @@ function buildWaitZone(args: {
   }
   return null;
 }
+
+// ============================================================
+// Structure picker — maps a TradePlan + topology to a specific options
+// structure (spread legs, BWB body, iron condor wings, etc.).
+//
+// Sourced from docs/superpowers/specs/periscope-analyzer-build-2026-05-21.md
+// "Structure mapping" table. The trade-direction and verdict already
+// come from computeTradePlan above; this layer chooses HOW to express
+// each side as a defined-risk options structure.
+// ============================================================
+
+export type TradeStructure =
+  | 'debit_call_spread'
+  | 'debit_put_spread'
+  | 'credit_call_spread'
+  | 'credit_put_spread'
+  | 'iron_condor'
+  | 'broken_wing_butterfly'
+  | 'directional_long_call'
+  | 'directional_long_put'
+  | 'long_strangle'
+  | 'no_trade';
+
+export interface StructureLeg {
+  strike: number;
+  type: 'C' | 'P';
+  side: 'long' | 'short';
+}
+
+export interface RecommendedStructure {
+  kind: TradeStructure;
+  legs: StructureLeg[];
+  /** Display label, e.g. "debit_call_spread 7395/7405". */
+  label: string;
+}
+
+export interface StructurePlan {
+  long: RecommendedStructure | null;
+  short: RecommendedStructure | null;
+  wait: RecommendedStructure | null;
+}
+
+const SPX_STRIKE_INCREMENT = 5;
+
+function roundToStrike(n: number): number {
+  return Math.round(n / SPX_STRIKE_INCREMENT) * SPX_STRIKE_INCREMENT;
+}
+
+function legsLabel(legs: StructureLeg[]): string {
+  return legs
+    .map((l) => `${l.side === 'long' ? '+' : '-'}${l.strike}${l.type}`)
+    .join('/');
+}
+
+/**
+ * Pick the directional spread for a LONG-side setup.
+ *
+ * @param trigger entry-arm level from plan.long.trigger
+ * @param ceiling +γ ceiling strike (long-side cap)
+ * @param regime  trade plan regime — cone-breach-up uses naked long instead
+ */
+function pickLongStructure(
+  trigger: number,
+  ceiling: number | null,
+  regime: Regime,
+): RecommendedStructure {
+  const longLeg = roundToStrike(trigger);
+  // Cone breach above = vol expansion. Naked long captures the expansion
+  // upside; capping it with a short above defeats the point.
+  if (regime === 'cone-breach-up') {
+    const legs: StructureLeg[] = [{ strike: longLeg, type: 'C', side: 'long' }];
+    return {
+      kind: 'directional_long_call',
+      legs,
+      label: `directional_long_call ${longLeg}`,
+    };
+  }
+  // No ceiling identified — naked long is the only structure that doesn't
+  // require a known short strike.
+  if (ceiling == null) {
+    const legs: StructureLeg[] = [{ strike: longLeg, type: 'C', side: 'long' }];
+    return {
+      kind: 'directional_long_call',
+      legs,
+      label: `directional_long_call ${longLeg}`,
+    };
+  }
+  // Standard case: long at the trigger, short at the +γ ceiling.
+  const shortLeg = roundToStrike(ceiling);
+  const legs: StructureLeg[] = [
+    { strike: longLeg, type: 'C', side: 'long' },
+    { strike: shortLeg, type: 'C', side: 'short' },
+  ];
+  return {
+    kind: 'debit_call_spread',
+    legs,
+    label: `debit_call_spread ${longLeg}/${shortLeg}`,
+  };
+}
+
+function pickShortStructure(
+  trigger: number,
+  floor: number | null,
+  regime: Regime,
+): RecommendedStructure {
+  const longLeg = roundToStrike(trigger);
+  if (regime === 'cone-breach-down') {
+    const legs: StructureLeg[] = [{ strike: longLeg, type: 'P', side: 'long' }];
+    return {
+      kind: 'directional_long_put',
+      legs,
+      label: `directional_long_put ${longLeg}`,
+    };
+  }
+  if (floor == null) {
+    const legs: StructureLeg[] = [{ strike: longLeg, type: 'P', side: 'long' }];
+    return {
+      kind: 'directional_long_put',
+      legs,
+      label: `directional_long_put ${longLeg}`,
+    };
+  }
+  const shortLeg = roundToStrike(floor);
+  const legs: StructureLeg[] = [
+    { strike: longLeg, type: 'P', side: 'long' },
+    { strike: shortLeg, type: 'P', side: 'short' },
+  ];
+  return {
+    kind: 'debit_put_spread',
+    legs,
+    label: `debit_put_spread ${longLeg}/${shortLeg}`,
+  };
+}
+
+/**
+ * Pick the wait-zone (no-directional) structure.
+ *
+ * - pin → broken_wing_butterfly anchored at the dominant gamma magnet
+ *   inside the wait band.
+ * - chop → iron_condor with short legs at the trigger boundaries and
+ *   long legs at the +γ floor / +γ ceiling.
+ * - drift-and-cap → null (drift-and-cap has a directional side; the
+ *   wait band is a transitional zone, not a structure target).
+ * - cone-breach / no-data → null.
+ */
+function pickWaitStructure(
+  view: PeriscopeView,
+  plan: TradePlan,
+): RecommendedStructure | null {
+  const { gamma } = view;
+  const floor = gamma.floor?.strike ?? null;
+  const ceiling = gamma.ceiling?.strike ?? null;
+  const longTrigger = plan.long.trigger;
+  const shortTrigger = plan.short.trigger;
+
+  if (plan.regime === 'pin') {
+    // BWB body at the largest |γ| strike near spot. Pick from
+    // topByAbsNear which is already sorted by |value|.
+    const magnet = gamma.topByAbsNear[0];
+    if (magnet == null) return null;
+    const body = roundToStrike(magnet.strike);
+    // Symmetric ±10 wings for v1; per-regime cone-aware wings is a
+    // refinement we'll add when we have a vol skew signal feeding in.
+    const lowerWing = body - 10;
+    const upperWing = body + 10;
+    const legs: StructureLeg[] = [
+      { strike: lowerWing, type: 'P', side: 'long' },
+      { strike: body, type: 'P', side: 'short' },
+      { strike: body, type: 'C', side: 'short' },
+      { strike: upperWing, type: 'C', side: 'long' },
+    ];
+    return {
+      kind: 'broken_wing_butterfly',
+      legs,
+      label: `broken_wing_butterfly ${lowerWing}/${body}/${upperWing}`,
+    };
+  }
+
+  if (
+    plan.regime === 'chop' &&
+    floor != null &&
+    ceiling != null &&
+    longTrigger != null &&
+    shortTrigger != null
+  ) {
+    const farPut = roundToStrike(floor);
+    const nearPut = roundToStrike(shortTrigger);
+    const nearCall = roundToStrike(longTrigger);
+    const farCall = roundToStrike(ceiling);
+    const legs: StructureLeg[] = [
+      { strike: farPut, type: 'P', side: 'long' },
+      { strike: nearPut, type: 'P', side: 'short' },
+      { strike: nearCall, type: 'C', side: 'short' },
+      { strike: farCall, type: 'C', side: 'long' },
+    ];
+    return {
+      kind: 'iron_condor',
+      legs,
+      label: `iron_condor ${farPut}p/${nearPut}p/${nearCall}c/${farCall}c`,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Derive options structures for each side of the TradePlan. Returns a
+ * {long, short, wait} bundle where each entry is null when the
+ * directional verdict is 'avoid' or the topology doesn't support a
+ * defined structure (e.g. cone-breach with no +γ wall to anchor on).
+ *
+ * Pure function — view + plan in, structure recommendations out. No
+ * I/O. Strike rounding is fixed at SPX (5-pt grid).
+ *
+ * Note: `legs` are ordered short-first by convention for the existing
+ * debit_*_spread enum readers, but the helper functions here build
+ * them long-first for readability. Both shapes are equivalent for the
+ * downstream renderer which inspects `side` per leg.
+ */
+export function pickStructures(
+  view: PeriscopeView,
+  plan: TradePlan,
+): StructurePlan {
+  const long =
+    plan.long.verdict === 'safe' && plan.long.trigger != null
+      ? pickLongStructure(
+          plan.long.trigger,
+          view.gamma.ceiling?.strike ?? null,
+          plan.regime,
+        )
+      : null;
+  const short =
+    plan.short.verdict === 'safe' && plan.short.trigger != null
+      ? pickShortStructure(
+          plan.short.trigger,
+          view.gamma.floor?.strike ?? null,
+          plan.regime,
+        )
+      : null;
+  const wait = pickWaitStructure(view, plan);
+  return { long, short, wait };
+}
+
+// Pretty-print a structure for debug / logging. Kept for parity with the
+// existing `fmtSigned` helper export — not used in the panel itself.
+export { legsLabel };

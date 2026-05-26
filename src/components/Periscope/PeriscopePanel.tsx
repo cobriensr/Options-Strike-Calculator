@@ -26,7 +26,7 @@
  * `./shared.tsx`.
  */
 
-import { memo, useMemo } from 'react';
+import { memo } from 'react';
 import { SectionBox } from '../ui';
 import { theme } from '../../themes';
 import { formatTimeCT } from '../../utils/component-formatters';
@@ -35,13 +35,7 @@ import type {
   PeriscopeView,
   PeriscopeSelectedSlot,
 } from '../../hooks/usePeriscopeExposure';
-import { computeTradePlan } from '../../utils/periscope-trade-plan';
-import { TradePlanSection } from './TradePlanSection';
-import { ConeSection } from './ConeSection';
-import { GammaSection } from './GammaSection';
-import { CharmSection } from './CharmSection';
-import { VannaSection } from './VannaSection';
-import { FlipsSection } from './FlipsSection';
+import { MMExposureMap } from './MMExposureMap';
 import { SlotPicker } from './SlotPicker';
 
 interface PeriscopePanelProps {
@@ -166,10 +160,8 @@ function PeriscopePanelInner({
 }
 
 function PeriscopeBody({ view }: { view: PeriscopeView }) {
-  const plan = useMemo(() => computeTradePlan(view), [view]);
-
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between font-mono text-[11px]">
         <span style={{ color: theme.textSecondary }}>
           Slot {formatTimeCT(view.capturedAt)} CT · {view.expiry}
@@ -177,13 +169,7 @@ function PeriscopeBody({ view }: { view: PeriscopeView }) {
         <span style={{ color: theme.text }}>spot {view.spot.toFixed(2)}</span>
       </div>
 
-      <TradePlanSection plan={plan} />
-
-      {view.cone && <ConeSection view={view} />}
-      <GammaSection view={view} />
-      <CharmSection view={view} />
-      {view.vanna.topByAbs.length > 0 && <VannaSection view={view} />}
-      {view.signFlips.length > 0 && <FlipsSection view={view} />}
+      <MMExposureMap view={view} />
     </div>
   );
 }
