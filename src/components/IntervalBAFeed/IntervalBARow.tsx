@@ -543,6 +543,7 @@ export const IntervalBARow = memo(function IntervalBARow({
                 candles={candles}
                 previousClose={previousClose}
                 markerTs={alert.fired_at}
+                date={date}
                 ariaLabel={`${alert.ticker} cumulative net call/put premium with stock price overlay`}
               />
             )}

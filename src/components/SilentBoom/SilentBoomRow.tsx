@@ -940,6 +940,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
                 candles={candles}
                 previousClose={previousClose}
                 markerTs={alert.bucketCt}
+                date={alert.date}
                 ariaLabel={`${alert.underlyingSymbol} cumulative net call/put premium with stock price overlay`}
               />
             )}
