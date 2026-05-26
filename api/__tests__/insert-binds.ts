@@ -62,10 +62,7 @@ export function extractAllInsertBinds(
   return calls.map((call) => parseBinds(call, table));
 }
 
-function parseBinds(
-  call: unknown[],
-  table: string,
-): Map<string, unknown> {
+function parseBinds(call: unknown[], table: string): Map<string, unknown> {
   const strings = call[0] as readonly string[];
   const head = strings[0] ?? '';
   // Capture the column list between `INSERT INTO <table> (` and the
@@ -73,10 +70,7 @@ function parseBinds(
   // contained entirely within the first literal fragment because no
   // `${...}` interpolation lands inside it in this codebase.
   const match = head.match(
-    new RegExp(
-      `INSERT INTO ${table}\\s*\\(([\\s\\S]+?)\\)\\s*VALUES`,
-      '',
-    ),
+    new RegExp(`INSERT INTO ${table}\\s*\\(([\\s\\S]+?)\\)\\s*VALUES`, ''),
   );
   if (!match) {
     throw new Error(
