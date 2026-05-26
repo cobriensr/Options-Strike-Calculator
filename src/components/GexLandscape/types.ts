@@ -74,40 +74,6 @@ export interface DriftTarget {
   volReinforcement: 'reinforcing' | 'opposing' | 'neutral';
 }
 
-/**
- * Naive drift-target shape used by the BiasPanel's naive sub-readout.
- * Leaner than `DriftTarget` because the naive view has no charm
- * equivalent (so no classification badge) and no per-strike vol
- * reinforcement (that's an MM-side OI-vs-vol read).
- */
-export interface NaiveDriftTarget {
-  strike: number;
-  /** `callGammaOi + putGammaOi` from the WS feed. */
-  netGamma: number;
-}
-
-/**
- * Parallel naive read of the structural bias, sourced from the WS
- * feed's raw `call_gamma_oi + put_gamma_oi` per strike. Rendered as
- * a sub-line under the MM readout in the BiasPanel. `null` when no
- * WS data is available for the rows being analyzed (panel skips the
- * sub-line entirely in that case).
- *
- * Verdict and regime are NOT duplicated here — those are MM-only
- * structural reads (see [bias.ts](./bias.ts) for rationale).
- */
-export interface NaiveBiasMetrics {
-  gravityStrike: number;
-  gravityOffset: number;
-  gravityGex: number;
-  upsideTargets: NaiveDriftTarget[];
-  downsideTargets: NaiveDriftTarget[];
-  floorTrend10m: number | null;
-  ceilingTrend10m: number | null;
-  floorTrend30m: number | null;
-  ceilingTrend30m: number | null;
-}
-
 // `PriceTrend` moved to `src/utils/price-trend.ts` so the server-side
 // regime cron can consume it without pulling the GexLandscape module
 // (and its React dependency graph) into the Vercel Function bundle.
@@ -138,21 +104,18 @@ export interface BiasMetrics {
   upsideTargets: DriftTarget[];
   /** Top 2 below spot by |netGamma|. */
   downsideTargets: DriftTarget[];
-  /** Avg 10m Δ% for below-spot strikes (MM cadence is 10 min). */
+  /** Avg 1m Δ% for below-spot strikes (GexBot cadence is 1 min). */
+  floorTrend1m: number | null;
+  /** Avg 1m Δ% for above-spot strikes. */
+  ceilingTrend1m: number | null;
+  /** Avg 5m Δ% for below-spot strikes. */
+  floorTrend5m: number | null;
+  /** Avg 5m Δ% for above-spot strikes. */
+  ceilingTrend5m: number | null;
+  /** Avg 10m Δ% for below-spot strikes. */
   floorTrend10m: number | null;
   /** Avg 10m Δ% for above-spot strikes. */
   ceilingTrend10m: number | null;
-  /** Avg 30m Δ% for below-spot strikes. */
-  floorTrend30m: number | null;
-  /** Avg 30m Δ% for above-spot strikes. */
-  ceilingTrend30m: number | null;
   /** Price trend over the lookback window (null until enough data accumulates). */
   priceTrend: PriceTrendInternal | null;
-  /**
-   * Parallel naive read — gravity, drift targets, and Δ% trend numbers
-   * computed over `call_gamma_oi + put_gamma_oi` instead of MM
-   * `netGamma`. `null` when no WS data is available; BiasPanel
-   * defensively skips the sub-line.
-   */
-  naive: NaiveBiasMetrics | null;
 }

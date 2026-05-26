@@ -1,14 +1,15 @@
 /**
  * Unit tests for GexLandscape bias synthesis (computeBias).
- * Focuses on the price-drift override that converts `rangebound` to
- * `drifting-down` / `drifting-up` when price is persistently trending.
+ *
+ * Phase 3 of the 1-min GexBot rebuild
+ * (docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md):
+ *   - computeBias now takes 3 delta maps (1m/5m/10m) and returns 6 trend fields
+ *   - the legacy naive sub-bias (computeNaiveSubBias) is gone
+ *   - the verdict + gravity + price-drift override logic is unchanged
  */
 
 import { describe, expect, it } from 'vitest';
-import {
-  computeBias,
-  computeNaiveSubBias,
-} from '../../components/GexLandscape/bias';
+import { computeBias } from '../../components/GexLandscape/bias';
 import type {
   GexStrikeLevel,
   PriceTrend,
@@ -81,6 +82,7 @@ describe('computeBias drift override', () => {
       7030,
       emptyDeltaMap,
       emptyDeltaMap,
+      emptyDeltaMap,
       trend,
     );
     expect(bias.verdict).toBe('drifting-down');
@@ -97,6 +99,7 @@ describe('computeBias drift override', () => {
     const bias = computeBias(
       rangeboundStrikes(),
       7030,
+      emptyDeltaMap,
       emptyDeltaMap,
       emptyDeltaMap,
       trend,
@@ -116,6 +119,7 @@ describe('computeBias drift override', () => {
       7030,
       emptyDeltaMap,
       emptyDeltaMap,
+      emptyDeltaMap,
       trend,
     );
     expect(bias.verdict).toBe('rangebound');
@@ -125,6 +129,7 @@ describe('computeBias drift override', () => {
     const bias = computeBias(
       rangeboundStrikes(),
       7030,
+      emptyDeltaMap,
       emptyDeltaMap,
       emptyDeltaMap,
       null,
@@ -150,133 +155,76 @@ describe('computeBias drift override', () => {
       7030,
       emptyDeltaMap,
       emptyDeltaMap,
+      emptyDeltaMap,
       trend,
     );
     expect(bias.verdict).toBe('gex-pull-up');
   });
 
-  it('preserves backward compatibility when priceTrend param is omitted', () => {
+  it('defaults priceTrend to null when the param is omitted', () => {
     const bias = computeBias(
       rangeboundStrikes(),
       7030,
+      emptyDeltaMap,
       emptyDeltaMap,
       emptyDeltaMap,
     );
     expect(bias.verdict).toBe('rangebound');
     expect(bias.priceTrend).toBeNull();
   });
-
-  it('passes naive sub-bias straight through to BiasMetrics.naive', () => {
-    const naive = {
-      gravityStrike: 7050,
-      gravityOffset: 20,
-      gravityGex: 1_000_000,
-      upsideTargets: [],
-      downsideTargets: [],
-      floorTrend10m: null,
-      ceilingTrend10m: null,
-      floorTrend30m: null,
-      ceilingTrend30m: null,
-    };
-    const bias = computeBias(
-      rangeboundStrikes(),
-      7030,
-      emptyDeltaMap,
-      emptyDeltaMap,
-      null,
-      naive,
-    );
-    expect(bias.naive).toBe(naive);
-  });
-
-  it('defaults naive to null when omitted', () => {
-    const bias = computeBias(
-      rangeboundStrikes(),
-      7030,
-      emptyDeltaMap,
-      emptyDeltaMap,
-    );
-    expect(bias.naive).toBeNull();
-  });
 });
 
-describe('computeNaiveSubBias', () => {
-  it('returns null when every strike has zero naive OI (no WS data)', () => {
+describe('computeBias trend fields', () => {
+  it('returns 6 trend fields (floor + ceiling × 1m/5m/10m) populated from the 3 delta maps', () => {
     const strikes = [
-      makeStrike({ strike: 7060, callGammaOi: 0, putGammaOi: 0 }),
-      makeStrike({ strike: 7030, callGammaOi: 0, putGammaOi: 0 }),
+      // Above spot — feed ceiling trends
+      makeStrike({ strike: 7080, netGamma: 1e9 }),
+      makeStrike({ strike: 7070, netGamma: 1e9 }),
+      // Below spot — feed floor trends
+      makeStrike({ strike: 7000, netGamma: 1e9 }),
+      makeStrike({ strike: 6990, netGamma: 1e9 }),
     ];
-    expect(
-      computeNaiveSubBias(strikes, 7030, emptyDeltaMap, emptyDeltaMap),
-    ).toBeNull();
-  });
-
-  it('picks the gravity strike by largest |callGammaOi + putGammaOi|', () => {
-    const strikes = [
-      // 7060 above spot: naive = +5 + 3 = 8 (smaller absolute)
-      makeStrike({ strike: 7060, callGammaOi: 5, putGammaOi: 3 }),
-      // 7000 below spot: naive = 1 + (-30) = -29 (largest absolute → gravity)
-      makeStrike({ strike: 7000, callGammaOi: 1, putGammaOi: -30 }),
-      // 7050 above spot: naive = 4 + 1 = 5
-      makeStrike({ strike: 7050, callGammaOi: 4, putGammaOi: 1 }),
-    ];
-    const naive = computeNaiveSubBias(
-      strikes,
-      7030,
-      emptyDeltaMap,
-      emptyDeltaMap,
-    );
-    expect(naive).not.toBeNull();
-    expect(naive?.gravityStrike).toBe(7000);
-    expect(naive?.gravityGex).toBe(-29);
-    expect(naive?.gravityOffset).toBe(-30);
-  });
-
-  it('builds top-2 drift targets above and below spot by |naive netGamma|', () => {
-    // Use widely-separated strikes so the SPX_SPOT_BAND filter doesn't
-    // strip out near-ATM rows from the above/below buckets.
-    const strikes = [
-      makeStrike({ strike: 7080, callGammaOi: 100, putGammaOi: 0 }), // |100| upside #1
-      makeStrike({ strike: 7070, callGammaOi: 50, putGammaOi: 0 }), //  |50| upside #2
-      makeStrike({ strike: 7060, callGammaOi: 10, putGammaOi: 0 }), //  |10| upside #3 — dropped
-      makeStrike({ strike: 7000, callGammaOi: 0, putGammaOi: -90 }), //  |90| downside #1
-      makeStrike({ strike: 6990, callGammaOi: 0, putGammaOi: -40 }), //  |40| downside #2
-    ];
-    const naive = computeNaiveSubBias(
-      strikes,
-      7030,
-      emptyDeltaMap,
-      emptyDeltaMap,
-    );
-    expect(naive?.upsideTargets.map((t) => t.strike)).toEqual([7080, 7070]);
-    expect(naive?.downsideTargets.map((t) => t.strike)).toEqual([7000, 6990]);
-  });
-
-  it('averages naive Δ% across strikes above (ceiling) and below (floor) spot', () => {
-    const strikes = [
-      // Above spot
-      makeStrike({ strike: 7080, callGammaOi: 10, putGammaOi: 0 }),
-      makeStrike({ strike: 7070, callGammaOi: 5, putGammaOi: 0 }),
-      // Below spot
-      makeStrike({ strike: 7000, callGammaOi: 0, putGammaOi: -10 }),
-    ];
-    const naiveDelta10m = new Map<number, number | null>([
+    const delta1m = new Map<number, number | null>([
+      [7080, 4],
+      [7070, 2],
+      [7000, -1],
+      [6990, -3],
+    ]);
+    const delta5m = new Map<number, number | null>([
+      [7080, 8],
+      [7070, 6],
+      [7000, -4],
+      [6990, -6],
+    ]);
+    const delta10m = new Map<number, number | null>([
       [7080, 10],
       [7070, 6],
       [7000, -8],
+      [6990, -12],
     ]);
-    const naive = computeNaiveSubBias(
-      strikes,
+    const bias = computeBias(strikes, 7030, delta1m, delta5m, delta10m);
+    // ceiling = mean above spot, floor = mean below spot
+    expect(bias.ceilingTrend1m).toBe(3); // (4 + 2) / 2
+    expect(bias.floorTrend1m).toBe(-2); // (-1 + -3) / 2
+    expect(bias.ceilingTrend5m).toBe(7); // (8 + 6) / 2
+    expect(bias.floorTrend5m).toBe(-5); // (-4 + -6) / 2
+    expect(bias.ceilingTrend10m).toBe(8); // (10 + 6) / 2
+    expect(bias.floorTrend10m).toBe(-10); // (-8 + -12) / 2
+  });
+
+  it('returns null for trend fields when the corresponding delta map has no usable values', () => {
+    const bias = computeBias(
+      rangeboundStrikes(),
       7030,
-      naiveDelta10m,
+      emptyDeltaMap,
+      emptyDeltaMap,
       emptyDeltaMap,
     );
-    // (10 + 6) / 2 = 8
-    expect(naive?.ceilingTrend10m).toBe(8);
-    // single value below spot
-    expect(naive?.floorTrend10m).toBe(-8);
-    // No 30m map values supplied
-    expect(naive?.floorTrend30m).toBeNull();
-    expect(naive?.ceilingTrend30m).toBeNull();
+    expect(bias.floorTrend1m).toBeNull();
+    expect(bias.ceilingTrend1m).toBeNull();
+    expect(bias.floorTrend5m).toBeNull();
+    expect(bias.ceilingTrend5m).toBeNull();
+    expect(bias.floorTrend10m).toBeNull();
+    expect(bias.ceilingTrend10m).toBeNull();
   });
 });

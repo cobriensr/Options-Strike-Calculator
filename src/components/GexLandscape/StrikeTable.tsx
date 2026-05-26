@@ -20,7 +20,6 @@ import {
   classify,
   getDirection,
   signalTooltip,
-  type GammaPressure,
 } from './classify';
 import { fmtGex, fmtPct } from './formatters';
 
@@ -56,12 +55,6 @@ export interface StrikeTableProps {
   justEntered?: Set<number>;
   /** Strike that has been in the set the longest (Top 5 only). */
   oldestStrike?: number | null;
-  /**
-   * Per-strike gamma-pressure label (reinforcing / unwinding / neutral).
-   * Optional — strikes missing from the map render as neutral (no
-   * indicator).
-   */
-  gammaPressureMap?: Map<number, GammaPressure>;
 }
 
 export function StrikeTable({
@@ -79,7 +72,6 @@ export function StrikeTable({
   showAtmDistance = false,
   justEntered,
   oldestStrike = null,
-  gammaPressureMap,
 }: StrikeTableProps) {
   return (
     <div className="border-edge overflow-hidden rounded-lg border">
@@ -168,8 +160,6 @@ export function StrikeTable({
                 : '#fbbf24';
           const isNew = justEntered?.has(s.strike) ?? false;
           const isAnchor = oldestStrike !== null && s.strike === oldestStrike;
-          const pressure: GammaPressure =
-            gammaPressureMap?.get(s.strike) ?? 'neutral';
 
           return (
             <div
@@ -227,24 +217,6 @@ export function StrikeTable({
                 >
                   {meta.badge}
                 </span>
-                {pressure === 'reinforcing' && (
-                  <span
-                    className="cursor-help font-mono text-[11px] font-bold text-emerald-400/80"
-                    title="Walls reinforcing — customers net selling gamma at this strike (dealers getting longer)"
-                    aria-label="Walls reinforcing"
-                  >
-                    +
-                  </span>
-                )}
-                {pressure === 'unwinding' && (
-                  <span
-                    className="cursor-help font-mono text-[11px] font-bold text-red-400/80"
-                    title="Walls unwinding — customers net buying gamma at this strike (dealers getting shorter)"
-                    aria-label="Walls unwinding"
-                  >
-                    −
-                  </span>
-                )}
                 {isNew && (
                   <span
                     className="animate-fade-in-up inline-block rounded bg-sky-500/20 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider text-sky-300 uppercase ring-1 ring-sky-400/40"

@@ -86,12 +86,13 @@ describe('formatBiasForClaude', () => {
       gravityGex: 1_800_000_000,
       upsideTargets: [],
       downsideTargets: [],
+      floorTrend1m: null,
+      ceilingTrend1m: null,
+      floorTrend5m: null,
+      ceilingTrend5m: null,
       floorTrend10m: null,
       ceilingTrend10m: null,
-      floorTrend30m: null,
-      ceilingTrend30m: null,
       priceTrend: null,
-      naive: null,
       ...overrides,
     };
   }
@@ -146,22 +147,26 @@ describe('formatBiasForClaude', () => {
     expect(out).not.toMatch(/Downside targets:/);
   });
 
-  it('appends 10m and 30m trend lines when trend values are present', () => {
+  it('appends 1m, 5m, and 10m trend lines when trend values are present', () => {
     const bias = baseBias({
+      ceilingTrend1m: 2.5,
+      floorTrend1m: -1.2,
+      ceilingTrend5m: 5.4,
+      floorTrend5m: -2.6,
       ceilingTrend10m: 8.4,
       floorTrend10m: -3.1,
-      ceilingTrend30m: 12.3,
-      floorTrend30m: 5.7,
     });
     const out = formatBiasForClaude(bias);
+    expect(out).toMatch(/1m GEX trend: ceiling \+2\.5% \| floor \u22121\.2%/);
+    expect(out).toMatch(/5m GEX trend: ceiling \+5\.4% \| floor \u22122\.6%/);
     expect(out).toMatch(/10m GEX trend: ceiling \+8\.4% \| floor \u22123\.1%/);
-    expect(out).toMatch(/30m GEX trend: ceiling \+12% \| floor \+5\.7%/);
   });
 
-  it('skips trend lines entirely when both ceiling and floor are null', () => {
+  it('skips trend lines entirely when all ceiling and floor are null', () => {
     const out = formatBiasForClaude(baseBias());
+    expect(out).not.toMatch(/1m GEX trend:/);
+    expect(out).not.toMatch(/5m GEX trend:/);
     expect(out).not.toMatch(/10m GEX trend:/);
-    expect(out).not.toMatch(/30m GEX trend:/);
   });
 
   it('excludes the volTag when reinforcement is neutral', () => {
@@ -211,35 +216,6 @@ describe('formatBiasForClaude', () => {
     });
     const out = formatBiasForClaude(bias);
     expect(out).not.toMatch(/Price trend:/);
-  });
-
-  it('omits the naive line when naive is null', () => {
-    const out = formatBiasForClaude(baseBias({ naive: null }));
-    expect(out).not.toMatch(/Naive:/);
-  });
-
-  it('appends a naive line with gravity and trends when naive data is present', () => {
-    const out = formatBiasForClaude(
-      baseBias({
-        naive: {
-          gravityStrike: 7425,
-          gravityOffset: -15,
-          gravityGex: 18_000,
-          upsideTargets: [],
-          downsideTargets: [],
-          floorTrend10m: 5.2,
-          ceilingTrend10m: -3.1,
-          floorTrend30m: 12,
-          ceilingTrend30m: -7,
-        },
-      }),
-    );
-    expect(out).toMatch(/Naive: gravity 7,425/);
-    expect(out).toMatch(/15 pts below spot/);
-    // fmtGex(18000) → '+18K'
-    expect(out).toMatch(/\+18K/);
-    expect(out).toMatch(/10m ceiling −3\.1% \/ floor \+5\.2%/);
-    expect(out).toMatch(/30m ceiling −7\.0% \/ floor \+12%/);
   });
 
   // Suppress the locale-string console output from unused imports

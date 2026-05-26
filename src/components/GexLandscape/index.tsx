@@ -55,8 +55,7 @@ import { BiasPanel } from './BiasPanel';
 import { ClassificationLegend } from './ClassificationLegend';
 import { ScrubControls } from '../ScrubControls';
 import { StrikeTable } from './StrikeTable';
-import { computeBias, computeNaiveSubBias } from './bias';
-import { computeGammaPressure, type GammaPressure } from './classify';
+import { computeBias } from './bias';
 import { PRICE_WINDOW } from './constants';
 import { computePriceTrend, computeSmoothedStrikes } from './deltas';
 import { formatBiasForClaude } from './formatters';
@@ -136,12 +135,13 @@ const GexLandscape = memo(function GexLandscape({
   const {
     strikes,
     timestamps,
+    gexDeltaMap,
+    gexDelta5mMap,
     gexDelta10mMap,
     gexDelta30mMap,
     naiveDelta1mMap,
     naiveDelta5mMap,
     naiveDelta10mMap,
-    naiveDelta30mMap,
     loading,
     error,
     refresh,
@@ -295,26 +295,6 @@ const GexLandscape = memo(function GexLandscape({
     return maxAbs > 0 ? maxStrike : null;
   }, [gexDelta10mMap, rows]);
 
-  // Per-strike gamma-pressure map (reinforcing / unwinding / neutral).
-  // Built from the full `strikes` list (not just the `rows` window) so the
-  // Top 5 tab — which surfaces walls outside ±PRICE_WINDOW — also lights up.
-  const gammaPressureMap = useMemo<Map<number, GammaPressure>>(() => {
-    const m = new Map<number, GammaPressure>();
-    for (const s of strikes) {
-      m.set(
-        s.strike,
-        computeGammaPressure({
-          callGammaAskVol: s.callGammaAsk,
-          callGammaBidVol: s.callGammaBid,
-          putGammaAskVol: s.putGammaAsk,
-          putGammaBidVol: s.putGammaBid,
-          dollarGammaOi: Math.abs(s.callGammaOi + s.putGammaOi),
-        }),
-      );
-    }
-    return m;
-  }, [strikes]);
-
   // Strike with the largest absolute 30m GEX Δ% (excludes ATM row).
   const maxChanged30mStrike = useMemo(() => {
     let maxAbs = 0;
@@ -334,33 +314,28 @@ const GexLandscape = memo(function GexLandscape({
   // Structural bias synthesis — directional verdict + key levels + trends.
   // Uses smoothedRows (5-min avg) so small per-snapshot GEX fluctuations don't
   // flip the verdict. Falls back to raw rows until enough history accumulates.
-  // Naive sub-bias rides off the same row set but uses naive Δ% (WS-sourced).
-  const bias = useMemo(() => {
-    const base = smoothedRows.length > 0 ? smoothedRows : rows;
-    const naive = computeNaiveSubBias(
-      base,
+  // Phase 3 of the 1-min GexBot rebuild: 1m/5m/10m delta maps replace the
+  // legacy 10m/30m pair (cadence is now 1 min native via /api/gex-landscape).
+  const bias = useMemo(
+    () =>
+      computeBias(
+        smoothedRows.length > 0 ? smoothedRows : rows,
+        currentPrice,
+        gexDeltaMap,
+        gexDelta5mMap,
+        gexDelta10mMap,
+        priceTrend,
+      ),
+    [
+      smoothedRows,
+      rows,
       currentPrice,
-      naiveDelta10mMap,
-      naiveDelta30mMap,
-    );
-    return computeBias(
-      base,
-      currentPrice,
+      gexDeltaMap,
+      gexDelta5mMap,
       gexDelta10mMap,
-      gexDelta30mMap,
       priceTrend,
-      naive,
-    );
-  }, [
-    smoothedRows,
-    rows,
-    currentPrice,
-    gexDelta10mMap,
-    gexDelta30mMap,
-    naiveDelta10mMap,
-    naiveDelta30mMap,
-    priceTrend,
-  ]);
+    ],
+  );
 
   // Notify parent whenever the structural bias verdict changes so it can be
   // forwarded to the analyze endpoint as part of AnalysisContext.
@@ -587,7 +562,6 @@ const GexLandscape = memo(function GexLandscape({
             naiveDelta1mMap={naiveDelta1mMap}
             naiveDelta5mMap={naiveDelta5mMap}
             naiveDelta10mMap={naiveDelta10mMap}
-            gammaPressureMap={gammaPressureMap}
             spotRowRef={spotRowRef}
           />
         )}
@@ -649,7 +623,6 @@ const GexLandscape = memo(function GexLandscape({
               naiveDelta1mMap={naiveDelta1mMap}
               naiveDelta5mMap={naiveDelta5mMap}
               naiveDelta10mMap={naiveDelta10mMap}
-              gammaPressureMap={gammaPressureMap}
               spotRowRef={spotRowRef}
               showAtmDistance
               justEntered={justEntered}

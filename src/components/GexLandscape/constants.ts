@@ -19,15 +19,6 @@ export const PRICE_WINDOW = 50;
  */
 export const SPX_SPOT_BAND = 25;
 
-/**
- * Neutral band for gamma pressure: ratio of |pressure| to |dollar gamma OI|
- * at strike. A strike is labelled `'neutral'` when the absolute gamma
- * pressure is below this fraction of its absolute dollar gamma OI — small
- * absolute pressure at a tiny strike doesn't trigger; meaningful pressure
- * at a major wall does.
- */
-export const PRESSURE_NEUTRAL_BAND_RATIO = 0.05;
-
 // `DRIFT_PTS_THRESHOLD` and `DRIFT_CONSISTENCY_THRESHOLD` were moved to
 // `src/utils/price-trend.ts` so the server-side regime cron can import
 // the same constants without pulling in the whole GexLandscape module.

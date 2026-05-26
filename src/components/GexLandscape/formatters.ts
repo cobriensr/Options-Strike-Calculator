@@ -65,45 +65,24 @@ export function formatBiasForClaude(b: BiasMetrics): string {
     lines.push(
       `Downside targets: ${b.downsideTargets.map(fmtTarget).join(', ')}`,
     );
+  const t1: string[] = [];
+  if (b.ceilingTrend1m !== null) t1.push(`ceiling ${fmtPct(b.ceilingTrend1m)}`);
+  if (b.floorTrend1m !== null) t1.push(`floor ${fmtPct(b.floorTrend1m)}`);
+  if (t1.length > 0) lines.push(`1m GEX trend: ${t1.join(' | ')}`);
+  const t5: string[] = [];
+  if (b.ceilingTrend5m !== null) t5.push(`ceiling ${fmtPct(b.ceilingTrend5m)}`);
+  if (b.floorTrend5m !== null) t5.push(`floor ${fmtPct(b.floorTrend5m)}`);
+  if (t5.length > 0) lines.push(`5m GEX trend: ${t5.join(' | ')}`);
   const t10: string[] = [];
   if (b.ceilingTrend10m !== null)
     t10.push(`ceiling ${fmtPct(b.ceilingTrend10m)}`);
   if (b.floorTrend10m !== null) t10.push(`floor ${fmtPct(b.floorTrend10m)}`);
   if (t10.length > 0) lines.push(`10m GEX trend: ${t10.join(' | ')}`);
-  const t30: string[] = [];
-  if (b.ceilingTrend30m !== null)
-    t30.push(`ceiling ${fmtPct(b.ceilingTrend30m)}`);
-  if (b.floorTrend30m !== null) t30.push(`floor ${fmtPct(b.floorTrend30m)}`);
-  if (t30.length > 0) lines.push(`30m GEX trend: ${t30.join(' | ')}`);
   if (b.priceTrend && b.priceTrend.direction !== 'flat') {
     const dir = b.priceTrend.direction === 'up' ? 'UP' : 'DOWN';
     lines.push(
       `Price trend: DRIFTING ${dir} (${b.priceTrend.changePts > 0 ? '+' : ''}${b.priceTrend.changePts.toFixed(1)} pts, ${fmtPct(b.priceTrend.changePct)} over 30m)`,
     );
-  }
-  if (b.naive) {
-    const n = b.naive;
-    const naiveDir = n.gravityOffset >= 0 ? 'above' : 'below';
-    const naiveOffsetDisplay = Math.abs(n.gravityOffset).toLocaleString(
-      undefined,
-      { maximumFractionDigits: 2 },
-    );
-    const parts = [
-      `Naive: gravity ${n.gravityStrike.toLocaleString()} (${naiveOffsetDisplay} pts ${naiveDir} spot, ${fmtGex(n.gravityGex)})`,
-    ];
-    const t10naive: string[] = [];
-    if (n.ceilingTrend10m !== null)
-      t10naive.push(`ceiling ${fmtPct(n.ceilingTrend10m)}`);
-    if (n.floorTrend10m !== null)
-      t10naive.push(`floor ${fmtPct(n.floorTrend10m)}`);
-    if (t10naive.length > 0) parts.push(`10m ${t10naive.join(' / ')}`);
-    const t30naive: string[] = [];
-    if (n.ceilingTrend30m !== null)
-      t30naive.push(`ceiling ${fmtPct(n.ceilingTrend30m)}`);
-    if (n.floorTrend30m !== null)
-      t30naive.push(`floor ${fmtPct(n.floorTrend30m)}`);
-    if (t30naive.length > 0) parts.push(`30m ${t30naive.join(' / ')}`);
-    lines.push(parts.join(' | '));
   }
   return lines.join('\n');
 }
