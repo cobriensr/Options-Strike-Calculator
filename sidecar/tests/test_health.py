@@ -12,6 +12,7 @@ import io
 import json
 import os
 import sys
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1314,7 +1315,7 @@ class TestStartHealthServer:
         from unittest.mock import MagicMock as _MagicMock
 
         fake_server = _MagicMock()
-        with patch("health.ThreadingHTTPServer") as fake_srv_cls, patch(
+        with patch("health._QuietThreadingHTTPServer") as fake_srv_cls, patch(
             "health.threading.Thread"
         ) as fake_thread:
             fake_srv_cls.return_value = fake_server
@@ -1342,7 +1343,7 @@ class TestStartHealthServer:
     def test_wires_optional_theta_and_seed_callables(self) -> None:
         import health
 
-        with patch("health.ThreadingHTTPServer") as fake_srv_cls, patch(
+        with patch("health._QuietThreadingHTTPServer") as fake_srv_cls, patch(
             "health.threading.Thread"
         ):
             from unittest.mock import MagicMock as _MagicMock
@@ -1371,7 +1372,7 @@ class TestStartHealthServer:
         the staticmethod-wrap branch evaluates the falsy ternary path."""
         import health
 
-        with patch("health.ThreadingHTTPServer") as fake_srv_cls, patch(
+        with patch("health._QuietThreadingHTTPServer") as fake_srv_cls, patch(
             "health.threading.Thread"
         ):
             from unittest.mock import MagicMock as _MagicMock
@@ -1389,3 +1390,56 @@ class TestStartHealthServer:
         assert health.HealthHandler.theta_is_running() is True
         assert health.HealthHandler.theta_last_ready_at is None
         assert health.HealthHandler.theta_last_error is None
+
+
+# ---------------------------------------------------------------------------
+# _QuietThreadingHTTPServer — client-disconnect noise suppression
+# ---------------------------------------------------------------------------
+
+
+class TestQuietThreadingHTTPServer:
+    """The subclass must swallow BrokenPipe / ConnectionReset only — every
+    other exception class still goes through the default handle_error
+    so real bugs are still loud.
+    """
+
+    def _make_server(self) -> Any:
+        import health  # noqa: PLC0415
+
+        # Allocate without __init__ — we don't want a real socket.
+        return health._QuietThreadingHTTPServer.__new__(
+            health._QuietThreadingHTTPServer
+        )
+
+    def test_swallows_broken_pipe(self) -> None:
+        server = self._make_server()
+        with patch.object(
+            ThreadingHTTPServer, "handle_error"
+        ) as super_handle_error:
+            try:
+                raise BrokenPipeError(32, "broken pipe")
+            except BrokenPipeError:
+                server.handle_error(object(), ("127.0.0.1", 0))
+        super_handle_error.assert_not_called()
+
+    def test_swallows_connection_reset(self) -> None:
+        server = self._make_server()
+        with patch.object(
+            ThreadingHTTPServer, "handle_error"
+        ) as super_handle_error:
+            try:
+                raise ConnectionResetError(104, "connection reset")
+            except ConnectionResetError:
+                server.handle_error(object(), ("127.0.0.1", 0))
+        super_handle_error.assert_not_called()
+
+    def test_propagates_unrelated_exceptions(self) -> None:
+        server = self._make_server()
+        with patch.object(
+            ThreadingHTTPServer, "handle_error"
+        ) as super_handle_error:
+            try:
+                raise ValueError("bad input")
+            except ValueError:
+                server.handle_error(object(), ("127.0.0.1", 0))
+        super_handle_error.assert_called_once()

@@ -143,6 +143,38 @@ def _aq() -> Any:
     return _archive_query_module
 
 
+class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that swallows client-disconnect errors.
+
+    When a client (Vercel Function caller) disconnects mid-response —
+    most commonly because Railway's edge proxy hit its upstream-response
+    timeout and returned a 502 before our handler finished — the next
+    ``wfile.write`` raises ``BrokenPipeError`` / ``ConnectionResetError``
+    inside ``socketserver.process_request_thread``. socketserver's
+    default ``handle_error`` then dumps a full stack trace to stderr.
+
+    Those tracebacks are alert-grade log noise (one per slow multileg
+    classify call against this 3-vCPU box under contention) but carry
+    no signal — the caller already knows the request failed (it saw
+    the 502), and any real failure modes still surface as Sentry
+    ``multileg.classify.sidecar_non_2xx`` from the Vercel side.
+
+    All other exceptions propagate to the default ``handle_error``.
+    """
+
+    def handle_error(
+        self, request: Any, client_address: Any
+    ) -> None:  # noqa: D401
+        import sys  # noqa: PLC0415
+
+        exc_type = sys.exc_info()[0]
+        if exc_type is not None and issubclass(
+            exc_type, (BrokenPipeError, ConnectionResetError)
+        ):
+            return
+        super().handle_error(request, client_address)
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     """Handle GET /health + POST /admin/seed-archive requests."""
 
@@ -813,7 +845,13 @@ def start_health_server(
     # queries don't block the /health probe (and vice versa). Was
     # HTTPServer (single-threaded) previously, which bottlenecked the
     # backfill at 1 req/sec.
-    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    #
+    # _QuietThreadingHTTPServer subclass swallows BrokenPipe/
+    # ConnectionReset on response write — those happen when Vercel's
+    # client (or Railway's edge proxy on its behalf) closes the upstream
+    # connection before we finish writing. Vercel already records the
+    # real failure (sidecar_non_2xx); the Python traceback is just noise.
+    server = _QuietThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log.info("Health server listening on port %d (threaded)", port)
