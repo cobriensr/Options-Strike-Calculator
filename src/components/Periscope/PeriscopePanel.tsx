@@ -1,7 +1,7 @@
 /**
  * PeriscopePanel — read-only display of the latest UW Periscope
- * MM-attributed exposure slot, scraped into `periscope_snapshots`
- * by the Railway scraper service.
+ * MM-attributed exposure slot, populated into `periscope_snapshots`
+ * by the GEXBot-fed cron adapter (`populate-periscope-from-gexbot`).
  *
  * Replaces the screenshot-paste workflow: the same data the analyze
  * endpoint injects into Claude's prompt is rendered here so the user
@@ -36,8 +36,6 @@ import type {
   PeriscopeSelectedSlot,
 } from '../../hooks/usePeriscopeExposure';
 import { computeTradePlan } from '../../utils/periscope-trade-plan';
-import type { UsePeriscopePlaybookReturn } from '../../hooks/usePeriscopePlaybook';
-import { PlaybookSection } from './PlaybookSection';
 import { TradePlanSection } from './TradePlanSection';
 import { ConeSection } from './ConeSection';
 import { GammaSection } from './GammaSection';
@@ -59,13 +57,6 @@ interface PeriscopePanelProps {
   selectedSlot: PeriscopeSelectedSlot | null;
   /** Callback to change the selected slot. Pass null to drop back to live. */
   onSelectSlot: (slot: PeriscopeSelectedSlot | null) => void;
-  /**
-   * Optional Claude-generated playbook. Rendered as the top section
-   * when available with status='complete'. The deterministic TradePlan
-   * section remains beneath as a fallback so the panel stays useful
-   * when no auto-playbook row exists yet (Risk R14 in the spec).
-   */
-  playbook?: UsePeriscopePlaybookReturn | undefined;
 }
 
 /** Convert an ISO captured_at to a CT HH:MM string (zero-padded).
@@ -97,7 +88,6 @@ function PeriscopePanelInner({
   availableSlots,
   selectedSlot,
   onSelectSlot,
-  playbook,
 }: PeriscopePanelProps) {
   // Resolve the displayed slot's CT timestamps. When the rendered view
   // exists, prefer its captured_at (ground truth). Otherwise fall back
@@ -145,7 +135,7 @@ function PeriscopePanelInner({
       </p>
     );
   } else {
-    body = <PeriscopeBody view={view} playbook={playbook} />;
+    body = <PeriscopeBody view={view} />;
   }
 
   return (
@@ -175,34 +165,8 @@ function PeriscopePanelInner({
   );
 }
 
-function PeriscopeBody({
-  view,
-  playbook,
-}: {
-  view: PeriscopeView;
-  playbook?: UsePeriscopePlaybookReturn | undefined;
-}) {
+function PeriscopeBody({ view }: { view: PeriscopeView }) {
   const plan = useMemo(() => computeTradePlan(view), [view]);
-  const hasClaudePlaybook =
-    playbook?.data != null && playbook.data.panelPayload != null;
-
-  // Spot reconciliation. Two sources can disagree:
-  //   - `view.spot` is what UW's Periscope panel displayed at scrape
-  //     time (recorded in periscope_snapshots).
-  //   - `playbook.data.panelPayload.spot` is the DB-resolved SPX cash
-  //     close at the slot's `read_time` (from index_candles_1m), per
-  //     the 2026-05-11 runner override.
-  // The DB cash value is the authoritative spot for analytical
-  // purposes; the UW panel reading periodically drifts 20-50pt from
-  // cash. When the playbook is present and the two diverge by >2pt,
-  // show both labeled so the trader doesn't see a contradiction.
-  // When agreement is tight or no playbook exists, show one value
-  // (preferring playbook's cash spot when available).
-  const playbookSpot = hasClaudePlaybook
-    ? (playbook?.data?.panelPayload?.spot ?? null)
-    : null;
-  const showBothSpots =
-    playbookSpot != null && Math.abs(view.spot - playbookSpot) > 2;
 
   return (
     <div className="flex flex-col gap-4">
@@ -210,27 +174,10 @@ function PeriscopeBody({
         <span style={{ color: theme.textSecondary }}>
           Slot {formatTimeCT(view.capturedAt)} CT · {view.expiry}
         </span>
-        {showBothSpots ? (
-          <span style={{ color: theme.text }}>
-            cash {playbookSpot!.toFixed(2)}
-            <span style={{ color: theme.textMuted }}>
-              {' '}
-              · UW {view.spot.toFixed(2)}
-            </span>
-          </span>
-        ) : (
-          <span style={{ color: theme.text }}>
-            spot {(playbookSpot ?? view.spot).toFixed(2)}
-          </span>
-        )}
+        <span style={{ color: theme.text }}>spot {view.spot.toFixed(2)}</span>
       </div>
 
-      {playbook != null && <PlaybookSection playbook={playbook} />}
-
-      {/* Deterministic client-derived trade plan stays as a fallback /
-          comparison surface — Risk R14 in the spec. Hidden visually when
-          Claude's playbook is fresh to keep the panel concise. */}
-      {!hasClaudePlaybook && <TradePlanSection plan={plan} />}
+      <TradePlanSection plan={plan} />
 
       {view.cone && <ConeSection view={view} />}
       <GammaSection view={view} />

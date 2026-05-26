@@ -37,16 +37,12 @@ const coreSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
 });
 
-/** Auth and security: owner gating, cron auth, Schwab OAuth, scraper webhook. */
+/** Auth and security: owner gating, cron auth, Schwab OAuth. */
 const authSchema = z.object({
   OWNER_SECRET: z.string().min(1).optional(),
   CRON_SECRET: z.string().min(1).optional(),
   SCHWAB_CLIENT_ID: z.string().min(1).optional(),
   SCHWAB_CLIENT_SECRET: z.string().min(1).optional(),
-  /** Distinct from CRON_SECRET — guards /api/periscope-auto-playbook only. */
-  PERISCOPE_WEBHOOK_SECRET: z.string().min(1).optional(),
-  /** 'true' (default) / 'false' — kill switch for the auto-playbook loop. */
-  AUTO_PLAYBOOK_ENABLED: z.string().min(1).optional(),
 });
 
 /** Third-party API keys for data and analysis. */

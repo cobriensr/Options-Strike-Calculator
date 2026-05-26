@@ -1,9 +1,10 @@
 /**
  * Deterministic client-derived TradePlan section of the Periscope panel.
  *
- * This is the fallback / comparison surface (Risk R14 in the Periscope
- * spec) — when Claude's `PlaybookSection` is fresh, the parent hides
- * this block; otherwise it stays visible so the panel is never empty.
+ * As of the Claude auto-playbook retirement (2026-05-26 — see
+ * cf70bcba and the periscope-auto-playbook removal), this is the
+ * panel's primary trade-plan surface. The prose `PlaybookSection`
+ * and `usePeriscopePlaybook` hook have been removed.
  *
  * Extracted from PeriscopePanel.tsx during the Phase 3A decomposition
  * (2026-05-19). DirectionalRow is kept private to this file because no

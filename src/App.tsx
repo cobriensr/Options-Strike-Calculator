@@ -340,15 +340,10 @@ export default function StrikeCalculator() {
     spotHint: market.data.quotes?.spx?.price ?? null,
     selectedSlot: periscopeSlot,
   });
-  // Phase 4c: parallel hook for Claude's auto-playbook. When a complete
-  // panel_payload exists for the selected date, the panel renders it
-  // above (and instead of) the deterministic TradePlanSection. When
-  // viewing a historical slot, pass its date so the playbook lookup
   // Periscope auto-playbook (Claude) is retired in favor of the
-  // deterministic GEXBot-fed map at /api/periscope-map. Panel no
-  // longer renders the prose layer. usePeriscopePlaybook hook left
-  // in the codebase for potential historical-replay reuse, but not
-  // called here.
+  // deterministic GEXBot-fed map at /api/periscope-map. Panel renders
+  // the deterministic TradePlanSection only — the prose layer and the
+  // usePeriscopePlaybook hook have been removed.
   // GEX Landscape owns its own date / scrub state internally and pulls
   // MM-attributed per-strike data via `useGexLandscapeData` →
   // `/api/periscope-strikes` (with a WS side channel for vol
@@ -1226,9 +1221,6 @@ export default function StrikeCalculator() {
                 availableSlots={periscope.availableSlots}
                 selectedSlot={periscopeSlot}
                 onSelectSlot={setPeriscopeSlot}
-                /* playbook intentionally omitted: Claude auto-playbook
-                   call has been dropped in favor of the deterministic
-                   GEXBot-fed map from /api/periscope-map. */
               />
             </GatedSection>
           ),
