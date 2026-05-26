@@ -786,8 +786,7 @@ class DatabentoClient:
         # — this log turns that silent failure into a visible one.
         if "End of interval for ohlcv-1m" in msg:
             log.info(
-                "Options pipeline: definitions_cached=%d ATM_strikes=%d "
-                "center=%.2f",
+                "Options pipeline: definitions_cached=%d ATM_strikes=%d center=%.2f",
                 len(self._option_definitions),
                 len(self._options_strikes.strikes),
                 self._options_strikes.center_price,

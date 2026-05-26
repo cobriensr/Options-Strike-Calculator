@@ -81,9 +81,7 @@ def test_load_bundle_attaches_tree_explainer_once() -> None:
     takeit_server._bundle_cache.clear()
 
     with (
-        patch.dict(
-            "os.environ", {"BLOB_READ_WRITE_TOKEN": "tok"}, clear=False
-        ),
+        patch.dict("os.environ", {"BLOB_READ_WRITE_TOKEN": "tok"}, clear=False),
         patch.object(
             takeit_server,
             "_list_blob",

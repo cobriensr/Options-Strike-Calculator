@@ -117,8 +117,7 @@ def test_two_trade_vertical_returns_vertical_classification() -> None:
     assert classifications[0]["inferred_structure"] == "vertical"
     assert classifications[1]["inferred_structure"] == "vertical"
     assert (
-        classifications[0]["pattern_group_id"]
-        == classifications[1]["pattern_group_id"]
+        classifications[0]["pattern_group_id"] == classifications[1]["pattern_group_id"]
     )
     assert classifications[0]["is_isolated_leg"] is False
     assert classifications[1]["is_isolated_leg"] is False
@@ -302,6 +301,5 @@ def test_module_adds_ml_src_to_path() -> None:
     ml_src = repo_root / "ml" / "src"
     on_path = {str(vendored), str(ml_src)} & set(sys.path)
     assert on_path, (
-        "expected _vendored_ml/ or ml/src/ on sys.path after importing "
-        "multileg_routes"
+        "expected _vendored_ml/ or ml/src/ on sys.path after importing multileg_routes"
     )

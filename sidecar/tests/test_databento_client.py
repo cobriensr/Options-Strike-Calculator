@@ -554,9 +554,7 @@ class TestOptionsPipelineDiagnostics:
         client._options_strikes.center_price = 5800.0
 
         with caplog.at_level("INFO"):
-            client._handle_system(
-                _make_system_record("End of interval for ohlcv-1m")
-            )
+            client._handle_system(_make_system_record("End of interval for ohlcv-1m"))
 
         diagnostic_lines = [
             r.message for r in caplog.records if "Options pipeline:" in r.message
@@ -576,9 +574,7 @@ class TestOptionsPipelineDiagnostics:
         client._options_strikes.center_price = 0.0
 
         with caplog.at_level("INFO"):
-            client._handle_system(
-                _make_system_record("End of interval for tbbo")
-            )
+            client._handle_system(_make_system_record("End of interval for tbbo"))
             client._handle_system(
                 _make_system_record("Subscription request 0 for tbbo succeeded")
             )
@@ -599,9 +595,7 @@ class TestOptionsPipelineDiagnostics:
         client._options_strikes.center_price = 5800.0
 
         with caplog.at_level("INFO"):
-            client._handle_system(
-                _make_system_record("End of interval for ohlcv-1m")
-            )
+            client._handle_system(_make_system_record("End of interval for ohlcv-1m"))
 
         diagnostic_lines = [
             r.message for r in caplog.records if "Options pipeline:" in r.message
@@ -623,9 +617,7 @@ class TestVersionedRecordRouting:
     branch and downstream state (e.g. _option_definitions) never fills.
     """
 
-    def _build(
-        self, class_name: str, bases: tuple = ()
-    ) -> type:
+    def _build(self, class_name: str, bases: tuple = ()) -> type:
         """Create a dynamically-named fake record class for routing checks."""
         return type(class_name, bases or (object,), {})
 
@@ -767,9 +759,10 @@ class TestUpdateAtmStrikes:
         assert client._options_strikes.center_price == 5800.0
         assert len(client._options_strikes.strikes) == 21
         # 5-pt spacing, ATM ±10 → range should be 100 pts wide
-        assert max(client._options_strikes.strikes) - min(
-            client._options_strikes.strikes
-        ) == 100
+        assert (
+            max(client._options_strikes.strikes) - min(client._options_strikes.strikes)
+            == 100
+        )
 
     def test_does_not_call_subscribe(self, client: DatabentoClient) -> None:
         """Re-center logic must NOT re-subscribe — subscriptions are
@@ -842,7 +835,9 @@ class TestDefinitionOptionTypeCoercion:
                 return hash(self.value)
 
         call_enum = FakeEnum("C")
-        client._handle_definition(self._make_def_record(instrument_class=call_enum, iid=42))
+        client._handle_definition(
+            self._make_def_record(instrument_class=call_enum, iid=42)
+        )
 
         stored = client._option_definitions.get(42)
         assert stored is not None, "Definition was not cached"
@@ -855,24 +850,18 @@ class TestDefinitionOptionTypeCoercion:
         """Regression guard: older SDKs / tests that pass bare 'C'/'P'
         strings must continue to work (the coercion path should be a
         no-op for strings)."""
-        client._handle_definition(
-            self._make_def_record(instrument_class="P", iid=43)
-        )
+        client._handle_definition(self._make_def_record(instrument_class="P", iid=43))
 
         stored = client._option_definitions.get(43)
         assert stored is not None
         assert stored["option_type"] == "P"
         assert isinstance(stored["option_type"], str)
 
-    def test_non_call_or_put_still_filtered_out(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_non_call_or_put_still_filtered_out(self, client: DatabentoClient) -> None:
         """Regression guard: enum-or-string-wise, non-option
         instrument classes (futures 'F', spread 'S', etc.) must still
         hit the early-return and NOT populate _option_definitions."""
-        client._handle_definition(
-            self._make_def_record(instrument_class="F", iid=44)
-        )
+        client._handle_definition(self._make_def_record(instrument_class="F", iid=44))
         assert 44 not in client._option_definitions
 
 
@@ -922,9 +911,7 @@ class TestStatTypeToKwargTable:
             assert isinstance(kwarg_name, str) and kwarg_name
             assert value_source in ("stat_value", "stat_quantity")
 
-    def test_handle_stat_dispatches_via_table(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_handle_stat_dispatches_via_table(self, client: DatabentoClient) -> None:
         """End-to-end: every entry in the dict drives a successful
         upsert_options_daily call with the right kwarg set."""
         from databento_client import STAT_TYPE_TO_KWARG
@@ -973,9 +960,7 @@ class TestStatTypeToKwargTable:
         client._handle_stat(rec)
         client._test_upsert_options_daily.assert_not_called()
 
-    def test_settlement_passes_is_final_flag(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_settlement_passes_is_final_flag(self, client: DatabentoClient) -> None:
         """Settlement is the only stat type that derives ``is_final``
         from ``stat_flags & 1``. The dict-driven path must preserve
         that special case."""
@@ -1062,7 +1047,9 @@ class TestStart:
         # Live ctor was called with the expected reconnect policy
         assert live_ctor.call_count == 1
         ctor_kwargs = live_ctor.call_args.kwargs
-        assert ctor_kwargs["reconnect_policy"] == "reconnect"  # ReconnectPolicy.RECONNECT sentinel
+        assert (
+            ctor_kwargs["reconnect_policy"] == "reconnect"
+        )  # ReconnectPolicy.RECONNECT sentinel
         assert ctor_kwargs["heartbeat_interval_s"] == 30
         assert ctor_kwargs["ts_out"] is True
 
@@ -1209,9 +1196,7 @@ class TestHandleOhlcvFromClient:
         fake_client = MagicMock()
         fake_client.symbology_map = {7: "ESM6"}
         rec = _make_bar_record(iid=7)
-        with patch(
-            "db.upsert_futures_bar", side_effect=RuntimeError("boom")
-        ):
+        with patch("db.upsert_futures_bar", side_effect=RuntimeError("boom")):
             # Must not raise
             client._handle_ohlcv_from_client(rec, fake_client)
 
@@ -1227,6 +1212,7 @@ class TestOnRecordErrorHandling:
     ) -> None:
         """A handler raising must NOT propagate out of _on_record — that
         would tear the SDK callback thread."""
+
         def boom(_rec: Any) -> None:
             raise RuntimeError("handler exploded")
 
@@ -1282,9 +1268,7 @@ class TestOnError:
 
 
 class TestOnReconnectExceptions:
-    def test_bad_timestamps_default_to_zero_gap(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_bad_timestamps_default_to_zero_gap(self, client: DatabentoClient) -> None:
         """If timestamp arithmetic blows up (non-numeric inputs), the
         exception path must clamp gap_s to 0.0 and not fire the warning."""
         # Pass non-numeric values to force the float division to TypeError
@@ -1392,9 +1376,7 @@ class TestMaybeLogDefinitionLagSummaryShim:
         """The thin shim on DatabentoClient just calls through to the
         underlying router method."""
         called = MagicMock()
-        monkeypatch.setattr(
-            client._router, "_maybe_log_definition_lag_summary", called
-        )
+        monkeypatch.setattr(client._router, "_maybe_log_definition_lag_summary", called)
         client._maybe_log_definition_lag_summary()
         called.assert_called_once()
 
@@ -1451,9 +1433,7 @@ class TestHandleSystemErrorBranch:
         with caplog.at_level("ERROR"):
             client._handle_system(_make_system_record("session expired", is_error=True))
 
-        error_lines = [
-            r.message for r in caplog.records if r.levelname == "ERROR"
-        ]
+        error_lines = [r.message for r in caplog.records if r.levelname == "ERROR"]
         assert any("session expired" in m for m in error_lines)
 
     def test_error_msg_class_name_takes_error_branch(
@@ -1495,9 +1475,7 @@ class TestHandleSystemErrorBranch:
         assert client._mapping_summary_logged is True
         # Subsequent end-of-interval messages must NOT re-log the summary
         with caplog.at_level("INFO"):
-            client._handle_system(
-                _make_system_record("End of interval for ohlcv-1m")
-            )
+            client._handle_system(_make_system_record("End of interval for ohlcv-1m"))
         # The summary log line contains "Symbology map:"
         summary_lines = [
             r.message for r in caplog.records if "Symbology map:" in r.message

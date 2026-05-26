@@ -232,9 +232,7 @@ def _execute_values_batch(
         try:
             with get_conn() as conn:
                 with conn.cursor() as cur:
-                    psycopg2.extras.execute_values(
-                        cur, sql, rows, page_size=page_size
-                    )
+                    psycopg2.extras.execute_values(cur, sql, rows, page_size=page_size)
             return
         except psycopg2.OperationalError:
             if attempt == 2:

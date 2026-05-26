@@ -157,9 +157,7 @@ class TestHandleDefinition:
         """Definitions without an expiration timestamp are unusable for
         downstream pin/expiry routing — must early-return without caching."""
         router, _ = router_setup
-        rec = _make_def_record(
-            instrument_class="C", iid=77, expiration_ns=0
-        )
+        rec = _make_def_record(instrument_class="C", iid=77, expiration_ns=0)
         router.handle_definition(rec)
         assert 77 not in router.option_definitions
 

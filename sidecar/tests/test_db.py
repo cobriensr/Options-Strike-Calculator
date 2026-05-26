@@ -416,9 +416,7 @@ class TestExecuteWithRetry:
     SAMPLE_SQL = "INSERT INTO some_table (a, b) VALUES (%s, %s)"
     SAMPLE_PARAMS = (1, 2)
 
-    def test_success_on_first_attempt(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_success_on_first_attempt(self, mock_conn_pool: MagicMock) -> None:
         db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
         mock_conn_pool.execute.assert_called_once_with(
             self.SAMPLE_SQL, self.SAMPLE_PARAMS
@@ -537,9 +535,7 @@ class TestLoadAlertConfigObservability:
     """
 
     @pytest.fixture
-    def real_undefined_table(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> type[Exception]:
+    def real_undefined_table(self, monkeypatch: pytest.MonkeyPatch) -> type[Exception]:
         """Install a real exception class for psycopg2.errors.UndefinedTable.
 
         Without this, `except psycopg2.errors.UndefinedTable:` raises
@@ -559,9 +555,7 @@ class TestLoadAlertConfigObservability:
     ) -> None:
         """Pre-init state (table doesn't exist yet) is a known-OK
         condition — must NOT page Sentry, just log a warning."""
-        mock_conn_pool.execute.side_effect = real_undefined_table(
-            "table missing"
-        )
+        mock_conn_pool.execute.side_effect = real_undefined_table("table missing")
 
         captured: list[BaseException] = []
         monkeypatch.setattr(
@@ -754,26 +748,20 @@ class TestGetPool:
         db._pool = original
 
     @pytest.fixture
-    def fake_threaded_pool(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> MagicMock:
+    def fake_threaded_pool(self, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         """Patch the ThreadedConnectionPool factory to a MagicMock."""
         import psycopg2.pool
 
         factory = MagicMock()
         factory.return_value = MagicMock()
-        monkeypatch.setattr(
-            psycopg2.pool, "ThreadedConnectionPool", factory
-        )
+        monkeypatch.setattr(psycopg2.pool, "ThreadedConnectionPool", factory)
         return factory
 
     @pytest.fixture
     def fake_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Inject a fake `config` module exposing settings.database_url."""
         fake_config = MagicMock()
-        fake_config.settings.database_url = (
-            "postgresql://u:p@host/db?sslmode=require"
-        )
+        fake_config.settings.database_url = "postgresql://u:p@host/db?sslmode=require"
         monkeypatch.setitem(sys.modules, "config", fake_config)
 
     def test_lazy_init_creates_pool_with_stripped_dsn(
@@ -887,9 +875,7 @@ class TestGetConnWithTimeout:
         def fake_capture(msg: str, **kwargs: object) -> None:
             captured.append((msg, kwargs))
 
-        monkeypatch.setattr(
-            "sentry_setup.capture_message", fake_capture
-        )
+        monkeypatch.setattr("sentry_setup.capture_message", fake_capture)
 
         result = db._getconn_with_timeout(pool, timeout_s=10.0)
 
@@ -975,9 +961,7 @@ class TestGetConnWithTimeout:
 
 
 class TestVerifyConnection:
-    def test_happy_path_returns_none(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_happy_path_returns_none(self, mock_conn_pool: MagicMock) -> None:
         """SELECT 1 returning (1,) means the DB is reachable."""
         mock_conn_pool.fetchone.return_value = (1,)
         # Must not raise.
@@ -986,18 +970,14 @@ class TestVerifyConnection:
         sql = mock_conn_pool.execute.call_args[0][0]
         assert "SELECT 1" in sql
 
-    def test_no_row_raises_runtime_error(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_no_row_raises_runtime_error(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.fetchone.return_value = None
         with pytest.raises(
             RuntimeError, match="Database connection verification failed"
         ):
             db.verify_connection()
 
-    def test_wrong_row_raises_runtime_error(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_wrong_row_raises_runtime_error(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.fetchone.return_value = (0,)
         with pytest.raises(
             RuntimeError, match="Database connection verification failed"
@@ -1011,14 +991,10 @@ class TestVerifyConnection:
 
 
 class TestIsDbHealthy:
-    def test_returns_true_on_success(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_returns_true_on_success(self, mock_conn_pool: MagicMock) -> None:
         assert db.is_db_healthy() is True
 
-    def test_returns_false_on_exception(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_returns_false_on_exception(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.execute.side_effect = RuntimeError("connection reset")
         assert db.is_db_healthy() is False
 
@@ -1132,8 +1108,7 @@ class TestUpsertOptionsDaily:
         sql, params = mock_conn_pool.execute.call_args[0]
         assert "INSERT INTO futures_options_daily" in sql
         assert (
-            "ON CONFLICT (underlying, trade_date, expiry, strike, option_type)"
-            in sql
+            "ON CONFLICT (underlying, trade_date, expiry, strike, option_type)" in sql
         )
         assert params == (
             "ES",
@@ -1149,9 +1124,7 @@ class TestUpsertOptionsDaily:
             True,
         )
 
-    def test_defaults_propagate_as_none(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_defaults_propagate_as_none(self, mock_conn_pool: MagicMock) -> None:
         """All optional kwargs default to None so the COALESCE() upsert
         on the SQL side keeps the existing column value."""
         from datetime import date as _date
@@ -1175,9 +1148,7 @@ class TestUpsertOptionsDaily:
 
 
 class TestLoadAlertConfigHappyPath:
-    def test_returns_dict_keyed_by_alert_type(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_returns_dict_keyed_by_alert_type(self, mock_conn_pool: MagicMock) -> None:
         """fetchall returns RealDictCursor-style rows; load_alert_config
         must reshape into {alert_type: {...}}."""
         mock_conn_pool.fetchall.return_value = [
@@ -1210,9 +1181,7 @@ class TestLoadAlertConfigHappyPath:
 
 
 class TestHasThetaOptionEodRows:
-    def test_returns_true_when_row_exists(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_returns_true_when_row_exists(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.fetchone.return_value = (1,)
         assert db.has_theta_option_eod_rows("SPX") is True
         sql, params = mock_conn_pool.execute.call_args[0]
@@ -1220,9 +1189,7 @@ class TestHasThetaOptionEodRows:
         assert "LIMIT 1" in sql
         assert params == ("SPX",)
 
-    def test_returns_false_when_no_row(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_returns_false_when_no_row(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.fetchone.return_value = None
         assert db.has_theta_option_eod_rows("SPX") is False
 
@@ -1233,9 +1200,7 @@ class TestHasThetaOptionEodRows:
 
 
 class TestGetRecentBars:
-    def test_returns_dict_per_row(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_returns_dict_per_row(self, mock_conn_pool: MagicMock) -> None:
         from datetime import datetime as _datetime
 
         rows = [
@@ -1259,9 +1224,7 @@ class TestGetRecentBars:
         assert "make_interval(mins => %s)" in sql
         assert params == ("ES", 30)
 
-    def test_default_minutes_is_60(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_default_minutes_is_60(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.fetchall.return_value = []
         db.get_recent_bars("ES")
         params = mock_conn_pool.execute.call_args[0][1]

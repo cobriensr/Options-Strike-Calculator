@@ -68,9 +68,7 @@ def _fetch_blob(url: str, token: str) -> bytes:
     # omitted the header and relied on the URL being public; that produced
     # the recurring `HTTPError 403` on cold start each time the in-process
     # bundle cache was empty.
-    req = urllib.request.Request(
-        url, headers={"Authorization": f"Bearer {token}"}
-    )
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted)
         return resp.read()
 
@@ -92,9 +90,7 @@ def _load_bundle(alert_type: str) -> dict:
         )
         if not manifest_entry:
             raise RuntimeError(f"manifest not found at {MANIFEST_PATH}")
-        manifest = json.loads(
-            _fetch_blob(manifest_entry["url"], token).decode("utf-8")
-        )
+        manifest = json.loads(_fetch_blob(manifest_entry["url"], token).decode("utf-8"))
         target_path = manifest[alert_type]
         # The Blob does store the JSON form, but for SHAP we need the joblib
         # (which contains the XGBClassifier + IsotonicRegression objects).
@@ -222,9 +218,7 @@ def handle_health_payload() -> dict:
     }
 
 
-def handle_explain_payload(
-    body_bytes: bytes, auth_header: str
-) -> tuple[int, dict]:
+def handle_explain_payload(body_bytes: bytes, auth_header: str) -> tuple[int, dict]:
     """Parse + dispatch a POST /takeit/explain body. Returns (http_status, body).
 
     The HealthHandler caller is responsible for writing the response headers

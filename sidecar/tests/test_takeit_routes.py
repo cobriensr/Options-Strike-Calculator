@@ -34,9 +34,7 @@ class _FakeRequest:
                 f"\r\n"
             ).encode() + body
         else:
-            self.raw = (
-                f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"
-            ).encode()
+            self.raw = (f"{method} {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").encode()
 
     def makefile(self, mode: str, *_args: object) -> io.BytesIO:
         return io.BytesIO(self.raw) if "r" in mode else io.BytesIO()
@@ -152,7 +150,10 @@ def test_takeit_explain_forwards_body_to_handler_when_enabled() -> None:
         patch("takeit_server.is_enabled", return_value=True),
         patch(
             "takeit_server.handle_explain_payload",
-            return_value=(200, {"results": [{"alert_id": 1, "top_positive": [], "top_negative": []}]}),
+            return_value=(
+                200,
+                {"results": [{"alert_id": 1, "top_positive": [], "top_negative": []}]},
+            ),
         ) as mock_handle,
     ):
         status, body = _drive(

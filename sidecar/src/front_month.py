@@ -148,9 +148,7 @@ def front_month_cte(
         order_by = "ORDER BY total_vol DESC"
 
     hyphen_clause = (
-        f"\n              AND strpos(sym.symbol, '-') = 0"
-        if exclude_hyphenated
-        else ""
+        "\n              AND strpos(sym.symbol, '-') = 0" if exclude_hyphenated else ""
     )
 
     return f"""WITH filtered AS (

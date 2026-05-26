@@ -14,6 +14,7 @@ import os
 import sys
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -666,9 +667,7 @@ class TestSeedArchivePost:
 
     def test_post_500_when_result_has_failures(self) -> None:
 
-        HealthHandler.seed_archive = staticmethod(
-            lambda: {"failed": 3, "synced": 1}
-        )
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 3, "synced": 1})
         os.environ["ARCHIVE_SEED_TOKEN"] = "tok"
         status, body = _run_post_request(headers={"X-Admin-Token": "tok"})
         assert status == 500
@@ -754,19 +753,13 @@ class TestArchiveAnalogDays:
     def test_analog_days_400_on_bad_optional_int(
         self, configure_base_callables
     ) -> None:
-        status, body = _run_request(
-            "/archive/analog-days?date=2024-01-15&k=notanint"
-        )
+        status, body = _run_request("/archive/analog-days?date=2024-01-15&k=notanint")
         assert status == 400
         assert "k must be an integer" in body["error"]
 
-    def test_analog_days_200_passes_kwargs(
-        self, configure_base_callables
-    ) -> None:
+    def test_analog_days_200_passes_kwargs(self, configure_base_callables) -> None:
         sample = {"neighbors": [{"date": "2023-05-01", "distance": 0.1}]}
-        with patch(
-            "archive_query.analog_days", return_value=sample
-        ) as mock_q:
+        with patch("archive_query.analog_days", return_value=sample) as mock_q:
             status, body = _run_request(
                 "/archive/analog-days?date=2024-01-15&until_minute=60&k=20"
             )
@@ -774,28 +767,20 @@ class TestArchiveAnalogDays:
         assert body == sample
         mock_q.assert_called_once_with("2024-01-15", until_minute=60, k=20)
 
-    def test_analog_days_400_on_value_error(
-        self, configure_base_callables
-    ) -> None:
+    def test_analog_days_400_on_value_error(self, configure_base_callables) -> None:
         with patch(
             "archive_query.analog_days",
             side_effect=ValueError("k must be 1..50"),
         ):
-            status, body = _run_request(
-                "/archive/analog-days?date=2024-01-15&k=999"
-            )
+            status, body = _run_request("/archive/analog-days?date=2024-01-15&k=999")
         assert status == 400
         assert "k must be" in body["error"]
 
     def test_analog_days_500_on_unexpected_exception(
         self, configure_base_callables
     ) -> None:
-        with patch(
-            "archive_query.analog_days", side_effect=RuntimeError("oops")
-        ):
-            status, body = _run_request(
-                "/archive/analog-days?date=2024-01-15"
-            )
+        with patch("archive_query.analog_days", side_effect=RuntimeError("oops")):
+            status, body = _run_request("/archive/analog-days?date=2024-01-15")
         assert status == 500
         assert body["error"] == "query failed"
 
@@ -809,13 +794,9 @@ class TestArchiveDaySummaryExceptions:
     def _past_date(self) -> str:
         from datetime import datetime, timedelta, timezone
 
-        return (
-            datetime.now(timezone.utc).date() - timedelta(days=45)
-        ).isoformat()
+        return (datetime.now(timezone.utc).date() - timedelta(days=45)).isoformat()
 
-    def test_day_summary_404_on_value_error(
-        self, configure_base_callables
-    ) -> None:
+    def test_day_summary_404_on_value_error(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_summary_text",
             side_effect=ValueError("no rows for date"),
@@ -826,9 +807,7 @@ class TestArchiveDaySummaryExceptions:
         assert status == 404
         assert body["error"] == "no rows for date"
 
-    def test_day_summary_500_on_unexpected(
-        self, configure_base_callables
-    ) -> None:
+    def test_day_summary_500_on_unexpected(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_summary_text",
             side_effect=RuntimeError("boom"),
@@ -839,9 +818,7 @@ class TestArchiveDaySummaryExceptions:
         assert status == 500
         assert body["error"] == "query failed"
 
-    def test_day_features_400_on_bad_date(
-        self, configure_base_callables
-    ) -> None:
+    def test_day_features_400_on_bad_date(self, configure_base_callables) -> None:
         """Cover the _BadRequest branch (lines 392-394) — bad date 400s
         before the today-or-future guard runs."""
         with patch("archive_query.day_features_vector") as mock_q:
@@ -850,9 +827,7 @@ class TestArchiveDaySummaryExceptions:
         assert "YYYY-MM-DD" in body["error"]
         mock_q.assert_not_called()
 
-    def test_day_features_404_on_value_error(
-        self, configure_base_callables
-    ) -> None:
+    def test_day_features_404_on_value_error(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_features_vector",
             side_effect=ValueError("no rows"),
@@ -863,9 +838,7 @@ class TestArchiveDaySummaryExceptions:
         assert status == 404
         assert body["error"] == "no rows"
 
-    def test_day_features_500_on_unexpected(
-        self, configure_base_callables
-    ) -> None:
+    def test_day_features_500_on_unexpected(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_features_vector",
             side_effect=RuntimeError("boom"),
@@ -884,9 +857,7 @@ class TestArchiveDaySummaryExceptions:
 
 
 class TestArchiveBatchHandlers:
-    def test_features_batch_400_on_bad_range(
-        self, configure_base_callables
-    ) -> None:
+    def test_features_batch_400_on_bad_range(self, configure_base_callables) -> None:
         status, body = _run_request(
             "/archive/day-features-batch?from=bad&to=2024-01-02"
         )
@@ -895,9 +866,7 @@ class TestArchiveBatchHandlers:
 
     def test_features_batch_200(self, configure_base_callables) -> None:
         rows = [{"date": "2024-01-01", "vector": [0.1] * 60}]
-        with patch(
-            "archive_query.day_features_batch", return_value=rows
-        ) as mock_q:
+        with patch("archive_query.day_features_batch", return_value=rows) as mock_q:
             status, body = _run_request(
                 "/archive/day-features-batch?from=2024-01-01&to=2024-01-02"
             )
@@ -907,9 +876,7 @@ class TestArchiveBatchHandlers:
         assert body["rows"] == rows
         mock_q.assert_called_once_with("2024-01-01", "2024-01-02")
 
-    def test_features_batch_500_on_exception(
-        self, configure_base_callables
-    ) -> None:
+    def test_features_batch_500_on_exception(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_features_batch",
             side_effect=RuntimeError("boom"),
@@ -920,9 +887,7 @@ class TestArchiveBatchHandlers:
         assert status == 500
         assert body["error"] == "query failed"
 
-    def test_summary_batch_400_on_bad_range(
-        self, configure_base_callables
-    ) -> None:
+    def test_summary_batch_400_on_bad_range(self, configure_base_callables) -> None:
         status, _body = _run_request(
             "/archive/day-summary-batch?from=bad&to=2024-01-02"
         )
@@ -930,9 +895,7 @@ class TestArchiveBatchHandlers:
 
     def test_summary_batch_200(self, configure_base_callables) -> None:
         rows = [{"date": "2024-01-01", "summary": "x"}]
-        with patch(
-            "archive_query.day_summary_batch", return_value=rows
-        ) as mock_q:
+        with patch("archive_query.day_summary_batch", return_value=rows) as mock_q:
             status, body = _run_request(
                 "/archive/day-summary-batch?from=2024-01-01&to=2024-01-02"
             )
@@ -940,9 +903,7 @@ class TestArchiveBatchHandlers:
         assert body["rows"] == rows
         mock_q.assert_called_once_with("2024-01-01", "2024-01-02")
 
-    def test_summary_batch_500_on_exception(
-        self, configure_base_callables
-    ) -> None:
+    def test_summary_batch_500_on_exception(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_summary_batch",
             side_effect=RuntimeError("boom"),
@@ -952,12 +913,8 @@ class TestArchiveBatchHandlers:
             )
         assert status == 500
 
-    def test_summary_prediction_400_on_bad_date(
-        self, configure_base_callables
-    ) -> None:
-        status, body = _run_request(
-            "/archive/day-summary-prediction?date=nope"
-        )
+    def test_summary_prediction_400_on_bad_date(self, configure_base_callables) -> None:
+        status, body = _run_request("/archive/day-summary-prediction?date=nope")
         assert status == 400
         assert "YYYY-MM-DD" in body["error"]
 
@@ -999,39 +956,31 @@ class TestArchiveBatchHandlers:
         assert status == 500
         assert body["error"] == "query failed"
 
-    def test_summary_prediction_batch_400(
-        self, configure_base_callables
-    ) -> None:
+    def test_summary_prediction_batch_400(self, configure_base_callables) -> None:
         status, _body = _run_request(
             "/archive/day-summary-prediction-batch?from=bad&to=2024-01-02"
         )
         assert status == 400
 
-    def test_summary_prediction_batch_200(
-        self, configure_base_callables
-    ) -> None:
+    def test_summary_prediction_batch_200(self, configure_base_callables) -> None:
         rows = [{"date": "2024-01-01", "summary": "x"}]
         with patch(
             "archive_query.day_summary_prediction_batch", return_value=rows
         ) as mock_q:
             status, body = _run_request(
-                "/archive/day-summary-prediction-batch"
-                "?from=2024-01-01&to=2024-01-02"
+                "/archive/day-summary-prediction-batch?from=2024-01-01&to=2024-01-02"
             )
         assert status == 200
         assert body["rows"] == rows
         mock_q.assert_called_once_with("2024-01-01", "2024-01-02")
 
-    def test_summary_prediction_batch_500(
-        self, configure_base_callables
-    ) -> None:
+    def test_summary_prediction_batch_500(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_summary_prediction_batch",
             side_effect=RuntimeError("boom"),
         ):
             status, _body = _run_request(
-                "/archive/day-summary-prediction-batch"
-                "?from=2024-01-01&to=2024-01-02"
+                "/archive/day-summary-prediction-batch?from=2024-01-01&to=2024-01-02"
             )
         assert status == 500
 
@@ -1042,9 +991,7 @@ class TestArchiveBatchHandlers:
 
 
 class TestTbboDayMicrostructureMore:
-    def test_500_on_unexpected_exception(
-        self, configure_base_callables
-    ) -> None:
+    def test_500_on_unexpected_exception(self, configure_base_callables) -> None:
         with patch(
             "archive_query.tbbo_day_microstructure",
             side_effect=RuntimeError("disk crashed"),
@@ -1076,9 +1023,7 @@ class TestTbboOfiPercentileBranches:
         assert status == 400
         assert "window" in body["error"]
 
-    def test_400_on_value_unparseable(
-        self, configure_base_callables
-    ) -> None:
+    def test_400_on_value_unparseable(self, configure_base_callables) -> None:
         status, body = _run_request(
             "/archive/tbbo-ofi-percentile?symbol=ES&value=abc&window=1h"
         )
@@ -1094,15 +1039,12 @@ class TestTbboOfiPercentileBranches:
 
     def test_400_on_horizon_below_lo(self, configure_base_callables) -> None:
         status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
-            "&window=1h&horizon_days=0"
+            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h&horizon_days=0"
         )
         assert status == 400
         assert ">= 1" in body["error"]
 
-    def test_500_on_unexpected_exception(
-        self, configure_base_callables
-    ) -> None:
+    def test_500_on_unexpected_exception(self, configure_base_callables) -> None:
         with patch(
             "archive_query.tbbo_ofi_percentile",
             side_effect=RuntimeError("boom"),
@@ -1125,9 +1067,7 @@ class TestTbboOfiPercentileBranches:
             "std": 0.1,
             "count": 100,
         }
-        with patch(
-            "archive_query.tbbo_ofi_percentile", return_value=sample
-        ) as mock_q:
+        with patch("archive_query.tbbo_ofi_percentile", return_value=sample) as mock_q:
             status, body = _run_request(
                 "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
                 "&window=1h&horizon_days=100"
@@ -1145,9 +1085,7 @@ class TestTbboOfiPercentileBranches:
 
 
 class TestHealthFreshness:
-    def test_data_fresh_true_when_recent(
-        self, configure_base_callables
-    ) -> None:
+    def test_data_fresh_true_when_recent(self, configure_base_callables) -> None:
         # last_bar_at returns "now" — staleness < 120s → fresh.
         import time
 
@@ -1157,9 +1095,7 @@ class TestHealthFreshness:
         assert status == 200
         assert body["checks"]["data_fresh"] is True
 
-    def test_data_fresh_false_when_stale(
-        self, configure_base_callables
-    ) -> None:
+    def test_data_fresh_false_when_stale(self, configure_base_callables) -> None:
         # Bar was 5 minutes ago — staleness > 120s → degraded.
         import time
 
@@ -1170,9 +1106,7 @@ class TestHealthFreshness:
         assert body["checks"]["data_fresh"] is False
         assert body["status"] == "degraded"
 
-    def test_db_exception_swallowed_to_false(
-        self, configure_base_callables
-    ) -> None:
+    def test_db_exception_swallowed_to_false(self, configure_base_callables) -> None:
         def boom() -> bool:
             raise RuntimeError("conn refused")
 
@@ -1197,9 +1131,7 @@ class TestBuildThetaBlock:
             _status, body = _run_request()
         assert "theta" not in body
 
-    def test_handles_missing_optional_callables(
-        self, configure_base_callables
-    ) -> None:
+    def test_handles_missing_optional_callables(self, configure_base_callables) -> None:
         # Only running is set; others remain None — block must still render
         # with last_ready_at=None and last_error=None.
         HealthHandler.theta_is_running = staticmethod(lambda: True)
@@ -1315,9 +1247,10 @@ class TestStartHealthServer:
         from unittest.mock import MagicMock as _MagicMock
 
         fake_server = _MagicMock()
-        with patch("health._QuietThreadingHTTPServer") as fake_srv_cls, patch(
-            "health.threading.Thread"
-        ) as fake_thread:
+        with (
+            patch("health._QuietThreadingHTTPServer") as fake_srv_cls,
+            patch("health.threading.Thread") as fake_thread,
+        ):
             fake_srv_cls.return_value = fake_server
             result = health.start_health_server(
                 0,
@@ -1343,8 +1276,9 @@ class TestStartHealthServer:
     def test_wires_optional_theta_and_seed_callables(self) -> None:
         import health
 
-        with patch("health._QuietThreadingHTTPServer") as fake_srv_cls, patch(
-            "health.threading.Thread"
+        with (
+            patch("health._QuietThreadingHTTPServer") as fake_srv_cls,
+            patch("health.threading.Thread"),
         ):
             from unittest.mock import MagicMock as _MagicMock
 
@@ -1372,8 +1306,9 @@ class TestStartHealthServer:
         the staticmethod-wrap branch evaluates the falsy ternary path."""
         import health
 
-        with patch("health._QuietThreadingHTTPServer") as fake_srv_cls, patch(
-            "health.threading.Thread"
+        with (
+            patch("health._QuietThreadingHTTPServer") as fake_srv_cls,
+            patch("health.threading.Thread"),
         ):
             from unittest.mock import MagicMock as _MagicMock
 
@@ -1413,9 +1348,7 @@ class TestQuietThreadingHTTPServer:
 
     def test_swallows_broken_pipe(self) -> None:
         server = self._make_server()
-        with patch.object(
-            ThreadingHTTPServer, "handle_error"
-        ) as super_handle_error:
+        with patch.object(ThreadingHTTPServer, "handle_error") as super_handle_error:
             try:
                 raise BrokenPipeError(32, "broken pipe")
             except BrokenPipeError:
@@ -1424,9 +1357,7 @@ class TestQuietThreadingHTTPServer:
 
     def test_swallows_connection_reset(self) -> None:
         server = self._make_server()
-        with patch.object(
-            ThreadingHTTPServer, "handle_error"
-        ) as super_handle_error:
+        with patch.object(ThreadingHTTPServer, "handle_error") as super_handle_error:
             try:
                 raise ConnectionResetError(104, "connection reset")
             except ConnectionResetError:
@@ -1435,9 +1366,7 @@ class TestQuietThreadingHTTPServer:
 
     def test_propagates_unrelated_exceptions(self) -> None:
         server = self._make_server()
-        with patch.object(
-            ThreadingHTTPServer, "handle_error"
-        ) as super_handle_error:
+        with patch.object(ThreadingHTTPServer, "handle_error") as super_handle_error:
             try:
                 raise ValueError("bad input")
             except ValueError:

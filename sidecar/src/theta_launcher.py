@@ -54,6 +54,7 @@ _ERROR_SIGNATURES = re.compile(
     re.IGNORECASE,
 )
 
+
 # Monitor state (guarded by _state_lock). Used to be `dict[str, Any]`,
 # which let typos like `_state["shutdwn"]` silently miss at runtime.
 # Typed dataclass surfaces those at type-check / mypy time. The lock

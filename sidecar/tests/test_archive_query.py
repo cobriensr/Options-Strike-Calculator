@@ -1180,9 +1180,7 @@ def test_tbbo_day_microstructure_honors_utc_day_on_non_utc_host(
     # would leak into the 2025-10-15 CT day and produce a non-empty
     # result here.
     with pytest.raises(ValueError, match="2025-10-15"):
-        archive_query.tbbo_day_microstructure(
-            "2025-10-15", "ES", root=tmp_path
-        )
+        archive_query.tbbo_day_microstructure("2025-10-15", "ES", root=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1279,9 +1277,7 @@ def test_day_features_batch_tied_volume_resolves_deterministically(
         ],
     )
 
-    batch = archive_query.day_features_batch(
-        "2024-06-03", "2024-06-03", root=tmp_path
-    )
+    batch = archive_query.day_features_batch("2024-06-03", "2024-06-03", root=tmp_path)
     assert len(batch) == 1
     # ESM4 < ESU4 lex-wise → ESM4 wins.
     assert batch[0]["symbol"] == "ESM4"
@@ -1311,9 +1307,7 @@ def test_day_summary_batch_tied_volume_resolves_deterministically(
         ],
     )
 
-    batch = archive_query.day_summary_batch(
-        "2024-06-03", "2024-06-03", root=tmp_path
-    )
+    batch = archive_query.day_summary_batch("2024-06-03", "2024-06-03", root=tmp_path)
     assert len(batch) == 1
     assert batch[0]["symbol"] == "ESM4"
 

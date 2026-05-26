@@ -250,9 +250,7 @@ def test_tbbo_ofi_percentile_shape() -> None:
 
 @pytest.mark.parametrize("ts_column", ["ts_event", "ts_recv"])
 @pytest.mark.parametrize("tiebreak", ["none", "contract_asc"])
-def test_each_combination_is_well_formed(
-    ts_column: str, tiebreak: str
-) -> None:
+def test_each_combination_is_well_formed(ts_column: str, tiebreak: str) -> None:
     sql = front_month_cte(
         symbol_like="'ES%'",
         parquet_path_param="?",
@@ -272,9 +270,7 @@ def test_each_combination_is_well_formed(
     if tiebreak == "contract_asc":
         assert "symbol ASC" in sql
     else:
-        assert "ASC" not in sql.split("ORDER BY total_vol DESC")[-1].split(
-            ") AS rk"
-        )[0]
+        assert "ASC" not in sql.split("ORDER BY total_vol DESC")[-1].split(") AS rk")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -295,10 +291,7 @@ def test_rendered_sql_parses_in_duckdb() -> None:
     )
 
     # The fragment ends with a trailing comma so we tack on a stub CTE.
-    full = (
-        fragment
-        + " stub AS (SELECT 1 AS x) SELECT * FROM stub"
-    )
+    full = fragment + " stub AS (SELECT 1 AS x) SELECT * FROM stub"
 
     conn = duckdb.connect(":memory:")
     try:

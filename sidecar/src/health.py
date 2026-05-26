@@ -162,9 +162,7 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     All other exceptions propagate to the default ``handle_error``.
     """
 
-    def handle_error(
-        self, request: Any, client_address: Any
-    ) -> None:  # noqa: D401
+    def handle_error(self, request: Any, client_address: Any) -> None:  # noqa: D401
         import sys  # noqa: PLC0415
 
         exc_type = sys.exc_info()[0]
@@ -479,9 +477,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         # those partitions during RTH. Avoids a 3–7s DuckDB query that
         # is guaranteed to miss and consume memory each time.
         if _is_today_or_future_utc(d):
-            self._send_json(
-                404, {"error": "date not yet in archive (today or future)"}
-            )
+            self._send_json(404, {"error": "date not yet in archive (today or future)"})
             return
 
         try:
@@ -513,9 +509,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         # _handle_archive_day_summary. The refresh-current-snapshot
         # cron fires both of these in parallel every 5 min in RTH.
         if _is_today_or_future_utc(d):
-            self._send_json(
-                404, {"error": "date not yet in archive (today or future)"}
-            )
+            self._send_json(404, {"error": "date not yet in archive (today or future)"})
             return
 
         try:

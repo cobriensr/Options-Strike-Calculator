@@ -56,9 +56,7 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     }
 
     monkeypatch.setattr(main, "init_sentry", mocks["init_sentry"])
-    monkeypatch.setattr(
-        main.theta_launcher, "start", mocks["theta_launcher_start"]
-    )
+    monkeypatch.setattr(main.theta_launcher, "start", mocks["theta_launcher_start"])
     monkeypatch.setattr(
         main.theta_fetcher,
         "start_scheduler",
@@ -68,9 +66,7 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     monkeypatch.setattr(main, "TradeProcessor", mocks["trade_processor_cls"])
     monkeypatch.setattr(main, "QuoteProcessor", mocks["quote_processor_cls"])
     monkeypatch.setattr(main, "DatabentoClient", mocks["databento_client_cls"])
-    monkeypatch.setattr(
-        main, "start_health_server", mocks["start_health_server"]
-    )
+    monkeypatch.setattr(main, "start_health_server", mocks["start_health_server"])
     monkeypatch.setattr(main, "connect_with_retry", mocks["connect_with_retry"])
 
     return mocks
