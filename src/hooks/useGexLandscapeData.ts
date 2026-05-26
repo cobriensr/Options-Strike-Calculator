@@ -1,60 +1,81 @@
 /**
- * useGexLandscapeData — adapts MM-attributed strike data from
- * `usePeriscopeStrikes` into the `GexStrikeLevel` shape GexLandscape
- * consumes, with the call/put-split **vol reinforcement** column
- * sourced from the WS-fed `useGexStrikeExpiry` SPX feed (the only
- * place ask/bid attribution exists).
+ * useGexLandscapeData — fetches the per-strike GEX landscape from the
+ * 1-min GexBot-fed `/api/gex-landscape` endpoint and projects each row
+ * into the `GexStrikeLevel` shape the GexLandscape renderer consumes.
  *
- * Phase 2 of the GEX Landscape MM swap
- * (docs/superpowers/specs/gex-landscape-mm-swap-2026-05-12.md).
- * Replaces the WS-as-primary architecture; WS data now serves a
- * side-channel role (vol reinforcement + ask/bid only).
+ * Phase 2 of the GEX Landscape 1-min GexBot rebuild
+ * (docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md).
+ * Replaces the dual-source MM (`usePeriscopeStrikes`) + WS
+ * (`useGexStrikeExpirySpx`) path with a single endpoint that already
+ * carries the `[t-1m, t-5m, t-10m]` prior values per strike — no
+ * client-side lookback fetches needed.
  *
- * Δ% maps at 10-min cadence compress to: gexDelta10mMap (1-slot diff),
- * gexDelta20mMap (2-slot), gexDelta30mMap (3-slot). The 1m / 5m / 15m
- * fields stay on the return type as empty maps for Phase 2 backwards
- * compat with the renderer — Phase 3 drops the dead columns + fields.
+ * Δ% maps (1m / 5m / 10m) are computed inline against each row's
+ * `prevNm` field using the same `DELTA_NOISE_FLOOR` semantics the
+ * legacy hook used (|prior| < 100 → null). The 15m / 30m maps and all
+ * `naiveDelta*` maps are returned as empty `Map`s for backwards
+ * compatibility with the Phase 2-pinned components (StrikeTable,
+ * BiasPanel, bias.ts); Phases 3 and 4 drop those fields properly.
+ *
+ * Polling: live mode polls every POLL_INTERVALS.PERISCOPE (60s) while
+ * `marketOpen` is true and we're not pinned to a scrubbed `at`.
+ * Snapshot mode (`at` set) is one-shot.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { usePeriscopeStrikes } from './usePeriscopeStrikes';
-import {
-  useGexStrikeExpirySpx,
-  type GexStrikeExpiryRow,
-} from './useGexStrikeExpiry';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { POLL_INTERVALS } from '../constants';
+import { getAccessMode } from '../utils/auth';
+import { getErrorMessage } from '../utils/error';
+import { usePolling } from './usePolling';
 import type { GexStrikeLevel } from '../components/GexLandscape/types';
+
+/** Shape of a single strike row returned by /api/gex-landscape. */
+export interface GexLandscapeStrikeRow {
+  strike: number;
+  gamma: number;
+  charm: number;
+  vanna: number;
+  gammaPrev1m: number | null;
+  gammaPrev5m: number | null;
+  gammaPrev10m: number | null;
+  charmPrev1m: number | null;
+  charmPrev5m: number | null;
+  charmPrev10m: number | null;
+  vannaPrev1m: number | null;
+  vannaPrev5m: number | null;
+  vannaPrev10m: number | null;
+}
+
+/** Top-level /api/gex-landscape response. `data: null` when stale/missing. */
+export interface GexLandscapeResponse {
+  marketOpen: boolean;
+  asOf: string;
+  data: { strikes: GexLandscapeStrikeRow[]; spot: number } | null;
+  reason?: 'no_slot' | 'no_spot';
+  ageSec?: number;
+  availableMinutes: string[];
+}
 
 export interface UseGexLandscapeDataReturn {
   strikes: GexStrikeLevel[];
   timestamps: string[];
-  /**
-   * Per-strike Δ% (percent; e.g. 5 for +5%). `null` means no comparable
-   * prior slot exists in the lookback window.
-   *
-   * At 10-min MM cadence the windows compress: `10m` = 1-slot diff,
-   * `30m` = 3-slot. The `1m` / `5m` / `15m` maps are always empty
-   * here — kept on the return type for Phase 2 backwards compatibility
-   * with the GexLandscape renderer; Phase 3 drops the dead columns
-   * and these map fields, and ADDS `gexDelta20mMap` once StrikeTable
-   * wires the 20m column. Adding 20m here without a consumer would
-   * be a wasted lookback fetch.
-   */
+  /** Δ% maps populated from the per-row `prevNm` fields. */
   gexDeltaMap: Map<number, number | null>;
   gexDelta5mMap: Map<number, number | null>;
   gexDelta10mMap: Map<number, number | null>;
+  /**
+   * Phase 2 compat: returned as empty Maps. The 15m / 30m windows go
+   * away in Phase 3 (types + BiasPanel rebuild); until then bias.ts
+   * still reads `gexDelta30mMap` for `floorTrend30m` and the panel
+   * renders `—` for that row, which is the expected intermediate
+   * state per the spec.
+   */
   gexDelta15mMap: Map<number, number | null>;
   gexDelta30mMap: Map<number, number | null>;
   /**
-   * Naive per-strike Δ% sourced from the WS feed's server-computed
-   * `gamma_delta_*m` fields (SQL `LAG()` over
-   * `ws_gex_strike_expiry.ts_minute`). 1m / 5m / 10m are the fast-cadence
-   * windows that MM data cannot expose (periscope cadence is 10 min);
-   * 30m is the session-scale window used by the BiasPanel.
-   *
-   * No client-side noise floor here — server uses `NULLIF(ABS(...),0)`
-   * which only filters exact-zero priors. Tiny OTM strikes may surface
-   * large percentages; aggregations in `bias.ts` use means, so a few
-   * outliers don't dominate the floor/ceiling trend numbers.
+   * Phase 2 compat: returned as empty Maps. The WS side-channel that
+   * fed these is gone; Phase 3 redefines `volReinforcement` as
+   * delta-trend agreement and drops the naive sub-line entirely.
    */
   naiveDelta1mMap: Map<number, number | null>;
   naiveDelta5mMap: Map<number, number | null>;
@@ -67,106 +88,57 @@ export interface UseGexLandscapeDataReturn {
 
 /**
  * Magnitude floor for the Δ% denominator. Strikes whose prior gamma
- * has |value| < this floor produce huge meaningless percentages
+ * magnitude is below this floor produce huge meaningless percentages
  * (a +5 strike against a 0.01 prior reads 50,000% Δ); the floor maps
  * those to `null` so the BiasPanel mean and the StrikeTable cells
- * don't get poisoned. The value was chosen from the Phase 4 probe
- * (scripts/probe-mm-bias-calibration.mjs): ATM strike |gamma| p10
- * across 5 days = 112, so 100 sits just below typical ATM and only
- * filters near-zero strikes (which have no economic meaning at MM
- * scale anyway).
+ * don't get poisoned. Same value the MM-era hook used — calibrated
+ * against ATM gamma p10 ~112 at MM scale. The spec notes GexBot
+ * scale may differ; revisit in Phase 4's threshold tune.
  */
 const DELTA_NOISE_FLOOR = 100;
 
-/**
- * Build a single Δ% map from the current MM strikes vs. a prior slot's
- * gamma-keyed lookup. Percent change uses `|prior|` as the denominator
- * so the sign of the delta reflects movement direction even when the
- * prior gamma is negative (the natural case in negative-gamma regimes).
- * Returns `null` when the strike isn't in the lookback OR the prior
- * gamma's magnitude is below `DELTA_NOISE_FLOOR`.
- */
-function buildDeltaMap(
-  currentStrikes: ReadonlyArray<{ strike: number; gamma: number }>,
-  prior: Map<number, number> | null,
-): Map<number, number | null> {
-  const out = new Map<number, number | null>();
-  if (prior == null) {
-    for (const r of currentStrikes) out.set(r.strike, null);
-    return out;
-  }
-  for (const r of currentStrikes) {
-    const p = prior.get(r.strike);
-    if (p === undefined || Math.abs(p) < DELTA_NOISE_FLOOR) {
-      out.set(r.strike, null);
-    } else {
-      out.set(r.strike, ((r.gamma - p) / Math.abs(p)) * 100);
-    }
-  }
-  return out;
+/** Pure: compute one strike's Δ% against its own prev value. */
+function computeDelta(current: number, prev: number | null): number | null {
+  if (prev == null || Math.abs(prev) < DELTA_NOISE_FLOOR) return null;
+  return ((current - prev) / Math.abs(prev)) * 100;
 }
 
 /**
- * Project an MM strike row (+ optional matching WS row) into the
- * `GexStrikeLevel` shape the GexLandscape renderer consumes.
+ * Project an endpoint strike row into the `GexStrikeLevel` shape the
+ * GexLandscape renderer consumes.
  *
- * - MM gamma → `netGamma`; MM charm → `netCharm`. MM data does NOT
- *   split call/put attribution (UW's dealer math collapses the two
- *   sides), so the call/put _MM_ OI fields stay zero.
- * - The WS side channel supplies:
- *   - `callGammaOi` / `putGammaOi` — raw OI gamma, the NAIVE GEX
- *     numerator. Surfaced so downstream consumers can compute
- *     `callGammaOi + putGammaOi` for the naive sub-read alongside MM.
- *   - `callGammaAsk` / `callGammaBid` / `putGammaAsk` / `putGammaBid`
- *     — bid/ask attribution for the gamma-pressure cue.
- *   - `volReinforcement` verdict from OI vs vol sign agreement.
- *   Missing WS data (e.g. ticker mismatch) zeroes the naive fields
- *   and drops `volReinforcement` to `neutral` — the MM read still
- *   renders cleanly without the WS sub-channel.
- * - Vanna and delta fields are zeroed (out of Phase 2 scope).
+ * - Endpoint `gamma` → `netGamma`, `charm` → `netCharm`, `vanna` → `netVanna`.
+ *   The endpoint already serves MM-attributed values from GexBot.
+ * - `price` ← top-level `spot` from the endpoint payload.
+ * - All call/put split fields stay zero — WS side channel is gone and
+ *   MM dealer math collapses call/put attribution anyway.
+ * - `volReinforcement` is `'neutral'` for the entire Phase 2 window.
+ *   Phase 3 redefines it as delta-trend agreement (sign(Δ1m) ===
+ *   sign(Δ5m) === sign(Δ10m) === sign(netGamma) → 'reinforcing'); for
+ *   now a placeholder keeps the StrikeTable column rendering without
+ *   crashing.
  */
-export function projectMmStrike(
-  mmRow: { strike: number; gamma: number; charm: number },
+export function projectStrike(
+  row: GexLandscapeStrikeRow,
   spot: number,
-  wsRow: GexStrikeExpiryRow | undefined,
 ): GexStrikeLevel {
-  const callGammaOi = wsRow?.call_gamma_oi ?? 0;
-  const putGammaOi = wsRow?.put_gamma_oi ?? 0;
-  const callGammaAsk = wsRow?.call_gamma_ask_vol ?? 0;
-  const callGammaBid = wsRow?.call_gamma_bid_vol ?? 0;
-  const putGammaAsk = wsRow?.put_gamma_ask_vol ?? 0;
-  const putGammaBid = wsRow?.put_gamma_bid_vol ?? 0;
-
-  let volReinforcement: 'reinforcing' | 'opposing' | 'neutral' = 'neutral';
-  if (wsRow) {
-    const netGammaOi = callGammaOi + putGammaOi;
-    const netGammaVol =
-      (wsRow.call_gamma_vol ?? 0) + (wsRow.put_gamma_vol ?? 0);
-    if (netGammaOi !== 0 && netGammaVol !== 0) {
-      const sameSign =
-        (netGammaOi > 0 && netGammaVol > 0) ||
-        (netGammaOi < 0 && netGammaVol < 0);
-      volReinforcement = sameSign ? 'reinforcing' : 'opposing';
-    }
-  }
-
   return {
-    strike: mmRow.strike,
+    strike: row.strike,
     price: spot,
-    callGammaOi,
-    putGammaOi,
-    netGamma: mmRow.gamma,
+    callGammaOi: 0,
+    putGammaOi: 0,
+    netGamma: row.gamma,
     callGammaVol: 0,
     putGammaVol: 0,
     netGammaVol: 0,
-    volReinforcement,
-    callGammaAsk,
-    callGammaBid,
-    putGammaAsk,
-    putGammaBid,
+    volReinforcement: 'neutral',
+    callGammaAsk: 0,
+    callGammaBid: 0,
+    putGammaAsk: 0,
+    putGammaBid: 0,
     callCharmOi: 0,
     putCharmOi: 0,
-    netCharm: mmRow.charm,
+    netCharm: row.charm,
     callCharmVol: 0,
     putCharmVol: 0,
     netCharmVol: 0,
@@ -175,177 +147,138 @@ export function projectMmStrike(
     netDelta: 0,
     callVannaOi: 0,
     putVannaOi: 0,
-    netVanna: 0,
+    netVanna: row.vanna,
     callVannaVol: 0,
     putVannaVol: 0,
     netVannaVol: 0,
   };
 }
 
+/**
+ * ISO timestamp → CT HH:MM (24h) — preserved here in case the endpoint
+ * adopts a `?time` shape later. Currently /api/gex-landscape takes a
+ * raw `?at=ISO` so we pass through the input directly.
+ */
+async function fetchGexLandscape(
+  at: string | null,
+  signal: AbortSignal,
+): Promise<GexLandscapeResponse | null> {
+  const qs = new URLSearchParams();
+  if (at != null) qs.set('at', at);
+  const url = qs.toString()
+    ? `/api/gex-landscape?${qs.toString()}`
+    : '/api/gex-landscape';
+  const res = await fetch(url, {
+    credentials: 'same-origin',
+    signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]),
+  });
+  if (!res.ok) {
+    if (res.status === 401) return null;
+    throw new Error(`gex-landscape: HTTP ${res.status}`);
+  }
+  return (await res.json()) as GexLandscapeResponse;
+}
+
 export function useGexLandscapeData(
   marketOpen: boolean,
-  expiry: string,
+  // `_expiry` kept on the signature for component-call-site compat
+  // (Phase 4 drops it). /api/gex-landscape resolves the expiry
+  // server-side from `getETDateStr(new Date())` since 0DTE-only.
+  _expiry: string,
   at: string | null = null,
 ): UseGexLandscapeDataReturn {
-  const primary = usePeriscopeStrikes(marketOpen, expiry, at);
-  const ws = useGexStrikeExpirySpx(marketOpen, expiry, at);
+  const accessMode = getAccessMode();
+  const [resp, setResp] = useState<GexLandscapeResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const abortRef = useRef<AbortController | null>(null);
 
-  // O(N) lookup of WS rows by strike so the projection doesn't run a
-  // linear scan per strike. Memoized on the source `rows` reference so
-  // the map identity is stable across renders with the same payload.
-  const wsByStrike = useMemo<Map<number, GexStrikeExpiryRow>>(() => {
-    const m = new Map<number, GexStrikeExpiryRow>();
-    for (const r of ws.data?.rows ?? []) m.set(r.strike, r);
-    return m;
-  }, [ws.data?.rows]);
+  const fetchOnce = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
 
-  const spot = primary.latest?.spot ?? 0;
-  const sourceStrikes = primary.latest?.strikes;
-
-  const strikes = useMemo<GexStrikeLevel[]>(
-    () =>
-      (sourceStrikes ?? []).map((mm) =>
-        projectMmStrike(mm, spot, wsByStrike.get(mm.strike)),
-      ),
-    [sourceStrikes, spot, wsByStrike],
-  );
-
-  const gexDelta10mMap = useMemo(
-    () => buildDeltaMap(sourceStrikes ?? [], primary.prior10m),
-    [sourceStrikes, primary.prior10m],
-  );
-  const gexDelta30mMap = useMemo(
-    () => buildDeltaMap(sourceStrikes ?? [], primary.prior30m),
-    [sourceStrikes, primary.prior30m],
-  );
-
-  // Naive Δ% maps — pulled directly from each WS row's server-computed
-  // `gamma_delta_*m` fields (SQL `LAG()` already ran on the server,
-  // no client-side recompute needed). Strikes present in MM but
-  // absent from WS get `null` — the table cell and the bias panel
-  // both treat null as "no data" and render `—`.
-  const naiveDelta1mMap = useMemo<Map<number, number | null>>(() => {
-    const m = new Map<number, number | null>();
-    for (const mm of sourceStrikes ?? []) {
-      const wsRow = wsByStrike.get(mm.strike);
-      m.set(mm.strike, wsRow?.gamma_delta_1m ?? null);
+    try {
+      const next = await fetchGexLandscape(at, ctrl.signal);
+      if (!mountedRef.current || ctrl.signal.aborted) return;
+      setResp(next);
+      setError(null);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (ctrl.signal.aborted) return;
+      if (mountedRef.current) setError(getErrorMessage(err));
+    } finally {
+      if (mountedRef.current && abortRef.current === ctrl) setLoading(false);
     }
-    return m;
-  }, [sourceStrikes, wsByStrike]);
-  const naiveDelta5mMap = useMemo<Map<number, number | null>>(() => {
-    const m = new Map<number, number | null>();
-    for (const mm of sourceStrikes ?? []) {
-      const wsRow = wsByStrike.get(mm.strike);
-      m.set(mm.strike, wsRow?.gamma_delta_5m ?? null);
-    }
-    return m;
-  }, [sourceStrikes, wsByStrike]);
-  const naiveDelta10mMap = useMemo<Map<number, number | null>>(() => {
-    const m = new Map<number, number | null>();
-    for (const mm of sourceStrikes ?? []) {
-      const wsRow = wsByStrike.get(mm.strike);
-      m.set(mm.strike, wsRow?.gamma_delta_10m ?? null);
-    }
-    return m;
-  }, [sourceStrikes, wsByStrike]);
-  const naiveDelta30mMap = useMemo<Map<number, number | null>>(() => {
-    const m = new Map<number, number | null>();
-    for (const mm of sourceStrikes ?? []) {
-      const wsRow = wsByStrike.get(mm.strike);
-      m.set(mm.strike, wsRow?.gamma_delta_30m ?? null);
-    }
-    return m;
-  }, [sourceStrikes, wsByStrike]);
+  }, [at]);
 
-  // Empty-map back-compat for fields the Phase 2 component still
-  // references (1m / 5m / 15m columns). Phase 3 removes them.
-  const emptyMap = useMemo<Map<number, number | null>>(() => new Map(), []);
-
-  // Picker timestamps — prefer the WS feed's 1-min resolution list
-  // over MM's 10-min `availableSlots` so the trader can scrub at
-  // minute granularity (the cadence at which the Phase 5 naive Δ%
-  // columns carry signal). MM columns at-or-before resolve on the
-  // server when the user lands on a non-10-min minute, so the MM Γ /
-  // MM 10m / MM 30m cells stick for up to 10 minutes — that's
-  // already the data's natural behavior, just exposed at finer
-  // granularity in the picker.
-  //
-  // We CACHE the last known live (non-scrubbed) WS timestamps in
-  // state rather than reading `ws.data.timestamps` directly. The WS
-  // endpoint truncates `timestamps` to `<= at` while scrubbed, so
-  // returning the live response's list directly would cause a
-  // single-render flash when the user clicks Live: the in-flight
-  // `ws.data` still holds the scrubbed (truncated) response until
-  // the next poll lands, which would shrink the picker for one
-  // render. Caching the last live list keeps the picker stable
-  // across the scrub → Live transition.
-  //
-  // Fallback to MM slots when no live WS response has ever arrived
-  // (first paint, side-channel error, 401 for public visitors) so
-  // the picker isn't empty.
-  const [livePickerTimestamps, setLivePickerTimestamps] = useState<string[]>(
-    [],
-  );
-  // Reset the cache when the expiry changes. `useGexStrikeExpirySpx`
-  // is sticky-on-empty, so without this reset the picker would
-  // briefly show yesterday's minute list against today's chain until
-  // the new live WS response lands.
   useEffect(() => {
-    setLivePickerTimestamps([]);
-  }, [expiry]);
-  const wsAt = ws.data?.at ?? null;
-  const wsRawTimestamps = ws.data?.timestamps;
-  useEffect(() => {
-    // `at === null` on the response means the WS endpoint returned a
-    // live (non-truncated) timestamps list. Only those are eligible
-    // for the picker cache.
-    if (wsAt !== null) return;
-    if (!wsRawTimestamps || wsRawTimestamps.length === 0) return;
-    // Skip the state update when contents are unchanged — every poll
-    // allocates a fresh array reference even when the underlying
-    // minute list is identical, so a naive setState would re-render
-    // (and re-fire `index.tsx`'s `liveTimestamps` mirror effect) on
-    // every poll.
-    setLivePickerTimestamps((prev) => {
-      if (
-        prev.length === wsRawTimestamps.length &&
-        prev.every((t, i) => t === wsRawTimestamps[i])
-      ) {
-        return prev;
-      }
-      return wsRawTimestamps;
-    });
-  }, [wsAt, wsRawTimestamps]);
-  const timestamps =
-    livePickerTimestamps.length > 0
-      ? livePickerTimestamps
-      : (primary.latest?.availableSlots ?? []);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
-  // Primary errors take precedence (MM is the structural read).
-  // WS side-channel errors degrade vol reinforcement only — surface
-  // them as a softer prefixed message so the user knows what's
-  // missing, but don't suppress the MM-driven render.
-  const error =
-    primary.error ?? (ws.error ? `SPX vol reinforcement: ${ws.error}` : null);
+  useEffect(() => {
+    if (accessMode === 'public') {
+      setLoading(false);
+      return;
+    }
+    void fetchOnce();
+  }, [accessMode, fetchOnce]);
+
+  // Snapshot mode (`at` set) is static — no polling. Public access stays idle.
+  usePolling(() => void fetchOnce(), POLL_INTERVALS.PERISCOPE, [
+    accessMode !== 'public',
+    marketOpen,
+    !at,
+  ]);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const refresh = useCallback(() => {
-    primary.refresh();
-    ws.refresh();
-  }, [primary, ws]);
+    setLoading(true);
+    void fetchOnce();
+  }, [fetchOnce]);
+
+  // Derived state — kept inline (no `useMemo`) because the dep is a
+  // single `resp` reference and the work is O(N strikes), N≈40.
+  const sourceRows = resp?.data?.strikes ?? [];
+  const spot = resp?.data?.spot ?? 0;
+  const strikes: GexStrikeLevel[] = sourceRows.map((row) =>
+    projectStrike(row, spot),
+  );
+
+  const gexDeltaMap = new Map<number, number | null>();
+  const gexDelta5mMap = new Map<number, number | null>();
+  const gexDelta10mMap = new Map<number, number | null>();
+  for (const row of sourceRows) {
+    gexDeltaMap.set(row.strike, computeDelta(row.gamma, row.gammaPrev1m));
+    gexDelta5mMap.set(row.strike, computeDelta(row.gamma, row.gammaPrev5m));
+    gexDelta10mMap.set(row.strike, computeDelta(row.gamma, row.gammaPrev10m));
+  }
+
+  // Phase 2 compat: empty Maps for fields owned by Phase 3 cleanup.
+  // Allocating fresh each render is cheap (empty Map) and matches the
+  // referential pattern of the populated maps above.
+  const emptyMap: Map<number, number | null> = new Map();
+
+  const timestamps = resp?.availableMinutes ?? [];
 
   return {
     strikes,
     timestamps,
-    gexDeltaMap: emptyMap,
-    gexDelta5mMap: emptyMap,
+    gexDeltaMap,
+    gexDelta5mMap,
     gexDelta10mMap,
     gexDelta15mMap: emptyMap,
-    gexDelta30mMap,
-    naiveDelta1mMap,
-    naiveDelta5mMap,
-    naiveDelta10mMap,
-    naiveDelta30mMap,
-    loading: primary.loading,
+    gexDelta30mMap: emptyMap,
+    naiveDelta1mMap: emptyMap,
+    naiveDelta5mMap: emptyMap,
+    naiveDelta10mMap: emptyMap,
+    naiveDelta30mMap: emptyMap,
+    loading,
     error,
     refresh,
   };
