@@ -197,13 +197,21 @@ function WaitRow({
   structure: RecommendedStructure | null;
   regime: Regime;
 }) {
-  if (longTrigger == null && shortTrigger == null) return null;
+  // When neither side has a trigger AND there's no structure to render,
+  // bail out only when we're in a regime that has explicit directional
+  // verdicts (cone-breach-up/down — LONG or SHORT covers the read).
+  // In `no-data` we still want to show the WAIT row so the trader sees
+  // an explicit empty-state message instead of blank space.
+  const hasTrigger = longTrigger != null || shortTrigger != null;
+  if (!hasTrigger && regime !== 'no-data') return null;
   const bandLabel =
     longTrigger != null && shortTrigger != null
       ? `${fmtLevel(shortTrigger)} – ${fmtLevel(longTrigger)}`
       : longTrigger != null
         ? `below ${fmtLevel(longTrigger)}`
-        : `above ${fmtLevel(shortTrigger!)}`;
+        : shortTrigger != null
+          ? `above ${fmtLevel(shortTrigger)}`
+          : '— no levels —';
   return (
     <div className="flex flex-col gap-0.5 font-mono text-[12px]">
       <div className="flex flex-wrap items-baseline gap-2">

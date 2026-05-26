@@ -481,12 +481,6 @@ function roundToStrike(n: number): number {
   return Math.round(n / SPX_STRIKE_INCREMENT) * SPX_STRIKE_INCREMENT;
 }
 
-function legsLabel(legs: StructureLeg[]): string {
-  return legs
-    .map((l) => `${l.side === 'long' ? '+' : '-'}${l.strike}${l.type}`)
-    .join('/');
-}
-
 /**
  * Pick the directional spread for a LONG-side setup.
  *
@@ -675,7 +669,3 @@ export function pickStructures(
   const wait = pickWaitStructure(view, plan);
   return { long, short, wait };
 }
-
-// Pretty-print a structure for debug / logging. Kept for parity with the
-// existing `fmtSigned` helper export — not used in the panel itself.
-export { legsLabel };

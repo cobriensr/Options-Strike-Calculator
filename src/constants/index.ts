@@ -371,9 +371,9 @@ export const POLL_INTERVALS = {
   ANOMALY_CROSS_ASSET: 30_000,
   /** Vega spike feed refresh (useVegaSpikes) — matches monitor-vega-spike cron cadence. */
   VEGA_SPIKES: 60_000,
-  /** Periscope MM exposure refresh (usePeriscopeExposure) — UW publishes
-   *  10-min slots, but we poll at 60s so a fresh slot lands in the UI
-   *  within ≤1 min of the scraper inserting it. */
+  /** Periscope MM exposure refresh (usePeriscopeExposure) — GEXBot writes
+   *  a fresh state capture every minute. Polling at 60s keeps the UI
+   *  ≤~90s stale (cache TTL 30s + SWR 30s + this poll). */
   PERISCOPE: 60_000,
   /** Batch ticker net-flow snapshot (useTickerNetFlowBatch). 60s is
    *  twice the endpoint's 30s cache TTL so each poll either hits cache

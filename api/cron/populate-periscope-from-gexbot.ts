@@ -36,60 +36,20 @@ import {
 import { getETDateStr } from '../../src/utils/timezone.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import {
+  PANELS,
+  PANEL_TO_CATEGORY,
+  STALENESS_CUTOFF_MS,
+  TICKER,
+  decodeStrikes,
+  type GexbotStatePayload,
+} from '../_lib/periscope-gexbot.js';
 
 export const config = { maxDuration: 30 };
 
-type PanelName = 'gamma' | 'charm' | 'vanna';
-
-const PANEL_TO_CATEGORY: Record<PanelName, string> = {
-  gamma: 'gamma_zero',
-  charm: 'charm_zero',
-  vanna: 'vanna_zero',
-};
-
-const PANELS: PanelName[] = ['gamma', 'charm', 'vanna'];
-const TICKER = 'SPX';
-
-interface GexbotStatePayload {
-  spot?: number;
-  ticker?: string;
-  timestamp?: number;
-  min_dte?: number;
-  major_negative?: number;
-  major_positive?: number;
-  mini_contracts?: unknown[][];
-}
-
-interface DecodedStrike {
-  strike: number;
-  value: number;
-}
-
-/**
- * Decode GEXBot's `mini_contracts` array. Each row is
- *   [strike, call_val, put_val, total_dealer_value, [t-1m, t-5m, t-10m], 0, null]
- * Position-3 is the signed MM-attributed value for the panel
- * (gamma at gamma_zero endpoint, charm at charm_zero, etc.).
- *
- * Rows with non-numeric position-0 or position-3 are dropped — the
- * payload occasionally includes sparse rows for far-OTM strikes where
- * the dealer book is empty.
- */
-export function decodeStrikes(payload: GexbotStatePayload): DecodedStrike[] {
-  const arr = payload.mini_contracts;
-  if (!Array.isArray(arr)) return [];
-  const out: DecodedStrike[] = [];
-  for (const row of arr) {
-    if (!Array.isArray(row) || row.length < 4) continue;
-    // Number(null) coerces to 0 — explicit null/undefined check.
-    if (row[0] == null || row[3] == null) continue;
-    const strike = Number(row[0]);
-    const value = Number(row[3]);
-    if (!Number.isFinite(strike) || !Number.isFinite(value)) continue;
-    out.push({ strike: Math.round(strike), value });
-  }
-  return out;
-}
+// Re-export for the existing test file that imports `decodeStrikes` from
+// this module. New callers should import from _lib/periscope-gexbot.
+export { decodeStrikes };
 
 /**
  * Build the "HH:MM - HH:MM" CT timeframe label matching the scraper's
@@ -117,10 +77,10 @@ export default withCronInstrumentation(
     const sql = getDb();
     const todayEt = getETDateStr(new Date()); // 0DTE expiry
 
-    // Pull the latest capture row per panel from the last 5 min.
-    // Anything older means GEXBot is down — we skip rather than
-    // backfill a stale slice.
-    const stalenessCutoff = new Date(Date.now() - 5 * 60 * 1000);
+    // Pull the latest capture row per panel within the staleness
+    // window. Anything older means GEXBot is down — we skip rather
+    // than backfill a stale slice.
+    const stalenessCutoff = new Date(Date.now() - STALENESS_CUTOFF_MS);
 
     let totalRows = 0;
     let panelsWritten = 0;

@@ -1,29 +1,16 @@
 /**
- * PeriscopePanel — read-only display of the latest UW Periscope
- * MM-attributed exposure slot, populated into `periscope_snapshots`
- * by the GEXBot-fed cron adapter (`populate-periscope-from-gexbot`).
+ * PeriscopePanel — read-only display of the latest dealer-flow map,
+ * served by `/api/periscope-map` from GEXBot's 1-min state captures.
  *
- * Replaces the screenshot-paste workflow: the same data the analyze
- * endpoint injects into Claude's prompt is rendered here so the user
- * can see what Claude is seeing without opening UW.
+ * The panel is a thin composition shell: header (slot timestamp + spot)
+ * plus the deterministic `MMExposureMap` body that derives the level
+ * ladder, entry triggers, stops, targets, and recommended options
+ * structures from the PeriscopeView. SlotPicker provides the date/time
+ * stepper that swaps the data source to `/api/periscope-exposure` for
+ * historical replay (full ~6-month back-catalog from periscope_snapshots).
  *
- * Sections (in priority order — matches the periscope skill's
- * structural read):
- *   1. Cone bounds + breach status  → frames the day's expected move
- *   2. Gamma topology               → +γ ceiling/floor + −γ accel
- *   3. Charm flow                   → tally near spot + top extremes
- *   4. Vanna pressure               → vol-shock sensitivity
- *   5. Sign flips                   → orange-bar regime-flip equivalent
- *
- * Empty states are explicit: "no SPX spot yet", "scraper hasn't
- * inserted any slot yet" — never a blank panel.
- *
- * As of Phase 3A (2026-05-19) this file is a thin composition shell —
- * the section components live in sibling files (ConeSection,
- * GammaSection, CharmSection, VannaSection, FlipsSection,
- * TradePlanSection, SlotPicker) and the shared formatters / UI
- * primitives live in `src/utils/periscope-formatting.ts` and
- * `./shared.tsx`.
+ * Empty states are explicit: "no SPX spot yet" or "no GEXBot capture
+ * for today yet" — never a blank panel.
  */
 
 import { memo } from 'react';
@@ -122,7 +109,7 @@ function PeriscopePanelInner({
     const message =
       emptyReason === 'no_spot'
         ? 'Waiting for SPX spot from index_candles_1m.'
-        : 'Scraper has not inserted a Periscope slot for today yet. First slot lands ~5:50 CT during a normal session.';
+        : 'No GEXBot capture for today yet. First slot lands around the cash open (8:30 CT).';
     body = (
       <p className="font-mono text-[12px]" style={{ color: theme.textMuted }}>
         {message}

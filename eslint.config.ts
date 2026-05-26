@@ -21,9 +21,9 @@ export default [
       'sidecar',
       'daemon',
       'uw-stream',
-      // periscope-scraper has its own node_modules + tsconfig + lint
-      // script; treat it like sidecar/daemon/uw-stream and ignore the
-      // whole directory at the root.
+      // periscope-scraper service was retired 2026-05-26 but local
+      // dist/ + node_modules can linger on dev machines. Keep the
+      // root-dir ignore so eslint doesn't choke on the compiled JS.
       'periscope-scraper',
       'playwright-report',
       '.scannerwork',
