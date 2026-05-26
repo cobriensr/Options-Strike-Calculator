@@ -79,7 +79,37 @@ function loadBundle(alertType: 'lottery' | 'silentboom'): TakeitBundle {
   return JSON.parse(fs.readFileSync(p, 'utf8')) as TakeitBundle;
 }
 
+// Skip the parity test when the Python-generated bundles are missing.
+// `ml/data/` is gitignored, so CI (which has no Python venv in the
+// `app` job) can't see the JSON bundles unless they're regenerated.
+// In CI we skip silently; locally we fail loudly with the regen hint
+// so a contributor making bundle-format changes can't miss it.
+function missingArtifact(): string | null {
+  if (!fs.existsSync(FIXTURE_PATH)) return `parity fixture: ${FIXTURE_PATH}`;
+  for (const alertType of ['lottery', 'silentboom'] as const) {
+    const p = path.join(BUNDLE_DIR, `${alertType}_classifier.json`);
+    if (!fs.existsSync(p)) return `${alertType} bundle: ${p}`;
+  }
+  return null;
+}
+
+const missing = missingArtifact();
+const isCI = process.env.CI === 'true' || process.env.CI === '1';
+
 describe('takeit-score TS↔Python parity', () => {
+  if (missing) {
+    if (isCI) {
+      it.skip(`skipped — ${missing} (regenerate with ml.src.takeit.train)`, () => {});
+      return;
+    }
+    it('required artifacts are present', () => {
+      throw new Error(
+        `missing ${missing}; regenerate with: ml/.venv/bin/python -m ml.src.takeit.train`,
+      );
+    });
+    return;
+  }
+
   const fixture = loadFixture();
 
   for (const alertType of ['lottery', 'silentboom'] as const) {
