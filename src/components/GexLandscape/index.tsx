@@ -185,13 +185,6 @@ const GexLandscape = memo(function GexLandscape({
     setLiveTimestamps([]);
   }, [selectedDate, clearScrub]);
 
-  const onRefresh = refresh;
-  const onDateChange = setSelectedDate;
-  const onScrubPrev = scrub.scrubPrev;
-  const onScrubNext = scrub.scrubNext;
-  const onScrubTo = scrub.scrubTo;
-  const onScrubLive = scrubLive;
-
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
   const hasScrolledRef = useRef(false);
@@ -468,16 +461,16 @@ const GexLandscape = memo(function GexLandscape({
       timestamp={timestamp}
       timestamps={liveTimestamps}
       selectedDate={selectedDate}
-      onDateChange={onDateChange}
+      onDateChange={setSelectedDate}
       isLive={isLive}
       isScrubbed={isScrubbed}
       canScrubPrev={canScrubPrev}
       canScrubNext={canScrubNext}
-      onScrubPrev={onScrubPrev}
-      onScrubNext={onScrubNext}
-      onScrubTo={onScrubTo}
-      onScrubLive={onScrubLive}
-      onRefresh={onRefresh}
+      onScrubPrev={scrub.scrubPrev}
+      onScrubNext={scrub.scrubNext}
+      onScrubTo={scrub.scrubTo}
+      onScrubLive={scrubLive}
+      onRefresh={refresh}
       loading={loading}
       sectionLabel="GEX landscape"
     />
