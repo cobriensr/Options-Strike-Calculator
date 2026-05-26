@@ -209,9 +209,9 @@ export default async function handler(
     const marketOpen = isMarketOpen();
     const date = getETDateStr(new Date()); // today CT
 
-    // Cache: 30s live, 60s after-hours. Panel polls at POLL_INTERVALS.PERISCOPE
-    // (60s) so the cache + SWR keeps the worst-case rendered staleness around
-    // 30-90s even with the cache layer.
+    // Cache: edge 30s live / 300s after-hours, SWR 30s live / 60s after-hours.
+    // Panel polls at POLL_INTERVALS.PERISCOPE (60s) so the cache + SWR keeps
+    // the worst-case rendered staleness around 30-90s even with the cache layer.
     setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
 
     // Available slots backs the prev/next stepper. The stepper is meant
