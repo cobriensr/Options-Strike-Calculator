@@ -55,6 +55,7 @@ interface CapturedListener {
 const listeners = new Map<string, CapturedListener>();
 const skipWaiting = vi.fn();
 const clientsClaim = vi.fn().mockResolvedValue(undefined);
+const showNotification = vi.fn().mockResolvedValue(undefined);
 
 const mockSelf = {
   __WB_MANIFEST: [] as Array<{ url: string; revision: string }>,
@@ -64,6 +65,9 @@ const mockSelf = {
   skipWaiting,
   clients: {
     claim: clientsClaim,
+  },
+  registration: {
+    showNotification,
   },
 };
 
@@ -81,6 +85,7 @@ afterAll(() => {
 beforeEach(() => {
   skipWaiting.mockClear();
   clientsClaim.mockClear();
+  showNotification.mockClear();
 });
 
 // ── Helper: build a mock ExtendableEvent that captures waitUntil() ──────
@@ -99,9 +104,10 @@ function makeExtendableEvent(extra: Record<string, unknown> = {}) {
 // ── Tests ───────────────────────────────────────────────────────────────
 
 describe('sw — module load', () => {
-  it('registers message and activate lifecycle listeners on self', () => {
+  it('registers message, activate, and push lifecycle listeners on self', () => {
     expect(listeners.has('message')).toBe(true);
     expect(listeners.has('activate')).toBe(true);
+    expect(listeners.has('push')).toBe(true);
   });
 });
 
@@ -133,5 +139,103 @@ describe('sw — activate handler', () => {
     handler(event);
     await event.flush();
     expect(clientsClaim).toHaveBeenCalledOnce();
+  });
+});
+
+describe('sw — push handler', () => {
+  // Build a mock PushEvent whose .data.json() returns the given payload.
+  // `dataJson` can throw to simulate a non-JSON push body — the handler
+  // is contracted to fall through to the generic title in that case.
+  function makePushEvent(dataJson: () => unknown) {
+    return makeExtendableEvent({
+      data: {
+        json: dataJson,
+      },
+    });
+  }
+
+  it('shows notification with title, body, tag, requireInteraction from JSON payload', async () => {
+    const handler = listeners.get('push')!;
+    const event = makePushEvent(() => ({
+      title: 'SPXW 7100C 90% ASK',
+      body: '$415K premium / 2 trades',
+      tag: 'interval-ba-9001',
+      requireInteraction: true,
+    }));
+    handler(event);
+    await event.flush();
+
+    expect(showNotification).toHaveBeenCalledOnce();
+    const [title, options] = showNotification.mock.calls[0]!;
+    expect(title).toBe('SPXW 7100C 90% ASK');
+    expect(options).toMatchObject({
+      body: '$415K premium / 2 trades',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: 'interval-ba-9001',
+      requireInteraction: true,
+    });
+  });
+
+  it('falls back to "Strike Calculator alert" title when payload omits title', async () => {
+    const handler = listeners.get('push')!;
+    const event = makePushEvent(() => ({ body: 'no title given' }));
+    handler(event);
+    await event.flush();
+
+    const [title, options] = showNotification.mock.calls[0]!;
+    expect(title).toBe('Strike Calculator alert');
+    expect(options.body).toBe('no title given');
+    // Defaults the rest too — tag undefined, requireInteraction false.
+    expect(options.tag).toBeUndefined();
+    expect(options.requireInteraction).toBe(false);
+  });
+
+  it('defaults body to empty string when omitted', async () => {
+    const handler = listeners.get('push')!;
+    const event = makePushEvent(() => ({ title: 'Heads up' }));
+    handler(event);
+    await event.flush();
+    const [, options] = showNotification.mock.calls[0]!;
+    expect(options.body).toBe('');
+  });
+
+  it('falls back to defaults when the push body is non-JSON', async () => {
+    const handler = listeners.get('push')!;
+    const event = makePushEvent(() => {
+      throw new SyntaxError('Unexpected token');
+    });
+    handler(event);
+    await event.flush();
+
+    const [title, options] = showNotification.mock.calls[0]!;
+    expect(title).toBe('Strike Calculator alert');
+    expect(options.body).toBe('');
+  });
+
+  it('falls back to defaults when event.data is absent (older push contract)', async () => {
+    const handler = listeners.get('push')!;
+    const event = makeExtendableEvent(); // no `data` field at all
+    handler(event);
+    await event.flush();
+
+    expect(showNotification).toHaveBeenCalledOnce();
+    const [title] = showNotification.mock.calls[0]!;
+    expect(title).toBe('Strike Calculator alert');
+  });
+
+  it('passes explicit requireInteraction=true through to NotificationOptions', async () => {
+    // ?? false leaves a present boolean alone — exercises the truthy
+    // arm of the nullish coalescing separately from Test 2's omitted-
+    // field branch (which exercises the fallback arm).
+    const handler = listeners.get('push')!;
+    const event = makePushEvent(() => ({
+      title: 'X',
+      requireInteraction: true,
+    }));
+    handler(event);
+    await event.flush();
+    const [, options] = showNotification.mock.calls[0]!;
+    expect(options.requireInteraction).toBe(true);
   });
 });
