@@ -109,6 +109,35 @@ function writeStoredPrefs(prefs: StoredPrefs): void {
   }
 }
 
+/**
+ * Should the GET response replace the localStorage-seeded state for
+ * this axis?
+ *
+ * The keepalive PUT fired from cmd+shift+r / tab-close can drop on
+ * the floor (the `.catch(() => undefined)` in `sendPut` swallows
+ * network errors), leaving the DB stale while localStorage holds the
+ * user's latest order/visibility. If the next mount's GET then
+ * returns the stale empty arrays, we used to overwrite the fresh
+ * localStorage seed and the post-state effect would re-write the
+ * empty arrays back to localStorage — wiping the user's panel order
+ * across a reload.
+ *
+ * Rule: apply the server value EXCEPT when it would clear a
+ * non-empty local seed. That preserves cross-device sync when the
+ * server actually has data, while protecting "I changed locally but
+ * the PUT didn't make it to the server before reload" from silent
+ * destruction. Single-owner deployment (see CLAUDE.md "Auth is
+ * single-owner") means the cross-device-clears-everything edge case
+ * is rare; the reload-loses-my-work case happens every keepalive
+ * miss.
+ */
+function shouldApplyServerAxis(
+  server: readonly string[],
+  local: readonly string[],
+): boolean {
+  return !(server.length === 0 && local.length > 0);
+}
+
 export interface PanelPrefs {
   // Visibility (axis 1)
   hidden: ReadonlySet<string>;
@@ -201,16 +230,31 @@ export function usePanelPrefs(): PanelPrefs {
         // Only apply axes the user HASN'T touched since mount —
         // otherwise the GET overwrites the user's pre-load toggle /
         // drag with stored state. Touched-axis presence is encoded as
-        // key presence in pendingBodyRef.
+        // key presence in pendingBodyRef. Additionally, skip axes
+        // where the server returned an empty array but localStorage
+        // had a non-empty seed — see `shouldApplyServerAxis()` for
+        // why (keepalive PUT loss across cmd+shift+r).
         const pending = pendingBodyRef.current;
-        if (!('hiddenPanels' in pending)) {
-          setHidden(new Set(data.hiddenPanels));
+        const serverHidden = data.hiddenPanels;
+        const serverOrder = data.panelOrder ?? [];
+        const serverGroupOrder = data.groupOrder ?? [];
+        if (
+          !('hiddenPanels' in pending) &&
+          shouldApplyServerAxis(serverHidden, cached.hiddenPanels)
+        ) {
+          setHidden(new Set(serverHidden));
         }
-        if (!('panelOrder' in pending)) {
-          setOrderState(data.panelOrder ?? []);
+        if (
+          !('panelOrder' in pending) &&
+          shouldApplyServerAxis(serverOrder, cached.panelOrder)
+        ) {
+          setOrderState(serverOrder);
         }
-        if (!('groupOrder' in pending)) {
-          setGroupOrderState(data.groupOrder ?? []);
+        if (
+          !('groupOrder' in pending) &&
+          shouldApplyServerAxis(serverGroupOrder, cached.groupOrder)
+        ) {
+          setGroupOrderState(serverGroupOrder);
         }
         setIsLoaded(true);
       } catch (err) {
@@ -221,7 +265,10 @@ export function usePanelPrefs(): PanelPrefs {
     return () => {
       abort.abort();
     };
-  }, [initialMode]);
+    // `cached` is the once-per-mount localStorage seed (useMemo with []
+    // deps); listing it satisfies react-hooks/exhaustive-deps and is
+    // referentially stable so this effect still only fires once.
+  }, [initialMode, cached]);
 
   const sendPut = useCallback((body: PartialBody, keepalive: boolean) => {
     // `keepalive: true` lets the request outlive the page when fired

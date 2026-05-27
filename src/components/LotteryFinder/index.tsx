@@ -836,11 +836,12 @@ export function LotteryFinderSection({
         <div className="space-y-2.5 rounded-lg border border-neutral-800/80 bg-neutral-950/40 p-2.5">
           {/* Row 1: date + scrub controls. Prev/next buttons step the
             1-minute point-in-time bucket by ±1 min — the drag slider
-            was too finicky to land on a target minute. Click "All
-            day" / "Live" to clear the bucket. Keyboard: tab to a
-            button and press space/enter to step. Export anchors are
-            inlined to the right so the toolbar starts with a single
-            row of controls instead of two. */}
+            was too finicky to land on a target minute. Click "Live ·
+            All day" (today) or "All day" (historical) to clear the
+            bucket. Keyboard: tab to a button and press space/enter to
+            step. Export anchors are inlined to the right so the
+            toolbar starts with a single row of controls instead of
+            two. */}
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <label className="flex items-center gap-1.5">
               <span className={SECTION_LABEL}>date</span>
@@ -863,12 +864,12 @@ export function LotteryFinderSection({
                 onClick={() => setMinute(null)}
                 title={
                   isLive
-                    ? 'Live: showing today (most recent first), polls every 30s'
-                    : 'Show every fire on the selected day'
+                    ? 'Live · All day — clears the minute pick and shows every fire on today (polls every 30s)'
+                    : 'All day — clears the minute pick and shows every fire on the selected day'
                 }
                 ariaPressed={minute == null}
               >
-                {date === todayCt() ? 'Live' : 'All day'}
+                {date === todayCt() ? 'Live · All day' : 'All day'}
               </FilterChip>
               {/* Per-minute controls. Lo = 08:30 CT, hi = 15:00 CT
                 (regular session). For today, hi is further capped at

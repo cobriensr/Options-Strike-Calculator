@@ -498,3 +498,128 @@ describe('usePanelPrefs — localStorage cache', () => {
     expect(result.current.groupOrder).toEqual(['Trading']);
   });
 });
+
+describe('usePanelPrefs — GET does not clobber non-empty localStorage seed', () => {
+  // Regression test for the cmd+shift+r data-loss bug: the keepalive
+  // PUT fired from pagehide can drop silently (sendPut .catches and
+  // swallows errors). On the next mount, the GET would return the
+  // stale empty arrays from the DB and overwrite the freshly-seeded
+  // localStorage state — and because the post-state effect mirrors
+  // state back to localStorage, the cleared values were also written
+  // back, destroying the user's saved order/visibility across a
+  // reload.
+  //
+  // Rule under test: when the GET response is an empty array for an
+  // axis AND localStorage had a non-empty seed for that axis, prefer
+  // the local seed. Non-empty server responses still win
+  // (cross-device sync) and "both empty" is a no-op either way.
+
+  it('GET returning empty panelOrder does NOT wipe localStorage-seeded order', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        hiddenPanels: [],
+        panelOrder: ['sec-spot-price', 'sec-datetime', 'sec-iv'],
+        groupOrder: [],
+      }),
+    );
+    // Server returns empty arrays — simulates the stale-DB case where
+    // the last keepalive PUT didn't land.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ hiddenPanels: [], panelOrder: [], groupOrder: [] }),
+    );
+
+    const { result } = renderHook(() => usePanelPrefs());
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    expect(result.current.order).toEqual([
+      'sec-spot-price',
+      'sec-datetime',
+      'sec-iv',
+    ]);
+    // localStorage must also stay non-empty — the post-state effect
+    // would otherwise mirror the cleared state back and the next
+    // reload would have a truly empty seed.
+    const stored = JSON.parse(
+      window.localStorage.getItem(STORAGE_KEY) ?? '{}',
+    ) as { panelOrder: string[] };
+    expect(stored.panelOrder).toEqual([
+      'sec-spot-price',
+      'sec-datetime',
+      'sec-iv',
+    ]);
+  });
+
+  it('GET returning empty hiddenPanels does NOT wipe localStorage-seeded hides', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        hiddenPanels: ['sec-darkpool', 'sec-greek-flow'],
+        panelOrder: [],
+        groupOrder: [],
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ hiddenPanels: [], panelOrder: [], groupOrder: [] }),
+    );
+
+    const { result } = renderHook(() => usePanelPrefs());
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    expect(result.current.isHidden('sec-darkpool')).toBe(true);
+    expect(result.current.isHidden('sec-greek-flow')).toBe(true);
+  });
+
+  it('non-empty server panelOrder DOES overwrite empty localStorage (cross-device sync)', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    // No localStorage seed — first time on this device.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        hiddenPanels: [],
+        panelOrder: ['sec-x', 'sec-y'],
+        groupOrder: [],
+      }),
+    );
+
+    const { result } = renderHook(() => usePanelPrefs());
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    expect(result.current.order).toEqual(['sec-x', 'sec-y']);
+  });
+
+  it('non-empty server panelOrder DOES overwrite non-empty localStorage (server is authoritative when both present)', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+    window.localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        hiddenPanels: [],
+        panelOrder: ['old-a', 'old-b'],
+        groupOrder: [],
+      }),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        hiddenPanels: [],
+        panelOrder: ['new-1', 'new-2', 'new-3'],
+        groupOrder: [],
+      }),
+    );
+
+    const { result } = renderHook(() => usePanelPrefs());
+    await waitFor(() => {
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    // When both sides have data, server wins — preserves cross-device
+    // sync of meaningful reorderings.
+    expect(result.current.order).toEqual(['new-1', 'new-2', 'new-3']);
+  });
+});
