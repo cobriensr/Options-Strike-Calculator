@@ -183,6 +183,7 @@ function showBrowserNotification(alert: IntervalBAAlert): void {
 
 export function useIntervalBAAlerts(
   marketOpen: boolean,
+  muted: boolean = false,
 ): IntervalBAAlertPollingState {
   // Owner-or-guest: any authenticated session gets the banner + chime.
   // Public visitors (no cookie) skip the poll loop entirely so we don't
@@ -191,6 +192,19 @@ export function useIntervalBAAlerts(
   const [alerts, setAlerts] = useState<IntervalBAAlert[]>([]);
   const lastSeenRef = useRef<string | null>(null);
   const seenIdsRef = useRef<Set<number>>(new Set());
+  // Held in a ref so changing `muted` doesn't bust fetchAlerts identity
+  // and re-trigger the eager-fetch effect (which would re-chime queued
+  // alerts on every mute toggle).
+  const mutedRef = useRef(muted);
+  useEffect(() => {
+    mutedRef.current = muted;
+    // Mute flip → silence any chimes already in flight. Without this,
+    // an "extreme" alert that started a 5s repeating chime would keep
+    // ringing for the whole interval after the user hit mute.
+    if (muted) {
+      for (const alertId of seenIdsRef.current) stopChime(alertId);
+    }
+  }, [muted]);
 
   const fetchAlerts = useCallback(async () => {
     try {
@@ -226,9 +240,16 @@ export function useIntervalBAAlerts(
 
       for (const a of fresh) seenIdsRef.current.add(a.id);
 
-      for (const alert of fresh) {
-        showBrowserNotification(alert);
-        startChime(alert);
+      // When muted, surface the alert in state (so the count badge and
+      // the restored stack are accurate) but skip the audible chime
+      // and the system notification — those are what's actually
+      // intrusive. Polling itself keeps running so re-enabling shows
+      // the real backlog, not a stale snapshot.
+      if (!mutedRef.current) {
+        for (const alert of fresh) {
+          showBrowserNotification(alert);
+          startChime(alert);
+        }
       }
 
       if (fresh.length > 0) {

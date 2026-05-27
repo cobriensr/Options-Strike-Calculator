@@ -26,6 +26,7 @@ import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
 import { useAlertPolling } from './hooks/useAlertPolling';
 import { useIntervalBAAlerts } from './hooks/useIntervalBAAlerts';
+import { useIntervalBAMute } from './hooks/useIntervalBAMute';
 import { usePushSubscription } from './hooks/usePushSubscription';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
 import { useGexTarget } from './hooks/useGexTarget';
@@ -321,8 +322,10 @@ export default function StrikeCalculator() {
     market.data.quotes?.marketOpen ?? false,
   );
   const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
+  const intervalBAMute = useIntervalBAMute();
   const intervalBAAlertState = useIntervalBAAlerts(
     market.data.quotes?.marketOpen ?? false,
+    intervalBAMute.muted,
   );
   // Web Push v2 (interval-ba-push-v2-2026-05-12.md): subscribe() runs
   // the full grant + register + POST /api/push/subscribe flow. No-op
@@ -1463,6 +1466,8 @@ export default function StrikeCalculator() {
       <IntervalBAAlertBanner
         alerts={intervalBAAlertState.alerts}
         onAcknowledge={intervalBAAlertState.acknowledge}
+        muted={intervalBAMute.muted}
+        onToggleMute={intervalBAMute.toggle}
       />
       <div
         id="app-shell"

@@ -141,4 +141,86 @@ describe('IntervalBAAlertBanner', () => {
     );
     expect(screen.queryByText(/^\+/)).not.toBeInTheDocument();
   });
+
+  it('renders Mute button when onToggleMute is wired and alerts present', () => {
+    render(
+      <IntervalBAAlertBanner
+        alerts={[sample]}
+        onAcknowledge={async () => {}}
+        muted={false}
+        onToggleMute={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText('Mute alerts')).toBeInTheDocument();
+    // Alert stack is still visible.
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+  });
+
+  it('omits Mute button entirely when onToggleMute is not provided', () => {
+    render(
+      <IntervalBAAlertBanner
+        alerts={[sample]}
+        onAcknowledge={async () => {}}
+      />,
+    );
+    expect(screen.queryByLabelText('Mute alerts')).not.toBeInTheDocument();
+  });
+
+  it('when muted with pending alerts, collapses to a restore chip', () => {
+    render(
+      <IntervalBAAlertBanner
+        alerts={[sample]}
+        onAcknowledge={async () => {}}
+        muted={true}
+        onToggleMute={() => {}}
+      />,
+    );
+    expect(
+      screen.getByLabelText('Unmute alerts (1 pending)'),
+    ).toBeInTheDocument();
+    // The full alert content is hidden.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('when muted with NO pending alerts, renders nothing', () => {
+    const { container } = render(
+      <IntervalBAAlertBanner
+        alerts={[]}
+        onAcknowledge={async () => {}}
+        muted={true}
+        onToggleMute={() => {}}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('Mute button click invokes onToggleMute', async () => {
+    const user = userEvent.setup();
+    const toggle = vi.fn();
+    render(
+      <IntervalBAAlertBanner
+        alerts={[sample]}
+        onAcknowledge={async () => {}}
+        muted={false}
+        onToggleMute={toggle}
+      />,
+    );
+    await user.click(screen.getByLabelText('Mute alerts'));
+    expect(toggle).toHaveBeenCalledTimes(1);
+  });
+
+  it('Restore chip click invokes onToggleMute', async () => {
+    const user = userEvent.setup();
+    const toggle = vi.fn();
+    render(
+      <IntervalBAAlertBanner
+        alerts={[sample]}
+        onAcknowledge={async () => {}}
+        muted={true}
+        onToggleMute={toggle}
+      />,
+    );
+    await user.click(screen.getByLabelText('Unmute alerts (1 pending)'));
+    expect(toggle).toHaveBeenCalledTimes(1);
+  });
 });

@@ -10,6 +10,11 @@
  * tint and the chime cadence (cadence handled inside the hook). The
  * dismiss button calls the hook's `acknowledge(id)` which POSTs to
  * `/api/interval-ba-alerts-ack` AND stops the repeating chime.
+ *
+ * Mute control: when `muted` is true, the entire stack collapses to a
+ * single chip showing the pending count + restore button. Polling keeps
+ * running in the hook, but the chime + browser notifications are
+ * suppressed. See {@link useIntervalBAMute} for the persistence layer.
  */
 
 import type { IntervalBAAlert } from '../hooks/useIntervalBAAlerts';
@@ -24,6 +29,8 @@ import { tintedSurface } from '../utils/ui-utils';
 interface IntervalBAAlertBannerProps {
   alerts: IntervalBAAlert[];
   onAcknowledge: (id: number) => Promise<void>;
+  muted?: boolean;
+  onToggleMute?: () => void;
 }
 
 function severityStyles(severity: IntervalBAAlert['severity']) {
@@ -65,8 +72,38 @@ function sideBadgeStyles(optionType: IntervalBAAlert['option_type']) {
 export default function IntervalBAAlertBanner({
   alerts,
   onAcknowledge,
+  muted = false,
+  onToggleMute,
 }: Readonly<IntervalBAAlertBannerProps>) {
   const active = alerts.filter((a) => !a.acknowledged);
+
+  // Muted state: render the restore chip iff a control was wired up AND
+  // we'd otherwise be showing alerts. If no alerts are pending and the
+  // user is muted, render nothing — the speaker icon doesn't need to
+  // permanently camp the corner of the screen.
+  if (muted && onToggleMute) {
+    if (active.length === 0) return null;
+    return (
+      <div className="fixed right-4 bottom-24 z-[80]">
+        <button
+          type="button"
+          onClick={onToggleMute}
+          aria-label={`Unmute alerts (${active.length} pending)`}
+          aria-pressed="true"
+          className="flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 font-sans text-xs font-semibold shadow-lg transition-opacity hover:opacity-90"
+          style={{
+            backgroundColor: theme.surface,
+            color: theme.text,
+            borderColor: theme.textMuted,
+          }}
+        >
+          <span aria-hidden="true">{'\u{1F507}'}</span>
+          <span>{active.length} muted &mdash; click to restore</span>
+        </button>
+      </div>
+    );
+  }
+
   if (active.length === 0) return null;
 
   // Bottom-right cluster invariants:
@@ -78,6 +115,26 @@ export default function IntervalBAAlertBanner({
   const overflow = active.length - visible.length;
   return (
     <div className="fixed right-4 bottom-24 z-[80] flex w-full max-w-sm flex-col gap-1">
+      {onToggleMute && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onToggleMute}
+            aria-label="Mute alerts"
+            aria-pressed="false"
+            title="Mute alerts — chime + notifications stop, polling continues"
+            className="cursor-pointer rounded-full border px-2 py-0.5 font-sans text-[10px] font-semibold shadow transition-opacity hover:opacity-90"
+            style={{
+              backgroundColor: theme.surface,
+              color: theme.text,
+              borderColor: theme.textMuted,
+            }}
+          >
+            <span aria-hidden="true">{'\u{1F509}'}</span>
+            <span className="ml-1">Mute</span>
+          </button>
+        </div>
+      )}
       {visible.map((alert) => {
         const sev = severityStyles(alert.severity);
         const sideBadge = sideBadgeStyles(alert.option_type);

@@ -393,4 +393,76 @@ describe('useIntervalBAAlerts', () => {
 
     unmount();
   });
+
+  it('when muted, populates alerts but does NOT chime or notify', async () => {
+    mockFetchJson({ alerts: [baseAlert] });
+
+    const { result, unmount } = renderHook(() =>
+      useIntervalBAAlerts(true, true),
+    );
+
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+    // Alert IS in state so the count badge + restored stack reflect it.
+    expect(result.current.unacknowledgedCount).toBe(1);
+    // ...but the chime never fires.
+    expect(vi.mocked(playSweepAlarm)).not.toHaveBeenCalled();
+
+    unmount();
+  });
+
+  it('flipping muted=true mid-flight stops the repeating chime', async () => {
+    // Without the [muted] effect that loops stopChime over seenIdsRef,
+    // an extreme alert's 5s repeating chime would keep ringing for the
+    // full interval after the user hit mute. Spy on clearInterval since
+    // stopChime is module-private; it's the smoking gun for the stop.
+    mockFetchJson({ alerts: [baseAlert] });
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval');
+
+    const { result, rerender, unmount } = renderHook(
+      ({ muted }: { muted: boolean }) => useIntervalBAAlerts(true, muted),
+      { initialProps: { muted: false } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+    // Chime started. Now flip mute on.
+    expect(vi.mocked(playSweepAlarm)).toHaveBeenCalled();
+    const clearsBeforeMute = clearSpy.mock.calls.length;
+
+    rerender({ muted: true });
+
+    // The [muted] effect ran stopChime over the seen id; that calls
+    // clearInterval on the active chime handle. At least one new
+    // clearInterval call must appear vs. before the mute flip.
+    expect(clearSpy.mock.calls.length).toBeGreaterThan(clearsBeforeMute);
+
+    clearSpy.mockRestore();
+    unmount();
+  });
+
+  it('un-muting after a muted fire does not retroactively chime past alerts', async () => {
+    mockFetchJson({ alerts: [baseAlert] });
+
+    const { result, rerender, unmount } = renderHook(
+      ({ muted }: { muted: boolean }) => useIntervalBAAlerts(true, muted),
+      { initialProps: { muted: true } },
+    );
+
+    await waitFor(() => {
+      expect(result.current.alerts).toHaveLength(1);
+    });
+    expect(vi.mocked(playSweepAlarm)).not.toHaveBeenCalled();
+
+    // Flip mute off — the past alert is already in the dedupe set so
+    // the next poll should NOT re-emit a chime for it. Only NEW fires
+    // would chime.
+    rerender({ muted: false });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(vi.mocked(playSweepAlarm)).not.toHaveBeenCalled();
+
+    unmount();
+  });
 });
