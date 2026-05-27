@@ -385,6 +385,16 @@ export const lotteryFinderTickerCountsQuerySchema = z.object({
    *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
    *  stay aligned when the Burst chip is active. */
   minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+  /** Mirror of `showAll` on `lotteryFinderQuerySchema`. When 'true',
+   *  bypass the bottom-quintile inversion-quality suppression so the
+   *  chip strip matches the feed under the "Show filtered tickers"
+   *  toggle. Off by default — chip totals reflect the same Q1/Q2
+   *  suppression the feed applies, preventing the confusion of a
+   *  non-zero ticker count with an empty feed. */
+  showAll: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
 });
 
 export type LotteryFinderTickerCountsQuery = z.infer<

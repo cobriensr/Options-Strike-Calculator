@@ -511,6 +511,7 @@ export function LotteryFinderSection({
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
+    showAll: showFilteredTickers,
   });
 
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
@@ -1388,7 +1389,17 @@ export function LotteryFinderSection({
           </div>
         ) : fires.length === 0 ? (
           <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400">
-            {reloadOnly || cheapCallPmOnly || modeFilter ? (
+            {!showFilteredTickers && page === 0 && total > 0 ? (
+              <>
+                {total} fire{total === 1 ? '' : 's'} for {date} matched the
+                filters but every one was suppressed by the inversion-quality
+                filter (bottom-quintile ticker). Toggle{' '}
+                <span className="font-medium text-neutral-200">
+                  Show filtered tickers
+                </span>{' '}
+                in the MODE row to view them.
+              </>
+            ) : reloadOnly || cheapCallPmOnly || modeFilter ? (
               <>
                 No fires on {date} matching the active filters. Try clearing a
                 filter chip above.

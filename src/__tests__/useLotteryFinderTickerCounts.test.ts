@@ -52,6 +52,7 @@ describe('useLotteryFinderTickerCounts', () => {
     expect(url).not.toContain('optionType=');
     expect(url).not.toContain('tod=');
     expect(url).not.toContain('minScore=');
+    expect(url).not.toContain('showAll=');
   });
 
   it('appends every optional filter to the URL when supplied', async () => {
@@ -66,6 +67,7 @@ describe('useLotteryFinderTickerCounts', () => {
         optionType: 'C',
         tod: 'PM',
         minScore: 12,
+        showAll: true,
       }),
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -76,6 +78,26 @@ describe('useLotteryFinderTickerCounts', () => {
     expect(url).toContain('optionType=C');
     expect(url).toContain('tod=PM');
     expect(url).toContain('minScore=12');
+    expect(url).toContain('showAll=true');
+  });
+
+  it('omits showAll from the URL when false (default)', async () => {
+    // The chip-strip endpoint applies Q1/Q2 suppression by default,
+    // matching the feed. The URL builder must NOT send `showAll=false`
+    // (the Zod transform treats anything other than literal 'true' as
+    // false, so an explicit 'false' would still suppress — but staying
+    // off the URL keeps the contract clean and the request URL shorter).
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+        showAll: false,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('showAll=');
   });
 
   it('exposes tickers + clears loading on success', async () => {

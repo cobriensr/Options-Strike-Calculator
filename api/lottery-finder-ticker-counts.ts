@@ -24,6 +24,7 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { lotteryFinderTickerCountsQuerySchema } from './_lib/validation.js';
+import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type DbNumeric = string | number;
@@ -48,6 +49,7 @@ interface LotteryFinderTickerCountsResponse {
     minScore: number | null;
     minPremium: number | null;
     minFireCount: number | null;
+    showAll: boolean;
   };
   tickers: {
     ticker: string;
@@ -90,6 +92,7 @@ export default async function handler(
     q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
   const minFireCount =
     q.minFireCount != null && q.minFireCount > 1 ? q.minFireCount : null;
+  const showAll = q.showAll ?? false;
 
   try {
     const db = getDb();
@@ -100,6 +103,18 @@ export default async function handler(
     // The outer SELECT then groups the deduped rows by ticker. Peak
     // is taken across the chain's lifetime (MAX over partition); the
     // latest trigger time is the freshest fire within the chain.
+    //
+    // Two filters must mirror /api/lottery-finder exactly so chip
+    // totals don't overstate the visible feed:
+    //   1. `entry_price >= MIN_ALERT_ENTRY_PRICE` — the system-level
+    //      penny-option floor (the feed enforces this on every query).
+    //   2. Phase 3 inversion-quality suppression: LEFT JOIN
+    //      lottery_ticker_stats and drop chains whose ticker sits in
+    //      `inversion_quintile` 1 or 2 unless `showAll=true`. NULL
+    //      quintile (cold-start tickers) is never suppressed. The feed
+    //      applies this post-SELECT in JS; doing it in SQL here keeps
+    //      the chip totals aligned and avoids fetching ticker_stats
+    //      back to the Node layer.
     const rows = (await withDbRetry(
       () => db`
       WITH chain_day AS (
@@ -112,6 +127,7 @@ export default async function handler(
           MAX(trigger_time_ct) AS chain_latest_trigger
         FROM lottery_finder_fires
         WHERE date = ${date}::date
+          AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${q.reload ?? null}::boolean IS NULL OR reload_tagged = ${q.reload ?? false})
           AND (${q.cheapCallPm ?? null}::boolean IS NULL OR cheap_call_pm_tagged = ${q.cheapCallPm ?? false})
           AND (${q.mode ?? null}::text IS NULL OR mode = ${q.mode ?? ''})
@@ -126,12 +142,18 @@ export default async function handler(
         HAVING (${minFireCount}::int IS NULL OR COUNT(*) >= ${minFireCount ?? 0})
       )
       SELECT
-        underlying_symbol AS ticker,
+        cd.underlying_symbol AS ticker,
         COUNT(*)::int AS count,
-        MAX(chain_peak_pct) AS peak_best_pct,
-        MAX(chain_latest_trigger) AS latest_trigger_time_ct
-      FROM chain_day
-      GROUP BY underlying_symbol
+        MAX(cd.chain_peak_pct) AS peak_best_pct,
+        MAX(cd.chain_latest_trigger) AS latest_trigger_time_ct
+      FROM chain_day cd
+      LEFT JOIN lottery_ticker_stats s ON s.ticker = cd.underlying_symbol
+      WHERE (
+        ${showAll}::boolean
+        OR s.inversion_quintile IS NULL
+        OR s.inversion_quintile > 2
+      )
+      GROUP BY cd.underlying_symbol
       ORDER BY count DESC, latest_trigger_time_ct DESC, underlying_symbol ASC
     `,
       2,
@@ -149,6 +171,7 @@ export default async function handler(
         minScore: q.minScore ?? null,
         minPremium,
         minFireCount,
+        showAll,
       },
       tickers: rows.map((r) => ({
         ticker: r.ticker,

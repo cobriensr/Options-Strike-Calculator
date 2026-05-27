@@ -217,6 +217,57 @@ describe('lottery-finder-ticker-counts handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('binds MIN_ALERT_ENTRY_PRICE + the Q1/Q2 inversion suppression into the SQL', async () => {
+    // Chip totals must mirror /api/lottery-finder so the count and
+    // the visible feed agree. Two server-side filters are load-bearing:
+    //   1. entry_price >= MIN_ALERT_ENTRY_PRICE (penny-option floor)
+    //   2. Phase 3 inversion-quality suppression — LEFT JOIN
+    //      lottery_ticker_stats + inversion_quintile > 2 unless showAll
+    // This test fails loudly if either is dropped or refactored away.
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'AAPL',
+        count: 1,
+        peak_best_pct: '40.0',
+        latest_trigger_time_ct: '2026-05-14T15:00:00Z',
+      },
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const sql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(' ');
+    expect(sql).toContain('entry_price >=');
+    expect(sql).toContain('LEFT JOIN lottery_ticker_stats');
+    expect(sql).toContain('inversion_quintile');
+    // showAll default is false; the bind value must reach the SQL call.
+    expect((mockSql.mock.calls[0] as unknown[]).slice(1)).toContain(false);
+
+    const body = res._json as { filters: { showAll: boolean } };
+    expect(body.filters.showAll).toBe(false);
+  });
+
+  it('passes showAll=true through to the SQL bind and the filter echo', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', showAll: 'true' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect((mockSql.mock.calls[0] as unknown[]).slice(1)).toContain(true);
+    const body = res._json as { filters: { showAll: boolean } };
+    expect(body.filters.showAll).toBe(true);
+  });
+
   it('handles peak_best_pct = null without throwing', async () => {
     mockSql.mockResolvedValueOnce([
       {
