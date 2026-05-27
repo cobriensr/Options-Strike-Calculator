@@ -141,6 +141,8 @@ describe('fetch-gexbot-strikes handler', () => {
   });
 
   it('continues on per-(ticker,category) fetch failures with partial status', async () => {
+    // Uses 400 (non-retryable) so withRetry exits on the first attempt —
+    // 5xx would trigger backoff and stall under fake timers.
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string) => {
@@ -148,8 +150,8 @@ describe('fetch-gexbot-strikes handler', () => {
         if (url.endsWith('/SPX/state/gamma_zero')) {
           return {
             ok: false,
-            status: 500,
-            text: async () => 'upstream gone',
+            status: 400,
+            text: async () => 'bad request',
           } as Response;
         }
         const segs = url.split('/');
@@ -202,8 +204,8 @@ describe('fetch-gexbot-strikes handler', () => {
         if (ticker === 'SPX' && FAILING_CATEGORIES.has(category)) {
           return {
             ok: false,
-            status: 500,
-            text: async () => 'upstream gone',
+            status: 400,
+            text: async () => 'bad request',
           } as Response;
         }
         return {
@@ -240,10 +242,13 @@ describe('fetch-gexbot-strikes handler', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
+        // 400 (non-retryable) avoids stalling on withRetry's backoff
+        // under fake timers; the cap behavior is the same regardless
+        // of which non-2xx status the upstream returns.
         return {
           ok: false,
-          status: 500,
-          text: async () => 'upstream gone',
+          status: 400,
+          text: async () => 'bad request',
         } as Response;
       }),
     );

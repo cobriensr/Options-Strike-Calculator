@@ -279,7 +279,15 @@
     },
     {
       "path": "/api/cron/fetch-gexbot-strikes",
-      "schedule": "* 13-21 * * 1-5"
+      "schedule": "30-59 13 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-gexbot-strikes",
+      "schedule": "* 14-20 * * 1-5"
+    },
+    {
+      "path": "/api/cron/fetch-gexbot-strikes",
+      "schedule": "0-55 21 * * 1-5"
     },
     {
       "path": "/api/cron/populate-periscope-from-gexbot",

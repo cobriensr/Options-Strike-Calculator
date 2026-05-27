@@ -22,7 +22,8 @@
  * Environment: GEXBOT_API_KEY, CRON_SECRET
  */
 
-import { mapWithConcurrency } from '../_lib/uw-fetch.js';
+import { isFuturesRthCt } from '../_lib/cron-helpers.js';
+import { mapWithConcurrency, withRetry } from '../_lib/uw-fetch.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -78,7 +79,13 @@ export default withCronInstrumentation(
       FETCH_CONCURRENCY,
       async ({ ticker, category }) => {
         try {
-          const body = await fetchStatePerStrike(apiKey, ticker, category);
+          // Retry transient 5xx / timeout / ECONNRESET up to 2 times
+          // (3 attempts total, 1s + 2s exponential backoff). Mirrors
+          // the fetch-gexbot-fast wrap that suppressed SENTRY-EMERALD-
+          // DESERT-8F. 4xx (bad auth) still fails fast.
+          const body = await withRetry(() =>
+            fetchStatePerStrike(apiKey, ticker, category),
+          );
           return { ok: true as const, ticker, category, body };
         } catch (err) {
           return { ok: false as const, ticker, category, err };
@@ -146,5 +153,9 @@ export default withCronInstrumentation(
       metadata: { captures: captures.length, failed },
     };
   },
-  { requireApiKey: false },
+  // Gate to futures-tied RTH (08:30–15:55 CT) — keeps capture aligned
+  // with the sibling fetch-gexbot-fast (which uses the same gate) so
+  // per-strike rows continue to land alongside the orderflow scalars
+  // through the futures settlement window past equity close.
+  { requireApiKey: false, timeCheck: isFuturesRthCt },
 );
