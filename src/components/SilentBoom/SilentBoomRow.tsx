@@ -270,30 +270,77 @@ const spreadConfirmedBadge = (
 /**
  * Spike-ratio badge — gives the eye an at-a-glance read on how
  * extreme the burst was vs the contract's own preceding 4-bucket
- * baseline. Detector min is 5x; tiers above that flag genuinely
- * outlier prints.
+ * baseline. Detector min is 5x.
+ *
+ * Two corrections vs the stored `spike_ratio`:
+ *
+ * 1. **Floor the displayed baseline at 100.** The detector gate at
+ *    api/_lib/silent-boom.ts:253 qualifies fires using
+ *    `spikeMultiplier × max(baseline, 100)`, but the stored ratio at
+ *    line 279 uses `spikeVolume / max(baseline, 1)` — so a baseline
+ *    of 2 contracts inflates the ratio to ~8500× when the gate
+ *    actually treated it as 100. We display the gate-consistent
+ *    ratio: `spikeVolume / max(baseline, 100)`. The stored value is
+ *    untouched so sort / filter / scoring weights stay calibrated.
+ *
+ * 2. **Realign color bands with the score model.** The score model
+ *    at api/_lib/silent-boom-score.ts:54-64 actively PENALIZES
+ *    ratios ≥ 100× with -3 ("mostly ghost prints on dead chains"),
+ *    and the 50-100 bucket scores 0. Painting those buckets red
+ *    "extreme outlier" contradicts the model. New mapping:
+ *      <25×   grey   (5-25 = best signal per weights)
+ *      25-50  amber  (still positive points)
+ *      50-100 rose   (genuine outlier — neutral score, kept red as
+ *                     a "look, but the model says neutral" cue)
+ *      ≥100   grey-warning (-3 penalty bucket — visually muted so
+ *                     the eye doesn't read it as high-conviction)
  */
+const SPIKE_BASELINE_DISPLAY_FLOOR = 100;
+
 const spikeBadge = (
-  ratio: number,
+  rawRatio: number,
+  baselineVolume: number,
+  spikeVolume: number,
 ): { label: string; cls: string; tooltip: string } => {
-  if (ratio >= 50) {
+  const flooredBaseline = Math.max(
+    baselineVolume,
+    SPIKE_BASELINE_DISPLAY_FLOOR,
+  );
+  const effectiveRatio = spikeVolume / flooredBaseline;
+  const wasFloored = baselineVolume < SPIKE_BASELINE_DISPLAY_FLOOR;
+  const floorNote = wasFloored
+    ? ` Baseline was only ${baselineVolume} (under detector floor 100); ratio capped to avoid small-denominator inflation — raw ${rawRatio.toFixed(0)}×.`
+    : '';
+
+  const label = `×${effectiveRatio.toFixed(0)}`;
+
+  if (effectiveRatio >= 100) {
+    // Penalty bucket per silent-boom-score.ts — visually muted so
+    // the badge doesn't oversell what the score model penalizes.
     return {
-      label: `×${ratio.toFixed(0)}`,
-      cls: 'border-rose-500/50 bg-rose-950/40 text-rose-200',
-      tooltip: `Spike ${ratio.toFixed(0)}× the preceding 4-bucket baseline — extreme outlier.`,
+      label,
+      cls: 'border-neutral-600 bg-neutral-900 text-neutral-400',
+      tooltip: `Spike ${effectiveRatio.toFixed(0)}× the 4-bucket baseline — score model penalty bucket (≥100× is mostly ghost prints on dead chains).${floorNote}`,
     };
   }
-  if (ratio >= 20) {
+  if (effectiveRatio >= 50) {
     return {
-      label: `×${ratio.toFixed(0)}`,
+      label,
+      cls: 'border-rose-500/50 bg-rose-950/40 text-rose-200',
+      tooltip: `Spike ${effectiveRatio.toFixed(0)}× the 4-bucket baseline — extreme outlier (score-neutral bucket).${floorNote}`,
+    };
+  }
+  if (effectiveRatio >= 25) {
+    return {
+      label,
       cls: 'border-amber-500/40 bg-amber-950/30 text-amber-200',
-      tooltip: `Spike ${ratio.toFixed(0)}× the preceding 4-bucket baseline.`,
+      tooltip: `Spike ${effectiveRatio.toFixed(0)}× the 4-bucket baseline.${floorNote}`,
     };
   }
   return {
-    label: `×${ratio.toFixed(0)}`,
+    label,
     cls: 'border-neutral-700 bg-neutral-900 text-neutral-300',
-    tooltip: `Spike ${ratio.toFixed(0)}× the preceding 4-bucket baseline (detector floor 5×).`,
+    tooltip: `Spike ${effectiveRatio.toFixed(0)}× the 4-bucket baseline (5-25× is the strongest-signal bucket per score weights; detector floor 5×).${floorNote}`,
   };
 };
 
@@ -349,7 +396,11 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const primaryValue: number | null = alert.outcomes[exitPolicy];
   const primaryLabel = SILENT_BOOM_EXIT_POLICY_LABELS[exitPolicy];
   const primaryTooltip = SILENT_BOOM_EXIT_POLICY_TOOLTIPS[exitPolicy];
-  const spike = spikeBadge(alert.spikeRatio);
+  const spike = spikeBadge(
+    alert.spikeRatio,
+    alert.baselineVolume,
+    alert.spikeVolume,
+  );
   const tier = tierBadge(alert.scoreTier, alert.score);
   const tide = tideBadge(alert.mktTideDiff);
   const flow = flowBadge(

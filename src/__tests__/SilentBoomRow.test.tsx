@@ -253,9 +253,49 @@ describe('SilentBoomRow: badges', () => {
   });
 
   it('renders the spike-ratio "burst" badge with an integer multiplier', () => {
-    renderRow(makeAlert({ spikeRatio: 17.7 }));
-    // 17.7 → "×18" via toFixed(0) — followed by "burst"
+    // Display ratio is computed from spikeVolume / max(baselineVolume,
+    // 100) so the badge stays mathematically grounded when the detector
+    // gate's safety floor (100) was the qualifying denominator. With
+    // baseline=100 the floor is a no-op and the badge equals the raw
+    // ratio. 17.7 → "×18" via toFixed(0).
+    renderRow(
+      makeAlert({ spikeRatio: 17.7, spikeVolume: 1770, baselineVolume: 100 }),
+    );
     expect(screen.getByText(/×18 burst/)).toBeInTheDocument();
+  });
+
+  it('caps the burst ratio at the 100-contract baseline floor when the real baseline is tiny', () => {
+    // Small-denominator artifact case the detector gate at
+    // silent-boom.ts:253 silently floors when qualifying, but the
+    // stored `spike_ratio` doesn't — so e.g. baseline=2 produced
+    // 8502× headlines that contradicted what the score model said.
+    // The badge re-applies the floor: 17000 / max(2, 100) = 170×.
+    renderRow(
+      makeAlert({
+        spikeRatio: 8502,
+        spikeVolume: 17_000,
+        baselineVolume: 2,
+      }),
+    );
+    expect(screen.getByText(/×170 burst/)).toBeInTheDocument();
+  });
+
+  it('mutes the ≥100× penalty bucket with neutral styling (score model classifies it as -3 ghost prints)', () => {
+    // Spike-ratio bucket ≥100× scores -3 per silent-boom-score.ts;
+    // the badge should NOT paint these red "extreme outlier" since
+    // that contradicts the model. Asserts the muted neutral classes
+    // win over the rose classes used for the 50-100 bucket.
+    renderRow(
+      makeAlert({
+        spikeRatio: 250,
+        spikeVolume: 25_000,
+        baselineVolume: 100,
+      }),
+    );
+    const label = screen.getByText(/×250/);
+    const badge = label.closest('span');
+    expect(badge?.className).toMatch(/text-neutral-400/);
+    expect(badge?.className).not.toMatch(/text-rose-200/);
   });
 
   it('omits the Tide badge when mktTideDiff is null', () => {
