@@ -41,6 +41,9 @@ interface UseLotteryFinderTickerCountsArgs {
    *  `minPremiumK * 1000` value so the chip-strip counts match the
    *  filtered feed. */
   minPremium?: number;
+  /** Chain-day fire_count floor. Server-side so chip counts stay
+   *  aligned with the burst-filtered feed. 0/1 = no floor. */
+  minFireCount?: number;
 }
 
 export interface LotteryFinderTickerCountsResponse {
@@ -58,6 +61,7 @@ export function useLotteryFinderTickerCounts({
   tod = null,
   minScore = null,
   minPremium = 0,
+  minFireCount = 0,
 }: UseLotteryFinderTickerCountsArgs): UseFetchedDataResult<LotteryFinderTickerCountsResponse> {
   const params = new URLSearchParams({ date });
   if (reload != null) params.set('reload', String(reload));
@@ -67,6 +71,7 @@ export function useLotteryFinderTickerCounts({
   if (tod) params.set('tod', tod);
   if (minScore != null) params.set('minScore', String(minScore));
   if (minPremium > 0) params.set('minPremium', String(minPremium));
+  if (minFireCount > 1) params.set('minFireCount', String(minFireCount));
   const url = `/api/lottery-finder-ticker-counts?${params.toString()}`;
 
   return useFetchedData<LotteryFinderTickerCountsResponse>({

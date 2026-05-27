@@ -390,6 +390,69 @@ describe('lottery-finder endpoint', () => {
     expect(countSql).toContain('entry_price * trigger_window_size * 100');
   });
 
+  it('honors minFireCount=8 — burst floor gates rows + COUNT queries + echoes in filters', async () => {
+    // Server-side push of the Burst chip. Previously the floor was
+    // applied client-side AFTER the page slice arrived, which left
+    // pagination inflated and empty pages when most chains had
+    // fire_count < floor. Server-side filter must bind on BOTH the
+    // rows query (outer WHERE f.rn = 1 AND f.fire_count >= floor) AND
+    // the COUNT query (HAVING COUNT(*) >= floor) so pagination
+    // reflects the post-filter total.
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', minFireCount: '8' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.minFireCount).toBe(8);
+
+    // Rows + COUNT both bind the floor.
+    const rowsCall = mockSql.mock.calls[0] as unknown[];
+    const countCall = mockSql.mock.calls[1] as unknown[];
+    expect(rowsCall.slice(1)).toContain(8);
+    expect(countCall.slice(1)).toContain(8);
+
+    // SQL text wires the floor into the right shapes: outer WHERE for
+    // rows (post-CTE so window function `fire_count` is in scope),
+    // HAVING for the count subquery.
+    const rowsSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+      ' ',
+    );
+    const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+      ' ',
+    );
+    expect(rowsSql).toContain('f.fire_count >=');
+    expect(countSql).toContain('HAVING');
+    expect(countSql).toContain('COUNT(*) >=');
+  });
+
+  it('omits minFireCount from filters echo when not provided', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.minFireCount).toBeNull();
+  });
+
+  it('rejects minFireCount below 1 with 400 (Zod min(1))', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', minFireCount: '0' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('omits minPremium from filters echo when not provided', async () => {
     mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 

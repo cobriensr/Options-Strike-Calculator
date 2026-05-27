@@ -640,77 +640,39 @@ describe('LotteryFinderSection: filter interactions', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('min-fire-count chip "×≥8" hides chains with fewer than 8 fires', () => {
-    // Burst-quality filter — fire_count < 8 fires are the low-edge
-    // cohort per docs/tmp/burst-profitability-findings-2026-05-17.md.
-    // Default chip is 'all'; clicking '×≥8' should drop the 3-fire row.
-    const fires = [
-      makeFire({
-        id: 1,
-        optionChainId: 'QQQ260515P00708000',
-        underlyingSymbol: 'QQQ',
-        fireCount: 21, // bursty — passes ≥8
-      }),
-      makeFire({
-        id: 2,
-        optionChainId: 'SPY260515C00500000',
-        underlyingSymbol: 'SPY',
-        fireCount: 3, // low — drops on ≥8
-      }),
-    ];
-    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
-
+  it('min-fire-count chip "×≥8" forwards minFireCount=8 to the hook', () => {
+    // Burst-quality filter — pushed server-side so pagination and
+    // chip totals reflect the post-filter count (the prior client-side
+    // implementation left empty pages once the server returned a
+    // page slice that the chip would strip). Clicking the chip should
+    // cause both feed + ticker-counts hooks to be invoked with the
+    // matching numeric floor.
     render(<LotteryFinderSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('burst-filter-gte8'));
 
-    expect(
-      screen.getByTestId('lottery-row-QQQ260515P00708000'),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId('lottery-row-SPY260515C00500000'),
-    ).not.toBeInTheDocument();
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minFireCount: 8 });
+    const countsCall = mockUseLotteryFinderTickerCounts.mock.calls.at(-1);
+    expect(countsCall?.[0]).toMatchObject({ minFireCount: 8 });
   });
 
-  it('min-fire-count chip "all" (default) keeps single-fire chains visible', () => {
-    const fires = [
-      makeFire({
-        id: 1,
-        optionChainId: 'QQQ260515P00708000',
-        underlyingSymbol: 'QQQ',
-        fireCount: 1,
-      }),
-    ];
-    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 1 }));
-
+  it('min-fire-count chip "all" (default) forwards minFireCount=1', () => {
     render(<LotteryFinderSection marketOpen={false} />);
-    // No chip click — default state is 'all'.
-    expect(
-      screen.getByTestId('lottery-row-QQQ260515P00708000'),
-    ).toBeInTheDocument();
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minFireCount: 1 });
   });
 
-  it('persists burst floor to localStorage and reads it back on remount', () => {
-    const fires = [
-      makeFire({
-        id: 1,
-        optionChainId: 'AAPL260508C00200000',
-        underlyingSymbol: 'AAPL',
-        fireCount: 5,
-      }),
-    ];
-    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 1 }));
-
+  it('persists burst floor to localStorage and re-applies it on remount', () => {
     const { unmount } = render(<LotteryFinderSection marketOpen={false} />);
     fireEvent.click(screen.getByTestId('burst-filter-gte8'));
     expect(window.localStorage.getItem('lottery.minFireCount')).toBe('gte8');
     unmount();
 
-    // Remount — chip should restore from localStorage and the fire_count=5
-    // row should still be hidden.
+    // Remount — chip should restore from localStorage and the hook
+    // should be invoked with the persisted floor.
     render(<LotteryFinderSection marketOpen={false} />);
-    expect(
-      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
-    ).not.toBeInTheDocument();
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minFireCount: 8 });
   });
 });
 

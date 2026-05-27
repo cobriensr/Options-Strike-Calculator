@@ -90,6 +90,12 @@ export const lotteryFinderQuerySchema = z.object({
   // multiplier) yields the dollar premium deployed in the trigger
   // window.
   minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  // Burst floor — chain-day fire_count >= N. Server-side so pagination
+  // and ticker-counts reflect the post-filter total instead of the UI
+  // having to filter client-side over an inflated page slice. Mirrors
+  // the MIN_FIRE_COUNT chip group in the LotteryFinder toolbar
+  // (all / >=3 / >=8 / >=16).
+  minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
   /**
    * Phase 3 escape hatch: when 'true', server bypasses the bottom-quintile
    * inversion-quality filter and returns all surviving fires regardless of
@@ -375,6 +381,10 @@ export const lotteryFinderTickerCountsQuerySchema = z.object({
    *  Mirrors the same filter on `lotteryFinderQuerySchema` so the chip
    *  ticker counts stay consistent with the filtered feed. */
   minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
+  /** Chain-day fire_count floor. Mirrors `minFireCount` on
+   *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
+   *  stay aligned when the Burst chip is active. */
+  minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
 });
 
 export type LotteryFinderTickerCountsQuery = z.infer<

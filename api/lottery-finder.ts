@@ -326,6 +326,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       offset,
       sort,
       minScore,
+      minFireCount,
       showAll,
     } = parsed.data;
 
@@ -498,6 +499,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
+          AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
         ORDER BY f.combined_score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -580,6 +582,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
+          AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -661,6 +664,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
+          AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -690,6 +694,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
             AND (${minPremium}::numeric IS NULL OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric)
           GROUP BY underlying_symbol, strike, option_type, expiry
+          HAVING (${minFireCount ?? null}::int IS NULL OR COUNT(*) >= ${minFireCount ?? 0})
         ) collapsed
       `,
         2,
@@ -1431,6 +1436,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         sort,
         minScore,
         minPremium: parsed.data.minPremium ?? null,
+        minFireCount: minFireCount ?? null,
       },
       // count = rows returned (≤ limit). total = total matching rows
       // before LIMIT/OFFSET. UI uses (offset, limit, total) for the

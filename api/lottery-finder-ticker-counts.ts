@@ -47,6 +47,7 @@ interface LotteryFinderTickerCountsResponse {
     tod: 'AM_open' | 'MID' | 'LUNCH' | 'PM' | null;
     minScore: number | null;
     minPremium: number | null;
+    minFireCount: number | null;
   };
   tickers: {
     ticker: string;
@@ -87,6 +88,8 @@ export default async function handler(
   // skips the predicate cleanly (same convention as /api/lottery-finder).
   const minPremium =
     q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
+  const minFireCount =
+    q.minFireCount != null && q.minFireCount > 1 ? q.minFireCount : null;
 
   try {
     const db = getDb();
@@ -120,6 +123,7 @@ export default async function handler(
             OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric
           )
         GROUP BY underlying_symbol, strike, option_type, expiry
+        HAVING (${minFireCount}::int IS NULL OR COUNT(*) >= ${minFireCount ?? 0})
       )
       SELECT
         underlying_symbol AS ticker,
@@ -144,6 +148,7 @@ export default async function handler(
         tod: q.tod ?? null,
         minScore: q.minScore ?? null,
         minPremium,
+        minFireCount,
       },
       tickers: rows.map((r) => ({
         ticker: r.ticker,

@@ -148,6 +148,63 @@ describe('lottery-finder-ticker-counts handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
+  it('binds minFireCount to the HAVING clause + echoes it in filters', async () => {
+    // Server-side push of the Burst chip — chip counts must stay
+    // aligned with the burst-filtered feed, so the chain-day CTE
+    // gates with HAVING COUNT(*) >= floor. Without this binding the
+    // chip strip would overstate ticker counts when Burst is active.
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'TSLA',
+        count: 4,
+        peak_best_pct: '85.0',
+        latest_trigger_time_ct: '2026-05-14T15:00:00Z',
+      },
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', minFireCount: '8' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      filters: { minFireCount: number | null };
+    };
+    expect(body.filters.minFireCount).toBe(8);
+
+    // SQL string contains the HAVING gate; the floor value binds to
+    // the mocked sql tag call.
+    const sql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(' ');
+    expect(sql).toContain('HAVING');
+    expect(sql).toContain('COUNT(*) >=');
+    expect((mockSql.mock.calls[0] as unknown[]).slice(1)).toContain(8);
+  });
+
+  it('omits minFireCount from filters echo when not provided', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { filters: { minFireCount: number | null } };
+    expect(body.filters.minFireCount).toBeNull();
+  });
+
+  it('rejects minFireCount below 1 with 400 (Zod min(1))', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', minFireCount: '0' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('returns 400 on an invalid date', async () => {
     const req = mockRequest({
       method: 'GET',

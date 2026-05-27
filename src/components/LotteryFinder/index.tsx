@@ -451,8 +451,13 @@ export function LotteryFinderSection({
     aggressivePremium,
     moneynessMode,
     minPremiumK,
+    minFireCount,
     showFilteredTickers,
   ]);
+
+  // Burst chip → numeric fire_count floor. 1 = no floor; >1 turns into
+  // a server-side filter on both the feed and ticker-counts endpoints.
+  const minFireCountFloor = MIN_FIRE_COUNT_TO_FLOOR[minFireCount];
 
   const lotteryFinder = useLotteryFinder({
     date,
@@ -467,6 +472,7 @@ export function LotteryFinderSection({
     sort: sortMode,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
+    minFireCount: minFireCountFloor,
     showAll: showFilteredTickers,
     page,
     pageSize: PAGE_SIZE,
@@ -504,6 +510,7 @@ export function LotteryFinderSection({
     tod: todFilter,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
+    minFireCount: minFireCountFloor,
   });
 
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
@@ -607,10 +614,10 @@ export function LotteryFinderSection({
           return moneynessMode === 'otm' ? otm : !otm;
         });
       }
-      const floor = MIN_FIRE_COUNT_TO_FLOOR[minFireCount];
-      if (floor > 1) {
-        out = out.filter((f) => f.fireCount >= floor);
-      }
+      // Burst (fire_count) floor is applied server-side via
+      // `minFireCount` on both feed + ticker-counts so pagination and
+      // chip totals reflect the post-filter result — see useLotteryFinder
+      // above.
       return out;
     },
     [
@@ -620,7 +627,6 @@ export function LotteryFinderSection({
       hideRoundTripped,
       aggressivePremium,
       moneynessMode,
-      minFireCount,
       ctMinuteOfDay,
     ],
   );

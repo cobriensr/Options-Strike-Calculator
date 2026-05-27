@@ -104,6 +104,37 @@ describe('useLotteryFinder', () => {
     expect(url).toContain('minPremium=100000');
   });
 
+  it('omits minFireCount when null or <=1 (matches "all" floor)', async () => {
+    // The Burst chip resets to 'all' (numeric 1) → no server-side
+    // filter. Like minPremium, the hook must NOT serialize the
+    // no-op floor.
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({
+        date: '2026-05-07',
+        marketOpen: false,
+        minFireCount: 1,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('minFireCount=');
+  });
+
+  it('appends minFireCount when > 1 (server-side burst filter)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({
+        date: '2026-05-07',
+        marketOpen: false,
+        minFireCount: 16,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('minFireCount=16');
+  });
+
   it('attaches all optional filters when supplied', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
     renderHook(() =>
@@ -316,6 +347,54 @@ describe('useLotteryFinder', () => {
     resolveFetch(jsonResponse(emptyFinder({ total: 99 })));
     await act(async () => {});
     expect(result.current.data).toBeNull();
+  });
+
+  it('serves cached page data immediately when revisiting a previously-loaded URL', async () => {
+    // Page cache: forward navigation does a real fetch; returning to
+    // a prior page should render the cached response instantly while
+    // a background revalidate runs. Validates that the cached value
+    // is surfaced in `result.current.data` BEFORE the revalidating
+    // fetch resolves — proving the cache is the source for the
+    // pending render.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(emptyFinder({ total: 100, count: 1 })),
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(emptyFinder({ total: 100, count: 2 })),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ page }: { page: number }) =>
+        useLotteryFinder({ date: '2026-05-07', marketOpen: false, page }),
+      { initialProps: { page: 0 } },
+    );
+
+    // Page 0 loads — cache now contains page 0's URL.
+    await waitFor(() => expect(result.current.data?.count).toBe(1));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Navigate forward to page 1. New URL → cache miss → fetch.
+    rerender({ page: 1 });
+    await waitFor(() => expect(result.current.data?.count).toBe(2));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Hold the revalidating fetch for page 0 open so we can prove
+    // the cache renders instantly while the network is still in flight.
+    let resolveRevalidate: (v: unknown) => void = () => {};
+    fetchMock.mockReturnValueOnce(
+      new Promise((res) => {
+        resolveRevalidate = res;
+      }),
+    );
+
+    rerender({ page: 0 });
+    // Cache hit: page 0's stored response surfaces immediately, even
+    // though the revalidating fetch hasn't resolved yet.
+    await waitFor(() => expect(result.current.data?.count).toBe(1));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // Cleanup — resolve the held fetch so other tests don't inherit it.
+    resolveRevalidate(jsonResponse(emptyFinder({ total: 100, count: 1 })));
   });
 
   it('cancels prior in-flight fetch when filters change', async () => {
