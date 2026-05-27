@@ -219,6 +219,76 @@ async def test_ws_connected_only_set_after_subscribe_all(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_invalid_handshake_logs_warning_not_capture_exception(monkeypatch) -> None:
+    """Regression for the 2026-05-27 UW 503 incident.
+
+    When UW returns HTTP 503 on the WS upgrade, the websockets library
+    raises ``InvalidStatus`` (subclass of ``InvalidHandshake``). The
+    pre-fix behavior was that this fell through to the catch-all
+    ``except Exception`` branch in ``run()``, which called
+    ``capture_exception`` every retry — a sustained outage produced one
+    Sentry error event per ~60s backoff cycle.
+
+    The fix moves handshake rejections into the typed-warning branch
+    alongside ``ConnectionClosed`` so they share the same log.warning +
+    storm-alert + backoff treatment, no per-event Sentry capture.
+    """
+    import websockets
+
+    import connector as connector_mod
+    import sentry_setup as sentry_mod
+
+    captured: list[BaseException] = []
+
+    def _spy_capture(exc, **_kwargs):
+        captured.append(exc)
+
+    monkeypatch.setattr(sentry_mod, "capture_exception", _spy_capture)
+    # The connector module imports capture_exception by name, so patch
+    # that binding too — Python doesn't keep the two in sync.
+    monkeypatch.setattr(connector_mod, "capture_exception", _spy_capture)
+
+    # Make _connect_once raise once, then signal the run loop to exit
+    # via CancelledError so the test doesn't hang.
+    call_count = 0
+
+    # Drop initial backoff to zero so the test isn't gated on the real
+    # 1s _INITIAL_BACKOFF_S between the two _connect_once iterations.
+    monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 0.0)
+
+    async def _raise_then_cancel(self):
+        # Must be async to substitute for the real _connect_once coroutine;
+        # await sleep(0) just yields to the event loop and keeps this a
+        # genuine coroutine (avoids "async with no await" lint).
+        await asyncio.sleep(0)
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise websockets.InvalidHandshake()
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(Connector, "_connect_once", _raise_then_cancel)
+
+    connector = Connector(
+        channels=["flow-alerts"],
+        receive_queue=asyncio.Queue(maxsize=10),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await connector.run()
+
+    # The InvalidHandshake landed in the typed-warning branch, NOT the
+    # catch-all Exception branch. No Sentry capture should have happened.
+    assert captured == [], (
+        f"InvalidHandshake should be caught by the typed-warning branch "
+        f"and NOT trigger capture_exception, but got: {captured}"
+    )
+    # And the reconnect counter still ticked — the daemon treats it as
+    # a retryable transient, same as a clean drop.
+    assert state.reconnects_last_hour() >= 1
+
+
+@pytest.mark.asyncio
 async def test_ws_connected_set_to_true_when_subscribe_succeeds(monkeypatch) -> None:
     """Mirror of the previous test: when subscribe completes cleanly,
     the flag does flip to True before the receive loop starts.

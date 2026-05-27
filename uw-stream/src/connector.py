@@ -67,11 +67,22 @@ class Connector:
                 log.info("WS closed cleanly, reconnecting after grace")
                 backoff = _INITIAL_BACKOFF_S
                 await asyncio.sleep(backoff)
-            except websockets.ConnectionClosed as exc:
+            except (
+                websockets.ConnectionClosed,
+                # Handshake-rejection variants (HTTP 503, 502, 504, etc. on the
+                # WS upgrade) inherit from InvalidHandshake. They were
+                # previously falling through to the catch-all `except
+                # Exception`, which Sentry-captured every retry — a sustained
+                # UW outage produced one Sentry event per backoff cycle
+                # (~60s). Treat them like a connection drop: warning log +
+                # storm alert + backoff, no per-event capture. The storm
+                # alert at >=5 reconnects/hour still surfaces the incident.
+                websockets.InvalidHandshake,
+            ) as exc:
                 state.ws_connected = False
                 state.record_reconnect()
                 log.warning(
-                    "WS connection closed",
+                    "WS connection unavailable",
                     extra={"err": str(exc), "backoff": backoff},
                 )
                 self._maybe_alert_storm()
