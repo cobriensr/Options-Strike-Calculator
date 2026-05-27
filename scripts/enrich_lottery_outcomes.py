@@ -921,11 +921,95 @@ def _write_tune_csv(
         print(f'  >={t1:>2}   >={t2:>2}     {med:>5.1f}{marker}')
 
 
+def list_unenriched_dates(conn) -> list[str]:
+    """Distinct YYYY-MM-DD dates with at least one pending fire (enriched_at NULL).
+
+    Used by --all-unenriched so post-nightly manual backfills don't get
+    stranded when the per-date enrich-one pass in the nightly loop missed
+    them (e.g. alerts inserted by scripts/backfill_lottery_fires_for_ticker.py
+    after `make nightly` already ran its per-CSV pipeline).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT DISTINCT date::text
+        FROM lottery_finder_fires
+        WHERE enriched_at IS NULL
+        ORDER BY date ASC
+        """
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+def enrich_one_date(conn, target_date: str) -> None:
+    """Per-date passes: main outcome computation + flow-inversion. Caller
+    runs the global ticker-quality refit once after the date loop.
+    """
+    fires = fetch_unenriched(conn, target_date)
+    print(f'[enrich] {target_date} unenriched fires: {len(fires):,}')
+    if not fires:
+        print(f'[enrich] {target_date} main pass: nothing to do')
+    else:
+        chain_index = load_parquet_chain_index(
+            target_date, {f.option_chain_id for f in fires}
+        )
+        print(f'[enrich] {target_date} chains in parquet: {len(chain_index):,}')
+
+        t0 = time.time()
+        updates: list[tuple] = []
+        no_post_tick_ids: list[int] = []
+        skipped_chain_missing = 0
+        for fire in fires:
+            chain_df = chain_index.get(fire.option_chain_id)
+            if chain_df is None:
+                skipped_chain_missing += 1
+                continue
+            res = compute_fire_outcomes(fire, chain_df)
+            if res is None:
+                no_post_tick_ids.append(fire.id)
+                continue
+            trail, hard30, tier50, eod, peak, mtp = res
+            updates.append(
+                (fire.id, trail, hard30, tier50, eod, peak, mtp)
+            )
+
+        print(
+            f'[enrich] {target_date} computed {len(updates):,} outcomes '
+            f'in {time.time() - t0:.1f}s '
+            f'(skipped: {skipped_chain_missing} no-chain, '
+            f'{len(no_post_tick_ids)} no-post-ticks)'
+        )
+
+        update_fires(conn, updates)
+        mark_no_post_ticks(conn, no_post_tick_ids)
+        print(
+            f'[enrich] {target_date} DB updated: {len(updates):,} rows '
+            f'(+ {len(no_post_tick_ids)} marked enriched-with-NULLs)'
+        )
+
+    # Second pass — flow-inversion. Targets `realized_flow_inversion_pct
+    # IS NULL` regardless of enriched_at, so it backfills both the
+    # rows we just enriched AND any historical fires the Vercel cron
+    # missed.
+    run_flow_inversion_pass(conn, target_date)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         '--date',
         help='YYYY-MM-DD; defaults to the latest matching parquet on disk',
+    )
+    parser.add_argument(
+        '--all-unenriched',
+        action='store_true',
+        help=(
+            'Enumerate every date with enriched_at IS NULL rows and process '
+            'each. Overrides --date. The ticker-quality refit still runs '
+            'once at the end (it is global, not per-date). Used by '
+            "`make enrich` so post-nightly manual backfills don't get "
+            'stranded with enriched_at NULL.'
+        ),
     )
     parser.add_argument(
         '--parquet-dir',
@@ -945,11 +1029,6 @@ def main() -> None:
     PARQUET_FILE_PATTERN = PARQUET_FORMATS[args.parquet_format]
 
     load_env()
-    target_date = args.date or detect_latest_date()
-    # Validate format.
-    DateType.fromisoformat(target_date)
-
-    print(f'[enrich] target date: {target_date}')
 
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get(
         'DATABASE_URL'
@@ -959,58 +1038,35 @@ def main() -> None:
 
     conn = psycopg2.connect(db_url)
     try:
-        fires = fetch_unenriched(conn, target_date)
-        print(f'[enrich] unenriched fires: {len(fires):,}')
-        if not fires:
-            print('[enrich] main pass: nothing to do')
-        else:
-            chain_index = load_parquet_chain_index(
-                target_date, {f.option_chain_id for f in fires}
-            )
-            print(f'[enrich] chains in parquet: {len(chain_index):,}')
-
-            t0 = time.time()
-            updates: list[tuple] = []
-            no_post_tick_ids: list[int] = []
-            skipped_chain_missing = 0
-            for fire in fires:
-                chain_df = chain_index.get(fire.option_chain_id)
-                if chain_df is None:
-                    skipped_chain_missing += 1
-                    continue
-                res = compute_fire_outcomes(fire, chain_df)
-                if res is None:
-                    no_post_tick_ids.append(fire.id)
-                    continue
-                trail, hard30, tier50, eod, peak, mtp = res
-                updates.append(
-                    (fire.id, trail, hard30, tier50, eod, peak, mtp)
+        if args.all_unenriched:
+            dates = list_unenriched_dates(conn)
+            if not dates:
+                # Nothing pending — fall through to the global refit so the
+                # caller (make enrich) still gets a stats refresh.
+                latest_date = detect_latest_date()
+                print(
+                    f'[enrich] --all-unenriched: 0 dates pending '
+                    f'(latest parquet: {latest_date})'
                 )
-
-            print(
-                f'[enrich] computed {len(updates):,} outcomes '
-                f'in {time.time() - t0:.1f}s '
-                f'(skipped: {skipped_chain_missing} no-chain, '
-                f'{len(no_post_tick_ids)} no-post-ticks)'
-            )
-
-            update_fires(conn, updates)
-            mark_no_post_ticks(conn, no_post_tick_ids)
-            print(
-                f'[enrich] DB updated: {len(updates):,} rows '
-                f'(+ {len(no_post_tick_ids)} marked enriched-with-NULLs)'
-            )
-
-        # Second pass — flow-inversion. Targets `realized_flow_inversion_pct
-        # IS NULL` regardless of enriched_at, so it backfills both the
-        # rows we just enriched AND any historical fires the Vercel cron
-        # missed.
-        run_flow_inversion_pass(conn, target_date)
+            else:
+                print(
+                    f'[enrich] --all-unenriched: {len(dates)} dates to process'
+                )
+                for d in dates:
+                    enrich_one_date(conn, d)
+                latest_date = dates[-1]
+        else:
+            latest_date = args.date or detect_latest_date()
+            # Validate format.
+            DateType.fromisoformat(latest_date)
+            print(f'[enrich] target date: {latest_date}')
+            enrich_one_date(conn, latest_date)
 
         # Third pass — per-ticker inversion-quality refit (Phase 2 of the
         # inversion-quality filter). Runs against whatever is in
         # lottery_finder_fires regardless of whether today's main pass ran.
-        sim_csv = Path(f'docs/tmp/lottery-quality-sim-{target_date}.csv')
+        # Stamp the sim CSV with the most recent date we touched.
+        sim_csv = Path(f'docs/tmp/lottery-quality-sim-{latest_date}.csv')
         refit_ticker_inversion_stats(
             conn,
             write_db=bool(int(os.environ.get('WRITE_DB', '0'))),

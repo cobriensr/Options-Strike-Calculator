@@ -210,6 +210,28 @@ def compute_outcomes(
     return peak_pct, mtp, r30, r60, r120, eod, trail30
 
 
+def list_unenriched_dates(conn, backfill_mode: bool) -> list[str]:
+    """Distinct YYYY-MM-DD dates with at least one pending alert.
+
+    Standard mode gates on enriched_at IS NULL (the live nightly flow).
+    Backfill mode gates on realized_trail30_10_pct IS NULL — matches the
+    --backfill-mode semantics of fetch_unenriched.
+    """
+    where_clause = (
+        'realized_trail30_10_pct IS NULL' if backfill_mode else 'enriched_at IS NULL'
+    )
+    cur = conn.cursor()
+    cur.execute(
+        f"""
+        SELECT DISTINCT date::text
+        FROM silent_boom_alerts
+        WHERE {where_clause}
+        ORDER BY date ASC
+        """
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--date', help='YYYY-MM-DD; single-day mode')
@@ -225,19 +247,37 @@ def main() -> None:
             'resetting enriched_at on the table.'
         ),
     )
+    parser.add_argument(
+        '--all-unenriched',
+        action='store_true',
+        help=(
+            'Enumerate dates from silent_boom_alerts WHERE enriched_at IS NULL '
+            '(or realized_trail30_10_pct IS NULL with --backfill-mode) and '
+            'process only those. Overrides --date / --from-date / --to-date. '
+            "Used by `make enrich` so post-nightly manual backfills don't get "
+            'stranded with enriched_at NULL.'
+        ),
+    )
     args = parser.parse_args()
 
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
     try:
-        dates = (
-            [args.date]
-            if args.date
-            else list_parquet_dates(args.from_date, args.to_date)
-        )
+        if args.all_unenriched:
+            dates = list_unenriched_dates(conn, args.backfill_mode)
+        else:
+            dates = (
+                [args.date]
+                if args.date
+                else list_parquet_dates(args.from_date, args.to_date)
+            )
         mode_label = 'backfill' if args.backfill_mode else 'standard'
-        print(f'[enrich-silent-boom] {len(dates)} dates (mode={mode_label})')
+        scope = 'all-unenriched' if args.all_unenriched else 'parquet-list'
+        print(
+            f'[enrich-silent-boom] {len(dates)} dates '
+            f'(mode={mode_label}, scope={scope})'
+        )
 
         grand_updated = 0
         t0 = time.time()

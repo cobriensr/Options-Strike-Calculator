@@ -152,27 +152,33 @@ backfill-flow:
 enrich:
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  STEP 5/5 — enrich_lottery_outcomes.py (replay parquet → Postgres)"
+	@echo "  STEP 5/5 — enrich_lottery_outcomes.py --all-unenriched (replay parquet → Postgres)"
 	@echo "════════════════════════════════════════════════════════════════"
-	@# Auto-detects the date from the latest *-trades.parquet so this
-	@# still works after `ingest` has deleted the source CSV (which makes
-	@# `$(DATE)` resolve to empty here). Three passes:
-	@#   1. trail/hard/tier50/peak/eod/min_to_peak from parquet
-	@#   2. flow_inversion from parquet NBBO mids + net_flow_per_ticker_history
+	@# --all-unenriched enumerates every date with enriched_at IS NULL
+	@# rows and processes each. Catches:
+	@#   - The normal latest-date case (one date in the list)
+	@#   - Post-nightly manual backfills (e.g. scripts/backfill_lottery_fires_for_ticker.py
+	@#     inserts rows for an older date after `make nightly` already ran).
+	@# Three passes per date plus a global third pass:
+	@#   1. trail/hard/tier50/peak/eod/min_to_peak from parquet (per-date)
+	@#   2. flow_inversion from parquet NBBO mids + net_flow_per_ticker_history (per-date)
 	@#   3. per-ticker inversion-quality refit (Wilson LCB + quintile) into
-	@#      lottery_ticker_stats. Gated by WRITE_DB=1; staleness >3 days
-	@#      raises a Sentry warning from the next /api/cron/refresh-vix1d
-	@#      run (see spec lottery-inversion-quality-filter-2026-05-19.md).
-	WRITE_DB=1 $(PYTHON) scripts/enrich_lottery_outcomes.py
+	@#      lottery_ticker_stats (global, runs once after the date loop).
+	@#      Gated by WRITE_DB=1; staleness >3 days raises a Sentry warning
+	@#      from the next /api/cron/refresh-vix1d run (see spec
+	@#      lottery-inversion-quality-filter-2026-05-19.md).
+	WRITE_DB=1 $(PYTHON) scripts/enrich_lottery_outcomes.py --all-unenriched
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  STEP 5/5 (cont.) — enrich_silent_boom_outcomes.py"
+	@echo "  STEP 5/5 (cont.) — enrich_silent_boom_outcomes.py --all-unenriched"
 	@echo "════════════════════════════════════════════════════════════════"
 	@# Idempotent (WHERE enriched_at IS NULL). Populates peak_ceiling_pct,
 	@# minutes_to_peak, realized_{30,60,120}m_pct, realized_eod_pct on
 	@# silent_boom_alerts from the same per-day *-trades.parquet that the
-	@# lottery enrichment uses. Mirrors that script's auto-date enumeration.
-	$(PYTHON) scripts/enrich_silent_boom_outcomes.py
+	@# lottery enrichment uses. --all-unenriched scopes the date list to
+	@# dates with pending rows (matches the lottery target's behavior so
+	@# manual backfills get picked up regardless of when they landed).
+	$(PYTHON) scripts/enrich_silent_boom_outcomes.py --all-unenriched
 
 refit:
 	@echo ""
@@ -190,11 +196,15 @@ refit:
 	$(PYTHON) scripts/sync_lottery_score_weights_v2.py
 	$(PYTHON) scripts/backfill_lottery_scores.py
 
-update: refit
+update: enrich refit
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  UPDATE — daily research refresh (after nightly enrichment)"
 	@echo "════════════════════════════════════════════════════════════════"
+	@# Prereq `enrich` (with --all-unenriched) guarantees `make nightly update`
+	@# enriches every pending alert across all dates, including any inserted
+	@# by manual backfills after nightly's per-CSV loop ran. Idempotent —
+	@# if everything is already enriched it's a no-op DB query.
 	@# Each script auto-detects the latest enriched fire date from the
 	@# DB and writes a date-stamped report to docs/tmp/ so day-over-day
 	@# diffs are easy. The CSV tracker keeps a one-line-per-day rollup
