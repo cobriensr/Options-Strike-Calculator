@@ -6,8 +6,8 @@
  * Spec: docs/superpowers/specs/lottery-rescore-2026-05-22.md
  * Source JSON: ml/output/lottery_score_weights.json
  *
- * Model version : rescore-v1-2026-05-23-no-context
- * Trained at    : 2026-05-23T01:30:00.000000+00:00
+ * Model version : rescore-v1-2026-05-22
+ * Trained at    : 2026-05-27T01:43:33.177213+00:00
  *
  * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
  * Until then the old lottery-score-weights.ts continues to drive production.
@@ -168,8 +168,8 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
  * Quintile 4 : value >= boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.05972558514931396, 0.09594891893354361, 0.1548051590316375,
-  0.37964843216675015,
+  0.059845559845559844, 0.09635416666666667, 0.1554953013519579,
+  0.38177297544570055,
 ];
 
 // ---------------------------------------------------------------------------
@@ -180,8 +180,8 @@ export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
   3, -2, -2, -2, -1,
 ];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.012354732666666668, 0.02561910331064694, 0.04267619413483657,
-  0.06927210280434017,
+  0.01234384404571487, 0.025592719160305345, 0.042654430769050365,
+  0.06926807198716604,
 ];
 
 // ---------------------------------------------------------------------------
@@ -290,8 +290,8 @@ export const COMPOSITE_BONUSES_V2: ReadonlyArray<CompositeBonus> = [
 // ---------------------------------------------------------------------------
 
 export const LOTTERY_TIER_THRESHOLDS_V2 = {
-  t1: 11,
-  t2: 8,
+  t1: 9,
+  t2: 7,
 } as const;
 
 // ---------------------------------------------------------------------------
