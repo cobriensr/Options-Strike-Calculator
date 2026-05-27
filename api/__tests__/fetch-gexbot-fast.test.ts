@@ -196,7 +196,9 @@ describe('fetch-gexbot-fast handler', () => {
   // ── Partial failure ───────────────────────────────────────
 
   it('continues on per-ticker fetch failures and reports partial', async () => {
-    // Fetch fails for SPX/orderflow only; everyone else succeeds
+    // Fetch fails for SPX/orderflow only; everyone else succeeds.
+    // Uses 400 (non-retryable) so withRetry exits on the first attempt —
+    // 5xx would trigger backoff and stall under fake timers.
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string) => {
@@ -204,8 +206,8 @@ describe('fetch-gexbot-fast handler', () => {
         if (url.endsWith('/SPX/orderflow/orderflow')) {
           return {
             ok: false,
-            status: 500,
-            text: async () => 'upstream gone',
+            status: 400,
+            text: async () => 'bad request',
           } as Response;
         }
         const ticker =
@@ -269,7 +271,8 @@ describe('fetch-gexbot-fast handler', () => {
     // When SPX/state/gex_zero/maxchange fails, the captured Sentry
     // event must carry tags identifying which ticker + endpoint +
     // category exploded — needed for "is this a GEXBot-wide outage or
-    // a single-symbol issue" triage during the trial.
+    // a single-symbol issue" triage during the trial. Uses 401
+    // (non-retryable, auth class) so withRetry exits on first attempt.
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: string) => {
@@ -277,8 +280,8 @@ describe('fetch-gexbot-fast handler', () => {
         if (url.endsWith('/SPX/state/gex_zero/maxchange')) {
           return {
             ok: false,
-            status: 503,
-            text: async () => 'unavailable',
+            status: 401,
+            text: async () => 'unauthorized',
           } as Response;
         }
         const ticker =
@@ -304,5 +307,56 @@ describe('fetch-gexbot-fast handler', () => {
     expect(opts.tags['gexbot.ticker']).toBe('SPX');
     expect(opts.tags['gexbot.endpoint']).toBe('state-maxchange');
     expect(opts.tags['gexbot.category']).toBe('gex_zero');
+  });
+
+  // ── Retry on transient 5xx ────────────────────────────────
+
+  it('retries on transient 503 and reports success without Sentry capture', async () => {
+    // SPX/orderflow returns 503 on the first call, succeeds on the
+    // retry. Validates the `withRetry` wrap suppresses single-fault
+    // transient GEXBot timeouts (SENTRY-EMERALD-DESERT-8F regression).
+    vi.useFakeTimers();
+    vi.setSystemTime(MARKET_TIME);
+
+    const callsByPath = new Map<string, number>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        const url = String(input);
+        const path = new URL(url).pathname;
+        const calls = (callsByPath.get(path) ?? 0) + 1;
+        callsByPath.set(path, calls);
+        if (path === '/v2/SPX/orderflow/orderflow' && calls === 1) {
+          return {
+            ok: false,
+            status: 503,
+            text: async () => 'transient',
+          } as Response;
+        }
+        const ticker =
+          url.split('/').find((seg) => GEXBOT_TICKERS.includes(seg as never)) ??
+          'SPX';
+        const body = url.includes('/orderflow/orderflow')
+          ? makeOrderflowBody(ticker)
+          : makeMaxchangeBody(ticker);
+        return { ok: true, status: 200, json: async () => body } as Response;
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    const pending = handler(req, res);
+    // withRetry's first-attempt backoff is 1000 × (0 + 1) = 1000ms;
+    // advance past it so the retry fires.
+    await vi.advanceTimersByTimeAsync(1500);
+    await pending;
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', failed: 0 });
+    expect(mockSentryCapture).not.toHaveBeenCalled();
+    expect(callsByPath.get('/v2/SPX/orderflow/orderflow')).toBe(2);
   });
 });

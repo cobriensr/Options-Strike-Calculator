@@ -52,6 +52,33 @@ export function isMarketHours(): boolean {
 }
 
 /**
+ * Futures-tied RTH window: 08:30–15:55 CT (== 09:30–16:55 ET).
+ *
+ * Wider than `isMarketHours()` on the close side (15:55 CT vs equity
+ * close + 5 min = 15:05 CT) so futures-anchored crons (GEXBot, ES
+ * mechanics) keep capturing through the futures settlement window.
+ *
+ * Holiday-aware via the same event calendar — returns false on closed
+ * sessions. Early-close days still respect the 16:55 ET cap; this
+ * matches the user's stated window regardless of equity early-close.
+ */
+export function isFuturesRthCt(): boolean {
+  const now = new Date();
+  const day = getETDayOfWeek(now);
+  if (day === 0 || day === 6) return false;
+
+  const dateStr = getETDateStr(now);
+  const closeHour = getMarketCloseHourET(dateStr);
+  if (closeHour == null) return false; // holiday
+
+  const { hour, minute } = getETTime(now);
+  const totalMin = hour * 60 + minute;
+  const openMin = 9 * 60 + 30; // 09:30 ET = 08:30 CT
+  const closeMin = 16 * 60 + 55; // 16:55 ET = 15:55 CT
+  return totalMin >= openMin && totalMin <= closeMin;
+}
+
+/**
  * Check if US equity markets are currently open.
  * Accounts for weekends, holidays, and early-close days
  * using the event calendar. Used to adjust cache durations.

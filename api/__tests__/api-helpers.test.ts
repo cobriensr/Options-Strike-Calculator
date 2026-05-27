@@ -81,6 +81,7 @@ import {
   setCacheHeaders,
   isMarketOpen,
   isMarketHours,
+  isFuturesRthCt,
   sendError,
   withRetry,
   uwFetch,
@@ -94,7 +95,7 @@ import {
 import { z } from 'zod';
 import { getAccessToken } from '../_lib/schwab.js';
 import { checkBotId } from 'botid/server';
-import { getETDayOfWeek } from '../../src/utils/timezone.js';
+import { getETDayOfWeek, getETTime } from '../../src/utils/timezone.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 
 /** Build a minimal botid result shape for mocking checkBotId. */
@@ -1276,6 +1277,67 @@ describe('api-helpers', () => {
   // ============================================================
   // IS MARKET OPEN — ADDITIONAL BRANCHES
   // ============================================================
+
+  // ============================================================
+  // IS FUTURES RTH CT — open/close boundaries + holiday/weekend
+  // ============================================================
+
+  describe('isFuturesRthCt', () => {
+    afterEach(() => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(1);
+      vi.mocked(getMarketCloseHourET).mockReturnValue(16);
+      vi.mocked(getETTime).mockReturnValue({ hour: 10, minute: 30 });
+    });
+
+    it('returns false on Sunday', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(0);
+      expect(isFuturesRthCt()).toBe(false);
+    });
+
+    it('returns false on Saturday', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(6);
+      expect(isFuturesRthCt()).toBe(false);
+    });
+
+    it('returns false on a holiday (closeHour is null)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValue(3);
+      vi.mocked(getMarketCloseHourET).mockReturnValue(null);
+      expect(isFuturesRthCt()).toBe(false);
+    });
+
+    it('returns false at 09:29 ET (08:29 CT — one minute before open)', () => {
+      vi.mocked(getETTime).mockReturnValue({ hour: 9, minute: 29 });
+      expect(isFuturesRthCt()).toBe(false);
+    });
+
+    it('returns true at 09:30 ET (08:30 CT — exact open)', () => {
+      vi.mocked(getETTime).mockReturnValue({ hour: 9, minute: 30 });
+      expect(isFuturesRthCt()).toBe(true);
+    });
+
+    it('returns true at 16:55 ET (15:55 CT — exact close)', () => {
+      vi.mocked(getETTime).mockReturnValue({ hour: 16, minute: 55 });
+      expect(isFuturesRthCt()).toBe(true);
+    });
+
+    it('returns false at 16:56 ET (15:56 CT — one minute past close)', () => {
+      vi.mocked(getETTime).mockReturnValue({ hour: 16, minute: 56 });
+      expect(isFuturesRthCt()).toBe(false);
+    });
+
+    it('returns true at 12:00 ET (mid-session)', () => {
+      vi.mocked(getETTime).mockReturnValue({ hour: 12, minute: 0 });
+      expect(isFuturesRthCt()).toBe(true);
+    });
+
+    it('returns true on an early-close day at 15:55 ET (within the 16:55 cap)', () => {
+      // 1pm ET early close → calendar reports 13. Our gate caps at 16:55 ET
+      // regardless, so capture continues through the documented window.
+      vi.mocked(getMarketCloseHourET).mockReturnValue(13);
+      vi.mocked(getETTime).mockReturnValue({ hour: 15, minute: 55 });
+      expect(isFuturesRthCt()).toBe(true);
+    });
+  });
 
   describe('isMarketOpen (weekend and holiday branches)', () => {
     afterEach(() => {

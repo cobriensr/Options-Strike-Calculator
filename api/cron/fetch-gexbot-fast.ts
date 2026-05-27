@@ -21,7 +21,8 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { mapWithConcurrency } from '../_lib/uw-fetch.js';
+import { isFuturesRthCt } from '../_lib/cron-helpers.js';
+import { mapWithConcurrency, withRetry } from '../_lib/uw-fetch.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -176,19 +177,26 @@ export default withCronInstrumentation(
       FETCH_CONCURRENCY,
       async (task) => {
         try {
+          // Retry transient 5xx / timeout / ECONNRESET up to 2 times
+          // (3 attempts total, 1s + 2s exponential backoff). Suppresses
+          // single-tick TimeoutError storms (SENTRY-EMERALD-DESERT-8F:
+          // 214 events / 9 days) caused by GEXBot 1–2s slow minutes
+          // brushing the 2.5s per-call timeout. `withRetry`'s classifier
+          // matches /50[234]/ and /timeout|ECONN.../ but NOT 4xx, so a
+          // bad API key still fails fast.
           let body: GexbotResponse;
           switch (task.kind) {
             case 'orderflow':
-              body = await fetchOrderflow(apiKey, task.ticker);
+              body = await withRetry(() => fetchOrderflow(apiKey, task.ticker));
               break;
             case 'classic-maxchange':
-              body = await fetchMaxchange(apiKey, task.ticker, task.category);
+              body = await withRetry(() =>
+                fetchMaxchange(apiKey, task.ticker, task.category),
+              );
               break;
             case 'state-maxchange':
-              body = await fetchStateMaxchange(
-                apiKey,
-                task.ticker,
-                task.category,
+              body = await withRetry(() =>
+                fetchStateMaxchange(apiKey, task.ticker, task.category),
               );
               break;
             default: {
@@ -301,5 +309,8 @@ export default withCronInstrumentation(
       },
     };
   },
-  { requireApiKey: false },
+  // Gate to futures-tied RTH (08:30–15:55 CT) instead of the default
+  // equity-RTH window — GEXBot publishes through the futures settlement
+  // window, and we want to keep capturing past the equity close at 15:00 CT.
+  { requireApiKey: false, timeCheck: isFuturesRthCt },
 );
