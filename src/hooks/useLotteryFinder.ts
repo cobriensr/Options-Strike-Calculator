@@ -18,7 +18,7 @@
  * to PAGE_CACHE_MAX entries with FIFO eviction.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
 import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 import type {
@@ -138,30 +138,29 @@ export function useLotteryFinder({
 
   // Per-URL response cache. `useFetchedData` keeps the previous URL's
   // `data` while the next URL's fetch is in flight (stale-while-
-  // revalidate), so the UI never blanks. But after a fetch resolves,
-  // its `data` is "owned by" the URL that was current when that fetch
-  // started — clicking back to a previously-loaded page would otherwise
-  // show stale data from the latest page until the new fetch finishes.
-  // The cache fixes that: the read path consults the cache for the
-  // current URL synchronously inside `useMemo`, so a back-navigation
-  // hit paints in the same render as the URL change (no 1-frame stale
-  // flash), and `useFetchedData` revalidates in the background.
+  // revalidate), so the UI never blanks. After a fetch resolves, its
+  // `data` is "owned by" the URL that was current when that fetch
+  // started — clicking back to a previously-loaded page would
+  // otherwise show stale data from the latest page until the new
+  // fetch finishes. The cache fixes that: the read path consults the
+  // cache for the current URL synchronously inside `useMemo`, so a
+  // back-navigation hit paints in the same render as the URL change
+  // (no 1-frame stale flash), and `useFetchedData` revalidates in the
+  // background.
+  //
+  // Freshness rule: when `fetched.fetchedAt` is newer than the
+  // `lastSavedFetchedAt` value, the freshest data is sitting in
+  // `fetched.data` waiting for the save effect to write it to cache
+  // (effects run after render). In that window we MUST prefer
+  // `fetched.data` over the cache; otherwise a poll-tick resolution
+  // would render the stale prior tick for one frame, then the new
+  // tick on the save-effect-triggered re-render (the visible
+  // "flicker"). The save effect writes cache + advances
+  // `lastSavedFetchedAtRef` without bumping any state, so it does NOT
+  // cause an extra render.
   const cacheRef = useRef<Map<string, LotteryFinderResponse>>(new Map());
-  // Tracks the `fetchedAt` of the most recent fetch we've written to
-  // the cache, used by the save-effect below to ignore URL-only
-  // changes (where `fetched.data` still belongs to the prior URL).
   const lastSavedFetchedAtRef = useRef<number | null>(null);
-  // Bumped whenever the cache is mutated so the read-path `useMemo`
-  // recomputes. Without this the memo would miss writes — `cacheRef`
-  // itself is not a dep, only the version counter is.
-  const [cacheVersion, setCacheVersion] = useState(0);
 
-  // When a fresh fetch resolves, write to cache + bump the version
-  // counter so the read-path memo re-runs. Gated on `fetchedAt` so
-  // the effect only acts on genuine fetch completions, not on URL-
-  // only changes that leave `fetched.data` pointing at the previous
-  // URL's response (which would otherwise corrupt the new URL's
-  // cache slot).
   useEffect(() => {
     if (fetched.data == null) return;
     if (fetched.fetchedAt == null) return;
@@ -174,17 +173,19 @@ export function useLotteryFinder({
       if (oldest == null) break;
       cache.delete(oldest);
     }
-    setCacheVersion((v) => v + 1);
   }, [fetched.data, fetched.fetchedAt, url]);
 
   return useMemo(() => {
-    // Synchronous cache lookup keyed on the current URL. A back-nav
-    // hit lands in the same render as the URL change. On a miss we
-    // surface `fetched.data` (which `useFetchedData` keeps pinned to
-    // the prior URL until the new fetch resolves — preserves
-    // stale-while-revalidate for first-visit pages).
+    // If `fetched.fetchedAt` is newer than what we last persisted, the
+    // freshest payload is in `fetched.data` (save effect hasn't run
+    // yet); prefer it. Otherwise the cache holds the latest value for
+    // this URL — use it (back-nav hit) or fall back to the stale
+    // prev-URL data `useFetchedData` is still surfacing.
+    const lastSaved = lastSavedFetchedAtRef.current ?? 0;
+    const fetchedIsFresher =
+      fetched.fetchedAt != null && fetched.fetchedAt > lastSaved;
     const cached = cacheRef.current.get(url) ?? null;
-    const data = cached ?? fetched.data;
+    const data = fetchedIsFresher ? fetched.data : (cached ?? fetched.data);
     return {
       data,
       loading: fetched.loading && data == null,
@@ -192,8 +193,5 @@ export function useLotteryFinder({
       refresh: fetched.refresh,
       fetchedAt: fetched.fetchedAt,
     };
-    // `cacheVersion` is intentionally a dep — it bumps whenever the
-    // cache mutates, forcing a recompute that reads the fresh value.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetched, url, cacheVersion]);
+  }, [fetched, url]);
 }

@@ -630,10 +630,6 @@ export function LotteryFinderSection({
       ctMinuteOfDay,
     ],
   );
-  const displayedFires = useMemo(
-    () => applyClientFilters(fires),
-    [fires, applyClientFilters],
-  );
   // Per-filter hidden counts — computed against the unfiltered set so
   // each chip's "−N" reflects only what THAT filter is hiding.
   const hiddenLatePmCount = hideLatePm
@@ -678,33 +674,36 @@ export function LotteryFinderSection({
   // groups. The `reignited` flag is computed globally per-day in
   // api/lottery-finder.ts (top 5/day by post_gap_fires DESC, fire_count
   // DESC) so the badge stays stable across filter views. The pinned
-  // payload (`rawReignitedFires`) is delivered alongside `fires` by the
-  // hook but served INDEPENDENT of pagination, so the section stays
-  // visible on every page even when the qualifying chains naturally
-  // sort onto a later page slice. We re-apply the same client-side
-  // filter chain that `displayedFires` uses so chip filters affect both
-  // surfaces consistently. Each fire renders in EXACTLY ONE place
-  // (reignited list OR ticker group) — `tickerGroupFires` drops any
-  // reignited rows that happen to live in the page slice, preventing
-  // a duplicate render on pages where they would have grouped.
-  const reignitedFires = useMemo(
-    () =>
-      [...applyClientFilters(rawReignitedFires)].sort((a, b) => {
+  // payload (`rawReignitedFires`) is delivered alongside `fires` by
+  // the hook but served INDEPENDENT of pagination, so the section
+  // stays visible on every page even when the qualifying chains
+  // naturally sort onto a later page slice.
+  //
+  // Both outputs come from one consolidated memo so the chain
+  // `fires → applyClientFilters → displayedFires → tickerGroupFires`
+  // collapses to a single invalidation pass on every fires/filter
+  // change — important on the 30s poll tick, which previously
+  // rebuilt three chained memos in sequence per tick. Each fire still
+  // renders in EXACTLY ONE place (reignited list OR ticker group);
+  // `tickerGroupFires` drops any reignited rows that happen to live
+  // in the page slice.
+  const { tickerGroupFires, reignitedFires } = useMemo(() => {
+    const filtered = applyClientFilters(fires);
+    const filteredReignited = [...applyClientFilters(rawReignitedFires)].sort(
+      (a, b) => {
         // Guard against malformed triggerTimeCt — Date.parse returns
         // NaN on invalid input, and NaN comparators yield unspecified
         // sort order. Production data is always ISO; defensive only.
         const at = Date.parse(a.triggerTimeCt);
         const bt = Date.parse(b.triggerTimeCt);
         return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
-      }),
-    [rawReignitedFires, applyClientFilters],
-  );
-  // Fires that don't qualify for the pinned section feed the regular
-  // ticker grouping below — keeps the per-ticker rollup counts honest.
-  const tickerGroupFires = useMemo(
-    () => displayedFires.filter((f) => f.reignited !== true),
-    [displayedFires],
-  );
+      },
+    );
+    return {
+      tickerGroupFires: filtered.filter((f) => f.reignited !== true),
+      reignitedFires: filteredReignited,
+    };
+  }, [fires, rawReignitedFires, applyClientFilters]);
 
   // Group displayed fires by ticker so each underlying renders as one
   // collapsible row. Grouping + ordering + conviction/storm rollups
