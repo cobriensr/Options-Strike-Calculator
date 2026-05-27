@@ -363,4 +363,50 @@ describe('BacktestDiag', () => {
     expect(screen.getByText('5800.25')).toBeInTheDocument();
     expect(screen.getByText('▼')).toBeInTheDocument();
   });
+
+  it('mounts collapsed when localStorage flag is set', () => {
+    localStorage.setItem('backtestDiag.collapsed', '1');
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+
+    // Header is still visible.
+    expect(screen.getByText('Backtest Diagnostic')).toBeInTheDocument();
+    // Table body is not.
+    expect(screen.queryByText('5800.25')).not.toBeInTheDocument();
+    // Arrow reflects collapsed state.
+    expect(screen.getByText('▲')).toBeInTheDocument();
+  });
+
+  it('persists collapsed=true to localStorage when toggled', () => {
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('Backtest Diagnostic'));
+    expect(localStorage.getItem('backtestDiag.collapsed')).toBe('1');
+  });
+
+  it('removes the localStorage entry when expanded back', () => {
+    localStorage.setItem('backtestDiag.collapsed', '1');
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+
+    // Mounted collapsed; expand and the key is removed.
+    fireEvent.click(screen.getByText('Backtest Diagnostic'));
+    expect(localStorage.getItem('backtestDiag.collapsed')).toBeNull();
+  });
 });

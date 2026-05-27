@@ -15,7 +15,13 @@ import type {
   HistorySnapshot,
   UseHistoryDataReturn,
 } from '../../hooks/useHistoryData';
-import { POSITION_STORAGE_KEY, clamp, loadStoredPosition } from './helpers';
+import {
+  POSITION_STORAGE_KEY,
+  clamp,
+  loadStoredCollapsed,
+  loadStoredPosition,
+  writeStoredCollapsed,
+} from './helpers';
 
 interface Props {
   snapshot: HistorySnapshot | null;
@@ -39,8 +45,12 @@ export default function BacktestDiag({
   timeAmPm,
   timezone,
 }: Readonly<Props>) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(loadStoredCollapsed);
   const [position, setPosition] = useState<Position | null>(loadStoredPosition);
+
+  useEffect(() => {
+    writeStoredCollapsed(collapsed);
+  }, [collapsed]);
   const containerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
     startX: number;
