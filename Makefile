@@ -57,7 +57,7 @@ DATE        ?= $(lastword $(PENDING_DATES))
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version
+.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback
 
 help:
 	@echo "EOD options-flow pipeline targets:"
@@ -449,3 +449,20 @@ version:
 	  echo "  ⚠️  mismatch — either pre-deploy or Vercel served a stale Function bundle"; \
 	fi; \
 	echo "  PROD_URL=$(PROD_URL) (override with PROD_URL=https://...)"
+
+# Flip the active TAKE-IT bundle in the loader manifest without redeploying.
+#
+# Read-only (show current manifest):
+#   make takeit-rollback
+#
+# Flip one feed:
+#   make takeit-rollback FEED=lottery PATH_OVERRIDE=takeit/lottery-v2026-05-10.json
+#   make takeit-rollback FEED=silentboom PATH_OVERRIDE=takeit/silentboom-v2026-05-10.json
+#
+# Dry-run (print what would be written, no Blob write):
+#   make takeit-rollback FEED=lottery PATH_OVERRIDE=takeit/lottery-v2026-05-10.json DRY_RUN=1
+
+takeit-rollback:
+	@set -a && source $(ENV_FILE) && set +a && \
+		FEED=$(FEED) PATH_OVERRIDE=$(PATH_OVERRIDE) DRY_RUN=$(DRY_RUN) \
+		node scripts/takeit-rollback.mjs
