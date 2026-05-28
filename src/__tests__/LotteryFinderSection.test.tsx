@@ -1070,4 +1070,32 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
       screen.queryByTestId('lottery-row-TSLA260508C00250000'),
     ).not.toBeInTheDocument();
   });
+
+  it('clicking the "all" preset removes the floor and reveals hidden fires', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'TSLA260508C00250000',
+        underlyingSymbol: 'TSLA',
+        strike: 250,
+        takeitProb: 0.3,
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 1 }));
+
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    // Default 0.70 floor hides the low-takeitProb fire.
+    expect(
+      screen.queryByTestId('lottery-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
+
+    // Click the "all" preset to disable the floor.
+    fireEvent.click(screen.getByTestId('takeit-floor-0'));
+
+    // Fire is now visible.
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
 });

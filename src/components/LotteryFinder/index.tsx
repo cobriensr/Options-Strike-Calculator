@@ -245,7 +245,11 @@ const MIN_FIRE_COUNT_TO_FLOOR: Record<MinFireCountFloor, number> = {
 
 const TAKEIT_FLOOR_LS_KEY = 'lottery.takeitFloor';
 
-const TAKEIT_FLOOR_OPTIONS = [
+const TAKEIT_FLOOR_OPTIONS: Array<{
+  value: number;
+  label: string;
+  tooltip: string;
+}> = [
   { value: 0, label: 'all', tooltip: 'No TAKE-IT floor.' },
   {
     value: 0.6,
@@ -268,7 +272,7 @@ const TAKEIT_FLOOR_OPTIONS = [
     label: '≥0.80',
     tooltip: 'Rare elite tail (≈1–4% of fires).',
   },
-] as const;
+];
 
 const SORT_OPTIONS: Array<{
   value: LotterySortMode;
