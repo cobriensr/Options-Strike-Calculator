@@ -16,6 +16,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
+import pytest
 
 from multileg_assembler import classify_trades
 
@@ -646,3 +647,289 @@ def test_isolated_legs_get_unique_group_ids() -> None:
 
     gids = out["pattern_group_id"].to_list()
     assert len(set(gids)) == 2
+
+
+# ── Phase 1.5 hardening: defensive fixes ────────────────────────────────────
+
+
+def test_classify_trades_accepts_uppercase_option_type() -> None:
+    """Finding 1.4 + Agent C F8: direct callers passing ``CALL`` / ``PUT``
+    (bypassing the ``classifier/src/multileg_routes.py`` ``.lower()``
+    normalization) must still get correct cross-type pairing.
+
+    Without the defensive lowercase at the top of ``_classify_ticker``,
+    ``_two_leg_cross_type_from_batch``'s
+    ``option_type[0] == "call"`` literal compare silently zeros out
+    strangles and risk_reversals on uppercase input — every trade would
+    fall to ``isolated_leg``.
+    """
+    rows = [
+        _trade(
+            trade_id="us1",
+            offset_s=0.0,
+            strike=210.0,
+            option_type="CALL",
+            size=20,
+            price=0.80,
+            nbbo_bid=0.70,
+            nbbo_ask=0.80,  # buy
+        ),
+        _trade(
+            trade_id="us2",
+            offset_s=15.0,
+            strike=190.0,
+            option_type="PUT",
+            size=20,
+            price=0.75,
+            nbbo_bid=0.65,
+            nbbo_ask=0.75,  # buy
+        ),
+    ]
+    out = classify_trades(_df(rows))
+
+    # Strangle must still be discovered despite the uppercase casing.
+    structures = set(out["inferred_structure"].to_list())
+    assert structures == {"strangle"}, (
+        f"uppercase option_type silently failed cross-type pairing: {structures}"
+    )
+    assert all(not iso for iso in out["is_isolated_leg"].to_list())
+    gids = out["pattern_group_id"].to_list()
+    assert gids[0] == gids[1]
+
+
+def test_classify_trades_accepts_mixed_case_option_type() -> None:
+    """Finding 1.4: mixed-case option_type (``Call`` / ``Put``) — the
+    Pydantic ``Literal`` union accepts these spellings, and the matcher
+    must too. Defends against routing changes that bypass ``.lower()``.
+    """
+    rows = [
+        _trade(
+            trade_id="mc1",
+            offset_s=0.0,
+            strike=210.0,
+            option_type="Call",
+            size=20,
+            price=0.80,
+            nbbo_bid=0.70,
+            nbbo_ask=0.80,
+        ),
+        _trade(
+            trade_id="mc2",
+            offset_s=15.0,
+            strike=190.0,
+            option_type="Put",
+            size=20,
+            price=0.75,
+            nbbo_bid=0.65,
+            nbbo_ask=0.75,
+        ),
+    ]
+    out = classify_trades(_df(rows))
+    structures = set(out["inferred_structure"].to_list())
+    assert structures == {"strangle"}, (
+        f"mixed-case option_type failed cross-type pairing: {structures}"
+    )
+
+
+def test_classify_trades_raises_on_partial_nbbo_missing_bid() -> None:
+    """Finding 1.5: if a caller provides ``nbbo_ask`` but no ``nbbo_bid``,
+    raise loudly. Silent fallback to ``side='mid'`` for every trade would
+    massively over-classify random pairs as verticals at ~0.85 confidence.
+    """
+    rows = [_trade(trade_id="p1"), _trade(trade_id="p2", offset_s=30.0)]
+    df = _df(rows).drop("nbbo_bid")
+    with pytest.raises(ValueError, match="nbbo_bid"):
+        classify_trades(df)
+
+
+def test_classify_trades_raises_on_partial_nbbo_missing_ask() -> None:
+    """Finding 1.5: symmetric — missing ``nbbo_ask`` must also raise."""
+    rows = [_trade(trade_id="p1"), _trade(trade_id="p2", offset_s=30.0)]
+    df = _df(rows).drop("nbbo_ask")
+    with pytest.raises(ValueError, match="nbbo_ask"):
+        classify_trades(df)
+
+
+def test_classify_trades_accepts_both_nbbo_columns_sanity() -> None:
+    """Finding 1.5 sanity: both NBBO columns present is the happy path
+    and must not be affected by the new partial-NBBO guard.
+    """
+    rows = [
+        _trade(
+            trade_id="b1",
+            offset_s=0.0,
+            strike=190.0,
+            option_type="call",
+            size=10,
+            price=11.00,
+            nbbo_bid=10.90,
+            nbbo_ask=11.00,
+        ),
+        _trade(
+            trade_id="b2",
+            offset_s=30.0,
+            strike=200.0,
+            option_type="call",
+            size=10,
+            price=5.00,
+            nbbo_bid=5.00,
+            nbbo_ask=5.10,
+        ),
+    ]
+    out = classify_trades(_df(rows))
+    # Vertical pair still discovered (existing behavior preserved).
+    assert set(out["inferred_structure"].to_list()) == {"vertical"}
+
+
+def test_classify_trades_accepts_neither_nbbo_column_sanity() -> None:
+    """Finding 1.5 sanity: omitting both NBBO columns falls back to
+    ``side='mid'`` for every row (existing behavior — no new raise).
+    The matcher returns; we don't assert a specific structure, only
+    that no ValueError is raised.
+    """
+    rows = [_trade(trade_id="n1"), _trade(trade_id="n2", offset_s=30.0)]
+    df = _df(rows).drop(["nbbo_bid", "nbbo_ask"])
+    # Must not raise — both-absent is a documented fallback path.
+    out = classify_trades(df)
+    # Every row gets a structure (may be isolated_leg; that's fine —
+    # the point is the call completed without raising).
+    assert out.height == 2
+    assert all(s is not None for s in out["inferred_structure"].to_list())
+
+
+def test_classify_trades_handles_mixed_null_delta() -> None:
+    """Finding 3.4: mixed null/non-null ``delta`` in a single batch
+    should not crash or produce NaN confidences.
+
+    The matcher's docstring says ``delta`` is optional, but the in-batch
+    half-null case wasn't previously exercised. polars represents
+    missing as null in Float64; the cross-type pairing path uses delta
+    when present. Regression guard against silent NaN propagation into
+    ``match_confidence``.
+    """
+    import math
+
+    # 6 trades on AAPL: 3 calls + 3 puts at adjacent OTM strikes, within
+    # 5s of each other → strangle/risk_reversal cross-type pairing
+    # surface plus some same-type two-leg surface.
+    rows = [
+        # Call leg with delta present.
+        _trade(
+            trade_id="md1",
+            ticker="AAPL",
+            offset_s=0.0,
+            strike=205.0,
+            option_type="call",
+            size=20,
+            price=0.80,
+            nbbo_bid=0.70,
+            nbbo_ask=0.80,  # buy
+            delta=0.45,
+        ),
+        # Put leg with delta present.
+        _trade(
+            trade_id="md2",
+            ticker="AAPL",
+            offset_s=1.0,
+            strike=195.0,
+            option_type="put",
+            size=20,
+            price=0.75,
+            nbbo_bid=0.65,
+            nbbo_ask=0.75,  # buy
+            delta=-0.45,
+        ),
+        # Call leg with NULL delta — present here as a wrinkle the
+        # matcher must tolerate without producing NaN downstream.
+        _trade(
+            trade_id="md3",
+            ticker="AAPL",
+            offset_s=2.0,
+            strike=205.0,
+            option_type="call",
+            size=20,
+            price=0.81,
+            nbbo_bid=0.70,
+            nbbo_ask=0.80,
+            delta=None,  # type: ignore[arg-type]
+        ),
+        # Put leg with NULL delta.
+        _trade(
+            trade_id="md4",
+            ticker="AAPL",
+            offset_s=3.0,
+            strike=195.0,
+            option_type="put",
+            size=20,
+            price=0.76,
+            nbbo_bid=0.65,
+            nbbo_ask=0.75,
+            delta=None,  # type: ignore[arg-type]
+        ),
+        # Another call with delta present (distinct strike → vertical
+        # pairing surface on same-type).
+        _trade(
+            trade_id="md5",
+            ticker="AAPL",
+            offset_s=4.0,
+            strike=210.0,
+            option_type="call",
+            size=20,
+            price=0.40,
+            nbbo_bid=0.30,
+            nbbo_ask=0.40,
+            delta=0.30,
+        ),
+        # Another put with delta present.
+        _trade(
+            trade_id="md6",
+            ticker="AAPL",
+            offset_s=4.5,
+            strike=190.0,
+            option_type="put",
+            size=20,
+            price=0.35,
+            nbbo_bid=0.25,
+            nbbo_ask=0.35,
+            delta=-0.30,
+        ),
+    ]
+    # polars represents Python ``None`` in a Float64 column as null;
+    # build via DataFrame construction so the dtype is enforced.
+    out = classify_trades(
+        _df(rows),
+        window_seconds=90,
+        strike_tolerance=0.05,
+        size_tolerance=0.1,
+    )
+
+    # 1. No crash and full output.
+    assert out.height == 6
+
+    # 2. At least one pairing happened (not every trade was an isolated leg).
+    is_iso = out["is_isolated_leg"].to_list()
+    assert any(not iso for iso in is_iso), (
+        "mixed-null delta caused every trade to fall to isolated_leg; "
+        "the matcher silently rejected paired candidates — see Finding 3.4"
+    )
+
+    # 3. No NaN match_confidence on any row. (A null in a Float64
+    #    column round-trips as Python ``None``; NaN would be a bug.)
+    confidences = out["match_confidence"].to_list()
+    for c in confidences:
+        assert c is not None, "match_confidence emitted None on a normal row"
+        assert not math.isnan(c), (
+            "match_confidence is NaN — likely null-delta propagation through "
+            "delta-aware confidence scoring"
+        )
+
+    # 4. Every paired trade (is_isolated_leg=False) has a stable string
+    #    pattern_group_id.
+    group_ids = out["pattern_group_id"].to_list()
+    structures = out["inferred_structure"].to_list()
+    for iso, gid, struct in zip(is_iso, group_ids, structures):
+        if iso is False:
+            assert isinstance(gid, str) and gid, (
+                f"paired trade missing pattern_group_id: struct={struct!r} "
+                f"gid={gid!r}"
+            )

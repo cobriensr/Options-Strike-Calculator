@@ -355,8 +355,22 @@ def _classify_side(df: pl.DataFrame) -> pl.DataFrame:
 
     Uses NBBO if present; otherwise defaults to 'mid'. Tolerance of 1c
     around bid/ask matches the spec.
+
+    Raises ``ValueError`` if exactly one of ``nbbo_bid`` / ``nbbo_ask``
+    is present — that's a caller bug, and silently degrading every trade
+    to ``side='mid'`` would massively over-classify random pairs as
+    verticals at ~0.85 confidence. See Phase 1.5 hardening spec
+    (Finding 1.5).
     """
-    if "nbbo_ask" in df.columns and "nbbo_bid" in df.columns:
+    has_bid = "nbbo_bid" in df.columns
+    has_ask = "nbbo_ask" in df.columns
+    if has_bid != has_ask:
+        raise ValueError(
+            "classify_trades: caller provided exactly one of nbbo_bid / "
+            "nbbo_ask. Either provide both (recommended) or omit both to "
+            "fall back to side='mid' for all trades."
+        )
+    if has_bid and has_ask:
         side_expr = (
             pl.when(pl.col("price") >= pl.col("nbbo_ask") - 0.01)
             .then(pl.lit("buy"))
@@ -393,6 +407,18 @@ def _classify_ticker(
     ``assignments`` — the caller is responsible for emitting null
     structure columns for those rows (best-effort matcher semantics).
     """
+    # Defensive: normalize option_type case so any direct caller of
+    # classify_trades that doesn't normalize upstream still gets correct
+    # cross-type pairing. Without this, _two_leg_cross_type_from_batch's
+    # ``option_type[0] == "call"`` literal compare silently zeros out
+    # strangles and risk_reversals on uppercase input. Defense-in-depth
+    # alongside classifier/src/multileg_routes.py's existing ``.lower()``
+    # normalization. See Phase 1.5 hardening spec (Finding 1.4 +
+    # Agent C F8 in the red-team review).
+    ticker_df = ticker_df.with_columns(
+        pl.col("option_type").str.to_lowercase()
+    )
+
     # Slim, sorted, indexed leg frame.
     legs = ticker_df.with_row_index(name="ridx").select(
         [

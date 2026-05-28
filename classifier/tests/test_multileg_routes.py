@@ -792,3 +792,104 @@ def test_classification_rejects_extra_field(
                 "rogue_field": "nope",
             }
         )
+
+
+# ── Finding 3.4: mixed null/non-null delta wire-path integration ─────────
+
+
+def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
+    make_payload,
+    sample_trade: dict[str, Any],
+) -> None:
+    """Finding 3.4 (classifier-side mirror of the ml/ test): a request
+    body where half the trades omit ``delta`` (Pydantic emits ``None``)
+    and half carry a float must round-trip through
+    ``handle_classify_payload`` cleanly — no 500, no NaN
+    ``match_confidence``, and the response shape matches
+    ``MultilegClassification``.
+
+    Unlike most tests in this file, this one does NOT mock
+    ``_classify_with_polars`` because the contract under test is the
+    full wire path: Pydantic null-default → polars Float64 null →
+    real matcher → projected dicts → response Pydantic.
+    """
+    import math
+
+    # 6 AAPL trades within ±5s — 3 calls + 3 puts at adjacent OTM
+    # strikes. Half have float delta, half omit it (Pydantic default
+    # = None → polars Float64 null in the matcher's DataFrame).
+    trades: list[dict[str, Any]] = []
+    base_time = "2026-05-15T15:30:{sec}.000000Z"
+    legs: list[tuple[str, str, float, float, float, float, float | None]] = [
+        # (id,    type,  strike, price, bid,   ask,   delta)
+        ("md1", "call", 205.0, 0.80, 0.70, 0.80, 0.45),
+        ("md2", "put", 195.0, 0.75, 0.65, 0.75, -0.45),
+        ("md3", "call", 205.0, 0.81, 0.70, 0.80, None),
+        ("md4", "put", 195.0, 0.76, 0.65, 0.75, None),
+        ("md5", "call", 210.0, 0.40, 0.30, 0.40, 0.30),
+        ("md6", "put", 190.0, 0.35, 0.25, 0.35, -0.30),
+    ]
+    for idx, (tid, otype, strike, price, bid, ask, delta) in enumerate(legs):
+        t = copy.deepcopy(sample_trade)
+        t["id"] = tid
+        t["executed_at"] = base_time.format(sec=str(idx).zfill(2))
+        t["option_chain_id"] = f"AAPL-2026-05-15-{otype[0].upper()}-{strike}"
+        t["strike"] = strike
+        t["option_type"] = otype
+        t["price"] = price
+        t["nbbo_bid"] = bid
+        t["nbbo_ask"] = ask
+        t["premium"] = price * 20.0 * 100.0
+        t["size"] = 20.0
+        if delta is None:
+            t.pop("delta", None)  # Pydantic default = None
+        else:
+            t["delta"] = delta
+        trades.append(t)
+
+    body = make_payload(trades=trades, window_seconds=90)
+    status, payload = multileg_routes.handle_classify_payload(body)
+
+    # 1. No 500. (The matcher tolerated mixed-null delta.)
+    assert status == 200, f"expected 200, got {status}: {payload!r}"
+
+    classifications = payload["classifications"]
+    assert len(classifications) == 6
+    assert [c["id"] for c in classifications] == [
+        "md1",
+        "md2",
+        "md3",
+        "md4",
+        "md5",
+        "md6",
+    ]
+
+    # 2. No NaN ``match_confidence`` on any classification row.
+    for c in classifications:
+        mc = c["match_confidence"]
+        assert mc is not None, (
+            f"match_confidence None on classification id={c['id']!r}; the "
+            "matcher should always emit a float here (this is not the "
+            "overload-skip null path)"
+        )
+        assert isinstance(mc, float) and not math.isnan(mc), (
+            f"NaN match_confidence on id={c['id']!r}: {mc!r} — likely "
+            "null-delta propagation through confidence scoring"
+        )
+
+    # 3. Every classification has a stable string pattern_group_id.
+    for c in classifications:
+        gid = c["pattern_group_id"]
+        assert isinstance(gid, str) and gid, (
+            f"missing pattern_group_id on id={c['id']!r}: {gid!r}"
+        )
+
+    # 4. At least one row was paired (proving the matcher didn't fail
+    #    over to ``isolated_leg`` for everything when ``delta`` was
+    #    partially null).
+    assert any(
+        c["is_isolated_leg"] is False for c in classifications
+    ), (
+        "every trade fell to isolated_leg — mixed-null delta silently "
+        "rejected paired candidates; see Finding 3.4"
+    )
