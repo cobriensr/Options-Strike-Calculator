@@ -32,6 +32,13 @@ _BATCH_RANGE_MAX_DAYS = 366 * 3
 # Compiled once — every archive handler reuses this.
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
+# Upper bound on POST request bodies (takeit/explain + multileg-classify).
+# The server binds 0.0.0.0, so an unbounded `rfile.read(content_length)`
+# is a trivial unauthenticated remote-OOM vector. We reject by *declared*
+# Content-Length before allocating, which is sufficient to prevent the
+# allocation. Configurable via env; default 1 MiB.
+MAX_BODY_BYTES = int(os.environ.get("TAKEIT_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
+
 
 def _is_today_or_future_utc(date_str: str) -> bool:
     """Return True when date_str (YYYY-MM-DD) is >= today in UTC.
@@ -376,6 +383,14 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": "empty body"}).encode())
             return
+        if content_length > MAX_BODY_BYTES:
+            # Reject by declared length before allocating — guards the
+            # `rfile.read` OOM vector. Do NOT read the body.
+            self.send_response(413)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "payload too large"}).encode())
+            return
 
         body_bytes = self.rfile.read(content_length)
         auth_header = self.headers.get("Authorization", "")
@@ -392,7 +407,27 @@ class HealthHandler(BaseHTTPRequestHandler):
         Full Tape trade rows; we run polars-based pattern matching and
         return per-trade classifications in the same order.
         """
-        import multileg_routes  # noqa: PLC0415
+        # Auth + size checks BEFORE the heavy `import multileg_routes`
+        # (polars/numpy) and before any payload read, so an unauthorized or
+        # oversized request never loads the ML deps or allocates a body.
+        shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
+        if not shared_secret:
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps(
+                    {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
+                ).encode()
+            )
+            return
+        auth_header = self.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth_header, f"Bearer {shared_secret}"):
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
+            return
 
         content_length = int(self.headers.get("Content-Length", "0") or 0)
         if content_length <= 0:
@@ -401,6 +436,16 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": "empty body"}).encode())
             return
+        if content_length > MAX_BODY_BYTES:
+            # Reject by declared length before allocating — guards the
+            # `rfile.read` OOM vector. Do NOT read the body.
+            self.send_response(413)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "payload too large"}).encode())
+            return
+
+        import multileg_routes  # noqa: PLC0415
 
         body_bytes = self.rfile.read(content_length)
         status, body = multileg_routes.handle_classify_payload(body_bytes)
@@ -430,8 +475,9 @@ class HealthHandler(BaseHTTPRequestHandler):
             # Known "no data for this date" — return 404 with message.
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("es-range query failed for %s: %s", d, exc)
-            self._send_json(500, {"error": "query failed"})
+            self._archive_500(
+                "es-range", exc, "es-range query failed for %s: %s", d, exc, date=d
+            )
 
     def _handle_archive_analog_days(self) -> None:
         """GET /archive/analog-days?date=YYYY-MM-DD&until_minute=60&k=20"""
@@ -458,8 +504,14 @@ class HealthHandler(BaseHTTPRequestHandler):
             # surface as ValueError; the message is user-facing either way.
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("analog-days query failed for %s: %s", d, exc)
-            self._send_json(500, {"error": "query failed"})
+            self._archive_500(
+                "analog-days",
+                exc,
+                "analog-days query failed for %s: %s",
+                d,
+                exc,
+                date=d,
+            )
 
     def _handle_archive_day_summary(self) -> None:
         """GET /archive/day-summary?date=YYYY-MM-DD → deterministic text.
@@ -489,8 +541,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("day-summary query failed for %s: %s", d, exc)
-            self._send_json(500, {"error": "query failed"})
+            self._archive_500(
+                "day-summary",
+                exc,
+                "day-summary query failed for %s: %s",
+                d,
+                exc,
+                date=d,
+            )
 
     def _handle_archive_day_features(self) -> None:
         """GET /archive/day-features?date=YYYY-MM-DD → 60-dim vector.
@@ -524,8 +582,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("day-features query failed for %s: %s", d, exc)
-            self._send_json(500, {"error": "query failed"})
+            self._archive_500(
+                "day-features",
+                exc,
+                "day-features query failed for %s: %s",
+                d,
+                exc,
+                date=d,
+            )
 
     def _handle_archive_day_features_batch(self) -> None:
         """GET /archive/day-features-batch?from=YYYY-MM-DD&to=YYYY-MM-DD
@@ -547,8 +611,15 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_features_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            log.error("day-features-batch failed for %s..%s: %s", start, end, exc)
-            self._send_json(500, {"error": "query failed"})
+            self._archive_500(
+                "day-features-batch",
+                exc,
+                "day-features-batch failed for %s..%s: %s",
+                start,
+                end,
+                exc,
+                date=f"{start}..{end}",
+            )
 
     def _handle_archive_day_summary_batch(self) -> None:
         """GET /archive/day-summary-batch?from=YYYY-MM-DD&to=YYYY-MM-DD"""
@@ -563,8 +634,15 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_summary_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            log.error("day-summary-batch failed for %s..%s: %s", start, end, exc)
-            self._send_json(500, {"error": "query failed"})
+            self._archive_500(
+                "day-summary-batch",
+                exc,
+                "day-summary-batch failed for %s..%s: %s",
+                start,
+                end,
+                exc,
+                date=f"{start}..{end}",
+            )
 
     def _handle_archive_day_summary_prediction(self) -> None:
         """GET /archive/day-summary-prediction?date=YYYY-MM-DD
@@ -587,8 +665,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("day-summary-prediction failed for %s: %s", d, exc)
-            self._send_json(500, {"error": "query failed"})
+            self._archive_500(
+                "day-summary-prediction",
+                exc,
+                "day-summary-prediction failed for %s: %s",
+                d,
+                exc,
+                date=d,
+            )
 
     def _handle_archive_day_summary_prediction_batch(self) -> None:
         """GET /archive/day-summary-prediction-batch?from=Y-M-D&to=Y-M-D"""
@@ -603,13 +687,15 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_summary_prediction_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            log.error(
+            self._archive_500(
+                "day-summary-prediction-batch",
+                exc,
                 "day-summary-prediction-batch failed %s..%s: %s",
                 start,
                 end,
                 exc,
+                date=f"{start}..{end}",
             )
-            self._send_json(500, {"error": "query failed"})
 
     def _handle_archive_tbbo_day_microstructure(self) -> None:
         """GET /archive/tbbo-day-microstructure?date=YYYY-MM-DD&symbol=ES|NQ
@@ -641,13 +727,16 @@ class HealthHandler(BaseHTTPRequestHandler):
             # is a missing-data case.
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error(
+            self._archive_500(
+                "tbbo-day-microstructure",
+                exc,
                 "tbbo-day-microstructure failed for %s/%s: %s",
                 d,
                 symbol,
                 exc,
+                date=d,
+                symbol=symbol,
             )
-            self._send_json(500, {"error": "query failed"})
 
     def _handle_archive_tbbo_ofi_percentile(self) -> None:
         """GET /archive/tbbo-ofi-percentile?symbol=ES|NQ&value=<float>&window=5m|15m|1h
@@ -713,8 +802,40 @@ class HealthHandler(BaseHTTPRequestHandler):
             # the query layer after the validation above).
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            log.error("tbbo-ofi-percentile failed for %s/%s: %s", symbol, window, exc)
-            self._send_json(500, {"error": "query failed"})
+            self._archive_500(
+                "tbbo-ofi-percentile",
+                exc,
+                "tbbo-ofi-percentile failed for %s/%s: %s",
+                symbol,
+                window,
+                exc,
+                symbol=symbol,
+                window=window,
+            )
+
+    def _archive_500(
+        self,
+        route: str,
+        exc: Exception,
+        log_msg: str,
+        *log_args: object,
+        **tags: object,
+    ) -> None:
+        """Log + Sentry-capture an archive query failure, then 500.
+
+        DRY helper for the archive read handlers. Mirrors the /health
+        DB-probe pattern (capture_exception alongside log.error) so
+        archive 500s surface in Sentry instead of dying in logs only.
+        The 500 JSON response shape is unchanged.
+        """
+        log.error(log_msg, *log_args)
+        from sentry_setup import capture_exception  # noqa: PLC0415
+
+        capture_exception(
+            exc,
+            tags={"component": "archive", "route": route, **tags},
+        )
+        self._send_json(500, {"error": "query failed"})
 
     def _send_json(self, status: int, body: dict[str, object]) -> None:
         self.send_response(status)

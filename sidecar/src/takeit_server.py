@@ -34,6 +34,7 @@ Endpoint (wired in sidecar/src/health.py):
 
 from __future__ import annotations
 
+import hmac
 import io
 import json
 import logging
@@ -227,7 +228,8 @@ def handle_explain_payload(body_bytes: bytes, auth_header: str) -> tuple[int, di
     shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
     if not shared_secret:
         return 503, {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
-    if auth_header != f"Bearer {shared_secret}":
+    # Constant-time compare — a raw `!=` leaks the secret via timing.
+    if not hmac.compare_digest(auth_header, f"Bearer {shared_secret}"):
         return 401, {"error": "unauthorized"}
 
     try:

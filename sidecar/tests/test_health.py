@@ -12,6 +12,7 @@ import io
 import json
 import os
 import sys
+import types
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -1378,3 +1379,258 @@ class TestQuietThreadingHTTPServer:
             except ValueError:
                 server.handle_error(object(), ("127.0.0.1", 0))
         super_handle_error.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# POST body driver — supports an arbitrary body + Content-Length, and tracks
+# whether the handler actually read from rfile (so the 413 over-cap path can
+# assert "no body read"). Distinct from _FakePostRequest, which hardwires
+# Content-Length: 0 for the seed-archive lifecycle tests.
+# ---------------------------------------------------------------------------
+
+
+class _TrackingRfile(io.BytesIO):
+    """BytesIO that records whether read() was called."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.read_called = False
+
+    def read(self, *args: object, **kwargs: object) -> bytes:
+        self.read_called = True
+        return super().read(*args, **kwargs)
+
+
+def _run_post_with_body(
+    path: str,
+    body: bytes = b"",
+    headers: dict[str, str] | None = None,
+    declared_length: int | None = None,
+) -> tuple[int, dict, bool]:
+    """Drive HealthHandler for one POST; return (status, body_obj, read_called).
+
+    ``declared_length`` overrides the Content-Length header independent of the
+    actual body length — used to exercise the over-cap 413 path without
+    allocating a giant body.
+    """
+    length = declared_length if declared_length is not None else len(body)
+    header_lines = "Host: localhost\r\n"
+    for k, v in (headers or {}).items():
+        header_lines += f"{k}: {v}\r\n"
+    request_head = (
+        f"POST {path} HTTP/1.1\r\n{header_lines}Content-Length: {length}\r\n\r\n"
+    ).encode()
+
+    output = io.BytesIO()
+    rfile = _TrackingRfile(body)
+
+    # Parse the request line + headers from a head-only stream, then swap
+    # rfile to the tracking body stream so we can assert read-or-not on the
+    # body independently of header parsing.
+    class _H(HealthHandler):
+        def setup(self_inner) -> None:  # noqa: N805
+            self_inner.rfile = io.BytesIO(request_head)
+            self_inner.wfile = output
+
+        def parse_request(self_inner) -> bool:  # noqa: N805
+            ok = super().parse_request()
+            self_inner.rfile = rfile
+            return ok
+
+        def finish(self_inner) -> None:  # noqa: N805
+            pass
+
+        def log_message(self_inner, *_a: object, **_kw: object) -> None:  # noqa: N805
+            pass
+
+    _H(object(), ("127.0.0.1", 0), None)  # type: ignore[arg-type]
+
+    raw = output.getvalue().decode()
+    status_line, *_ = raw.split("\r\n", 1)
+    status = int(status_line.split()[1])
+    _, _, body_text = raw.partition("\r\n\r\n")
+    body_obj: dict
+    if not body_text:
+        body_obj = {}
+    else:
+        try:
+            body_obj = json.loads(body_text)
+        except json.JSONDecodeError:
+            body_obj = {"_raw": body_text}
+    return status, body_obj, rfile.read_called
+
+
+# ---------------------------------------------------------------------------
+# POST /takeit/multileg-classify — auth + body-size cap (Finding 3, CRITICAL)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _clear_takeit_secret() -> Any:
+    saved = os.environ.pop("TAKEIT_SIDECAR_SHARED_SECRET", None)
+    yield
+    if saved is not None:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = saved
+    else:
+        os.environ.pop("TAKEIT_SIDECAR_SHARED_SECRET", None)
+
+
+class TestMultilegClassifyAuth:
+    def test_503_when_secret_unset(self, _clear_takeit_secret) -> None:
+        status, body, read_called = _run_post_with_body(
+            "/takeit/multileg-classify", body=b'{"rows": []}'
+        )
+        assert status == 503
+        assert body["error"] == "TAKEIT_SIDECAR_SHARED_SECRET not configured"
+        assert read_called is False
+
+    def test_401_when_auth_header_missing(self, _clear_takeit_secret) -> None:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
+        status, body, read_called = _run_post_with_body(
+            "/takeit/multileg-classify", body=b'{"rows": []}'
+        )
+        assert status == 401
+        assert body["error"] == "unauthorized"
+        assert read_called is False
+
+    def test_401_when_bearer_wrong(self, _clear_takeit_secret) -> None:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
+        status, body, read_called = _run_post_with_body(
+            "/takeit/multileg-classify",
+            body=b'{"rows": []}',
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert status == 401
+        assert body["error"] == "unauthorized"
+        assert read_called is False
+
+    def test_200_with_good_bearer(self, _clear_takeit_secret) -> None:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
+        # Inject a fake multileg_routes so the heavy polars import is never
+        # triggered; the handler does `import multileg_routes` after auth.
+        fake = types.ModuleType("multileg_routes")
+        fake.handle_classify_payload = lambda b: (200, {"results": []})  # type: ignore[attr-defined]
+        with patch.dict(sys.modules, {"multileg_routes": fake}):
+            status, body, read_called = _run_post_with_body(
+                "/takeit/multileg-classify",
+                body=b'{"rows": []}',
+                headers={"Authorization": "Bearer s3cret"},
+            )
+        assert status == 200
+        assert body == {"results": []}
+        assert read_called is True
+
+    def test_413_over_cap_does_not_read_body(self, _clear_takeit_secret) -> None:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
+        # Declare a Content-Length above the 1 MiB default while sending a
+        # tiny body — the handler must reject before reading.
+        from health import MAX_BODY_BYTES
+
+        status, body, read_called = _run_post_with_body(
+            "/takeit/multileg-classify",
+            body=b"{}",
+            headers={"Authorization": "Bearer s3cret"},
+            declared_length=MAX_BODY_BYTES + 1,
+        )
+        assert status == 413
+        assert body["error"] == "payload too large"
+        assert read_called is False
+
+    def test_400_on_empty_body(self, _clear_takeit_secret) -> None:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
+        status, body, read_called = _run_post_with_body(
+            "/takeit/multileg-classify",
+            body=b"",
+            headers={"Authorization": "Bearer s3cret"},
+            declared_length=0,
+        )
+        assert status == 400
+        assert body["error"] == "empty body"
+        assert read_called is False
+
+
+# ---------------------------------------------------------------------------
+# POST /takeit/explain — body-size cap (auth lives in takeit_server)
+# ---------------------------------------------------------------------------
+
+
+class TestTakeitExplainBodyCap:
+    def test_413_over_cap_does_not_read_body(self, _clear_takeit_secret) -> None:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
+        from health import MAX_BODY_BYTES
+
+        # is_enabled() must return True to reach the cap check. Patch the
+        # takeit_server module the handler lazily imports.
+        fake = types.ModuleType("takeit_server")
+        fake.is_enabled = lambda: True  # type: ignore[attr-defined]
+        fake.handle_explain_payload = lambda b, a: (200, {"results": []})  # type: ignore[attr-defined]
+        with patch.dict(sys.modules, {"takeit_server": fake}):
+            status, body, read_called = _run_post_with_body(
+                "/takeit/explain",
+                body=b"{}",
+                headers={"Authorization": "Bearer s3cret"},
+                declared_length=MAX_BODY_BYTES + 1,
+            )
+        assert status == 413
+        assert body["error"] == "payload too large"
+        assert read_called is False
+
+    def test_200_under_cap_reads_body(self, _clear_takeit_secret) -> None:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = "s3cret"
+        fake = types.ModuleType("takeit_server")
+        fake.is_enabled = lambda: True  # type: ignore[attr-defined]
+        fake.handle_explain_payload = lambda b, a: (200, {"results": []})  # type: ignore[attr-defined]
+        with patch.dict(sys.modules, {"takeit_server": fake}):
+            status, _body, read_called = _run_post_with_body(
+                "/takeit/explain",
+                body=b'{"alert_type": "lottery", "rows": []}',
+                headers={"Authorization": "Bearer s3cret"},
+            )
+        assert status == 200
+        assert read_called is True
+
+
+# ---------------------------------------------------------------------------
+# Archive 500s reach Sentry (MEDIUM finding)
+# ---------------------------------------------------------------------------
+
+
+class TestArchive500Sentry:
+    def test_es_range_500_captures_to_sentry(
+        self, configure_base_callables
+    ) -> None:
+        with (
+            patch(
+                "archive_query.es_day_summary",
+                side_effect=RuntimeError("duckdb crashed"),
+            ),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request("/archive/es-range?date=2024-01-15")
+        assert status == 500
+        assert body["error"] == "query failed"
+        cap.assert_called_once()
+        # Route tag carries the endpoint name for Sentry filtering.
+        _args, kwargs = cap.call_args
+        assert kwargs["tags"]["route"] == "es-range"
+        assert kwargs["tags"]["component"] == "archive"
+
+    def test_tbbo_microstructure_500_captures_to_sentry(
+        self, configure_base_callables
+    ) -> None:
+        with (
+            patch(
+                "archive_query.tbbo_day_microstructure",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request(
+                "/archive/tbbo-day-microstructure?date=2024-01-15&symbol=ES"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+        cap.assert_called_once()
+        _args, kwargs = cap.call_args
+        assert kwargs["tags"]["route"] == "tbbo-day-microstructure"
+        assert kwargs["tags"]["symbol"] == "ES"

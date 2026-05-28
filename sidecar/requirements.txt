@@ -12,6 +12,11 @@ duckdb>=1.0.0
 # `archive_query._connection`. (Phase 4c shipped the same guard in the ML
 # pipeline; Phase 4b rework brings it to the sidecar.)
 pytz>=2024.1
+# Bundles the IANA tz database so `zoneinfo.ZoneInfo("America/Chicago")`
+# resolves on Railway's slim image, which may lack system tz files. Without
+# it, session_calendar.cme_session_date would raise ZoneInfoNotFoundError in
+# prod. Required by the CME-trade-date roll (Phase 1 hardening 2026-05-28).
+tzdata>=2024.1
 pytest>=8.0.0
 pytest-cov>=6.0
 ruff>=0.11
