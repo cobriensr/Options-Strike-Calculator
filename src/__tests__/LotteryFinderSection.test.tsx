@@ -145,6 +145,10 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
     inversionN21d: null,
     inversionN90d: null,
     insertedAt: '2026-05-08T19:31:00Z',
+    // Default takeitProb above the 0.70 floor so existing tests remain
+    // visible when the default floor is active. Override explicitly when
+    // testing the filter logic.
+    takeitProb: 0.75,
     ...overrides,
   };
 }
@@ -1017,5 +1021,53 @@ describe('LotteryFinderSection: hide-counter-flow filter', () => {
 
     // Both are counter-flow calls → chip should show −2 suffix.
     expect(chip).toHaveTextContent('−2');
+  });
+});
+
+// ============================================================
+// TAKE-IT FLOOR CHIP
+// ============================================================
+
+describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('renders the TAKE-IT floor chip group with default 0.70 chip active', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    const chip = screen.getByTestId('takeit-floor-0.7');
+    expect(chip).toBeInTheDocument();
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('default 0.70 floor hides fires with takeitProb < 0.70 and shows fires with takeitProb >= 0.70', () => {
+    const fires = [
+      makeFire({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        underlyingSymbol: 'AAPL',
+        strike: 200,
+        takeitProb: 0.8,
+      }),
+      makeFire({
+        id: 2,
+        optionChainId: 'TSLA260508C00250000',
+        underlyingSymbol: 'TSLA',
+        strike: 250,
+        takeitProb: 0.3,
+      }),
+    ];
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
+
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    // High takeitProb is visible.
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    // Low takeitProb is hidden by the default 0.70 floor.
+    expect(
+      screen.queryByTestId('lottery-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
   });
 });

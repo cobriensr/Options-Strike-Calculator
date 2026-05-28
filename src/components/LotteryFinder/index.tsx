@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   boolPersistOpts,
   convictionFloorPersistOpts,
+  floatPersistOpts,
   intPersistOpts,
   moneynessPersistOpts,
   type ConvictionFloor,
@@ -234,6 +235,41 @@ const MIN_FIRE_COUNT_TO_FLOOR: Record<MinFireCountFloor, number> = {
   gte16: 16,
 };
 
+// ============================================================
+// TAKE-IT FLOOR — calibrated XGBoost P(peak ≥ +20%) floor
+// ============================================================
+//
+// 0.70 is the empirical threshold where realized return stops being
+// negative historically (calibration docs in
+// takeit-phase3-production-scoring-2026-05-16.md). Default ON at 0.70.
+
+const TAKEIT_FLOOR_LS_KEY = 'lottery.takeitFloor';
+
+const TAKEIT_FLOOR_OPTIONS = [
+  { value: 0, label: 'all', tooltip: 'No TAKE-IT floor.' },
+  {
+    value: 0.6,
+    label: '≥0.60',
+    tooltip: 'Hide fires below 0.60 calibrated P(peak ≥ +20%).',
+  },
+  {
+    value: 0.7,
+    label: '≥0.70',
+    tooltip:
+      'Default. ~0.70 is where historical realized return stops being negative.',
+  },
+  {
+    value: 0.75,
+    label: '≥0.75',
+    tooltip: 'Stricter — clearly positive expectancy historically.',
+  },
+  {
+    value: 0.8,
+    label: '≥0.80',
+    tooltip: 'Rare elite tail (≈1–4% of fires).',
+  },
+] as const;
+
 const SORT_OPTIONS: Array<{
   value: LotterySortMode;
   label: string;
@@ -423,6 +459,12 @@ export function LotteryFinderSection({
     MONEYNESS_LS_KEY,
     'all',
     moneynessPersistOpts,
+  );
+  // TAKE-IT floor — calibrated XGBoost P(peak ≥ +20%) floor. Default 0.70.
+  const [takeitFloor, setTakeitFloor] = usePersistedState<number>(
+    TAKEIT_FLOOR_LS_KEY,
+    0.7,
+    floatPersistOpts,
   );
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
   const [page, setPage] = useState<number>(0);
@@ -615,6 +657,11 @@ export function LotteryFinderSection({
           return moneynessMode === 'otm' ? otm : !otm;
         });
       }
+      if (takeitFloor > 0) {
+        out = out.filter(
+          (f) => f.takeitProb != null && f.takeitProb >= takeitFloor,
+        );
+      }
       // Burst (fire_count) floor is applied server-side via
       // `minFireCount` on both feed + ticker-counts so pagination and
       // chip totals reflect the post-filter result — see useLotteryFinder
@@ -628,6 +675,7 @@ export function LotteryFinderSection({
       hideRoundTripped,
       aggressivePremium,
       moneynessMode,
+      takeitFloor,
       ctMinuteOfDay,
     ],
   );
@@ -654,6 +702,11 @@ export function LotteryFinderSection({
   const hiddenRoundTrippedCount = hideRoundTripped
     ? fires.filter((f) => (f.roundTripScoreDeduct ?? 0) < 0).length
     : 0;
+  const hiddenTakeitCount =
+    takeitFloor > 0
+      ? fires.filter((f) => f.takeitProb == null || f.takeitProb < takeitFloor)
+          .length
+      : 0;
 
   // All tickers with at least one fire today, from the dedicated
   // all-day counts endpoint — independent of pagination + the minute
@@ -1077,6 +1130,24 @@ export function LotteryFinderSection({
                 </FilterChip>
               );
             })}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>TAKE-IT</span>
+            {TAKEIT_FLOOR_OPTIONS.map((o) => {
+              const active = takeitFloor === o.value;
+              return (
+                <FilterChip
+                  key={o.value}
+                  active={active}
+                  activeColor="sky"
+                  onClick={() => setTakeitFloor(o.value)}
+                  title={o.tooltip}
+                  ariaPressed={active}
+                  testId={`takeit-floor-${o.value}`}
+                >
+                  {o.label}
+                </FilterChip>
+              );
+            })}
           </div>
 
           {/* Row 2b: numeric server-side filter — min premium $K. Mirrors
@@ -1472,6 +1543,12 @@ export function LotteryFinderSection({
                 {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     ({hiddenRoundTrippedCount} round-tripped hidden)
+                  </span>
+                )}
+                {takeitFloor > 0 && hiddenTakeitCount > 0 && (
+                  <span className="ml-2 text-sky-300/80">
+                    ({hiddenTakeitCount} hidden below TAKE-IT{' '}
+                    {takeitFloor.toFixed(2)})
                   </span>
                 )}
               </span>
