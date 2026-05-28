@@ -521,6 +521,88 @@ describe('SilentBoomTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
+    it('renders the cluster badge when at least one alert has suspiciousCluster=true', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'AMZN260520C00220000',
+          underlyingSymbol: 'AMZN',
+          suspiciousCluster: true,
+          clusterStrikeCount: 4,
+        }),
+        makeAlert({
+          optionChainId: 'AMZN260520C00225000',
+          underlyingSymbol: 'AMZN',
+          strike: 225,
+          suspiciousCluster: false,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="AMZN"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-cluster-AMZN'),
+      ).toHaveTextContent('OTM SWEEP ×4');
+    });
+
+    it('omits the cluster badge when no alerts have suspiciousCluster=true', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'AMZN260520C00220000',
+          underlyingSymbol: 'AMZN',
+          suspiciousCluster: false,
+        }),
+        makeAlert({
+          optionChainId: 'AMZN260520C00225000',
+          underlyingSymbol: 'AMZN',
+          strike: 225,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="AMZN"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-cluster-AMZN'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('omits the cluster badge when clusterStrikeCount is below 3', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'AMZN260520C00220000',
+          underlyingSymbol: 'AMZN',
+          suspiciousCluster: true,
+          clusterStrikeCount: 2,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="AMZN"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-cluster-AMZN'),
+      ).not.toBeInTheDocument();
+    });
+
     it('renders the conviction badge when the conviction prop is true', () => {
       // The conviction/storm flags are now computed by
       // `useTickerGrouping` against the unfiltered set and pushed in

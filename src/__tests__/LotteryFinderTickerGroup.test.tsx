@@ -919,6 +919,88 @@ describe('LotteryFinderTickerGroup', () => {
         screen.queryByTestId('lottery-ticker-gated-TSLA'),
       ).not.toBeInTheDocument();
     });
+
+    it('renders the cluster badge when at least one fire has suspiciousCluster=true', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'META260520C00600000',
+          underlyingSymbol: 'META',
+          suspiciousCluster: true,
+          clusterStrikeCount: 3,
+        }),
+        makeFire({
+          optionChainId: 'META260520C00610000',
+          underlyingSymbol: 'META',
+          strike: 610,
+          suspiciousCluster: false,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="META"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.getByTestId('lottery-ticker-cluster-META'),
+      ).toHaveTextContent('OTM SWEEP ×3');
+    });
+
+    it('omits the cluster badge when no fires have suspiciousCluster=true', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'META260520C00600000',
+          underlyingSymbol: 'META',
+          suspiciousCluster: false,
+        }),
+        makeFire({
+          optionChainId: 'META260520C00610000',
+          underlyingSymbol: 'META',
+          strike: 610,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="META"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-cluster-META'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('omits the cluster badge when clusterStrikeCount is below 3', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'META260520C00600000',
+          underlyingSymbol: 'META',
+          suspiciousCluster: true,
+          clusterStrikeCount: 2,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="META"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-cluster-META'),
+      ).not.toBeInTheDocument();
+    });
   });
 
   describe('flow rollup chip', () => {

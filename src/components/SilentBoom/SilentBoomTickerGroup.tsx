@@ -188,6 +188,20 @@ function SilentBoomTickerGroupBase({
   const showConvictionBadge = conviction;
   const showStormBadge = storm;
 
+  // OTM-sweep cluster badge — derived from the alerts array directly.
+  // clusterStrikes = highest clusterStrikeCount among all cluster alerts.
+  // Guard against empty array: Math.max(...[]) = -Infinity.
+  const clusterStrikes =
+    alerts.length === 0
+      ? 0
+      : Math.max(
+          0,
+          ...alerts.map((a) =>
+            a.suspiciousCluster ? (a.clusterStrikeCount ?? 0) : 0,
+          ),
+        );
+  const showClusterBadge = clusterStrikes >= 3;
+
   const strikesWithSpread =
     agg.strikeRange != null && strikesSummary
       ? `${strikesSummary} (${agg.strikeRange.spreadPts}pt)`
@@ -249,6 +263,15 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-storm-${ticker}`}
             >
               {BURST_STORM_BADGE_LABEL}
+            </span>
+          )}
+          {showClusterBadge && (
+            <span
+              className="rounded bg-violet-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-violet-200 ring-1 ring-violet-400/60"
+              title="≥3 cheap, OTM, ask-side 0DTE strikes co-fired on this ticker today — the smart-money lottery-sweep profile. Descriptive context only, NOT a conviction signal (the cohort is net negative-expectancy). Use TAKE-IT for conviction."
+              data-testid={`silent-boom-ticker-cluster-${ticker}`}
+            >
+              🎰 OTM SWEEP ×{clusterStrikes}
             </span>
           )}
           {strikesWithSpread && (
