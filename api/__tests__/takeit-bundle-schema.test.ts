@@ -84,6 +84,18 @@ describe('validateBundle', () => {
     };
     expect(() => validateBundle(withMetrics)).not.toThrow();
   });
+
+  it('error message includes the failing field path', () => {
+    const broken = { ...minimalValidBundle } as Record<string, unknown>;
+    delete broken.feature_cols;
+    expect(() => validateBundle(broken)).toThrowError(/feature_cols/);
+  });
+
+  it('returns the validated data on success', () => {
+    const result = validateBundle(minimalValidBundle);
+    expect(result.alert_type).toBe('lottery');
+    expect(result.feature_cols).toHaveLength(2);
+  });
 });
 
 // Smoke-test that the schema is exported correctly.

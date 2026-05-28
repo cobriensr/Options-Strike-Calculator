@@ -70,7 +70,9 @@ export function validateBundle(raw: unknown): TakeitBundleValidated {
   const result = TakeitBundleSchema.safeParse(raw);
   if (!result.success) {
     const firstIssue = result.error.issues[0];
-    const where = firstIssue?.path.join('.') ?? '<root>';
+    const where = firstIssue?.path.length
+      ? firstIssue.path.join('.')
+      : '<root>';
     const msg = firstIssue?.message ?? 'unknown validation failure';
     throw new BundleSchemaError(
       `TakeitBundle validation failed at ${where}: ${msg}`,
