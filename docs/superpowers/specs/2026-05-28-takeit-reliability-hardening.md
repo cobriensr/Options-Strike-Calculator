@@ -66,9 +66,18 @@ Today the bundle URL is hardcoded. After:
   `{ "lottery": "<blob_url>", "silent_boom": "<blob_url>", "promoted_at": "..." }`.
 - `loadTakeitDetectContext()` reads the pointer first, then fetches the
   named bundles. The pointer file is small and cached aggressively.
-- Rollback procedure: re-upload `bundles/active.json` pointing at a prior
-  bundle URL. New cron invocations pick it up within one cycle (≤ 5 min).
-- Document the rollback in `docs/runbooks/takeit-rollback.md` (new).
+- Rollback procedure: `make takeit-rollback BUNDLE=<url>` (or the equivalent
+  Makefile-idiomatic invocation — wire to whatever the existing Makefile
+  patterns look like). The Make target invokes a small Node script
+  `scripts/takeit-rollback.mjs` that uses `@vercel/blob` to read the
+  current `bundles/active.json`, swap the named bundle URL, and re-upload.
+  New cron invocations pick it up within one cycle (≤ 5 min).
+- The script also supports `make takeit-rollback` with no arguments to
+  print the current active.json contents (no-op read) — used to confirm
+  what's live before flipping.
+- Document the rollback in `docs/runbooks/takeit-rollback.md` (new) — the
+  spec, the Make target usage, and where to find prior bundle URLs in
+  Blob's UI.
 
 ### 1.3 NaN/Infinity guards inside scoring
 
@@ -89,6 +98,8 @@ Today the bundle URL is hardcoded. After:
   `api/_lib/takeit-score.ts`
 - Test: `api/__tests__/takeit-bundle-loader.test.ts` (extend),
   `api/__tests__/takeit-detect-sanitize.test.ts` (new)
+- Create: `scripts/takeit-rollback.mjs` (the Node script the Makefile invokes)
+- Modify: the project `Makefile` — add `takeit-rollback` target
 - Create: `docs/runbooks/takeit-rollback.md`
 
 ---
@@ -142,15 +153,18 @@ Owned by Phase 2 + 3 (both write to it). One row per (date, feed, metric).
 
 ---
 
-## Phase 3 — ML drift + validation (Python pipeline, ml/ side)
+## Phase 3 — ML drift + validation (Python, folded into `make nightly-update`)
 
 The deeper analytical layer. Ships last; depends on Phase 2's
-`takeit_health_daily` table existing.
+`takeit_health_daily` table existing. NOT a standalone cron — folded into
+the user's existing `make nightly-update` workflow so outputs commit
+alongside the other nightly artifacts (lottery score-weights, ML plots).
 
-### 3.1 New nightly script: `ml/src/takeit_drift_monitor.py`
+### 3.1 New module: `ml/src/takeit_drift_monitor.py`
 
-Runs after the existing nightly retrain. Queries Neon directly via
-psycopg2 (the same pattern `ml/` already uses).
+Invoked from `make nightly-update` (the existing target the user runs each
+night). Queries Neon directly via psycopg2 (the same pattern `ml/` already
+uses for its other steps).
 
 For each feed, computes:
 
@@ -158,7 +172,10 @@ For each feed, computes:
   (`peak_ceiling_pct >= 20`). Captures gradual decay. Also computes 7d/30d
   AUC vs `realized_trail30_10_pct >= 0` as a secondary signal (this is what
   the gate exemption ultimately cares about; informs the deferred
-  realized-target retrain decision).
+  realized-target retrain decision). The peak-vs-realized AUC divergence
+  is itself a tracked metric — when those two AUCs separate by more than
+  ~0.05 sustained over 30 days, that's the empirical case for revisiting
+  the realized-target retrain.
 - **Calibration / reliability** — bin predictions into deciles, compare
   predicted vs actual rate per bin. Plot as a reliability diagram saved to
   `ml/plots/takeit-drift/reliability_<feed>_<date>.png` (tracked in git per
@@ -173,25 +190,39 @@ For each feed, computes:
   bundle scored on a recent sample; alert if top-3 changes ≥ 2 positions
   month-over-month.
 
-Outputs:
+Outputs (all committed by the existing `make nightly-update` git step):
 
-- A markdown report `ml/output/takeit-drift/<date>.md` (tracked in git).
+- A daily markdown report `ml/output/takeit-drift/<date>.md` — one row per
+  metric per feed, with prior-baseline + delta + threshold + pass/fail.
+- A rolling summary `ml/output/takeit-drift/_rolling.md` — last 30 days at
+  a glance; replaces in place each run.
+- Reliability diagram PNGs in `ml/plots/takeit-drift/`.
 - Threshold-breach rows appended to `takeit_health_daily` (same table as
-  Phase 2; metric_name prefixed with `ml_`).
-- Sentry alerts on any breach.
+  Phase 2; metric_name prefixed with `ml_`). The script writes to Neon
+  using the same psycopg2 connection it already opens for reads.
+- Sentry alerts on any breach, fired directly from the Python script via
+  the existing Sentry SDK already used in the `ml/` pipeline.
 
-### 3.2 GitHub Actions integration
+### 3.2 Makefile integration
 
-The existing nightly ML retrain workflow gains a step that runs
-`takeit_drift_monitor.py` after the bundle ships. If a breach is detected,
-the workflow's exit code is non-zero so the user gets a GH notification
-alongside the Sentry alert.
+Add the script to the existing `nightly-update` target (or whatever the
+user's current Make target is named — re-read the project `Makefile`
+before adding). Position AFTER the retrain step (so the drift monitor
+scores against the freshly-promoted bundle) but BEFORE the git-commit
+step (so the outputs end up in the same commit as the other nightly
+artifacts).
+
+If the user has separate Make targets for the different ML steps, the
+drift monitor gets its own target (`make takeit-drift`) AND a call from
+`nightly-update`. That way it can be re-run standalone if needed without
+re-doing the full nightly cycle.
 
 ### Files (Phase 3)
 
 - Create: `ml/src/takeit_drift_monitor.py`
-- Modify: `.github/workflows/nightly-ml-pipeline.yml` (or equivalent)
-- Output dirs: `ml/output/takeit-drift/`, `ml/plots/takeit-drift/`
+- Modify: the project `Makefile` — add (or fold into) the nightly target
+- Output dirs (committed alongside other nightly artifacts):
+  `ml/output/takeit-drift/`, `ml/plots/takeit-drift/`
 
 ---
 
@@ -216,19 +247,27 @@ data. Defined as constants in one place per phase:
 - `SHAP_RESHUFFLE_TOP3_MAX = 1` (positions changed month-over-month)
 - Bundle-load retries: `2`, backoff `200ms / 800ms`.
 
-## Open questions (with default picks)
+## Decisions resolved (was: open questions)
 
-1. **Bundle pointer rollback — CLI tool or manual upload?** Default
-   manual for v1 (re-upload `bundles/active.json` via Vercel Blob console);
-   add a CLI in Phase 1.5 if the rollback is actually exercised.
-2. **Does the Phase 2 cron need its own CRON_SECRET path?** Default: yes,
-   same pattern as other crons — reuse `CRON_SECRET`.
-3. **Should Phase 1's NaN-guard surface a metric to `takeit_health_daily`?**
-   Default: yes — `sanitize_rejected_pct` per feed per day. Phase 2 records it.
-4. **Calibration target choice for Phase 3.** Default: track BOTH targets
-   (peak ≥ 20% as the training target; realized_trail30 ≥ 0 as the
-   "trade-worthiness" target). The divergence between them is the
-   load-bearing signal for whether to invest in the realized-target retrain.
+1. **Rollback mechanism — Makefile target.** A `make takeit-rollback`
+   target wrapping a Node script `scripts/takeit-rollback.mjs` (uses
+   `@vercel/blob`). Matches the project's existing `make`-driven workflow.
+2. **NaN-guard reject rate as a tracked metric — yes.** Recorded as
+   `sanitize_rejected_pct` per feed per day in `takeit_health_daily` by
+   the Phase 2 cron.
+3. **Calibration target for Phase 3 — both peak AND realized.** Track 7d/
+   30d AUC against both `peak_ceiling_pct >= 20` (the training target)
+   and `realized_trail30_10_pct >= 0` (the trade-worthiness target).
+   Their divergence is itself a tracked metric and the empirical case
+   for revisiting the realized-target retrain later.
+4. **Phase 3 cadence — folded into `make nightly-update`, not GH Actions.**
+   Outputs commit alongside the other nightly ML artifacts. No standalone
+   workflow.
+
+## Remaining open questions
+
+1. **Does Phase 2 cron need its own CRON_SECRET path?** Default: yes,
+   reuse `CRON_SECRET` like the other crons.
 
 ## Non-goals
 
