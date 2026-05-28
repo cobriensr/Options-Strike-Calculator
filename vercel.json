@@ -214,6 +214,10 @@
       "schedule": "0 11 * * 1"
     },
     {
+      "path": "/api/cron/audit-takeit-health",
+      "schedule": "30 23 * * *"
+    },
+    {
       "path": "/api/cron/fetch-net-flow-history",
       "schedule": "25 21 * * 1-5"
     },
