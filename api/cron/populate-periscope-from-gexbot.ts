@@ -29,6 +29,7 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { isFuturesRthCt } from '../_lib/cron-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -162,5 +163,9 @@ export default withCronInstrumentation(
       metadata: { panelsWritten, errors },
     };
   },
-  { requireApiKey: false },
+  // Gate to futures-tied RTH (08:30–15:55 CT), matching the upstream
+  // gexbot capture crons it reads from. Without this, ticks outside the
+  // gexbot window find no fresh `gexbot_api_capture` row and emit a
+  // "no fresh row" Sentry warning every cycle.
+  { requireApiKey: false, timeCheck: isFuturesRthCt },
 );

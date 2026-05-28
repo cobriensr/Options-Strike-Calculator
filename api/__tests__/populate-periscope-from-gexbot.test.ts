@@ -106,7 +106,7 @@ describe('populate-periscope-from-gexbot handler', () => {
     process.env = originalEnv;
   });
 
-  it('skips outside market hours (cronGuard auto-gates)', async () => {
+  it('skips outside the futures-RTH window (cronGuard auto-gates via isFuturesRthCt)', async () => {
     vi.setSystemTime(WEEKEND_TIME);
     const req = mockRequest({
       method: 'GET',
@@ -116,6 +116,22 @@ describe('populate-periscope-from-gexbot handler', () => {
     await handler(req, res);
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ skipped: true });
+  });
+
+  it('runs in the late-session window (15:30 CT) the old equity-RTH gate rejected', async () => {
+    // 20:30 UTC = 15:30 CT. The old isMarketHours() gate closed at 15:05 CT
+    // (would skip); isFuturesRthCt() runs through 15:55 CT to capture the
+    // futures settlement window. Anchors the gate swap so a revert is caught.
+    vi.setSystemTime(new Date('2026-05-27T20:30:00.000Z'));
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    // Gate passed → handler ran its panel SELECTs (never called if skipped).
+    expect(res._json).not.toMatchObject({ skipped: true });
+    expect(mockSql).toHaveBeenCalled();
   });
 
   it('rejects without CRON_SECRET', async () => {

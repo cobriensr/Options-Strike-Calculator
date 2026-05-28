@@ -43,7 +43,12 @@
 import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
-import { uwFetch, cronJitter, withRetry } from '../_lib/api-helpers.js';
+import {
+  uwFetch,
+  cronJitter,
+  withRetry,
+  isFuturesRthCt,
+} from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -483,4 +488,10 @@ export default withCronInstrumentation(
       },
     };
   },
+  // Gate to futures-tied RTH (08:30–15:55 CT) instead of the default
+  // equity-RTH window. Schedule stays `* 13-21` (single crontab) because
+  // this cron is Sentry-monitored via SCHEDULE_MAP — out-of-window ticks
+  // exit through cronGuard's intentional-skip checkin, keeping the monitor
+  // green without splitting the schedule into multiple entries.
+  { timeCheck: isFuturesRthCt },
 );

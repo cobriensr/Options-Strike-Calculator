@@ -211,6 +211,27 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
     });
   });
 
+  it('runs in the late-session window (15:30 CT) the old equity-RTH gate rejected', async () => {
+    // 20:30 UTC = 15:30 CT. The old isMarketHours() gate closed at 15:05 CT
+    // (would skip); isFuturesRthCt() runs through 15:55 CT to capture the
+    // futures settlement window. Anchors the gate swap so a revert is caught.
+    vi.setSystemTime(new Date('2026-05-06T20:30:00.000Z'));
+    process.env.UW_API_KEY = 'uwkey';
+    const fetchMock = makeRoutedFetchMock({});
+    vi.stubGlobal('fetch', fetchMock);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+    // Gate passed → handler proceeded to its UW fetches (never called if skipped).
+    expect(res._json).not.toMatchObject({ skipped: true });
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
   // ── Missing API key ──────────────────────────────────────
 
   it('returns 500 when UW_API_KEY is not set', async () => {
