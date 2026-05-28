@@ -7,8 +7,13 @@ on:
     - cron: '45 1 * * 2-6'
   workflow_dispatch:
 
+# Default to read-only at the workflow level. The pipeline job needs
+# `contents: write` to push the findings/plots commit at the end; the
+# takeit-retrain job only uploads to Blob and inherits the read-only
+# default — minimizes the blast radius if either job's runner is ever
+# compromised.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ml-pipeline
@@ -19,6 +24,8 @@ jobs:
     name: Run ML Pipeline
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       PYTHON: python
