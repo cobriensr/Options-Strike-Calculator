@@ -1049,7 +1049,11 @@ describe('silent-boom-feed handler', () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }]) // count
       .mockResolvedValueOnce([
-        makeAlert({ underlying_symbol: 'META', option_type: 'C', strike: '617.5' }),
+        makeAlert({
+          underlying_symbol: 'META',
+          option_type: 'C',
+          strike: '617.5',
+        }),
       ]) // page
       .mockResolvedValueOnce([
         {

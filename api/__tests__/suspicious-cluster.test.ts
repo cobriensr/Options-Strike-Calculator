@@ -31,8 +31,14 @@ describe('computeSuspiciousClusters', () => {
   });
 
   it('counts DISTINCT strikes, not rows (dedupes repeated strikes)', () => {
-    const rows = [row({ strike: 617.5 }), row({ strike: 617.5 }), row({ strike: 615 })];
-    expect(computeSuspiciousClusters(rows).has(clusterKey('META', 'C'))).toBe(false); // only 2 distinct
+    const rows = [
+      row({ strike: 617.5 }),
+      row({ strike: 617.5 }),
+      row({ strike: 615 }),
+    ];
+    expect(computeSuspiciousClusters(rows).has(clusterKey('META', 'C'))).toBe(
+      false,
+    ); // only 2 distinct
   });
 
   it('excludes non-members: not 0DTE, too expensive, ITM, or below ask floor', () => {
@@ -45,7 +51,9 @@ describe('computeSuspiciousClusters', () => {
       row({ strike: 630, askPct: 0.5 }), // below ask floor
     ];
     // only 617.5 + 615 are members -> 2 distinct -> no cluster
-    expect(computeSuspiciousClusters(rows).has(clusterKey('META', 'C'))).toBe(false);
+    expect(computeSuspiciousClusters(rows).has(clusterKey('META', 'C'))).toBe(
+      false,
+    );
   });
 
   it('treats puts OTM as strike <= spot', () => {
@@ -54,7 +62,9 @@ describe('computeSuspiciousClusters', () => {
       row({ optionType: 'P', strike: 612.5, spot: 613 }),
       row({ optionType: 'P', strike: 600, spot: 613 }),
     ];
-    expect(computeSuspiciousClusters(rows).get(clusterKey('META', 'P'))).toBe(3);
+    expect(computeSuspiciousClusters(rows).get(clusterKey('META', 'P'))).toBe(
+      3,
+    );
   });
 
   it('keeps calls and puts on the same ticker as separate sides', () => {

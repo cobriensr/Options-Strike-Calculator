@@ -521,7 +521,8 @@ describe('useTickerGrouping', () => {
           items,
           unfilteredItems: items,
           sortMode: 'default',
-          extract: (item) => extractWithCluster(item, counts[items.indexOf(item)] ?? 0),
+          extract: (item) =>
+            extractWithCluster(item, counts[items.indexOf(item)] ?? 0),
           stormIntensityThreshold: 5,
         }),
       );

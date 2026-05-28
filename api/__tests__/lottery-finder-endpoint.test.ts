@@ -1778,7 +1778,10 @@ describe('lottery-finder endpoint', () => {
     expect(res._status).toBe(200);
     const fire = (
       res._json as {
-        fires: Array<{ suspiciousCluster: boolean; clusterStrikeCount: number }>;
+        fires: Array<{
+          suspiciousCluster: boolean;
+          clusterStrikeCount: number;
+        }>;
       }
     ).fires[0];
     expect(fire!.suspiciousCluster).toBe(true);
@@ -1801,7 +1804,10 @@ describe('lottery-finder endpoint', () => {
     expect(res._status).toBe(200);
     const fire = (
       res._json as {
-        fires: Array<{ suspiciousCluster: boolean; clusterStrikeCount: number }>;
+        fires: Array<{
+          suspiciousCluster: boolean;
+          clusterStrikeCount: number;
+        }>;
       }
     ).fires[0];
     expect(fire!.suspiciousCluster).toBe(false);
