@@ -5146,4 +5146,13 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 183,
+    description:
+      'Add uw_url TEXT column to tracker_contracts so rows created by pasting an UnusualWhales contract URL persist that URL as the canonical click-through target. The Add form already parses UW URLs to fill ticker/expiry/strike/side but discards the URL itself; this column makes the paste round-trip. Nullable — legacy rows and rows created via the structured form (no URL) stay NULL, and the UI renders the contract cell as plain text when uw_url is NULL rather than synthesizing a URL (UW URL shape is not stable enough). See docs/superpowers/specs/2026-05-28-contract-tracker-enhancements-design.md.',
+    statements: (sql) => [
+      sql`ALTER TABLE tracker_contracts
+            ADD COLUMN IF NOT EXISTS uw_url TEXT`,
+    ],
+  },
 ];

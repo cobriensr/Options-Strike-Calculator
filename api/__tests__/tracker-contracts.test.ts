@@ -159,6 +159,9 @@ describe('GET /api/tracker/contracts', () => {
     expect(sqlText).toContain('LEFT JOIN LATERAL');
     expect(sqlText).toContain('tracker_contract_ticks');
     expect(sqlText).toContain('ORDER BY fetched_at DESC');
+    // uw_url must be in the SELECT so the row's UW click-through link
+    // hydrates on initial render.
+    expect(sqlText).toContain('c.uw_url');
     // Expiry must be stringified at the SQL boundary so the Neon driver
     // doesn't hydrate it as a Date (which then ISO-serializes and breaks
     // dteFromExpiry on the frontend).
@@ -346,6 +349,129 @@ describe('POST /api/tracker/contracts (structured)', () => {
     );
     expect(res._status).toBe(400);
   });
+
+  it('accepts uw_url on unusualwhales.com and persists it', async () => {
+    const uwUrl =
+      'https://unusualwhales.com/stock/NVDA/option-chain?expiry=2026-05-22&strike=225&type=put';
+    mockSql.mockResolvedValueOnce([{ ...SAMPLE_ROW, uw_url: uwUrl }]);
+    const res = mockResponse();
+    await listCreateHandler(
+      mockRequest({
+        method: 'POST',
+        body: { ...validBody, uw_url: uwUrl },
+      }),
+      res,
+    );
+    expect(res._status).toBe(201);
+    const body = res._json as { contract: { uw_url: string } };
+    expect(body.contract.uw_url).toBe(uwUrl);
+    // Verify the URL was bound (not embedded in the SQL strings array).
+    const call = mockSql.mock.calls[0]!;
+    expect(call.slice(1)).toContain(uwUrl);
+    // RETURNING clause must surface uw_url so the optimistic post-create
+    // row carries it back to the frontend.
+    const sqlText = Array.isArray(call[0])
+      ? call[0].join('?')
+      : String(call[0]);
+    expect(sqlText).toContain('uw_url');
+  });
+
+  it('rejects uw_url pointing to a non-UW host', async () => {
+    const res = mockResponse();
+    await listCreateHandler(
+      mockRequest({
+        method: 'POST',
+        body: {
+          ...validBody,
+          uw_url: 'https://evil.example.com/option-chain?ticker=NVDA',
+        },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects uw_url that is not a valid URL', async () => {
+    const res = mockResponse();
+    await listCreateHandler(
+      mockRequest({
+        method: 'POST',
+        body: { ...validBody, uw_url: 'not-a-url' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('accepts a uw_url on a subdomain of unusualwhales.com', async () => {
+    const uwUrl = 'https://app.unusualwhales.com/option-chain/NVDA';
+    mockSql.mockResolvedValueOnce([{ ...SAMPLE_ROW, uw_url: uwUrl }]);
+    const res = mockResponse();
+    await listCreateHandler(
+      mockRequest({
+        method: 'POST',
+        body: { ...validBody, uw_url: uwUrl },
+      }),
+      res,
+    );
+    expect(res._status).toBe(201);
+  });
+
+  it('rejects uw_url with non-https protocol (http://, ftp://)', async () => {
+    for (const badUrl of [
+      'http://unusualwhales.com/option-chain/NVDA',
+      'ftp://unusualwhales.com/option-chain/NVDA',
+    ]) {
+      const res = mockResponse();
+      await listCreateHandler(
+        mockRequest({
+          method: 'POST',
+          body: { ...validBody, uw_url: badUrl },
+        }),
+        res,
+      );
+      expect(res._status).toBe(400);
+    }
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects uw_url where hostname has a confusable suffix', async () => {
+    // Defense against the classic `endsWith('.unusualwhales.com')` bypass:
+    // a domain like `evilunusualwhales.com` would slip through a naive
+    // `endsWith('unusualwhales.com')` (no leading dot) check.
+    const res = mockResponse();
+    await listCreateHandler(
+      mockRequest({
+        method: 'POST',
+        body: {
+          ...validBody,
+          uw_url: 'https://evilunusualwhales.com/option-chain/NVDA',
+        },
+      }),
+      res,
+    );
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('trims whitespace around uw_url before validating', async () => {
+    const uwUrl = 'https://unusualwhales.com/option-chain/NVDA';
+    mockSql.mockResolvedValueOnce([{ ...SAMPLE_ROW, uw_url: uwUrl }]);
+    const res = mockResponse();
+    await listCreateHandler(
+      mockRequest({
+        method: 'POST',
+        body: { ...validBody, uw_url: `   ${uwUrl}\n` },
+      }),
+      res,
+    );
+    expect(res._status).toBe(201);
+    // The trimmed value must be what was bound to the INSERT.
+    const call = mockSql.mock.calls[0]!;
+    expect(call.slice(1)).toContain(uwUrl);
+  });
 });
 
 // ============================================================
@@ -366,6 +492,29 @@ describe('POST /api/tracker/contracts (free-text)', () => {
     expect(res._status).toBe(201);
     const call = mockSql.mock.calls[0]!;
     expect(call[1]).toBe('NVDA  260522P00225000');
+  });
+
+  it('persists uw_url on the free-text branch', async () => {
+    const uwUrl =
+      'https://unusualwhales.com/stock/NVDA/option-chain?expiry=2026-05-22&strike=225&type=put';
+    mockSql.mockResolvedValueOnce([{ ...SAMPLE_ROW, uw_url: uwUrl }]);
+    const res = mockResponse();
+    await listCreateHandler(
+      mockRequest({
+        method: 'POST',
+        body: {
+          input: 'NVDA 225P 05/22/26 @ 4.30 x 5 long',
+          uw_url: uwUrl,
+        },
+      }),
+      res,
+    );
+    expect(res._status).toBe(201);
+    const body = res._json as { contract: { uw_url: string } };
+    expect(body.contract.uw_url).toBe(uwUrl);
+    // Ensure the URL was bound to the INSERT (not embedded in SQL).
+    const call = mockSql.mock.calls[0]!;
+    expect(call.slice(1)).toContain(uwUrl);
   });
 
   it('returns 400 when free-text is malformed', async () => {
@@ -505,6 +654,13 @@ describe('PATCH /api/tracker/contracts/[id]', () => {
     expect(res._status).toBe(200);
     const body = res._json as { contract: { up_thresholds: unknown } };
     expect(body.contract.up_thresholds).toEqual(['75', '150']);
+    // PATCH RETURNING must surface uw_url so the frontend's optimistic
+    // merge doesn't drop a row's stored URL on every notes/threshold edit.
+    const call = mockSql.mock.calls[0]!;
+    const sqlText = Array.isArray(call[0])
+      ? call[0].join('?')
+      : String(call[0]);
+    expect(sqlText).toContain('uw_url');
   });
 
   it('closes contract when status=closed + closed_price', async () => {

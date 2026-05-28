@@ -96,7 +96,7 @@ async function handleList(
         c.strike, c.side,
         c.direction, c.entry_price, c.quantity, c.notes, c.status,
         c.closed_at, c.closed_price, c.up_thresholds, c.down_thresholds,
-        c.spot_alerts, c.created_at, c.updated_at,
+        c.spot_alerts, c.uw_url, c.created_at, c.updated_at,
         t.last         AS latest_last,
         t.bid          AS latest_bid,
         t.ask          AS latest_ask,
@@ -154,6 +154,7 @@ async function handleCreate(
     up_thresholds?: number[] | undefined;
     down_thresholds?: number[] | undefined;
     spot_alerts?: { op: string; level: number }[] | undefined;
+    uw_url?: string | undefined;
   };
 
   if (isFreeText) {
@@ -221,6 +222,7 @@ async function handleCreate(
       up_thresholds: data.up_thresholds,
       down_thresholds: data.down_thresholds,
       spot_alerts: data.spot_alerts,
+      uw_url: data.uw_url,
     };
   } else {
     const parsed = contractCreateSchema.safeParse(req.body);
@@ -260,6 +262,7 @@ async function handleCreate(
       up_thresholds: data.up_thresholds,
       down_thresholds: data.down_thresholds,
       spot_alerts: data.spot_alerts,
+      uw_url: data.uw_url,
     };
   }
 
@@ -276,7 +279,7 @@ async function handleCreate(
       INSERT INTO tracker_contracts (
         occ_symbol, ticker, expiry, strike, side, direction,
         entry_price, quantity, notes,
-        up_thresholds, down_thresholds, spot_alerts
+        up_thresholds, down_thresholds, spot_alerts, uw_url
       )
       VALUES (
         ${occSymbol}, ${resolved.ticker}, ${resolved.expiry},
@@ -285,14 +288,15 @@ async function handleCreate(
         ${extras.notes ?? null},
         ${extras.up_thresholds ?? null},
         ${extras.down_thresholds ?? null},
-        ${spotAlertsJson}::jsonb
+        ${spotAlertsJson}::jsonb,
+        ${extras.uw_url ?? null}
       )
       ON CONFLICT (occ_symbol) DO NOTHING
       RETURNING id, occ_symbol, ticker,
                 TO_CHAR(expiry, 'YYYY-MM-DD') AS expiry,
                 strike, side, direction,
                 entry_price, quantity, notes, status, closed_at, closed_price,
-                up_thresholds, down_thresholds, spot_alerts,
+                up_thresholds, down_thresholds, spot_alerts, uw_url,
                 created_at, updated_at,
                 NULL::numeric     AS latest_last,
                 NULL::numeric     AS latest_bid,

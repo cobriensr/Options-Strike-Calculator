@@ -151,7 +151,7 @@ async function handlePatch(
                 TO_CHAR(expiry, 'YYYY-MM-DD') AS expiry,
                 strike, side, direction,
                 entry_price, quantity, notes, status, closed_at, closed_price,
-                up_thresholds, down_thresholds, spot_alerts,
+                up_thresholds, down_thresholds, spot_alerts, uw_url,
                 created_at, updated_at,
                 NULL::numeric     AS latest_last,
                 NULL::numeric     AS latest_bid,

@@ -47,6 +47,36 @@ const upThresholdSchema = z.number().finite().positive();
  */
 const downThresholdSchema = z.number().finite().negative();
 
+/**
+ * UnusualWhales contract URL — captured when the Add form's paste box
+ * receives a UW link. Stored verbatim and rendered as the row's
+ * click-through target. Hostname + protocol allowlist prevents an
+ * accidental open-redirect on the row click (the surface is
+ * owner-or-guest, so cheap to enforce). `.trim()` normalizes
+ * paste-from-clipboard whitespace — this is the exact UX surface this
+ * schema serves. Migration #183 added the underlying column.
+ */
+const uwUrlSchema = z
+  .string()
+  .trim()
+  .url()
+  .max(2000)
+  .refine(
+    (raw) => {
+      try {
+        const parsed = new URL(raw);
+        if (parsed.protocol !== 'https:') return false;
+        const host = parsed.hostname.toLowerCase();
+        return (
+          host === 'unusualwhales.com' || host.endsWith('.unusualwhales.com')
+        );
+      } catch {
+        return false;
+      }
+    },
+    { message: 'uw_url must be an https:// link on unusualwhales.com' },
+  );
+
 // ============================================================
 // POST /api/tracker/contracts — structured body
 // ============================================================
@@ -78,6 +108,7 @@ export const contractCreateSchema = z.object({
   up_thresholds: z.array(upThresholdSchema).max(20).optional(),
   down_thresholds: z.array(downThresholdSchema).max(20).optional(),
   spot_alerts: z.array(spotAlertSchema).max(20).optional(),
+  uw_url: uwUrlSchema.optional(),
 });
 
 export type ContractCreateBody = z.infer<typeof contractCreateSchema>;
@@ -97,6 +128,7 @@ export const freeTextContractSchema = z.object({
   up_thresholds: z.array(upThresholdSchema).max(20).optional(),
   down_thresholds: z.array(downThresholdSchema).max(20).optional(),
   spot_alerts: z.array(spotAlertSchema).max(20).optional(),
+  uw_url: uwUrlSchema.optional(),
 });
 
 export type FreeTextContractBody = z.infer<typeof freeTextContractSchema>;
