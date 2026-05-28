@@ -74,6 +74,26 @@ const COMPONENTS = {
 
 const PLUGINS = [remarkGfm];
 
+// Defense-in-depth against rehype-raw / unsanitized HTML being added later.
+// react-markdown v10 already disables raw HTML by default — this list is a
+// belt-and-braces guard. DO NOT add `rehype-raw` to PLUGINS without also
+// wiring `rehype-sanitize` first. Claude prose is rendered into the chat
+// panel and any escape into the DOM would be an immediate XSS sink.
+const DISALLOWED_ELEMENTS = [
+  'script',
+  'iframe',
+  'object',
+  'embed',
+  'form',
+  'input',
+  'button',
+  // `style` and `link` are CSS-injection vectors (`@import` or
+  // `behavior:` URLs in older engines) — react-markdown v10 already
+  // strips raw HTML, but listing them costs nothing.
+  'style',
+  'link',
+];
+
 interface ProseViewProps {
   /** Raw markdown source from Claude. JSON code block already stripped. */
   prose: string;
@@ -86,7 +106,11 @@ export function ProseView({ prose, className }: ProseViewProps) {
     <div
       className={className ?? 'border-edge bg-surface/40 rounded-md border p-3'}
     >
-      <Markdown remarkPlugins={PLUGINS} components={COMPONENTS}>
+      <Markdown
+        remarkPlugins={PLUGINS}
+        components={COMPONENTS}
+        disallowedElements={DISALLOWED_ELEMENTS}
+      >
         {prose}
       </Markdown>
     </div>
