@@ -17,6 +17,7 @@ import {
   OWNER_COOKIE_MAX_AGE,
   rejectIfRateLimited,
 } from '../_lib/api-helpers.js';
+import logger from '../_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
@@ -73,8 +74,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const result = await storeInitialTokens(code, redirectUri);
 
       if ('error' in result) {
+        // Don't leak the raw Schwab error body to the client — it can
+        // include OAuth diagnostic metadata that narrows an attacker's
+        // probe surface. Capture details server-side; return opaque text.
+        Sentry.captureMessage(
+          `Schwab token exchange failed: ${result.error.message}`,
+          'error',
+        );
+        logger.error(
+          { err: result.error.message },
+          'Schwab token exchange failed',
+        );
         done({ status: 500 });
-        return res.status(500).json({ error: result.error.message });
+        return res.status(500).json({ error: 'Token exchange failed' });
       }
 
       // Set the owner session cookie — this is what gates the data endpoints.

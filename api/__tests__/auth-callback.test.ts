@@ -108,7 +108,7 @@ describe('GET /api/auth/callback', () => {
     expect((res._json as { error: string }).error).toContain('APP_URL');
   });
 
-  it('returns 500 when token exchange fails', async () => {
+  it('returns 500 with an opaque message when token exchange fails', async () => {
     process.env.OWNER_SECRET = 'secret';
     vi.mocked(storeInitialTokens).mockResolvedValue({
       error: { type: 'token_error', message: 'Exchange failed' },
@@ -122,7 +122,10 @@ describe('GET /api/auth/callback', () => {
       res,
     );
     expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toBe('Exchange failed');
+    // Raw Schwab error body must NOT leak to the client — opaque message only.
+    const body = (res._json as { error: string }).error;
+    expect(body).toBe('Token exchange failed');
+    expect(body).not.toContain('Exchange failed');
   });
 
   it('sets owner cookie and returns HTML on success', async () => {
