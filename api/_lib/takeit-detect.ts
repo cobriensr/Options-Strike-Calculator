@@ -27,6 +27,48 @@ import {
 } from './takeit-score.js';
 
 /**
+ * Defense-in-depth sanitizer for numeric scoring inputs. The tree walk
+ * routes null via `default_left`; NaN/Infinity would silently propagate
+ * to undefined branching. We coerce non-finite numerics to null so the
+ * model gets a known "missing" sentinel instead.
+ *
+ * Returned counts are surfaced to Sentry by the cron-level wrapper so we
+ * can backtrack what's emitting bad inputs.
+ */
+export function sanitizeScoringInputs(
+  rec: Record<string, number | null | undefined>,
+): Record<string, number | null>;
+export function sanitizeScoringInputs(
+  rec: Record<string, number | null | undefined>,
+  opts: { withRejectedCount: true },
+): { sanitized: Record<string, number | null>; rejectedCount: number };
+export function sanitizeScoringInputs(
+  rec: Record<string, number | null | undefined>,
+  opts?: { withRejectedCount: boolean },
+):
+  | Record<string, number | null>
+  | { sanitized: Record<string, number | null>; rejectedCount: number } {
+  const sanitized: Record<string, number | null> = {};
+  let rejectedCount = 0;
+  for (const [key, value] of Object.entries(rec)) {
+    if (value == null) {
+      sanitized[key] = null;
+      continue;
+    }
+    if (!Number.isFinite(value)) {
+      sanitized[key] = null;
+      rejectedCount += 1;
+      continue;
+    }
+    sanitized[key] = value;
+  }
+  if (opts?.withRejectedCount) {
+    return { sanitized, rejectedCount };
+  }
+  return sanitized;
+}
+
+/**
  * Look-back constants — pulled wider than the in-cron window so a fire at
  * minute 29 in a 30-min sliding window still sees prior fires from minute 0
  * of the window. The Phase 1 builder uses 30 min for burst-storm + same-dir;
@@ -155,7 +197,28 @@ export function scoreLottery(
 ): TakeitScoreResult {
   if (!detectCtx) return { prob: null, version: null, features: null };
   try {
-    const featureRec = featuresForLottery(detectCtx.bundle, row, detectCtx.ctx);
+    const rawFeatureRec = featuresForLottery(
+      detectCtx.bundle,
+      row,
+      detectCtx.ctx,
+    );
+    const { sanitized: featureRec, rejectedCount } = sanitizeScoringInputs(
+      rawFeatureRec,
+      { withRejectedCount: true },
+    );
+    if (rejectedCount > 0) {
+      Sentry.captureMessage(
+        `takeit: ${rejectedCount} non-finite feature(s) sanitized`,
+        {
+          level: 'info',
+          tags: { 'takeit.alert_type': 'lottery', 'takeit.sanitize': 'true' },
+          extra: {
+            option_chain_id: row.option_chain_id,
+            rejected_count: rejectedCount,
+          },
+        },
+      );
+    }
     const featureArr = featuresFromRow(detectCtx.bundle, featureRec);
     const result = predictTakeitScore(detectCtx.bundle, featureArr);
     return {
@@ -182,11 +245,31 @@ export function scoreSilentBoom(
 ): TakeitScoreResult {
   if (!detectCtx) return { prob: null, version: null, features: null };
   try {
-    const featureRec = featuresForSilentBoom(
+    const rawFeatureRec = featuresForSilentBoom(
       detectCtx.bundle,
       row,
       detectCtx.ctx,
     );
+    const { sanitized: featureRec, rejectedCount } = sanitizeScoringInputs(
+      rawFeatureRec,
+      { withRejectedCount: true },
+    );
+    if (rejectedCount > 0) {
+      Sentry.captureMessage(
+        `takeit: ${rejectedCount} non-finite feature(s) sanitized`,
+        {
+          level: 'info',
+          tags: {
+            'takeit.alert_type': 'silentboom',
+            'takeit.sanitize': 'true',
+          },
+          extra: {
+            option_chain_id: row.option_chain_id,
+            rejected_count: rejectedCount,
+          },
+        },
+      );
+    }
     const featureArr = featuresFromRow(detectCtx.bundle, featureRec);
     const result = predictTakeitScore(detectCtx.bundle, featureArr);
     return {
