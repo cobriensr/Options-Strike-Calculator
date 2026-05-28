@@ -29,6 +29,7 @@ from decimal import Decimal
 from batched_writer import BatchedWriter
 from db import batch_insert_options_trades
 from logger_setup import log
+from session_calendar import cme_session_date
 
 # Trades are flushed (a) when the buffer reaches BATCH_SIZE, (b) by the
 # background flush thread at ~FLUSH_INTERVAL_S cadence, and (c) on
@@ -94,9 +95,12 @@ class TradeProcessor(BatchedWriter[TradeRecord]):
         # Convert Databento price (1e-9 units) to decimal
         price_decimal = Decimal(price_raw) / Decimal(1_000_000_000)
 
-        # Convert nanosecond timestamp to datetime
+        # Convert nanosecond timestamp to datetime. ``ts`` keeps the real
+        # UTC event timestamp; ``trade_date`` buckets by the CME session
+        # (17:00 CT roll, DST-aware) so an overnight trade at 17:30 CT
+        # lands in the next day's session rather than the UTC calendar day.
         ts_dt = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
-        trade_dt = ts_dt.date()
+        trade_dt = cme_session_date(ts_ns)
 
         strike_decimal = Decimal(str(strike))
 

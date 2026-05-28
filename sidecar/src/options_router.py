@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Callable
 
 from logger_setup import log
+from session_calendar import cme_session_date
 from symbol_manager import OptionsStrikeSet
 
 if TYPE_CHECKING:
@@ -65,6 +65,14 @@ STAT_TYPE_TO_KWARG: dict[int, tuple[str, str]] = {
 
 # SIDE-012: emit a lag-drop summary at most once per this interval.
 DEFINITION_LAG_SUMMARY_INTERVAL_S = 60.0
+
+# FINDING 4: emit a window-filter-drop summary at most once per this interval.
+WINDOW_FILTER_SUMMARY_INTERVAL_S = 60.0
+
+# FINDING 4: ATM-window strikes sit on a 5-point grid; a half-point band
+# absorbs float-representation noise (e.g. 5849.9999999 vs 5850) without
+# false-matching a genuinely off-grid / off-window strike.
+STRIKE_MATCH_TOLERANCE = 0.5
 
 
 class OptionsRecordRouter:
@@ -110,6 +118,12 @@ class OptionsRecordRouter:
         # SIDE-012: definition-lag drop tracking.
         self.definition_lag_drops = 0
         self.last_lag_summary_ts = 0.0
+
+        # FINDING 4: ATM-window-filter drop tracking (distinct cause from
+        # definition lag — these are known instruments whose strike fell
+        # outside the current ATM window). Own throttle state.
+        self.window_filter_drops = 0
+        self.last_window_summary_ts = 0.0
 
         # Guards concurrent writes to option_definitions from the SDK
         # callback thread vs reads from other handlers.
@@ -205,8 +219,17 @@ class OptionsRecordRouter:
         option_type = instrument_info["option_type"]
         expiry = instrument_info["expiry"]
 
-        # Filter: only process strikes in our ATM window
-        if strike not in self.options_strikes.strikes:
+        # Filter: only process strikes in our ATM window. Match with a
+        # ±STRIKE_MATCH_TOLERANCE band rather than exact equality so a
+        # float-representation noise strike (5849.9999999) still matches
+        # its clean 5-point-grid window entry (5850). FINDING 4: exact
+        # equality silently dropped such strikes with no counter/log.
+        if not any(
+            abs(strike - s) <= STRIKE_MATCH_TOLERANCE
+            for s in self.options_strikes.strikes
+        ):
+            self.window_filter_drops += 1
+            self._maybe_log_window_filter_summary()
             return
 
         self._trade_processor.process_trade(
@@ -250,7 +273,25 @@ class OptionsRecordRouter:
         strike = instrument_info["strike"]
         option_type = instrument_info["option_type"]
         expiry = instrument_info["expiry"]
-        trade_date = date.today()
+
+        # FINDING 5: bucket the stat by its CME session date (17:00 CT roll,
+        # DST-aware), derived from the record's ts_event — NOT the container
+        # local-clock date.today(), which mis-buckets every overnight stat.
+        # StatMsg defines ts_event (verified against databento_dbn 0.53.0).
+        # If it's missing or non-positive we must NOT silently fall back to
+        # a local-clock date (would reintroduce the bug); skip + capture.
+        ts_event = getattr(record, "ts_event", None)
+        if not isinstance(ts_event, int) or ts_event <= 0:
+            from sentry_setup import capture_message
+
+            capture_message(
+                "Dropped ES option stat with missing/invalid ts_event — "
+                "cannot resolve CME session date",
+                level="warning",
+                context={"stat_type": stat_type, "strike": strike},
+            )
+            return
+        trade_date = cme_session_date(ts_event)
 
         # Resolve the value from the configured source field.
         if value_source == "stat_value":
@@ -318,5 +359,36 @@ class OptionsRecordRouter:
             context={
                 "drops": drops,
                 "interval_s": round(DEFINITION_LAG_SUMMARY_INTERVAL_S, 1),
+            },
+        )
+
+    def _maybe_log_window_filter_summary(self) -> None:
+        """Emit a periodic summary of ATM-window-filter drops (FINDING 4).
+
+        Called from ``handle_trade`` when a known instrument's strike falls
+        outside the current ATM window. Mirrors the definition-lag summary
+        but uses its own throttle state so the two distinct drop causes don't
+        mask each other. Converts the previously-silent window filter into a
+        visible one without log-spamming on every drop.
+        """
+        if self.window_filter_drops == 0:
+            return
+        now = time.time()
+        if now - self.last_window_summary_ts < WINDOW_FILTER_SUMMARY_INTERVAL_S:
+            return
+        drops = self.window_filter_drops
+        self.window_filter_drops = 0
+        self.last_window_summary_ts = now
+
+        from sentry_setup import capture_message
+
+        capture_message(
+            f"Dropped {drops} ES option trades outside the ATM strike "
+            f"window (known instruments, strike not within "
+            f"±{STRIKE_MATCH_TOLERANCE} of any window strike)",
+            level="warning",
+            context={
+                "drops": drops,
+                "interval_s": round(WINDOW_FILTER_SUMMARY_INTERVAL_S, 1),
             },
         )

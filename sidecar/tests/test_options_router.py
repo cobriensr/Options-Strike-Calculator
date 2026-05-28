@@ -256,6 +256,54 @@ class TestHandleTrade:
         router.handle_trade(_make_trade_record(iid=99))
         mocks["trade_processor"].process_trade.assert_not_called()
 
+    def test_float_noise_strike_within_tolerance_is_processed(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """FINDING 4: a float-noise strike (5849.9999999) within ±0.5 of a
+        clean window strike (5850) must be PROCESSED, not dropped by an
+        exact-equality membership test."""
+        router, mocks = router_setup
+        router.option_definitions[99] = {
+            "strike": 5849.9999999,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+        router.options_strikes = MagicMock()
+        router.options_strikes.strikes = [5850]  # clean int, 5-pt grid
+
+        router.handle_trade(_make_trade_record(iid=99))
+        mocks["trade_processor"].process_trade.assert_called_once()
+        assert router.window_filter_drops == 0
+
+    def test_off_window_strike_drops_and_increments_counter(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """FINDING 4: a genuinely off-window strike (far OTM, not within
+        ±0.5 of any window strike) still drops, surfaces via the
+        window-filter summary, and does NOT touch the definition-lag
+        counter (distinct drop cause)."""
+        router, mocks = router_setup
+        router.option_definitions[99] = {
+            "strike": 6500.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+        router.options_strikes = MagicMock()
+        router.options_strikes.strikes = [5850]  # 6500 is far outside
+
+        # Pin the throttle clock forward so the drop is counted without the
+        # summary firing+resetting it — lets us assert the raw counter.
+        import time as real_time
+
+        router.last_window_summary_ts = real_time.time()
+
+        router.handle_trade(_make_trade_record(iid=99))
+        mocks["trade_processor"].process_trade.assert_not_called()
+        assert router.window_filter_drops == 1
+        assert router.definition_lag_drops == 0  # distinct drop cause
+        # Throttled: no summary this cycle.
+        mocks["capture_message"].assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # handle_stat — drives the STAT_TYPE_TO_KWARG dispatch table
@@ -282,6 +330,7 @@ class TestHandleStat:
         rec.stat_value = 1_500_000_000  # 1.5 in 1e-9
         rec.stat_quantity = 0
         rec.stat_flags = 1
+        rec.ts_event = 1_780_000_000_000_000_000
 
         router.handle_stat(rec)
         kwargs = mocks["upsert_options_daily"].call_args.kwargs
@@ -299,6 +348,7 @@ class TestHandleStat:
         rec.stat_type = STAT_TYPE_OPEN_INTEREST
         rec.stat_value = 0
         rec.stat_quantity = 1234
+        rec.ts_event = 1_780_000_000_000_000_000
 
         router.handle_stat(rec)
         kwargs = mocks["upsert_options_daily"].call_args.kwargs
@@ -350,6 +400,30 @@ class TestHandleStat:
         router.handle_stat(rec)
         mocks["upsert_options_daily"].assert_not_called()
 
+    def test_stat_trade_date_uses_cme_session_not_local_clock(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """FINDING 5: handle_stat must derive trade_date from the record's
+        ts_event via cme_session_date, not the container local-clock
+        date.today(). A stat with a late-evening ts_event (after 17:00 CT)
+        keys to the NEXT session date, which differs from date.today()."""
+        router, mocks = router_setup
+        self._preload(router)
+
+        # 2026-06-15 22:30:00 UTC == 17:30 America/Chicago (after the
+        # 17:00 CT roll) -> CME session date 2026-06-16.
+        rec = MagicMock()
+        rec.instrument_id = 7
+        rec.stat_type = STAT_TYPE_OPEN_INTEREST
+        rec.stat_value = 0
+        rec.stat_quantity = 1234
+        rec.ts_event = 1_781_562_600_000_000_000
+
+        router.handle_stat(rec)
+        passed_trade_date = mocks["upsert_options_daily"].call_args.args[1]
+        assert passed_trade_date == date(2026, 6, 16)
+        assert passed_trade_date != date.today()
+
 
 # ---------------------------------------------------------------------------
 # Definition-lag summary throttling
@@ -387,6 +461,49 @@ class TestLagSummaryThrottle:
 
         assert mocks["capture_message"].call_count == 1
         assert router.definition_lag_drops == 5
+
+
+# ---------------------------------------------------------------------------
+# Window-filter (FINDING 4) summary throttling
+# ---------------------------------------------------------------------------
+
+
+class TestWindowFilterSummaryThrottle:
+    def test_summary_does_not_fire_when_zero_drops(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        router, mocks = router_setup
+        router._maybe_log_window_filter_summary()
+        mocks["capture_message"].assert_not_called()
+
+    def test_repeated_off_window_drops_throttle_to_one_summary(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """Multiple off-window drops within the throttle interval produce
+        only one summary — same throttle mechanics as the lag summary, but
+        on its own independent throttle state."""
+        router, mocks = router_setup
+        router.option_definitions[99] = {
+            "strike": 6500.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+        router.options_strikes = MagicMock()
+        router.options_strikes.strikes = [5850]
+
+        # First drop fires immediately because last_window_summary_ts = 0.
+        router.handle_trade(_make_trade_record(iid=99))
+        assert mocks["capture_message"].call_count == 1
+
+        import time as real_time
+
+        router.last_window_summary_ts = real_time.time()
+
+        for _ in range(5):
+            router.handle_trade(_make_trade_record(iid=99))
+
+        assert mocks["capture_message"].call_count == 1
+        assert router.window_filter_drops == 5
 
 
 # ---------------------------------------------------------------------------

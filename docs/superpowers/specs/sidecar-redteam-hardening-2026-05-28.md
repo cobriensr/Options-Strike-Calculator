@@ -62,10 +62,10 @@ Files: `databento_client.py`, test_databento_client.
   - Re-seed definitions on reconnect: in `_on_reconnect`, re-issue the definition subscribe with the snapshot (or pass `snapshot=True` on the initial subscribe so the SDK replays it on reconnect — verify against SDK that stored `snapshot` is honored on resubscribe: `session.py:714-722` preserves `snapshot=bool(sub.snapshot)`). Prefer `snapshot=True` if the SDK replays it; otherwise explicit resubscribe in `_on_reconnect`. Add a test.
 
 ### Phase 3 — Timezone consumers + strike filter
-Files: `options_router.py`, `trade_processor.py`, `front_month.py`, their tests.
+Files: `options_router.py`, `trade_processor.py`, their tests.
 - **Finding 5:** `options_router.py:253` `trade_date = date.today()` → use `cme_session_date(record.ts_event)` (Statistics records carry `ts_event`; mirror the `expiry` UTC-from-ns pattern at line 149).
 - **trade `trade_date`:** `trade_processor.py:98-99` `ts_dt.date()` (UTC day) → `cme_session_date(ts_ns)`.
-- **Finding A (front-month):** `front_month.py:157,162` UTC `date_trunc('day', ...)` → CME-session-date SQL expression above. Verify DuckDB ICU/`AT TIME ZONE` is available (archive_query already relies on it).
+- **Finding A (front-month): DROPPED from this sweep (2026-05-28).** A concurrent session owns the front_month.py session-date fix (it has already written the failing tests in test_front_month.py). Do NOT touch front_month.py / test_front_month.py here.
 - **Finding 4:** `options_router.py:209` `if strike not in self.options_strikes.strikes:` — float (`float(strike_raw)/1e9`) vs int set, exact-equality; float-noise / non-5pt strikes silently dropped, NO counter.
   - Match with a tolerance (round to nearest `ES_STRIKE_SPACING` or compare with `abs(diff) < 0.5`), and add a `window_filter_drops` counter + throttled summary log mirroring `definition_lag_drops`.
 

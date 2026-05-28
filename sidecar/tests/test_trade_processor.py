@@ -123,6 +123,33 @@ class TestProcessTradePriceConversion:
         assert rows[0][7] == "A"  # index 7 = side
 
 
+class TestProcessTradeSessionDate:
+    def test_trade_date_uses_cme_session_not_utc_day(
+        self, processor: TradeProcessor, mock_batch_insert: MagicMock
+    ) -> None:
+        """A trade at 22:30 UTC (17:30 CDT, after the 17:00 CT roll) must
+        bucket into the NEXT CME session date, while the ``ts`` column
+        keeps the real UTC event timestamp (same UTC calendar day)."""
+        # 2026-06-15 22:30:00 UTC == 17:30 America/Chicago (CDT, UTC-5).
+        ns = 1_781_562_600_000_000_000
+        processor.process_trade(
+            underlying="ES",
+            expiry=SAMPLE_EXPIRY,
+            strike=SAMPLE_STRIKE,
+            option_type="C",
+            ts_ns=ns,
+            price_raw=10_000_000_000,
+            size=1,
+            side_char="B",
+        )
+        processor.flush()
+        row = mock_batch_insert.call_args[0][0][0]
+        ts_in_row = row[4]  # index 4 = ts
+        trade_date_in_row = row[8]  # index 8 = trade_date
+        assert ts_in_row.date() == date(2026, 6, 15)  # real UTC event day
+        assert trade_date_in_row == date(2026, 6, 16)  # next CME session
+
+
 # ---------------------------------------------------------------------------
 # TradeProcessor — buffer / flush
 # ---------------------------------------------------------------------------

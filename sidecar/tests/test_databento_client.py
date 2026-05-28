@@ -943,6 +943,7 @@ class TestStatTypeToKwargTable:
             rec.stat_value = 1_500_000_000  # 1.5 in 1e-9 units
             rec.stat_quantity = 42
             rec.stat_flags = 0
+            rec.ts_event = 1_780_000_000_000_000_000
             client._handle_stat(rec)
 
             client._test_upsert_options_daily.assert_called_once()
@@ -988,6 +989,7 @@ class TestStatTypeToKwargTable:
         rec.stat_value = 1_500_000_000
         rec.stat_quantity = 0
         rec.stat_flags = 1  # final
+        rec.ts_event = 1_780_000_000_000_000_000
         client._handle_stat(rec)
 
         call_kwargs = client._test_upsert_options_daily.call_args.kwargs
