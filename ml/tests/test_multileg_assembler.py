@@ -738,7 +738,7 @@ def test_classify_trades_raises_on_partial_nbbo_missing_bid() -> None:
     """
     rows = [_trade(trade_id="p1"), _trade(trade_id="p2", offset_s=30.0)]
     df = _df(rows).drop("nbbo_bid")
-    with pytest.raises(ValueError, match="nbbo_bid"):
+    with pytest.raises(ValueError, match=r"exactly one of nbbo_bid / nbbo_ask"):
         classify_trades(df)
 
 
@@ -746,7 +746,7 @@ def test_classify_trades_raises_on_partial_nbbo_missing_ask() -> None:
     """Finding 1.5: symmetric — missing ``nbbo_ask`` must also raise."""
     rows = [_trade(trade_id="p1"), _trade(trade_id="p2", offset_s=30.0)]
     df = _df(rows).drop("nbbo_ask")
-    with pytest.raises(ValueError, match="nbbo_ask"):
+    with pytest.raises(ValueError, match=r"exactly one of nbbo_bid / nbbo_ask"):
         classify_trades(df)
 
 
@@ -806,42 +806,52 @@ def test_classify_trades_handles_mixed_null_delta() -> None:
     missing as null in Float64; the cross-type pairing path uses delta
     when present. Regression guard against silent NaN propagation into
     ``match_confidence``.
+
+    Implementation note: the ``_trade()`` helper substitutes a default
+    float when ``delta=None`` is passed (so its other callers get
+    non-null deltas). To genuinely build polars nulls here, we override
+    ``delta`` on the row dict AFTER ``_trade()`` returns, then construct
+    the DataFrame with an explicit Float64 schema so polars preserves
+    ``None`` as null. The ``null_count() == 2`` precondition is asserted
+    BEFORE calling ``classify_trades`` so any future regression in
+    ``_trade()`` or polars dtype inference surfaces here, not as a
+    silently-passing false-positive guard.
     """
     import math
 
     # 6 trades on AAPL: 3 calls + 3 puts at adjacent OTM strikes, within
     # 5s of each other → strangle/risk_reversal cross-type pairing
     # surface plus some same-type two-leg surface.
-    rows = [
-        # Call leg with delta present.
-        _trade(
-            trade_id="md1",
-            ticker="AAPL",
-            offset_s=0.0,
-            strike=205.0,
-            option_type="call",
-            size=20,
-            price=0.80,
-            nbbo_bid=0.70,
-            nbbo_ask=0.80,  # buy
-            delta=0.45,
-        ),
-        # Put leg with delta present.
-        _trade(
-            trade_id="md2",
-            ticker="AAPL",
-            offset_s=1.0,
-            strike=195.0,
-            option_type="put",
-            size=20,
-            price=0.75,
-            nbbo_bid=0.65,
-            nbbo_ask=0.75,  # buy
-            delta=-0.45,
-        ),
-        # Call leg with NULL delta — present here as a wrinkle the
-        # matcher must tolerate without producing NaN downstream.
-        _trade(
+    md1 = _trade(
+        trade_id="md1",
+        ticker="AAPL",
+        offset_s=0.0,
+        strike=205.0,
+        option_type="call",
+        size=20,
+        price=0.80,
+        nbbo_bid=0.70,
+        nbbo_ask=0.80,  # buy
+        delta=0.45,
+    )
+    md2 = _trade(
+        trade_id="md2",
+        ticker="AAPL",
+        offset_s=1.0,
+        strike=195.0,
+        option_type="put",
+        size=20,
+        price=0.75,
+        nbbo_bid=0.65,
+        nbbo_ask=0.75,  # buy
+        delta=-0.45,
+    )
+    # md3 / md4: NULL delta. Build with a non-None placeholder via the
+    # helper, then overwrite. This bypasses the helper's
+    # ``if delta is None: delta = 0.5...`` substitution branch, which
+    # would silently mask the mixed-null contract under test.
+    md3 = {
+        **_trade(
             trade_id="md3",
             ticker="AAPL",
             offset_s=2.0,
@@ -851,10 +861,12 @@ def test_classify_trades_handles_mixed_null_delta() -> None:
             price=0.81,
             nbbo_bid=0.70,
             nbbo_ask=0.80,
-            delta=None,  # type: ignore[arg-type]
+            delta=0.0,  # placeholder — overwritten below
         ),
-        # Put leg with NULL delta.
-        _trade(
+        "delta": None,
+    }
+    md4 = {
+        **_trade(
             trade_id="md4",
             ticker="AAPL",
             offset_s=3.0,
@@ -864,40 +876,74 @@ def test_classify_trades_handles_mixed_null_delta() -> None:
             price=0.76,
             nbbo_bid=0.65,
             nbbo_ask=0.75,
-            delta=None,  # type: ignore[arg-type]
+            delta=0.0,  # placeholder — overwritten below
         ),
-        # Another call with delta present (distinct strike → vertical
-        # pairing surface on same-type).
-        _trade(
-            trade_id="md5",
-            ticker="AAPL",
-            offset_s=4.0,
-            strike=210.0,
-            option_type="call",
-            size=20,
-            price=0.40,
-            nbbo_bid=0.30,
-            nbbo_ask=0.40,
-            delta=0.30,
-        ),
-        # Another put with delta present.
-        _trade(
-            trade_id="md6",
-            ticker="AAPL",
-            offset_s=4.5,
-            strike=190.0,
-            option_type="put",
-            size=20,
-            price=0.35,
-            nbbo_bid=0.25,
-            nbbo_ask=0.35,
-            delta=-0.30,
-        ),
-    ]
-    # polars represents Python ``None`` in a Float64 column as null;
-    # build via DataFrame construction so the dtype is enforced.
+        "delta": None,
+    }
+    md5 = _trade(
+        trade_id="md5",
+        ticker="AAPL",
+        offset_s=4.0,
+        strike=210.0,
+        option_type="call",
+        size=20,
+        price=0.40,
+        nbbo_bid=0.30,
+        nbbo_ask=0.40,
+        delta=0.30,
+    )
+    md6 = _trade(
+        trade_id="md6",
+        ticker="AAPL",
+        offset_s=4.5,
+        strike=190.0,
+        option_type="put",
+        size=20,
+        price=0.35,
+        nbbo_bid=0.25,
+        nbbo_ask=0.35,
+        delta=-0.30,
+    )
+
+    rows = [md1, md2, md3, md4, md5, md6]
+
+    # Explicit schema dict: polars will preserve Python ``None`` as a
+    # null in a Float64 column rather than coercing to NaN or rejecting
+    # the mixed-type column. Using a sample row to derive the matching
+    # dtypes for the other (non-delta) columns keeps this robust to
+    # future helper changes.
+    df = pl.DataFrame(
+        rows,
+        schema={
+            "id": pl.Utf8,
+            "underlying_symbol": pl.Utf8,
+            "executed_at": pl.Datetime(time_unit="us", time_zone="UTC"),
+            "option_chain_id": pl.Utf8,
+            "strike": pl.Float64,
+            "expiry": pl.Date,
+            "option_type": pl.Utf8,
+            "size": pl.Int64,
+            "price": pl.Float64,
+            "nbbo_bid": pl.Float64,
+            "nbbo_ask": pl.Float64,
+            "premium": pl.Float64,
+            "delta": pl.Float64,  # explicit Float64 so None becomes null
+        },
+    )
+
+    # Pre-classify-trades sanity: prove the mixed-null contract is
+    # actually present in the input. Without this assertion, a future
+    # change to ``_trade()`` or to polars' dtype inference could turn
+    # this test into a silently-passing uniform-delta exercise — which
+    # was the original Task 3 reviewer finding.
+    assert df["delta"].null_count() == 2, (
+        f"test setup bug: expected exactly 2 null deltas (md3, md4); "
+        f"got null_count={df['delta'].null_count()} — the mixed-null "
+        f"contract is not actually being exercised"
+    )
+
     out = classify_trades(
-        _df(rows),
+        df,
         window_seconds=90,
         strike_tolerance=0.05,
         size_tolerance=0.1,
