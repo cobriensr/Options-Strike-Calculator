@@ -1,10 +1,10 @@
 """HTTP server for the multileg classifier service.
 
 Small ThreadingHTTPServer that fronts ``multileg_routes.handle_classify_payload``
-with route dispatch (``/health`` GET, ``/multileg-classify`` POST), method
-validation (405 on the wrong verb), and a request-body size cap (50 MB →
-413). Route handler logic stays in ``multileg_routes``; this module is
-HTTP plumbing only.
+with route dispatch (``/health`` GET, ``/version`` GET,
+``/multileg-classify`` POST), method validation (405 on the wrong verb),
+and a request-body size cap (50 MB → 413). Route handler logic stays in
+``multileg_routes``; this module is HTTP plumbing only.
 
 Phase 1 of the 2026-05-28 spec — no BoundedSemaphore yet. Phase 2 will
 add bounded concurrency in front of ``handle_classify_payload``; the
@@ -22,15 +22,27 @@ Operational notes:
     comfortable headroom AND a DoS-protection floor. Larger payloads
     short-circuit to 413 BEFORE the matcher (which would happily try
     to materialize them and OOM).
+  - Per-handler ``timeout = 30`` (Phase 1.5 fix 1.7): defends against
+    Slowloris-style attacks where a client trickles bytes to hold a
+    worker thread + socket indefinitely. 30s is generous headroom for
+    the ~1s our largest legitimate payloads take.
+  - ``_QuietThreadingHTTPServer.block_on_close = False`` (Phase 1.5 fix
+    2.6): makes ``server_close()`` return immediately during shutdown
+    instead of waiting on in-flight worker threads. Railway's grace
+    period is the only timeout that should govern teardown.
 """
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any
 
+import sentry_setup
 from multileg_routes import handle_classify_payload
 
 # 50 MB cap on request body. Realistic 7500-trade payloads are ~3-4 MB
@@ -38,6 +50,50 @@ from multileg_routes import handle_classify_payload
 # unambiguously bad-input or attack traffic and we reject before reading
 # any bytes off the wire.
 _MAX_BODY_BYTES = 50 * 1024 * 1024
+
+# Canonical pattern list mirroring api/_lib/multileg-client.ts
+# MULTILEG_STRUCTURES. Exposed via GET /version so the TS client can
+# detect drift between deploys (Phase 1.5 fix 2.2).
+_MULTILEG_PATTERNS: tuple[str, ...] = (
+    "isolated_leg",
+    "vertical",
+    "strangle",
+    "risk_reversal",
+    "butterfly",
+)
+
+# Cached sha256 of the vendored matcher. Computed lazily on first
+# /version request and frozen for the process lifetime — the file
+# never mutates after the image boots.
+_matcher_sha_cache: str | None = None
+
+
+def _compute_matcher_sha() -> str:
+    """Hash ``_vendored_ml/multileg_assembler.py`` for drift detection.
+
+    Resolves the file via the already-imported ``multileg_assembler``
+    module rather than a hard-coded ``/app/`` path so local dev and
+    production both work. Returns ``'unknown'`` on any error so the
+    ``/version`` endpoint can never crash on a quirky filesystem.
+    """
+    try:
+        import multileg_assembler
+
+        path = multileg_assembler.__file__
+        if path is None:
+            return "unknown"
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except Exception:
+        return "unknown"
+
+
+def _get_matcher_sha() -> str:
+    """Return the cached matcher sha, computing it on first call."""
+    global _matcher_sha_cache
+    if _matcher_sha_cache is None:
+        _matcher_sha_cache = _compute_matcher_sha()
+    return _matcher_sha_cache
 
 
 class _QuietThreadingHTTPServer(ThreadingHTTPServer):
@@ -58,7 +114,18 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     continuity) from the Vercel side.
 
     All other exceptions propagate to the default ``handle_error``.
+
+    ``block_on_close = False`` (Phase 1.5 fix 2.6): when ``main`` calls
+    ``server_close()`` on shutdown, socketserver would otherwise join
+    every in-flight worker thread. Combined with Slowloris-style slow
+    clients (now also bounded to 30s by ``ClassifierHandler.timeout``,
+    fix 1.7), that could push teardown past Railway's SIGKILL grace
+    window. Setting ``block_on_close = False`` makes ``server_close()``
+    return immediately; in-flight threads finish on their own or get
+    SIGKILLed with the process.
     """
+
+    block_on_close = False
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         exc_type = sys.exc_info()[0]
@@ -70,7 +137,16 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
 
 
 class ClassifierHandler(BaseHTTPRequestHandler):
-    """Route dispatcher for ``/health`` and ``/multileg-classify``."""
+    """Route dispatcher for ``/health``, ``/version``, and ``/multileg-classify``."""
+
+    # ``StreamRequestHandler.setup`` installs this as the socket timeout
+    # on every connection. Phase 1.5 fix 1.7: bound the worst-case time
+    # a single connection can hold a thread to defend against Slowloris.
+    # 30s is generous headroom for the ~1s our largest legitimate
+    # payloads take; anything beyond that is almost certainly an
+    # adversarial slow-drip client and we'd rather drop the socket than
+    # let it hold a worker indefinitely.
+    timeout = 30
 
     # ---- response helpers ---------------------------------------------------
 
@@ -120,6 +196,20 @@ class ClassifierHandler(BaseHTTPRequestHandler):
             # health probe is "process is up and handling requests".
             self._write_json(200, {"status": "ok"})
             return
+        if self.path == "/version":
+            # Cross-deploy drift detection (Phase 1.5 fix 2.2). The TS
+            # client fetches this on cold start and alarms via Sentry if
+            # ``patterns`` is not a superset of its MULTILEG_STRUCTURES
+            # enum, or if ``matcher_sha`` flips mid-soak.
+            self._write_json(
+                200,
+                {
+                    "matcher_sha": _get_matcher_sha(),
+                    "release": os.environ.get("RAILWAY_DEPLOYMENT_ID", "local"),
+                    "patterns": list(_MULTILEG_PATTERNS),
+                },
+            )
+            return
         if self.path == "/multileg-classify":
             # Wrong verb — tell the caller which method to use rather
             # than fall through to 404, which would mask a TS-client bug.
@@ -133,6 +223,38 @@ class ClassifierHandler(BaseHTTPRequestHandler):
             return
         if self.path != "/multileg-classify":
             self._send_404()
+            return
+
+        # Phase 1.5 fix 3.1: reject Transfer-Encoding outright. http.server
+        # does NOT auto-decode chunked, so a chunked body would fail closed
+        # at the "empty body" 400 below — safe but misleading. 411 Length
+        # Required is the RFC 9110 §10.2.1 answer and tells a future
+        # streaming TS client exactly what's wrong.
+        if self.headers.get("Transfer-Encoding"):
+            self._write_json(
+                411,
+                {
+                    "error": (
+                        "Transfer-Encoding not supported; use Content-Length"
+                    )
+                },
+                close_connection=True,
+            )
+            return
+
+        # Phase 1.5 fix 3.2: reject duplicate Content-Length. The classic
+        # HTTP request-smuggling pattern is two Content-Length headers (or
+        # one CL + one chunked TE) where the edge proxy and the origin
+        # disagree on framing. We don't want different framing
+        # interpretations between Railway's edge and this Python server,
+        # so any ambiguity → 400 + connection close.
+        content_length_values = self.headers.get_all("Content-Length") or []
+        if len(content_length_values) > 1:
+            self._write_json(
+                400,
+                {"error": "duplicate Content-Length"},
+                close_connection=True,
+            )
             return
 
         # Body size cap — applied BEFORE the rfile.read to keep an
@@ -175,12 +297,39 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         # until ``n`` bytes are received or the socket closes — fine for
         # well-behaved clients (the Vercel TS client). If the connection
         # drops mid-read we surface that as a 400 rather than crashing.
+        # ``TimeoutError`` (Phase 1.5 fix 1.7) means the per-handler
+        # 30s timeout fired during the body read — translate to 408
+        # Request Timeout and drop a Sentry breadcrumb so the soak
+        # exposes whether 30s is too tight. In Python 3.10+
+        # ``socket.timeout`` is an alias for ``TimeoutError``; we catch
+        # the canonical name to satisfy ruff UP041.
         try:
             body_bytes = self.rfile.read(content_length)
         except (BrokenPipeError, ConnectionResetError):
             # _QuietThreadingHTTPServer swallows these in handle_error,
             # but we still want to avoid invoking the matcher on a
             # truncated body — just exit the request silently.
+            return
+        except TimeoutError:
+            if sentry_setup.is_enabled():
+                with contextlib.suppress(Exception):
+                    import sentry_sdk
+
+                    sentry_sdk.add_breadcrumb(
+                        category="classifier.http",
+                        message="rfile.read timed out (Slowloris defense)",
+                        level="warning",
+                        data={
+                            "content_length": content_length,
+                            "timeout_seconds": self.timeout,
+                        },
+                    )
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError):
+                self._write_json(
+                    408,
+                    {"error": "request timeout"},
+                    close_connection=True,
+                )
             return
 
         if len(body_bytes) != content_length:

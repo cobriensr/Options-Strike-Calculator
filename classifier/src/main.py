@@ -6,17 +6,19 @@ Boots Sentry, builds the HTTP server, and blocks on ``serve_forever``
 until Railway sends SIGTERM (graceful shutdown) or the operator hits
 Ctrl-C.
 
-Kept deliberately short: no background tasks, no signal handlers
-beyond what ``serve_forever`` already responds to via KeyboardInterrupt.
+Kept deliberately short: no background tasks, just an explicit SIGTERM
+handler (Phase 1.5 fix 0.3) and a try/finally that drains the listener.
 http.server's ThreadingHTTPServer cleans up its worker threads on
 ``shutdown()``; the try/finally guarantees the listening socket is
-released even when boot fails halfway.
+released even when boot fails halfway and that ``sentry_sdk.flush`` runs
+before the process exits.
 """
 
 from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import sys
 
 import sentry_setup
@@ -38,6 +40,19 @@ def _parse_port(raw: str | None) -> int:
     return port
 
 
+def _on_sigterm(_signum: int, _frame: object) -> None:
+    """Translate SIGTERM into KeyboardInterrupt so ``main``'s finally runs.
+
+    Python's *default* SIGTERM handler is the OS default — immediate
+    process termination with no exception raised. That means without
+    this explicit override, a Railway redeploy would SIGKILL us
+    mid-classify with no ``finally`` block, no ``server.shutdown()``,
+    and no ``sentry_sdk.flush()``. Raising KeyboardInterrupt funnels
+    SIGTERM through the same exit path as Ctrl-C.
+    """
+    raise KeyboardInterrupt
+
+
 def main() -> int:
     """Entrypoint; returns a process exit code."""
     # Sentry init must never block the service from starting. The
@@ -51,30 +66,45 @@ def main() -> int:
     try:
         port = _parse_port(os.environ.get("PORT"))
     except ValueError as exc:
+        # Sentry is up by this point (init ran above). Capture the
+        # misconfig BEFORE returning 2 so a bad PORT env doesn't
+        # crashloop silently — Phase 1.5 fix 3.3.
+        with contextlib.suppress(Exception):
+            sentry_setup.capture_exception(exc, tags={"phase": "port_parse"})
         print(f"main: {exc}", flush=True)
         return 2
 
     httpd = server.build_server(port)
     print(f"classifier listening on 0.0.0.0:{port}", flush=True)
 
+    # Install the SIGTERM handler BEFORE serve_forever so a Railway
+    # redeploy that arrives milliseconds after boot still cleans up.
+    # Phase 1.5 fix 0.3 — the original code's comment claimed Python's
+    # default handler raised KeyboardInterrupt, which is false.
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        # SIGINT in dev / Ctrl-C — fall through to the finally block.
+        # SIGINT (Ctrl-C) and our explicit SIGTERM handler both land here.
         pass
     finally:
-        # Railway sends SIGTERM (which Python translates to
-        # KeyboardInterrupt under the default handler when running as
-        # PID 1, same code path). ``shutdown`` is idempotent and the
-        # ``server_close`` releases the listening socket so a quick
-        # restart doesn't hit "address already in use". Suppress broadly:
-        # the process is exiting anyway, and a noisy traceback on the
-        # cleanup path masks the underlying serve_forever failure that
-        # got us here.
+        # ``shutdown`` is idempotent and ``server_close`` releases the
+        # listening socket so a quick restart doesn't hit "address
+        # already in use". Suppress broadly: the process is exiting
+        # anyway, and a noisy traceback on the cleanup path masks the
+        # underlying serve_forever failure that got us here.
         with contextlib.suppress(Exception):
             httpd.shutdown()
         with contextlib.suppress(Exception):
             httpd.server_close()
+        # Phase 1.5 fix 0.3: flush queued Sentry events with a short
+        # timeout. Suppress because flush() may raise when Sentry is
+        # unset (no-op SDK) or already torn down.
+        with contextlib.suppress(Exception):
+            import sentry_sdk
+
+            sentry_sdk.flush(timeout=2)
         print("classifier stopped", flush=True)
 
     return 0

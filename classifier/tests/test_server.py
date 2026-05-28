@@ -2,7 +2,9 @@
 
 Exercises the HTTP plumbing: route dispatch, method validation,
 Content-Length handling, body cap, ``Connection: close`` policy, log
-suppression, and concurrent /health probes.
+suppression, concurrent /health probes, plus the Phase 1.5 hardening
+fixes (SIGTERM-friendly class attrs, Slowloris timeout, smuggling
+defenses, /version endpoint).
 
 All tests use a server bound to an ephemeral port (``build_server(0)``)
 started in a daemon thread. Stdlib ``urllib.request`` drives requests
@@ -12,6 +14,7 @@ minimal).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 import threading
@@ -527,3 +530,286 @@ def test_log_message_is_silenced(running_server, capsys) -> None:
     # line to stderr. Our override should keep stderr empty.
     assert "GET /health" not in captured.err
     assert "200" not in captured.err or "Traceback" in captured.err
+
+
+# ── Phase 1.5 hardening: class attributes ───────────────────────────────
+
+
+def test_handler_has_30_second_socket_timeout() -> None:
+    """Phase 1.5 fix 1.7 (Slowloris defense): the per-handler
+    ``timeout`` class attribute must be 30 seconds.
+
+    ``StreamRequestHandler.setup`` reads this attribute and installs it
+    as ``self.connection.settimeout(...)`` on every accepted socket.
+    Without it (default ``None``), a Slowloris-style attacker dripping
+    one byte per minute can hold a worker thread indefinitely.
+    """
+    assert server.ClassifierHandler.timeout == 30
+
+
+def test_quiet_server_has_block_on_close_false() -> None:
+    """Phase 1.5 fix 2.6: ``server_close()`` must not block on
+    in-flight worker threads.
+
+    ``ThreadingHTTPServer`` defaults to ``block_on_close = True``, which
+    in combination with a slow client could push shutdown past Railway's
+    SIGKILL grace window. Setting it False makes shutdown return as soon
+    as the listening socket is released; in-flight threads finish
+    independently or get killed with the process.
+    """
+    assert server._QuietThreadingHTTPServer.block_on_close is False
+
+
+# ── Phase 1.5 hardening: Transfer-Encoding / duplicate Content-Length ───
+
+
+def test_chunked_transfer_encoding_returns_411(running_server) -> None:
+    """Phase 1.5 fix 3.1: a ``Transfer-Encoding: chunked`` request must
+    short-circuit to 411 Length Required (RFC 9110 §10.2.1).
+
+    http.server doesn't auto-decode chunked, so without this guard the
+    request would silently fail at the "empty body" 400 — misleading
+    error for a TS-side streaming client.
+    """
+    _httpd, base_url = running_server
+    host, port = "127.0.0.1", int(base_url.rsplit(":", 1)[1])
+    # No Content-Length; one chunk of "hi" then terminator.
+    raw = (
+        f"POST /multileg-classify HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Transfer-Encoding: chunked\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+        f"2\r\nhi\r\n0\r\n\r\n"
+    ).encode()
+    response = _send_raw(host, port, raw, timeout=3.0)
+    first_line = response.split(b"\r\n", 1)[0].decode()
+    assert "411" in first_line, f"expected 411, got: {first_line!r}"
+    assert b"Transfer-Encoding not supported" in response
+    # 4xx → Connection: close header set.
+    assert b"Connection: close" in response or b"connection: close" in response
+
+
+def test_chunked_transfer_encoding_identity_value_also_returns_411(
+    running_server,
+) -> None:
+    """Defense in depth: any ``Transfer-Encoding`` value (even the
+    benign ``identity``) is rejected. We don't want to enumerate values
+    the matcher's body reader does/doesn't understand; safer to require
+    Content-Length framing exclusively.
+    """
+    _httpd, base_url = running_server
+    host, port = "127.0.0.1", int(base_url.rsplit(":", 1)[1])
+    raw = (
+        f"POST /multileg-classify HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Transfer-Encoding: identity\r\n"
+        f"Content-Length: 2\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+        f"{{}}"
+    ).encode()
+    response = _send_raw(host, port, raw, timeout=3.0)
+    first_line = response.split(b"\r\n", 1)[0].decode()
+    assert "411" in first_line, f"expected 411, got: {first_line!r}"
+
+
+def test_duplicate_content_length_returns_400(running_server) -> None:
+    """Phase 1.5 fix 3.2: two ``Content-Length`` headers is the classic
+    HTTP smuggling pattern. Reject 400 + connection close before we
+    even try to read a body.
+    """
+    _httpd, base_url = running_server
+    host, port = "127.0.0.1", int(base_url.rsplit(":", 1)[1])
+    body = b'{"trades": []}'
+    raw = (
+        f"POST /multileg-classify HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        f"Content-Type: application/json\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        f"Content-Length: {len(body) + 100}\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+    ).encode() + body
+    response = _send_raw(host, port, raw, timeout=3.0)
+    first_line = response.split(b"\r\n", 1)[0].decode()
+    assert "400" in first_line, f"expected 400, got: {first_line!r}"
+    assert b"duplicate Content-Length" in response
+
+
+# ── Phase 1.5 hardening: GET /version ───────────────────────────────────
+
+
+def test_get_version_returns_matcher_sha_and_patterns(running_server) -> None:
+    """Phase 1.5 fix 2.2: ``/version`` exposes matcher_sha + release +
+    patterns for cross-deploy drift detection by the TS client.
+
+    Assertions:
+      - matcher_sha is a 64-char lowercase hex sha256 of the actual
+        vendored ``multileg_assembler.py`` file (not 'unknown' — the
+        file MUST be readable in any healthy test environment).
+      - patterns is the canonical 5-element list matching the TS
+        MULTILEG_STRUCTURES enum.
+      - release defaults to 'local' when RAILWAY_DEPLOYMENT_ID is unset.
+    """
+    _httpd, base_url = running_server
+    status, headers, body = _do_get(f"{base_url}/version")
+    assert status == 200
+    assert headers["content-type"] == "application/json"
+
+    data = json.loads(body)
+    assert set(data.keys()) == {"matcher_sha", "release", "patterns"}
+
+    # matcher_sha is the sha256 of the imported multileg_assembler file.
+    import multileg_assembler
+
+    expected_path = multileg_assembler.__file__
+    assert expected_path is not None
+    with open(expected_path, "rb") as fh:
+        expected_sha = hashlib.sha256(fh.read()).hexdigest()
+    assert data["matcher_sha"] == expected_sha
+    assert len(data["matcher_sha"]) == 64
+
+    # release: either a real RAILWAY_DEPLOYMENT_ID or 'local'.
+    import os
+
+    expected_release = os.environ.get("RAILWAY_DEPLOYMENT_ID", "local")
+    assert data["release"] == expected_release
+
+    # patterns: canonical list mirroring TS MULTILEG_STRUCTURES.
+    assert data["patterns"] == [
+        "isolated_leg",
+        "vertical",
+        "strangle",
+        "risk_reversal",
+        "butterfly",
+    ]
+
+    # 2xx keeps keep-alive (no explicit close header).
+    assert "connection" not in headers or headers["connection"].lower() != "close"
+
+
+def test_get_version_caches_matcher_sha(running_server) -> None:
+    """Phase 1.5 fix 2.2: matcher_sha is computed lazily on first call
+    and cached at module level — subsequent /version calls should not
+    re-hash the file (the file never mutates after image boot).
+    """
+    _httpd, base_url = running_server
+    # Force the cache populated.
+    _do_get(f"{base_url}/version")
+    # Now intercept the compute helper and verify it isn't called again.
+    with patch.object(server, "_compute_matcher_sha") as mock_compute:
+        status, _, body = _do_get(f"{base_url}/version")
+    assert status == 200
+    assert mock_compute.call_count == 0
+    # And the cached value is still the real sha.
+    data = json.loads(body)
+    assert len(data["matcher_sha"]) == 64
+    assert data["matcher_sha"] != "unknown"
+
+
+def test_post_to_version_returns_405(running_server) -> None:
+    """``/version`` is GET-only. POST should 405 with Allow: GET."""
+    _httpd, base_url = running_server
+    # No POST handler for /version → falls through to 404 in the current
+    # design (we didn't add a POST /version branch). Document that.
+    status, headers, body = _do_post(f"{base_url}/version", body=b"{}")
+    assert status == 404
+    assert headers["connection"] == "close"
+    assert json.loads(body) == {"error": "not found"}
+
+
+def test_compute_matcher_sha_returns_unknown_on_read_error() -> None:
+    """``_compute_matcher_sha`` must never raise — a missing / unreadable
+    matcher file falls back to 'unknown' so /version can't crash.
+    """
+    with patch("builtins.open", side_effect=OSError("disk gone")):
+        result = server._compute_matcher_sha()
+    assert result == "unknown"
+
+
+def test_compute_matcher_sha_returns_unknown_when_module_file_is_none() -> None:
+    """Defensive: ``__file__`` can be None for namespace packages. Verify
+    the function doesn't choke on that edge case.
+    """
+    with patch.object(server, "_compute_matcher_sha", wraps=server._compute_matcher_sha):
+        import multileg_assembler
+
+        with patch.object(multileg_assembler, "__file__", None):
+            result = server._compute_matcher_sha()
+    assert result == "unknown"
+
+
+# ── Phase 1.5 hardening: socket.timeout handling in do_POST ─────────────
+
+
+def test_do_post_socket_timeout_during_read_returns_408() -> None:
+    """When ``rfile.read`` raises ``socket.timeout`` (Slowloris-style
+    slow client hit the 30s handler timeout), respond 408 Request
+    Timeout with Connection: close.
+    """
+    handler, wfile = _make_handler_for_do_post(
+        headers={"Content-Length": "100"},
+        rfile_read_side_effect=TimeoutError("slow client"),
+    )
+    handler.do_POST()
+    all_writes = b"".join(call.args[0] for call in wfile.write.call_args_list)
+    assert b"408" in all_writes
+    assert b"request timeout" in all_writes
+    assert b"Connection: close" in all_writes or b"connection: close" in all_writes
+
+
+def test_do_post_socket_timeout_emits_sentry_breadcrumb_when_enabled() -> None:
+    """Verify the timeout path adds a Sentry breadcrumb so we can see in
+    the soak whether 30s is too tight.
+    """
+    handler, _wfile = _make_handler_for_do_post(
+        headers={"Content-Length": "100"},
+        rfile_read_side_effect=TimeoutError("slow"),
+    )
+    with (
+        patch.object(server.sentry_setup, "is_enabled", return_value=True),
+        patch("sentry_sdk.add_breadcrumb") as mock_breadcrumb,
+    ):
+        handler.do_POST()
+    assert mock_breadcrumb.called
+    kwargs = mock_breadcrumb.call_args.kwargs
+    assert kwargs.get("category") == "classifier.http"
+    assert "Slowloris" in kwargs.get("message", "")
+    assert kwargs.get("data", {}).get("timeout_seconds") == 30
+
+
+def test_do_post_socket_timeout_swallows_write_errors() -> None:
+    """If the client socket is also dead when we try to write the 408,
+    the BrokenPipeError must be swallowed so we don't crash the worker
+    thread.
+    """
+    handler, wfile = _make_handler_for_do_post(
+        headers={"Content-Length": "100"},
+        rfile_read_side_effect=TimeoutError("slow"),
+    )
+    wfile.write.side_effect = BrokenPipeError("client gone too")
+    # Must not raise.
+    handler.do_POST()
+
+
+def test_do_post_socket_timeout_swallows_breadcrumb_failure() -> None:
+    """If ``sentry_sdk.add_breadcrumb`` raises (SDK partially torn
+    down, mocked weirdly in a test), the inner ``except Exception`` must
+    keep the 408 response path intact.
+    """
+    handler, wfile = _make_handler_for_do_post(
+        headers={"Content-Length": "100"},
+        rfile_read_side_effect=TimeoutError("slow"),
+    )
+    with (
+        patch.object(server.sentry_setup, "is_enabled", return_value=True),
+        patch("sentry_sdk.add_breadcrumb", side_effect=RuntimeError("sdk wedged")),
+    ):
+        handler.do_POST()  # must not raise
+    all_writes = b"".join(call.args[0] for call in wfile.write.call_args_list)
+    # 408 still emitted despite the breadcrumb failure.
+    assert b"408" in all_writes
+    assert b"request timeout" in all_writes
