@@ -1,12 +1,9 @@
 {
   "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-05-27T01:43:33.177213+00:00",
+  "trained_at": "2026-05-27T22:15:40.323165+00:00",
   "training_sample": {
-    "n": 161832,
-    "date_range": [
-      "2026-02-26 00:00:00",
-      "2026-05-26 00:00:00"
-    ],
+    "n": 161849,
+    "date_range": ["2026-02-26 00:00:00", "2026-05-27 00:00:00"],
     "filters_applied": [
       "last 90 days",
       "aligned only (cum_ncp > cum_npp for calls, vice versa for puts)",
@@ -36,44 +33,18 @@
       "2": 0,
       "3": 1
     },
-    "vol_oi_quintile_weights": [
-      1,
-      0,
-      2,
-      0,
-      -3
-    ],
+    "vol_oi_quintile_weights": [1, 0, 2, 0, -3],
     "vol_oi_quintile_boundaries": [
-      0.059845559845559844,
-      0.09635416666666667,
-      0.1554953013519579,
-      0.38177297544570055
+      0.05985147295934173, 0.09635974304068523, 0.15552076871759463,
+      0.3817829457364341
     ],
-    "gamma_quintile_weights": [
-      3,
-      -2,
-      -2,
-      -2,
-      -1
-    ],
+    "gamma_quintile_weights": [3, -2, -2, -2, -1],
     "gamma_quintile_boundaries": [
-      0.01234384404571487,
-      0.025592719160305345,
-      0.042654430769050365,
-      0.06926807198716604
+      0.01234385266008575, 0.02559131, 0.0426539571228536, 0.0692641349936143
     ],
-    "ask_pct_quintile_weights": [
-      -1,
-      1,
-      1,
-      2,
-      -4
-    ],
+    "ask_pct_quintile_weights": [-1, 1, 1, 2, -4],
     "ask_pct_quintile_boundaries": [
-      0.5333333333333333,
-      0.5714285714285714,
-      0.625,
-      0.75
+      0.5333333333333333, 0.5714285714285714, 0.625, 0.75
     ],
     "option_type_weights": {
       "C": 2,
@@ -249,13 +220,13 @@
     "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift."
   },
   "validation": {
-    "tier1_count": 11712,
-    "tier2_count": 12990,
-    "tier3_count": 137130,
-    "tier1_mean_outcome_pct": 34.7225192985738,
-    "tier2_mean_outcome_pct": 27.17981755914726,
-    "tier3_mean_outcome_pct": 4.254654260797776,
-    "spearman_score_outcome": 0.18271506402696394,
+    "tier1_count": 11714,
+    "tier2_count": 12992,
+    "tier3_count": 137143,
+    "tier1_mean_outcome_pct": 34.72686067052401,
+    "tier2_mean_outcome_pct": 27.170991193835754,
+    "tier3_mean_outcome_pct": 4.249664202404794,
+    "spearman_score_outcome": 0.18272730370995333,
     "spearman_p_value": 0.0
   }
 }
