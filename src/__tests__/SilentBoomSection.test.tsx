@@ -896,3 +896,80 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
     expect(callAfterFilter?.[0]).toMatchObject({ page: 0 });
   });
 });
+
+// ============================================================
+// PAGINATION — POST-FILTER EMPTY + PAST-LAST-PAGE RECOVERY
+// ============================================================
+
+describe('SilentBoomSection: pagination edge states', () => {
+  it('renders the post-filter empty state when every server row is hidden by client chips', () => {
+    // Default takeitFloor is 0.70 — alerts below that get hidden client-side.
+    // Server returns 5 alerts; all have takeitProb=0.5 → all hidden → header
+    // + pagination still render but the body must explain the gap.
+    const alerts = Array.from({ length: 5 }, (_, i) =>
+      makeAlert({
+        id: i + 1,
+        optionChainId: `HIDDEN-${i}`,
+        underlyingSymbol: 'AAPL',
+        takeitProb: 0.5,
+      }),
+    );
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts, total: 5, hasMore: false }),
+    );
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    expect(
+      screen.getByTestId('silent-boom-all-filtered-empty'),
+    ).toBeInTheDocument();
+    expect(screen.queryAllByTestId(/^silent-boom-row-/)).toHaveLength(0);
+  });
+
+  it('renders "showing N of M" with the post-filter visible count, not the server slice size', () => {
+    // 3 server alerts; 1 visible after the default 0.70 TAKE-IT floor.
+    const alerts = [
+      makeAlert({ id: 1, optionChainId: 'V1', takeitProb: 0.5 }),
+      makeAlert({ id: 2, optionChainId: 'V2', takeitProb: 0.5 }),
+      makeAlert({ id: 3, optionChainId: 'V3', takeitProb: 0.85 }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts, total: 3, hasMore: false }),
+    );
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    expect(screen.getByText(/showing 1 of 3/)).toBeInTheDocument();
+  });
+
+  it('shows the past-last-page recovery when server returns 0 alerts on page > 0 and clicking back returns to the previous page', () => {
+    // Differentiated mock: page 0 has one alert + hasMore=true; any
+    // page > 0 returns empty (simulates the user navigating past the
+    // last page).
+    mockUseSilentBoomFeed.mockImplementation(({ page }: { page: number }) =>
+      page > 0
+        ? feedResult({ alerts: [], total: 100, hasMore: false })
+        : feedResult({
+            alerts: [makeAlert({ id: 1, optionChainId: 'PAGE0-ALERT' })],
+            total: 100,
+            hasMore: true,
+          }),
+    );
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+
+    expect(
+      screen.getByTestId('silent-boom-past-last-page'),
+    ).toBeInTheDocument();
+    const backBtn = screen.getByRole('button', { name: /back one page/i });
+    const jumpBtn = screen.getByRole('button', { name: /jump to page 1/i });
+    expect(backBtn).toBeInTheDocument();
+    expect(jumpBtn).toBeInTheDocument();
+
+    fireEvent.click(backBtn);
+    const lastCall = mockUseSilentBoomFeed.mock.calls.at(-1);
+    expect(lastCall?.[0]).toMatchObject({ page: 0 });
+  });
+});

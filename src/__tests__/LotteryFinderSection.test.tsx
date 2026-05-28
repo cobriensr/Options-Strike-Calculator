@@ -1127,3 +1127,82 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
     expect(callAfterFilter?.[0]).toMatchObject({ page: 0 });
   });
 });
+
+// ============================================================
+// PAGINATION — POST-FILTER EMPTY + PAST-LAST-PAGE RECOVERY
+// ============================================================
+
+describe('LotteryFinderSection: pagination edge states', () => {
+  it('renders the post-filter empty state when every server row is hidden by client chips', () => {
+    // Default takeitFloor is 0.70 — fires below that get hidden client-side.
+    // Server returns 5 fires; all have takeitProb=0.5 → all hidden → header
+    // + pagination still render but the body must explain the gap.
+    const fires = Array.from({ length: 5 }, (_, i) =>
+      makeFire({
+        id: i + 1,
+        optionChainId: `HIDDEN-${i}`,
+        underlyingSymbol: 'AAPL',
+        takeitProb: 0.5,
+      }),
+    );
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires, total: 5, hasMore: false }),
+    );
+
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    expect(
+      screen.getByTestId('lottery-all-filtered-empty'),
+    ).toBeInTheDocument();
+    // No rows rendered because every fire is filtered out.
+    expect(screen.queryAllByTestId(/^lottery-row-/)).toHaveLength(0);
+  });
+
+  it('renders "showing N of M" with the post-filter visible count, not the server slice size', () => {
+    // 3 server fires; 1 visible after the default 0.70 TAKE-IT floor.
+    const fires = [
+      makeFire({ id: 1, optionChainId: 'V1', takeitProb: 0.5 }),
+      makeFire({ id: 2, optionChainId: 'V2', takeitProb: 0.5 }),
+      makeFire({ id: 3, optionChainId: 'V3', takeitProb: 0.85 }),
+    ];
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires, total: 3, hasMore: false }),
+    );
+
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    expect(screen.getByText(/showing 1 of 3/)).toBeInTheDocument();
+  });
+
+  it('shows the past-last-page recovery when server returns 0 fires on page > 0 and clicking back returns to the previous page', () => {
+    // Differentiated mock: page 0 has fires + hasMore=true; any page > 0
+    // returns empty (simulates the user navigating past the last page,
+    // or the result set shrinking between fetches).
+    mockUseLotteryFinder.mockImplementation(({ page }: { page: number }) =>
+      page > 0
+        ? feedResult({ fires: [], total: 100, hasMore: false })
+        : feedResult({
+            fires: [makeFire({ id: 1, optionChainId: 'PAGE0-FIRE' })],
+            total: 100,
+            hasMore: true,
+          }),
+    );
+
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    // Advance to page 2 via Next.
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+
+    // The past-last-page recovery panel is now visible with both buttons.
+    expect(screen.getByTestId('lottery-past-last-page')).toBeInTheDocument();
+    const backBtn = screen.getByRole('button', { name: /back one page/i });
+    const jumpBtn = screen.getByRole('button', { name: /jump to page 1/i });
+    expect(backBtn).toBeInTheDocument();
+    expect(jumpBtn).toBeInTheDocument();
+
+    // Click "back one page" → the hook should be re-invoked with page 0.
+    fireEvent.click(backBtn);
+    const lastCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(lastCall?.[0]).toMatchObject({ page: 0 });
+  });
+});

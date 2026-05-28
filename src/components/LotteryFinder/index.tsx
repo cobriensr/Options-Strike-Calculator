@@ -772,13 +772,15 @@ export function LotteryFinderSection({
   // the real post-filter visible count (filteredFires.length) as the
   // numerator. Placement here — after the applyClientFilters memo — is
   // intentional; moving it back above the filter pipeline would break the
-  // extrapolation.
+  // extrapolation. `null` means the denominator is unknown — the label
+  // drops to "page N" rather than lying with a fabricated total.
   const totalPages = estimateFilteredTotalPages({
     serverTotal: total,
     pageSize: PAGE_SIZE,
     currentPage,
     currentPageRequested: fires.length,
     currentPageVisible: filteredFires.length,
+    hasMore,
   });
 
   // Group displayed fires by ticker so each underlying renders as one
@@ -1486,8 +1488,37 @@ export function LotteryFinderSection({
             Error: {error}
           </div>
         ) : fires.length === 0 ? (
-          <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400">
-            {!showFilteredTickers && page === 0 && total > 0 ? (
+          <div
+            className="space-y-2 rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400"
+            data-testid={
+              page > 0 ? 'lottery-past-last-page' : 'lottery-empty-state'
+            }
+          >
+            {page > 0 ? (
+              <>
+                <p>
+                  No fires on page {currentPage} — either you&apos;ve navigated
+                  past the last page or the result set shrank since you opened
+                  it.
+                </p>
+                <p className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:text-white"
+                  >
+                    ← back one page
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPage(0)}
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:text-white"
+                  >
+                    ↻ jump to page 1
+                  </button>
+                </p>
+              </>
+            ) : !showFilteredTickers && total > 0 ? (
               <>
                 {total} fire{total === 1 ? '' : 's'} for {date} matched the
                 filters but every one was suppressed by the inversion-quality
@@ -1529,7 +1560,7 @@ export function LotteryFinderSection({
                 )}
                 {total > 0 && (
                   <span className="ml-2 text-neutral-600">
-                    showing {offset + 1}-{offset + fires.length}
+                    showing {filteredFires.length} of {total}
                   </span>
                 )}
                 {convictionFloor !== 'all' && (
@@ -1588,7 +1619,9 @@ export function LotteryFinderSection({
                     ← prev
                   </button>
                   <span className="font-mono text-xs text-neutral-400">
-                    {currentPage} / {totalPages}
+                    {totalPages != null
+                      ? `${currentPage} / ${totalPages}`
+                      : `page ${currentPage}`}
                   </span>
                   <button
                     type="button"
@@ -1612,23 +1645,43 @@ export function LotteryFinderSection({
               marketOpen={marketOpen}
               getFlowSnapshot={getReignitionSnapshot}
             />
-            {groupedByTicker.map((g) => (
-              <LotteryFinderTickerGroup
-                key={g.ticker}
-                ticker={g.ticker}
-                fires={g.items}
-                expanded={tickerExpandedMap[g.ticker] === true}
-                onToggle={handleTickerToggle}
-                marketOpen={marketOpen}
-                exitPolicy={exitPolicy}
-                conviction={g.conviction}
-                storm={g.storm}
-                clusterStrikes={g.clusterStrikes}
-                wasConvictionAt={g.wasConvictionAt}
-                wasConvictionFireCount={g.wasConvictionFireCount}
-                liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}
-              />
-            ))}
+            {/* Post-filter empty state — server returned rows but every
+                one was hidden by client-side chips (hideLatePm, moneyness,
+                takeitFloor, etc.). Without this branch the body renders
+                literal whitespace below the pagination header and the user
+                has no signal that filters caused the blank. */}
+            {groupedByTicker.length === 0 && reignitedFires.length === 0 ? (
+              <div
+                className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400"
+                data-testid="lottery-all-filtered-empty"
+              >
+                All {fires.length} fire{fires.length === 1 ? '' : 's'} on this
+                page were hidden by active filter chips.{' '}
+                {hasMore
+                  ? 'Try Next to skip to the next server page, or'
+                  : 'Try'}{' '}
+                relaxing a filter (TAKE-IT floor, hide-* toggles, moneyness,
+                etc.).
+              </div>
+            ) : (
+              groupedByTicker.map((g) => (
+                <LotteryFinderTickerGroup
+                  key={g.ticker}
+                  ticker={g.ticker}
+                  fires={g.items}
+                  expanded={tickerExpandedMap[g.ticker] === true}
+                  onToggle={handleTickerToggle}
+                  marketOpen={marketOpen}
+                  exitPolicy={exitPolicy}
+                  conviction={g.conviction}
+                  storm={g.storm}
+                  clusterStrikes={g.clusterStrikes}
+                  wasConvictionAt={g.wasConvictionAt}
+                  wasConvictionFireCount={g.wasConvictionFireCount}
+                  liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}
+                />
+              ))
+            )}
           </div>
         )}
       </div>

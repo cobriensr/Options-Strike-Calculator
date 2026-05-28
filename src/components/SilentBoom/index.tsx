@@ -910,15 +910,20 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
 
   // totalPages derived AFTER the client-filter pass so the estimate uses
   // the real post-filter visible count (displayedAlerts.length) as the
-  // numerator. Includes the bucketIso scrub filter — reflecting bucket
-  // scoping in the page count is correct behaviour (users see fewer rows
-  // when scrubbing to a narrow bucket).
+  // numerator. `null` means the denominator is unknown — the label drops
+  // to "page N" rather than lying with a fabricated total.
+  //
+  // When the user is scrubbed to a single bucket (bucketIso != null) the
+  // visible count is structurally tiny relative to the day total — the
+  // pagination block is suppressed entirely below, so the value of
+  // totalPages doesn't reach the screen in that case anyway.
   const totalPages = estimateFilteredTotalPages({
     serverTotal: total,
     pageSize: PAGE_SIZE,
     currentPage,
     currentPageRequested: alerts.length,
     currentPageVisible: displayedAlerts.length,
+    hasMore,
   });
 
   return (
@@ -1540,9 +1545,44 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
             Error: {error}
           </div>
         ) : alerts.length === 0 ? (
-          <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400">
-            No silent-boom alerts on {date} matching the active filters. Try
-            lowering the vol/OI floor or clearing the ticker / type chips.
+          <div
+            className="space-y-2 rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400"
+            data-testid={
+              page > 0
+                ? 'silent-boom-past-last-page'
+                : 'silent-boom-empty-state'
+            }
+          >
+            {page > 0 ? (
+              <>
+                <p>
+                  No alerts on page {currentPage} — either you&apos;ve navigated
+                  past the last page or the result set shrank since you opened
+                  it.
+                </p>
+                <p className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:text-white"
+                  >
+                    ← back one page
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPage(0)}
+                    className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 hover:text-white"
+                  >
+                    ↻ jump to page 1
+                  </button>
+                </p>
+              </>
+            ) : (
+              <>
+                No silent-boom alerts on {date} matching the active filters. Try
+                lowering the vol/OI floor or clearing the ticker / type chips.
+              </>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
@@ -1562,7 +1602,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                     {total} alert{total === 1 ? '' : 's'} for {date}
                     {total > 0 && (
                       <span className="ml-2 text-neutral-600">
-                        showing {offset + 1}-{offset + alerts.length}
+                        showing {displayedAlerts.length} of {total}
                       </span>
                     )}
                   </>
@@ -1642,7 +1682,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   </span>
                 )}
               </span>
-              {total > PAGE_SIZE && (
+              {/* Pagination — suppressed entirely when scrubbed to a
+                  single 5-min bucket. The bucket filter is client-side,
+                  so server-page navigation produces mostly-empty pages
+                  and the page denominator has no useful meaning at that
+                  zoom level. */}
+              {bucketIso == null && total > PAGE_SIZE && (
                 <span className="flex items-center gap-1.5">
                   <button
                     type="button"
@@ -1654,7 +1699,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                     ← prev
                   </button>
                   <span className="font-mono text-xs text-neutral-400">
-                    {currentPage} / {totalPages}
+                    {totalPages != null
+                      ? `${currentPage} / ${totalPages}`
+                      : `page ${currentPage}`}
                   </span>
                   <button
                     type="button"
@@ -1668,23 +1715,44 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </span>
               )}
             </div>
-            {groupedByTicker.map((g) => (
-              <SilentBoomTickerGroup
-                key={g.ticker}
-                ticker={g.ticker}
-                alerts={g.items}
-                expanded={tickerExpandedMap[g.ticker] === true}
-                onToggle={handleTickerToggle}
-                marketOpen={marketOpen}
-                exitPolicy={exitPolicy}
-                conviction={g.conviction}
-                storm={g.storm}
-                clusterStrikes={g.clusterStrikes}
-                wasConvictionAt={g.wasConvictionAt}
-                wasConvictionFireCount={g.wasConvictionFireCount}
-                liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}
-              />
-            ))}
+            {/* Post-filter empty state — server returned alerts but every
+                one was hidden by client-side chips (bucket scrub, ghosts,
+                gated, moneyness, takeitFloor, etc.). Without this branch
+                the body renders literal whitespace below the pagination
+                header and the user has no signal that filters caused the
+                blank. */}
+            {groupedByTicker.length === 0 ? (
+              <div
+                className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400"
+                data-testid="silent-boom-all-filtered-empty"
+              >
+                {bucketIso != null
+                  ? `No alerts in this 5-min bucket. Step to a different bucket or click All day.`
+                  : `All ${alerts.length} alert${alerts.length === 1 ? '' : 's'} on this page were hidden by active filter chips. ${
+                      hasMore
+                        ? 'Try Next to skip to the next server page, or'
+                        : 'Try'
+                    } relaxing a filter (TAKE-IT floor, hide-* toggles, moneyness, etc.).`}
+              </div>
+            ) : (
+              groupedByTicker.map((g) => (
+                <SilentBoomTickerGroup
+                  key={g.ticker}
+                  ticker={g.ticker}
+                  alerts={g.items}
+                  expanded={tickerExpandedMap[g.ticker] === true}
+                  onToggle={handleTickerToggle}
+                  marketOpen={marketOpen}
+                  exitPolicy={exitPolicy}
+                  conviction={g.conviction}
+                  storm={g.storm}
+                  clusterStrikes={g.clusterStrikes}
+                  wasConvictionAt={g.wasConvictionAt}
+                  wasConvictionFireCount={g.wasConvictionFireCount}
+                  liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}
+                />
+              ))
+            )}
           </div>
         )}
       </div>
