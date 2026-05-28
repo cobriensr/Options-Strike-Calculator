@@ -36,6 +36,42 @@ import {
 const BUNDLE_REFRESH_TTL_MS = 15 * 60 * 1000;
 const MANIFEST_PATH = 'takeit/latest.json';
 
+const BUNDLE_FETCH_MAX_RETRIES = 2;
+const BUNDLE_FETCH_BACKOFFS_MS = [200, 800];
+
+async function withRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= BUNDLE_FETCH_MAX_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      // Schema errors are deterministic — retrying won't fix them.
+      // Re-throw immediately so the caller's fail-closed path runs.
+      const isSchemaErr =
+        err instanceof BundleSchemaError ||
+        (err instanceof Error && err.name === 'BundleSchemaError');
+      if (isSchemaErr) throw err;
+
+      lastErr = err;
+      if (attempt >= BUNDLE_FETCH_MAX_RETRIES) break;
+      const delay = BUNDLE_FETCH_BACKOFFS_MS[attempt] ?? 1000;
+      Sentry.captureMessage(
+        `takeit-bundle: ${label} attempt ${attempt + 1} failed, retrying`,
+        {
+          level: 'info',
+          tags: { 'takeit.bundle.retry': String(attempt + 1) },
+          extra: { error: String(err) },
+        },
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 // Private Vercel Blob stores: neither `entry.url` nor `entry.downloadUrl`
 // is self-signed — both require a bearer token. The `?download=1` query
 // param on downloadUrl only forces Content-Disposition; it does NOT auth.
@@ -125,7 +161,7 @@ export async function getBundle(
 
   let manifest: ManifestPayload;
   try {
-    manifest = await fetchManifest();
+    manifest = await withRetry('fetchManifest', () => fetchManifest());
   } catch (err) {
     Sentry.captureMessage('takeit.bundle.manifest_fetch_failed', {
       level: 'warning',
@@ -154,7 +190,9 @@ export async function getBundle(
   }
 
   try {
-    const bundle = await fetchBundleByPath(targetPath);
+    const bundle = await withRetry(`fetchBundle:${alertType}`, () =>
+      fetchBundleByPath(targetPath),
+    );
     CACHE[alertType] = { bundle, fetchedAt: Date.now() };
     return bundle;
   } catch (err) {
