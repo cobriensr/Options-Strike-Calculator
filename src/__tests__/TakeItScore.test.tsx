@@ -25,6 +25,11 @@ describe('takeitProbClass', () => {
     expect(takeitProbClass(null)).toContain('neutral');
     expect(takeitProbClass(undefined)).toContain('neutral');
   });
+
+  it('returns neutral when prob is NaN (defense-in-depth)', () => {
+    expect(takeitProbClass(Number.NaN)).toContain('neutral');
+    expect(takeitProbClass(Number.NaN)).not.toMatch(/rose|red/);
+  });
 });
 
 describe('<TakeItScore>', () => {
@@ -43,6 +48,19 @@ describe('<TakeItScore>', () => {
     );
     const chip = screen.getByTestId('takeit-score-chip');
     expect(chip).toHaveTextContent('—');
+    expect(chip.className).toContain('neutral');
+  });
+
+  it('uses the neutral color class when prob is NaN (defense-in-depth)', () => {
+    render(
+      <TakeItScore
+        prob={Number.NaN}
+        topFeatures={{ positive: [], negative: [] }}
+      />,
+    );
+    const chip = screen.getByTestId('takeit-score-chip');
+    // The chip's class string should NOT include rose/red (the < 0.40 band's color)
+    expect(chip.className).not.toMatch(/rose|red/);
     expect(chip.className).toContain('neutral');
   });
 

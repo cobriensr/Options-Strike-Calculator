@@ -14,6 +14,9 @@ export function takeitProbClass(prob: number | null | undefined): string {
   if (prob == null) {
     return 'border-neutral-700 bg-neutral-900 text-neutral-400';
   }
+  if (Number.isNaN(prob)) {
+    return 'border-neutral-700 bg-neutral-900 text-neutral-400';
+  }
   if (prob >= 0.7)
     return 'border-emerald-400/60 bg-emerald-950/50 text-emerald-200';
   if (prob >= 0.55) return 'border-green-500/40 bg-green-950/30 text-green-200';
