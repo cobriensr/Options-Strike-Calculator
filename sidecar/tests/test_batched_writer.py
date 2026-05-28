@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from unittest.mock import MagicMock
 
 # Required env vars for config.py's pydantic-settings validation, even
 # though batched_writer itself doesn't reach config — its imports
@@ -334,3 +335,128 @@ class TestAbstract:
         overriding ``_write`` must fail at construction time."""
         with pytest.raises(TypeError):
             BatchedWriter(batch_size=5)  # type: ignore[abstract]
+
+
+# ---------------------------------------------------------------------------
+# Write-failure re-queue + bounded overflow (Finding A)
+# ---------------------------------------------------------------------------
+
+
+class _FlakyWriter(BatchedWriter[int]):
+    """Subclass whose ``_write`` raises on the first N calls, then succeeds.
+
+    Lets us drive the base class's re-queue contract: rows from a failed
+    write must land on the next successful flush, none lost.
+    """
+
+    def __init__(self, batch_size: int = 5, *, fail_times: int = 1) -> None:
+        super().__init__(batch_size=batch_size)
+        self._fail_times = fail_times
+        self.calls = 0
+        self.writes: list[list[int]] = []
+
+    def _write(self, rows: list[int]) -> None:
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise RuntimeError("simulated Neon SSL drop")
+        self.writes.append(list(rows))
+
+
+class _AlwaysFailWriter(BatchedWriter[int]):
+    """Subclass whose ``_write`` always raises — drives the bounded-buffer
+    overflow-trim path under a persistent DB outage."""
+
+    def __init__(self, batch_size: int = 5, *, max_buffer_size: int | None = None):
+        super().__init__(batch_size=batch_size, max_buffer_size=max_buffer_size)
+
+    def _write(self, rows: list[int]) -> None:
+        raise RuntimeError("persistent outage")
+
+
+class TestWriteFailureRequeue:
+    def test_transient_failure_rows_retried_on_next_flush(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ``_write`` that raises once then succeeds must not lose rows —
+        the failed batch is re-queued to the FRONT and lands on the next
+        flush."""
+        import batched_writer
+
+        monkeypatch.setattr(batched_writer, "_capture_exception", MagicMock())
+
+        w = _FlakyWriter(batch_size=3, fail_times=1)
+        # First three items trigger an auto-flush that raises → re-queued.
+        for i in range(3):
+            w.add(i)
+        assert w.writes == []  # nothing landed yet
+        assert w._buffer == [0, 1, 2]  # re-queued for retry
+
+        # A manual flush retries; the second _write call succeeds.
+        w.flush()
+        assert w.writes == [[0, 1, 2]]
+        assert w._buffer == []
+
+    def test_failure_fires_capture_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A write failure must be captured to Sentry centrally."""
+        import batched_writer
+
+        cap = MagicMock()
+        monkeypatch.setattr(batched_writer, "_capture_exception", cap)
+
+        w = _FlakyWriter(batch_size=2, fail_times=1)
+        w.add(1)
+        w.add(2)  # triggers the failing write
+        cap.assert_called_once()
+        # The captured exception is the one _write raised.
+        assert isinstance(cap.call_args[0][0], RuntimeError)
+
+    def test_requeued_rows_preserve_order_at_front(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Failed rows are re-prepended; newly-added rows go behind them."""
+        import batched_writer
+
+        monkeypatch.setattr(batched_writer, "_capture_exception", MagicMock())
+
+        w = _FlakyWriter(batch_size=3, fail_times=1)
+        for i in range(3):
+            w.add(i)  # 0,1,2 fail and re-queue to front
+        w.add(9)  # appended behind the re-queued batch
+        w.flush()
+        assert w.writes == [[0, 1, 2, 9]]
+
+
+class TestBoundedBuffer:
+    def test_persistent_failure_trims_oldest_overflow(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Under a persistent outage, the buffer must be bounded at
+        ``max_buffer_size``; the OLDEST overflow is dropped (not silently)."""
+        import batched_writer
+
+        cap_exc = MagicMock()
+        cap_msg = MagicMock()
+        monkeypatch.setattr(batched_writer, "_capture_exception", cap_exc)
+        monkeypatch.setattr(batched_writer, "_capture_message", cap_msg)
+
+        # batch_size=2 auto-flushes every 2 adds; cap at 4 rows total.
+        w = _AlwaysFailWriter(batch_size=2, max_buffer_size=4)
+        for i in range(10):
+            w.add(i)
+
+        # Buffer is capped at max_buffer_size; oldest rows dropped.
+        assert len(w._buffer) <= 4
+        # The newest rows survive (drop is from the front/oldest).
+        assert w._buffer[-1] == 9
+        # The overflow drop was reported, not silent.
+        assert cap_msg.called
+        assert cap_exc.called
+
+    def test_default_max_buffer_size(self) -> None:
+        """Default cap is ``max(batch_size*10, 1000)``."""
+        w = _AlwaysFailWriter(batch_size=500)
+        assert w._max_buffer_size == 5000
+        w2 = _AlwaysFailWriter(batch_size=10)
+        assert w2._max_buffer_size == 1000

@@ -47,7 +47,6 @@ from typing import Any
 from batched_writer import BatchedWriter
 from db import batch_insert_top_of_book, batch_insert_trade_ticks
 from logger_setup import log
-from sentry_setup import capture_exception
 
 # Batch size for DB inserts. Matches the 500-row ``page_size`` used by
 # ``batch_insert_options_trades``. TBBO on active ES sessions can emit
@@ -241,12 +240,11 @@ class _TopOfBookWriter(BatchedWriter[TopOfBookRow]):
         super().__init__(batch_size=BATCH_SIZE, thread_name="quote-tob-flush")
 
     def _write(self, rows: list[TopOfBookRow]) -> None:
+        # Raise on failure: BatchedWriter._write_or_requeue captures the
+        # exception centrally and re-queues these rows (bounded) for the
+        # next flush. Do NOT swallow here.
         tuples = [(r.symbol, r.ts, r.bid, r.bid_size, r.ask, r.ask_size) for r in rows]
-        try:
-            batch_insert_top_of_book(tuples)
-        except Exception as exc:
-            log.error("Failed to batch insert top-of-book: %s", exc)
-            capture_exception(exc, context={"rows": len(tuples)})
+        batch_insert_top_of_book(tuples)
 
 
 class _TradeTickWriter(BatchedWriter[TradeTickRow]):
@@ -254,12 +252,10 @@ class _TradeTickWriter(BatchedWriter[TradeTickRow]):
         super().__init__(batch_size=BATCH_SIZE, thread_name="quote-trade-flush")
 
     def _write(self, rows: list[TradeTickRow]) -> None:
+        # Raise on failure — see _TopOfBookWriter._write. The base class
+        # captures + re-queues; swallowing here would defeat the retry.
         tuples = [(r.symbol, r.ts, r.price, r.size, r.aggressor_side) for r in rows]
-        try:
-            batch_insert_trade_ticks(tuples)
-        except Exception as exc:
-            log.error("Failed to batch insert trade ticks: %s", exc)
-            capture_exception(exc, context={"rows": len(tuples)})
+        batch_insert_trade_ticks(tuples)
 
 
 class QuoteProcessor:
@@ -313,10 +309,22 @@ class QuoteProcessor:
             self._trade_writer.add(trade)
 
     def flush(self) -> None:
-        """Force flush both buffers. Called on shutdown.
+        """Force flush both buffers.
 
         Each inner BatchedWriter swaps its own buffer under its own
         lock, then writes outside it (same pattern as ``process_tbbo``).
         """
         self._tob_writer.flush()
         self._trade_writer.flush()
+
+    def stop(self) -> None:
+        """Stop both inner writers (final flush each). Called on shutdown.
+
+        Neither inner writer runs a background thread, so
+        :meth:`BatchedWriter.stop` here simply performs a final flush on
+        each buffer. Exposed so ``main.shutdown()`` can drain buffered
+        rows before the DB pool is torn down — mirrors
+        :meth:`TradeProcessor.stop` (inherited from BatchedWriter).
+        """
+        self._tob_writer.stop()
+        self._trade_writer.stop()

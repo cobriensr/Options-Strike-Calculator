@@ -39,8 +39,16 @@ from quote_processor import QuoteProcessor
 from sentry_setup import capture_exception, init_sentry
 from trade_processor import TradeProcessor
 
+# A reconnect that survives at least this long is treated as a "healthy"
+# session and resets the backoff to 1.0s. Shorter sessions are flaps:
+# the backoff keeps escalating so we don't hammer Databento in a tight
+# reconnect loop.
+MIN_HEALTHY_SESSION_S = 60.0
+
 # Global references for shutdown
 _client: DatabentoClient | None = None
+_trade_processor: TradeProcessor | None = None
+_quote_processor: QuoteProcessor | None = None
 _shutting_down = False
 
 
@@ -63,6 +71,16 @@ def shutdown(signum: int, frame: object) -> None:
 
     # Stop the Theta Terminal subprocess. No-op when Theta was never started.
     theta_launcher.shutdown()
+
+    # Flush + stop the data processors BEFORE draining the pool. Their
+    # background flush thread is a daemon and would be killed with rows
+    # still buffered; stop() joins the thread and performs a final flush
+    # so buffered trades/quotes land in Neon before the pool closes.
+    # Guarded for None — shutdown can fire before main() created them.
+    if _trade_processor is not None:
+        _trade_processor.stop()
+    if _quote_processor is not None:
+        _quote_processor.stop()
 
     # Give pending writes a moment to complete
     time.sleep(1)
@@ -120,10 +138,15 @@ def main() -> None:
     # Verify database connection
     verify_connection()
 
-    # Initialize components
+    # Initialize components. Promote to module globals so shutdown() can
+    # flush their buffered rows before the DB pool is drained — they are
+    # daemon-backed and would otherwise be killed mid-buffer on SIGTERM.
+    global _trade_processor, _quote_processor
     trade_processor = TradeProcessor()
     trade_processor.start_background_flush()
     quote_processor = QuoteProcessor()
+    _trade_processor = trade_processor
+    _quote_processor = quote_processor
 
     # Create the Databento client
     _client = DatabentoClient(
@@ -186,7 +209,9 @@ def connect_with_retry(client: DatabentoClient) -> None:
 
             # Block until the connection closes (reconnection is handled
             # internally by the SDK with ReconnectPolicy.RECONNECT)
+            session_start = time.monotonic()
             client.block_for_close()
+            session_dur = time.monotonic() - session_start
 
             # If we get here, the client exited cleanly or lost connection
             # permanently. The SDK's reconnect policy handles transient failures.
@@ -196,7 +221,13 @@ def connect_with_retry(client: DatabentoClient) -> None:
             log.warning("Databento client exited, will retry")
             # Clean up old client state before restarting
             client.stop()
-            backoff = 1.0  # Reset backoff on clean exit
+            # Only reset backoff if the session lasted long enough to be
+            # "healthy". A session that returns near-instantly is a flap —
+            # resetting to 1.0s there would reconnect in a tight loop
+            # forever with no escalation. Leaving backoff alone lets the
+            # min(backoff*2, max_backoff) below keep escalating.
+            if session_dur >= MIN_HEALTHY_SESSION_S:
+                backoff = 1.0
 
         except KeyboardInterrupt:
             break

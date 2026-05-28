@@ -28,7 +28,6 @@ from decimal import Decimal
 
 from batched_writer import BatchedWriter
 from db import batch_insert_options_trades
-from logger_setup import log
 from session_calendar import cme_session_date
 
 # Trades are flushed (a) when the buffer reaches BATCH_SIZE, (b) by the
@@ -127,10 +126,11 @@ class TradeProcessor(BatchedWriter[TradeRecord]):
     def _write(self, rows: list[TradeRecord]) -> None:
         """Materialize TradeRecord dataclasses into tuples and batch-insert.
 
-        Errors are caught and logged here so a transient Neon hiccup
-        doesn't tear down the Databento callback thread. The base class
-        does NOT retry — buffered rows that hit a write failure are
-        discarded.
+        Raises on a DB write failure: the base class
+        (:meth:`BatchedWriter._write_or_requeue`) captures the exception
+        to Sentry and re-queues these rows for the next flush, so a
+        transient Neon hiccup no longer discards buffered trades. Do NOT
+        catch here — that would defeat the bounded re-queue.
         """
         tuples = [
             (
@@ -147,10 +147,7 @@ class TradeProcessor(BatchedWriter[TradeRecord]):
             for r in rows
         ]
 
-        try:
-            batch_insert_options_trades(tuples)
-        except Exception as exc:
-            log.error("Failed to batch insert trades: %s", exc)
+        batch_insert_options_trades(tuples)
 
     # ------------------------------------------------------------------
     # Convenience wrapper preserving the no-arg start_background_flush()

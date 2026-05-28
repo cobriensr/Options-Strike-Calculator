@@ -237,6 +237,8 @@ def shutdown_fixtures(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     flag so each test starts from a clean slate."""
     monkeypatch.setattr(main, "_shutting_down", False)
     monkeypatch.setattr(main, "_client", None)
+    monkeypatch.setattr(main, "_trade_processor", None)
+    monkeypatch.setattr(main, "_quote_processor", None)
 
     mocks = {
         "theta_fetcher_stop": MagicMock(),
@@ -291,6 +293,56 @@ def test_shutdown_stops_client_when_present(
         main.shutdown(_signal.SIGINT, None)
 
     fake_client.stop.assert_called_once()
+    shutdown_fixtures["drain_pool"].assert_called_once()
+
+
+def test_shutdown_flushes_processors_before_draining_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    shutdown_fixtures: dict[str, MagicMock],
+) -> None:
+    """shutdown() must stop (final-flush) the trade + quote processors
+    BEFORE draining the DB pool, so buffered rows land in Neon before the
+    pool closes. Pre-fix the processors were main()-locals and the daemon
+    flush thread was killed with rows still buffered."""
+    call_order: list[str] = []
+
+    trade_proc = MagicMock()
+    trade_proc.stop.side_effect = lambda: call_order.append("trade_stop")
+    quote_proc = MagicMock()
+    quote_proc.stop.side_effect = lambda: call_order.append("quote_stop")
+    shutdown_fixtures["drain_pool"].side_effect = lambda: call_order.append("drain")
+
+    monkeypatch.setattr(main, "_trade_processor", trade_proc)
+    monkeypatch.setattr(main, "_quote_processor", quote_proc)
+
+    import signal as _signal
+
+    with pytest.raises(SystemExit):
+        main.shutdown(_signal.SIGTERM, None)
+
+    trade_proc.stop.assert_called_once()
+    quote_proc.stop.assert_called_once()
+    shutdown_fixtures["drain_pool"].assert_called_once()
+    # Both processor flushes must precede the pool drain.
+    assert call_order.index("trade_stop") < call_order.index("drain")
+    assert call_order.index("quote_stop") < call_order.index("drain")
+
+
+def test_shutdown_handles_missing_processors(
+    shutdown_fixtures: dict[str, MagicMock],
+) -> None:
+    """shutdown() must not crash when the processors were never created
+    (signal fired before main() initialized them). The fixture leaves
+    _trade_processor / _quote_processor at their module defaults."""
+    import signal as _signal
+
+    # Ensure the globals are None (a prior test may have set them).
+    main._trade_processor = None
+    main._quote_processor = None
+
+    with pytest.raises(SystemExit):
+        main.shutdown(_signal.SIGTERM, None)
+
     shutdown_fixtures["drain_pool"].assert_called_once()
 
 
@@ -376,6 +428,73 @@ def test_connect_with_retry_reconnects_after_clean_exit(
     client.block_for_close.assert_called_once()
     client.stop.assert_called_once()
     # Backoff reset to 1.0 means first sleep is 1.0s.
+    assert sleep_calls == [1.0]
+
+    monkeypatch.setattr(main, "_shutting_down", False)
+
+
+def test_connect_with_retry_escalates_backoff_on_flapping_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two near-instant clean returns (a flapping session) must NOT reset
+    backoff to 1.0 each time — the second reconnect sleep must escalate.
+
+    Pre-fix: backoff was unconditionally reset to 1.0 after every clean
+    block_for_close(), so an instant flap reconnected at ~1s forever.
+    Post-fix: a session shorter than MIN_HEALTHY_SESSION_S leaves backoff
+    escalating via min(backoff*2, max_backoff).
+    """
+    monkeypatch.setattr(main, "_shutting_down", False)
+    # monotonic() is read once before and once after each block_for_close;
+    # equal pairs → session_dur == 0 → flap (no reset).
+    monkeypatch.setattr(main.time, "monotonic", lambda: 100.0)
+
+    sleep_calls: list[float] = []
+
+    def _fake_sleep(s: float) -> None:
+        sleep_calls.append(s)
+        if len(sleep_calls) >= 2:
+            main._shutting_down = True
+
+    monkeypatch.setattr(main.time, "sleep", _fake_sleep)
+
+    client = MagicMock()
+    client.block_for_close.return_value = None  # always a clean instant return
+
+    main.connect_with_retry(client)
+
+    # First sleep at 1.0 (initial backoff), second escalated to 2.0
+    # because the flapping session did not reset it.
+    assert sleep_calls == [1.0, 2.0]
+
+    monkeypatch.setattr(main, "_shutting_down", False)
+
+
+def test_connect_with_retry_resets_backoff_on_healthy_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A session lasting >= MIN_HEALTHY_SESSION_S resets backoff to 1.0."""
+    monkeypatch.setattr(main, "_shutting_down", False)
+
+    # First session: long (healthy) → reset. Provide a monotonic sequence
+    # where the post-block read is +120s from the pre-block read.
+    times = iter([0.0, 120.0, 200.0, 200.0])
+    monkeypatch.setattr(main.time, "monotonic", lambda: next(times))
+
+    sleep_calls: list[float] = []
+
+    def _fake_sleep(s: float) -> None:
+        sleep_calls.append(s)
+        main._shutting_down = True
+
+    monkeypatch.setattr(main.time, "sleep", _fake_sleep)
+
+    client = MagicMock()
+    client.block_for_close.return_value = None
+
+    main.connect_with_retry(client)
+
+    # Healthy session keeps backoff at 1.0 for the (single) reconnect sleep.
     assert sleep_calls == [1.0]
 
     monkeypatch.setattr(main, "_shutting_down", False)

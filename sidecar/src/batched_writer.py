@@ -22,17 +22,59 @@ The time-based background flush is opt-in via
 ``start_background_flush(interval_s)`` — only ``trade_processor`` uses
 it. ``quote_processor`` flushes purely on size + shutdown because TBBO
 volume reliably reaches BATCH_SIZE in seconds.
+
+**Write-failure contract — bounded re-queue (NOT discard).** A DB write
+that raises (e.g. a transient Neon SSL drop) does NOT lose its rows. The
+base class catches the exception in ``add()`` / ``flush()``, captures it
+to Sentry centrally, and re-prepends the failed rows to the FRONT of the
+buffer so the next flush retries them. To bound memory under a
+*persistent* outage, the buffer is capped at ``max_buffer_size``; on
+overflow the OLDEST rows are trimmed and the drop count is reported
+(``capture_message`` + ``log.warning``) — never silently. Subclass
+``_write`` implementations therefore RAISE on failure and leave capture +
+re-queue to the base class.
 """
 
 from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from logger_setup import log
 
 T = TypeVar("T")
+
+
+def _capture_exception(exc: BaseException, *, context: dict[str, Any]) -> None:
+    """Forward a write failure to Sentry, guarded + lazy.
+
+    Mirrors db.py's lazy-import pattern so unit tests that don't install
+    ``sentry_sdk`` (or don't want Sentry wired) still import + run. A
+    failure in the Sentry path must never mask the original write error
+    or block the re-queue.
+    """
+    try:
+        from sentry_setup import capture_exception
+
+        capture_exception(exc, context=context, tags={"component": "batched_writer"})
+    except Exception:  # noqa: BLE001
+        log.error("batched_writer write failed: %s (context=%s)", exc, context)
+
+
+def _capture_message(message: str, *, context: dict[str, Any]) -> None:
+    """Forward a non-exception event (overflow drop) to Sentry, guarded."""
+    try:
+        from sentry_setup import capture_message
+
+        capture_message(
+            message,
+            level="warning",
+            context=context,
+            tags={"component": "batched_writer"},
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("%s (context=%s)", message, context)
 
 
 class BatchedWriter(ABC, Generic[T]):
@@ -48,6 +90,10 @@ class BatchedWriter(ABC, Generic[T]):
         thread_name: Name applied to the background flush thread, if
             one is started. Aids debugging in thread dumps. Defaults
             to ``"batched-writer-flush"``.
+        max_buffer_size: Upper bound on buffered rows. On a persistent
+            write failure the re-queue would grow without limit, so the
+            OLDEST overflow is trimmed once the buffer exceeds this cap.
+            Defaults to ``max(batch_size * 10, 1000)``.
     """
 
     def __init__(
@@ -55,10 +101,16 @@ class BatchedWriter(ABC, Generic[T]):
         batch_size: int,
         *,
         thread_name: str = "batched-writer-flush",
+        max_buffer_size: int | None = None,
     ) -> None:
         self._buffer: list[T] = []
         self._lock = threading.Lock()
         self._batch_size = batch_size
+        self._max_buffer_size = (
+            max_buffer_size
+            if max_buffer_size is not None
+            else max(batch_size * 10, 1000)
+        )
         self._thread_name = thread_name
         self._stop_event = threading.Event()
         self._flush_thread: threading.Thread | None = None
@@ -83,20 +135,21 @@ class BatchedWriter(ABC, Generic[T]):
                 to_write = self._buffer
                 self._buffer = []
         if to_write:
-            self._write(to_write)
+            self._write_or_requeue(to_write)
 
     def flush(self) -> None:
         """Force-flush the buffer.
 
         Same lock-swap-release-write pattern as :meth:`add`: the DB
         write happens after the lock has been released. Safe to call
-        when the buffer is empty (no-op).
+        when the buffer is empty (no-op). On write failure the rows are
+        re-queued (see :meth:`_write_or_requeue`).
         """
         with self._lock:
             to_write = self._buffer
             self._buffer = []
         if to_write:
-            self._write(to_write)
+            self._write_or_requeue(to_write)
 
     def start_background_flush(self, interval_s: float) -> None:
         """Start a daemon thread that calls ``flush()`` every ``interval_s``.
@@ -141,6 +194,50 @@ class BatchedWriter(ABC, Generic[T]):
         self.flush()
 
     # ------------------------------------------------------------------
+    # Internal: write with bounded re-queue on failure
+    # ------------------------------------------------------------------
+
+    def _write_or_requeue(self, to_write: list[T]) -> None:
+        """Call :meth:`_write`; on failure, capture + bounded re-queue.
+
+        Runs OUTSIDE ``self._lock`` (the caller already swapped the
+        buffer). On a DB write failure:
+
+        1. The exception is captured to Sentry centrally (so every
+           subclass gets reporting without duplicating the call site).
+        2. The failed rows are re-prepended to the FRONT of the buffer
+           under the lock, so the next flush retries them in order
+           ahead of any rows that arrived in the meantime.
+        3. If the buffer now exceeds ``max_buffer_size`` (persistent
+           outage), the OLDEST overflow is trimmed and the drop count
+           is reported — never silently discarded.
+        """
+        # Bounded re-queue on failure — this catch is intentional, not a
+        # swallow: the rows are captured + re-buffered, not discarded.
+        try:
+            self._write(to_write)
+        except Exception as exc:  # noqa: BLE001
+            _capture_exception(exc, context={"rows": len(to_write)})
+            dropped = 0
+            with self._lock:
+                self._buffer = to_write + self._buffer
+                overflow = len(self._buffer) - self._max_buffer_size
+                if overflow > 0:
+                    # Trim the OLDEST rows (front) — newest data is the
+                    # most relevant to downstream consumers.
+                    self._buffer = self._buffer[overflow:]
+                    dropped = overflow
+            if dropped:
+                _capture_message(
+                    "batched_writer buffer overflow — dropped oldest rows",
+                    context={
+                        "dropped": dropped,
+                        "max_buffer_size": self._max_buffer_size,
+                        "writer": self.__class__.__name__,
+                    },
+                )
+
+    # ------------------------------------------------------------------
     # Subclass hook
     # ------------------------------------------------------------------
 
@@ -149,12 +246,11 @@ class BatchedWriter(ABC, Generic[T]):
         """Persist ``rows`` to the database.
 
         Called OUTSIDE ``self._lock`` with a non-empty list. Subclasses
-        are responsible for their own error handling — exceptions raised
-        here will propagate up to the caller of :meth:`add` /
-        :meth:`flush`. The base class does not retry, does not
-        re-buffer rows on failure, and does not capture exceptions to
-        Sentry; subclasses that want any of those behaviors must
-        implement them in ``_write``.
+        must RAISE on a DB write failure rather than swallowing it: the
+        base class catches the exception in :meth:`_write_or_requeue`,
+        captures it to Sentry centrally, and re-queues the failed rows
+        (bounded by ``max_buffer_size``) for the next flush. Do NOT
+        catch-and-log inside ``_write`` — that would defeat the retry.
         """
 
     # ------------------------------------------------------------------
