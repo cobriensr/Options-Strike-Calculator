@@ -737,6 +737,9 @@ export function LotteryFinderSection({
         peakPct: f.outcomes.peakCeilingPct,
         triggerMs: Number.isFinite(triggerMs) ? triggerMs : 0,
         rollupSummary,
+        clusterStrikeCount: f.suspiciousCluster
+          ? (f.clusterStrikeCount ?? 0)
+          : 0,
       };
     },
   });
@@ -1520,6 +1523,7 @@ export function LotteryFinderSection({
                 exitPolicy={exitPolicy}
                 conviction={g.conviction}
                 storm={g.storm}
+                clusterStrikes={g.clusterStrikes}
                 wasConvictionAt={g.wasConvictionAt}
                 wasConvictionFireCount={g.wasConvictionFireCount}
                 liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}

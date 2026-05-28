@@ -521,19 +521,16 @@ describe('SilentBoomTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('renders the cluster badge when at least one alert has suspiciousCluster=true', () => {
+    it('renders the cluster badge when clusterStrikes >= 3', () => {
+      // Cluster state is now computed upstream by `useTickerGrouping`
+      // against the UNFILTERED day-scoped set and pushed in as a prop,
+      // mirroring conviction/storm. Component test asserts the badge
+      // wiring; the per-ticker reduction is covered in
+      // useTickerGrouping.test.ts.
       const alerts = [
         makeAlert({
           optionChainId: 'AMZN260520C00220000',
           underlyingSymbol: 'AMZN',
-          suspiciousCluster: true,
-          clusterStrikeCount: 4,
-        }),
-        makeAlert({
-          optionChainId: 'AMZN260520C00225000',
-          underlyingSymbol: 'AMZN',
-          strike: 225,
-          suspiciousCluster: false,
         }),
       ];
       render(
@@ -544,6 +541,7 @@ describe('SilentBoomTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
+          clusterStrikes={4}
         />,
       );
       expect(
@@ -551,17 +549,11 @@ describe('SilentBoomTickerGroup', () => {
       ).toHaveTextContent('OTM SWEEP ×4');
     });
 
-    it('omits the cluster badge when no alerts have suspiciousCluster=true', () => {
+    it('omits the cluster badge when clusterStrikes is 0', () => {
       const alerts = [
         makeAlert({
           optionChainId: 'AMZN260520C00220000',
           underlyingSymbol: 'AMZN',
-          suspiciousCluster: false,
-        }),
-        makeAlert({
-          optionChainId: 'AMZN260520C00225000',
-          underlyingSymbol: 'AMZN',
-          strike: 225,
         }),
       ];
       render(
@@ -572,6 +564,7 @@ describe('SilentBoomTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
+          clusterStrikes={0}
         />,
       );
       expect(
@@ -579,13 +572,34 @@ describe('SilentBoomTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('omits the cluster badge when clusterStrikeCount is below 3', () => {
+    it('omits the cluster badge when clusterStrikes is below the 3 threshold', () => {
       const alerts = [
         makeAlert({
           optionChainId: 'AMZN260520C00220000',
           underlyingSymbol: 'AMZN',
-          suspiciousCluster: true,
-          clusterStrikeCount: 2,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="AMZN"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          clusterStrikes={2}
+        />,
+      );
+      expect(
+        screen.queryByTestId('silent-boom-ticker-cluster-AMZN'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('omits the cluster badge when clusterStrikes prop is omitted (back-compat default 0)', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'AMZN260520C00220000',
+          underlyingSymbol: 'AMZN',
         }),
       ];
       render(

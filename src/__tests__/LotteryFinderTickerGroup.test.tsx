@@ -920,19 +920,16 @@ describe('LotteryFinderTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('renders the cluster badge when at least one fire has suspiciousCluster=true', () => {
+    it('renders the cluster badge when clusterStrikes >= 3', () => {
+      // Cluster state is now computed upstream by `useTickerGrouping`
+      // against the UNFILTERED day-scoped set and pushed in as a prop,
+      // mirroring conviction/storm. Component test asserts the badge
+      // wiring; the per-ticker reduction is covered in
+      // useTickerGrouping.test.ts.
       const fires = [
         makeFire({
           optionChainId: 'META260520C00600000',
           underlyingSymbol: 'META',
-          suspiciousCluster: true,
-          clusterStrikeCount: 3,
-        }),
-        makeFire({
-          optionChainId: 'META260520C00610000',
-          underlyingSymbol: 'META',
-          strike: 610,
-          suspiciousCluster: false,
         }),
       ];
       render(
@@ -943,6 +940,7 @@ describe('LotteryFinderTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
+          clusterStrikes={3}
         />,
       );
       expect(
@@ -950,17 +948,11 @@ describe('LotteryFinderTickerGroup', () => {
       ).toHaveTextContent('OTM SWEEP ×3');
     });
 
-    it('omits the cluster badge when no fires have suspiciousCluster=true', () => {
+    it('omits the cluster badge when clusterStrikes is 0', () => {
       const fires = [
         makeFire({
           optionChainId: 'META260520C00600000',
           underlyingSymbol: 'META',
-          suspiciousCluster: false,
-        }),
-        makeFire({
-          optionChainId: 'META260520C00610000',
-          underlyingSymbol: 'META',
-          strike: 610,
         }),
       ];
       render(
@@ -971,6 +963,7 @@ describe('LotteryFinderTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
+          clusterStrikes={0}
         />,
       );
       expect(
@@ -978,13 +971,34 @@ describe('LotteryFinderTickerGroup', () => {
       ).not.toBeInTheDocument();
     });
 
-    it('omits the cluster badge when clusterStrikeCount is below 3', () => {
+    it('omits the cluster badge when clusterStrikes is below the 3 threshold', () => {
       const fires = [
         makeFire({
           optionChainId: 'META260520C00600000',
           underlyingSymbol: 'META',
-          suspiciousCluster: true,
-          clusterStrikeCount: 2,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="META"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          clusterStrikes={2}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-ticker-cluster-META'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('omits the cluster badge when clusterStrikes prop is omitted (back-compat default 0)', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'META260520C00600000',
+          underlyingSymbol: 'META',
         }),
       ];
       render(

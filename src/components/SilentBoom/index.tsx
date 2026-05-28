@@ -785,6 +785,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
         peakPct: a.outcomes.peakCeilingPct,
         triggerMs: Number.isFinite(triggerMs) ? triggerMs : 0,
         rollupSummary,
+        clusterStrikeCount: a.suspiciousCluster
+          ? (a.clusterStrikeCount ?? 0)
+          : 0,
       };
     },
   });
@@ -1578,6 +1581,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 exitPolicy={exitPolicy}
                 conviction={g.conviction}
                 storm={g.storm}
+                clusterStrikes={g.clusterStrikes}
                 wasConvictionAt={g.wasConvictionAt}
                 wasConvictionFireCount={g.wasConvictionFireCount}
                 liveFlowSnapshot={tickerFlowSnapshots.get(g.ticker) ?? null}

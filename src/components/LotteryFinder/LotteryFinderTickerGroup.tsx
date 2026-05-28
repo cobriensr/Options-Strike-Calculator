@@ -72,6 +72,15 @@ interface LotteryFinderTickerGroupProps {
   conviction?: boolean;
   storm?: boolean;
   /**
+   * Highest OTM-sweep cluster-strike count for this ticker, computed
+   * upstream by `useTickerGrouping` against the UNFILTERED full-day
+   * fire set (same pattern as `conviction`/`storm`). The violet 🎰
+   * OTM SWEEP badge renders when this is ≥ 3. Defaults to 0 (no
+   * badge) when omitted — keeps existing test fixtures + future call
+   * sites simple.
+   */
+  clusterStrikes?: number;
+  /**
    * Past-tense "was conviction" surface: epoch ms of the first fire
    * in the earliest qualifying 15-min window today. When present and
    * `conviction === false`, the component renders a small "was ✦
@@ -168,6 +177,7 @@ function LotteryFinderTickerGroupBase({
   exitPolicy,
   conviction = false,
   storm = false,
+  clusterStrikes = 0,
   wasConvictionAt = null,
   wasConvictionFireCount = 0,
   liveFlowSnapshot,
@@ -221,19 +231,6 @@ function LotteryFinderTickerGroupBase({
   // hook's `unfilteredItems` option for the source of truth.
   const showConvictionBadge = conviction;
   const showStormBadge = storm;
-
-  // OTM-sweep cluster badge — derived from the fires array directly.
-  // clusterStrikes = highest clusterStrikeCount among all cluster fires.
-  // Guard against empty array: Math.max(...[]) = -Infinity.
-  const clusterStrikes =
-    fires.length === 0
-      ? 0
-      : Math.max(
-          0,
-          ...fires.map((f) =>
-            f.suspiciousCluster ? (f.clusterStrikeCount ?? 0) : 0,
-          ),
-        );
   const showClusterBadge = clusterStrikes >= 3;
 
   const strikesWithSpread =

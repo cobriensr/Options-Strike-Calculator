@@ -495,6 +495,97 @@ describe('useTickerGrouping', () => {
     });
   });
 
+  describe('clusterStrikes upstream reduction', () => {
+    // Cluster-badge state is computed upstream against the UNFILTERED
+    // set so filter chips that hide individual rows (e.g. the TAKE-IT
+    // floor) can't silently erase the violet 🎰 OTM SWEEP badge on a
+    // ticker whose cluster members all fall below the floor. Mirrors
+    // the conviction/storm upstream-computation pattern.
+
+    function extractWithCluster(
+      item: Fix,
+      clusterStrikeCount: number,
+    ): TickerGroupingExtract {
+      return { ...extract(item), clusterStrikeCount };
+    }
+
+    it('reduces clusterStrikes to the per-ticker max across the unfiltered set', () => {
+      const items = [
+        fix({ ticker: 'META', ms: 1 }),
+        fix({ ticker: 'META', ms: 2 }),
+        fix({ ticker: 'META', ms: 3 }),
+      ];
+      const counts = [3, 5, 2];
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items,
+          unfilteredItems: items,
+          sortMode: 'default',
+          extract: (item) => extractWithCluster(item, counts[items.indexOf(item)] ?? 0),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      expect(result.current[0]?.clusterStrikes).toBe(5);
+    });
+
+    it('keeps clusterStrikes from the UNFILTERED set when the displayed subset is filtered down', () => {
+      // Real-world flow: TAKE-IT floor hides the only cluster member
+      // (count=4) from the visible page but the underlying ticker is
+      // still genuinely a clustered sweep. Badge must survive.
+      const fullItems = [
+        fix({ ticker: 'META', ms: 1 }), // cluster member
+        fix({ ticker: 'META', ms: 2 }), // non-cluster
+        fix({ ticker: 'META', ms: 3 }), // non-cluster
+      ];
+      const counts = [4, 0, 0];
+      const filtered = fullItems.slice(1); // drops the cluster member
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items: filtered,
+          unfilteredItems: fullItems,
+          sortMode: 'default',
+          extract: (item) =>
+            extractWithCluster(item, counts[fullItems.indexOf(item)] ?? 0),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      expect(result.current[0]?.clusterStrikes).toBe(4);
+    });
+
+    it('falls back to the filtered set when unfilteredItems is omitted (back-compat)', () => {
+      const items = [fix({ ticker: 'META', ms: 1 })];
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items,
+          // unfilteredItems intentionally omitted
+          sortMode: 'default',
+          extract: (item) => extractWithCluster(item, 3),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      expect(result.current[0]?.clusterStrikes).toBe(3);
+    });
+
+    it('returns 0 when no items carry a clusterStrikeCount projection', () => {
+      const items = [
+        fix({ ticker: 'META', ms: 1 }),
+        fix({ ticker: 'META', ms: 2 }),
+      ];
+      const { result } = renderHook(() =>
+        useTickerGrouping({
+          items,
+          unfilteredItems: items,
+          sortMode: 'default',
+          // extract omits clusterStrikeCount entirely — equivalent to
+          // an item that simply isn't part of a cluster.
+          extract: (item) => extract(item),
+          stormIntensityThreshold: 5,
+        }),
+      );
+      expect(result.current[0]?.clusterStrikes).toBe(0);
+    });
+  });
+
   describe('stable extract identity is not required', () => {
     it('does not rerun the memo when extract changes ref but items/sortMode stay', () => {
       // Without the extractRef trick, a new `extract` ref each render

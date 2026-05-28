@@ -35,6 +35,16 @@ export interface TickerGroupingExtract {
   triggerMs: number;
   /** Rollup summary fed into computeRollupAggregates. */
   rollupSummary: RollupAlertSummary;
+  /**
+   * Distinct OTM-sweep cluster-strike count attached to this item by
+   * the backend, or 0 when the item isn't part of a suspicious cluster.
+   * Reduced to a per-ticker max so the `clusterStrikes` flag on the
+   * returned group reflects the highest cluster size seen across the
+   * UNFILTERED day-scoped set — mirroring the conviction/storm
+   * upstream-computation pattern so chip filters can't silently erase
+   * the badge once cluster members fall below a TAKE-IT floor.
+   */
+  clusterStrikeCount?: number;
 }
 
 export interface TickerGroup<T> {
@@ -60,6 +70,14 @@ export interface TickerGroup<T> {
    * tooltip.
    */
   wasConvictionFireCount: number;
+  /**
+   * Highest OTM-sweep cluster-strike count across this ticker — derived
+   * from the UNFILTERED set when `unfilteredItems` is provided, falling
+   * back to the filtered set otherwise. Drives the violet 🎰 OTM SWEEP
+   * badge on the group header (rendered at ≥ 3). 0 when no item in the
+   * ticker carries a cluster mark.
+   */
+  clusterStrikes: number;
 }
 
 /**
@@ -131,6 +149,7 @@ export function useTickerGrouping<T>(
         storm: boolean;
         wasConvictionAt: number | null;
         wasConvictionFireCount: number;
+        clusterStrikes: number;
       }
     >();
     if (unfilteredItems) {
@@ -149,11 +168,19 @@ export function useTickerGrouping<T>(
         const window = findEarliestConvictionWindow(
           summaries.map((s) => s.rollupSummary),
         );
+        // Reduce-with-0-seed matches the peakBest pattern below and
+        // handles the empty-list case naturally (no need for a
+        // Math.max-spread + empty guard).
+        const clusterStrikes = summaries.reduce(
+          (max, s) => Math.max(max, s.clusterStrikeCount ?? 0),
+          0,
+        );
         unfilteredFlags.set(ticker, {
           conviction: isHighConviction(agg, list.length),
           storm: isBurstStorm(agg, list.length, stormIntensityThreshold),
           wasConvictionAt: window?.firstFireMs ?? null,
           wasConvictionFireCount: window?.fireCount ?? 0,
+          clusterStrikes,
         });
       }
     }
@@ -187,6 +214,14 @@ export function useTickerGrouping<T>(
           Number.isFinite(s.triggerMs) && s.triggerMs > max ? s.triggerMs : max,
         0,
       );
+      // Back-compat fallback: when unfilteredItems is omitted, fall
+      // back to the filtered subset (same shape as conviction/storm
+      // back-compat). Uses the same reduce-with-0-seed pattern as the
+      // unfiltered branch.
+      const filteredClusterStrikes = summaries.reduce(
+        (max, s) => Math.max(max, s.clusterStrikeCount ?? 0),
+        0,
+      );
       const unfiltered = unfilteredFlags.get(ticker);
       return {
         ticker,
@@ -200,6 +235,7 @@ export function useTickerGrouping<T>(
         latestTriggerMs,
         wasConvictionAt: unfiltered?.wasConvictionAt ?? null,
         wasConvictionFireCount: unfiltered?.wasConvictionFireCount ?? 0,
+        clusterStrikes: unfiltered?.clusterStrikes ?? filteredClusterStrikes,
       };
     }).sort((a, b) => {
       if (sortMode === 'peak') {

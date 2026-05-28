@@ -42,6 +42,15 @@ interface SilentBoomTickerGroupProps {
   conviction?: boolean;
   storm?: boolean;
   /**
+   * Highest OTM-sweep cluster-strike count for this ticker, computed
+   * upstream by `useTickerGrouping` against the UNFILTERED full-day
+   * alert set (same pattern as `conviction`/`storm`). The violet 🎰
+   * OTM SWEEP badge renders when this is ≥ 3. Defaults to 0 (no
+   * badge) when omitted — keeps existing test fixtures + future call
+   * sites simple.
+   */
+  clusterStrikes?: number;
+  /**
    * Past-tense "was conviction" surface: epoch ms of the first alert
    * in the earliest qualifying 15-min window today. When present and
    * `conviction === false`, the component renders a "was ✦ HH:MM
@@ -137,6 +146,7 @@ function SilentBoomTickerGroupBase({
   exitPolicy,
   conviction = false,
   storm = false,
+  clusterStrikes = 0,
   wasConvictionAt = null,
   wasConvictionFireCount = 0,
   liveFlowSnapshot,
@@ -187,19 +197,6 @@ function SilentBoomTickerGroupBase({
   // don't silently erase a ticker's true-footprint badges.
   const showConvictionBadge = conviction;
   const showStormBadge = storm;
-
-  // OTM-sweep cluster badge — derived from the alerts array directly.
-  // clusterStrikes = highest clusterStrikeCount among all cluster alerts.
-  // Guard against empty array: Math.max(...[]) = -Infinity.
-  const clusterStrikes =
-    alerts.length === 0
-      ? 0
-      : Math.max(
-          0,
-          ...alerts.map((a) =>
-            a.suspiciousCluster ? (a.clusterStrikeCount ?? 0) : 0,
-          ),
-        );
   const showClusterBadge = clusterStrikes >= 3;
 
   const strikesWithSpread =
