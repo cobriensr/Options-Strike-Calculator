@@ -30,6 +30,29 @@ installAuthInterceptor();
 
 console.log('[build]', __BUILD_SHA__);
 
+/**
+ * Redact query-string VALUES while preserving keys on fetch/xhr
+ * breadcrumb URLs. `?ticker=SPX&qty=10` → `?ticker=REDACTED&qty=REDACTED`.
+ * Keeps the URL shape visible for triage while stopping PII (position
+ * sizes, account-number-bearing endpoints, journal text) from landing
+ * in Sentry events.
+ */
+function redactQueryValues(url: string): string {
+  const qIdx = url.indexOf('?');
+  if (qIdx === -1) return url;
+  const base = url.slice(0, qIdx);
+  const params = url.slice(qIdx + 1);
+  const redacted = params
+    .split('&')
+    .map((kv) => {
+      const eqIdx = kv.indexOf('=');
+      if (eqIdx === -1) return kv;
+      return `${kv.slice(0, eqIdx)}=REDACTED`;
+    })
+    .join('&');
+  return `${base}?${redacted}`;
+}
+
 Sentry.init({
   dsn: import.meta.env.VITE_SENTRY_DSN || undefined,
   environment: import.meta.env.PROD ? 'production' : 'development',
@@ -47,6 +70,15 @@ Sentry.init({
     if (messages.some((m) => m?.includes('KPSDK has already been configured')))
       return null;
     return event;
+  },
+  beforeBreadcrumb(breadcrumb) {
+    if (breadcrumb.category === 'fetch' || breadcrumb.category === 'xhr') {
+      const url = breadcrumb.data?.url;
+      if (typeof url === 'string' && url.includes('/api/')) {
+        breadcrumb.data = { ...breadcrumb.data, url: redactQueryValues(url) };
+      }
+    }
+    return breadcrumb;
   },
 });
 
@@ -109,6 +141,7 @@ if (import.meta.env.PROD)
       { path: '/api/positions', method: 'GET' },
       { path: '/api/positions', method: 'POST' },
       { path: '/api/vix-ohlc', method: 'GET' },
+      { path: '/api/vix1d-daily', method: 'GET' },
       { path: '/api/pre-market', method: 'GET' },
       { path: '/api/pre-market', method: 'POST' },
       { path: '/api/iv-term-structure', method: 'GET' },
