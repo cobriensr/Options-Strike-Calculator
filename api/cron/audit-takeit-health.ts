@@ -162,79 +162,86 @@ async function persistMetrics(
 }
 
 export default withCronCheckin('audit-takeit-health', async (req, res) => {
-  Sentry.setTag('cron.job', 'audit-takeit-health');
-  const done = metrics.request('/api/cron/audit-takeit-health');
-  const startedAt = Date.now();
+  await Sentry.withIsolationScope(async (scope) => {
+    scope.setTransactionName('GET /api/cron/audit-takeit-health');
+    Sentry.setTag('cron.job', 'audit-takeit-health');
+    const done = metrics.request('/api/cron/audit-takeit-health');
+    const startedAt = Date.now();
 
-  const guard = cronGuard(req, res, {
-    marketHours: false,
-    requireApiKey: false,
-  });
-  if (!guard) return;
+    const guard = cronGuard(req, res, {
+      marketHours: false,
+      requireApiKey: false,
+    });
+    if (!guard) return;
 
-  const sql = getDb();
-  try {
-    // Yesterday's date (UTC YYYY-MM-DD — matches how the fires/alerts tables
-    // store `date`).
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 10);
+    const sql = getDb();
+    try {
+      // Yesterday's date (UTC YYYY-MM-DD — matches how the fires/alerts
+      // tables store `date`).
+      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
 
-    const lottery = await summarizeFeed(sql, 'lottery_finder_fires', yesterday);
-    const silentBoom = await summarizeFeed(
-      sql,
-      'silent_boom_alerts',
-      yesterday,
-    );
+      const lottery = await summarizeFeed(
+        sql,
+        'lottery_finder_fires',
+        yesterday,
+      );
+      const silentBoom = await summarizeFeed(
+        sql,
+        'silent_boom_alerts',
+        yesterday,
+      );
 
-    const lotterySummary = applyAlerts(lottery, 'lottery');
-    const sbSummary = applyAlerts(silentBoom, 'silent_boom');
+      const lotterySummary = applyAlerts(lottery, 'lottery');
+      const sbSummary = applyAlerts(silentBoom, 'silent_boom');
 
-    await persistMetrics(sql, yesterday, 'lottery', lotterySummary);
-    await persistMetrics(sql, yesterday, 'silent_boom', sbSummary);
+      await persistMetrics(sql, yesterday, 'lottery', lotterySummary);
+      await persistMetrics(sql, yesterday, 'silent_boom', sbSummary);
 
-    const durationMs = Date.now() - startedAt;
-    logger.info(
-      {
+      const durationMs = Date.now() - startedAt;
+      logger.info(
+        {
+          lottery_null_rate: lotterySummary.null_rate_pct,
+          sb_null_rate: sbSummary.null_rate_pct,
+          durationMs,
+        },
+        'audit-takeit-health: complete',
+      );
+
+      await reportCronRun('audit-takeit-health', {
+        status: 'ok',
+        durationMs,
         lottery_null_rate: lotterySummary.null_rate_pct,
         sb_null_rate: sbSummary.null_rate_pct,
-        durationMs,
-      },
-      'audit-takeit-health: complete',
-    );
+      });
 
-    await reportCronRun('audit-takeit-health', {
-      status: 'ok',
-      durationMs,
-      lottery_null_rate: lotterySummary.null_rate_pct,
-      sb_null_rate: sbSummary.null_rate_pct,
-    });
-
-    done({ status: 200 });
-    return res.status(200).json({
-      job: 'audit-takeit-health',
-      success: true,
-      date: yesterday,
-      lottery: lotterySummary,
-      silent_boom: sbSummary,
-      durationMs,
-    });
-  } catch (error) {
-    const durationMs = Date.now() - startedAt;
-    Sentry.captureException(error);
-    logger.error({ err: error, durationMs }, 'audit-takeit-health error');
-
-    try {
-      await reportCronRun('audit-takeit-health', {
-        status: 'error',
-        error: String(error),
+      done({ status: 200 });
+      res.status(200).json({
+        job: 'audit-takeit-health',
+        success: true,
+        date: yesterday,
+        lottery: lotterySummary,
+        silent_boom: sbSummary,
         durationMs,
       });
-    } catch {
-      /* swallowed: observability path must never crash the response */
-    }
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      Sentry.captureException(error);
+      logger.error({ err: error, durationMs }, 'audit-takeit-health error');
 
-    done({ status: 500, error: 'unhandled' });
-    return res.status(500).json({ error: 'Internal server error' });
-  }
+      try {
+        await reportCronRun('audit-takeit-health', {
+          status: 'error',
+          error: String(error),
+          durationMs,
+        });
+      } catch {
+        /* swallowed: observability path must never crash the response */
+      }
+
+      done({ status: 500, error: 'unhandled' });
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
 });
