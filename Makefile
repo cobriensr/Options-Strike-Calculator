@@ -57,7 +57,7 @@ DATE        ?= $(lastword $(PENDING_DATES))
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback
+.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback takeit-drift
 
 help:
 	@echo "EOD options-flow pipeline targets:"
@@ -231,6 +231,11 @@ update: enrich refit
 	@# next cron tick. Skip guard: < 100 enriched fires → no-op.
 	$(PYTHON) scripts/online_ticker_update.py
 	$(PYTHON) scripts/sync_lottery_score_weights_v2.py
+	@# TAKE-IT drift monitor — scores freshly-promoted bundle against the
+	@# rolling enriched window. Runs AFTER the refit prereq so the AUC is
+	@# measured against the current weights. Writes docs/tmp/takeit-drift-
+	@# YYYY-MM-DD.md + ml/plots/takeit-drift/reliability_<feed>_<date>.png.
+	$(MAKE) takeit-drift
 	@echo ""
 	@echo "  ✅ daily research artifacts:"
 	@echo "     docs/tmp/lottery-exit-policy-search-YYYY-MM-DD.md"
@@ -241,6 +246,25 @@ update: enrich refit
 	@echo "     docs/tmp/lottery-score-lineage-YYYY-MM-DD.md  (attribution)"
 	@echo "     docs/tmp/lottery-ticker-weight-history.csv  (EMA update log)"
 	@echo "     ml/output/lottery_score_weights.json  (ticker_weights updated)"
+	@echo "     docs/tmp/takeit-drift-YYYY-MM-DD.md  (drift monitor report)"
+	@echo "     ml/plots/takeit-drift/reliability_<feed>_YYYY-MM-DD.png"
+
+takeit-drift:
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  TAKEIT-DRIFT — daily TAKE-IT AUC + reliability drift monitor"
+	@echo "════════════════════════════════════════════════════════════════"
+	@# Reads enriched lottery_finder_fires + takeit_score_log from Postgres,
+	@# computes rolling AUC + reliability curves per feed (lottery/silent_boom),
+	@# writes docs/tmp/takeit-drift-YYYY-MM-DD.md + reliability PNGs to
+	@# ml/plots/takeit-drift/, and persists ml_-prefixed metrics to
+	@# takeit_health_daily. Invoked directly from `make update` after refit.
+	@if [[ ! -f "$(ENV_FILE)" ]]; then \
+	  echo "  ❌ $(ENV_FILE) not found — needed for DATABASE_URL"; \
+	  exit 2; \
+	fi
+	set -a && source $(ENV_FILE) && set +a && \
+	  $(PYTHON) ml/src/takeit_drift_monitor.py
 
 tune:
 	@echo ""
