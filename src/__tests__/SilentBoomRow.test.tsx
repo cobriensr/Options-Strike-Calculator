@@ -191,6 +191,57 @@ describe('SilentBoomRow: smoke', () => {
     expect(screen.getByText(/peak \+47\.0%/)).toBeInTheDocument();
   });
 
+  it('renders spot and %OTM in the visible footer when underlyingPriceAtSpike is present (frozen at fire time)', () => {
+    // Strike 200 (call) vs spot 198.50 → (200 - 198.50) / 198.50
+    // = +0.755% → "+0.8%" formatted. Spot displays from the snapshot,
+    // not from live candles, so the moneyness is what it was when the
+    // spike fired.
+    renderRow(makeAlert({ underlyingPriceAtSpike: 198.5 }));
+    expect(
+      screen.getByTestId(
+        'silent-boom-row-spot-AAPL260508C00200000-2026-05-08T14:30:00Z',
+      ),
+    ).toHaveTextContent('198.50');
+    expect(
+      screen.getByTestId(
+        'silent-boom-row-otm-pct-AAPL260508C00200000-2026-05-08T14:30:00Z',
+      ),
+    ).toHaveTextContent('%OTM 0.8%');
+  });
+
+  it('flips the OTM sign for puts (positive = OTM regardless of side)', () => {
+    // Put with strike 195 vs spot 200 → raw (195 - 200) / 200 = -0.025
+    // → flipped for puts → +0.025 → "2.5%" OTM. Sign convention: the
+    // displayed % is positive when OTM and negative when ITM, so the
+    // reader can compare calls and puts with a single mental model.
+    renderRow(
+      makeAlert({
+        optionType: 'P',
+        strike: 195,
+        underlyingPriceAtSpike: 200,
+      }),
+    );
+    expect(
+      screen.getByTestId(
+        'silent-boom-row-otm-pct-AAPL260508C00200000-2026-05-08T14:30:00Z',
+      ),
+    ).toHaveTextContent('%OTM 2.5%');
+  });
+
+  it('omits spot and %OTM when underlyingPriceAtSpike is null (legacy / pending row)', () => {
+    renderRow(makeAlert({ underlyingPriceAtSpike: null }));
+    expect(
+      screen.queryByTestId(
+        'silent-boom-row-spot-AAPL260508C00200000-2026-05-08T14:30:00Z',
+      ),
+    ).toBeNull();
+    expect(
+      screen.queryByTestId(
+        'silent-boom-row-otm-pct-AAPL260508C00200000-2026-05-08T14:30:00Z',
+      ),
+    ).toBeNull();
+  });
+
   it('renders the UW contract link with the correct href', () => {
     renderRow(makeAlert());
     // The link's accessible name is the concatenation of its child

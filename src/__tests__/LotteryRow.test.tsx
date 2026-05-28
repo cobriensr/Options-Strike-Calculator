@@ -238,6 +238,54 @@ describe('LotteryRow: smoke', () => {
     expect(screen.getByText('+22.5%')).toBeInTheDocument();
   });
 
+  it('renders spot and %OTM in the always-visible row footer (frozen snapshot)', () => {
+    // Fixture: strike 200 (call), spotAtTrigger 198.5 → (200-198.5)/198.5
+    // = +0.755% → "+0.8%" formatted. Spot displays from spotAtTrigger,
+    // not from live candles, because OTM% is frozen at fire time.
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    // Always-visible spot field (no expand click).
+    expect(screen.getByText('198.50')).toBeInTheDocument();
+    // Always-visible %OTM chip — disambiguated via testid because the
+    // expanded CONTRACT strip also renders a %OTM chip. No sign on the
+    // numeric: positive means OTM (neutral color), negative means ITM
+    // (amber). Matches the convention of the existing expanded chip.
+    expect(
+      screen.getByTestId('lottery-row-otm-pct-AAPL260508C00200000'),
+    ).toHaveTextContent('%OTM 0.8%');
+  });
+
+  it('falls back to spotAtFirst when spotAtTrigger is null (pre-#176 row)', () => {
+    // Legacy row from before migration #176: spotAtTrigger is null, so
+    // the visible footer + %OTM should drive off spotAtFirst (199.0).
+    // Strike 200 vs spot 199.0 (call) → +0.5% OTM rounded.
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 0.85,
+            openInterest: 5000,
+            spotAtFirst: 199.0,
+            spotAtTrigger: null,
+            alertSeq: 7,
+            minutesSincePrevFire: 30,
+          },
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByText('199.00')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-otm-pct-AAPL260508C00200000'),
+    ).toHaveTextContent('%OTM 0.5%');
+  });
+
   it('renders the cheap-call-PM badge when the tag is set', () => {
     render(
       <LotteryRow
@@ -894,7 +942,10 @@ describe('LotteryRow: expand / collapse', () => {
     expect(screen.getByText('Prem')).toBeInTheDocument();
     // Premium = 175 * 1.25 * 100 = 21875 → '$22K' via formatPremiumAmount.
     expect(screen.getByText('$22K')).toBeInTheDocument();
-    expect(screen.getByText('%OTM')).toBeInTheDocument();
+    // %OTM appears twice now: once in the always-visible row footer
+    // (spot-at-fire moneyness chip) and once in the expanded CONTRACT
+    // detail strip.
+    expect(screen.getAllByText('%OTM')).toHaveLength(2);
 
     // NET FLOW header carries NCV / NPV / Δv with computed totals.
     expect(screen.getByText('NCV')).toBeInTheDocument();

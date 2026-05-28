@@ -525,6 +525,22 @@ export const SilentBoomRow = memo(function SilentBoomRow({
     };
   }, [netFlowSeries]);
 
+  /**
+   * Distance-from-spot in percent, signed so the reader can tell ITM
+   * vs OTM at a glance. Frozen at fire time — uses the snapshotted
+   * `underlyingPriceAtSpike` (migration #152, NUMERIC NOT NULL) rather
+   * than live candles, so the moneyness shown is what it was when the
+   * spike fired. Call OTM: strike > spot → positive; Put OTM:
+   * strike < spot → positive. Sign flipped to negative for ITM. Null
+   * only when the snapshot is missing or zero (defensive guard).
+   */
+  const otmPct = useMemo<number | null>(() => {
+    const spot = alert.underlyingPriceAtSpike;
+    if (spot == null || !Number.isFinite(spot) || spot <= 0) return null;
+    const raw = (alert.strike - spot) / spot;
+    return alert.optionType === 'C' ? raw : -raw;
+  }, [alert.underlyingPriceAtSpike, alert.strike, alert.optionType]);
+
   return (
     <div
       className={`rounded border p-3 text-sm ${rowContainerClass(alert.optionType)}`}
@@ -815,6 +831,37 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             {formatPremiumAmount(alert.entryPrice * alert.spikeVolume * 100)}
           </span>
         </span>
+        {alert.underlyingPriceAtSpike != null &&
+          Number.isFinite(alert.underlyingPriceAtSpike) && (
+            <span title="Underlying spot at the moment the spike bucket fired (frozen snapshot — does not track intraday drift).">
+              spot{' '}
+              <span
+                className="font-mono text-neutral-300"
+                data-testid={`silent-boom-row-spot-${alert.optionChainId}-${alert.bucketCt}`}
+              >
+                {alert.underlyingPriceAtSpike.toFixed(2)}
+              </span>
+            </span>
+          )}
+        {otmPct != null && (
+          <span
+            data-testid={`silent-boom-row-otm-pct-${alert.optionChainId}-${alert.bucketCt}`}
+            title={
+              otmPct >= 0
+                ? `Strike was ${(otmPct * 100).toFixed(1)}% out of the money at fire time.`
+                : `Strike was ${(Math.abs(otmPct) * 100).toFixed(1)}% in the money at fire time.`
+            }
+          >
+            %OTM{' '}
+            <span
+              className={`font-mono ${
+                otmPct >= 0 ? 'text-neutral-300' : 'text-amber-300'
+              }`}
+            >
+              {(otmPct * 100).toFixed(1)}%
+            </span>
+          </span>
+        )}
         <span>
           spike vol{' '}
           <span className="font-mono text-neutral-200">

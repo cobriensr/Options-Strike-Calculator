@@ -521,16 +521,24 @@ export const LotteryRow = memo(function LotteryRow({
   }, [netFlowSeries]);
 
   /**
-   * Live spot for %OTM — prefer the latest underlying candle so the
-   * value tracks intraday drift; fall back to spot-at-first for the
-   * cases where candles haven't loaded yet (early polls, history).
+   * Spot at fire time — frozen snapshot, not live. Prefers
+   * `spotAtTrigger` (this specific fire) and falls back to
+   * `spotAtFirst` for pre-#176 legacy rows. Drives the visible spot
+   * field and the %OTM chips (both visible footer and expanded
+   * detail), so the moneyness shown is what it was when the alert
+   * fired — not what it is right now.
    */
-  const liveSpot = useMemo<number | null>(() => {
-    const last = candles.at(-1);
-    if (last != null && Number.isFinite(last.close)) return last.close;
+  const fireSpot = useMemo<number | null>(() => {
+    if (
+      fire.entry.spotAtTrigger != null &&
+      Number.isFinite(fire.entry.spotAtTrigger) &&
+      fire.entry.spotAtTrigger > 0
+    ) {
+      return fire.entry.spotAtTrigger;
+    }
     if (Number.isFinite(fire.entry.spotAtFirst)) return fire.entry.spotAtFirst;
     return null;
-  }, [candles, fire.entry.spotAtFirst]);
+  }, [fire.entry.spotAtTrigger, fire.entry.spotAtFirst]);
 
   /**
    * Distance-from-spot in percent, signed so the reader can tell ITM
@@ -539,10 +547,10 @@ export const LotteryRow = memo(function LotteryRow({
    * Result is null when spot is unavailable.
    */
   const otmPct = useMemo<number | null>(() => {
-    if (liveSpot == null || liveSpot <= 0) return null;
-    const raw = (fire.strike - liveSpot) / liveSpot;
+    if (fireSpot == null || fireSpot <= 0) return null;
+    const raw = (fire.strike - fireSpot) / fireSpot;
     return fire.optionType === 'C' ? raw : -raw;
-  }, [liveSpot, fire.strike, fire.optionType]);
+  }, [fireSpot, fire.strike, fire.optionType]);
 
   /**
    * Total premium $ across the contract tape. Each contract represents
@@ -1052,12 +1060,31 @@ export const LotteryRow = memo(function LotteryRow({
             )}
           </span>
         </span>
-        <span>
+        <span title="Underlying spot at the moment this fire triggered (frozen snapshot — does not track intraday drift).">
           spot{' '}
           <span className="font-mono text-neutral-300">
-            {fire.entry.spotAtFirst.toFixed(2)}
+            {(fireSpot ?? fire.entry.spotAtFirst).toFixed(2)}
           </span>
         </span>
+        {otmPct != null && (
+          <span
+            data-testid={`lottery-row-otm-pct-${fire.optionChainId}`}
+            title={
+              otmPct >= 0
+                ? `Strike was ${(otmPct * 100).toFixed(1)}% out of the money at fire time.`
+                : `Strike was ${(Math.abs(otmPct) * 100).toFixed(1)}% in the money at fire time.`
+            }
+          >
+            %OTM{' '}
+            <span
+              className={`font-mono ${
+                otmPct >= 0 ? 'text-neutral-300' : 'text-amber-300'
+              }`}
+            >
+              {(otmPct * 100).toFixed(1)}%
+            </span>
+          </span>
+        )}
         <span>
           IV{' '}
           <span className="font-mono text-neutral-300">
