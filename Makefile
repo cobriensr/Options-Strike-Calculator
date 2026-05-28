@@ -463,6 +463,10 @@ version:
 #   make takeit-rollback FEED=lottery PATH_OVERRIDE=takeit/lottery-v2026-05-10.json DRY_RUN=1
 
 takeit-rollback:
+	@if [[ ! -f "$(ENV_FILE)" ]]; then \
+	  echo "  ❌ $(ENV_FILE) not found — needed for BLOB_READ_WRITE_TOKEN"; \
+	  exit 2; \
+	fi
 	@set -a && source $(ENV_FILE) && set +a && \
 		FEED=$(FEED) PATH_OVERRIDE=$(PATH_OVERRIDE) DRY_RUN=$(DRY_RUN) \
 		node scripts/takeit-rollback.mjs
