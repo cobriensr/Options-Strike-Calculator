@@ -1143,7 +1143,8 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 </FilterChip>
               );
             })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+          </div>
+          <div className="flex w-full basis-full flex-wrap items-center gap-x-2 gap-y-1">
             <span className={SECTION_LABEL}>TAKE-IT</span>
             {TAKEIT_FLOOR_OPTIONS.map((o) => {
               const active = takeitFloor === o.value;
