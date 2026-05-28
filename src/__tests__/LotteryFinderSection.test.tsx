@@ -1026,63 +1026,28 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
     expect(chip).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('default 0.70 floor hides fires with takeitProb < 0.70 and shows fires with takeitProb >= 0.70', () => {
-    const fires = [
-      makeFire({
-        id: 1,
-        optionChainId: 'AAPL260508C00200000',
-        underlyingSymbol: 'AAPL',
-        strike: 200,
-        takeitProb: 0.8,
-      }),
-      makeFire({
-        id: 2,
-        optionChainId: 'TSLA260508C00250000',
-        underlyingSymbol: 'TSLA',
-        strike: 250,
-        takeitProb: 0.3,
-      }),
-    ];
-    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 2 }));
-
+  it('default 0.70 floor forwards minTakeitProb=0.7 to both feed + ticker-counts hooks', () => {
+    // TAKE-IT is now pushed server-side so pagination + chip totals
+    // reflect the post-filter count. The chip click changes the URL
+    // (via the hook), which triggers a server fetch with the new
+    // floor — there is no client-side filter to assert against
+    // anymore. Verify the hook contract instead.
     render(<LotteryFinderSection marketOpen={false} />);
 
-    // High takeitProb is visible.
-    expect(
-      screen.getByTestId('lottery-row-AAPL260508C00200000'),
-    ).toBeInTheDocument();
-    // Low takeitProb is hidden by the default 0.70 floor.
-    expect(
-      screen.queryByTestId('lottery-row-TSLA260508C00250000'),
-    ).not.toBeInTheDocument();
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minTakeitProb: 0.7 });
+    const countsCall = mockUseLotteryFinderTickerCounts.mock.calls.at(-1);
+    expect(countsCall?.[0]).toMatchObject({ minTakeitProb: 0.7 });
   });
 
-  it('clicking the "all" preset removes the floor and reveals hidden fires', () => {
-    const fires = [
-      makeFire({
-        id: 1,
-        optionChainId: 'TSLA260508C00250000',
-        underlyingSymbol: 'TSLA',
-        strike: 250,
-        takeitProb: 0.3,
-      }),
-    ];
-    mockUseLotteryFinder.mockReturnValue(feedResult({ fires, total: 1 }));
-
+  it('clicking the "all" preset forwards minTakeitProb=0 (server-side floor disabled)', () => {
     render(<LotteryFinderSection marketOpen={false} />);
-
-    // Default 0.70 floor hides the low-takeitProb fire.
-    expect(
-      screen.queryByTestId('lottery-row-TSLA260508C00250000'),
-    ).not.toBeInTheDocument();
-
-    // Click the "all" preset to disable the floor.
     fireEvent.click(screen.getByTestId('takeit-floor-0'));
 
-    // Fire is now visible.
-    expect(
-      screen.getByTestId('lottery-row-TSLA260508C00250000'),
-    ).toBeInTheDocument();
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minTakeitProb: 0 });
+    const countsCall = mockUseLotteryFinderTickerCounts.mock.calls.at(-1);
+    expect(countsCall?.[0]).toMatchObject({ minTakeitProb: 0 });
   });
 
   it('toggling takeitFloor while on page 2 resets the page to 0', () => {
@@ -1120,15 +1085,20 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
 
 describe('LotteryFinderSection: pagination edge states', () => {
   it('renders the post-filter empty state when every server row is hidden by client chips', () => {
-    // Default takeitFloor is 0.70 — fires below that get hidden client-side.
-    // Server returns 5 fires; all have takeitProb=0.5 → all hidden → header
-    // + pagination still render but the body must explain the gap.
+    // TAKE-IT is now server-side, but smaller client-side chips
+    // (hideLatePm, hideGated, hideCounterFlow, hideRoundTripped,
+    // aggressivePremium, moneynessMode) still apply. Default state
+    // has hideLatePm=true (persisted) — use a post-14:30 trigger
+    // time to demonstrate the empty-state when every server row is
+    // dropped by the client.
     const fires = Array.from({ length: 5 }, (_, i) =>
       makeFire({
         id: i + 1,
         optionChainId: `HIDDEN-${i}`,
         underlyingSymbol: 'AAPL',
-        takeitProb: 0.5,
+        // 14:45 CT → 19:45 UTC during CDT; well past the 14:30 cutoff
+        // so hideLatePm strips them all.
+        triggerTimeCt: '2026-05-08T19:45:00Z',
       }),
     );
     mockUseLotteryFinder.mockReturnValue(
@@ -1137,25 +1107,45 @@ describe('LotteryFinderSection: pagination edge states', () => {
 
     render(<LotteryFinderSection marketOpen={false} />);
 
+    // Make sure hideLatePm is on (it persists; defensively enable).
+    const hideLatePmBtn = screen.getByText(/hide post-14:30/i);
+    const hideLatePmPressed = hideLatePmBtn.getAttribute('aria-pressed');
+    if (hideLatePmPressed !== 'true') fireEvent.click(hideLatePmBtn);
+
     expect(
       screen.getByTestId('lottery-all-filtered-empty'),
     ).toBeInTheDocument();
-    // No rows rendered because every fire is filtered out.
     expect(screen.queryAllByTestId(/^lottery-row-/)).toHaveLength(0);
   });
 
-  it('renders "showing N of M" with the post-filter visible count, not the server slice size', () => {
-    // 3 server fires; 1 visible after the default 0.70 TAKE-IT floor.
+  it('renders "showing N of M" with the post-client-filter visible count, not the server slice size', () => {
+    // 3 server fires; 2 are post-14:30 and get stripped by hideLatePm
+    // (client-side). Visible count should be 1 of 3.
     const fires = [
-      makeFire({ id: 1, optionChainId: 'V1', takeitProb: 0.5 }),
-      makeFire({ id: 2, optionChainId: 'V2', takeitProb: 0.5 }),
-      makeFire({ id: 3, optionChainId: 'V3', takeitProb: 0.85 }),
+      makeFire({
+        id: 1,
+        optionChainId: 'V1',
+        triggerTimeCt: '2026-05-08T19:45:00Z',
+      }),
+      makeFire({
+        id: 2,
+        optionChainId: 'V2',
+        triggerTimeCt: '2026-05-08T19:50:00Z',
+      }),
+      makeFire({
+        id: 3,
+        optionChainId: 'V3',
+        triggerTimeCt: '2026-05-08T14:30:00Z',
+      }),
     ];
     mockUseLotteryFinder.mockReturnValue(
       feedResult({ fires, total: 3, hasMore: false }),
     );
 
     render(<LotteryFinderSection marketOpen={false} />);
+    const hideLatePmBtn = screen.getByText(/hide post-14:30/i);
+    const hideLatePmPressed = hideLatePmBtn.getAttribute('aria-pressed');
+    if (hideLatePmPressed !== 'true') fireEvent.click(hideLatePmBtn);
 
     expect(screen.getByText(/showing 1 of 3/)).toBeInTheDocument();
   });

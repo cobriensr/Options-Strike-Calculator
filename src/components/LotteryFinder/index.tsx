@@ -510,6 +510,7 @@ export function LotteryFinderSection({
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
+    minTakeitProb: takeitFloor,
     showAll: showFilteredTickers,
     page,
     pageSize: PAGE_SIZE,
@@ -548,6 +549,7 @@ export function LotteryFinderSection({
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
+    minTakeitProb: takeitFloor,
     showAll: showFilteredTickers,
   });
 
@@ -587,6 +589,13 @@ export function LotteryFinderSection({
   );
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+  // totalPages is now accurate because every load-bearing filter
+  // (Burst + TAKE-IT) is pushed server-side, so `total` reflects what
+  // pagination will actually traverse. The smaller client-side chips
+  // (hideLatePm, hideGated, etc.) can still leave a page lighter than
+  // PAGE_SIZE but cannot inflate the total page count by 10×+ the way
+  // TAKE-IT 0.70 used to.
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   // Late-PM cutoff is applied client-side: keep `total` and pagination
   // tied to the server's view (so filter chips and counts remain
@@ -648,15 +657,12 @@ export function LotteryFinderSection({
           return moneynessMode === 'otm' ? otm : !otm;
         });
       }
-      if (takeitFloor > 0) {
-        out = out.filter(
-          (f) => f.takeitProb != null && f.takeitProb >= takeitFloor,
-        );
-      }
-      // Burst (fire_count) floor is applied server-side via
-      // `minFireCount` on both feed + ticker-counts so pagination and
-      // chip totals reflect the post-filter result — see useLotteryFinder
-      // above.
+      // Burst (fire_count) and TAKE-IT floors are applied server-side
+      // via `minFireCount` / `minTakeitProb` on both feed +
+      // ticker-counts so pagination + chip totals reflect the post-
+      // filter result — see useLotteryFinder above. Previously TAKE-IT
+      // ran client-side and routinely dropped 40+ of 50 rows per page,
+      // making "page 1 of N" meaningless.
       return out;
     },
     [
@@ -665,7 +671,6 @@ export function LotteryFinderSection({
       hideCounterFlow,
       aggressivePremium,
       moneynessMode,
-      takeitFloor,
       ctMinuteOfDay,
     ],
   );
@@ -689,12 +694,6 @@ export function LotteryFinderSection({
         return f.optionType === 'C' ? delta < 0 : delta > 0;
       }).length
     : 0;
-  const hiddenTakeitCount =
-    takeitFloor > 0
-      ? fires.filter((f) => f.takeitProb == null || f.takeitProb < takeitFloor)
-          .length
-      : 0;
-
   // All tickers with at least one fire today, from the dedicated
   // all-day counts endpoint — independent of pagination + the minute
   // scrubber so tickers that fired off the current page slice still
@@ -1543,10 +1542,9 @@ export function LotteryFinderSection({
                     ({hiddenCounterFlowCount} counter-flow hidden)
                   </span>
                 )}
-                {takeitFloor > 0 && hiddenTakeitCount > 0 && (
+                {takeitFloor > 0 && (
                   <span className="ml-2 text-sky-300/80">
-                    ({hiddenTakeitCount} hidden below TAKE-IT{' '}
-                    {takeitFloor.toFixed(2)})
+                    (TAKE-IT ≥ {takeitFloor.toFixed(2)})
                   </span>
                 )}
               </span>
@@ -1563,7 +1561,7 @@ export function LotteryFinderSection({
                     ← prev
                   </button>
                   <span className="font-mono text-xs text-neutral-400">
-                    page {currentPage}
+                    page {currentPage} / {totalPages}
                   </span>
                   <button
                     type="button"

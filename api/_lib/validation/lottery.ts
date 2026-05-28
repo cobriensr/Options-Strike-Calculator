@@ -96,6 +96,15 @@ export const lotteryFinderQuerySchema = z.object({
   // the MIN_FIRE_COUNT chip group in the LotteryFinder toolbar
   // (all / >=3 / >=8 / >=16).
   minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+  // TAKE-IT floor — calibrated XGBoost P(peak >= +20%). Default UI
+  // value is 0.70, which strips a large share of each page (often 40+
+  // of 50) when applied client-side and made pagination meaningless
+  // ("759 fires, page 1 of N showing 2"). Server-side so `total` and
+  // pagination reflect what the user will actually see. NULL takeit
+  // values (rows that haven't been enriched yet) are EXCLUDED when
+  // a floor is active, matching the prior client-side behavior at
+  // src/components/LotteryFinder/index.tsx:651-653.
+  minTakeitProb: z.coerce.number().min(0).max(1).optional(),
   /**
    * Phase 3 escape hatch: when 'true', server bypasses the bottom-quintile
    * inversion-quality filter and returns all surviving fires regardless of
@@ -385,6 +394,10 @@ export const lotteryFinderTickerCountsQuerySchema = z.object({
    *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
    *  stay aligned when the Burst chip is active. */
   minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+  /** TAKE-IT calibrated P(peak >= +20%) floor. Mirrors `minTakeitProb`
+   *  on `lotteryFinderQuerySchema` so chip counts and the filtered
+   *  feed stay aligned. NULL takeit rows are excluded when active. */
+  minTakeitProb: z.coerce.number().min(0).max(1).optional(),
   /** Mirror of `showAll` on `lotteryFinderQuerySchema`. When 'true',
    *  bypass the bottom-quintile inversion-quality suppression so the
    *  chip strip matches the feed under the "Show filtered tickers"

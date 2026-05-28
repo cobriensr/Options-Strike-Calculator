@@ -408,6 +408,7 @@ export interface LotteryFinderResponse {
     minScore?: number;
     minPremium?: number | null;
     minFireCount?: number | null;
+    minTakeitProb?: number | null;
   };
   /** Number of fires actually returned in this response (≤ limit). */
   count: number;

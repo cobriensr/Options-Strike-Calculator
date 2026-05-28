@@ -348,6 +348,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       showAll,
     } = parsed.data;
 
+    // TAKE-IT calibrated P(peak >= +20%) floor. 0/null = no floor.
+    // Filtered server-side so pagination reflects the post-filter
+    // total — the prior client-side filter at LotteryFinder/index.tsx
+    // stripped 40+ of 50 rows per page when the default 0.70 floor
+    // was active and made "page 1 of N" meaningless. NULL takeit
+    // values are excluded when the floor is on (matches the prior
+    // client-side `(f) => f.takeitProb != null && f.takeitProb >= floor`).
+    const minTakeitProb =
+      parsed.data.minTakeitProb != null && parsed.data.minTakeitProb > 0
+        ? parsed.data.minTakeitProb
+        : null;
+
     // Premium floor — entry_price * trigger_window_size * 100, in
     // dollars. null = no floor. Filtered server-side so pagination
     // reflects the post-filter count. Mirrors SilentBoom's
@@ -524,6 +536,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
+          AND (${minTakeitProb}::numeric IS NULL OR f.takeit_prob >= ${minTakeitProb}::numeric)
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -607,6 +620,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
+          AND (${minTakeitProb}::numeric IS NULL OR f.takeit_prob >= ${minTakeitProb}::numeric)
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -689,6 +703,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
+          AND (${minTakeitProb}::numeric IS NULL OR f.takeit_prob >= ${minTakeitProb}::numeric)
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -701,9 +716,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // matches the dedup'd CTE above.
       withDbRetry(
         () => db`
-        SELECT COUNT(*)::int AS total
-        FROM (
-          SELECT 1
+        WITH ranked AS (
+          SELECT
+            underlying_symbol, strike, option_type, expiry,
+            takeit_prob,
+            ROW_NUMBER() OVER (
+              PARTITION BY underlying_symbol, strike, option_type, expiry
+              ORDER BY trigger_time_ct DESC, id DESC
+            ) AS rn,
+            COUNT(*) OVER (
+              PARTITION BY underlying_symbol, strike, option_type, expiry
+            )::int AS fc
           FROM lottery_finder_fires
           WHERE date = ${targetDate}::date
             AND trigger_time_ct >= ${windowStart}::timestamptz
@@ -717,9 +740,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${minScore ?? null}::int IS NULL OR score >= ${minScore ?? 0})
             AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
             AND (${minPremium}::numeric IS NULL OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric)
-          GROUP BY underlying_symbol, strike, option_type, expiry
-          HAVING (${minFireCount ?? null}::int IS NULL OR COUNT(*) >= ${minFireCount ?? 0})
-        ) collapsed
+        )
+        -- Count chains (rn=1) whose LATEST fire passes the TAKE-IT
+        -- floor; mirrors the row queries shape exactly so total and
+        -- displayed page rows always match. fc (window-function fire
+        -- count) gates the Burst chip the same way the rows do.
+        SELECT COUNT(*)::int AS total
+        FROM ranked
+        WHERE rn = 1
+          AND (${minFireCount ?? null}::int IS NULL OR fc >= ${minFireCount ?? 0})
+          AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
       `,
         2,
         10000,
@@ -987,6 +1017,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
+          AND (${minTakeitProb}::numeric IS NULL OR f.takeit_prob >= ${minTakeitProb}::numeric)
         ORDER BY f.trigger_time_ct DESC, f.id DESC
       `,
         [] as FireRow[],
@@ -1518,6 +1549,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         minScore,
         minPremium: parsed.data.minPremium ?? null,
         minFireCount: minFireCount ?? null,
+        minTakeitProb: minTakeitProb ?? null,
       },
       // count = rows returned (≤ limit). total = total matching rows
       // before LIMIT/OFFSET. UI uses (offset, limit, total) for the

@@ -396,8 +396,10 @@ describe('lottery-finder endpoint', () => {
     // pagination inflated and empty pages when most chains had
     // fire_count < floor. Server-side filter must bind on BOTH the
     // rows query (outer WHERE f.rn = 1 AND f.fire_count >= floor) AND
-    // the COUNT query (HAVING COUNT(*) >= floor) so pagination
-    // reflects the post-filter total.
+    // the COUNT query (outer WHERE fc >= floor on a ranked CTE) so
+    // pagination reflects the post-filter total. The count's shape
+    // mirrors the rows shape so a chain qualifying for the displayed
+    // feed always shows in the count.
     mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({
@@ -417,9 +419,10 @@ describe('lottery-finder endpoint', () => {
     expect(rowsCall.slice(1)).toContain(8);
     expect(countCall.slice(1)).toContain(8);
 
-    // SQL text wires the floor into the right shapes: outer WHERE for
-    // rows (post-CTE so window function `fire_count` is in scope),
-    // HAVING for the count subquery.
+    // Rows SQL filters fire_count via the outer WHERE (post-CTE).
+    // Count SQL uses the ranked-CTE pattern with WHERE rn = 1 + fc
+    // filter, mirroring the rows path so a chain in the feed is the
+    // same chain counted toward total.
     const rowsSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
       ' ',
     );
@@ -427,8 +430,9 @@ describe('lottery-finder endpoint', () => {
       ' ',
     );
     expect(rowsSql).toContain('f.fire_count >=');
-    expect(countSql).toContain('HAVING');
-    expect(countSql).toContain('COUNT(*) >=');
+    expect(countSql).toContain('WITH ranked');
+    expect(countSql).toContain('WHERE rn = 1');
+    expect(countSql).toContain('fc >=');
   });
 
   it('omits minFireCount from filters echo when not provided', async () => {

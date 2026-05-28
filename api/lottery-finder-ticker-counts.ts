@@ -49,6 +49,7 @@ interface LotteryFinderTickerCountsResponse {
     minScore: number | null;
     minPremium: number | null;
     minFireCount: number | null;
+    minTakeitProb: number | null;
     showAll: boolean;
   };
   tickers: {
@@ -92,6 +93,8 @@ export default async function handler(
     q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
   const minFireCount =
     q.minFireCount != null && q.minFireCount > 1 ? q.minFireCount : null;
+  const minTakeitProb =
+    q.minTakeitProb != null && q.minTakeitProb > 0 ? q.minTakeitProb : null;
   const showAll = q.showAll ?? false;
 
   try {
@@ -117,14 +120,30 @@ export default async function handler(
     //      back to the Node layer.
     const rows = (await withDbRetry(
       () => db`
-      WITH chain_day AS (
+      WITH ranked AS (
+        -- One row per fire, decorated with per-chain aggregates +
+        -- ROW_NUMBER so we can filter on the LATEST fire's
+        -- takeit_prob (per-fire value; latest is what /api/lottery-finder
+        -- shows on the row). Mirrors the count subquery shape there.
         SELECT
           underlying_symbol,
           strike,
           option_type,
           expiry,
-          MAX(peak_ceiling_pct) AS chain_peak_pct,
-          MAX(trigger_time_ct) AS chain_latest_trigger
+          takeit_prob,
+          MAX(peak_ceiling_pct) OVER (
+            PARTITION BY underlying_symbol, strike, option_type, expiry
+          ) AS chain_peak_pct,
+          MAX(trigger_time_ct) OVER (
+            PARTITION BY underlying_symbol, strike, option_type, expiry
+          ) AS chain_latest_trigger,
+          COUNT(*) OVER (
+            PARTITION BY underlying_symbol, strike, option_type, expiry
+          )::int AS fc,
+          ROW_NUMBER() OVER (
+            PARTITION BY underlying_symbol, strike, option_type, expiry
+            ORDER BY trigger_time_ct DESC, id DESC
+          ) AS rn
         FROM lottery_finder_fires
         WHERE date = ${date}::date
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
@@ -138,8 +157,19 @@ export default async function handler(
             ${minPremium}::numeric IS NULL
             OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric
           )
-        GROUP BY underlying_symbol, strike, option_type, expiry
-        HAVING (${minFireCount}::int IS NULL OR COUNT(*) >= ${minFireCount ?? 0})
+      ),
+      chain_day AS (
+        SELECT
+          underlying_symbol,
+          strike,
+          option_type,
+          expiry,
+          chain_peak_pct,
+          chain_latest_trigger
+        FROM ranked
+        WHERE rn = 1
+          AND (${minFireCount}::int IS NULL OR fc >= ${minFireCount ?? 0})
+          AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
       )
       SELECT
         cd.underlying_symbol AS ticker,
@@ -171,6 +201,7 @@ export default async function handler(
         minScore: q.minScore ?? null,
         minPremium,
         minFireCount,
+        minTakeitProb,
         showAll,
       },
       tickers: rows.map((r) => ({

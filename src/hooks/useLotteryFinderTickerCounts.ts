@@ -44,6 +44,9 @@ interface UseLotteryFinderTickerCountsArgs {
   /** Chain-day fire_count floor. Server-side so chip counts stay
    *  aligned with the burst-filtered feed. 0/1 = no floor. */
   minFireCount?: number;
+  /** TAKE-IT calibrated probability floor. Server-side so chip counts
+   *  stay aligned with the TAKE-IT-filtered feed. 0 = no floor. */
+  minTakeitProb?: number;
   /** Mirror of `showAll` on the feed hook. When true, the count
    *  endpoint bypasses the bottom-quintile inversion-quality
    *  suppression so the chip strip matches the feed under the
@@ -69,6 +72,7 @@ export function useLotteryFinderTickerCounts({
   minScore = null,
   minPremium = 0,
   minFireCount = 0,
+  minTakeitProb = 0,
   showAll = false,
 }: UseLotteryFinderTickerCountsArgs): UseFetchedDataResult<LotteryFinderTickerCountsResponse> {
   const params = new URLSearchParams({ date });
@@ -80,6 +84,7 @@ export function useLotteryFinderTickerCounts({
   if (minScore != null) params.set('minScore', String(minScore));
   if (minPremium > 0) params.set('minPremium', String(minPremium));
   if (minFireCount > 1) params.set('minFireCount', String(minFireCount));
+  if (minTakeitProb > 0) params.set('minTakeitProb', String(minTakeitProb));
   if (showAll) params.set('showAll', 'true');
   const url = `/api/lottery-finder-ticker-counts?${params.toString()}`;
 

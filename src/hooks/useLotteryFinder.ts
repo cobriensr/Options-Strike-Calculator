@@ -69,6 +69,13 @@ interface UseLotteryFinderArgs {
    */
   minFireCount?: number | null;
   /**
+   * TAKE-IT calibrated P(peak >= +20%) floor. 0 / null = no floor.
+   * Server-side so pagination + ticker counts reflect the post-
+   * filter total. Mirrors the TAKEIT_FLOOR chip group; default UI
+   * value is 0.70.
+   */
+  minTakeitProb?: number | null;
+  /**
    * Phase 4 inversion-quality escape hatch. When `true`, the URL
    * builder appends `showAll=true` and the server bypasses the bottom-
    * quintile (Q1/Q2) inversion-quality suppression. Off by default —
@@ -101,6 +108,7 @@ export function useLotteryFinder({
   minScore = null,
   minPremium = null,
   minFireCount = null,
+  minTakeitProb = null,
   showAll = false,
   page = 0,
   pageSize = 50,
@@ -123,6 +131,8 @@ export function useLotteryFinder({
     params.set('minPremium', String(minPremium));
   if (minFireCount != null && minFireCount > 1)
     params.set('minFireCount', String(minFireCount));
+  if (minTakeitProb != null && minTakeitProb > 0)
+    params.set('minTakeitProb', String(minTakeitProb));
   if (showAll) params.set('showAll', 'true');
   const url = `/api/lottery-finder?${params.toString()}`;
 
