@@ -18,7 +18,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from health import HEALTH_STARTUP_GRACE_S, healthz
+from config import settings
+from health import HEALTH_STARTUP_GRACE_S, healthz, metrics
 from state import state
 
 
@@ -126,3 +127,58 @@ async def test_healthz_returns_stale_when_message_gap_too_large():
 
     assert resp.status == 503
     assert body == {"status": "stale"}
+
+
+# ── /metrics auth gate ───────────────────────────────────────
+
+
+class _StubRequest:
+    """Minimal stand-in for aiohttp.web.Request — `metrics()` only
+    consults ``request.headers.get(name, default)``.
+    """
+
+    def __init__(self, headers: dict[str, str] | None = None):
+        self.headers = headers or {}
+
+
+@pytest.fixture
+def _restore_metrics_token():
+    saved = settings.internal_metrics_token
+    yield
+    settings.internal_metrics_token = saved
+
+
+async def test_metrics_open_when_token_env_unset(_restore_metrics_token):
+    """Default deployment: no INTERNAL_METRICS_TOKEN → /metrics returns
+    200 without any header so operator scrape scripts keep working.
+    """
+    settings.internal_metrics_token = ""
+    resp = await metrics(_StubRequest())  # type: ignore[arg-type]
+    assert resp.status == 200
+
+
+async def test_metrics_requires_token_when_configured(_restore_metrics_token):
+    """With INTERNAL_METRICS_TOKEN set, a request without the matching
+    X-Metrics-Token header is rejected 401.
+    """
+    settings.internal_metrics_token = "expected-token"
+    resp = await metrics(_StubRequest())  # type: ignore[arg-type]
+    assert resp.status == 401
+
+
+async def test_metrics_rejects_wrong_token(_restore_metrics_token):
+    """With INTERNAL_METRICS_TOKEN set, a mismatched header is rejected."""
+    settings.internal_metrics_token = "expected-token"
+    resp = await metrics(
+        _StubRequest({"X-Metrics-Token": "wrong"}),  # type: ignore[arg-type]
+    )
+    assert resp.status == 401
+
+
+async def test_metrics_accepts_matching_token(_restore_metrics_token):
+    """With INTERNAL_METRICS_TOKEN set, a matching header passes through."""
+    settings.internal_metrics_token = "expected-token"
+    resp = await metrics(
+        _StubRequest({"X-Metrics-Token": "expected-token"}),  # type: ignore[arg-type]
+    )
+    assert resp.status == 200

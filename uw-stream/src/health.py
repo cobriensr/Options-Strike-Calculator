@@ -6,6 +6,7 @@ directly — no shared lock because asyncio is single-threaded.
 
 from __future__ import annotations
 
+import hmac
 from datetime import UTC, datetime, timedelta
 
 from aiohttp import web
@@ -62,8 +63,20 @@ async def healthz(_request: web.Request) -> web.Response:
     return web.json_response({"status": "ok"}, status=200)
 
 
-async def metrics(_request: web.Request) -> web.Response:
-    """JSON snapshot of per-channel counters and global state."""
+async def metrics(request: web.Request) -> web.Response:
+    """JSON snapshot of per-channel counters and global state.
+
+    Optionally gated on ``INTERNAL_METRICS_TOKEN``: when set, the
+    request must carry a matching ``X-Metrics-Token`` header. When
+    unset, the endpoint is open (backward compatible with existing
+    operator scrape scripts). The comparison is constant-time to
+    prevent timing-based token guessing.
+    """
+    expected = settings.internal_metrics_token
+    if expected:
+        got = request.headers.get("X-Metrics-Token", "")
+        if not hmac.compare_digest(got, expected):
+            return web.json_response({"error": "unauthorized"}, status=401)
     now = datetime.now(UTC)
     body = {
         "uptime_seconds": int((now - state.started_at).total_seconds()),

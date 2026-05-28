@@ -162,6 +162,13 @@ class Settings(BaseSettings):
     vercel_notify_url: str = ""
     internal_notify_secret: str = ""
 
+    # Optional auth token for /metrics. When set, requests without a
+    # matching X-Metrics-Token header are rejected with 401. When unset
+    # (default), /metrics is open — backward compatible with existing
+    # operator scripts that scrape it. Set on Railway once the scraping
+    # surface is locked down.
+    internal_metrics_token: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("ws_log_sample_rate")
