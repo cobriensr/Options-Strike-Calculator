@@ -429,7 +429,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const flow = flowBadge(
     deltaFromAtFire(alert.tickerCumNcpAtFire, alert.tickerCumNppAtFire),
   );
-  const tierPreserved = alert.directionGated && alert.scoreTier !== 'tier3';
+  const tierPreserved =
+    alert.directionGated &&
+    (alert.scoreTier === 'tier1' || alert.scoreTier === 'tier2');
   const gated = alert.directionGated ? gatedPill(tierPreserved) : null;
   const spreadConfirmed = spreadConfirmedBadge(alert.multiLegShare);
   const gexbot = gexbotBadge(alert.gex);

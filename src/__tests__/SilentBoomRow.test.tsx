@@ -340,6 +340,18 @@ describe('SilentBoomRow: direction-gate pill', () => {
     expect(pill).toHaveTextContent('Gated');
     expect(pill).not.toHaveTextContent(/Soft/);
   });
+
+  it('renders the standard (hard) "Gated" pill when scoreTier is null even if directionGated is true', () => {
+    renderRow(
+      makeAlert({
+        directionGated: true,
+        scoreTier: null,
+      } as Partial<SilentBoomAlert> as SilentBoomAlert),
+    );
+    const pill = screen.getByTestId('silent-boom-gated-pill');
+    expect(pill).toBeInTheDocument();
+    expect(pill).not.toHaveTextContent(/Soft/);
+  });
 });
 
 describe('SilentBoomRow: spread-confirmed badge', () => {
