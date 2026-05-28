@@ -17,16 +17,21 @@ import datetime as dt
 import sys
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import psycopg2
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score
+try:
+    import matplotlib
 
-# Reuse the project's existing connection helper.
-from utils import get_connection  # type: ignore[import-not-found]
+    matplotlib.use('Agg')  # must precede pyplot import
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import psycopg2
+    from sklearn.metrics import roc_auc_score
+except ImportError:
+    print('Missing dependencies. Run:')
+    print('  ml/.venv/bin/pip install -r ml/requirements.txt')
+    sys.exit(1)
+
+from utils import get_connection  # type: ignore[import-not-found]  # noqa: I001
 
 
 ML_ROOT = Path(__file__).resolve().parent.parent
@@ -41,8 +46,10 @@ FEATURE_Z_ALERT = 3.0
 
 
 def rolling_auc(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """AUC, returns NaN if y_true is single-class or empty."""
+    """AUC, returns NaN if y_true is single-class, empty, or y_pred has NaN."""
     if len(y_true) == 0 or len(np.unique(y_true)) < 2:
+        return float('nan')
+    if np.any(np.isnan(y_pred)):
         return float('nan')
     return float(roc_auc_score(y_true, y_pred))
 
@@ -91,6 +98,9 @@ def per_segment_auc(
     return out
 
 
+# Exported for the deferred per-feature drift monitor (see Phase 3 scope notes in
+# docs/superpowers/specs/2026-05-28-takeit-reliability-hardening.md). Not called
+# in main() until the per-feature baseline table ships in a follow-up plan.
 def feature_zscore(
     today: np.ndarray, baseline_mean: float, baseline_std: float,
 ) -> float:
@@ -122,7 +132,7 @@ def fetch_recent_fires(
         AND takeit_prob IS NOT NULL
         AND peak_ceiling_pct IS NOT NULL
     """
-    return pd.read_sql(sql, conn)
+    return pd.read_sql(sql, conn, parse_dates=['date'])
 
 
 def compute_feed_drift(df: pd.DataFrame, feed: str) -> dict:
@@ -130,7 +140,7 @@ def compute_feed_drift(df: pd.DataFrame, feed: str) -> dict:
     if df.empty:
         return out
 
-    today = pd.Timestamp.utcnow().normalize().tz_localize(None).date()
+    today = pd.Timestamp.now('UTC').normalize().tz_localize(None).date()
     for window_days, label in [(7, '7d'), (30, '30d')]:
         cutoff = today - dt.timedelta(days=window_days)
         win = df[df['date'] >= pd.Timestamp(cutoff)]
@@ -198,7 +208,7 @@ def render_markdown_report(
 def plot_reliability(df: pd.DataFrame, feed: str, today_str: str) -> Path | None:
     if df.empty:
         return None
-    cutoff30 = pd.Timestamp.utcnow().normalize().tz_localize(None) - pd.Timedelta(days=30)
+    cutoff30 = pd.Timestamp.now('UTC').normalize().tz_localize(None) - pd.Timedelta(days=30)
     win = df[df['date'] >= cutoff30]
     if win.empty:
         return None

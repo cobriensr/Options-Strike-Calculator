@@ -1,11 +1,12 @@
 # ml/tests/test_takeit_drift_monitor.py
-import pytest
 import numpy as np
+import pytest
+
 from takeit_drift_monitor import (
-    rolling_auc,
-    reliability_bins,
-    per_segment_auc,
     feature_zscore,
+    per_segment_auc,
+    reliability_bins,
+    rolling_auc,
 )
 
 
@@ -18,6 +19,12 @@ def test_rolling_auc_perfect_separation():
 def test_rolling_auc_returns_nan_on_single_class():
     y_true = np.array([1, 1, 1])
     y_pred = np.array([0.4, 0.6, 0.8])
+    assert np.isnan(rolling_auc(y_true, y_pred))
+
+
+def test_rolling_auc_returns_nan_on_nan_in_y_pred():
+    y_true = np.array([0, 0, 1, 1])
+    y_pred = np.array([0.1, 0.2, float('nan'), 0.9])
     assert np.isnan(rolling_auc(y_true, y_pred))
 
 
