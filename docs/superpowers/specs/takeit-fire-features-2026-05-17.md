@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-17
 **Status:** deferred — note for the next takeit retrain cycle
-**Owner:** ML pipeline (ml/src/takeit_*.py)
+**Owner:** ML pipeline (ml/src/takeit\_\*.py)
 **Empirical basis:** [burst-profitability-findings-2026-05-17.md](../../tmp/burst-profitability-findings-2026-05-17.md)
 
 ## Why

@@ -144,7 +144,7 @@ ariaPressed only set when prop provided, testId passes through.
 
 - `LotteryFinderSection.tsx` — replace all chip-button `<button>` blocks
   with `<FilterChip>`. The local `disabled:hover:border-neutral-700
-  disabled:hover:text-neutral-300` overrides on stepper buttons fold
+disabled:hover:text-neutral-300` overrides on stepper buttons fold
   into `FILTER_CHIP_INACTIVE` so the override is always present (no-op
   unless `disabled`).
 - `SilentBoomSection.tsx` — same.
@@ -154,15 +154,15 @@ Visual check on both panels.
 
 ## Files touched
 
-| Phase | File                                          | New / Modified |
-| ----- | --------------------------------------------- | -------------- |
-| 1     | `src/components/ui/filter-toolbar-tokens.ts`  | New            |
-| 1     | `src/components/LotteryFinder/LotteryFinderSection.tsx` | Modified |
-| 1     | `src/components/SilentBoom/SilentBoomSection.tsx`       | Modified |
-| 2     | `src/components/ui/FilterChip.tsx`            | New            |
-| 2     | `src/__tests__/ui/FilterChip.test.tsx`        | New            |
-| 2     | `src/components/LotteryFinder/LotteryFinderSection.tsx` | Modified |
-| 2     | `src/components/SilentBoom/SilentBoomSection.tsx`       | Modified |
+| Phase | File                                                    | New / Modified |
+| ----- | ------------------------------------------------------- | -------------- |
+| 1     | `src/components/ui/filter-toolbar-tokens.ts`            | New            |
+| 1     | `src/components/LotteryFinder/LotteryFinderSection.tsx` | Modified       |
+| 1     | `src/components/SilentBoom/SilentBoomSection.tsx`       | Modified       |
+| 2     | `src/components/ui/FilterChip.tsx`                      | New            |
+| 2     | `src/__tests__/ui/FilterChip.test.tsx`                  | New            |
+| 2     | `src/components/LotteryFinder/LotteryFinderSection.tsx` | Modified       |
+| 2     | `src/components/SilentBoom/SilentBoomSection.tsx`       | Modified       |
 
 ## Open questions
 
@@ -172,7 +172,7 @@ Visual check on both panels.
   attribute). Matches existing behavior where stepper buttons don't set
   `aria-pressed`. Could flip to auto-derive if we'd rather standardize.
 - **Disabled-state hover override placement** — Bake `disabled:opacity-40
-  disabled:hover:border-neutral-700 disabled:hover:text-neutral-300` into
+disabled:hover:border-neutral-700 disabled:hover:text-neutral-300` into
   `FILTER_CHIP_INACTIVE` (always present, no-op when not disabled) or
   leave callers to opt in via `className`? Current draft: bake in. Less
   code at call sites, no observable downside.

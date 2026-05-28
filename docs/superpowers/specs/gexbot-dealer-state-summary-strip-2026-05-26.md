@@ -63,7 +63,7 @@ strip ships, so it's removed in the same commit.
   partial/unknown).
 - Loading / error / true-empty states render a single strip-wide chip
   matching the existing pattern (`text-tertiary rounded-md border
-  border-white/5 bg-white/[0.02] px-3 py-2 text-xs`).
+border-white/5 bg-white/[0.02] px-3 py-2 text-xs`).
 - Per-tile partial: if SPX row exists but missing spot or zero-gamma,
   that tile shows `—` rather than blanking the whole strip.
 
@@ -77,7 +77,7 @@ Cross-asset breadth and "loudest" iterate over `GEXBOT_TICKER_ORDER`.
 ## Acceptance criteria
 
 - Strip renders 4 tiles when the snapshots-latest payload contains SPX
-  + VIX + ≥1 other ticker.
+  - VIX + ≥1 other ticker.
 - VIX dealer state matches what the deleted `VixDealerStateBadge` would
   have shown for the same payload.
 - Loading / error / empty states render a single chip; no React errors

@@ -58,12 +58,12 @@ count `≥ 3`, the ticker+side is a suspicious cluster.
 
 **Member conditions:**
 
-| condition   | lottery source            | silent-boom source             |
-| ----------- | ------------------------- | ------------------------------ |
-| 0DTE        | `dte === 0`               | `dte === 0`                    |
-| cheap entry | `entry_price <= 1.50`     | `entry_price <= 1.50`          |
-| OTM at fire¹| spot = `spot_at_first`    | spot = `underlying_price_at_spike` |
-| ask-side    | `trigger_ask_pct >= 0.70` | `ask_pct >= 0.70`              |
+| condition    | lottery source            | silent-boom source                 |
+| ------------ | ------------------------- | ---------------------------------- |
+| 0DTE         | `dte === 0`               | `dte === 0`                        |
+| cheap entry  | `entry_price <= 1.50`     | `entry_price <= 1.50`              |
+| OTM at fire¹ | spot = `spot_at_first`    | spot = `underlying_price_at_spike` |
+| ask-side     | `trigger_ask_pct >= 0.70` | `ask_pct >= 0.70`                  |
 
 ¹ OTM = strike at/beyond spot in the option's direction at fire time: calls
 `(strike − spot)/spot >= 0`, puts `(spot − strike)/spot >= 0`.
@@ -78,6 +78,7 @@ it historically without a persisted column.
 
 **Badge UI:** a ticker-group-header chip (alongside existing `megaCluster` /
 `adj_cofire` chips), e.g. `⚡ 3× cheap-OTM call cluster`. Tooltip:
+
 > "N cheap, OTM, ask-side 0DTE strikes co-fired on this ticker today — the
 > smart-money lottery-sweep profile. Descriptive context only, NOT a conviction
 > signal (the cohort is net negative-expectancy). Use TAKE-IT for conviction."

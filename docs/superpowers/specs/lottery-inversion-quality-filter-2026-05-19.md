@@ -67,18 +67,18 @@ spam problem.
 
 ## Thresholds / constants (locked from brainstorm)
 
-| Constant | Value | Source |
-|---|---|---|
-| Win threshold T | `realized_flow_inversion_pct >= 50%` | Matches existing `high_peak_rate` framing |
-| Sample-size floor (per window) | N ≥ 10 | Same floor used elsewhere in `lottery_ticker_stats` |
-| 21-day window weight | 0.6 | Brainstorm pick — recency |
-| 90-day window weight | 0.4 | Brainstorm pick — stability |
-| Bonus shape (Q5→Q1) | +5 / +3 / 0 / -2 / -5 | Symmetric, ~10pt swing top-to-bottom |
-| Quintile filter cut | Suppress Q1, Q2 (worst ~40% of tickers) | Server-side, bypassable via `?showAll=1` |
-| Target Tier 1+2 daily volume | 40-50 fires/day | User pick |
-| Tier 1 cutoff (post-bonus) | `quality_adjusted_score >= 24` | Phase 2 CSV — ~22 fires/day in Tier 1 |
-| Tier 2 cutoff (post-bonus) | `quality_adjusted_score >= 22` | Phase 2 CSV — median 52/day Tier 1+2 combined (closest integer to 40-50 target; 23 dropped to 22/day) |
-| Staleness warning threshold | `MAX(lottery_ticker_stats.updated_at) > 3 days` | Operational guard |
+| Constant                       | Value                                           | Source                                                                                                |
+| ------------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Win threshold T                | `realized_flow_inversion_pct >= 50%`            | Matches existing `high_peak_rate` framing                                                             |
+| Sample-size floor (per window) | N ≥ 10                                          | Same floor used elsewhere in `lottery_ticker_stats`                                                   |
+| 21-day window weight           | 0.6                                             | Brainstorm pick — recency                                                                             |
+| 90-day window weight           | 0.4                                             | Brainstorm pick — stability                                                                           |
+| Bonus shape (Q5→Q1)            | +5 / +3 / 0 / -2 / -5                           | Symmetric, ~10pt swing top-to-bottom                                                                  |
+| Quintile filter cut            | Suppress Q1, Q2 (worst ~40% of tickers)         | Server-side, bypassable via `?showAll=1`                                                              |
+| Target Tier 1+2 daily volume   | 40-50 fires/day                                 | User pick                                                                                             |
+| Tier 1 cutoff (post-bonus)     | `quality_adjusted_score >= 24`                  | Phase 2 CSV — ~22 fires/day in Tier 1                                                                 |
+| Tier 2 cutoff (post-bonus)     | `quality_adjusted_score >= 22`                  | Phase 2 CSV — median 52/day Tier 1+2 combined (closest integer to 40-50 target; 23 dropped to 22/day) |
+| Staleness warning threshold    | `MAX(lottery_ticker_stats.updated_at) > 3 days` | Operational guard                                                                                     |
 
 ---
 
@@ -175,7 +175,7 @@ Same script also writes a one-shot simulation CSV to `docs/tmp/lottery-quality-s
     bonus, i.e. cold-start tickers are not penalized).
   - A flag `would_be_filtered = (quintile IN (1, 2))`.
 - [ ] CSV columns: `fire_id, ticker, fired_at, combined_score, quintile,
-      bonus, quality_adjusted_score, would_be_filtered`.
+    bonus, quality_adjusted_score, would_be_filtered`.
 - [ ] Script prints a summary table: for candidate Tier 1 cutoffs
       `[20, 21, 22, 23, 24]` and Tier 2 cutoffs `[14, 15, 16, 17]`, show
       median daily Tier 1+2 count after filtering. We pick the cutoffs
@@ -238,7 +238,11 @@ Same script also writes a one-shot simulation CSV to `docs/tmp/lottery-quality-s
     quintile: number | null,
   ): number;
   export const INVERSION_BONUS_BY_QUINTILE: Readonly<Record<number, number>> = {
-    1: -5, 2: -2, 3: 0, 4: 3, 5: 5,
+    1: -5,
+    2: -2,
+    3: 0,
+    4: 3,
+    5: 5,
   };
   ```
 - [ ] NULL quintile → bonus 0 (cold-start tickers are neutral).
@@ -271,8 +275,10 @@ Same script also writes a one-shot simulation CSV to `docs/tmp/lottery-quality-s
   ```ts
   const filtered = showAll
     ? rows
-    : rows.filter((r) => r.tickerInversionQuintile == null
-        || r.tickerInversionQuintile > 2);
+    : rows.filter(
+        (r) =>
+          r.tickerInversionQuintile == null || r.tickerInversionQuintile > 2,
+      );
   ```
 - [ ] Serialize new fields on the response row:
   - `qualityAdjustedScore: number`
@@ -391,10 +397,11 @@ Same script also writes a one-shot simulation CSV to `docs/tmp/lottery-quality-s
   const ageDays = await sql`
     SELECT EXTRACT(EPOCH FROM (NOW() - MAX(updated_at))) / 86400 AS days
     FROM lottery_ticker_stats`;
-  if (ageDays > 3) Sentry.captureMessage(
-    'lottery_ticker_stats stale',
-    { level: 'warning', extra: { ageDays } },
-  );
+  if (ageDays > 3)
+    Sentry.captureMessage('lottery_ticker_stats stale', {
+      level: 'warning',
+      extra: { ageDays },
+    });
   ```
 - [ ] Pick the host cron so it runs once per market morning, not on
       every fetch tick (avoid alert spam).
@@ -411,15 +418,15 @@ Same script also writes a one-shot simulation CSV to `docs/tmp/lottery-quality-s
 
 ## Test coverage summary (rolled up)
 
-| Area | New tests |
-|---|---|
-| `db.test.ts` | Migration mock + call count |
-| `ml/tests/` | Wilson LCB, blend, quintile-cut (Python) |
-| `lottery-inversion-bonus.test.ts` | Every quintile + NULL + out-of-range |
-| `lottery-tier.test.ts` | Boundary values + NULL |
-| `lottery-finder.*.test.ts` | Row shape + Q1/Q2 filter + `?showAll=1` + NULL never-filtered |
-| Frontend component tests | Chip render + tooltip + toggle |
-| `e2e/lottery-inversion-filter.spec.ts` | End-to-end filter + toggle behavior + axe-core |
+| Area                                   | New tests                                                     |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `db.test.ts`                           | Migration mock + call count                                   |
+| `ml/tests/`                            | Wilson LCB, blend, quintile-cut (Python)                      |
+| `lottery-inversion-bonus.test.ts`      | Every quintile + NULL + out-of-range                          |
+| `lottery-tier.test.ts`                 | Boundary values + NULL                                        |
+| `lottery-finder.*.test.ts`             | Row shape + Q1/Q2 filter + `?showAll=1` + NULL never-filtered |
+| Frontend component tests               | Chip render + tooltip + toggle                                |
+| `e2e/lottery-inversion-filter.spec.ts` | End-to-end filter + toggle behavior + axe-core                |
 
 Every phase ends with `npm run review` (which includes vitest --coverage)
 clean before a code-reviewer subagent runs.

@@ -8,21 +8,21 @@ Turn the nightly `make update` from a passive enrichment job into an active feed
 
 - V2 scoring shipped as a hard-swap through Phases 0-7 of `docs/superpowers/specs/lottery-rescore-2026-05-22.md` (commits `a7583af9` → `d5e709b6`). Linear additive bucket-encoded model, cutoffs `t1=9 / t2=7`.
 - Nightly currently enriches `realized_*_pct` outcome columns via `scripts/enrich_lottery_outcomes.py` but does **nothing** with them — they're a static product for tomorrow's analysis.
-- The user's stated goal: *"make my scores better based on today's trading history."* The way to do that is to feed today's outcomes back into model insights.
-- This spec doesn't auto-modify scoring — it surfaces *candidate* signals for human approval. Auto-application requires cross-validation infrastructure we don't have yet (v2 of this project).
+- The user's stated goal: _"make my scores better based on today's trading history."_ The way to do that is to feed today's outcomes back into model insights.
+- This spec doesn't auto-modify scoring — it surfaces _candidate_ signals for human approval. Auto-application requires cross-validation infrastructure we don't have yet (v2 of this project).
 
 ## Locked-in design decisions
 
-| # | Decision | Rationale |
-|---|---|---|
-| 1 | **Compute score components at read-time, not persist** | The V2 formula is deterministic given input fields + weights JSON. Re-deriving components is cheap and avoids a schema migration. |
-| 2 | **Outputs to `docs/tmp/`** | Daily reports, not production data. Matches `feedback_scratch_files_in_docs_tmp.md`. |
-| 3 | **No auto-application of mined patterns in v1** | Human-in-the-loop review for now. Bandit-style auto-application is a separate spec. |
-| 4 | **Mining window = last 90 days, aligned, non-structure** | Matches the V2 training window from Phase 1. Same statistical population. |
-| 5 | **Winner threshold: outcome ≥ +50%** | Matches the existing `hit_50` metric tracked in the EDA. |
-| 6 | **Loser threshold: outcome ≤ -50%** | Symmetric to winners. |
-| 7 | **Minimum support per candidate combo = 10 fires** | Filter noise. Per `feedback_uniform_lift_is_leakage.md`, real edge concentrates — small support is more noise than signal. |
-| 8 | **Outcome column = COALESCE(realized_flow_inversion_pct, realized_eod_pct)** | Same as Phase 1 training. Consistent metric. |
+| #   | Decision                                                                     | Rationale                                                                                                                         |
+| --- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Compute score components at read-time, not persist**                       | The V2 formula is deterministic given input fields + weights JSON. Re-deriving components is cheap and avoids a schema migration. |
+| 2   | **Outputs to `docs/tmp/`**                                                   | Daily reports, not production data. Matches `feedback_scratch_files_in_docs_tmp.md`.                                              |
+| 3   | **No auto-application of mined patterns in v1**                              | Human-in-the-loop review for now. Bandit-style auto-application is a separate spec.                                               |
+| 4   | **Mining window = last 90 days, aligned, non-structure**                     | Matches the V2 training window from Phase 1. Same statistical population.                                                         |
+| 5   | **Winner threshold: outcome ≥ +50%**                                         | Matches the existing `hit_50` metric tracked in the EDA.                                                                          |
+| 6   | **Loser threshold: outcome ≤ -50%**                                          | Symmetric to winners.                                                                                                             |
+| 7   | **Minimum support per candidate combo = 10 fires**                           | Filter noise. Per `feedback_uniform_lift_is_leakage.md`, real edge concentrates — small support is more noise than signal.        |
+| 8   | **Outcome column = COALESCE(realized_flow_inversion_pct, realized_eod_pct)** | Same as Phase 1 training. Consistent metric.                                                                                      |
 
 ## Phases
 
@@ -31,6 +31,7 @@ Turn the nightly `make update` from a passive enrichment job into an active feed
 Build a deterministic Python helper that returns the V2 component breakdown for any fire.
 
 **Files:**
+
 - `ml/src/score_components.py` (NEW) — exports:
   ```python
   def compute_components(fire_row: dict, weights: dict) -> dict[str, int]:
@@ -45,9 +46,11 @@ Build a deterministic Python helper that returns the V2 component breakdown for 
 Implement combinatorial scan for both winning and losing combos (ideas #5 + #6 from the brainstorm fold into one script since they share infrastructure).
 
 **Files:**
+
 - `scripts/mine_outcome_patterns.py` (NEW)
 
 **Algorithm:**
+
 1. Query `lottery_finder_fires_with_outcome` (view from rescore Phase 0) for last 90-day aligned, non-structure fires
 2. Build feature tuple per fire: `(ticker, tod, dte, vol_oi_q, gamma_q, ask_pct_q, option_type)` — quintile lookups via the weights JSON boundaries
 3. Generate all 2- and 3-feature sub-tuples (skip singletons — those are already in the model; skip 4+ — combinatorial explosion)
@@ -59,6 +62,7 @@ Implement combinatorial scan for both winning and losing combos (ideas #5 + #6 f
 6. Write to `docs/tmp/lottery-composite-candidates-{YYYY-MM-DD}.md`
 
 **Output schema (Markdown):**
+
 ```
 ## Top 25 winning composites (high lift_win, low lift_loss)
 | Combo | Support (winners) | lift_win | lift_loss | net_score | Suggested bonus |
@@ -74,9 +78,11 @@ Implement combinatorial scan for both winning and losing combos (ideas #5 + #6 f
 Per-component attribution analysis. Detects "TOD bonus has been a net negative contributor on Mondays for 6 weeks" type insights (idea #8).
 
 **Files:**
+
 - `scripts/score_lineage_audit.py` (NEW)
 
 **Algorithm:**
+
 1. Pull last 30-day enriched aligned fires
 2. For each fire, recover the 7 component contributions via `compute_components` (Phase 0 helper)
 3. Bucket fires by: `(tier, day_of_week, outcome_class)` where outcome_class is win (≥50%) / push (-50 to 50%) / loss (≤-50%)
@@ -88,6 +94,7 @@ Per-component attribution analysis. Detects "TOD bonus has been a net negative c
 6. Write to `docs/tmp/lottery-score-lineage-{YYYY-MM-DD}.md`
 
 **Output schema (Markdown):**
+
 ```
 ## Component attribution by DOW (last 30 days)
 | DOW | Component | n_winners | n_losers | win_mean_contrib | loss_mean_contrib | attribution_gap | flag |
@@ -101,6 +108,7 @@ Per-component attribution analysis. Detects "TOD bonus has been a net negative c
 ### Phase 3 — Wire into `make update` (30 min)
 
 **Files:**
+
 - `Makefile` — extend `update` target to call the two new scripts after `daily_tracker.py`.
 
 ```make
@@ -122,7 +130,7 @@ update: refit
 
 ## Open questions (genuinely undecided)
 
-1. **Cross-feature confounding** — A composite "AMD + AM_open" might just be "AMD" with AM_open along for the ride. v1 reports raw lift; if reports are noisy, v2 should report *marginal* lift (lift conditional on individual feature lifts).
+1. **Cross-feature confounding** — A composite "AMD + AM_open" might just be "AMD" with AM_open along for the ride. v1 reports raw lift; if reports are noisy, v2 should report _marginal_ lift (lift conditional on individual feature lifts).
 2. **Statistical significance** — Currently a flat support threshold of 10. If outputs are noisy, add a chi-square test for "is this combo's lift significant vs random."
 3. **Action loop** — Once we identify "TOD bonus is wrong on Mondays," how do we feed that into the model? v1 = human reads the report, refits manually. v2 = auto-suggest a per-DOW correction overlay.
 

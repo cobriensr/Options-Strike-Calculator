@@ -4,6 +4,7 @@
 **Status:** Spec (build not yet started)
 **Output target:** `api/_lib/periscope-analyzer.ts` + `/api/periscope-map` endpoint + simplified Market Maker Exposure panel
 **Depends on:**
+
 - [`docs/superpowers/specs/periscope-rules-study-2026-05-21.md`](periscope-rules-study-2026-05-21.md) — study spec
 - `docs/tmp/periscope-rules-study-findings-2026-05-21.md` — findings (gitignored, local-only)
 - `api/_lib/periscope-analyzer-rules.ts` — validated rule constants
@@ -39,24 +40,35 @@ GEXBot poll (1-min cadence, already running) = up to 1 min
 **13-15 min → ~1 min.** The Claude call latency goes to zero because the analyzer is deterministic. The 10-min cadence goes to 1-min because GEXBot polls every minute.
 
 User direction from 2026-05-21:
-- *"The whole point of this is to replace Periscope with Gexbot so I go from 13-15 minutes of latency to 1 minute response"*
-- *"I just need a map to know where to go during the day based on gamma, delta, charm, vanna, etc."*
-- *"This be based on dealer mechanics and price action not just an arbitrary number"*
-- *"Whatever the data says"* (the rules study's job; already done)
+
+- _"The whole point of this is to replace Periscope with Gexbot so I go from 13-15 minutes of latency to 1 minute response"_
+- _"I just need a map to know where to go during the day based on gamma, delta, charm, vanna, etc."_
+- _"This be based on dealer mechanics and price action not just an arbitrary number"_
+- _"Whatever the data says"_ (the rules study's job; already done)
 
 ## Output schema — the map
 
 ```ts
 // api/_lib/periscope-analyzer-types.ts
 export type RegimeTag =
-  | 'pin' | 'drift-and-cap' | 'gap-and-rip' | 'trap'
-  | 'cone-breach' | 'chop' | 'other';
+  | 'pin'
+  | 'drift-and-cap'
+  | 'gap-and-rip'
+  | 'trap'
+  | 'cone-breach'
+  | 'chop'
+  | 'other';
 
 export type TradeStructure =
-  | 'debit_call_spread' | 'debit_put_spread'
-  | 'iron_condor' | 'broken_wing_butterfly'
-  | 'directional_long_call' | 'directional_long_put'
-  | 'long_strangle' | 'credit_call_spread' | 'credit_put_spread';
+  | 'debit_call_spread'
+  | 'debit_put_spread'
+  | 'iron_condor'
+  | 'broken_wing_butterfly'
+  | 'directional_long_call'
+  | 'directional_long_put'
+  | 'long_strangle'
+  | 'credit_call_spread'
+  | 'credit_put_spread';
 
 export interface DirectionalSetup {
   /** Price level that arms the trigger when held past per TRIGGER_ARM rule. */
@@ -90,8 +102,8 @@ export interface PeriscopeMap {
   coneUpper: number | null;
 
   // Setups
-  long: DirectionalSetup | null;   // null when no +γ ceiling above spot
-  short: DirectionalSetup | null;  // null when no +γ floor below spot
+  long: DirectionalSetup | null; // null when no +γ ceiling above spot
+  short: DirectionalSetup | null; // null when no +γ floor below spot
   waitZone: { lower: number; upper: number } | null;
 
   // Regime (rule-based, no Claude)
@@ -145,16 +157,16 @@ All rule thresholds and parameters come from `api/_lib/periscope-analyzer-rules.
 
 Phase-2 mapping from `periscope-rules-study-2026-05-21.md` Section "Trade-structure mapping," lifted into the analyzer:
 
-| Setup state | Structure | Strike selection |
-|---|---|---|
-| `long.armed = true`, regime != cone-breach | `debit_call_spread` | long = `triggerLevel`, short = `gammaCeiling.strike` |
-| `long.armed = true`, regime = cone-breach | `directional_long_call` | strike = `triggerLevel` |
-| `short.armed = true`, regime != cone-breach | `debit_put_spread` | long = `triggerLevel`, short = `gammaFloor.strike` |
-| `short.armed = true`, regime = cone-breach | `directional_long_put` | strike = `triggerLevel` |
-| Both unarmed, regime = pin | `broken_wing_butterfly` | body = `magnet`, wings asymmetric per `coneLower/coneUpper` skew |
-| Both unarmed, regime = chop | `iron_condor` | short legs = wait-zone boundaries, long legs = `gammaFloor`/`gammaCeiling` |
-| Both unarmed, regime = trap | `null` (no structure) | wait — chart is ambiguous |
-| Both unarmed, regime = drift-and-cap | side-dependent (long side: credit_call_spread above ceiling; short side: credit_put_spread below floor) | — |
+| Setup state                                 | Structure                                                                                               | Strike selection                                                           |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `long.armed = true`, regime != cone-breach  | `debit_call_spread`                                                                                     | long = `triggerLevel`, short = `gammaCeiling.strike`                       |
+| `long.armed = true`, regime = cone-breach   | `directional_long_call`                                                                                 | strike = `triggerLevel`                                                    |
+| `short.armed = true`, regime != cone-breach | `debit_put_spread`                                                                                      | long = `triggerLevel`, short = `gammaFloor.strike`                         |
+| `short.armed = true`, regime = cone-breach  | `directional_long_put`                                                                                  | strike = `triggerLevel`                                                    |
+| Both unarmed, regime = pin                  | `broken_wing_butterfly`                                                                                 | body = `magnet`, wings asymmetric per `coneLower/coneUpper` skew           |
+| Both unarmed, regime = chop                 | `iron_condor`                                                                                           | short legs = wait-zone boundaries, long legs = `gammaFloor`/`gammaCeiling` |
+| Both unarmed, regime = trap                 | `null` (no structure)                                                                                   | wait — chart is ambiguous                                                  |
+| Both unarmed, regime = drift-and-cap        | side-dependent (long side: credit_call_spread above ceiling; short side: credit_put_spread below floor) | —                                                                          |
 
 Reference: existing `api/_lib/analyze-prompts.ts` for current Claude logic.
 
@@ -181,12 +193,20 @@ export interface PerStrikeSnapshot {
   capturedAt: Date;
   spot: number;
   expiry: string;
-  strikes: { strike: number; gamma: number; charm: number; vanna: number; positions?: number }[];
+  strikes: {
+    strike: number;
+    gamma: number;
+    charm: number;
+    vanna: number;
+    positions?: number;
+  }[];
   source: 'gexbot_state' | 'periscope_snapshots';
 }
 
 // PRIMARY — used by /api/periscope-map and the cron.
-export function loadLatestFromGexbot(ticker: GexbotTicker): Promise<PerStrikeSnapshot>;
+export function loadLatestFromGexbot(
+  ticker: GexbotTicker,
+): Promise<PerStrikeSnapshot>;
 
 // FALLBACK — used when the latest gexbot_api_capture row is > 3 min old.
 // Also used by the replay test for historical days where GEXBot wasn't
@@ -212,7 +232,7 @@ Data source reader joins three `gexbot_api_capture` rows per snapshot (gamma_zer
 export async function computePeriscopeMap(opts: {
   source: 'periscope_snapshots' | 'gexbot_state';
   ticker?: GexbotTicker; // required if source = gexbot_state
-  asOf?: Date;          // for historical replay
+  asOf?: Date; // for historical replay
 }): Promise<PeriscopeMap>;
 ```
 
@@ -239,13 +259,13 @@ CRON_SECRET guard, isMarketHours gate, withDbRetry on the DB calls.
 
 ## Integration points (what changes in the existing system)
 
-| Current path | After change |
-|---|---|
+| Current path                                                                                    | After change                                                                                                                                                  |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `api/_lib/periscope-chat-runner.ts:runPeriscopeAutoPlaybook` called on scraper webhook → Claude | `runPeriscopeAutoPlaybook` keeps Claude for `pre_trade` + `debrief`; for `intraday` mode, calls `computePeriscopeMap()` instead, persists to `periscope_maps` |
-| `src/hooks/usePeriscopeExposure.ts` reads `/api/periscope-analysis` | reads `/api/periscope-map` instead |
-| `MarketMakerExposure` panel renders prose + structured fields | renders the map layout (see Frontend section) |
-| `periscope_analyses` table | keeps growing (pre_trade + debrief). Intraday rows stop flowing in once cut over. |
-| `periscope_maps` (new table) | one row per minute per ticker, the analyzer's persisted output |
+| `src/hooks/usePeriscopeExposure.ts` reads `/api/periscope-analysis`                             | reads `/api/periscope-map` instead                                                                                                                            |
+| `MarketMakerExposure` panel renders prose + structured fields                                   | renders the map layout (see Frontend section)                                                                                                                 |
+| `periscope_analyses` table                                                                      | keeps growing (pre_trade + debrief). Intraday rows stop flowing in once cut over.                                                                             |
+| `periscope_maps` (new table)                                                                    | one row per minute per ticker, the analyzer's persisted output                                                                                                |
 
 ## Frontend — the panel
 
@@ -276,6 +296,7 @@ Strip `MarketMakerExposure` down to the layout the user sketched:
 ```
 
 Visual rules:
+
 - Spot color tracks zone: green tint when in wait, blue tint when armed long, red tint when armed short
 - Armed trigger pulses (subtle CSS animation) until trade taken
 - Stale data (age > 90 s) renders with a low-opacity overlay + "stale" badge
@@ -294,6 +315,7 @@ export function usePeriscopeMap(): {
 Polls `/api/periscope-map` every 10 s during market hours.
 
 ### Components to retire
+
 - The current "auto-playbook prose" section of `MarketMakerExposure`
 - The "Claude analysis" badge / link
 - Anything tied to `periscope_analyses.prose_text`
@@ -302,24 +324,26 @@ Polls `/api/periscope-map` every 10 s during market hours.
 
 The original draft included a 5-day A/B soak validating analyzer-vs-Claude agreement. That's the wrong objective — the user's goal is **latency reduction**, not signal parity. Removed. Replaced with a direct cut-over behind a feature flag.
 
-| Phase | Action | User-visible? |
-|---|---|---|
-| 1 | Build analyzer + GEXBot data source + endpoint + cron + cache. Map persists every minute. Panel still shows Claude output. | No |
-| 2 | Frontend: ship the new map panel behind a feature flag, default OFF. Owner toggles it on for their own session. | Owner only |
-| 3 | Owner uses map for a few live sessions, eyeball-validates against current Periscope reads. If happy, flip flag default to ON. | Yes |
-| 4 | Retire intraday `runPeriscopeAutoPlaybook` Claude calls. Keep `pre_trade` + `debrief`. | No |
+| Phase | Action                                                                                                                        | User-visible? |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| 1     | Build analyzer + GEXBot data source + endpoint + cron + cache. Map persists every minute. Panel still shows Claude output.    | No            |
+| 2     | Frontend: ship the new map panel behind a feature flag, default OFF. Owner toggles it on for their own session.               | Owner only    |
+| 3     | Owner uses map for a few live sessions, eyeball-validates against current Periscope reads. If happy, flip flag default to ON. | Yes           |
+| 4     | Retire intraday `runPeriscopeAutoPlaybook` Claude calls. Keep `pre_trade` + `debrief`.                                        | No            |
 
 If the map looks wrong in live use, fall back to flag OFF and fix. The cost of being wrong is one wrong-map-driven trade decision; the cost of dragging out the migration is real latency the user is paying every day.
 
 ## Testing
 
 ### Unit tests (`api/__tests__/periscope-analyzer.test.ts`)
+
 - Per-rule TDD: feed a synthetic snapshot + expected trigger level / stop / target
 - Regime classifier: 7 test cases, one per regime tag, asserting the right tag fires
 - Structure mapping: assert each `(regime, armed_state) → structure` row from the mapping table
 - No-data conditions: assert the analyzer returns null fields rather than throwing when no nearby +γ exists
 
 ### Integration test (`api/__tests__/periscope-map-endpoint.test.ts`)
+
 - Mock the data source, hit the endpoint, assert the response shape matches `PeriscopeMap`
 - Cache hit/miss path
 
@@ -351,32 +375,32 @@ If the analyzer is producing null gamma_floor on 80% of slices, the magnitude th
 
 ## Deliverables
 
-| Artifact | Location | LOC est. |
-|---|---|---|
-| Types | `api/_lib/periscope-analyzer-types.ts` | 80 |
-| Data source adapter | `api/_lib/periscope-data-source.ts` | 150 |
-| Analyzer (pure) | `api/_lib/periscope-analyzer.ts` | 500 |
-| Endpoint | `api/periscope-map.ts` | 120 |
-| Cron | `api/cron/compute-periscope-map.ts` | 80 |
-| Migration | `api/_lib/db-migrations.ts` (new table `periscope_maps`) | 40 |
-| Frontend hook | `src/hooks/usePeriscopeMap.ts` | 80 |
-| Frontend panel | `src/components/MarketMakerExposure/index.tsx` (refactor) | -200 (net deletion) |
-| Unit tests | `api/__tests__/periscope-analyzer.test.ts` | 400 |
-| Endpoint test | `api/__tests__/periscope-map-endpoint.test.ts` | 120 |
-| Replay test | `scripts/replay-periscope-analyzer-2026-05-21.ts` | 250 |
-| vercel.json cron entry | — | 5 |
+| Artifact               | Location                                                  | LOC est.            |
+| ---------------------- | --------------------------------------------------------- | ------------------- |
+| Types                  | `api/_lib/periscope-analyzer-types.ts`                    | 80                  |
+| Data source adapter    | `api/_lib/periscope-data-source.ts`                       | 150                 |
+| Analyzer (pure)        | `api/_lib/periscope-analyzer.ts`                          | 500                 |
+| Endpoint               | `api/periscope-map.ts`                                    | 120                 |
+| Cron                   | `api/cron/compute-periscope-map.ts`                       | 80                  |
+| Migration              | `api/_lib/db-migrations.ts` (new table `periscope_maps`)  | 40                  |
+| Frontend hook          | `src/hooks/usePeriscopeMap.ts`                            | 80                  |
+| Frontend panel         | `src/components/MarketMakerExposure/index.tsx` (refactor) | -200 (net deletion) |
+| Unit tests             | `api/__tests__/periscope-analyzer.test.ts`                | 400                 |
+| Endpoint test          | `api/__tests__/periscope-map-endpoint.test.ts`            | 120                 |
+| Replay test            | `scripts/replay-periscope-analyzer-2026-05-21.ts`         | 250                 |
+| vercel.json cron entry | —                                                         | 5                   |
 
 Total ~1,625 LOC net add (after the frontend deletion).
 
 ## Phasing
 
-| Phase | Scope | Time |
-|---|---|---|
-| 1 | Types + GEXBot data source (decoder for `mini_contracts` array) + analyzer + unit tests | 1.5 days |
-| 2 | Endpoint + cron + Upstash cache + migration #N for `periscope_maps` + replay sanity test | 1 day |
-| 3 | Frontend hook + panel refactor + feature-flag toggle | 1 day |
-| 4 | Owner enables flag, validates in 1-2 live sessions, flips default on | 1-2 trading days passive |
-| 5 | Retire intraday `runPeriscopeAutoPlaybook` Claude calls | 0.5 day |
+| Phase | Scope                                                                                    | Time                     |
+| ----- | ---------------------------------------------------------------------------------------- | ------------------------ |
+| 1     | Types + GEXBot data source (decoder for `mini_contracts` array) + analyzer + unit tests  | 1.5 days                 |
+| 2     | Endpoint + cron + Upstash cache + migration #N for `periscope_maps` + replay sanity test | 1 day                    |
+| 3     | Frontend hook + panel refactor + feature-flag toggle                                     | 1 day                    |
+| 4     | Owner enables flag, validates in 1-2 live sessions, flips default on                     | 1-2 trading days passive |
+| 5     | Retire intraday `runPeriscopeAutoPlaybook` Claude calls                                  | 0.5 day                  |
 
 Calendar total: **~3.5 build days + 1-2 owner-validation sessions.** No multi-week soak.
 

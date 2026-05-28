@@ -10,9 +10,9 @@
 Replace the existing `StrikeMoverTicker` (a flex-wrap chip wall of ~30–140
 chips, unscannable during a trading session) with `StrikeMoverLadder`: a
 spot-anchored, SPX-centered ladder of strike movers that surfaces the
-most actionable signal for 0DTE SPX trading — *where the floors and
+most actionable signal for 0DTE SPX trading — _where the floors and
 ceilings are, which are strengthening or breaking, and whether
-cross-asset flow confirms.*
+cross-asset flow confirms._
 
 ## Why the current ticker is unusable
 
@@ -23,7 +23,7 @@ cross-asset flow confirms.*
    SPX 1DTE, SPX all, ES_SPX 0DTE, ES_SPX 1DTE, ES_SPX all). That is
    confirmation — but it renders as clutter.
 3. **No Periscope semantics.** Sign of Δ is encoded by chip color, but
-   the directional read (*floor strengthening* vs *floor breaking*)
+   the directional read (_floor strengthening_ vs _floor breaking_)
    requires position relative to spot. The ticker lacks that axis.
 4. **Symbols the user doesn't trade dominate.** QQQ, NDX, NQ_NDX, IWM
    contribute roughly half the chips and compete for attention with the
@@ -113,7 +113,7 @@ moment we have at most:
   after cross-asset binning.
 
 This is the design point, not a limitation. The ladder is a **focus
-indicator**: the rendered row is *the* SPX strike where the largest
+indicator**: the rendered row is _the_ SPX strike where the largest
 5-minute hedging move is happening across the SPX complex. A
 "show all SPX strikes' GEX" view would require a new API on top of
 `gex_strike_expiry` and is an explicit non-goal here.
@@ -163,30 +163,30 @@ a focus indicator, not a survey.
 strike  symbol-dots  confirm-badge  Δ-value  magnitude-bar  status-icon
 ```
 
-| Element | Meaning |
-| --- | --- |
-| Strike | SPX-equivalent strike, rounded to nearest 5. |
-| ATM badge | `◈ ATM` prefix when strike is within ±0.25% of spot (the magnet case). Renders before the symbol dots. |
-| Symbol dots | One filled dot per symbol that has a winner within tolerance: `▪ES` `▪SPX` `▪SPY`. |
-| Confirm badge | `3✓` when all three symbols agree on direction; `2✓` when two; otherwise omitted. |
-| Δ-value | Signed change for the SPX row (the spine), formatted via existing `formatChange()`. |
-| Magnitude bar | Horizontal bar, width relative to the largest `\|Δ\|` in the visible ladder. Min 4% so non-zero is visible. |
-| Status icon | `⚡` = largest mover in current view. `▽` = sign opposes expected direction for this side (e.g., floor with `−Δ` is weakening). |
+| Element       | Meaning                                                                                                                         |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Strike        | SPX-equivalent strike, rounded to nearest 5.                                                                                    |
+| ATM badge     | `◈ ATM` prefix when strike is within ±0.25% of spot (the magnet case). Renders before the symbol dots.                          |
+| Symbol dots   | One filled dot per symbol that has a winner within tolerance: `▪ES` `▪SPX` `▪SPY`.                                              |
+| Confirm badge | `3✓` when all three symbols agree on direction; `2✓` when two; otherwise omitted.                                               |
+| Δ-value       | Signed change for the SPX row (the spine), formatted via existing `formatChange()`.                                             |
+| Magnitude bar | Horizontal bar, width relative to the largest `\|Δ\|` in the visible ladder. Min 4% so non-zero is visible.                     |
+| Status icon   | `⚡` = largest mover in current view. `▽` = sign opposes expected direction for this side (e.g., floor with `−Δ` is weakening). |
 
 ## Trading-aware color logic
 
-This is the central insight. *Position relative to spot × sign of Δ*
+This is the central insight. _Position relative to spot × sign of Δ_
 determines the read:
 
-| Position | 5-min Δ sign | Reads as | Row tone | Marker |
-| --- | --- | --- | --- | --- |
-| Below spot | + | Floor strengthening | `text-emerald-300` | — |
-| Below spot | − | Floor weakening / failing | `text-amber-300` | `▽` |
-| Above spot | − | Ceiling strengthening | `text-rose-300` | — |
-| Above spot | + | Ceiling weakening | `text-yellow-300` | `▽` |
-| Within ±0.25% of spot | ± | **Magnet** — pin candidate | `text-violet-300` | `◈ ATM` |
+| Position              | 5-min Δ sign | Reads as                   | Row tone           | Marker  |
+| --------------------- | ------------ | -------------------------- | ------------------ | ------- |
+| Below spot            | +            | Floor strengthening        | `text-emerald-300` | —       |
+| Below spot            | −            | Floor weakening / failing  | `text-amber-300`   | `▽`     |
+| Above spot            | −            | Ceiling strengthening      | `text-rose-300`    | —       |
+| Above spot            | +            | Ceiling weakening          | `text-yellow-300`  | `▽`     |
+| Within ±0.25% of spot | ±            | **Magnet** — pin candidate | `text-violet-300`  | `◈ ATM` |
 
-ATM is treated as a distinct *magnet* state, not a muted middle case.
+ATM is treated as a distinct _magnet_ state, not a muted middle case.
 An at-the-money winner is by definition the most-actionable level
 (pin candidate, gamma-flip neighborhood) and gets its own violet tone
 plus a `◈ ATM` badge so it pops visually.
@@ -196,7 +196,11 @@ Implemented in `strike-mover-ladder/colors.ts` as a single pure function:
 ```ts
 type Side = 'above' | 'below' | 'atm';
 type Tone = 'strengthening' | 'weakening' | 'magnet';
-function classifyRow(strike: number, spot: number, deltaSign: 1 | -1 | 0): {
+function classifyRow(
+  strike: number,
+  spot: number,
+  deltaSign: 1 | -1 | 0,
+): {
   side: Side;
   tone: Tone;
   toneClass: string;
@@ -241,11 +245,11 @@ Phase 1. They may get their own future tile; not this one.
 ## Constants (Phase 1)
 
 ```ts
-const CROSS_ASSET_TOLERANCE_PTS = 5;   // SPX±5pt match window
-const SPY_TO_SPX_RATIO = 10;           // SPY × 10 ≈ SPX
-const ATM_BAND_BPS = 25;               // ±0.25% of spot = ATM tone
+const CROSS_ASSET_TOLERANCE_PTS = 5; // SPX±5pt match window
+const SPY_TO_SPX_RATIO = 10; // SPY × 10 ≈ SPX
+const ATM_BAND_BPS = 25; // ±0.25% of spot = ATM tone
 const MAX_LADDER_ROWS = 10;
-const MIN_BAR_PCT = 4;                 // mirror CharmClock convention
+const MIN_BAR_PCT = 4; // mirror CharmClock convention
 ```
 
 ## Sign-flip detection (Phase 2, design preview)
@@ -261,7 +265,7 @@ type FlipBuffer = Map<FlipBufferKey, Array<{ ts: number; change: number }>>;
   visible winner row.
 - Drop entries older than `FLIP_HISTORY_WINDOW_MIN = 10` minutes.
 - At render, for each row, look at the buffer entry `FLIP_LOOKBACK_MIN
-  = 5` minutes ago: if `sign(then) !== sign(now)` and both non-zero,
+= 5` minutes ago: if `sign(then) !== sign(now)` and both non-zero,
   mark as flipped.
 - Display: `↻` badge with `flipped 3m ago` tooltip.
 

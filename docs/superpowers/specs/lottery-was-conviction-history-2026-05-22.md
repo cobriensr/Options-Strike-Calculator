@@ -8,7 +8,7 @@
 
 ## Goal
 
-When a ticker hits the ✦ conviction state at any point in the day, remember it. After the state drops (e.g., the 15-min spread cap is exceeded by later fires), render a "was-conviction at HH:MM CT (Nf)" badge so the user can see that the ticker *had* a conviction footprint earlier and which fires triggered it.
+When a ticker hits the ✦ conviction state at any point in the day, remember it. After the state drops (e.g., the 15-min spread cap is exceeded by later fires), render a "was-conviction at HH:MM CT (Nf)" badge so the user can see that the ticker _had_ a conviction footprint earlier and which fires triggered it.
 
 ## Design — frontend-only derivation
 
@@ -23,6 +23,7 @@ The hook + components already get unfiltered items; this is pure derivation on t
 ## Files (4)
 
 1. **`src/utils/ticker-rollup-aggregates.ts`** — new exported helper:
+
    ```ts
    export interface ConvictionWindow {
      firstFireMs: number;
@@ -33,6 +34,7 @@ The hook + components already get unfiltered items; this is pure derivation on t
      summaries: RollupAlertSummary[],
    ): ConvictionWindow | null;
    ```
+
    - Sort summaries by `triggeredAt` ms ascending (guard against unsorted input)
    - Two-pointer sliding window of fires within `HIGH_CONVICTION_MAX_SPREAD_MINUTES` (=15min)
    - For each window position, build a sub-aggregate and call `isHighConviction(subAgg, window.length)`
@@ -40,16 +42,18 @@ The hook + components already get unfiltered items; this is pure derivation on t
    - No true window → null
 
 2. **`src/hooks/useTickerGrouping.ts`** — when `unfilteredItems` is provided, compute `findEarliestConvictionWindow` per ticker. Add to `TickerGroup<T>`:
+
    ```ts
-   wasConvictionAt: string | null;          // ISO of earliest window first fire
-   wasConvictionFireCount: number;          // 0 when null
+   wasConvictionAt: string | null; // ISO of earliest window first fire
+   wasConvictionFireCount: number; // 0 when null
    ```
+
    (Skip the fireMs array on the group type — components only need the timestamp + count for the badge; the full ID list is overkill for the first ship.)
 
 3. **`src/components/LotteryFinder/LotteryFinderTickerGroup.tsx`** + **`src/components/SilentBoom/SilentBoomTickerGroup.tsx`** — render a NEW badge when:
    - `conviction === false` (live is off)
    - `wasConvictionAt != null` (historic state existed)
-   
+
    Format: `was ✦ HH:MM (Nf)` — small amber chip distinct from the live ✦ conviction badge (which is bold amber). Tooltip cites the exact window: "Earliest 15-min window of qualifying conviction footprint started at HH:MM CT with N fires."
 
 4. **Tests** in `src/__tests__/utils/ticker-rollup-aggregates.test.ts` (new `findEarliestConvictionWindow` describe block) + `src/hooks/__tests__/useTickerGrouping.test.ts` (group exposes wasConvictionAt) + the two TickerGroup component tests (badge renders when wasConvictionAt set + conviction false; doesn't when conviction is true).

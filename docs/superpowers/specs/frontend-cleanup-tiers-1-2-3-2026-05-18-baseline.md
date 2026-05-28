@@ -13,41 +13,41 @@ tolerance per the parent spec's operating rules).
 ## HEAD at baseline
 
 - Commit: `48858602` — `docs(spec): Frontend cleanup Tiers 1+2+3
-  post-audit remediation plan`
+post-audit remediation plan`
 - Parent of cleanup work: `36af0315` — `chore(lint): Clear 3
-  sonarjs errors blocking green-HEAD gate`
+sonarjs errors blocking green-HEAD gate`
 - `npm run review` status at this commit: **green** (tsc + eslint +
   prettier + vitest --coverage all passing)
 
 ## Source tree size (src/ only)
 
-| Metric | Value |
-|---|---|
-| Total `.ts`/`.tsx` files in `src/` | 675 |
-| Total LOC (incl. tests) | 174,883 |
-| Non-test LOC | 78,824 |
-| Test LOC | 96,011 |
-| Custom hooks (`src/hooks/*.ts`) | 64 |
-| Util modules (`src/utils/*.ts` top-level) | 41 |
-| Component feature folders (`src/components/*/`) | 40 |
+| Metric                                          | Value   |
+| ----------------------------------------------- | ------- |
+| Total `.ts`/`.tsx` files in `src/`              | 675     |
+| Total LOC (incl. tests)                         | 174,883 |
+| Non-test LOC                                    | 78,824  |
+| Test LOC                                        | 96,011  |
+| Custom hooks (`src/hooks/*.ts`)                 | 64      |
+| Util modules (`src/utils/*.ts` top-level)       | 41      |
+| Component feature folders (`src/components/*/`) | 40      |
 
 ## Top 12 largest non-test files
 
-| LOC | File |
-|---:|---|
-| 1690 | `src/components/SilentBoom/SilentBoomSection.tsx` |
+|  LOC | File                                                    |
+| ---: | ------------------------------------------------------- |
+| 1690 | `src/components/SilentBoom/SilentBoomSection.tsx`       |
 | 1502 | `src/components/LotteryFinder/LotteryFinderSection.tsx` |
-| 1415 | `src/App.tsx` |
-| 1200 | `src/components/LotteryFinder/LotteryRow.tsx` |
-|  940 | `src/components/SilentBoom/SilentBoomRow.tsx` |
-|  927 | `src/data/vixRangeStats.ts` |
-|  805 | `src/components/Periscope/PeriscopePanel.tsx` |
-|  770 | `src/components/LotteryFinder/ContractTapeChart.tsx` |
-|  701 | `src/components/GexLandscape/index.tsx` |
-|  633 | `src/components/LotteryFinder/TickerNetFlowChart.tsx` |
-|  632 | `src/utils/hedge.ts` |
-|  616 | `src/hooks/useGexTarget.ts` |
-|  586 | `src/components/Tracker/AddContractForm.tsx` |
+| 1415 | `src/App.tsx`                                           |
+| 1200 | `src/components/LotteryFinder/LotteryRow.tsx`           |
+|  940 | `src/components/SilentBoom/SilentBoomRow.tsx`           |
+|  927 | `src/data/vixRangeStats.ts`                             |
+|  805 | `src/components/Periscope/PeriscopePanel.tsx`           |
+|  770 | `src/components/LotteryFinder/ContractTapeChart.tsx`    |
+|  701 | `src/components/GexLandscape/index.tsx`                 |
+|  633 | `src/components/LotteryFinder/TickerNetFlowChart.tsx`   |
+|  632 | `src/utils/hedge.ts`                                    |
+|  616 | `src/hooks/useGexTarget.ts`                             |
+|  586 | `src/components/Tracker/AddContractForm.tsx`            |
 
 Expected deltas from the planned phases:
 
@@ -57,7 +57,7 @@ Expected deltas from the planned phases:
 - `App.tsx` ↓ ~550 LOC after Phase 2O (PanelRouter extraction)
 - `PeriscopePanel.tsx` ↓ significantly after Phase 3A
 - `hedge.ts` deleted; replaced by `src/utils/hedge/{pricing,
-  sizing,scenarios,constants,index}.ts` after Phase 2Q
+sizing,scenarios,constants,index}.ts` after Phase 2Q
 - `useGexTarget.ts` ↓ if Phase 2 follow-up splits it (not yet
   scoped — open question if it survives Tier 2 as-is)
 
@@ -66,12 +66,12 @@ Expected deltas from the planned phases:
 Coverage from `npm run review` (vitest `--coverage`) at HEAD
 `48858602` + prettier-sweep follow-up:
 
-| Coverage type | Hit count | % | Hard floor for subsequent phases |
-|---|---:|---:|---:|
-| Statements | 30,944 / 33,028 | 93.69% | ≥ **93.67%** (lowered Phase 1D) |
-| Branches | 21,265 / 24,704 | 86.07% | ≥ 86.07% |
-| Functions | 5,125 / 5,405 | 94.81% | ≥ 94.81% |
-| Lines | 27,930 / 29,227 | 95.56% | ≥ 95.56% |
+| Coverage type |       Hit count |      % | Hard floor for subsequent phases |
+| ------------- | --------------: | -----: | -------------------------------: |
+| Statements    | 30,944 / 33,028 | 93.69% |  ≥ **93.67%** (lowered Phase 1D) |
+| Branches      | 21,265 / 24,704 | 86.07% |                         ≥ 86.07% |
+| Functions     |   5,125 / 5,405 | 94.81% |                         ≥ 94.81% |
+| Lines         | 27,930 / 29,227 | 95.56% |                         ≥ 95.56% |
 
 These are the **hard floors** — every Phase N commit must produce
 coverage numbers ≥ each of the four values above. If a refactor

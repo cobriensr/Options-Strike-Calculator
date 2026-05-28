@@ -21,6 +21,7 @@ The Periscope skill (`.claude/skills/periscope/SKILL.md`) encodes several rules 
 The repo holds **130 trading days × ~40 slices/day = ~5,200 historical Periscope snapshots** joined to per-minute SPX candles. That's enough data to derive each threshold from outcomes rather than guess.
 
 User direction (verbatim from 2026-05-21 conversation):
+
 - "I would prefer this be based on dealer mechanics and price action not just an arbitrary number"
 - "Whatever the data says"
 
@@ -37,14 +38,14 @@ For each candidate rule (trigger arming, stop firing, target selection), there e
 
 All data is already in the production Neon DB.
 
-| Table | Use | Date range |
-|---|---|---|
-| `periscope_snapshots` | per-strike dealer GEX/charm/vanna/positions, 10-min slice cadence | 2025-11-10 → 2026-05-20 |
-| `index_candles_1m` | SPX + NDX 1-min OHLCV — primary truth for "what price did" | full window |
-| `lottery_finder_fires` | 0DTE alert fires with realized peak/EOD outcomes | full window |
-| `silent_boom_alerts` | per-strike volume-spike alerts with realized outcomes | full window |
-| `flow_data` (source = market_tide / spx_flow / etc.) | macro flow context | full window |
-| `spot_exposures` (ticker='SPX') | SPX gamma_oi / charm_oi / vanna_oi minute-cadence | full window |
+| Table                                                | Use                                                               | Date range              |
+| ---------------------------------------------------- | ----------------------------------------------------------------- | ----------------------- |
+| `periscope_snapshots`                                | per-strike dealer GEX/charm/vanna/positions, 10-min slice cadence | 2025-11-10 → 2026-05-20 |
+| `index_candles_1m`                                   | SPX + NDX 1-min OHLCV — primary truth for "what price did"        | full window             |
+| `lottery_finder_fires`                               | 0DTE alert fires with realized peak/EOD outcomes                  | full window             |
+| `silent_boom_alerts`                                 | per-strike volume-spike alerts with realized outcomes             | full window             |
+| `flow_data` (source = market_tide / spx_flow / etc.) | macro flow context                                                | full window             |
+| `spot_exposures` (ticker='SPX')                      | SPX gamma_oi / charm_oi / vanna_oi minute-cadence                 | full window             |
 
 ### Slice ↔ candle join
 
@@ -83,18 +84,18 @@ These features are the inputs every candidate rule operates on.
 
 Each rule is evaluated against historical outcomes. Pick the variant with the best metric per rule family.
 
-### A. Floor-break rules (when does a +γ floor *structurally* fail?)
+### A. Floor-break rules (when does a +γ floor _structurally_ fail?)
 
 A floor "fails" when price continues materially below it without mean-reverting. Define "failure" empirically: SPX close drops ≥10 pts below floor strike within the next 30 min AND does not reclaim within 60 min.
 
-| Rule | Trigger condition |
-|---|---|
-| F1 | 1-min candle close < floor strike |
-| F2 | 1-min candle close < floor strike, hold ≥ 2 bars |
-| F3 | 1-min candle close < floor strike, hold ≥ 5 bars |
-| F4 | F1 AND gamma_floor_magnitude at the floor strike dropped > 30% slice-over-slice |
-| F5 | F1 AND adjacent strike below shows dominant −γ |
-| F6 | F2 AND volume on the breaking bar > 1.5 × trailing-10-min average |
+| Rule | Trigger condition                                                               |
+| ---- | ------------------------------------------------------------------------------- |
+| F1   | 1-min candle close < floor strike                                               |
+| F2   | 1-min candle close < floor strike, hold ≥ 2 bars                                |
+| F3   | 1-min candle close < floor strike, hold ≥ 5 bars                                |
+| F4   | F1 AND gamma_floor_magnitude at the floor strike dropped > 30% slice-over-slice |
+| F5   | F1 AND adjacent strike below shows dominant −γ                                  |
+| F6   | F2 AND volume on the breaking bar > 1.5 × trailing-10-min average               |
 
 For each: precision (% of fires that became genuine failures), recall (% of genuine failures the rule caught), F1.
 
@@ -102,22 +103,24 @@ For each: precision (% of fires that became genuine failures), recall (% of genu
 
 A "legit" trigger is one where price continues in the direction for at least 1 ATR or reaches the next +γ wall. Define empirically: from trigger fire, did price travel ≥ 0.3% in the trigger direction before retracing past the trigger level?
 
-| Rule | Trigger condition |
-|---|---|
-| T1 | 1-min close past trigger |
-| T2 | 3-min hold past trigger |
-| T3 | T1 AND volume > 1.5 × trailing-10-min average |
-| T4 | T1 AND charm_tally direction agrees with trigger direction |
-| T5 | T1 AND spot is outside the cone (vol-expansion regime) |
+| Rule | Trigger condition                                          |
+| ---- | ---------------------------------------------------------- |
+| T1   | 1-min close past trigger                                   |
+| T2   | 3-min hold past trigger                                    |
+| T3   | T1 AND volume > 1.5 × trailing-10-min average              |
+| T4   | T1 AND charm_tally direction agrees with trigger direction |
+| T5   | T1 AND spot is outside the cone (vol-expansion regime)     |
 
 ### C. Target-selection rules (which target hits first?)
 
 Targets per direction:
+
 - **nearest +γ wall** (the +γ floor below for shorts, +γ ceiling above for longs)
 - **magnet** (largest |γ| within ±$30 of spot)
 - **charm-zero** (signed-charm crossing strike)
 
 For each historical slice with a directional setup, record:
+
 - which target was touched first
 - minutes-to-touch
 - whether the trade made it to T2 or stopped first
@@ -128,13 +131,13 @@ Output: a regime-conditional table (e.g., "in pin regime, magnet is T1 73% of th
 
 A stop "broke" if price continued ≥ 10 pts adverse in the next 30 min. A "false stop" is a wick + reversal that didn't continue.
 
-| Rule | Trigger condition |
-|---|---|
-| S1 | 1-min close below stop level |
-| S2 | 1-min close below stop level, hold ≥ 2 bars |
-| S3 | 5-min low pierces stop AND charm_tally flipped against position |
-| S4 | Stop level's +γ magnitude dropped > 50% from entry |
-| S5 | S1 AND no recovery candle within 5 bars |
+| Rule | Trigger condition                                               |
+| ---- | --------------------------------------------------------------- |
+| S1   | 1-min close below stop level                                    |
+| S2   | 1-min close below stop level, hold ≥ 2 bars                     |
+| S3   | 5-min low pierces stop AND charm_tally flipped against position |
+| S4   | Stop level's +γ magnitude dropped > 50% from entry              |
+| S5   | S1 AND no recovery candle within 5 bars                         |
 
 ## Success metrics per rule
 
@@ -159,14 +162,14 @@ Where TP/FP/FN are defined per rule family (failure detected/missed, trigger pre
 
 Given trigger + stop + targets are validated, the next layer maps structure type to gamma topology. This is mechanical (no separate backtest needed) — the structure follows the level locations:
 
-| Setup | Structure | Strike selection |
-|---|---|---|
-| LONG arm at trigger | debit_call_spread | long = trigger, short = gamma_ceiling |
-| SHORT arm at trigger | debit_put_spread | long = trigger, short = max(gamma_floor − 5, next −γ strike) |
-| WAIT zone | iron_condor | short legs = trigger boundaries, long legs = gamma_floor / gamma_ceiling |
-| Pin regime + magnet near spot | broken_wing_butterfly | body = magnet, wings asymmetric per cone skew |
-| Cone-breach + vol expansion | directional_long_call OR long_strangle | strike = cone breach level |
-| Asymmetric cone | credit spread on the cheap side | short = nearest +γ wall on cheap side |
+| Setup                         | Structure                              | Strike selection                                                         |
+| ----------------------------- | -------------------------------------- | ------------------------------------------------------------------------ |
+| LONG arm at trigger           | debit_call_spread                      | long = trigger, short = gamma_ceiling                                    |
+| SHORT arm at trigger          | debit_put_spread                       | long = trigger, short = max(gamma_floor − 5, next −γ strike)             |
+| WAIT zone                     | iron_condor                            | short legs = trigger boundaries, long legs = gamma_floor / gamma_ceiling |
+| Pin regime + magnet near spot | broken_wing_butterfly                  | body = magnet, wings asymmetric per cone skew                            |
+| Cone-breach + vol expansion   | directional_long_call OR long_strangle | strike = cone breach level                                               |
+| Asymmetric cone               | credit spread on the cheap side        | short = nearest +γ wall on cheap side                                    |
 
 Reference: existing `trade_types_recommended` enum in `periscope_analyses` schema. Reference `api/_lib/analyze-prompts.ts` for how Claude currently picks structures — the rules above codify that mapping.
 
@@ -192,11 +195,12 @@ Reference: existing `trade_types_recommended` enum in `periscope_analyses` schem
    - Charts where useful (magnitude-drop distribution, time-to-target histograms)
 
 2. **`api/_lib/periscope-analyzer-rules.ts`** — exported constants:
+
    ```ts
    export const FLOOR_BREAK_RULE = 'F4' as const;
    export const FLOOR_BREAK_THRESHOLDS = {
      minHoldBars: 2,
-     minMagnitudeDropPct: 0.30,
+     minMagnitudeDropPct: 0.3,
    };
    export const TRIGGER_ARM_RULE = 'T4' as const;
    // ...etc
@@ -206,13 +210,13 @@ Reference: existing `trade_types_recommended` enum in `periscope_analyses` schem
 
 ## Phasing after this spec
 
-| Phase | Scope | Time |
-|---|---|---|
-| 1 | Run this study, produce deliverables above | 1–2 days |
-| 2 | Spec `periscope-analyzer.ts` using validated thresholds | 0.5 day |
-| 3 | Build `periscope-analyzer.ts` + trade-recommendation overlay | 1–2 days |
-| 4 | Wire intraday panel to update from GEXBot 1-min via analyzer | 1 day |
-| 5 (optional) | Retire periscope-scraper if GEXBot proves sufficient | 0.5 day |
+| Phase        | Scope                                                        | Time     |
+| ------------ | ------------------------------------------------------------ | -------- |
+| 1            | Run this study, produce deliverables above                   | 1–2 days |
+| 2            | Spec `periscope-analyzer.ts` using validated thresholds      | 0.5 day  |
+| 3            | Build `periscope-analyzer.ts` + trade-recommendation overlay | 1–2 days |
+| 4            | Wire intraday panel to update from GEXBot 1-min via analyzer | 1 day    |
+| 5 (optional) | Retire periscope-scraper if GEXBot proves sufficient         | 0.5 day  |
 
 ## Non-goals
 
@@ -224,4 +228,4 @@ Reference: existing `trade_types_recommended` enum in `periscope_analyses` schem
 
 ## Risk to flag
 
-The convergence of 7/7 reads on 2026-05-19 to nearly identical structured outputs (all "medium" confidence, all "trap" or "drift-and-cap") suggests Claude is already producing mechanical output. The study is most likely to *confirm* that rules can replicate Claude's output — not to find dramatically new rules. The win is **latency + cost**, not better signal quality. Be honest about that in the findings doc.
+The convergence of 7/7 reads on 2026-05-19 to nearly identical structured outputs (all "medium" confidence, all "trap" or "drift-and-cap") suggests Claude is already producing mechanical output. The study is most likely to _confirm_ that rules can replicate Claude's output — not to find dramatically new rules. The win is **latency + cost**, not better signal quality. Be honest about that in the findings doc.

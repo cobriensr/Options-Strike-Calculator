@@ -14,13 +14,13 @@ Two new alert detectors that fire on `periscope_snapshots` events and produce li
 
 In-sample realized economics (26 days ex-5/18, optimal cells):
 
-| Filter | n/26 | hit ≥150% | hit ≥200% | realR/ticket at TP=5R | max R |
-|---|---:|---:|---:|---:|---:|
-| **I v3** (gex_dollars<1e9) | 10 | 90% | 50% | +0.80R | 75.25 |
-| **I v3-strict** (deep_neg + dist≥15) | 6 | 100% | 50% | +1.00R | 10.50 |
-| **I v4** (v3 + QQQ_balance>0) | 6 | 83% | 67% | +2.00R | 75.25 |
-| **L v3** (call_ratio<1.5) | 8 | 100% | 100% | +0.50R | 11.99 |
-| **L v3 alt** (entry_px≤1.0) | 10 | 90% | 90% | +2.00R | 11.99 |
+| Filter                               | n/26 | hit ≥150% | hit ≥200% | realR/ticket at TP=5R | max R |
+| ------------------------------------ | ---: | --------: | --------: | --------------------: | ----: |
+| **I v3** (gex_dollars<1e9)           |   10 |       90% |       50% |                +0.80R | 75.25 |
+| **I v3-strict** (deep_neg + dist≥15) |    6 |      100% |       50% |                +1.00R | 10.50 |
+| **I v4** (v3 + QQQ_balance>0)        |    6 |       83% |       67% |                +2.00R | 75.25 |
+| **L v3** (call_ratio<1.5)            |    8 |      100% |      100% |                +0.50R | 11.99 |
+| **L v3 alt** (entry_px≤1.0)          |   10 |       90% |       90% |                +2.00R | 11.99 |
 
 ## Cron architecture
 
@@ -178,7 +178,7 @@ async function detectCallLottery(slot: Slice): Promise<PeriscopeLotteryFire[]> {
   for (const c of candidates) {
     // Pull gex_target_features for the event strike
     const gex = await fetchGexTargetFeatures(c.strike, c.captured_at);
-    if (!gex || gex.gex_dollars >= 1e9) continue;              // v3 filter
+    if (!gex || gex.gex_dollars >= 1e9) continue; // v3 filter
 
     // Optional v4 confirmation: QQQ net prem balance
     const qqqBalance = await fetchQqqNetPremBalance30m(c.captured_at);
@@ -260,10 +260,10 @@ async function detectPutLottery(slot: Slice): Promise<PeriscopeLotteryFire[]> {
       greekChgRank: c.chg_rank,
       gexDollars: gex?.gex_dollars,
       callRatio: gex?.call_ratio,
-      qqqNetPremBalance30m: null,         // not used for L
+      qqqNetPremBalance30m: null, // not used for L
       entryPx: entry.price,
       vix: await fetchLatestVix(c.captured_at),
-      v4Confirmed: entryGate,              // re-used flag for "premium <= $1"
+      v4Confirmed: entryGate, // re-used flag for "premium <= $1"
     });
   }
   return fires;

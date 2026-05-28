@@ -17,6 +17,7 @@
 Operational task — runs an existing script. Independent of all UI work; can run in parallel.
 
 **Files:**
+
 - Run: `scripts/backfill-ticker-flow-at-fire.mjs` (already exists, no edits needed)
 
 - [ ] **Step 1: Estimate scope with a dry run**
@@ -74,6 +75,7 @@ This task has no code commit. The script run produces only DB state changes.
 Extracts the duplicated `tideBadge` from both row files into one module and adds the new `flowBadge` + `deltaFromAtFire` helpers.
 
 **Files:**
+
 - Create: `src/utils/macro-badges.ts`
 - Create: `src/__tests__/utils/macro-badges.test.ts`
 - Modify: `src/components/SilentBoom/SilentBoomRow.tsx` (remove local `tideBadge`, import from new utility)
@@ -310,6 +312,7 @@ git commit -m "refactor(macro-badges): extract shared tideBadge + add flowBadge 
 Adds the new `<span>` chip between the existing Tide chip and the existing Flow Match badge on each row.
 
 **Files:**
+
 - Modify: `src/components/SilentBoom/SilentBoomRow.tsx`
 - Modify: `src/components/LotteryFinder/LotteryRow.tsx`
 - Modify: `src/__tests__/SilentBoomRow.test.tsx`
@@ -372,7 +375,11 @@ In `src/components/SilentBoom/SilentBoomRow.tsx`:
 1. Update the import line for macro-badges:
 
 ```ts
-import { deltaFromAtFire, flowBadge, tideBadge } from '../../utils/macro-badges.js';
+import {
+  deltaFromAtFire,
+  flowBadge,
+  tideBadge,
+} from '../../utils/macro-badges.js';
 ```
 
 2. Find the existing `const tide = tideBadge(alert.mktTideDiff);` line in the component body. Add immediately after it:
@@ -386,16 +393,18 @@ const flow = flowBadge(
 3. Find the JSX where the Tide chip is rendered (look for `{tide && (` or similar — the existing Tide chip block). Insert directly after the closing tag of the Tide chip and before the Flow Match badge:
 
 ```tsx
-{flow && (
-  <span
-    data-testid="silent-boom-row-flow-chip"
-    className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
-    title={flow.tooltip}
-    aria-label={flow.tooltip}
-  >
-    {flow.label}
-  </span>
-)}
+{
+  flow && (
+    <span
+      data-testid="silent-boom-row-flow-chip"
+      className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
+      title={flow.tooltip}
+      aria-label={flow.tooltip}
+    >
+      {flow.label}
+    </span>
+  );
+}
 ```
 
 - [ ] **Step 4: Run the SilentBoomRow tests and verify they pass**
@@ -474,7 +483,11 @@ In `src/components/LotteryFinder/LotteryRow.tsx`:
 1. Update the imports for macro-badges:
 
 ```ts
-import { deltaFromAtFire, flowBadge, tideBadge } from '../../utils/macro-badges.js';
+import {
+  deltaFromAtFire,
+  flowBadge,
+  tideBadge,
+} from '../../utils/macro-badges.js';
 ```
 
 2. Find the existing `const tide = tideBadge(fire.macro.mktTideDiff);` line and add immediately after:
@@ -488,16 +501,18 @@ const flow = flowBadge(
 3. Find the JSX block where the Tide chip is rendered. Insert directly after the Tide chip closing tag and before the Flow Match badge:
 
 ```tsx
-{flow && (
-  <span
-    data-testid="lottery-row-flow-chip"
-    className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
-    title={flow.tooltip}
-    aria-label={flow.tooltip}
-  >
-    {flow.label}
-  </span>
-)}
+{
+  flow && (
+    <span
+      data-testid="lottery-row-flow-chip"
+      className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
+      title={flow.tooltip}
+      aria-label={flow.tooltip}
+    >
+      {flow.label}
+    </span>
+  );
+}
 ```
 
 - [ ] **Step 8: Run the LotteryRow tests and verify they pass**
@@ -530,6 +545,7 @@ git commit -m "feat(silent-boom,lottery): render per-row Flow chip from fire-tim
 Add `tickerNetFlowAtFire` to `RollupAlertSummary`, refactor `computeTide` into a generic `computeDirAlignment`, and add `computeFlow` + `formatFlowLabel`.
 
 **Files:**
+
 - Modify: `src/utils/ticker-rollup-aggregates.ts`
 - Modify: `src/__tests__/utils/ticker-rollup-aggregates.test.ts` (or wherever the existing tests live — check `src/__tests__/`)
 
@@ -631,11 +647,15 @@ describe('formatFlowLabel', () => {
   });
 
   it('renders "flow mixed"', () => {
-    expect(formatFlowLabel({ dir: 'mixed', align: 'mixed' })).toBe('flow mixed');
+    expect(formatFlowLabel({ dir: 'mixed', align: 'mixed' })).toBe(
+      'flow mixed',
+    );
   });
 
   it('renders "flow —" for unknown', () => {
-    expect(formatFlowLabel({ dir: 'unknown', align: 'unknown' })).toBe('flow —');
+    expect(formatFlowLabel({ dir: 'unknown', align: 'unknown' })).toBe(
+      'flow —',
+    );
   });
 });
 ```
@@ -795,6 +815,7 @@ git commit -m "refactor(rollup): generalize computeTide → computeDirAlignment 
 Wires the new `agg.flow` from Task 3 into the visible group-header chip. Also renames the local `tideChipClass` helper to `alignChipClass` in both ticker-group files for naming clarity.
 
 **Files:**
+
 - Modify: `src/components/SilentBoom/SilentBoomTickerGroup.tsx`
 - Modify: `src/components/SilentBoom/SilentBoomSection.tsx`
 - Modify: `src/components/LotteryFinder/LotteryFinderTickerGroup.tsx`
@@ -835,9 +856,9 @@ describe('SilentBoomTickerGroup — flow rollup chip', () => {
       }),
     ];
     renderGroup({ ticker: 'MSFT', alerts });
-    expect(screen.getByTestId('silent-boom-ticker-flow-MSFT')).toHaveTextContent(
-      'flow ↑ aligned',
-    );
+    expect(
+      screen.getByTestId('silent-boom-ticker-flow-MSFT'),
+    ).toHaveTextContent('flow ↑ aligned');
   });
 
   it('renders "flow ↓ counter" when bull bias but ticker flow negative', () => {
@@ -849,9 +870,9 @@ describe('SilentBoomTickerGroup — flow rollup chip', () => {
       }),
     ];
     renderGroup({ ticker: 'MSFT', alerts });
-    expect(screen.getByTestId('silent-boom-ticker-flow-MSFT')).toHaveTextContent(
-      'flow ↓ counter',
-    );
+    expect(
+      screen.getByTestId('silent-boom-ticker-flow-MSFT'),
+    ).toHaveTextContent('flow ↓ counter');
   });
 
   it('renders "flow —" when no rows have a fire-time snapshot', () => {
@@ -863,9 +884,9 @@ describe('SilentBoomTickerGroup — flow rollup chip', () => {
       }),
     ];
     renderGroup({ ticker: 'MSFT', alerts });
-    expect(screen.getByTestId('silent-boom-ticker-flow-MSFT')).toHaveTextContent(
-      'flow —',
-    );
+    expect(
+      screen.getByTestId('silent-boom-ticker-flow-MSFT'),
+    ).toHaveTextContent('flow —');
   });
 });
 ```
@@ -1009,6 +1030,7 @@ git commit -m "feat(rollup): render flow chip + rename tideChipClass → alignCh
 ## Task 5: Add `hide counter-flow` filter to SilentBoomSection
 
 **Files:**
+
 - Modify: `src/components/SilentBoom/SilentBoomSection.tsx`
 - Modify: `src/__tests__/SilentBoomSection.test.tsx`
 
@@ -1234,12 +1256,14 @@ git commit -m "feat(silent-boom): add hide-counter-flow filter chip"
 Symmetric to Task 5 on the lottery side. The lottery section's row shape uses `f.macro.tickerCumNcpAtFire` instead of `a.tickerCumNcpAtFire` — that's the only structural difference.
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/LotteryFinderSection.tsx`
 - Modify: `src/__tests__/LotteryFinderSection.test.tsx`
 
 - [ ] **Step 1: Write the failing tests**
 
 Mirror Task 5 Step 1 in `src/__tests__/LotteryFinderSection.test.tsx`. The five cases are identical except:
+
 - Test IDs: `lottery-hide-counter-flow-chip` instead of `silent-boom-...`
 - localStorage key: `lottery.hideCounterFlow`
 - Fixtures: use `makeFire` with `macro: { ...defaultMacro, tickerCumNcpAtFire, tickerCumNppAtFire }` instead of top-level fields
@@ -1385,6 +1409,7 @@ Wait for the server to be ready (Vite output reports `Local: http://localhost:51
 - [ ] **Step 3: Smoke-check the Silent Boom panel**
 
 Open `http://localhost:5173/`, navigate to the Silent Boom section. Verify on at least one ticker group with multiple alerts:
+
 1. Per-row `Flow ⬆` or `Flow ⬇` chip appears next to the existing `Tide` chip on rows where the ticker is in the WS universe.
 2. Parent rollup `flow ↑ aligned` / `flow ↓ counter` / `flow mixed` chip appears next to the existing `tide …` chip.
 3. The `hide counter-flow` filter chip is visible immediately after `hide counter-trend`. Clicking it toggles between active/inactive states; when active, hidden rows disappear and the chip shows a `−N` suffix.
@@ -1397,6 +1422,7 @@ Repeat Step 3 on the Lottery Finder section with the lottery test IDs.
 - [ ] **Step 5: Verify outside-universe ticker fallback**
 
 Find or scroll to an alert on a single-name ticker outside the WS universe (e.g. an obscure ETF or small-cap). Confirm:
+
 1. No `Flow` chip renders on the row (chip is hidden because fire-time fields are null).
 2. With `hide counter-flow` active, the row is NOT hidden (null-protection working).
 

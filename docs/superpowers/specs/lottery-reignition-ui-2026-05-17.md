@@ -20,6 +20,7 @@ Tuned against 93 days of `lottery_finder_fires` (626K rows, 2026-01-02 → 2026-
 **Anchor case:** QQQ 708P 2026-05-15 — 21 fires from 08:30 CT to 14:59 CT, a 162-min mid-day gap (10:50 → 13:32), then 5 post-gap fires that peaked at 150–578%. The locked rule catches this and ~half of the QQQ put chain that fired alongside it.
 
 **Locked rule — REIGNITED = Top 5/day from (3, 30, 2):**
+
 - `fire_count >= 3` AND
 - `max_gap_min >= 30` (computed from `trigger_time_ct`, NOT the broken `minutes_since_prev_fire` column) AND
 - `post_gap_fires >= 2`
@@ -47,6 +48,7 @@ Each phase is independently shippable. Per-phase loop per `feedback_per_phase_lo
 Add per-chain fire history + reignition flag to `/api/lottery-finder`.
 
 **Files to modify:**
+
 - [api/lottery-finder.ts](api/lottery-finder.ts) — extend the chain-day CTE to:
   - aggregate `fires_array` (jsonb of `{trigger_time_ct, entry_price}`) per chain
   - compute `max_gap_min` (LAG over partition by chain) and `post_gap_fires`
@@ -55,9 +57,10 @@ Add per-chain fire history + reignition flag to `/api/lottery-finder`.
 - [src/components/LotteryFinder/types.ts](src/components/LotteryFinder/types.ts) — add to `LotteryFire`:
   - `historicalFires?: Array<{ triggerTimeCt: string; entryPrice: number }>`
   - `reignited?: boolean`
-- [api/__tests__/lottery-finder.test.ts](api/__tests__/lottery-finder.test.ts) — verify both fields populate correctly; cover the Top 5/day rank cutoff
+- [api/**tests**/lottery-finder.test.ts](api/__tests__/lottery-finder.test.ts) — verify both fields populate correctly; cover the Top 5/day rank cutoff
 
 **Constants** (single source of truth, exported from `api/_lib/constants.ts`):
+
 ```ts
 export const REIGNITION_MIN_FIRES = 3;
 export const REIGNITION_MIN_GAP_MIN = 30;
@@ -66,6 +69,7 @@ export const REIGNITION_TOP_N_PER_DAY = 5;
 ```
 
 **SQL shape (sketch):**
+
 ```sql
 WITH fires_ranked AS (
   SELECT f.*,
@@ -104,6 +108,7 @@ SELECT ... CASE WHEN rr.rn <= $TOP_N THEN TRUE ELSE FALSE END AS reignited ...
 (The actual query may end up cleaner — this is illustrative. Optimizer may prefer a single-pass CTE.)
 
 **Acceptance:**
+
 - Existing endpoint contract unchanged; new fields additive
 - `historicalFires` only populated when `fireCount > 1` (avoid bloat)
 - Reignited row count per day matches `docs/tmp/reignition-tuning-v4` output ±10% over a 30-day sample
@@ -114,17 +119,20 @@ SELECT ... CASE WHEN rr.rn <= $TOP_N THEN TRUE ELSE FALSE END AS reignited ...
 Render every fire's entry-price line on the expanded contract chart.
 
 **Files to modify:**
+
 - [src/components/LotteryFinder/ContractTapeChart.tsx](src/components/LotteryFinder/ContractTapeChart.tsx) — new `historicalFires` prop; render each as an orange dashed line (`stroke="#fb923c"`, `strokeDasharray="2 3"`); keep latest purple line as-is
 - [src/components/LotteryFinder/LotteryRow.tsx](src/components/LotteryFinder/LotteryRow.tsx) — pass `fire.historicalFires` to `<ContractTapeChart>`
-- [src/__tests__/ContractTapeChart.test.tsx](src/__tests__/ContractTapeChart.test.tsx) — assert N orange lines rendered when N past fires given, plus the single purple line
+- [src/**tests**/ContractTapeChart.test.tsx](src/__tests__/ContractTapeChart.test.tsx) — assert N orange lines rendered when N past fires given, plus the single purple line
 
 **Visual spec:**
+
 - Past fires: vertical line at each `triggerTimeCt`, orange `#fb923c`, dashed `2 3`, 50% opacity
 - Latest fire: existing purple `#a855f7`, dashed `3 2`, full opacity — unchanged
 - No tooltip on past lines (keep it simple); the chart already has a hover layer for volume bars
 - Lines span the full price-zone height (not the volume zone)
 
 **Acceptance:**
+
 - A chain with 21 fires renders 20 orange lines + 1 purple (last fire is the marker)
 - When `historicalFires` is undefined/null/empty, behavior matches current production (just the purple line)
 - No regression in chart hover tooltip behavior
@@ -134,10 +142,12 @@ Render every fire's entry-price line on the expanded contract chart.
 Surface REIGNITED chains in a pinned section above the ticker groups.
 
 **Files to create:**
+
 - [src/components/LotteryFinder/ReignitionSection.tsx](src/components/LotteryFinder/ReignitionSection.tsx) — pinned section component; reuses `<LotteryRow>` for actual rendering
-- [src/__tests__/ReignitionSection.test.tsx](src/__tests__/ReignitionSection.test.tsx) — covers empty state, sort order, and that promoted rows have the chip
+- [src/**tests**/ReignitionSection.test.tsx](src/__tests__/ReignitionSection.test.tsx) — covers empty state, sort order, and that promoted rows have the chip
 
 **Files to modify:**
+
 - [src/components/LotteryFinder/LotteryFinderSection.tsx](src/components/LotteryFinder/LotteryFinderSection.tsx) — split the fires list:
   - `reignited` rows → render in `<ReignitionSection>` at top
   - non-reignited rows → render in existing ticker groups below
@@ -146,6 +156,7 @@ Surface REIGNITED chains in a pinned section above the ticker groups.
 - [src/components/LotteryFinder/LotteryRow.tsx](src/components/LotteryFinder/LotteryRow.tsx) — render `🔥 REIGNITED` chip when `fire.reignited === true` (orange/red, near the existing ×N badge)
 
 **Visual spec for the pinned section:**
+
 - Header: `🔥 Hot Right Now (N)` with subtle pulse animation on the icon
 - Border: orange/red gradient or wash to distinguish from ticker groups
 - Empty state: section hides entirely when N = 0 (don't show empty box)
@@ -154,6 +165,7 @@ Surface REIGNITED chains in a pinned section above the ticker groups.
 **Persistence note:** "Stays flagged for the session" is enforced by the SQL (`fire_count`, `max_gap_min`, `post_gap_fires` are all chain-day aggregates that only grow during the session). Once a chain qualifies, subsequent API polls will keep returning `reignited: true` for the rest of the day.
 
 **Acceptance:**
+
 - On 2026-05-15 data, 5 chains qualify and render in the pinned section
 - QQQ 708P 5/15 is one of them (anchor)
 - Removing `reignited` from a row removes it from the section and restores it to its ticker group
@@ -189,6 +201,7 @@ If implementing in one continuous session, do them in order 1 → 2 → 3. Each 
 ## Verification gates
 
 Per `feedback_run_review` + `feedback_always_test`:
+
 - `npm run review` (tsc + eslint + prettier + vitest --coverage) must pass after each phase
 - Every new module needs a test file (per `feedback_always_test`)
 - No `console.log` in committed code

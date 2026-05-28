@@ -24,9 +24,9 @@ jump groups — that preserves the conceptual buckets the registry defines.
   controlling group sequence today.
 - **Storage:** `panel_prefs` table — `identity TEXT PK`,
   `hidden_panels JSONB`, `updated_at`. Endpoint `GET/PUT
-  /api/panel-prefs`. Rate-limited 20/caller.
+/api/panel-prefs`. Rate-limited 20/caller.
 - **Hook:** `usePanelPrefs()` → `{ hidden, isHidden, toggle, reset,
-  isLoaded }` with optimistic 500ms-debounced PUT.
+isLoaded }` with optimistic 500ms-debounced PUT.
 - **Modal:** `src/components/PanelPrefsModal/PanelPrefsModal.tsx` —
   grouped checkboxes, "Reset (show all)" + "Done".
 - **Render:** `src/App.tsx` lines 781–1322 — **30+ hardcoded
@@ -151,8 +151,8 @@ market hours.
 
 - Add migration #110 (or next available) in `db-migrations.ts`:
   `ALTER TABLE panel_prefs ADD COLUMN panel_order JSONB NOT NULL
-  DEFAULT '[]'::jsonb, ADD COLUMN group_order JSONB NOT NULL DEFAULT
-  '[]'::jsonb;` (one migration row, atomic).
+DEFAULT '[]'::jsonb, ADD COLUMN group_order JSONB NOT NULL DEFAULT
+'[]'::jsonb;` (one migration row, atomic).
 - Update `api/panel-prefs.ts`:
   - GET returns `{ hiddenPanels, panelOrder, groupOrder }`.
   - PUT accepts optional `panelOrder?: string[]` and
@@ -206,11 +206,11 @@ market hours.
   - Outer `<DndContext>` + `<SortableContext>` over group ids
     (`verticalListSortingStrategy`). Each group header becomes a
     `useSortable` item with a grip-icon button (`aria-label="Drag
-    to reorder group {group}"`).
+to reorder group {group}"`).
   - Inside each group: an inner `<SortableContext>` over panel ids
     in that group. Each panel row gets a grip-icon drag handle in
     addition to its existing checkbox (`aria-label="Drag to
-    reorder {panel.label}"`).
+reorder {panel.label}"`).
   - `onDragEnd`:
     - If the dragged item is a group id → call `setGroupOrder()`.
     - If the dragged item is a panel id → call `setOrder()`. Reject

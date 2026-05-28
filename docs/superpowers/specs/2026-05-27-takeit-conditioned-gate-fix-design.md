@@ -18,11 +18,11 @@ Make the hard tier3 override **conditional on TAKE-IT**: exempt
 Silent Boom 0DTE fires, Jan 2 → May 27 2026, realized trailing-stop return
 (`docs/tmp/sf-gate.mjs`):
 
-| gated fires    | n   | peak ≥100% | peak ≥300% | mean trail | verdict        |
-| -------------- | --- | ---------- | ---------- | ---------- | -------------- |
-| TAKE-IT <0.5   | 154 | 15%        | 3%         | **−15.5%** | gate correct   |
-| TAKE-IT 0.5–0.7| 131 | 26%        | 3%         | −18.2%     | gate correct   |
-| TAKE-IT ≥0.7   | 448 | 38%        | 12%        | **+0.4%**  | gate is wrong  |
+| gated fires     | n   | peak ≥100% | peak ≥300% | mean trail | verdict       |
+| --------------- | --- | ---------- | ---------- | ---------- | ------------- |
+| TAKE-IT <0.5    | 154 | 15%        | 3%         | **−15.5%** | gate correct  |
+| TAKE-IT 0.5–0.7 | 131 | 26%        | 3%         | −18.2%     | gate correct  |
+| TAKE-IT ≥0.7    | 448 | 38%        | 12%        | **+0.4%**  | gate is wrong |
 
 Ungated TAKE-IT ≥0.7 peers: peak ≥100% 38%, mean trail −4.5%. So gated ≥0.7
 fires perform **as well as or better than** their ungated peers — the override
@@ -38,7 +38,7 @@ In `api/cron/detect-silent-boom.ts`, where `direction_gated` currently forces
 - Compute `takeit_prob` **before** the gate decision (ordering dependency — the
   cron already computes it; ensure it precedes the tier override).
 - Apply the tier3 override **only when** `takeit_prob < 0.70` OR `takeit_prob IS
-  NULL`. When `takeit_prob >= 0.70`, keep `direction_gated = true` (preserve the
+NULL`. When `takeit_prob >= 0.70`, keep `direction_gated = true` (preserve the
   counter-tide flag for display/audit) but **do not overwrite the tier** — let
   the alert show its real conviction with a "gated (counter-tide)" annotation.
 

@@ -12,7 +12,8 @@ arbitrary past trading days — including days where no signal fired —
 even after the underlying `ws_option_trades` retention window
 (2 days) has aged out the source trades. Today the OFS endpoint
 re-computes from raw trades for every request; that works for live
-+ yesterday but goes empty on day 3.
+
+- yesterday but goes empty on day 3.
 
 ## Why now
 
@@ -24,7 +25,7 @@ local storage." Confirmed with code grep:
 - [api/cron/cleanup-ws-option-trades.ts:44](../../../api/cron/cleanup-ws-option-trades.ts#L44)
   sets `RETENTION_DAYS = 2`.
 - The OFS endpoint already accepts `?date=YYYY-MM-DD` (see
-  [api/_lib/validation/opening-flow.ts:15](../../../api/_lib/validation/opening-flow.ts#L15))
+  [api/\_lib/validation/opening-flow.ts:15](../../../api/_lib/validation/opening-flow.ts#L15))
   and re-computes from `ws_option_trades`. So the endpoint surface
   is ready; the missing piece is durable storage of the result so
   it survives the trade-table sweep.
@@ -139,9 +140,9 @@ dates that have raw trades. No DB shape change in this phase.
   pour in). Calls `evaluateOpeningFlow(today CT date)`. UPSERTs
   one row per `{date, ticker}` into `opening_flow_signals`.
 - `api/__tests__/capture-opening-flow-signal.test.ts` — mocks db
-  + evaluator; asserts the cron hits ON CONFLICT upsert with the
-  right shape; asserts CRON_SECRET guard; asserts market-hours
-  gate (no-op on weekends / holidays).
+  - evaluator; asserts the cron hits ON CONFLICT upsert with the
+    right shape; asserts CRON_SECRET guard; asserts market-hours
+    gate (no-op on weekends / holidays).
 
 **Schedule:** add to `vercel.json` cron list — `0 14 * * 1-5` UTC
 (08:50 CT in CDT; will need DST consideration — match the same
@@ -214,11 +215,13 @@ operational note to run the cron manually after deploy.
 ## Files index
 
 **New:**
+
 - `api/cron/capture-opening-flow-signal.ts`
 - `api/__tests__/capture-opening-flow-signal.test.ts`
 - Optional: `scripts/backfill-opening-flow-signal.ts`
 
 **Modified:**
+
 - `api/_lib/db-migrations.ts` (migration #173)
 - `api/_lib/opening-flow.ts` (or new `opening-flow-evaluator.ts`)
 - `api/opening-flow-signal.ts` (extract evaluator + add
@@ -293,7 +296,7 @@ operational note to run the cron manually after deploy.
 - Date picker on the OFS panel; picking any past date returns
   data (within capture window) or a clear "not captured" state
 - The capture cron has run at least once on a real trading day
-  + the row is visible via SQL
+  - the row is visible via SQL
 - Backfill for the prior day (the only one still in ws_option_trades)
   is complete
 - Coverage floors held or improved

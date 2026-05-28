@@ -20,7 +20,7 @@ signal. Drop the 10-min `usePeriscopeStrikes` path entirely.
 - Each `mini_contracts` row already carries position-4 = `[t-1m, t-5m, t-10m]`
   per strike. The lookback windows the trader asked for are **embedded in the
   same payload** — no extra DB lookbacks needed. The current decoder in
-  [api/_lib/periscope-gexbot.ts](../../../api/_lib/periscope-gexbot.ts) drops it
+  [api/\_lib/periscope-gexbot.ts](../../../api/_lib/periscope-gexbot.ts) drops it
   on the floor.
 
 ## Locked decisions (2026-05-26)
@@ -64,6 +64,7 @@ gexbot_api_capture  ─┐
 ```
 
 **What goes away:**
+
 - `usePeriscopeStrikes` (still used? grep — drop only the GexLandscape consumer)
 - `useGexStrikeExpirySpx` consumption from this hook
 - 10m/15m/20m/30m Δ% maps and column UI
@@ -84,6 +85,7 @@ sweep dead props/imports/exports/logs in these three files BEFORE structural
 work. Commit separately.
 
 **Files:**
+
 - [src/components/GexLandscape/index.tsx](../../../src/components/GexLandscape/index.tsx) (673)
 - [src/components/GexLandscape/StrikeTable.tsx](../../../src/components/GexLandscape/StrikeTable.tsx) (455)
 - [src/components/GexLandscape/BiasPanel.tsx](../../../src/components/GexLandscape/BiasPanel.tsx) (405)
@@ -93,7 +95,7 @@ AND no behavior change visible in the panel.
 
 ### Phase 1 — Backend: extend decoder + new endpoint
 
-**1a. Decoder:** Extend [api/_lib/periscope-gexbot.ts](../../../api/_lib/periscope-gexbot.ts)
+**1a. Decoder:** Extend [api/\_lib/periscope-gexbot.ts](../../../api/_lib/periscope-gexbot.ts)
 with `decodeStrikesWithHistory()`:
 
 ```ts
@@ -109,6 +111,7 @@ Keep `decodeStrikes()` untouched so MMExposureMap doesn't move.
 
 **1b. New endpoint:** `api/gex-landscape.ts`. Pattern after `api/periscope-map.ts`
 but:
+
 - Decode all three panels with history (gamma, charm, vanna)
 - Join the three by strike into a single per-strike row
 - Return `{ strikes, spot, asOf, ageSec, availableMinutes }` — minute list pulled
@@ -117,6 +120,7 @@ but:
 - Cache headers: 30s live / 60s after-hours.
 
 **1c. Tests:** `api/__tests__/gex-landscape.test.ts`
+
 - Auth: rejects without owner cookie
 - happy path: 3 panels present, returns shaped data
 - no_slot when any panel stale
@@ -129,6 +133,7 @@ prod-like data + Phase 1 tests pass + 1 reviewer pass.
 ### Phase 2 — Hook rewrite
 
 Rewrite [src/hooks/useGexLandscapeData.ts](../../../src/hooks/useGexLandscapeData.ts):
+
 - Single fetch against `/api/gex-landscape` (no parallel WS hook)
 - Build `GexStrikeLevel[]` from the new payload (most call/put fields become
   zero — keep the type shape stable for the table renderer this phase)
@@ -137,7 +142,8 @@ Rewrite [src/hooks/useGexLandscapeData.ts](../../../src/hooks/useGexLandscapeDat
 - Drop all naive maps from the return type. Drop empty back-compat maps.
 - Update `UseGexLandscapeDataReturn` interface.
 
-**Tests:** rewrite [src/__tests__/hooks/useGexLandscapeData.test.ts](../../../src/__tests__/hooks/useGexLandscapeData.test.ts)
+**Tests:** rewrite [src/**tests**/hooks/useGexLandscapeData.test.ts](../../../src/__tests__/hooks/useGexLandscapeData.test.ts)
+
 - Happy path
 - Empty payload → empty arrays
 - Strike missing prev1m → null in delta map
@@ -149,17 +155,20 @@ columns showing the WRONG window names — Phase 4 fixes that).
 ### Phase 3 — Type + bias updates
 
 [src/components/GexLandscape/types.ts](../../../src/components/GexLandscape/types.ts):
+
 - Drop `NaiveDriftTarget`, `NaiveBiasMetrics`, `naive` from `BiasMetrics`
 - Replace `floorTrend10m/30m`, `ceilingTrend10m/30m` with 6 fields:
   `floorTrend1m/5m/10m`, `ceilingTrend1m/5m/10m`
 - Drop `volReinforcement` (or repurpose per Q1 answer — assuming (b))
 
 [src/components/GexLandscape/bias.ts](../../../src/components/GexLandscape/bias.ts):
+
 - Drop `computeNaiveSubBias()`
 - `computeBias()` takes 3 delta maps (1m/5m/10m), returns 6 trend fields
 - Verdict logic untouched (regime × gravity)
 
 [src/components/GexLandscape/classify.ts](../../../src/components/GexLandscape/classify.ts):
+
 - Drop `computeGammaPressure()` and `GammaPressure` export
 
 **Tests:** Update [GexLandscape-bias.test.ts](../../../src/__tests__/components/GexLandscape-bias.test.ts),
@@ -168,17 +177,20 @@ columns showing the WRONG window names — Phase 4 fixes that).
 ### Phase 4 — Component rebuild
 
 [src/components/GexLandscape/StrikeTable.tsx](../../../src/components/GexLandscape/StrikeTable.tsx):
+
 - Columns: Strike | Dir | NetGamma | NetCharm | NetVanna | Δ1m | Δ5m | Δ10m
   | Class | Reinforcement (if Q1=b)
 - Drop the gamma-pressure overlay rendering
 - Drop the vol-reinforcement column source (or repurpose per Q1)
 
 [src/components/GexLandscape/BiasPanel.tsx](../../../src/components/GexLandscape/BiasPanel.tsx):
+
 - Drop naive sub-line
 - Replace 10m/30m trend display with 1m/5m/10m
 - Verdict + gravity + drift targets unchanged
 
 [src/components/GexLandscape/index.tsx](../../../src/components/GexLandscape/index.tsx):
+
 - Drop the snapshot buffer + `computeSmoothedStrikes` call (1-min native; the
   5-min smoothing buffer was a 10-min-cadence band-aid)
 - Drop the WS-fallback picker-timestamps caching effect — `availableMinutes`
@@ -186,6 +198,7 @@ columns showing the WRONG window names — Phase 4 fixes that).
 - Keep scrub UI but bind it to `availableMinutes` (1-min ticks)
 
 [src/components/GexLandscape/deltas.ts](../../../src/components/GexLandscape/deltas.ts):
+
 - Either delete (smoothing gone, price-trend can live inline) or keep
   `computePriceTrend` only.
 
@@ -209,11 +222,13 @@ if Top-5 view stays; keep if it does.
 ## Files touched (summary)
 
 **Backend (new + modified):**
+
 - `api/_lib/periscope-gexbot.ts` — add `decodeStrikesWithHistory()`
 - `api/gex-landscape.ts` — NEW
 - `api/__tests__/gex-landscape.test.ts` — NEW
 
 **Frontend rewritten:**
+
 - `src/hooks/useGexLandscapeData.ts`
 - `src/components/GexLandscape/index.tsx`
 - `src/components/GexLandscape/StrikeTable.tsx`
@@ -225,10 +240,12 @@ if Top-5 view stays; keep if it does.
 - `src/components/GexLandscape/constants.ts` (threshold re-tune for 1-min cadence)
 
 **Tests updated:**
+
 - 7 existing GexLandscape test files
 - 2 hook test files
 
 **Possibly deleted:**
+
 - `src/hooks/useTopStrikesTracker.ts` (if Top-5 view goes)
 - `src/components/GexLandscape/ClassificationLegend.tsx` (re-evaluate)
 

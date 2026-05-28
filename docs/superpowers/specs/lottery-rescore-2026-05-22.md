@@ -2,7 +2,7 @@
 
 ## Goal
 
-Replace the current `lottery_finder_fires.combined_score` calibration with a unified score model trained on the last 90 days of *aligned* fires, optimizing for `realized_flow_inversion_pct` (with `realized_eod_pct` proxy for fires that never inverted). Fixes the structural bug where mode B fires (53% of volume) can never reach tier1/tier2 by design, and surfaces the strongest feature signals (TOD, vol/OI sweet spot, gamma convexity, DTE 1, low ask_pct) that the current formula either inverts or ignores.
+Replace the current `lottery_finder_fires.combined_score` calibration with a unified score model trained on the last 90 days of _aligned_ fires, optimizing for `realized_flow_inversion_pct` (with `realized_eod_pct` proxy for fires that never inverted). Fixes the structural bug where mode B fires (53% of volume) can never reach tier1/tier2 by design, and surfaces the strongest feature signals (TOD, vol/OI sweet spot, gamma convexity, DTE 1, low ask_pct) that the current formula either inverts or ignores.
 
 ## Background
 
@@ -12,32 +12,32 @@ Replace the current `lottery_finder_fires.combined_score` calibration with a uni
 
 ## Locked-in decisions (from walkthrough)
 
-| # | Decision | Implication |
-|---|---|---|
-| 1 | **Single unified score** | Mode/DTE are features in one global score. One leaderboard. Uniform cutoffs. |
-| 2 | **NULL outcome → eod proxy** | Training outcome column = `COALESCE(realized_flow_inversion_pct, realized_eod_pct)`. Recovers the 23% "never inverted" fires. |
-| 3 | **Drop reload_tagged from scoring** | Stays as a UI badge (`feat(lottery)` commits already shipped). Zero score weight. |
-| 4 | **Defer ETF UI** | Ticker weights handle IWM/SLV/USO naturally (negative coefficients). Revisit toggle/separation after a week of new-score data. |
-| 5 | **Linear weights (bucket-encoded), GBM only if weak** | Phase 1 ships linear per-feature uplift. Escalate to GBM only if Phase 7 ranking quality fails. Matches existing TS sync pipeline. |
-| 6 | **Alignment is a hard gate** | Misaligned fires get score = 0 / NULL — written to DB by cron but never surface in scored leaderboard. Consistent with flow_inversion outcome metric. |
-| 7 | **Audit inferred_structure outliers FIRST (blocks v1)** | Phase 0 audit script `scripts/audit-inferred-structure-outliers.mjs` shipped. **Verdict (2026-05-22): DROP from v1.** 100/100 sampled outlier rows have `flow_inversion_pct > peak_ceiling_pct`, mathematically impossible. Bug confirmed structure-tagged-only: 35.24% of structure rows have flow_inv>peak vs 0.50% of non-structure rows. Bulk of training data (429k non-structure) is clean. Structure-specific enrichment bug filed as separate follow-up — does NOT block this rescore project. v1 trains on non-structure rows only; structure can be re-added in v2 after enrichment fix. See `docs/tmp/inferred-structure-audit-2026-05-22.md` for the full audit report. |
-| 8 | **Daily retrain via existing `make update`** | New model plugs into the existing nightly pipeline (`make refit` is already part of `make update`). No new automation infra. Revisit cadence later if weight churn becomes an issue. |
+| #   | Decision                                                | Implication                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Single unified score**                                | Mode/DTE are features in one global score. One leaderboard. Uniform cutoffs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 2   | **NULL outcome → eod proxy**                            | Training outcome column = `COALESCE(realized_flow_inversion_pct, realized_eod_pct)`. Recovers the 23% "never inverted" fires.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 3   | **Drop reload_tagged from scoring**                     | Stays as a UI badge (`feat(lottery)` commits already shipped). Zero score weight.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 4   | **Defer ETF UI**                                        | Ticker weights handle IWM/SLV/USO naturally (negative coefficients). Revisit toggle/separation after a week of new-score data.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 5   | **Linear weights (bucket-encoded), GBM only if weak**   | Phase 1 ships linear per-feature uplift. Escalate to GBM only if Phase 7 ranking quality fails. Matches existing TS sync pipeline.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 6   | **Alignment is a hard gate**                            | Misaligned fires get score = 0 / NULL — written to DB by cron but never surface in scored leaderboard. Consistent with flow_inversion outcome metric.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 7   | **Audit inferred_structure outliers FIRST (blocks v1)** | Phase 0 audit script `scripts/audit-inferred-structure-outliers.mjs` shipped. **Verdict (2026-05-22): DROP from v1.** 100/100 sampled outlier rows have `flow_inversion_pct > peak_ceiling_pct`, mathematically impossible. Bug confirmed structure-tagged-only: 35.24% of structure rows have flow_inv>peak vs 0.50% of non-structure rows. Bulk of training data (429k non-structure) is clean. Structure-specific enrichment bug filed as separate follow-up — does NOT block this rescore project. v1 trains on non-structure rows only; structure can be re-added in v2 after enrichment fix. See `docs/tmp/inferred-structure-audit-2026-05-22.md` for the full audit report. |
+| 8   | **Daily retrain via existing `make update`**            | New model plugs into the existing nightly pipeline (`make refit` is already part of `make update`). No new automation infra. Revisit cadence later if weight churn becomes an issue.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ## Feature plan (from EDA findings)
 
 Ordered by lift concentration. All features computed at trigger time.
 
-| Feature | Treatment | Notes |
-|---|---|---|
-| **alignment_at_entry** | Hard gate (multiplier 0 or 1, or use as binary feature with very high weight) | Misaligned fires can still be detected but should not surface as scorable. Aligned = call+ncp>npp OR put+npp>ncp. |
-| **tod** | 4-level weight: AM_open ≫ MID > LUNCH ≈ PM | AM_open is 2.4× PM on mean and 2.2× on hit_25. |
-| **dte** | DTE 1 highest, DTE 3 second, DTE 0 ≈ DTE 2 | DTE 1 mean 89 vs DTE 0 mean 59 — inverts current mode_weight. |
-| **vol_oi_quintile** | Bucket-shaped (Q3 max, taper to Q1 and Q5) | Sweet spot 0.10-0.15. Current `>=0.5` bonus is in Q5 (worst hit_25). |
-| **gamma_quintile** | Monotonic-increasing weight | Q4 (0.041-0.066) gets the biggest bonus. Current `>=0.025` cutoff is too low. |
-| **trigger_ask_pct_quintile** | Monotonic-decreasing weight | NEW feature. Q1 (0.52-0.53, near mid) = 108 mean vs Q5 (0.74-1.00) = 28. |
-| **option_type** | Larger call bonus | C: 65 mean / 51% win; P: 50 mean / 40% win. Bump from +2 to +4 or model-derived. |
-| **ticker_weight** | From observed mean × win-rate | IWM/SLV/USO get negative coefficients. QQQ/SPY/AMZN/MSFT/SNDK/GOOGL get strong positive. |
-| **inferred_structure** | Bonus (median-derived, NOT mean) | strangle/risk_reversal/isolated_leg/vertical median 17-59 vs null -3. Add a +N bonus where N comes from median uplift, not the 3,900% mean. |
+| Feature                      | Treatment                                                                     | Notes                                                                                                                                       |
+| ---------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| **alignment_at_entry**       | Hard gate (multiplier 0 or 1, or use as binary feature with very high weight) | Misaligned fires can still be detected but should not surface as scorable. Aligned = call+ncp>npp OR put+npp>ncp.                           |
+| **tod**                      | 4-level weight: AM_open ≫ MID > LUNCH ≈ PM                                    | AM_open is 2.4× PM on mean and 2.2× on hit_25.                                                                                              |
+| **dte**                      | DTE 1 highest, DTE 3 second, DTE 0 ≈ DTE 2                                    | DTE 1 mean 89 vs DTE 0 mean 59 — inverts current mode_weight.                                                                               |
+| **vol_oi_quintile**          | Bucket-shaped (Q3 max, taper to Q1 and Q5)                                    | Sweet spot 0.10-0.15. Current `>=0.5` bonus is in Q5 (worst hit_25).                                                                        |
+| **gamma_quintile**           | Monotonic-increasing weight                                                   | Q4 (0.041-0.066) gets the biggest bonus. Current `>=0.025` cutoff is too low.                                                               |
+| **trigger_ask_pct_quintile** | Monotonic-decreasing weight                                                   | NEW feature. Q1 (0.52-0.53, near mid) = 108 mean vs Q5 (0.74-1.00) = 28.                                                                    |
+| **option_type**              | Larger call bonus                                                             | C: 65 mean / 51% win; P: 50 mean / 40% win. Bump from +2 to +4 or model-derived.                                                            |
+| **ticker_weight**            | From observed mean × win-rate                                                 | IWM/SLV/USO get negative coefficients. QQQ/SPY/AMZN/MSFT/SNDK/GOOGL get strong positive.                                                    |
+| **inferred_structure**       | Bonus (median-derived, NOT mean)                                              | strangle/risk_reversal/isolated_leg/vertical median 17-59 vs null -3. Add a +N bonus where N comes from median uplift, not the 3,900% mean. |
 
 ### Features explicitly dropped from scoring
 
@@ -59,6 +59,7 @@ Each phase is independently shippable. Verification gate at the end of each.
 Establish the training-data substrate AND resolve the structure-outlier data quality question (per decision 7 — audit blocks v1).
 
 **Files:**
+
 - `api/_lib/db-migrations.ts` — add migration `lottery_finder_fires_outcome_view`:
   ```sql
   CREATE OR REPLACE VIEW lottery_finder_fires_with_outcome AS
@@ -75,17 +76,20 @@ Establish the training-data substrate AND resolve the structure-outlier data qua
   - `option went to 0 then came back` (data weirdness)
 
 **Data quality validations (one-shot, included with audit script):**
+
 - Verify >99% coalesce coverage on last 90 days
 - Cap `trigger_iv > 5.0` (data error guard) — flag rows for inspection
 - Cap `trigger_vol_to_oi_window > 50` (fat-finger guard) — flag for inspection
 
 **Verify:**
+
 - View exists, returns expected shape; `outcome_pct` null rate <1% over 90 days
 - Structure audit script run; produces `docs/tmp/inferred-structure-audit-2026-05-22.md` with verdict: (a) outliers legitimate → include in v1 model with median-derived weight, OR (b) outliers data errors → drop from v1, file separate bug for enrichment fix
 
 ### Phase 1 — Train new model (2-3h, Python in `ml/`)
 
 **Files:**
+
 - `ml/src/lottery_scoring.py` — rewrite to:
   1. Query `lottery_finder_fires_with_outcome` for last 90 days, aligned only
   2. Compute feature buckets (quintiles for continuous, raw for categorical)
@@ -93,6 +97,7 @@ Establish the training-data substrate AND resolve the structure-outlier data qua
   4. Output `lottery_score_weights.json` to `ml/output/`
 
 **Verify:**
+
 - Weights file generated with the 9 features above
 - Spot-check: TOD weights show AM_open > PM
 - Spot-check: DTE 1 weight > DTE 0 weight
@@ -100,16 +105,19 @@ Establish the training-data substrate AND resolve the structure-outlier data qua
 ### Phase 2 — Sync to TypeScript (1h)
 
 **Files:**
+
 - `scripts/sync_lottery_score_weights.py` — extend to emit the new schema (currently only handles ticker + mode + price + tod + option_type)
 - `api/_lib/lottery-score-weights.ts` — gets rewritten by the sync script with new weights structure
 
 **Verify:**
+
 - `npm run lint` passes on the regenerated TS file
 - The TS exports match what `lottery-finder.ts` expects (probably need to update the consumer in Phase 3)
 
 ### Phase 3 — Cron writer integration (3-4h)
 
 **Files:**
+
 - `api/cron/detect-lottery-fires.ts` — update `computeLotteryScore()` to:
   - Compute `is_aligned` flag (using cum_ncp/npp_at_fire)
   - Bucket continuous features into quintiles using thresholds emitted by Phase 1
@@ -117,15 +125,18 @@ Establish the training-data substrate AND resolve the structure-outlier data qua
 - `api/__tests__/detect-lottery-fires.test.ts` — update fixtures + assertions for new score formula
 
 **Verify:**
+
 - All cron tests pass
 - A representative live fire scores within ±2 points of the expected score for its features
 
 ### Phase 4 — Backfill historical scores (1-2h)
 
 **Files:**
+
 - `scripts/backfill_lottery_scores.py` — already exists; verify it reuses the same `computeLotteryScore()` path (extract to shared module if not)
 
 **Verify:**
+
 - All 644k historical rows have updated `score` and `combined_score`
 - Spot-check: 2026-05-21 now has at least one tier2+ fire (proves the structural fix works)
 - Score distribution mean/median sanity vs Phase 1 training distribution
@@ -133,6 +144,7 @@ Establish the training-data substrate AND resolve the structure-outlier data qua
 ### Phase 5 — Re-derive tier cutoffs (1h)
 
 **Files:**
+
 - `ml/src/lottery_scoring.py` (or new script `ml/src/derive_tier_cutoffs.py`) — compute t1/t2 as percentiles of the post-backfill distribution
 - `api/_lib/lottery-finder.ts` or wherever the cutoff constants live — replace `t1=24, t2=22`
 - `docs/superpowers/specs/lottery-rescore-2026-05-22.md` (this file) — record final cutoffs
@@ -140,17 +152,20 @@ Establish the training-data substrate AND resolve the structure-outlier data qua
 **Suggested cutoff method:** t1 = top 5% of last-30-day aligned distribution, t2 = top 15%. Avoids re-tuning every time the model retrains.
 
 **Verify:**
+
 - Both modes produce tier1 fires in the last 14 days
 - ~5-15 tier1 + 15-40 tier2 per day on average (sanity vs current ~52/day per old calibration)
 
 ### Phase 6 — Observability (1h)
 
 **Files:**
+
 - `api/cron/detect-lottery-fires.ts` — add structured log on each run with `{tier1_count, tier2_count, tier3_count, total_fires}`
 - `api/_lib/sentry.ts` (or wherever metrics live) — emit `lottery.fires.tier_count{tier=N}` daily aggregate
 - New Sentry alert: `lottery_tier1_zero_streak` — fires if no tier1+ fires for 3 consecutive trading days (catches future calibration drift the way 5/19 + 5/21 would have)
 
 **Verify:**
+
 - Logs visible in Vercel dashboard
 - Sentry alert configured + can be triggered in staging via manual deletion of a day's fires
 
@@ -182,7 +197,7 @@ Recent commits and current uncommitted state from the parallel Claude session to
 
 ## Open questions
 
-*All resolved during walkthrough — see decisions 5-8 in the locked-in table above.*
+_All resolved during walkthrough — see decisions 5-8 in the locked-in table above._
 
 Open items remaining (genuinely undecided, will surface during implementation):
 

@@ -29,6 +29,7 @@ sweep. The historical query path then renders the LIVE scrubber for
 every ticker that the WS captured.
 
 Schema mapping (WS → strike_exposures):
+
 - `ts_minute` → `timestamp`
 - `date(ts_minute AT TIME ZONE 'America/New_York')` → `date`
 - `call_gamma_ask_vol` → `call_gamma_ask` (and the 7 sibling vol →
@@ -56,13 +57,14 @@ Friday's intraday is lost forever.
 ### Phase 1 — Helper + cron + test (ships as one commit)
 
 **Files:**
+
 - `api/_lib/rollup-ws-gex-strike-expiry.ts` — exports
   `rollupWsGexToStrikeExposures(db, date): Promise<{inserted, durationMs}>`.
   Iterates the lottery universe (read from
   `src/constants/greekHeatmapUniverse.ts`); per-ticker `INSERT INTO
-  strike_exposures … SELECT … FROM ws_gex_strike_expiry WHERE ticker =
-  $1 AND expiry = $2::date AND date(ts_minute AT TIME ZONE
-  'America/New_York') = $2::date ON CONFLICT (...) DO NOTHING`.
+strike_exposures … SELECT … FROM ws_gex_strike_expiry WHERE ticker =
+$1 AND expiry = $2::date AND date(ts_minute AT TIME ZONE
+'America/New_York') = $2::date ON CONFLICT (...) DO NOTHING`.
 - `api/cron/rollup-ws-gex-strike-expiry.ts` — Vercel cron handler;
   `cronGuard({ marketHours: false, requireApiKey: false })`; calls the
   helper with `today`; reports inserted count.
@@ -71,9 +73,10 @@ Friday's intraday is lost forever.
 - `vercel.json` — register cron at `30 22 * * 1-5` (22:30 UTC = 6:30
   PM EDT / 5:30 PM EST, after market close + restatement reconciles
   at 22:00, well before next-day 12:00 UTC retention). `maxDuration:
-  120`.
+120`.
 
 **Rescue script:**
+
 - `scripts/rescue-rollup-ws-gex-strike-expiry.mjs` — standalone .mjs;
   takes a YYYY-MM-DD arg; runs the same per-ticker INSERT...SELECT
   pattern against prod DB. Used to capture 5/15 before Monday.
@@ -107,7 +110,7 @@ lottery ticker on 5/18 renders the LIVE scrubber.
   backfill rows retain delta. The heatmap doesn't read delta, so no
   user-visible impact.
 - **`expiry` filter**: rollup only copies rows where `expiry =
-  date(ts_minute AT TIME ZONE 'America/New_York')` — 0DTE only.
+date(ts_minute AT TIME ZONE 'America/New_York')` — 0DTE only.
   Future-expiry rows still in `ws_gex_strike_expiry` (the daemon's
   0DTE filter from the retention spec hasn't fully purged them) are
   not rolled up. The heatmap is 0DTE-only by spec, so non-0DTE rows
@@ -124,6 +127,6 @@ lottery ticker on 5/18 renders the LIVE scrubber.
 - [ ] Test passes for cron auth + success + error + Sentry tag
 - [ ] Rescue script imports cleanly and runs against `.env.local`
 - [ ] After manual rescue run: META 5/15 in `strike_exposures` has
-  >50 distinct timestamps (was 1)
+  > 50 distinct timestamps (was 1)
 - [ ] `npm run review` passes (tsc + eslint + prettier + vitest)
 - [ ] Code-reviewer subagent verdict: pass

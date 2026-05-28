@@ -42,6 +42,7 @@ Click "Edit endpoint" in the Neon dashboard. No code change required.
 **Proposal:** Split into two groups firing on alternate minutes. Halves the per-minute stampede; data freshness goes from 1-min to 2-min for half the crons.
 
 ### Tier A — must stay every minute (signal timing matters)
+
 - `detect-lottery-fires` — alert engine
 - `detect-gamma-setups` — alert engine
 - `check-cone-breach` — breach detection
@@ -56,6 +57,7 @@ Click "Edit endpoint" in the Neon dashboard. No code change required.
 Keep schedule: `* 13-21 * * 1-5`
 
 ### Tier B — tolerable at 2-min cadence (slower-moving aggregates)
+
 - `fetch-greek-flow-etf`
 - `fetch-strike-iv`
 - `fetch-strike-trade-volume`
@@ -69,11 +71,13 @@ Keep schedule: `* 13-21 * * 1-5`
 Change schedule: `1,3,5,7,...,57,59 13-21 * * 1-5` (odd minutes)
 
 ### Net effect
+
 - Even minutes (`* 13-21`): 10 crons fire
 - Odd minutes (`1,3,5...59 13-21`): 9 crons fire on top of the 10 fixed
 - Wait — that's still 19 every odd minute. Need different split.
 
 **Better split (truly alternating):**
+
 - Tier A: `0,2,4,...,58 13-21` (even minutes) — 10 critical crons
 - Tier B: `1,3,5,...,59 13-21` (odd minutes) — 9 slower crons
 
@@ -89,6 +93,7 @@ That tradeoff might not be acceptable — for detect-lottery-fires especially, 1
 - Tier B (9 crons): `1,3,5,...,59 13-21 * * 1-5` (odd minutes)
 
 Effect:
+
 - Even minutes: 10 crons fire (the Tier A only)
 - Odd minutes: 10 + 9 = 19 crons fire (Tier A + Tier B)
 
@@ -103,12 +108,14 @@ Open question for user review: is a worst-case 60s extra alert latency acceptabl
 ## 3. `ws_option_trades` partitioning (migration — multi-step)
 
 Current state:
+
 - Single table, 27 GB, 3,461,712 rows
 - 6 btree indexes totaling 6.3 GB
 - Every query that scans `executed_at` traverses the global index
 - No retention policy; size grows unbounded
 
 Proposal:
+
 - **Convert to native PostgreSQL declarative partitioning by `executed_at` (daily partitions).**
 - Hot window: last 7 days as attached partitions, indexed normally.
 - Cold window: partitions older than 7 days detached and stored separately (or dropped if not needed in DB — they're already in the Databento archive via the Railway sidecar).
@@ -159,6 +166,7 @@ Run during a quiet window — uw-stream's next batch will land in the new partit
 **Phase 4 — Cleanup**
 
 After 24h of confirmed healthy operation:
+
 ```sql
 DROP TABLE ws_option_trades_old;
 ```
@@ -193,6 +201,7 @@ Risk: if the DB is genuinely down for >20s, longer retries mean longer hang time
 ## 5. Recurring autovacuum policy
 
 Six of the biggest tables had `last_autovacuum = NULL` — they have never been touched by autovacuum since the database was created. Either:
+
 - Neon's autovacuum is disabled / under-tuned for serverless workload
 - Or the tables are insert-only with no DELETE/UPDATE pressure, so autovacuum's dead-tuple-fraction threshold never trips
 

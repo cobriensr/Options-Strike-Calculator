@@ -6,9 +6,9 @@ Build a single live intraday top-level section that surfaces the three
 flow signals that fingerprinted today's 12:10 CT kickoff (and the 13:50
 CT reversal) in real time:
 
-1. **Vol Crush** — SPY 0DTE ATM IV grinding to session lows on a flat tape (the *setup*)
-2. **Volume Burst** — 1-min trade count exceeding 3× the trailing 20-min average (the *trigger*)
-3. **Delta Inflection** — rolling 30-min net customer delta on (SPY+QQQ+SPXW) flipping sign (the *confirmation*)
+1. **Vol Crush** — SPY 0DTE ATM IV grinding to session lows on a flat tape (the _setup_)
+2. **Volume Burst** — 1-min trade count exceeding 3× the trailing 20-min average (the _trigger_)
+3. **Delta Inflection** — rolling 30-min net customer delta on (SPY+QQQ+SPXW) flipping sign (the _confirmation_)
 
 Stacked 3-row chart underneath, single time axis, minute granularity,
 gated on `marketOpen`. Data sourced from the already-running `uw-stream`
@@ -31,15 +31,15 @@ Each phase is independently shippable. Phase 0 gates Phase 1.
 > Per `feedback_tune_before_ship.md`: tune thresholds against historical data BEFORE locking the spec.
 
 Re-run [docs/tmp/run-up-signal-hunt-2026-05-21-v2.py](../../tmp/run-up-signal-hunt-2026-05-21-v2.py)
-against the last 30 trading days of EOD CSVs (Downloads/EOD-OptionFlow/*.csv
+against the last 30 trading days of EOD CSVs (Downloads/EOD-OptionFlow/\*.csv
 or the equivalent archive). For each day, label run-ups (e.g., 30-min SPY advance ≥ 0.4%)
 and reversals. Measure precision/recall of each candidate threshold:
 
-| Signal           | Candidate                                       | Vary                                          |
-| ---------------- | ----------------------------------------------- | --------------------------------------------- |
-| Volume Burst     | 1-min trades > k × trailing-20m avg             | k ∈ {2, 2.5, **3**, 4, 5}                     |
-| Vol Crush        | ATM IV drop ≥ p% in 30 min AND range < r%       | p ∈ {3,4,5,7,10}, r ∈ {0.1,0.15,0.2}          |
-| Delta Inflection | 30-min cum cust delta crosses 0 AND \|Δ\| > $X  | X ∈ {$200M, $500M, $1B}                       |
+| Signal           | Candidate                                      | Vary                                 |
+| ---------------- | ---------------------------------------------- | ------------------------------------ |
+| Volume Burst     | 1-min trades > k × trailing-20m avg            | k ∈ {2, 2.5, **3**, 4, 5}            |
+| Vol Crush        | ATM IV drop ≥ p% in 30 min AND range < r%      | p ∈ {3,4,5,7,10}, r ∈ {0.1,0.15,0.2} |
+| Delta Inflection | 30-min cum cust delta crosses 0 AND \|Δ\| > $X | X ∈ {$200M, $500M, $1B}              |
 
 **Output**: a JSON file at `docs/tmp/vol-setup-tuning-2026-05-21.json` with
 {threshold, precision, recall, alerts_per_session} per parameter combo,
@@ -190,14 +190,14 @@ follow-up at that point.
 
 ## Data dependencies
 
-| Source                              | Kind                            | Status                                          |
-| ----------------------------------- | ------------------------------- | ----------------------------------------------- |
-| `ws_option_trades`                  | Existing table, migration #109  | Live, contains SPY/QQQ/SPXW 0DTE ticks          |
-| `uw-stream` Lottery universe        | `uw-stream/src/config.py` 39-40 | Already subscribes to SPY/QQQ/SPXW option_trades|
-| `~/Desktop/Eod-Full-Tape-parquet/`  | 96-day parquet archive          | Local-only; powers Phase 1.5 backfill           |
-| `vol_setup_bars_1m`                 | New table                       | Phase 1                                         |
-| `vol_setup_fires`                   | New table                       | Phase 1.5 (promoted from Phase 4)               |
-| UW WS feed                          | `UW_API_KEY` (Advanced tier)    | Already configured on Railway                   |
+| Source                             | Kind                            | Status                                           |
+| ---------------------------------- | ------------------------------- | ------------------------------------------------ |
+| `ws_option_trades`                 | Existing table, migration #109  | Live, contains SPY/QQQ/SPXW 0DTE ticks           |
+| `uw-stream` Lottery universe       | `uw-stream/src/config.py` 39-40 | Already subscribes to SPY/QQQ/SPXW option_trades |
+| `~/Desktop/Eod-Full-Tape-parquet/` | 96-day parquet archive          | Local-only; powers Phase 1.5 backfill            |
+| `vol_setup_bars_1m`                | New table                       | Phase 1                                          |
+| `vol_setup_fires`                  | New table                       | Phase 1.5 (promoted from Phase 4)                |
+| UW WS feed                         | `UW_API_KEY` (Advanced tier)    | Already configured on Railway                    |
 
 No new env vars. No new external API.
 
@@ -230,14 +230,14 @@ export const VOL_SETUP_THRESHOLDS = {
   // fires/session. Treat each fire as "something is happening RIGHT
   // NOW" — bet direction confirmed by spot + delta-bar polarity, not
   // by this signal alone.
-  VOLUME_BURST_MULTIPLIER: 4.0,        // 1-min count > 4 × trailing-20m
+  VOLUME_BURST_MULTIPLIER: 4.0, // 1-min count > 4 × trailing-20m
 
   // Vol Crush — visual chart marker only, NO audio. Any threshold
   // fires 15–80× per session at 5–8% precision. The signal is
   // descriptive of regime, not predictive of any specific minute.
-  VOL_CRUSH_IV_DROP_PCT: 5.0,           // ATM IV down ≥ 5% relative in 30m
-  VOL_CRUSH_RANGE_MAX_PCT: 0.20,        // AND SPY 30-min range < 0.20%
-                                         // (loosened from 0.15 to surface more setups)
+  VOL_CRUSH_IV_DROP_PCT: 5.0, // ATM IV down ≥ 5% relative in 30m
+  VOL_CRUSH_RANGE_MAX_PCT: 0.2, // AND SPY 30-min range < 0.20%
+  // (loosened from 0.15 to surface more setups)
 
   // Delta Inflection — visual chart marker only. Use the $1B threshold
   // for the panel; below that fires too often to read.

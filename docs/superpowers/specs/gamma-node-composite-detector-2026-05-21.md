@@ -56,6 +56,7 @@ A daily-active alert tile that flags real-time E1/E5/PCS setups against SPX +γ 
 ## Trade triggers (all use SPX `index_candles_1m` + `periscope_snapshots`)
 
 ### E1 — Long Call breakthrough
+
 Definition: 1-min SPX bar where `bar.open < node_strike` AND `bar.high > node_strike` AND `bar.close > node_strike`, for a positive-γ strike from the latest periscope snapshot. Then the NEXT 3 bars must all `close > node_strike` (hold). On confirmation of the 3-bar hold, fire the alert.
 
 Trade recommendation: long call at the broken node strike OR long call debit spread (next ceiling as long leg).
@@ -63,6 +64,7 @@ Trade recommendation: long call at the broken node strike OR long call debit spr
 Expected forward edge: +5 pts SPX over +30m (n=180 sample, walk-forward stable).
 
 ### E5 — Long Put failed-reversal
+
 Definition: a v4-style down-wick event (bar pierces +γ floor from above and closes back above) where the 30-min forward return was negative — i.e., the bounce failed. Then, within the 10 min after the wick bar, price breaks 1pt below the wick's low. On break-of-low confirmation, fire alert.
 
 Trade recommendation: long put at the broken low strike OR long put debit spread (next floor as long leg).
@@ -70,7 +72,9 @@ Trade recommendation: long put at the broken low strike OR long put debit spread
 Expected forward edge: +8.95 pts SPX over +30m from the breakdown bar (n=86, walk-forward HOLDS: H1 +10.98, H2 +6.92, both p<0.001).
 
 ### PCS — Monday Rejection (put credit spread)
+
 Definition: down-wick at a SMALL +γ floor (|gex| ≤ $500k) where bar.open is above node, bar.low pierces node, bar.close back above. ALSO requires:
+
 - ES basis in top quartile (ES holding bid vs SPX cash)
 - NOT a flat-gap day (`|open_gap| ≥ 0.1%`)
 - Monday only
@@ -81,19 +85,20 @@ Expected forward edge: +16 pts SPX over +30m (n=45, walk-forward holds both halv
 
 ## Confidence labels (per DOW, displayed prominently on the tile)
 
-| DOW | Label | Reason |
-|---|---|---|
-| **Monday** | **HIGH** (MAXIMUM if pre-day filter fires) | n=51 unfiltered Δ=+13, win 82%, p<0.0001. Strongest standalone. |
-| **Friday** | **HIGH** | n=24 with calendar anti-filters Δ=+9, win 63%, p=0.04. Second-cleanest. |
-| Tuesday | MEDIUM | n=41 Δ=+2.79, p=0.46. Edge present in composite but DOW-specific is noisy. |
-| Wednesday | MEDIUM | n=29 Δ=+0.38, p=0.90. Track-but-don't-press. |
-| Thursday | MEDIUM (caution) | n=26 Δ=-2.52, p=0.46. Slight negative drift, but composite still works on average. |
+| DOW        | Label                                      | Reason                                                                             |
+| ---------- | ------------------------------------------ | ---------------------------------------------------------------------------------- |
+| **Monday** | **HIGH** (MAXIMUM if pre-day filter fires) | n=51 unfiltered Δ=+13, win 82%, p<0.0001. Strongest standalone.                    |
+| **Friday** | **HIGH**                                   | n=24 with calendar anti-filters Δ=+9, win 63%, p=0.04. Second-cleanest.            |
+| Tuesday    | MEDIUM                                     | n=41 Δ=+2.79, p=0.46. Edge present in composite but DOW-specific is noisy.         |
+| Wednesday  | MEDIUM                                     | n=29 Δ=+0.38, p=0.90. Track-but-don't-press.                                       |
+| Thursday   | MEDIUM (caution)                           | n=26 Δ=-2.52, p=0.46. Slight negative drift, but composite still works on average. |
 
 **MAXIMUM tier upgrade:** if the pre-day filter fires (`prior 5-day SPX return < -1%` AND `prior IV rank > 25`), upgrade Monday from HIGH to MAXIMUM. Within filter-on Monday subset, n=36, Δ=+15, win 80.6%, p<0.0001.
 
 ## Calendar anti-filters (display warning, do NOT auto-suppress)
 
 The tile should DISPLAY these warnings but still let signals fire — the trader decides:
+
 - **FOMC day**: E1 has -13.75 edge (n=4 in sample). Show "FOMC day — E1 untrustworthy" badge.
 - **DOM 1-5**: E5 has -18.82 edge (n=12). Show "Early-month — E5 untrustworthy" badge.
 - **DOM 16-20**: E1 weak (-1.43 edge). Show "Mid-month gamma void — E1 weak" badge.
@@ -158,6 +163,7 @@ The `trade_*` columns are manually filled by the trader via a journal entry, so 
 ## Implementation order
 
 **Phase 1 — Backend (api/ + DB):**
+
 1. Migration #N+1: create `ws_gamma_setup_fires` table.
 2. New cron job at `/api/cron/detect-gamma-setups.ts` — runs every 1-2 min during RTH:
    - Pulls latest SPX 1-min candle
@@ -168,6 +174,7 @@ The `trade_*` columns are manually filled by the trader via a journal entry, so 
 4. Daily backfill cron `/api/cron/backfill-gamma-setup-outcomes.ts` — runs at 15:30 CT, fills `ret_*` columns for prior fires.
 
 **Phase 2 — Frontend (src/):**
+
 1. New tile `src/components/GammaSetupTile/` with:
    - Top banner: today's DOW + confidence tier + filter status
    - Active fires list (chronological today)
@@ -177,6 +184,7 @@ The `trade_*` columns are manually filled by the trader via a journal entry, so 
 3. Position in main layout — probably alongside Periscope tile, since they share the same gamma-node mental model.
 
 **Phase 3 — Live tracking & stats:**
+
 1. Manual journal entry form (extend existing journal to capture `trade_taken` + outcomes for any fire).
 2. Weekly summary panel: how many fires this week, how many trades taken, hit rate vs expected, edge realization.
 3. After 4-6 weeks of live data, refresh the analytical baseline and re-validate.
@@ -201,12 +209,14 @@ The `trade_*` columns are manually filled by the trader via a journal entry, so 
 The frontend uses a single-page `App.tsx` with a panel registry (`src/constants/panel-registry.ts`). Tiles are grouped into: Inputs, Market Context, Futures, Charts & History, Trading, Results.
 
 **Add new panel between `sec-gexbot` and `sec-periscope-exposure`** in the **Market Context** group. Rationale:
+
 - The tile is conceptually adjacent to Periscope (both about +γ floor/ceiling)
 - Keeps gamma-related tiles contiguous
 - Fire-list structure aligns with sibling alert tiles (LotteryFinder, SilentBoom) already in Market Context group
 - **SilentBoom precedent**: already implements per-DOW confidence badges — read its source as the closest UI reference before building
 
 **Registry entry** (`src/constants/panel-registry.ts`):
+
 ```ts
 { id: 'sec-gamma-node-detector', label: 'Gamma-Node Composite Detector', group: 'Market Context' }
 ```
@@ -230,19 +240,23 @@ src/components/GammaNodeDetector/
 The frontend uses semantic CSS tokens (`--color-success`, `--color-danger`, `--color-caution`, `--color-accent`) from `src/themes/` with a `.dark` class override. Use the existing components, not hand-rolled wrappers.
 
 **Outer tile wrapper** — use the `SectionBox` component (`src/components/ui/SectionBox.tsx`):
+
 ```tsx
 <SectionBox id="sec-gamma-node-detector" title="GAMMA-NODE COMPOSITE DETECTOR">
   {/* contents */}
 </SectionBox>
 ```
+
 SectionBox handles all the standard styling (border-t-accent, rounded-[14px], border-[1.5px], p-[18px], shadow, animate-fade-in-up, dark-mode tokens). DO NOT roll a custom wrapper.
 
 **Header** — handled by SectionBox `title` prop, which renders:
+
 ```
 text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase
 ```
 
 **Confidence badge** — use the `StatusBadge` component (`src/components/ui/StatusBadge.tsx`) with semantic color mapping. Reference implementation at `src/components/GexTarget/TargetTile.tsx:44-54`:
+
 ```tsx
 import { StatusBadge } from '../ui/StatusBadge';
 import { theme } from '../../themes';
@@ -253,9 +267,11 @@ function ConfidenceBadge({ tier }: { tier: 'MAXIMUM' | 'HIGH' | 'MEDIUM' }) {
   return <StatusBadge label={tier} color={color} />;
 }
 ```
+
 The StatusBadge uses `color-mix(in srgb, ${color} 9%, transparent)` for the tint — matches the existing visual.
 
 **Anti-filter warning badge** — use the EventDayWarning pattern (`src/components/EventDayWarning.tsx:120-134`):
+
 ```tsx
 <span
   className="shrink-0 rounded-full px-2 py-0.5 font-mono text-[10px] font-bold tracking-[0.06em] uppercase"
@@ -264,12 +280,15 @@ The StatusBadge uses `color-mix(in srgb, ${color} 9%, transparent)` for the tint
   FOMC DAY
 </span>
 ```
+
 Color mapping for warnings:
+
 - `FOMC day` → `theme.caution` (amber/yellow)
 - `DOM 1-5` → `theme.red` (anti-filter for E5)
 - `DOM 16-20` → `theme.red` (anti-filter for E1)
 
 **Fire-row layout** — mirror EventDayWarning's row pattern:
+
 ```tsx
 <div className="flex items-center gap-2.5 py-1.5">
   <span
@@ -288,6 +307,7 @@ Color mapping for warnings:
 ```
 
 **Color semantics for signal type:**
+
 - E1 long call → `theme.green` (bullish breakthrough)
 - E5 long put → `theme.red` (bearish breakdown)
 - PCS Monday → `theme.accent` (blue, premium-sell setup)
@@ -295,6 +315,7 @@ Color mapping for warnings:
 **Loading state** — use the `SkeletonSection` component (`src/components/SkeletonSection.tsx`). Matches the SectionBox dimensions.
 
 **Empty state** — when no fires today:
+
 ```tsx
 <div className="rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px] text-neutral-500">
   No setups detected yet today.
@@ -303,16 +324,16 @@ Color mapping for warnings:
 
 ### Typography reference (for any custom text in the tile)
 
-| Element | Classes |
-|---|---|
+| Element                                | Classes                                                                     |
+| -------------------------------------- | --------------------------------------------------------------------------- |
 | Section header (handled by SectionBox) | `text-tertiary font-sans text-[13px] font-bold tracking-[0.12em] uppercase` |
-| Sub-header / row label | `text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase` |
-| Card title | `text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase` |
-| Card subtitle | `text-muted font-sans text-[10px]` |
-| Body text | `text-primary font-sans text-xs font-medium` |
-| Numeric value | `font-mono text-[13px] font-semibold` |
-| Timestamp | `text-muted font-mono text-[11px]` |
-| Badge text | `font-mono text-[10px] font-bold tracking-[0.06em] uppercase` |
+| Sub-header / row label                 | `text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase` |
+| Card title                             | `text-tertiary font-sans text-[10px] font-bold tracking-[0.08em] uppercase` |
+| Card subtitle                          | `text-muted font-sans text-[10px]`                                          |
+| Body text                              | `text-primary font-sans text-xs font-medium`                                |
+| Numeric value                          | `font-mono text-[13px] font-semibold`                                       |
+| Timestamp                              | `text-muted font-mono text-[11px]`                                          |
+| Badge text                             | `font-mono text-[10px] font-bold tracking-[0.06em] uppercase`               |
 
 ### Day banner mockup
 

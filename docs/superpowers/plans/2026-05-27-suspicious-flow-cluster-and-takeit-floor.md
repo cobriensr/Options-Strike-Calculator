@@ -11,6 +11,7 @@
 **Reference spec:** `docs/superpowers/specs/2026-05-27-suspicious-flow-and-takeit-floor-design.md`
 
 **Constants (single source of truth, defined in Task 1):**
+
 - `MIN_CLUSTER_STRIKES = 3`
 - `MAX_CHEAP_ENTRY = 1.5`
 - `MIN_CLUSTER_ASK_PCT = 0.7`
@@ -23,6 +24,7 @@
 ### Task 1: Pure suspicious-cluster helper
 
 **Files:**
+
 - Create: `api/_lib/suspicious-cluster.ts`
 - Test: `api/__tests__/suspicious-cluster.test.ts`
 
@@ -61,8 +63,14 @@ describe('computeSuspiciousClusters', () => {
   });
 
   it('counts DISTINCT strikes, not rows (dedupes repeated strikes)', () => {
-    const rows = [row({ strike: 617.5 }), row({ strike: 617.5 }), row({ strike: 615 })];
-    expect(computeSuspiciousClusters(rows).has(clusterKey('META', 'C'))).toBe(false); // only 2 distinct
+    const rows = [
+      row({ strike: 617.5 }),
+      row({ strike: 617.5 }),
+      row({ strike: 615 }),
+    ];
+    expect(computeSuspiciousClusters(rows).has(clusterKey('META', 'C'))).toBe(
+      false,
+    ); // only 2 distinct
   });
 
   it('excludes non-members: not 0DTE, too expensive, ITM, or below ask floor', () => {
@@ -75,7 +83,9 @@ describe('computeSuspiciousClusters', () => {
       row({ strike: 630, askPct: 0.5 }), // below ask floor
     ];
     // only 617.5 + 615 are members -> 2 distinct -> no cluster
-    expect(computeSuspiciousClusters(rows).has(clusterKey('META', 'C'))).toBe(false);
+    expect(computeSuspiciousClusters(rows).has(clusterKey('META', 'C'))).toBe(
+      false,
+    );
   });
 
   it('treats puts OTM as strike <= spot', () => {
@@ -84,7 +94,9 @@ describe('computeSuspiciousClusters', () => {
       row({ optionType: 'P', strike: 612.5, spot: 613 }),
       row({ optionType: 'P', strike: 600, spot: 613 }),
     ];
-    expect(computeSuspiciousClusters(rows).get(clusterKey('META', 'P'))).toBe(3);
+    expect(computeSuspiciousClusters(rows).get(clusterKey('META', 'P'))).toBe(
+      3,
+    );
   });
 
   it('keeps calls and puts on the same ticker as separate sides', () => {
@@ -197,6 +209,7 @@ git commit -m "feat(suspicious-flow): pure cluster-detection helper"
 ### Task 2: Wire cluster detection into the Lottery Finder endpoint
 
 **Files:**
+
 - Modify: `api/lottery-finder.ts` (import helper; add day-scoped candidate query; build lookup; stamp `toLotteryFire`)
 - Test: `api/__tests__/lottery-finder-endpoint.test.ts` (add a cluster case)
 
@@ -213,14 +226,42 @@ it('stamps suspiciousCluster=true and clusterStrikeCount on rows whose ticker+si
     .mockResolvedValueOnce([{ total: 1 }]) // count
     // keep any other existing supplementary mocks in their current order, then:
     .mockResolvedValueOnce([
-      { underlying_symbol: 'META', option_type: 'C', strike: '617.5', dte: 0, entry_price: '0.34', spot_at_first: '613', trigger_ask_pct: '0.74' },
-      { underlying_symbol: 'META', option_type: 'C', strike: '615', dte: 0, entry_price: '0.91', spot_at_first: '613', trigger_ask_pct: '0.75' },
-      { underlying_symbol: 'META', option_type: 'C', strike: '622.5', dte: 0, entry_price: '1.25', spot_at_first: '613', trigger_ask_pct: '0.71' },
+      {
+        underlying_symbol: 'META',
+        option_type: 'C',
+        strike: '617.5',
+        dte: 0,
+        entry_price: '0.34',
+        spot_at_first: '613',
+        trigger_ask_pct: '0.74',
+      },
+      {
+        underlying_symbol: 'META',
+        option_type: 'C',
+        strike: '615',
+        dte: 0,
+        entry_price: '0.91',
+        spot_at_first: '613',
+        trigger_ask_pct: '0.75',
+      },
+      {
+        underlying_symbol: 'META',
+        option_type: 'C',
+        strike: '622.5',
+        dte: 0,
+        entry_price: '1.25',
+        spot_at_first: '613',
+        trigger_ask_pct: '0.71',
+      },
     ]);
   const req = mockRequest({ method: 'GET', query: { date: '2026-05-27' } });
   const res = mockResponse();
   await handler(req, res);
-  const fire = (res._json as { fires: Array<{ suspiciousCluster: boolean; clusterStrikeCount: number }> }).fires[0];
+  const fire = (
+    res._json as {
+      fires: Array<{ suspiciousCluster: boolean; clusterStrikeCount: number }>;
+    }
+  ).fires[0];
   expect(fire.suspiciousCluster).toBe(true);
   expect(fire.clusterStrikeCount).toBe(3);
 });
@@ -247,8 +288,9 @@ import {
 
 ```ts
 // Suspicious-flow cluster lookup — full day, 0DTE only, minimal columns.
-const clusterRows = (await withDbRetry(() =>
-  sql`
+const clusterRows = (await withDbRetry(
+  () =>
+    sql`
     SELECT underlying_symbol, option_type, strike, dte, entry_price,
            spot_at_first, trigger_ask_pct
     FROM lottery_finder_fires
@@ -268,7 +310,8 @@ const clusterCandidates: ClusterCandidateRow[] = clusterRows.map((r) => ({
   optionType: r.option_type,
   strike: Number(r.strike),
   dte: Number(r.dte),
-  entryPrice: r.entry_price == null ? Number.POSITIVE_INFINITY : Number(r.entry_price),
+  entryPrice:
+    r.entry_price == null ? Number.POSITIVE_INFINITY : Number(r.entry_price),
   spot: r.spot_at_first == null ? null : Number(r.spot_at_first),
   askPct: r.trigger_ask_pct == null ? 0 : Number(r.trigger_ask_pct),
 }));
@@ -303,6 +346,7 @@ git commit -m "feat(lottery): stamp suspicious-flow cluster on feed rows"
 ### Task 3: Wire cluster detection into the Silent Boom feed endpoint
 
 **Files:**
+
 - Modify: `api/silent-boom-feed.ts` (import helper; add day-scoped candidate query; build lookup; stamp the inline mapping)
 - Test: `api/__tests__/silent-boom-feed.test.ts` (add a cluster case)
 
@@ -314,16 +358,46 @@ Anchors: imports near top; queries ~396-666; inline `.map()` DTO ~669-753.
 it('stamps suspiciousCluster + clusterStrikeCount from the day cluster query', async () => {
   mockSql
     .mockResolvedValueOnce([{ n: 1 }]) // count
-    .mockResolvedValueOnce([makeAlert({ underlying_symbol: 'META', option_type: 'C', strike: 617.5 })]) // page
     .mockResolvedValueOnce([
-      { underlying_symbol: 'META', option_type: 'C', strike: '617.5', dte: 0, entry_price: '0.34', underlying_price_at_spike: '613', ask_pct: '0.74' },
-      { underlying_symbol: 'META', option_type: 'C', strike: '615', dte: 0, entry_price: '0.91', underlying_price_at_spike: '613', ask_pct: '0.75' },
-      { underlying_symbol: 'META', option_type: 'C', strike: '622.5', dte: 0, entry_price: '1.25', underlying_price_at_spike: '613', ask_pct: '0.71' },
+      makeAlert({ underlying_symbol: 'META', option_type: 'C', strike: 617.5 }),
+    ]) // page
+    .mockResolvedValueOnce([
+      {
+        underlying_symbol: 'META',
+        option_type: 'C',
+        strike: '617.5',
+        dte: 0,
+        entry_price: '0.34',
+        underlying_price_at_spike: '613',
+        ask_pct: '0.74',
+      },
+      {
+        underlying_symbol: 'META',
+        option_type: 'C',
+        strike: '615',
+        dte: 0,
+        entry_price: '0.91',
+        underlying_price_at_spike: '613',
+        ask_pct: '0.75',
+      },
+      {
+        underlying_symbol: 'META',
+        option_type: 'C',
+        strike: '622.5',
+        dte: 0,
+        entry_price: '1.25',
+        underlying_price_at_spike: '613',
+        ask_pct: '0.71',
+      },
     ]);
   const req = mockRequest({ method: 'GET', query: { date: '2026-05-27' } });
   const res = mockResponse();
   await handler(req, res);
-  const alert = (res._json as { alerts: Array<{ suspiciousCluster: boolean; clusterStrikeCount: number }> }).alerts[0];
+  const alert = (
+    res._json as {
+      alerts: Array<{ suspiciousCluster: boolean; clusterStrikeCount: number }>;
+    }
+  ).alerts[0];
   expect(alert.suspiciousCluster).toBe(true);
   expect(alert.clusterStrikeCount).toBe(3);
 });
@@ -349,8 +423,9 @@ import {
 - [ ] **Step 4: Add the candidate query + lookup** (after the page query resolves, before the `.map()`):
 
 ```ts
-const clusterRows = (await withDbRetry(() =>
-  sql`
+const clusterRows = (await withDbRetry(
+  () =>
+    sql`
     SELECT underlying_symbol, option_type, strike, dte, entry_price,
            underlying_price_at_spike, ask_pct
     FROM silent_boom_alerts
@@ -370,8 +445,12 @@ const clusterCandidates: ClusterCandidateRow[] = clusterRows.map((r) => ({
   optionType: r.option_type,
   strike: Number(r.strike),
   dte: Number(r.dte),
-  entryPrice: r.entry_price == null ? Number.POSITIVE_INFINITY : Number(r.entry_price),
-  spot: r.underlying_price_at_spike == null ? null : Number(r.underlying_price_at_spike),
+  entryPrice:
+    r.entry_price == null ? Number.POSITIVE_INFINITY : Number(r.entry_price),
+  spot:
+    r.underlying_price_at_spike == null
+      ? null
+      : Number(r.underlying_price_at_spike),
   askPct: r.ask_pct == null ? 0 : Number(r.ask_pct),
 }));
 const clusterLookup = computeSuspiciousClusters(clusterCandidates);
@@ -401,6 +480,7 @@ git commit -m "feat(silent-boom): stamp suspicious-flow cluster on feed rows"
 ### Task 4: Add the new fields to frontend types
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/types.ts` (add to `LotteryFire`)
 - Modify: `src/components/SilentBoom/types.ts` (add to the alert interface)
 
@@ -434,6 +514,7 @@ git commit -m "feat(types): add suspiciousCluster + clusterStrikeCount to feed t
 ### Task 5: Cluster badge on both ticker-group headers
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/LotteryFinderTickerGroup.tsx`
 - Modify: `src/components/SilentBoom/SilentBoomTickerGroup.tsx`
 - Test: `src/__tests__/LotteryFinderSection.test.tsx` (or the ticker-group test) — add a render assertion
@@ -443,7 +524,9 @@ Badge label/color must be DISTINCT from the existing ✦ conviction (amber) and 
 - [ ] **Step 1: Write the failing test** — render a group whose fires include `suspiciousCluster: true, clusterStrikeCount: 3` and assert the chip:
 
 ```ts
-expect(screen.getByTestId(`lottery-ticker-cluster-META`)).toHaveTextContent('OTM SWEEP ×3');
+expect(screen.getByTestId(`lottery-ticker-cluster-META`)).toHaveTextContent(
+  'OTM SWEEP ×3',
+);
 ```
 
 (Use the existing `makeFire` factory; set `suspiciousCluster: true`, `clusterStrikeCount: 3` on the group's fires. Follow the test file's existing render+mock setup.)
@@ -468,15 +551,17 @@ const showClusterBadge = clusterStrikes >= 3;
 - [ ] **Step 4: Render the chip** — after the storm badge block, following the exact existing badge `<span>` pattern (violet, distinct from amber/rose):
 
 ```tsx
-{showClusterBadge && (
-  <span
-    className="rounded bg-violet-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-violet-200 ring-1 ring-violet-400/60"
-    title="≥3 cheap, OTM, ask-side 0DTE strikes co-fired on this ticker today — the smart-money lottery-sweep profile. Descriptive context only, NOT a conviction signal (the cohort is net negative-expectancy). Use TAKE-IT for conviction."
-    data-testid={`lottery-ticker-cluster-${ticker}`}
-  >
-    🎰 OTM SWEEP ×{clusterStrikes}
-  </span>
-)}
+{
+  showClusterBadge && (
+    <span
+      className="rounded bg-violet-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-violet-200 ring-1 ring-violet-400/60"
+      title="≥3 cheap, OTM, ask-side 0DTE strikes co-fired on this ticker today — the smart-money lottery-sweep profile. Descriptive context only, NOT a conviction signal (the cohort is net negative-expectancy). Use TAKE-IT for conviction."
+      data-testid={`lottery-ticker-cluster-${ticker}`}
+    >
+      🎰 OTM SWEEP ×{clusterStrikes}
+    </span>
+  );
+}
 ```
 
 - [ ] **Step 5: Mirror in `SilentBoomTickerGroup.tsx`** — same derivation + chip, `data-testid={`silent-boom-ticker-cluster-${ticker}`}`.
@@ -498,6 +583,7 @@ git commit -m "feat(feeds): OTM-sweep cluster badge on ticker-group headers"
 ### Task 6: TAKE-IT floor chip — Lottery Finder
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/index.tsx`
 - Test: `src/__tests__/LotteryFinderSection.test.tsx`
 
@@ -518,11 +604,28 @@ Expected: FAIL.
 - [ ] **Step 3: Add the preset constant** (near `MIN_FIRE_COUNT_OPTIONS`):
 
 ```tsx
-const TAKEIT_FLOOR_OPTIONS: Array<{ value: number; label: string; tooltip: string }> = [
+const TAKEIT_FLOOR_OPTIONS: Array<{
+  value: number;
+  label: string;
+  tooltip: string;
+}> = [
   { value: 0, label: 'all', tooltip: 'No TAKE-IT floor.' },
-  { value: 0.6, label: '≥0.60', tooltip: 'Hide fires below 0.60 calibrated P(peak ≥ +20%).' },
-  { value: 0.7, label: '≥0.70', tooltip: 'Default. ~0.70 is where historical realized return stops being negative.' },
-  { value: 0.75, label: '≥0.75', tooltip: 'Stricter — clearly positive expectancy historically.' },
+  {
+    value: 0.6,
+    label: '≥0.60',
+    tooltip: 'Hide fires below 0.60 calibrated P(peak ≥ +20%).',
+  },
+  {
+    value: 0.7,
+    label: '≥0.70',
+    tooltip:
+      'Default. ~0.70 is where historical realized return stops being negative.',
+  },
+  {
+    value: 0.75,
+    label: '≥0.75',
+    tooltip: 'Stricter — clearly positive expectancy historically.',
+  },
   { value: 0.8, label: '≥0.80', tooltip: 'Rare elite tail (≈1–4% of fires).' },
 ];
 const TAKEIT_FLOOR_LS_KEY = 'lottery.takeitFloor';
@@ -553,40 +656,45 @@ Add `takeitFloor` to the `useCallback` dependency array.
 ```tsx
 const hiddenTakeitCount =
   takeitFloor > 0
-    ? fires.filter((f) => f.takeitProb == null || f.takeitProb < takeitFloor).length
+    ? fires.filter((f) => f.takeitProb == null || f.takeitProb < takeitFloor)
+        .length
     : 0;
 ```
 
 In the hidden-count info row (with the other `({n} ... hidden)` spans):
 
 ```tsx
-{takeitFloor > 0 && hiddenTakeitCount > 0 && (
-  <span className="ml-2 text-sky-300/80">
-    ({hiddenTakeitCount} hidden below TAKE-IT {takeitFloor.toFixed(2)})
-  </span>
-)}
+{
+  takeitFloor > 0 && hiddenTakeitCount > 0 && (
+    <span className="ml-2 text-sky-300/80">
+      ({hiddenTakeitCount} hidden below TAKE-IT {takeitFloor.toFixed(2)})
+    </span>
+  );
+}
 ```
 
 - [ ] **Step 7: Render the chip group** (after the burst-filter chip group), following the `FilterChip` pattern:
 
 ```tsx
-<span className={SECTION_LABEL}>TAKE-IT</span>
-{TAKEIT_FLOOR_OPTIONS.map((o) => {
-  const active = takeitFloor === o.value;
-  return (
-    <FilterChip
-      key={o.value}
-      active={active}
-      activeColor="sky"
-      onClick={() => setTakeitFloor(o.value)}
-      title={o.tooltip}
-      ariaPressed={active}
-      testId={`takeit-floor-${o.value}`}
-    >
-      {o.label}
-    </FilterChip>
-  );
-})}
+<span className={SECTION_LABEL}>TAKE-IT</span>;
+{
+  TAKEIT_FLOOR_OPTIONS.map((o) => {
+    const active = takeitFloor === o.value;
+    return (
+      <FilterChip
+        key={o.value}
+        active={active}
+        activeColor="sky"
+        onClick={() => setTakeitFloor(o.value)}
+        title={o.tooltip}
+        ariaPressed={active}
+        testId={`takeit-floor-${o.value}`}
+      >
+        {o.label}
+      </FilterChip>
+    );
+  });
+}
 ```
 
 - [ ] **Step 8: Run to verify it passes**
@@ -606,6 +714,7 @@ git commit -m "feat(lottery): TAKE-IT floor filter chip (default 0.70)"
 ### Task 7: TAKE-IT floor chip — Silent Boom
 
 **Files:**
+
 - Modify: `src/components/SilentBoom/index.tsx`
 - Test: `src/__tests__/SilentBoomSection.test.tsx`
 
@@ -639,6 +748,7 @@ git commit -m "feat(silent-boom): TAKE-IT floor filter chip (default 0.70)"
 ### Task 8: TAKE-IT tooltip rewrite
 
 **Files:**
+
 - Modify: `src/components/TakeItScore/TakeItScore.tsx` (~line 174-177)
 - Test: `src/components/TakeItScore/TakeItScore.test.tsx` (create if absent) — assert the new title text
 
@@ -659,9 +769,9 @@ describe('TakeItScore tooltip', () => {
   });
   it('uses a plain null-state tooltip', () => {
     render(<TakeItScore prob={null} topFeatures={null} />);
-    expect(screen.getByTestId('takeit-score-chip').getAttribute('title')).toContain(
-      'model bundle was unavailable',
-    );
+    expect(
+      screen.getByTestId('takeit-score-chip').getAttribute('title'),
+    ).toContain('model bundle was unavailable');
   });
 });
 ```

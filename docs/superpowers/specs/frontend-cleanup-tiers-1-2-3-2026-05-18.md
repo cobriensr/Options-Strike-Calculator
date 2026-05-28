@@ -404,12 +404,18 @@ ceremony.
 
 ```ts
 function useFetchedData<T>(opts: {
-  url: string | null;          // null = disabled
+  url: string | null; // null = disabled
   marketOpen: boolean;
-  pollIntervalMs?: number;     // omit = single fetch
-  historical?: boolean;        // backtest mode bypass
+  pollIntervalMs?: number; // omit = single fetch
+  historical?: boolean; // backtest mode bypass
   parse?: (raw: unknown) => T;
-}): { data: T | null; loading: boolean; error: string | null; refresh: () => void; fetchedAt: number | null };
+}): {
+  data: T | null;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+  fetchedAt: number | null;
+};
 ```
 
 Built on top of `usePolling` + the existing `fetchJson` from
@@ -462,7 +468,8 @@ These safeguards are non-negotiable for every 2M sub-commit:
    Walk every match, identify which fields it reads, build the
    rename map (`.refetch()` → `.refresh()`, `.lastUpdated` →
    `.fetchedAt`, etc.), apply all in the same commit.
-3. **No external-contract changes.** Only the *in-memory* hook
+
+3. **No external-contract changes.** Only the _in-memory_ hook
    return shape changes. Preserved verbatim:
    - localStorage keys
    - URL query params / API request shapes
@@ -472,7 +479,7 @@ These safeguards are non-negotiable for every 2M sub-commit:
      etc.) — destructure the hook return first, pass the inner
      primitive
 4. **Field-by-field semantic check.** When renaming a timestamp
-   field, the *value* must be semantically identical:
+   field, the _value_ must be semantically identical:
    - `lastUpdated: string (ISO)` → `fetchedAt: number (epoch ms)`
      is a **type change**, not just a rename. The renaming commit
      must update every consumer that does `new Date(updatedAt)`
@@ -684,8 +691,9 @@ feature root rendered by PanelRouter, `Panel` = inner subsection.
 Document in CLAUDE.md.
 
 **Loose top-level `src/components/*.tsx`:** audit list, fold any
->250 LOC into folders (`MarketRegimeSection`, `DarkPoolLevels`,
-`AdvancedSection` are obvious candidates).
+
+> 250 LOC into folders (`MarketRegimeSection`, `DarkPoolLevels`,
+> `AdvancedSection` are obvious candidates).
 
 ### Phase 3E — Hook return-shape rename sweep
 

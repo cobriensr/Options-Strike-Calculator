@@ -14,13 +14,13 @@ then re-run this same probe. If the same features hold, build the pipeline.
 
 ## What I expected vs. what I found
 
-| | Expected | Actual |
-|---|---|---|
-| GexBot history | "days" → assumed ≥30 | 4 trading days (2026-05-19 → 2026-05-22) |
-| Live in Neon | All of it | Only today (cleanup-gexbot is aggressive) |
-| Historical store | — | 4 parquet files in Vercel Blob `gexbot/gexbot_snapshots/` |
-| Silent Boom fires in window | ~3,000-4,000 | 599 enriched, 270 in GexBot universe |
-| Join hit rate after SPXW→SPX | <100% | 100% (every fire matched a snapshot) |
+|                              | Expected             | Actual                                                    |
+| ---------------------------- | -------------------- | --------------------------------------------------------- |
+| GexBot history               | "days" → assumed ≥30 | 4 trading days (2026-05-19 → 2026-05-22)                  |
+| Live in Neon                 | All of it            | Only today (cleanup-gexbot is aggressive)                 |
+| Historical store             | —                    | 4 parquet files in Vercel Blob `gexbot/gexbot_snapshots/` |
+| Silent Boom fires in window  | ~3,000-4,000         | 599 enriched, 270 in GexBot universe                      |
+| Join hit rate after SPXW→SPX | <100%                | 100% (every fire matched a snapshot)                      |
 
 ## Top features (Pearson r vs. hit-30%, sorted by |r|)
 
@@ -70,7 +70,7 @@ For hit-50% the same features rank highest, just with weaker effect sizes.
    one hour-of-day bucket — the cleanest way to spot leakage.
 4. **GexBot fields are point-in-time** (verified — no rolling/EMA in
    fetch-gexbot-fast.ts), so look-ahead leakage is unlikely. But
-   that's the *only* leakage check the small sample passes.
+   that's the _only_ leakage check the small sample passes.
 
 ## Recommendation
 

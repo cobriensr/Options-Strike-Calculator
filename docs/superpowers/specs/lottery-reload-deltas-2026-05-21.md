@@ -3,7 +3,7 @@
 **Date:** 2026-05-21
 **Source:** Live trading conversation with Wonce, 2026-05-21.
 **Goal:** When a lottery alert re-fires on a contract already alerted today, surface
-the **Δ option price** and **Δ underlying** *since the first fire on this chain*
+the **Δ option price** and **Δ underlying** _since the first fire on this chain_
 on the alert card, so the user can identify reload opportunities at a glance.
 
 ## Why
@@ -23,14 +23,14 @@ on the card.
 
 **Backend already has:**
 
-- `lottery_finder_fires.entry_price` — option price per fire ([api/_lib/db-migrations.ts](api/_lib/db-migrations.ts))
-- `lottery_finder_fires.entry_drop_pct_vs_prev` — option Δ vs IMMEDIATELY PRIOR fire ([api/_lib/lottery-finder.ts:644](api/_lib/lottery-finder.ts#L644))
+- `lottery_finder_fires.entry_price` — option price per fire ([api/\_lib/db-migrations.ts](api/_lib/db-migrations.ts))
+- `lottery_finder_fires.entry_drop_pct_vs_prev` — option Δ vs IMMEDIATELY PRIOR fire ([api/\_lib/lottery-finder.ts:644](api/_lib/lottery-finder.ts#L644))
 - `lottery_finder_fires.reload_tagged` boolean — strict gate: `burstRatio ≥ 2 AND entryDrop ≤ -30%`
 - `historicalFires[]` array on the API response with prior fires' triggerTimeCt + entryPrice ([api/lottery-finder.ts](api/lottery-finder.ts))
 
 **Backend GAP:**
 
-- `spot_at_first` is **per-cron-pass**, not per-chain-day. The cron runs every minute over a 7-min rolling window; `firstTick.underlyingPrice` in [api/_lib/lottery-finder.ts:484](api/_lib/lottery-finder.ts#L484) is the first tick the detector saw IN THAT BATCH, not the chain's first fire of the day. So we can't trust it for cross-fire Δ underlying.
+- `spot_at_first` is **per-cron-pass**, not per-chain-day. The cron runs every minute over a 7-min rolling window; `firstTick.underlyingPrice` in [api/\_lib/lottery-finder.ts:484](api/_lib/lottery-finder.ts#L484) is the first tick the detector saw IN THAT BATCH, not the chain's first fire of the day. So we can't trust it for cross-fire Δ underlying.
 - There is NO per-fire `spot_at_trigger` column. Each fire's tick has `cur.underlyingPrice` in the detector loop but it's discarded.
 
 **Frontend GAP:**
@@ -43,18 +43,20 @@ on the card.
 ### Phase 1A — Capture per-fire spot (backend)
 
 1. **Migration #N** (next available id): add column
+
    ```sql
    ALTER TABLE lottery_finder_fires
      ADD COLUMN IF NOT EXISTS spot_at_trigger NUMERIC(12,4)
    ```
+
    NULL-allowed for pre-existing rows. No backfill.
 
-2. **Detector** ([api/_lib/lottery-finder.ts](api/_lib/lottery-finder.ts)):
+2. **Detector** ([api/\_lib/lottery-finder.ts](api/_lib/lottery-finder.ts)):
    - Add `spotAtTrigger: number` to `LotteryFire` interface (line 272 area)
    - In `detectChainFires`, capture `cur.underlyingPrice` per fire (use the trigger-tick's spot, not the entry-tick — matches `triggerTimeCt`)
    - If `cur.underlyingPrice == null`, skip the fire (same guard pattern as `firstTick`)
 
-3. **Enricher** ([api/_lib/lottery-finder.ts:enrichFires](api/_lib/lottery-finder.ts)): pass `spotAtTrigger` through `LotteryFireRecord`.
+3. **Enricher** ([api/\_lib/lottery-finder.ts:enrichFires](api/_lib/lottery-finder.ts)): pass `spotAtTrigger` through `LotteryFireRecord`.
 
 4. **Cron** ([api/cron/detect-lottery-fires.ts](api/cron/detect-lottery-fires.ts)):
    - Add `spot_at_trigger` to the INSERT column list + values
@@ -75,6 +77,7 @@ on the card.
    - `api/__tests__/lottery-finder.test.ts` (or detector unit test if present) — assert `spotAtTrigger` flows through `detectChainFires` → `enrichFires` → mapped row
 
 **Files touched (Phase 1A): ~5**
+
 - `api/_lib/db-migrations.ts`
 - `api/_lib/lottery-finder.ts`
 - `api/cron/detect-lottery-fires.ts`
@@ -112,6 +115,7 @@ on the card.
      - Re-fire with option +3% → no badge
 
 **Files touched (Phase 1B): ~3**
+
 - `src/components/LotteryFinder/LotteryRow.tsx`
 - `src/components/LotteryFinder/__tests__/LotteryRow.test.tsx` (or nearest equivalent)
 - Possibly `src/components/LotteryFinder/types.ts` (already covered in 1A)
@@ -128,7 +132,7 @@ These are display-only thresholds. **No scoring/filter changes** — the existin
 ## Out of scope
 
 - Backfilling `spot_at_trigger` for historical rows — leave NULL; UI degrades gracefully.
-- Changing the strict `isReload()` thresholds in [api/_lib/lottery-finder.ts:418-428](api/_lib/lottery-finder.ts#L418-L428).
+- Changing the strict `isReload()` thresholds in [api/\_lib/lottery-finder.ts:418-428](api/_lib/lottery-finder.ts#L418-L428).
 - Adding the soft-reload cohort to scoring — observe in production first.
 - Surfacing `entry_drop_pct_vs_prev` (vs IMMEDIATELY PRIOR fire) — the user's mental model is "down since first fire," not "down since the last burst."
 - Fixing the per-cron-pass `spot_at_first` bug (it's used elsewhere for range-kill and mode classification; out of scope for this feature).

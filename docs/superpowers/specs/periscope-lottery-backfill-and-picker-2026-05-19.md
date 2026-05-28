@@ -22,13 +22,14 @@ Make the Periscope Lottery panel **backtestable** by
 **6a. Refactor detection for "all-events-of-the-day" mode.**
 
 Files:
+
 - `api/_lib/periscope-lottery-finder.ts`
 
 Today `fetchCandidates(panel, expiry)` returns events from the
-*latest* slice pair only — fine for the 5-min cron, useless for
+_latest_ slice pair only — fine for the 5-min cron, useless for
 backfill. Add a second mode: `fetchAllCandidatesForExpiry(panel,
 expiry)` that uses `LAG` over `captured_at` to compute deltas across
-*every* consecutive slice pair in the day, and `PARTITION BY
+_every_ consecutive slice pair in the day, and `PARTITION BY
 captured_at` for `lvl_rank` / `chg_rank` so per-slot rankings are
 preserved.
 
@@ -49,6 +50,7 @@ rows.
 **6b. Node backfill script for detection.**
 
 Files:
+
 - `scripts/backfill-periscope-lottery-fires.mjs`
 
 Walks distinct `expiry` values in `periscope_snapshots` (constrained
@@ -65,6 +67,7 @@ INSERTs.
 **6c. Python outcomes backfill from parquet.**
 
 Files:
+
 - `scripts/backfill_periscope_lottery_outcomes.py`
 
 For every row in `periscope_lottery_fires` with `outcome_locked =
@@ -98,6 +101,7 @@ $25, EOD $0.05).
 **7a. Add date picker to panel header.**
 
 Files:
+
 - `src/components/PeriscopeLottery/PeriscopeLotteryPanel.tsx`
 
 Replace the today-only `useMemo(() => getETDateStr(new Date()), [])`
@@ -113,6 +117,7 @@ The hook already accepts both — panel just passes them. `historical
 **7c. Tests.**
 
 New tests:
+
 - Date picker changes the `date` param to the hook
 - Past dates skip polling (assert no interval fires)
 - Today is the default initial value

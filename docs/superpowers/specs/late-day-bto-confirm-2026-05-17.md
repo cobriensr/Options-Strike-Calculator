@@ -11,6 +11,7 @@ Surface 1–3 DTE late-session (13:00–15:00 CT) large ask-side option blocks a
 ## Empirical anchor case
 
 Friday 2026-05-15 — SPXW 7300P 2026-05-18 (3DTE on Friday):
+
 - 13:30 CT — large ask-side block; QQQ 708P 2026-05-18 spiked alongside it
 - 14:20 CT — second large ask-side block on the same SPXW chain
 - Lottery Finder did NOT fire on either (the chain was outside its v4 trigger envelope)
@@ -22,11 +23,11 @@ This detector is designed to catch THIS pattern: late-session, near-expiry, ask-
 
 ## Why a new detector instead of extending Lottery / Silent Boom
 
-| Detector | Signal class | Why it misses the SPXW 7300P case |
-|---|---|---|
-| Lottery Finder | sustained-burst v4 trigger over 5-min rolling window | Single large block ≠ sustained burst; chain failed the cumulative vol/OI envelope |
-| Silent Boom | step-change from quiet trailing baseline | At 14:20 CT a chain may not be "quiet" — the 13:30 print already pushed it above baseline; baseline test is too strict |
-| **Late-Day BTO** | **single late-session ask-block on near-expiry contract, confirmed post-hoc by Periscope BTO/STO** | (this spec) |
+| Detector         | Signal class                                                                                       | Why it misses the SPXW 7300P case                                                                                      |
+| ---------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Lottery Finder   | sustained-burst v4 trigger over 5-min rolling window                                               | Single large block ≠ sustained burst; chain failed the cumulative vol/OI envelope                                      |
+| Silent Boom      | step-change from quiet trailing baseline                                                           | At 14:20 CT a chain may not be "quiet" — the 13:30 print already pushed it above baseline; baseline test is too strict |
+| **Late-Day BTO** | **single late-session ask-block on near-expiry contract, confirmed post-hoc by Periscope BTO/STO** | (this spec)                                                                                                            |
 
 Different signal class, different time-of-day gate, different post-hoc enrichment. Same architectural shape as the other two — separate table, separate cron, separate UI surface.
 
@@ -51,6 +52,7 @@ Each phase is independently shippable. Per-phase loop per `feedback_per_phase_lo
 **Method:** `scripts/late_day_bto_audit.py` (new) — walks every parquet file in `/Users/charlesobrien/Desktop/Eod-Full-Tape-parquet/`, filters to 13:00–15:00 CT trades on 1–3 DTE contracts in the candidate universe, sweeps thresholds on `(size, premium, ask_pct, vol_oi)`, and reports daily fire-density + how many fires correspond to the manual anchor cases the user remembers (SPXW 7300P 2026-05-15 must be in the set; ideally a handful of comparable historical cases the user identifies during scoping).
 
 **Outputs to produce before implementation:**
+
 - A frozen `LATE_DAY_BTO_SPEC_V1` parameter object (thresholds, universe list, time window)
 - Daily fire-density table (target: ≤20 candidates/day across the full universe so the feed is scannable)
 - Replay verification: SPXW 7300P 2026-05-15 13:30 CT and 14:20 CT both appear in the candidate set under the locked thresholds
@@ -63,12 +65,14 @@ Each phase is independently shippable. Per-phase loop per `feedback_per_phase_lo
 Lands the real-time candidate detector. Periscope ingestion not yet wired — CANDIDATE rows stay CANDIDATE forever until Phase 2 ships.
 
 **Files to create:**
+
 - `api/_lib/late-day-bto.ts` — pure-TS detector. Exports `LATE_DAY_BTO_SPEC_V1` (frozen from Phase 0), `detectLateDayBtoCandidates(buckets: BucketRow[]): CandidateRecord[]`. Mirrors `silent-boom.ts` shape.
 - `api/__tests__/late-day-bto.test.ts` — parity tests against the Phase 0 Python script on canonical cases (SPXW 7300P 5/15 must classify as candidate).
 - `api/cron/detect-late-day-bto.ts` — cron handler. Reads last 5 min of `ws_option_trades` aggregated by chain × 1-min bucket, applies detector, INSERTs CANDIDATE rows with `ON CONFLICT (option_chain_id, trade_bucket_ct) DO NOTHING`. Wraps in `withCronInstrumentation`.
 - `api/__tests__/detect-late-day-bto.test.ts` — cron-level integration test.
 
 **Files to modify:**
+
 - `api/_lib/db-migrations.ts` — append migration (next sequential id) creating table `late_day_bto_alerts`:
   ```sql
   CREATE TABLE IF NOT EXISTS late_day_bto_alerts (
@@ -115,12 +119,14 @@ Lands the real-time candidate detector. Periscope ingestion not yet wired — CA
 - `vercel.json` — register cron `*/1 18-20 * * 1-5` (UTC equivalent of 13:00–15:00 CT, Mon-Fri). NOTE the time window narrows the cron to 120 invocations/day rather than the full 390-min market window.
 
 **Universe (Phase 0 will refine; initial proposal):**
+
 - SPX / SPXW (the anchor case)
 - QQQ (co-fired in the anchor case)
 - SPY, IWM (parallel index/ETF coverage)
 - Liquid single names where 3-DTE OTM blocks are tradable. Start with the Lottery Finder universe intersection: NVDA, TSLA, AMD, AAPL, MSFT, META, GOOGL, AMZN. Wider universe deferred to v2.
 
 **Acceptance:**
+
 - Migration applies cleanly; table + indexes created
 - Detector parity test passes (TS detector matches Phase 0 Python on canonical cases)
 - Cron runs every minute in 13:00–15:00 CT window, produces ≤20 CANDIDATE rows/day on average over a 30-day dev replay
@@ -132,6 +138,7 @@ Lands the real-time candidate detector. Periscope ingestion not yet wired — CA
 Wires the confirmation half. Until Phase 2, all rows stay CANDIDATE.
 
 **Files to create:**
+
 - `api/_lib/periscope-bto-sto.ts` — ingestion module. Wraps the UW Periscope per-strike open-close data fetch (route to be determined during Phase 0 — likely a new method in the existing `periscope-scraper` Railway service, OR a direct API surface if `periscope-direct-xhr-2026-05-10.md` Path A unblocked one). Returns `{ chainId, asOfTimestamp, btoVolume, stoVolume, totalVolume }` per chain × time slot.
 - `api/cron/fetch-periscope-bto-sto.ts` — new cron, every 15 min during 13:00–17:00 CT. Pulls BTO/STO snapshots for the active universe, upserts into a new `periscope_bto_sto_snapshots` table.
 - `api/cron/confirm-late-day-bto.ts` — every 30 min during 14:00–22:00 CT + once at 22:30 CT (post-close EoD). For each CANDIDATE row older than `PERISCOPE_LAG_MIN` (locked in Phase 0, est. 30–60 min), join against the newest `periscope_bto_sto_snapshots` row covering the candidate's bucket and update `status`, `bto_volume`, `sto_volume`, `bto_share`, `confirmed_at`.
@@ -139,10 +146,12 @@ Wires the confirmation half. Until Phase 2, all rows stay CANDIDATE.
 - `api/__tests__/fetch-periscope-bto-sto.test.ts` — ingestion smoke test with mocked UW response.
 
 **Files to modify:**
+
 - `api/_lib/db-migrations.ts` — append migration creating `periscope_bto_sto_snapshots` table with `(option_chain_id, as_of_ts)` unique key.
 - `vercel.json` — register both crons.
 
 **Confirmation logic sketch (exact thresholds locked in Phase 0):**
+
 ```
 For each CANDIDATE row C older than PERISCOPE_LAG_MIN:
   snap = newest periscope_bto_sto_snapshots row where chain = C.chain
@@ -158,6 +167,7 @@ For each CANDIDATE row C older than PERISCOPE_LAG_MIN:
 ```
 
 **Acceptance:**
+
 - `periscope_bto_sto_snapshots` populates during dev with non-empty rows for the universe
 - On a replayed 2026-05-15, SPXW 7300P 5/18 13:30 CT row transitions CANDIDATE → CONFIRMED within 60 min of original bucket
 - A synthetic STO-heavy block transitions CANDIDATE → REJECTED
@@ -169,6 +179,7 @@ For each CANDIDATE row C older than PERISCOPE_LAG_MIN:
 Surfaces alerts in the dashboard. Single feed, status pills.
 
 **Files to create:**
+
 - `api/late-day-bto-feed.ts` — paginated feed endpoint. Default sort: status (CONFIRMED first, then CANDIDATE, then UNKNOWN; REJECTED hidden by default), then `trade_bucket_ct DESC`. Filters: date, ticker, status, min_premium.
 - `src/hooks/useLateDayBtoFeed.ts` — polling hook mirroring `useSilentBoomFeed`.
 - `src/components/LateDayBto/types.ts`
@@ -178,9 +189,11 @@ Surfaces alerts in the dashboard. Single feed, status pills.
 - `api/__tests__/late-day-bto-feed.test.ts`
 
 **Files to modify:**
+
 - `src/App.tsx` — wire `<LateDayBtoSection>` below `<SilentBoomSection>`.
 
 **Visual spec:**
+
 - Section header: `🕒 Late-Day BTO (N candidate / M confirmed)`
 - Row card shows: ticker / strike / DTE / time / block size / premium / `<StatusPill>`
 - CANDIDATE rows pulse subtly (animation cue: result is provisional)
@@ -188,6 +201,7 @@ Surfaces alerts in the dashboard. Single feed, status pills.
 - Expanded row: contract tape chart + the underlying ticker's net flow chart for the same 13:00–15:00 CT window
 
 **Acceptance:**
+
 - Section renders on dashboard; matches LotteryFinder/SilentBoom card aesthetic (per `ui-styling`)
 - Status pills update without page reload when the polling hook re-fetches
 - Empty state: section hides entirely when N + M = 0
@@ -207,6 +221,7 @@ Surfaces alerts in the dashboard. Single feed, status pills.
 ## Open questions
 
 **(a) "Large block" trigger criteria — UNRESOLVED, locked in Phase 0:**
+
 - Single 1-min bucket size threshold? Or cumulative size over a small window (e.g. 5 ticks within 60s)?
 - Premium-dollar floor? (e.g. ≥$50K notional) Or only contract-count floor?
 - `ask_pct` minimum? The 2026-05-15 SPXW prints were heavy ask-side but Phase 0 needs to confirm a single threshold doesn't catch routine market-making.
@@ -214,6 +229,7 @@ Surfaces alerts in the dashboard. Single feed, status pills.
 - Multi-leg classification: should the existing `classifyAlertMultileg` from `api/_lib/multileg-classify-batch.ts` gate out spreads / straddles, or is that a Phase 2 refinement?
 
 **(b) "Confirmation" semantics — UNRESOLVED, needs Phase 0 investigation of Periscope's actual data shape:**
+
 - Does Periscope publish BTO/STO at chain-level (aggregated, comparable to total volume) or per-trade (timestamped against each print)?
 - If chain-level aggregate: what fraction of the chain's volume in the candidate's bucket needs to be BTO to call it confirmed? Proposed thresholds (Phase 0 tunes):
   - `bto_share >= 0.65` → CONFIRMED
@@ -223,11 +239,13 @@ Surfaces alerts in the dashboard. Single feed, status pills.
 - What if multiple candidates share the same chain (the 13:30 and 14:20 CT SPXW blocks)? The confirm cron likely needs to attribute Periscope's aggregate split across the candidates in time order, or simply use the snapshot delta (`bto_volume[t+1] - bto_volume[t]`) bracketing each candidate's bucket. Lean toward delta — cleaner attribution.
 
 **(c) UI surface — TENTATIVELY RESOLVED to separate section, confirm during scoping:**
+
 - Proposal: new `<LateDayBtoSection>` below `<SilentBoomSection>`. Pros: clean isolation, status pill is a new UX primitive; Cons: yet another scroll target.
 - Alternative: pinned subsection inside `<LotteryFinderSection>` à la the REIGNITION pinned section. Pros: one place to look; Cons: conflates two signal classes.
 - Defer until Phase 3; user feedback on Phase 1 + 2 outputs will inform.
 
 **(d) Interaction with REIGNITION badge — TENTATIVELY RESOLVED to independent:**
+
 - REIGNITION lives on `lottery_finder_fires`. Late-Day BTO lives on its own table. A given chain could conceivably be both a Lottery REIGNITION AND a Late-Day BTO CANDIDATE on the same day — the anchor case actually rules this out (Lottery didn't fire) but other chains could double-up.
 - Proposal: leave them independent. If a chain appears in both feeds, both surfaces render it; no cross-feed dedup. Mark for re-evaluation if/when overlap is observed in production.
 
@@ -235,20 +253,20 @@ Surfaces alerts in the dashboard. Single feed, status pills.
 
 All locked into `LATE_DAY_BTO_SPEC_V1` before Phase 1 implementation per `feedback_tune_before_ship`. Tuning script: `scripts/late_day_bto_audit.py` (new), data: `/Users/charlesobrien/Desktop/Eod-Full-Tape-parquet/` (93 days, 2026-01-02 → 2026-05-15 inclusive).
 
-| Constant | Initial guess | What Phase 0 outputs |
-|---|---|---|
-| `WINDOW_START_CT` | 13:00 | Final value (does 12:30 catch more anchors without flooding?) |
-| `WINDOW_END_CT` | 15:00 | Final value (does 15:15 hurt density?) |
-| `DTE_MIN`, `DTE_MAX` | 1, 3 | Final values + whether 0DTE inclusion helps or just adds noise |
-| `MIN_BLOCK_SIZE` | 250 contracts | Calibrated against daily fire-density curve |
-| `MIN_BLOCK_PREMIUM_USD` | $50,000 | "" |
-| `MIN_ASK_PCT` | 0.65 | "" |
-| `MIN_VOL_OI` | 0.10 | "" — lower than Silent Boom because late-day 3DTE often has tiny OI |
-| `BTO_CONFIRM_THRESHOLD` | 0.65 | Measured against confirmed-anchor cases |
-| `BTO_REJECT_THRESHOLD` | 0.40 | "" |
-| `PERISCOPE_LAG_MIN` | 30 | Measured from historical Periscope snapshots |
-| `PERISCOPE_GIVEUP_MIN` | 240 | If no BTO/STO data by EoD + 4hr, mark UNKNOWN |
-| `UNIVERSE` | SPX/SPXW/QQQ/SPY/IWM + Lottery intersection | Final ticker list |
+| Constant                | Initial guess                               | What Phase 0 outputs                                                |
+| ----------------------- | ------------------------------------------- | ------------------------------------------------------------------- |
+| `WINDOW_START_CT`       | 13:00                                       | Final value (does 12:30 catch more anchors without flooding?)       |
+| `WINDOW_END_CT`         | 15:00                                       | Final value (does 15:15 hurt density?)                              |
+| `DTE_MIN`, `DTE_MAX`    | 1, 3                                        | Final values + whether 0DTE inclusion helps or just adds noise      |
+| `MIN_BLOCK_SIZE`        | 250 contracts                               | Calibrated against daily fire-density curve                         |
+| `MIN_BLOCK_PREMIUM_USD` | $50,000                                     | ""                                                                  |
+| `MIN_ASK_PCT`           | 0.65                                        | ""                                                                  |
+| `MIN_VOL_OI`            | 0.10                                        | "" — lower than Silent Boom because late-day 3DTE often has tiny OI |
+| `BTO_CONFIRM_THRESHOLD` | 0.65                                        | Measured against confirmed-anchor cases                             |
+| `BTO_REJECT_THRESHOLD`  | 0.40                                        | ""                                                                  |
+| `PERISCOPE_LAG_MIN`     | 30                                          | Measured from historical Periscope snapshots                        |
+| `PERISCOPE_GIVEUP_MIN`  | 240                                         | If no BTO/STO data by EoD + 4hr, mark UNKNOWN                       |
+| `UNIVERSE`              | SPX/SPXW/QQQ/SPY/IWM + Lottery intersection | Final ticker list                                                   |
 
 ## Out of scope (deferred)
 

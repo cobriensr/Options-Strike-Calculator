@@ -39,13 +39,13 @@ get backfilled by an existing operational script in **Phase 0**
 
 ## Decisions locked during brainstorm
 
-| Question | Decision |
-|----------|----------|
-| Server-side gate vs UI filter | **UI filter only** — no `directionGated`-style server flag, no score impact, no migration. |
-| Threshold for bullish/bearish | **Sign-only** — `delta > 0` bullish, `delta < 0` bearish, `delta === 0` flat. Matches the existing `computeFlowMatch` convention. |
-| Fire-time vs live snapshot | **Fire-time** — `tickerCumNcpAtFire` / `tickerCumNppAtFire`. Chip is stable; filter is deterministic. Doesn't conflict with the existing live `Flow Match` badge. |
-| Rollup count chip (parallel to `N gated`) | **Skip** — rely on the rollup `flow ↑/↓ counter` chip + per-row chip + filter. The `N gated` count is meaningful because rows were demoted; the new flow filter is client-side, so a count chip would just restate the per-row chip's info. |
-| Share `tideBadge` + `flowBadge` between row components | **Extract** to `src/utils/macro-badges.ts` — single source of truth for both panels' chips. |
+| Question                                               | Decision                                                                                                                                                                                                                                    |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Server-side gate vs UI filter                          | **UI filter only** — no `directionGated`-style server flag, no score impact, no migration.                                                                                                                                                  |
+| Threshold for bullish/bearish                          | **Sign-only** — `delta > 0` bullish, `delta < 0` bearish, `delta === 0` flat. Matches the existing `computeFlowMatch` convention.                                                                                                           |
+| Fire-time vs live snapshot                             | **Fire-time** — `tickerCumNcpAtFire` / `tickerCumNppAtFire`. Chip is stable; filter is deterministic. Doesn't conflict with the existing live `Flow Match` badge.                                                                           |
+| Rollup count chip (parallel to `N gated`)              | **Skip** — rely on the rollup `flow ↑/↓ counter` chip + per-row chip + filter. The `N gated` count is meaningful because rows were demoted; the new flow filter is client-side, so a count chip would just restate the per-row chip's info. |
+| Share `tideBadge` + `flowBadge` between row components | **Extract** to `src/utils/macro-badges.ts` — single source of truth for both panels' chips.                                                                                                                                                 |
 
 ## Data shape
 
@@ -161,6 +161,7 @@ export function flowBadge(diff: number | null): MacroBadgeView | null;
 ```
 
 `flowBadge` returns:
+
 - `Flow ⬆` (green border/text) when `diff > 0`
 - `Flow ⬇` (red border/text) when `diff < 0`
 - `Flow →` (neutral) when `diff === 0`
@@ -201,8 +202,8 @@ export function deltaFromAtFire(
 
 **Test updates:**
 
-- [src/__tests__/SilentBoomRow.test.tsx](src/__tests__/SilentBoomRow.test.tsx) — assert Flow chip renders for non-null + hidden for null
-- [src/__tests__/LotteryRow.test.tsx](src/__tests__/LotteryRow.test.tsx) — same
+- [src/**tests**/SilentBoomRow.test.tsx](src/__tests__/SilentBoomRow.test.tsx) — assert Flow chip renders for non-null + hidden for null
+- [src/**tests**/LotteryRow.test.tsx](src/__tests__/LotteryRow.test.tsx) — same
 
 ### Phase 3 — Rollup flow chip
 
@@ -260,7 +261,7 @@ export function formatFlowLabel(flow: TideAggregate): string {
 }
 ```
 
-**Tests:** [src/__tests__/utils/ticker-rollup-aggregates.test.ts](src/__tests__/utils/ticker-rollup-aggregates.test.ts)
+**Tests:** [src/**tests**/utils/ticker-rollup-aggregates.test.ts](src/__tests__/utils/ticker-rollup-aggregates.test.ts)
 — mirror every existing tide test case for flow (aligned / counter /
 mixed / unknown across bull/bear/mixed bias).
 
@@ -297,6 +298,7 @@ mixed / unknown across bull/bear/mixed bias).
 - [src/components/LotteryFinder/LotteryFinderSection.tsx](src/components/LotteryFinder/LotteryFinderSection.tsx)
 
 New state per section, persisted to localStorage with keys:
+
 - `silentBoom.hideCounterFlow`
 - `lottery.hideCounterFlow`
 
@@ -322,13 +324,13 @@ Filter predicate (added to the existing `displayedAlerts` / `displayedFires` `us
 ```ts
 if (hideCounterFlow) {
   out = out.filter((row) => {
-    const ncp = row.tickerCumNcpAtFire;  // or row.macro.tickerCumNcpAtFire
+    const ncp = row.tickerCumNcpAtFire; // or row.macro.tickerCumNcpAtFire
     const npp = row.tickerCumNppAtFire;
-    if (ncp == null || npp == null) return true;  // never drop pre-snapshot rows
+    if (ncp == null || npp == null) return true; // never drop pre-snapshot rows
     const delta = ncp - npp;
-    if (delta === 0) return true;  // flat = neutral, don't drop
-    if (row.optionType === 'C') return delta > 0;  // bullish flow → keep call
-    return delta < 0;  // bearish flow → keep put
+    if (delta === 0) return true; // flat = neutral, don't drop
+    if (row.optionType === 'C') return delta > 0; // bullish flow → keep call
+    return delta < 0; // bearish flow → keep put
   });
 }
 ```
@@ -367,7 +369,7 @@ market-tide counter-trend → per-ticker counter-flow.
 
 **Test updates:**
 
-- [src/__tests__/SilentBoomSection.test.tsx](src/__tests__/SilentBoomSection.test.tsx)
+- [src/**tests**/SilentBoomSection.test.tsx](src/__tests__/SilentBoomSection.test.tsx)
   - Assert `hide-counter-flow-chip` toggles `aria-pressed`
   - Assert localStorage persistence
   - Assert call rows are dropped when `tickerCumNcpAtFire < tickerCumNppAtFire`
@@ -379,27 +381,27 @@ market-tide counter-trend → per-ticker counter-flow.
 
 ## Files touched
 
-| Phase | File | New / Modified |
-|-------|------|----------------|
-| 0 | `scripts/backfill-ticker-flow-at-fire.mjs` | Operational (already exists) — run dry, then commit |
-| 1 | `src/utils/macro-badges.ts` | **New** |
-| 1 | `src/__tests__/utils/macro-badges.test.ts` | **New** |
-| 2 | `src/components/SilentBoom/SilentBoomRow.tsx` | Modified |
-| 2 | `src/components/LotteryFinder/LotteryRow.tsx` | Modified |
-| 2 | `src/__tests__/SilentBoomRow.test.tsx` | Modified |
-| 2 | `src/__tests__/LotteryRow.test.tsx` | Modified |
-| 3 | `src/utils/ticker-rollup-aggregates.ts` | Modified |
-| 3 | `src/__tests__/utils/ticker-rollup-aggregates.test.ts` | Modified |
-| 4 | `src/components/SilentBoom/SilentBoomTickerGroup.tsx` | Modified |
-| 4 | `src/components/SilentBoom/SilentBoomSection.tsx` | Modified |
-| 4 | `src/components/LotteryFinder/LotteryFinderTickerGroup.tsx` | Modified |
-| 4 | `src/components/LotteryFinder/LotteryFinderSection.tsx` | Modified |
-| 4 | `src/__tests__/SilentBoomTickerGroup.test.tsx` | Modified |
-| 4 | `src/__tests__/LotteryFinderTickerGroup.test.tsx` | Modified |
-| 5 | `src/components/SilentBoom/SilentBoomSection.tsx` (already in Phase 4) | Modified |
-| 5 | `src/components/LotteryFinder/LotteryFinderSection.tsx` (already in Phase 4) | Modified |
-| 5 | `src/__tests__/SilentBoomSection.test.tsx` | Modified |
-| 5 | `src/__tests__/LotteryFinderSection.test.tsx` | Modified |
+| Phase | File                                                                         | New / Modified                                      |
+| ----- | ---------------------------------------------------------------------------- | --------------------------------------------------- |
+| 0     | `scripts/backfill-ticker-flow-at-fire.mjs`                                   | Operational (already exists) — run dry, then commit |
+| 1     | `src/utils/macro-badges.ts`                                                  | **New**                                             |
+| 1     | `src/__tests__/utils/macro-badges.test.ts`                                   | **New**                                             |
+| 2     | `src/components/SilentBoom/SilentBoomRow.tsx`                                | Modified                                            |
+| 2     | `src/components/LotteryFinder/LotteryRow.tsx`                                | Modified                                            |
+| 2     | `src/__tests__/SilentBoomRow.test.tsx`                                       | Modified                                            |
+| 2     | `src/__tests__/LotteryRow.test.tsx`                                          | Modified                                            |
+| 3     | `src/utils/ticker-rollup-aggregates.ts`                                      | Modified                                            |
+| 3     | `src/__tests__/utils/ticker-rollup-aggregates.test.ts`                       | Modified                                            |
+| 4     | `src/components/SilentBoom/SilentBoomTickerGroup.tsx`                        | Modified                                            |
+| 4     | `src/components/SilentBoom/SilentBoomSection.tsx`                            | Modified                                            |
+| 4     | `src/components/LotteryFinder/LotteryFinderTickerGroup.tsx`                  | Modified                                            |
+| 4     | `src/components/LotteryFinder/LotteryFinderSection.tsx`                      | Modified                                            |
+| 4     | `src/__tests__/SilentBoomTickerGroup.test.tsx`                               | Modified                                            |
+| 4     | `src/__tests__/LotteryFinderTickerGroup.test.tsx`                            | Modified                                            |
+| 5     | `src/components/SilentBoom/SilentBoomSection.tsx` (already in Phase 4)       | Modified                                            |
+| 5     | `src/components/LotteryFinder/LotteryFinderSection.tsx` (already in Phase 4) | Modified                                            |
+| 5     | `src/__tests__/SilentBoomSection.test.tsx`                                   | Modified                                            |
+| 5     | `src/__tests__/LotteryFinderSection.test.tsx`                                | Modified                                            |
 
 **Touch count:** 2 new files, 12 modified files. No backend / DB / migration / detector / score changes.
 

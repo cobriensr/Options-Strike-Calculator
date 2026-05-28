@@ -320,7 +320,10 @@ File: `src/__tests__/strike-mover-ladder.aggregation.test.ts`
 ```ts
 import { describe, expect, it } from 'vitest';
 
-import { buildLadderRows, sortAndCapRows } from '../components/Gexbot/strike-mover-ladder/aggregation';
+import {
+  buildLadderRows,
+  sortAndCapRows,
+} from '../components/Gexbot/strike-mover-ladder/aggregation';
 import type { MaxchangeWinnerRow } from '../hooks/useGexbotData';
 
 function makeWinner(
@@ -495,7 +498,10 @@ describe('sortAndCapRows', () => {
   });
 
   it('orders rows by strike descending', () => {
-    const out = sortAndCapRows([make(6700, 1), make(6800, 1), make(6750, 1)], 6750);
+    const out = sortAndCapRows(
+      [make(6700, 1), make(6800, 1), make(6750, 1)],
+      6750,
+    );
     expect(out.map((r) => r.strike)).toEqual([6800, 6750, 6700]);
   });
 
@@ -511,8 +517,7 @@ describe('sortAndCapRows', () => {
     // 5 ceilings closest to spot: 6760, 6770, 6780, 6790, 6800 (NOT 6810/6820).
     // 5 floors closest to spot: 6740, 6730, 6720, 6710, 6700 (NOT 6690/6680).
     expect(out.map((r) => r.strike)).toEqual([
-      6800, 6790, 6780, 6770, 6760,
-      6740, 6730, 6720, 6710, 6700,
+      6800, 6790, 6780, 6770, 6760, 6740, 6730, 6720, 6710, 6700,
     ]);
   });
 
@@ -659,9 +664,7 @@ export function buildLadderRows(
     const symbols = SYMBOL_DISPLAY_ORDER.filter((s) => presentSet.has(s));
 
     const canonicalSign = Math.sign(canonical.change);
-    const allAgree = bucket.every(
-      (b) => Math.sign(b.change) === canonicalSign,
-    );
+    const allAgree = bucket.every((b) => Math.sign(b.change) === canonicalSign);
     const confirmCount: 0 | 2 | 3 =
       allAgree && symbols.length >= 2 ? (symbols.length as 2 | 3) : 0;
 
@@ -712,9 +715,7 @@ export function sortAndCapRows(
   ceilings.sort(
     (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
   );
-  floors.sort(
-    (a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot),
-  );
+  floors.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
   const trimmedCeilings = ceilings.slice(0, MAX_ROWS_PER_SIDE);
   const trimmedFloors = floors.slice(0, MAX_ROWS_PER_SIDE);
 
@@ -830,7 +831,9 @@ describe('<StrikeMoverLadder>', () => {
       freshestAt: null,
     });
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
-    expect(screen.getByTestId('strike-mover-ladder-loading')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('strike-mover-ladder-loading'),
+    ).toBeInTheDocument();
   });
 
   it('renders error tile when hook reports an error', () => {
@@ -897,10 +900,14 @@ describe('<StrikeMoverLadder>', () => {
     });
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
     // Default = GEX → shows strike 6750.
-    expect(screen.getByTestId('strike-mover-ladder-row-6750')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('strike-mover-ladder-row-6750'),
+    ).toBeInTheDocument();
     // Switch to γ tab → shows strike 6700.
     fireEvent.click(screen.getByRole('button', { name: /^γ$/ }));
-    expect(screen.getByTestId('strike-mover-ladder-row-6700')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('strike-mover-ladder-row-6700'),
+    ).toBeInTheDocument();
   });
 
   it('renders the ATM badge on a magnet row', () => {
@@ -922,7 +929,9 @@ describe('<StrikeMoverLadder>', () => {
       freshestAt: '2026-05-19T17:00:00Z',
     });
     render(<StrikeMoverLadder marketOpen spxSpot={6750} />);
-    expect(screen.getByTestId('strike-mover-ladder-spot-divider')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('strike-mover-ladder-spot-divider'),
+    ).toBeInTheDocument();
   });
 
   it('falls back gracefully when spxSpot is null', () => {
@@ -970,7 +979,10 @@ File: `src/components/Gexbot/StrikeMoverLadder.tsx`
 import { memo, useMemo, useState } from 'react';
 
 import { useGexbotData } from '../../hooks/useGexbotData';
-import { buildLadderRows, sortAndCapRows } from './strike-mover-ladder/aggregation';
+import {
+  buildLadderRows,
+  sortAndCapRows,
+} from './strike-mover-ladder/aggregation';
 import { classifyRow } from './strike-mover-ladder/colors';
 import {
   CATEGORY_LABEL,
@@ -986,7 +998,13 @@ interface StrikeMoverLadderProps {
 }
 
 const SPEC = { view: 'maxchange-winners' as const };
-const TABS: readonly CategoryTab[] = ['gex', 'gamma', 'delta', 'vanna', 'charm'];
+const TABS: readonly CategoryTab[] = [
+  'gex',
+  'gamma',
+  'delta',
+  'vanna',
+  'charm',
+];
 
 function formatChange(value: number): string {
   const abs = Math.abs(value);
@@ -1000,7 +1018,10 @@ function formatSpot(spot: number): string {
   return spot.toFixed(2).replace(/\.?0+$/, '');
 }
 
-function StrikeMoverLadderInner({ marketOpen, spxSpot }: StrikeMoverLadderProps) {
+function StrikeMoverLadderInner({
+  marketOpen,
+  spxSpot,
+}: StrikeMoverLadderProps) {
   const { rows: rawRows, loading, error } = useGexbotData(SPEC, marketOpen);
   const [activeTab, setActiveTab] = useState<CategoryTab>('gex');
 
@@ -1011,8 +1032,7 @@ function StrikeMoverLadderInner({ marketOpen, spxSpot }: StrikeMoverLadderProps)
   }, [rawRows, activeTab, spxSpot]);
 
   const maxAbsChange = useMemo(
-    () =>
-      visibleRows.reduce((m, r) => Math.max(m, Math.abs(r.change)), 0),
+    () => visibleRows.reduce((m, r) => Math.max(m, Math.abs(r.change)), 0),
     [visibleRows],
   );
 
@@ -1108,9 +1128,7 @@ function LadderBody({ rows, spot, maxAbsChange }: LadderBodyProps) {
     <div className="px-3 py-2">
       {rows.map((row, idx) => (
         <div key={row.strike}>
-          {idx === dividerIdx && (
-            <SpotDivider spot={spot} />
-          )}
+          {idx === dividerIdx && <SpotDivider spot={spot} />}
           <LadderRow row={row} spot={spot} maxAbsChange={maxAbsChange} />
         </div>
       ))}
@@ -1160,9 +1178,7 @@ function LadderRow({ row, spot, maxAbsChange }: LadderRowProps) {
       <span className="w-12 font-medium">{row.strike}</span>
 
       {classified.marker === '◈ ATM' && (
-        <span className="text-[10px] font-semibold tracking-wide">
-          ◈ ATM
-        </span>
+        <span className="text-[10px] font-semibold tracking-wide">◈ ATM</span>
       )}
 
       <span className="text-tertiary flex gap-1">
@@ -1293,9 +1309,7 @@ describe('<GexbotSection>', () => {
   });
 
   it('renders without crashing with marketOpen=true', () => {
-    const { container } = render(
-      <GexbotSection marketOpen spxSpot={6750} />,
-    );
+    const { container } = render(<GexbotSection marketOpen spxSpot={6750} />);
     expect(container.firstChild).not.toBeNull();
   });
 
@@ -1315,9 +1329,7 @@ describe('<GexbotSection>', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
     // Each child has a distinct *-empty testid; if any import broke,
     // one of these would be absent.
-    expect(
-      screen.getByTestId('strike-mover-ladder-empty'),
-    ).toBeInTheDocument();
+    expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
     expect(
       screen.getByTestId('vix-dealer-state-badge-empty'),
     ).toBeInTheDocument();
@@ -1339,9 +1351,7 @@ describe('<GexbotSection>', () => {
 
   it('renders the trial-context footnote', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
-    expect(
-      screen.getByText(/GEXBot Orderflow-tier data/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/GEXBot Orderflow-tier data/i)).toBeInTheDocument();
   });
 });
 ```
@@ -1415,9 +1425,7 @@ export const GexbotSection = memo(GexbotSectionInner);
 In `src/App.tsx`, locate the existing block (around line 1224):
 
 ```tsx
-<GexbotSection
-  marketOpen={market.data.quotes?.marketOpen ?? false}
-/>
+<GexbotSection marketOpen={market.data.quotes?.marketOpen ?? false} />
 ```
 
 Replace it with:

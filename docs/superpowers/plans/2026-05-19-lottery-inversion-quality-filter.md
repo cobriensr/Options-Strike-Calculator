@@ -11,6 +11,7 @@
 **Spec:** [docs/superpowers/specs/lottery-inversion-quality-filter-2026-05-19.md](../specs/lottery-inversion-quality-filter-2026-05-19.md)
 
 **Locked constants:**
+
 - Win threshold T: `realized_flow_inversion_pct >= 50`
 - Sample-size floor: N ≥ 10 per window
 - Window weights: 0.6 × 21d + 0.4 × 90d (fall back to whichever has N≥10)
@@ -25,6 +26,7 @@
 ## File Structure
 
 **Create:**
+
 - `api/_lib/lottery-inversion-bonus.ts` — pure helper: quintile → bonus, quality-adjusted-score
 - `api/_lib/lottery-tier.ts` — tier classification from `qualityAdjustedScore`
 - `api/__tests__/lottery-inversion-bonus.test.ts`
@@ -33,6 +35,7 @@
 - `ml/tests/test_lottery_ticker_quality.py` (or extend existing)
 
 **Modify:**
+
 - `api/_lib/db-migrations.ts` — migration #175
 - `api/__tests__/db.test.ts` — mock + assertion updates
 - `scripts/enrich_lottery_outcomes.py` — append stats refit + CSV simulation
@@ -66,6 +69,7 @@ Every phase ends with this fixed loop, no asking between steps:
 ### Task 1: Migration #175
 
 **Files:**
+
 - Modify: `api/_lib/db-migrations.ts` (append after id 174 at line ~4986)
 - Test: `api/__tests__/db.test.ts`
 
@@ -151,6 +155,7 @@ The existing script `scripts/enrich_lottery_outcomes.py` already uses psycopg2 +
 ### Task 2: Wilson LCB helper
 
 **Files:**
+
 - Modify: `scripts/enrich_lottery_outcomes.py` (append new helpers near the top, after the dataclass imports)
 - Test: `ml/tests/test_lottery_ticker_quality.py` (new file)
 
@@ -654,6 +659,7 @@ EOF
 ### Task 6: `lottery-inversion-bonus.ts` module
 
 **Files:**
+
 - Create: `api/_lib/lottery-inversion-bonus.ts`
 - Test: `api/__tests__/lottery-inversion-bonus.test.ts`
 
@@ -765,6 +771,7 @@ Expected: all PASS.
 ### Task 7: `lottery-tier.ts` module
 
 **Files:**
+
 - Create: `api/_lib/lottery-tier.ts`
 - Test: `api/__tests__/lottery-tier.test.ts`
 
@@ -776,10 +783,7 @@ Create `api/__tests__/lottery-tier.test.ts`:
 
 ```ts
 import { describe, expect, it } from 'vitest';
-import {
-  tierFromQualityScore,
-  TIER_CUTOFFS_V2,
-} from '../_lib/lottery-tier.js';
+import { tierFromQualityScore, TIER_CUTOFFS_V2 } from '../_lib/lottery-tier.js';
 
 describe('tierFromQualityScore', () => {
   const { tier1MinScore, tier2MinScore } = TIER_CUTOFFS_V2;
@@ -831,9 +835,7 @@ export const TIER_CUTOFFS_V2 = {
   tier2MinScore: 16,
 } as const;
 
-export function tierFromQualityScore(
-  score: number | null,
-): LotteryScoreTier {
+export function tierFromQualityScore(score: number | null): LotteryScoreTier {
   if (score == null) return 'tier3';
   if (score >= TIER_CUTOFFS_V2.tier1MinScore) return 'tier1';
   if (score >= TIER_CUTOFFS_V2.tier2MinScore) return 'tier2';
@@ -849,6 +851,7 @@ Expected: all PASS.
 ### Task 8: Validation schema — add `showAll`
 
 **Files:**
+
 - Modify: `api/_lib/validation/lottery.ts`
 - Test: `api/__tests__/lottery-finder.test.ts` (or wherever the validation schema is exercised)
 
@@ -883,6 +886,7 @@ console.log(lotteryFinderQuerySchema.safeParse({}));
 ### Task 9: Extend the endpoint SELECTs
 
 **Files:**
+
 - Modify: `api/lottery-finder.ts` (4 SELECTs at lines 441, 516, 590, 879 per current code)
 
 - [ ] **Step 9.1: Add the new columns to each SELECT**
@@ -903,15 +907,16 @@ Use `grep -n "ticker_high_peak_rate" api/lottery-finder.ts` to find every SELECT
 In `api/lottery-finder.ts`, find the row interface (search for `ticker_high_peak_rate: DbNullableNumeric`) and add:
 
 ```ts
-  ticker_inversion_blend: DbNullableNumeric;
-  ticker_inversion_quintile: DbNullableNumeric;
-  ticker_inversion_n_21d: DbNullableNumeric;
-  ticker_inversion_n_90d: DbNullableNumeric;
+ticker_inversion_blend: DbNullableNumeric;
+ticker_inversion_quintile: DbNullableNumeric;
+ticker_inversion_n_21d: DbNullableNumeric;
+ticker_inversion_n_90d: DbNullableNumeric;
 ```
 
 ### Task 10: Filter + serialize
 
 **Files:**
+
 - Modify: `api/lottery-finder.ts`
 - Test: `api/__tests__/lottery-finder-endpoint.test.ts`
 
@@ -924,20 +929,40 @@ describe('inversion-quality filter', () => {
   it('suppresses fires whose ticker inversion_quintile is 1 or 2 by default', async () => {
     // Mock 4 fires: tickers in quintiles 1, 2, 3, and null
     const mockRows = [
-      makeFireRow({ ticker: 'BADQ1', ticker_inversion_quintile: 1, combined_score: 18 }),
-      makeFireRow({ ticker: 'BADQ2', ticker_inversion_quintile: 2, combined_score: 18 }),
-      makeFireRow({ ticker: 'OKQ3',  ticker_inversion_quintile: 3, combined_score: 18 }),
-      makeFireRow({ ticker: 'NEW',   ticker_inversion_quintile: null, combined_score: 18 }),
+      makeFireRow({
+        ticker: 'BADQ1',
+        ticker_inversion_quintile: 1,
+        combined_score: 18,
+      }),
+      makeFireRow({
+        ticker: 'BADQ2',
+        ticker_inversion_quintile: 2,
+        combined_score: 18,
+      }),
+      makeFireRow({
+        ticker: 'OKQ3',
+        ticker_inversion_quintile: 3,
+        combined_score: 18,
+      }),
+      makeFireRow({
+        ticker: 'NEW',
+        ticker_inversion_quintile: null,
+        combined_score: 18,
+      }),
     ];
     // ... mock getDb sequence ...
 
-    const res = await callHandler(reqWith({ /* no showAll */ }));
+    const res = await callHandler(
+      reqWith({
+        /* no showAll */
+      }),
+    );
     const body = await res.json();
     const tickers = body.rows.map((r: any) => r.ticker);
     expect(tickers).not.toContain('BADQ1');
     expect(tickers).not.toContain('BADQ2');
     expect(tickers).toContain('OKQ3');
-    expect(tickers).toContain('NEW');  // NULL quintile is never filtered
+    expect(tickers).toContain('NEW'); // NULL quintile is never filtered
   });
 
   it('returns all rows including Q1/Q2 when showAll=true', async () => {
@@ -953,12 +978,16 @@ describe('inversion-quality filter', () => {
 
   it('computes qualityAdjustedScore from combined_score + quintile bonus', async () => {
     const mockRows = [
-      makeFireRow({ ticker: 'TOP', ticker_inversion_quintile: 5, combined_score: 18 }),
+      makeFireRow({
+        ticker: 'TOP',
+        ticker_inversion_quintile: 5,
+        combined_score: 18,
+      }),
     ];
     // mock ...
     const res = await callHandler(reqWith({ showAll: 'true' }));
     const body = await res.json();
-    expect(body.rows[0].qualityAdjustedScore).toBe(23);  // 18 + 5
+    expect(body.rows[0].qualityAdjustedScore).toBe(23); // 18 + 5
   });
 });
 ```
@@ -1013,9 +1042,7 @@ Then apply the filter — find the post-query row collection (likely `const rows
 ```ts
 const filteredRows = showAll
   ? rows
-  : rows.filter((r) =>
-      r.inversionQuintile == null || r.inversionQuintile > 2,
-    );
+  : rows.filter((r) => r.inversionQuintile == null || r.inversionQuintile > 2);
 ```
 
 Replace any downstream reference to `rows` (in the response payload + pagination) with `filteredRows`.
@@ -1083,6 +1110,7 @@ EOF
 ### Task 11: Extend the frontend row type
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/types.ts`
 
 - [ ] **Step 11.1: Add new fields to `LotteryRow` (or equivalent row interface)**
@@ -1090,12 +1118,12 @@ EOF
 In `src/components/LotteryFinder/types.ts`, find the row interface (it mirrors the API row shape — search for `realizedFlowInversionPct`) and add:
 
 ```ts
-  inversionQuintile: number | null;
-  inversionBlend: number | null;
-  inversionN21d: number | null;
-  inversionN90d: number | null;
-  qualityAdjustedScore: number;
-  tier: ScoreTier;  // re-derived field; was previously local-derived
+inversionQuintile: number | null;
+inversionBlend: number | null;
+inversionN21d: number | null;
+inversionN90d: number | null;
+qualityAdjustedScore: number;
+tier: ScoreTier; // re-derived field; was previously local-derived
 ```
 
 If `tier` is already present (it likely is — `ScoreTier` is imported on line 10), leave the existing declaration in place and just note that the server now sets it.
@@ -1103,6 +1131,7 @@ If `tier` is already present (it likely is — `ScoreTier` is imported on line 1
 ### Task 12: Tier badge consumes `qualityAdjustedScore`
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/LotteryRow.tsx` (1218 lines)
 
 - [ ] **Step 12.1: Find the tier badge component**
@@ -1120,6 +1149,7 @@ If a derivation helper imports `lotteryScoreTier` solely for this purpose and no
 ### Task 13: Quintile chip
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/LotteryRow.tsx`
 
 - [ ] **Step 13.1: Add the chip near the tier pill**
@@ -1127,26 +1157,28 @@ If a derivation helper imports `lotteryScoreTier` solely for this purpose and no
 Find the tier pill JSX (use the badge ref from Step 12.1). Adjacent to it, render:
 
 ```tsx
-{row.inversionQuintile != null && (
-  <span
-    className={cn(
-      'inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium',
-      row.inversionQuintile === 1 && 'bg-red-900/40 text-red-300',
-      row.inversionQuintile === 2 && 'bg-amber-900/40 text-amber-300',
-      row.inversionQuintile === 3 && 'bg-slate-800 text-slate-400',
-      row.inversionQuintile === 4 && 'bg-emerald-900/40 text-emerald-300',
-      row.inversionQuintile === 5 && 'bg-emerald-800 text-emerald-200',
-    )}
-    title={
-      row.inversionBlend != null
-        ? `Inversion-win rate: ${(row.inversionBlend * 100).toFixed(1)}% (Wilson 95% LCB)\n` +
-          `Sample: n=${row.inversionN21d ?? 0} (21d) / n=${row.inversionN90d ?? 0} (90d)`
-        : undefined
-    }
-  >
-    Q{row.inversionQuintile}
-  </span>
-)}
+{
+  row.inversionQuintile != null && (
+    <span
+      className={cn(
+        'inline-flex items-center rounded-md px-1.5 py-0.5 text-xs font-medium',
+        row.inversionQuintile === 1 && 'bg-red-900/40 text-red-300',
+        row.inversionQuintile === 2 && 'bg-amber-900/40 text-amber-300',
+        row.inversionQuintile === 3 && 'bg-slate-800 text-slate-400',
+        row.inversionQuintile === 4 && 'bg-emerald-900/40 text-emerald-300',
+        row.inversionQuintile === 5 && 'bg-emerald-800 text-emerald-200',
+      )}
+      title={
+        row.inversionBlend != null
+          ? `Inversion-win rate: ${(row.inversionBlend * 100).toFixed(1)}% (Wilson 95% LCB)\n` +
+            `Sample: n=${row.inversionN21d ?? 0} (21d) / n=${row.inversionN90d ?? 0} (90d)`
+          : undefined
+      }
+    >
+      Q{row.inversionQuintile}
+    </span>
+  );
+}
 ```
 
 If a `cn()` helper isn't already imported in this file, look up the project's convention (likely `clsx`). Match what's already used elsewhere in this file.
@@ -1154,6 +1186,7 @@ If a `cn()` helper isn't already imported in this file, look up the project's co
 ### Task 14: Escape-hatch toggle state in `LotteryFinderSection.tsx`
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/LotteryFinderSection.tsx`
 
 > **Architecture note:** `useAppState` was deleted in commit `f1426c39` (2026-05-19). Lottery filter state now lives as local `useState` inside `LotteryFinderSection.tsx` alongside `reloadOnly`, `cheapCallPmOnly`, `modeFilter`, etc. (current file lines 337-350). The toggle state goes there too.
@@ -1163,15 +1196,16 @@ If a `cn()` helper isn't already imported in this file, look up the project's co
 In `src/components/LotteryFinder/LotteryFinderSection.tsx`, alongside the other filter `useState` calls (around line 343 next to `reloadOnly`), add:
 
 ```ts
-  // Bypass the server-side Q1/Q2 inversion-quality filter when on.
-  // Off by default; intentionally NOT persisted in localStorage — flips
-  // back off on reload so the narrowed feed is the default.
-  const [showFilteredTickers, setShowFilteredTickers] = useState<boolean>(false);
+// Bypass the server-side Q1/Q2 inversion-quality filter when on.
+// Off by default; intentionally NOT persisted in localStorage — flips
+// back off on reload so the narrowed feed is the default.
+const [showFilteredTickers, setShowFilteredTickers] = useState<boolean>(false);
 ```
 
 ### Task 15: Wire the toggle into the lottery feed fetch URL
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/LotteryFinderSection.tsx` (same file)
 
 - [ ] **Step 15.1: Find the URL builder for `/api/lottery-finder`**
@@ -1195,6 +1229,7 @@ Confirm `showFilteredTickers` is included in the dependency array of whatever `u
 ### Task 16: Render the toggle UI
 
 **Files:**
+
 - Modify: `src/components/LotteryFinder/LotteryFinderSection.tsx` (same file)
 
 - [ ] **Step 16.1: Find the toolbar / chip area**
@@ -1224,6 +1259,7 @@ Place it adjacent to the `reloadOnly` / `cheapCallPmOnly` toggle controls so the
 ### Task 17: Playwright e2e spec
 
 **Files:**
+
 - Create: `e2e/lottery-inversion-filter.spec.ts`
 
 - [ ] **Step 17.1: Write the e2e spec**
@@ -1306,6 +1342,7 @@ EOF
 ### Task 19: Staleness check on `/api/cron/refresh-vix1d`
 
 **Files:**
+
 - Modify: `api/cron/refresh-vix1d.ts`
 - Test: `api/__tests__/refresh-vix1d.test.ts` (if exists; otherwise add coverage to the existing test pattern)
 
@@ -1325,8 +1362,8 @@ import * as Sentry from '@sentry/node';
 it('captures a Sentry warning when lottery_ticker_stats is stale (>3 days)', async () => {
   vi.mocked(getDb).mockReturnValue(mockSql);
   mockSql
-    .mockResolvedValueOnce([{ id: 'vix1d-row' }])  // existing flow
-    .mockResolvedValueOnce([{ days: '4.5' }]);     // staleness check returns >3 days
+    .mockResolvedValueOnce([{ id: 'vix1d-row' }]) // existing flow
+    .mockResolvedValueOnce([{ days: '4.5' }]); // staleness check returns >3 days
 
   const captureSpy = vi.spyOn(Sentry, 'captureMessage');
   process.env.CRON_SECRET = 'test-secret';
@@ -1343,7 +1380,7 @@ it('does NOT capture when lottery_ticker_stats is fresh', async () => {
   vi.mocked(getDb).mockReturnValue(mockSql);
   mockSql
     .mockResolvedValueOnce([{ id: 'vix1d-row' }])
-    .mockResolvedValueOnce([{ days: '0.5' }]);  // 12 hours old, fresh
+    .mockResolvedValueOnce([{ days: '0.5' }]); // 12 hours old, fresh
 
   const captureSpy = vi.spyOn(Sentry, 'captureMessage');
   process.env.CRON_SECRET = 'test-secret';
@@ -1366,25 +1403,25 @@ Expected: FAIL.
 In `api/cron/refresh-vix1d.ts`, at the end of the existing handler logic (after the main vix1d refresh, before the response), add:
 
 ```ts
-  // Staleness guard for the lottery inversion-quality refit. The refit is
-  // a manual nightly step; warn if the table hasn't been updated in >3 days.
-  try {
-    const ageRows = await sql`
+// Staleness guard for the lottery inversion-quality refit. The refit is
+// a manual nightly step; warn if the table hasn't been updated in >3 days.
+try {
+  const ageRows = await sql`
       SELECT EXTRACT(EPOCH FROM (NOW() - MAX(updated_at))) / 86400 AS days
       FROM lottery_ticker_stats
     `;
-    const days = Number(ageRows[0]?.days ?? 0);
-    if (days > 3) {
-      Sentry.captureMessage('lottery_ticker_stats stale', {
-        level: 'warning',
-        extra: { ageDays: days },
-      });
-    }
-  } catch (err) {
-    Sentry.captureException(err, {
-      tags: { source: 'lottery-ticker-stats-staleness-check' },
+  const days = Number(ageRows[0]?.days ?? 0);
+  if (days > 3) {
+    Sentry.captureMessage('lottery_ticker_stats stale', {
+      level: 'warning',
+      extra: { ageDays: days },
     });
   }
+} catch (err) {
+  Sentry.captureException(err, {
+    tags: { source: 'lottery-ticker-stats-staleness-check' },
+  });
+}
 ```
 
 Add the Sentry import if not present: `import * as Sentry from '@sentry/node';`.
@@ -1426,6 +1463,7 @@ EOF
 ## Self-Review (per writing-plans skill)
 
 **Spec coverage:**
+
 - ✅ Migration (Section 2.1 / Phase 1)
 - ✅ ML refit + tune-CSV (Section 2.2 / Phase 2)
 - ✅ Path A SELECT-time scoring (Section 2.3 / Phase 3 Task 6, 7, 10)
@@ -1439,9 +1477,11 @@ EOF
 - ✅ Code-reviewer subagent at end of every phase
 
 **Placeholder scan:**
-- One intentional placeholder: tier cutoff values in `lottery-tier.ts` (Step 7.3) are stamped as `22 / 16` with an explicit instruction to replace with Phase 2's locked values. This is the *only* TBD in the plan and is structurally unavoidable (the values come from the simulation run).
+
+- One intentional placeholder: tier cutoff values in `lottery-tier.ts` (Step 7.3) are stamped as `22 / 16` with an explicit instruction to replace with Phase 2's locked values. This is the _only_ TBD in the plan and is structurally unavoidable (the values come from the simulation run).
 
 **Type consistency:**
+
 - `inversionQuintile: number | null` — used identically in `types.ts`, `lottery-inversion-bonus.ts`, the endpoint serializer, the filter predicate, and the chip JSX.
 - `qualityAdjustedScore: number` — set on the row in Step 10.3, consumed by Step 12.2 (badge) and Step 7.x (tier classification).
 - `tier: ScoreTier` — produced server-side in Step 10.3, consumed in Step 12.2.
