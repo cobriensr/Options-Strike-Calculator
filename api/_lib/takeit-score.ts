@@ -23,6 +23,8 @@
  * production rows. Any divergence fails the build.
  */
 
+import { validateBundle } from './takeit-bundle-schema.js';
+
 const SUPPORTED_XGB_JSON_SCHEMAS: ReadonlySet<string> = new Set(['2.1']);
 
 const LEAF_SENTINEL = -1;
@@ -106,6 +108,7 @@ export function assertBundleCompat(
   bundle: TakeitBundle,
   supported: ReadonlySet<string> = SUPPORTED_XGB_JSON_SCHEMAS,
 ): void {
+  validateBundle(bundle);
   if (!supported.has(bundle.xgb_json_schema)) {
     throw new BundleSchemaError(
       `unsupported xgb_json_schema=${bundle.xgb_json_schema} (supported: ${[...supported].join(',')})`,
