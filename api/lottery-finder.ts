@@ -989,9 +989,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // minimal columns. Fed to computeSuspiciousClusters to detect
       // (ticker, side) pairs with ≥3 distinct cheap OTM ask-side strikes.
       // Must be a full-day scan (not page-scoped) because the paginated
-      // row slice doesn't contain all of a ticker's strikes. MUST remain
-      // the LAST element so its position aligns with `clusterCandidateRows`
-      // in the destructuring above.
+      // row slice doesn't contain all of a ticker's strikes.
+      //
+      // MUST remain the LAST element in this Promise.all: its position must
+      // align with `clusterCandidateRows` in the destructuring above.
+      // Adding a new query here without updating BOTH the array and the
+      // destructuring will silently assign the wrong rows to the wrong
+      // variable — the `as [...]` cast suppresses the type error. See the
+      // ordering bug fixed during the original Task 2 work.
       withDbRetry(
         () => db`
         SELECT underlying_symbol, option_type, strike, dte, entry_price,
@@ -1253,6 +1258,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const triggerIso = toIso(r.trigger_time_ct);
       const minuteKey = triggerIso.slice(0, 16);
       const clusterSize = megaClusterByMinute.get(minuteKey);
+      // Suspicious-cluster lookup key — cached so we hit the Map once
+      // for `.has` and once for `.get` without rebuilding the string.
+      const ck = clusterKey(r.underlying_symbol, r.option_type);
       return {
         id: Number(r.id),
         date: toIso(r.date).slice(0, 10),
@@ -1356,12 +1364,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // ask-side 0DTE strikes co-firing on the same day. Descriptive
         // attention-flag only — this cohort is net negative-expectancy
         // (spec: 2026-05-27-suspicious-flow-and-takeit-floor-design.md).
-        suspiciousCluster: clusterLookup.has(
-          clusterKey(r.underlying_symbol, r.option_type),
-        ),
-        clusterStrikeCount:
-          clusterLookup.get(clusterKey(r.underlying_symbol, r.option_type)) ??
-          0,
+        suspiciousCluster: clusterLookup.has(ck),
+        clusterStrikeCount: clusterLookup.get(ck) ?? 0,
 
         trigger: {
           volToOiWindow: Number(r.trigger_vol_to_oi_window),
