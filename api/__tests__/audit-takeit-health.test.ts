@@ -115,8 +115,14 @@ describe('audit-takeit-health cron', () => {
       lottery: { rows_scored: number; null_rate_pct: number };
       silent_boom: { rows_scored: number; null_rate_pct: number };
     };
-    expect(body.lottery).toMatchObject({ rows_scored: 1000, null_rate_pct: 3.0 });
-    expect(body.silent_boom).toMatchObject({ rows_scored: 200, null_rate_pct: 2.5 });
+    expect(body.lottery).toMatchObject({
+      rows_scored: 1000,
+      null_rate_pct: 3.0,
+    });
+    expect(body.silent_boom).toMatchObject({
+      rows_scored: 200,
+      null_rate_pct: 2.5,
+    });
   });
 
   it('fires Sentry captureMessage when null_rate exceeds threshold', async () => {

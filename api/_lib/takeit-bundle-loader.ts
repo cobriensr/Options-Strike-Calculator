@@ -39,10 +39,7 @@ const MANIFEST_PATH = 'takeit/latest.json';
 const BUNDLE_FETCH_MAX_RETRIES = 2;
 const BUNDLE_FETCH_BACKOFFS_MS = [200, 800];
 
-async function withRetry<T>(
-  label: string,
-  fn: () => Promise<T>,
-): Promise<T> {
+async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= BUNDLE_FETCH_MAX_RETRIES; attempt++) {
     try {

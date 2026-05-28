@@ -65,8 +65,9 @@ async function summarizeFeed(
 ): Promise<FeedAgg> {
   // sql.unsafe(table) is safe here — `table` is a hardcoded TypeScript
   // union ('lottery_finder_fires' | 'silent_boom_alerts'), never user input.
-  const rows = (await withDbRetry(() =>
-    sql`
+  const rows = (await withDbRetry(
+    () =>
+      sql`
       SELECT
         count(*) AS rows_scored,
         count(*) FILTER (WHERE takeit_prob IS NULL) AS null_count,
@@ -165,8 +166,9 @@ async function persistMetrics(
   ];
 
   for (const [metric_name, metric_value, threshold, alert_fired] of rows) {
-    await withDbRetry(() =>
-      sql`
+    await withDbRetry(
+      () =>
+        sql`
         INSERT INTO takeit_health_daily
           (date, feed, metric_name, metric_value, threshold, alert_fired)
         VALUES
