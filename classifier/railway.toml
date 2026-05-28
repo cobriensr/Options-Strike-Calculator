@@ -1,2 +1,2 @@
 [deploy]
-watchPatterns = ["classifier/**", "ml/src/multileg_assembler.py", "ml/src/multileg_patterns.py"]
+watchPatterns = ["classifier/**", "ml/src/multileg_*.py"]

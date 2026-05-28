@@ -19,7 +19,7 @@ are kept in sync by a test.
 
 ```bash
 pip install -r requirements.txt
-python -m src.main
+PYTHONPATH=src:_vendored_ml python -m main
 ```
 
 ## Running tests

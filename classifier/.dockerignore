@@ -14,4 +14,3 @@ __pycache__
 htmlcov/
 tests/
 conftest.py
-README.md
