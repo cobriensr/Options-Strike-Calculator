@@ -190,6 +190,13 @@ export const silentBoomFeedQuerySchema = z.object({
   // (#152) are excluded from the OTM check. See spec
   // docs/superpowers/specs/aggressive-premium-chip-2026-05-15.md.
   aggressivePremium: z.coerce.boolean().optional(),
+  // TAKE-IT floor — calibrated XGBoost P(peak >= +20%). 0 / null =
+  // no floor. Server-side so pagination + ticker counts reflect the
+  // post-filter total. Mirrors `minTakeitProb` on the lottery feed —
+  // the prior client-side filter at SilentBoomSection.tsx stripped
+  // ~40 of 50 rows per page when the default 0.70 floor was active
+  // and produced 16+ mostly-empty pages.
+  minTakeitProb: z.coerce.number().min(0).max(1).optional(),
   // Pagination.
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
@@ -224,6 +231,10 @@ export const silentBoomExportQuerySchema = z.object({
   dte: z.enum(['0', '1-3', '4+']).optional(),
   burst: z.enum(['red', 'yellow', 'grey']).optional(),
   askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
+  /** TAKE-IT calibrated probability floor — mirrors
+   *  `silentBoomFeedQuerySchema` so an export taken with the chip on
+   *  matches what was on-screen. */
+  minTakeitProb: z.coerce.number().min(0).max(1).optional(),
   format: z.enum(['csv', 'json']).default('csv'),
 });
 
@@ -342,6 +353,10 @@ export const silentBoomTickerCountsQuerySchema = z.object({
   hideLatePm: z.coerce.boolean().optional(),
   burst: z.enum(['red', 'yellow', 'grey']).optional(),
   askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
+  /** TAKE-IT calibrated probability floor. Mirrors `minTakeitProb` on
+   *  `silentBoomFeedQuerySchema` so chip counts and the filtered feed
+   *  stay aligned. NULL takeit rows are excluded when active. */
+  minTakeitProb: z.coerce.number().min(0).max(1).optional(),
 });
 
 export type SilentBoomTickerCountsQuery = z.infer<

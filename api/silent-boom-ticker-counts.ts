@@ -46,6 +46,7 @@ interface SilentBoomTickerCountsResponse {
     dte: '0' | '1-3' | '4+' | null;
     burst: 'red' | 'yellow' | 'grey' | null;
     askPctBand: '70-80' | '80-90' | '90-95' | '95-99' | '100' | null;
+    minTakeitProb: number | null;
   };
   tickers: {
     ticker: string;
@@ -111,6 +112,8 @@ export default async function handler(
   const dteHiBound = dteRange?.hi ?? 100_000;
   const minPremium =
     q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
+  const minTakeitProb =
+    q.minTakeitProb != null && q.minTakeitProb > 0 ? q.minTakeitProb : null;
   const hideLatePm = q.hideLatePm === true;
 
   const burstRange = (() => {
@@ -160,6 +163,7 @@ export default async function handler(
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
         AND (
           ${hideLatePm}::boolean IS NOT TRUE
           OR (
@@ -182,6 +186,7 @@ export default async function handler(
         dte: q.dte ?? null,
         burst: q.burst ?? null,
         askPctBand: q.askPctBand ?? null,
+        minTakeitProb,
       },
       tickers: rows.map((r) => ({
         ticker: r.ticker,

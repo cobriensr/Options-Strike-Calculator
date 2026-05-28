@@ -375,4 +375,32 @@ describe('useSilentBoomFeed', () => {
     const url = fetchMock.mock.calls[0]![0] as string;
     expect(url).not.toContain('askPctBand=');
   });
+
+  it('omits minTakeitProb when null or 0 (matches "all" preset)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        minTakeitProb: 0,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('minTakeitProb=');
+  });
+
+  it('appends minTakeitProb when > 0 (server-side TAKE-IT filter)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFeed()));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: '2026-05-07',
+        marketOpen: false,
+        minTakeitProb: 0.7,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('minTakeitProb=0.7');
+  });
 });

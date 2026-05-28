@@ -272,6 +272,7 @@ interface SilentBoomFeedResponse {
     askPctBand: SilentBoomAskPctBand | null;
     sort: 'newest' | 'spike_ratio' | 'vol_oi' | 'peak';
     aggressivePremium: boolean;
+    minTakeitProb: number | null;
   };
   count: number;
   total: number;
@@ -365,6 +366,16 @@ export default async function handler(
   // post-filter count.
   const minPremium =
     q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
+  // TAKE-IT calibrated P(peak >= +20%) floor. 0 / null = no floor.
+  // Server-side so pagination + ticker counts reflect the post-filter
+  // total — the prior client-side filter at SilentBoomSection.tsx
+  // stripped ~40 of 50 rows per page when the default 0.70 floor was
+  // active and produced 16+ mostly-empty pages. Mirrors the lottery
+  // fix in api/lottery-finder.ts. NULL takeit rows (not yet enriched)
+  // are excluded when the floor is on — matches the prior client
+  // behavior at SilentBoomSection.tsx:692-694.
+  const minTakeitProb =
+    q.minTakeitProb != null && q.minTakeitProb > 0 ? q.minTakeitProb : null;
   // Hide alerts whose bucket_ct (in CT) is at or after 14:30. When
   // active, this is a server-side filter so pagination accurately
   // reflects the visible count — was previously client-side which
@@ -440,6 +451,7 @@ export default async function handler(
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
         AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
         AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
         AND (
           ${hideLatePm}::boolean IS NOT TRUE
           OR (
@@ -498,6 +510,7 @@ export default async function handler(
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
         AND (
           ${hideLatePm}::boolean IS NOT TRUE
           OR (
@@ -552,6 +565,7 @@ export default async function handler(
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
         AND (
           ${hideLatePm}::boolean IS NOT TRUE
           OR (
@@ -606,6 +620,7 @@ export default async function handler(
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
         AND (
           ${hideLatePm}::boolean IS NOT TRUE
           OR (
@@ -661,6 +676,7 @@ export default async function handler(
           AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
           AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
           AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
+        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
         AND (
           ${hideLatePm}::boolean IS NOT TRUE
           OR (
@@ -824,6 +840,7 @@ export default async function handler(
         askPctBand: q.askPctBand ?? null,
         sort: q.sort,
         aggressivePremium,
+        minTakeitProb: minTakeitProb ?? null,
       },
       count: alerts.length,
       total,

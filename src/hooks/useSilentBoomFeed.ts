@@ -58,6 +58,9 @@ interface UseSilentBoomFeedArgs {
    * api/silent-boom-feed.ts.
    */
   aggressivePremium?: boolean;
+  /** TAKE-IT calibrated P(peak >= +20%) floor. 0 = no floor. Server-
+   *  side so pagination + chip totals reflect the post-filter result. */
+  minTakeitProb?: number;
   sort?: SilentBoomSortMode;
   page?: number;
   pageSize?: number;
@@ -80,6 +83,7 @@ export function useSilentBoomFeed({
   burst = null,
   askPctBand = null,
   aggressivePremium = false,
+  minTakeitProb = 0,
   sort = 'newest',
   page = 0,
   pageSize = 50,
@@ -103,6 +107,7 @@ export function useSilentBoomFeed({
   if (burst) params.set('burst', burst);
   if (askPctBand) params.set('askPctBand', askPctBand);
   if (aggressivePremium) params.set('aggressivePremium', 'true');
+  if (minTakeitProb > 0) params.set('minTakeitProb', String(minTakeitProb));
   const url = `/api/silent-boom-feed?${params.toString()}`;
 
   // Original gates were `[marketOpen, page === 0, !historical]` — fold

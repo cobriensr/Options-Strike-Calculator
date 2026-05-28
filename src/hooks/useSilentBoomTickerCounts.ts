@@ -48,6 +48,10 @@ interface UseSilentBoomTickerCountsArgs {
   hideLatePm?: boolean;
   burst?: SilentBoomBurstColor | null;
   askPctBand?: SilentBoomAskPctBand | null;
+  /** TAKE-IT calibrated probability floor. Server-side so chip
+   *  counts stay aligned with the TAKE-IT-filtered feed. 0 = no
+   *  floor. */
+  minTakeitProb?: number;
 }
 
 export interface SilentBoomTickerCountsResponse {
@@ -69,6 +73,7 @@ export function useSilentBoomTickerCounts({
   hideLatePm = false,
   burst = null,
   askPctBand = null,
+  minTakeitProb = 0,
 }: UseSilentBoomTickerCountsArgs): UseFetchedDataResult<SilentBoomTickerCountsResponse> {
   const params = new URLSearchParams({
     date,
@@ -84,6 +89,7 @@ export function useSilentBoomTickerCounts({
   if (hideLatePm) params.set('hideLatePm', 'true');
   if (burst) params.set('burst', burst);
   if (askPctBand) params.set('askPctBand', askPctBand);
+  if (minTakeitProb > 0) params.set('minTakeitProb', String(minTakeitProb));
   const url = `/api/silent-boom-ticker-counts?${params.toString()}`;
 
   return useFetchedData<SilentBoomTickerCountsResponse>({

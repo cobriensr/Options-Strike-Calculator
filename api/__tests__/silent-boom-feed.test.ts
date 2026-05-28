@@ -1041,6 +1041,49 @@ describe('silent-boom-feed handler', () => {
     expect(callsWithTrue.length).toBe(2);
   });
 
+  it('binds minTakeitProb to both count + rows queries and echoes it in filters', async () => {
+    // Server-side push of the TAKE-IT chip. Prior client-side filter
+    // stripped ~40 of 50 rows per page when default 0.70 was active
+    // and produced 16+ mostly-empty pages. Mirrors the lottery fix.
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', minTakeitProb: '0.7' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { minTakeitProb: number | null } };
+    expect(body.filters.minTakeitProb).toBe(0.7);
+
+    // Count + rows query both bind the floor value.
+    const countCall = mockSql.mock.calls[0] as unknown[];
+    const rowsCall = mockSql.mock.calls[1] as unknown[];
+    expect(countCall.slice(1)).toContain(0.7);
+    expect(rowsCall.slice(1)).toContain(0.7);
+
+    // SQL text references the takeit_prob column.
+    const countSql = (countCall[0] as TemplateStringsArray).join(' ');
+    const rowsSql = (rowsCall[0] as TemplateStringsArray).join(' ');
+    expect(countSql).toContain('takeit_prob >=');
+    expect(rowsSql).toContain('takeit_prob >=');
+  });
+
+  it('omits minTakeitProb from filters echo when not provided', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as { filters: { minTakeitProb: number | null } };
+    expect(body.filters.minTakeitProb).toBeNull();
+  });
+
   // ------------------------------------------------------------------
   // Suspicious-cluster detection tests.
   // ------------------------------------------------------------------

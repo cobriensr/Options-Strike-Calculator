@@ -796,63 +796,28 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
     expect(chip).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('default 0.70 floor hides an alert with takeitProb: 0.3', () => {
-    const alerts = [
-      makeAlert({
-        id: 1,
-        optionChainId: 'AAPL260508C00200000',
-        underlyingSymbol: 'AAPL',
-        strike: 200,
-        takeitProb: 0.8,
-      }),
-      makeAlert({
-        id: 2,
-        optionChainId: 'TSLA260508C00250000',
-        underlyingSymbol: 'TSLA',
-        strike: 250,
-        takeitProb: 0.3,
-      }),
-    ];
-    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
-
+  it('default 0.70 floor forwards minTakeitProb=0.7 to both feed + ticker-counts hooks', () => {
+    // TAKE-IT is now pushed server-side so pagination + chip totals
+    // reflect the post-filter count. The chip click changes the URL
+    // (via the hook), which triggers a server fetch with the new
+    // floor — there is no client-side filter to assert against
+    // anymore. Verify the hook contract instead.
     render(<SilentBoomSection marketOpen={false} />);
 
-    // High takeitProb is visible.
-    expect(
-      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
-    ).toBeInTheDocument();
-    // Low takeitProb is hidden by the default 0.70 floor.
-    expect(
-      screen.queryByTestId('silent-boom-row-TSLA260508C00250000'),
-    ).not.toBeInTheDocument();
+    const feedCall = mockUseSilentBoomFeed.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minTakeitProb: 0.7 });
+    const countsCall = mockUseSilentBoomTickerCounts.mock.calls.at(-1);
+    expect(countsCall?.[0]).toMatchObject({ minTakeitProb: 0.7 });
   });
 
-  it('clicking takeit-floor-0 ("all") reveals the previously-hidden alert', () => {
-    const alerts = [
-      makeAlert({
-        id: 1,
-        optionChainId: 'TSLA260508C00250000',
-        underlyingSymbol: 'TSLA',
-        strike: 250,
-        takeitProb: 0.3,
-      }),
-    ];
-    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 1 }));
-
+  it('clicking takeit-floor-0 ("all") forwards minTakeitProb=0', () => {
     render(<SilentBoomSection marketOpen={false} />);
-
-    // Default 0.70 floor hides the low-takeitProb alert.
-    expect(
-      screen.queryByTestId('silent-boom-row-TSLA260508C00250000'),
-    ).not.toBeInTheDocument();
-
-    // Click the "all" preset to disable the floor.
     fireEvent.click(screen.getByTestId('takeit-floor-0'));
 
-    // Alert is now visible.
-    expect(
-      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
-    ).toBeInTheDocument();
+    const feedCall = mockUseSilentBoomFeed.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minTakeitProb: 0 });
+    const countsCall = mockUseSilentBoomTickerCounts.mock.calls.at(-1);
+    expect(countsCall?.[0]).toMatchObject({ minTakeitProb: 0 });
   });
 
   it('toggling takeitFloor while on page 2 resets the page to 0', () => {
@@ -890,15 +855,18 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
 
 describe('SilentBoomSection: pagination edge states', () => {
   it('renders the post-filter empty state when every server row is hidden by client chips', () => {
-    // Default takeitFloor is 0.70 — alerts below that get hidden client-side.
-    // Server returns 5 alerts; all have takeitProb=0.5 → all hidden → header
-    // + pagination still render but the body must explain the gap.
+    // TAKE-IT is now server-side, but smaller client-only chips
+    // (bucket scrub, hideGhosts, hideGated, hideCounterFlow, moneyness)
+    // still apply. Use hideGhosts: a ghost print is baselineVolume <= 50
+    // AND spikeRatio >= 100. Build 5 alerts that all match, enable the
+    // hideGhosts chip, and assert the empty-state branch fires.
     const alerts = Array.from({ length: 5 }, (_, i) =>
       makeAlert({
         id: i + 1,
         optionChainId: `HIDDEN-${i}`,
         underlyingSymbol: 'AAPL',
-        takeitProb: 0.5,
+        baselineVolume: 10,
+        spikeRatio: 200,
       }),
     );
     mockUseSilentBoomFeed.mockReturnValue(
@@ -906,6 +874,7 @@ describe('SilentBoomSection: pagination edge states', () => {
     );
 
     render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByText(/hide ghosts/i));
 
     expect(
       screen.getByTestId('silent-boom-all-filtered-empty'),
@@ -913,18 +882,35 @@ describe('SilentBoomSection: pagination edge states', () => {
     expect(screen.queryAllByTestId(/^silent-boom-row-/)).toHaveLength(0);
   });
 
-  it('renders "showing N of M" with the post-filter visible count, not the server slice size', () => {
-    // 3 server alerts; 1 visible after the default 0.70 TAKE-IT floor.
+  it('renders "showing N of M" with the post-client-filter visible count, not the server slice size', () => {
+    // 3 server alerts; 2 are ghost prints (stripped by hideGhosts when
+    // active), 1 has a healthy baseline. Visible count should be 1 of 3.
     const alerts = [
-      makeAlert({ id: 1, optionChainId: 'V1', takeitProb: 0.5 }),
-      makeAlert({ id: 2, optionChainId: 'V2', takeitProb: 0.5 }),
-      makeAlert({ id: 3, optionChainId: 'V3', takeitProb: 0.85 }),
+      makeAlert({
+        id: 1,
+        optionChainId: 'V1',
+        baselineVolume: 10,
+        spikeRatio: 200,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'V2',
+        baselineVolume: 10,
+        spikeRatio: 200,
+      }),
+      makeAlert({
+        id: 3,
+        optionChainId: 'V3',
+        baselineVolume: 500,
+        spikeRatio: 10,
+      }),
     ];
     mockUseSilentBoomFeed.mockReturnValue(
       feedResult({ alerts, total: 3, hasMore: false }),
     );
 
     render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByText(/hide ghosts/i));
 
     expect(screen.getByText(/showing 1 of 3/)).toBeInTheDocument();
   });

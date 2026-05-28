@@ -596,6 +596,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     aggressivePremium,
     minVolOi,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minTakeitProb: takeitFloor,
     sort: sortMode,
     page,
     pageSize: PAGE_SIZE,
@@ -630,6 +631,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     askPctBand,
     minVolOi,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minTakeitProb: takeitFloor,
   });
 
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
@@ -689,11 +691,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
         return moneynessMode === 'otm' ? isOtm : !isOtm;
       });
     }
-    if (takeitFloor > 0) {
-      out = out.filter(
-        (a) => a.takeitProb != null && a.takeitProb >= takeitFloor,
-      );
-    }
+    // TAKE-IT floor is applied server-side via `minTakeitProb` on
+    // both useSilentBoomFeed + useSilentBoomTickerCounts so pagination
+    // and chip totals reflect the post-filter result. The prior
+    // client-side version stripped ~40 of 50 rows per page when the
+    // default 0.70 floor was active and created 16+ mostly-empty
+    // pages — mirrors the lottery fix in 870df524.
     return out;
   }, [
     alerts,
@@ -702,7 +705,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     hideGated,
     hideCounterFlow,
     moneynessMode,
-    takeitFloor,
   ]);
   // Per-filter hidden counts — computed against the unfiltered set
   // so each chip's "−N" count reflects what THAT filter is hiding,
@@ -736,12 +738,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     bucketIso == null && moneynessMode !== 'all'
       ? alerts.filter((a) => a.underlyingPriceAtSpike == null).length
       : 0;
-  const hiddenTakeitCount =
-    takeitFloor > 0 && bucketIso == null
-      ? alerts.filter((a) => a.takeitProb == null || a.takeitProb < takeitFloor)
-          .length
-      : 0;
-
   // All tickers with at least one alert today, from the dedicated
   // counts endpoint — independent of pagination. The list was
   // previously built from the 50-item page slice (hid tickers that
@@ -851,6 +847,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   }, []);
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+  // totalPages is accurate now that the load-bearing TAKE-IT filter
+  // is server-side. Smaller client-only chips (hideGhosts, hideGated,
+  // hideCounterFlow, moneynessMode, bucket scrub) can still leave a
+  // page lighter than PAGE_SIZE but cannot inflate the denominator
+  // by 10×+ the way TAKE-IT 0.70 used to.
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <SectionBox label="Silent Boom" collapsible>
@@ -1566,10 +1568,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                     ({hiddenCounterFlowCount} counter-flow hidden)
                   </span>
                 )}
-                {takeitFloor > 0 && hiddenTakeitCount > 0 && (
+                {takeitFloor > 0 && (
                   <span className="ml-2 text-sky-300/80">
-                    ({hiddenTakeitCount} hidden below TAKE-IT{' '}
-                    {takeitFloor.toFixed(2)})
+                    (TAKE-IT ≥ {takeitFloor.toFixed(2)})
                   </span>
                 )}
               </span>
@@ -1590,7 +1591,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                     ← prev
                   </button>
                   <span className="font-mono text-xs text-neutral-400">
-                    page {currentPage}
+                    page {currentPage} / {totalPages}
                   </span>
                   <button
                     type="button"
