@@ -867,4 +867,32 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
       screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
     ).toBeInTheDocument();
   });
+
+  it('toggling takeitFloor while on page 2 resets the page to 0', () => {
+    // Seed the hook with hasMore=true so the "next page" button renders.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({
+        alerts: [makeAlert({ id: 1, optionChainId: 'AAPL260508C00200000' })],
+        total: 100,
+        hasMore: true,
+      }),
+    );
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    // Advance to page 2 via the Next button.
+    const nextBtn = screen.getByRole('button', { name: /next/i });
+    fireEvent.click(nextBtn);
+
+    // Confirm the hook was called with page > 0 (page 2).
+    const callAfterNext = mockUseSilentBoomFeed.mock.calls.at(-1);
+    expect(callAfterNext?.[0]).toMatchObject({ page: 1 });
+
+    // Now toggle the takeitFloor chip (switch from 0.70 to "all").
+    fireEvent.click(screen.getByTestId('takeit-floor-0'));
+
+    // The page should have reset: the hook must be called with page 0.
+    const callAfterFilter = mockUseSilentBoomFeed.mock.calls.at(-1);
+    expect(callAfterFilter?.[0]).toMatchObject({ page: 0 });
+  });
 });

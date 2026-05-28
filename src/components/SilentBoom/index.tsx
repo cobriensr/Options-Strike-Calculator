@@ -599,6 +599,10 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     hideGhosts,
     hideGated,
     hideCounterFlow,
+    hideRoundTripped,
+    hideRoundTrippedAnyDte,
+    takeitFloor,
+    aggressivePremium,
     moneynessMode,
   ]);
 
