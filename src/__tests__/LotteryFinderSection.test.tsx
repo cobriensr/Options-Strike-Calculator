@@ -403,18 +403,12 @@ describe('LotteryFinderSection: filter interactions', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('default ON: chip starts aria-pressed=true; flipping OFF persists "0"', () => {
-    // Phase 3 default-on (post-2E soak result: deducted alerts had
-    // +11.4pp trail-loss vs baseline → safer to hide by default).
-    render(<LotteryFinderSection marketOpen={false} />);
-    const chip = screen.getByTestId('lottery-hide-round-tripped-chip');
-    expect(chip).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(chip);
-    expect(chip).toHaveAttribute('aria-pressed', 'false');
-    expect(window.localStorage.getItem('lottery.hideRoundTripped')).toBe('0');
-  });
-
-  it('drops fires with roundTripScoreDeduct < 0 by default; toggle OFF reveals them', () => {
+  it('keeps deducted fires visible (no mid-session hiding) and drops the hide chip', () => {
+    // The hide-round-tripped chip was removed: deducted fires no longer
+    // vanish from view mid-session. The dim styling + round-tripped pill
+    // are rendered by LotteryRow (covered by LotteryRow.test); this
+    // section-level test just verifies the section keeps both rows
+    // visible and the toolbar no longer carries the hide chip.
     const fires = [
       makeFire({
         id: 1,
@@ -434,23 +428,15 @@ describe('LotteryFinderSection: filter interactions', () => {
 
     render(<LotteryFinderSection marketOpen={false} />);
 
-    // Default ON — deducted alert is hidden on initial render.
-    expect(
-      screen.getByTestId('lottery-row-AAPL260508C00200000'),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId('lottery-row-SPY260508P00500000'),
-    ).not.toBeInTheDocument();
-
-    // Flip the chip OFF — both alerts now visible.
-    fireEvent.click(screen.getByTestId('lottery-hide-round-tripped-chip'));
-
     expect(
       screen.getByTestId('lottery-row-AAPL260508C00200000'),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId('lottery-row-SPY260508P00500000'),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-hide-round-tripped-chip'),
+    ).not.toBeInTheDocument();
   });
 
   it('flips the aggressive-premium aria-pressed state and persists to localStorage', () => {

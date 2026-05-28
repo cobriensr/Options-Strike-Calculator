@@ -165,13 +165,15 @@ interface FireRow {
   // Fire-count score adjustment (migration #167). Stored column
   // maintained by trigger on INSERT — the per-chain-day bucket map
   // (1→-3, 2-3→-1, 4-7→0, 8-15→+1, ≥16→+2) is applied at SQL level
-  // rather than at API read time. Included in combined_score's
-  // GENERATED expression so the score-sort ORDER BY picks it up.
+  // rather than at API read time. Folded into the displayed `score`
+  // field below; NOT used in the feed's ORDER BY (which sorts on the
+  // raw `f.score` column to keep fire positions frozen post-fire).
+  // Still part of the (now-unused) `combined_score` GENERATED column.
   fire_count_score_adjustment: number;
   // Gamma at trigger time (migration #168). Captured by the detect
   // cron from raw_payload->>'gamma'. NULL on rows inserted before
-  // migration #168 lands. Feeds combined_score's gamma bonus CASE
-  // expression and the UI HIGH-Γ chip.
+  // migration #168 lands. Folded into the displayed `score` field
+  // and surfaced via the UI HIGH-Γ chip.
   gamma_at_trigger: DbNullableNumeric;
   // Take-It calibrated win probability + bundle version (migration #155,
   // spec takeit-phase3-production-scoring-2026-05-16.md). Populated at
@@ -420,11 +422,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     //   - chronological: most-recent first (default; preserves prior UX)
     //   - score: Tier-1 fires float to the top, score-tied chronological
     //   - peak: highest realized peak first (post-hoc browsing)
-    // The score sort uses migration #159's `combined_score` STORED
-    // generated column + (date DESC, combined_score DESC NULLS LAST)
-    // index — restores the indexed early-LIMIT path that commit 4fc7ec99
-    // lost when it changed ORDER BY to a computed expression on
-    // (score + round_trip_score_deduct). The peak sort relies on
+    // The score sort uses the raw `f.score` column (migration #126's
+    // (date DESC, score DESC) index) to keep fire positions FROZEN at
+    // detect time. We deliberately do NOT sort by `combined_score` (the
+    // GENERATED column that folds in round_trip_score_deduct) because
+    // that would reshuffle the feed mid-session whenever the
+    // evaluate-round-trip cron writes a deduct 60-75min post-fire — the
+    // user's mental map of which alerts were near the top at fire time
+    // would silently drift. Deducted fires now render dimmed in-place via
+    // LotteryRow's round-tripped pill, preserving the EV signal without
+    // mutating sort position. The peak sort relies on
     // (date DESC, trigger_time_ct DESC) for the date prefix.
     // Per-row cum_ncp / cum_npp at fire time come straight off the row
     // (migration #158 cum_ncp_at_fire / cum_npp_at_fire columns,
@@ -517,7 +524,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
-        ORDER BY f.combined_score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
+        ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
       `,
@@ -1186,18 +1193,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           : Number(r.round_trip_score_deduct);
       // Fire-count adjustment — promoted to a stored DB column in
       // migration #167. The trigger update_lottery_fire_count_score_adj
-      // maintains it on every INSERT, and the `combined_score` STORED
-      // generated column now sums score + round_trip_score_deduct +
-      // fire_count_score_adjustment. The previous read-time TS
-      // computation (commit 254c94ed) is retired here — the displayed
-      // score now equals the SQL sort key, eliminating the divergence
-      // documented in that commit. Read both `fire_count_score_adj`
-      // and `combined_score` straight from the SELECT.
+      // maintains it on every INSERT. Folded into the displayed `score`
+      // below alongside rtDeduct + gammaAdj.
+      //
+      // NOTE — displayed score ≠ SQL sort key, BY DESIGN (2026-05-28).
+      // We intentionally reopened the divergence that commit 4fc7ec99
+      // closed: the feed now sorts on the raw `f.score` column so a
+      // fire's position is FROZEN at detect time. The `combined_score`
+      // GENERATED column (migrations #159/#167/#168) still exists and
+      // its index still exists, but the ORDER BY no longer consumes
+      // them — see api/lottery-finder.ts:417-433 for the rationale.
+      // Deducted/adjusted fires render dimmed in-place via LotteryRow's
+      // round-tripped pill rather than reshuffling in the feed.
       const fireCountAdj = Number(r.fire_count_score_adjustment ?? 0);
-      // Gamma at trigger time + the derived bonus (mirrors the SQL
-      // CASE expression in combined_score, kept in sync via the
-      // helper). Tooltip on the UI chip uses the value; the SQL sort
-      // already includes the bonus via combined_score.
+      // Gamma at trigger time + the derived bonus. Mirrors the SQL
+      // CASE expression that the `combined_score` GENERATED column
+      // uses internally, but applied here at read time because the
+      // feed sort no longer reads `combined_score` (see note above).
       const gammaAtTrigger =
         r.gamma_at_trigger != null ? Number(r.gamma_at_trigger) : null;
       const gammaAdj = gammaScoreAdjustment(

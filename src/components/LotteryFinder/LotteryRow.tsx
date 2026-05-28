@@ -656,11 +656,24 @@ export const LotteryRow = memo(function LotteryRow({
     return { label, className, title };
   }, [reloadDelta, fire.tags.reload]);
 
+  const roundTripDeduct = fire.roundTripScoreDeduct ?? 0;
+  const isRoundTripped = roundTripDeduct < 0;
+
   return (
     <div
       data-testid="lottery-row"
-      className={`rounded border p-3 text-sm ${rowContainerClass(fire.optionType)}`}
+      data-round-tripped={isRoundTripped ? 'true' : undefined}
+      className={`rounded border p-3 text-sm ${rowContainerClass(fire.optionType)} ${isRoundTripped ? 'opacity-60' : ''}`}
     >
+      {isRoundTripped && (
+        <div
+          data-testid="lottery-row-round-tripped-pill"
+          className="mb-1.5 inline-flex items-center gap-1 rounded border border-amber-500/50 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-200 uppercase"
+          title={`Post-fire flow turned bid-dominated (60-min window). Score deduct ${roundTripDeduct}. EDA: deducted fires had +11.4pp trail-loss rate vs baseline — treat as lower-EV.`}
+        >
+          round-tripped {roundTripDeduct}
+        </div>
+      )}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         {/* Tier badge — peak-potential at a glance. Sits before the
             ticker so the user's eye lands on conviction first. */}

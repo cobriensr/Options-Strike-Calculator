@@ -336,20 +336,12 @@ describe('SilentBoomSection: filter interactions', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('default ON: chip starts aria-pressed=true; flipping OFF persists "0"', () => {
-    // Phase 3 default-on (post-2E soak result: silent_boom deducted
-    // alerts had +14.4pp trail-loss vs baseline → safer to hide by default).
-    render(<SilentBoomSection marketOpen={false} />);
-    const chip = screen.getByTestId('silent-boom-hide-round-tripped-chip');
-    expect(chip).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(chip);
-    expect(chip).toHaveAttribute('aria-pressed', 'false');
-    expect(window.localStorage.getItem('silentBoom.hideRoundTripped')).toBe(
-      '0',
-    );
-  });
-
-  it('drops alerts with roundTripScoreDeduct < 0 by default; toggle OFF reveals them', () => {
+  it('keeps deducted alerts visible (no mid-session hiding) and drops both hide chips', () => {
+    // Both round-tripped chips were removed: deducted alerts no longer
+    // vanish from view post-fire. The dim styling + round-tripped pill
+    // are rendered by SilentBoomRow (covered by SilentBoomRow.test);
+    // this section-level test just verifies the section keeps both rows
+    // visible and the toolbar no longer carries the hide chips.
     const alerts = [
       makeAlert({
         id: 1,
@@ -369,23 +361,18 @@ describe('SilentBoomSection: filter interactions', () => {
 
     render(<SilentBoomSection marketOpen={false} />);
 
-    // Default ON — deducted alert hidden on initial render.
-    expect(
-      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByTestId('silent-boom-row-SPY260508P00500000'),
-    ).not.toBeInTheDocument();
-
-    // Flip OFF — both alerts visible.
-    fireEvent.click(screen.getByTestId('silent-boom-hide-round-tripped-chip'));
-
     expect(
       screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
     ).toBeInTheDocument();
     expect(
       screen.getByTestId('silent-boom-row-SPY260508P00500000'),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-hide-round-tripped-chip'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-hide-round-tripped-any-dte-chip'),
+    ).not.toBeInTheDocument();
   });
 
   it('filters to OTM-only alerts when the OTM moneyness chip is selected', () => {

@@ -53,7 +53,6 @@ const CONVICTION_LS_KEY = 'lottery.convictionFloor';
 const HIDE_LATE_PM_LS_KEY = 'lottery.hideLatePm';
 const HIDE_GATED_LS_KEY = 'lottery.hideGated';
 const HIDE_COUNTER_FLOW_LS_KEY = 'lottery.hideCounterFlow';
-const HIDE_ROUND_TRIPPED_LS_KEY = 'lottery.hideRoundTripped';
 const AGGRESSIVE_PREMIUM_LS_KEY = 'lottery.aggressivePremium';
 const MONEYNESS_LS_KEY = 'lottery.moneynessMode';
 const TICKER_EXPANDED_LS_KEY = 'lottery-ticker-expanded';
@@ -435,17 +434,6 @@ export function LotteryFinderSection({
     false,
     boolPersistOpts,
   );
-  // Phase 2D — "Hide round-tripped" — filters out fires where the
-  // evaluate-round-trip cron applied a non-zero score deduct. Defaults
-  // ON (Phase 3 default-on shipped post-2E soak — deducted alerts had
-  // +11.4pp trail-loss rate vs baseline; hiding them by default is the
-  // higher-EV move). Persists locally; user can flip the chip OFF to
-  // see deducted alerts. Spec: round-trip-score-deduct-production-2026-05-16.md
-  const [hideRoundTripped, setHideRoundTripped] = usePersistedState<boolean>(
-    HIDE_ROUND_TRIPPED_LS_KEY,
-    true,
-    boolPersistOpts,
-  );
   const [aggressivePremium, setAggressivePremium] = usePersistedState<boolean>(
     AGGRESSIVE_PREMIUM_LS_KEY,
     false,
@@ -496,7 +484,6 @@ export function LotteryFinderSection({
     hideGated,
     hideLatePm,
     hideCounterFlow,
-    hideRoundTripped,
     aggressivePremium,
     takeitFloor,
     moneynessMode,
@@ -652,9 +639,6 @@ export function LotteryFinderSection({
           return delta < 0;
         });
       }
-      if (hideRoundTripped) {
-        out = out.filter((f) => (f.roundTripScoreDeduct ?? 0) >= 0);
-      }
       if (aggressivePremium) {
         out = out.filter(isFireAggressivePremium);
       }
@@ -679,7 +663,6 @@ export function LotteryFinderSection({
       hideLatePm,
       hideGated,
       hideCounterFlow,
-      hideRoundTripped,
       aggressivePremium,
       moneynessMode,
       takeitFloor,
@@ -705,9 +688,6 @@ export function LotteryFinderSection({
         if (delta === 0) return false;
         return f.optionType === 'C' ? delta < 0 : delta > 0;
       }).length
-    : 0;
-  const hiddenRoundTrippedCount = hideRoundTripped
-    ? fires.filter((f) => (f.roundTripScoreDeduct ?? 0) < 0).length
     : 0;
   const hiddenTakeitCount =
     takeitFloor > 0
@@ -1373,21 +1353,6 @@ export function LotteryFinderSection({
               )}
             </FilterChip>
             <FilterChip
-              active={hideRoundTripped}
-              activeColor="amber"
-              testId="lottery-hide-round-tripped-chip"
-              onClick={() => setHideRoundTripped(!hideRoundTripped)}
-              title="Hide round-tripped fires — alerts where (ask−bid)/total flow in the 60-min window after the alert was net bid-dominated (round_trip_score_deduct < 0). Phase 1 EDA on 641K alerts × 92 days: AUC 0.59 for predicting loss, concentrated in 0–7 DTE. Score deduct stays on the row; this chip hides the demoted fires entirely. Client-side filter."
-              ariaPressed={hideRoundTripped}
-            >
-              hide round-tripped
-              {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenRoundTrippedCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
               active={aggressivePremium}
               activeColor="sky"
               testId="lottery-aggressive-premium-chip"
@@ -1576,11 +1541,6 @@ export function LotteryFinderSection({
                 {hideCounterFlow && hiddenCounterFlowCount > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     ({hiddenCounterFlowCount} counter-flow hidden)
-                  </span>
-                )}
-                {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
-                  <span className="ml-2 text-amber-300/80">
-                    ({hiddenRoundTrippedCount} round-tripped hidden)
                   </span>
                 )}
                 {takeitFloor > 0 && hiddenTakeitCount > 0 && (

@@ -966,3 +966,37 @@ describe('SilentBoomRow: EXIT badge', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe('SilentBoomRow: round-tripped dim treatment', () => {
+  it('dims the container and renders the round-tripped pill when deduct < 0', () => {
+    const { container } = renderRow(makeAlert({ roundTripScoreDeduct: -2 }));
+
+    const row = container.querySelector('[data-round-tripped="true"]');
+    expect(row).not.toBeNull();
+    expect(row!.className).toMatch(/opacity-60/);
+
+    const pill = screen.getByTestId('silent-boom-row-round-tripped-pill');
+    expect(pill).toHaveTextContent('round-tripped -2');
+  });
+
+  it('leaves the container at full opacity and omits the pill when deduct is 0', () => {
+    const { container } = renderRow(makeAlert({ roundTripScoreDeduct: 0 }));
+
+    expect(container.querySelector('[data-round-tripped="true"]')).toBeNull();
+    expect(
+      screen.queryByTestId('silent-boom-row-round-tripped-pill'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('treats missing roundTripScoreDeduct as 0 (legacy alerts render normally)', () => {
+    const alert = makeAlert();
+    delete (alert as { roundTripScoreDeduct?: number }).roundTripScoreDeduct;
+
+    const { container } = renderRow(alert);
+
+    expect(container.querySelector('[data-round-tripped="true"]')).toBeNull();
+    expect(
+      screen.queryByTestId('silent-boom-row-round-tripped-pill'),
+    ).not.toBeInTheDocument();
+  });
+});

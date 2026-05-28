@@ -1507,3 +1507,58 @@ describe('LotteryRow: HIGH-Γ chip', () => {
     expect(screen.queryByText('HIGH-Γ')).not.toBeInTheDocument();
   });
 });
+
+describe('LotteryRow: round-tripped dim treatment', () => {
+  it('dims the container and renders the round-tripped pill when deduct < 0', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ roundTripScoreDeduct: -2 })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+
+    const row = screen.getByTestId('lottery-row');
+    expect(row).toHaveAttribute('data-round-tripped', 'true');
+    expect(row.className).toMatch(/opacity-60/);
+
+    const pill = screen.getByTestId('lottery-row-round-tripped-pill');
+    expect(pill).toHaveTextContent('round-tripped -2');
+  });
+
+  it('leaves the container at full opacity and omits the pill when deduct is 0', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({ roundTripScoreDeduct: 0 })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+
+    const row = screen.getByTestId('lottery-row');
+    expect(row).not.toHaveAttribute('data-round-tripped');
+    expect(row.className).not.toMatch(/opacity-60/);
+    expect(
+      screen.queryByTestId('lottery-row-round-tripped-pill'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('treats missing roundTripScoreDeduct as 0 (legacy fires render normally)', () => {
+    const fire = makeFire();
+    delete (fire as { roundTripScoreDeduct?: number }).roundTripScoreDeduct;
+
+    render(
+      <LotteryRow
+        fire={fire}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+
+    const row = screen.getByTestId('lottery-row');
+    expect(row).not.toHaveAttribute('data-round-tripped');
+    expect(
+      screen.queryByTestId('lottery-row-round-tripped-pill'),
+    ).not.toBeInTheDocument();
+  });
+});
