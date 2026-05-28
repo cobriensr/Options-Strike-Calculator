@@ -74,8 +74,11 @@ if (dryRun) {
 const body = new Blob([JSON.stringify(updated, null, 2)], {
   type: 'application/json',
 });
+// Manifest is stored as a PRIVATE blob in the strike-calculator Vercel Blob
+// store; bundle bodies are private too. Read paths use Authorization: Bearer
+// on the downloadUrl; writes use access: 'private' on put().
 const result = await put(MANIFEST_KEY, body, {
-  access: 'public', // pointer file; bundle blobs themselves may be private
+  access: 'private',
   contentType: 'application/json',
   addRandomSuffix: false,
   allowOverwrite: true,
