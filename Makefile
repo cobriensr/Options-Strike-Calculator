@@ -57,7 +57,7 @@ DATE        ?= $(lastword $(PENDING_DATES))
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback takeit-drift
+.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback takeit-drift takeit-backfill
 
 help:
 	@echo "EOD options-flow pipeline targets:"
@@ -494,3 +494,29 @@ takeit-rollback:
 	@set -a && source $(ENV_FILE) && set +a && \
 		FEED=$(FEED) PATH_OVERRIDE=$(PATH_OVERRIDE) DRY_RUN=$(DRY_RUN) \
 		node scripts/takeit-rollback.mjs
+
+# Backfill takeit_prob + takeit_model_version on historical rows that were
+# inserted before the TAKE-IT scorer was wired into the detect cronsrons.
+# Uses the production scoring code path (scoreLottery / scoreSilentBoom)
+# for parity — no Python drift risk.
+#
+# Idempotent (WHERE takeit_prob IS NULL), resumable, batched (2000 rows).
+# Writes a timestamped log to scripts/output/backfill-takeit-<runId>.log.
+#
+# Usage:
+#   make takeit-backfill                          # both feeds
+#   make takeit-backfill FEED=lottery
+#   make takeit-backfill FEED=silent_boom SINCE=2026-03-01 LIMIT=10000
+
+FEED          ?=
+SINCE         ?=
+LIMIT         ?=
+
+takeit-backfill:
+	@if [[ ! -f "$(ENV_FILE)" ]]; then \
+	  echo "  ❌ $(ENV_FILE) not found — needed for DATABASE_URL"; \
+	  exit 2; \
+	fi
+	@set -a && source $(ENV_FILE) && set +a && \
+		FEED=$(FEED) SINCE=$(SINCE) LIMIT=$(LIMIT) \
+		npx tsx scripts/backfill-takeit-scores.mjs
