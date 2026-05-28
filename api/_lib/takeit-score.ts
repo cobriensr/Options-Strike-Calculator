@@ -78,6 +78,16 @@ export interface ScoreResult {
   prob_calibrated: number;
 }
 
+/**
+ * Minimum calibrated TAKE-IT probability that exempts a direction-gated
+ * Silent Boom alert from the tier3 override. Set at 0.70 — the empirical
+ * crossover where gated fires perform as well as ungated peers (mean trail
+ * +0.4% vs −4.5%) per the gate-fix design doc:
+ *   docs/superpowers/specs/2026-05-27-takeit-conditioned-gate-fix-design.md
+ * Below this threshold the gate continues to correctly suppress losers.
+ */
+export const TAKEIT_GATE_EXEMPT_MIN_PROB = 0.7;
+
 /* ───────────────────── Bundle integrity checks ──────────────────── */
 
 export class BundleSchemaError extends Error {
