@@ -25,6 +25,11 @@ import { avgHoldMinutesFor } from './_lib/silent-boom-hold.js';
 import { silentBoomScoreTier } from './_lib/silent-boom-score.js';
 import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
+import {
+  computeSuspiciousClusters,
+  clusterKey,
+  type ClusterCandidateRow,
+} from './_lib/suspicious-cluster.js';
 
 type DbId = number | string;
 type DbNumeric = string | number;
@@ -225,7 +230,26 @@ interface SilentBoomAlertResponse {
     enrichedAt: string | null;
   };
   insertedAt: string;
+  /**
+   * TRUE when this (ticker, side) co-fires >= 3 cheap OTM 0DTE strikes
+   * on the same day — attention flag per the suspicious-flow spec
+   * (docs/superpowers/specs/2026-05-27-suspicious-flow-and-takeit-floor-design.md).
+   * Descriptive only; the cohort is net-negative-expectancy.
+   */
+  suspiciousCluster: boolean;
+  /** Number of distinct strikes in the cluster (0 when suspiciousCluster is false). */
+  clusterStrikeCount: number;
 }
+
+type ClusterQueryRow = {
+  underlying_symbol: string;
+  option_type: 'C' | 'P';
+  strike: string | number;
+  dte: number;
+  entry_price: string | number | null;
+  underlying_price_at_spike: string | number | null;
+  ask_pct: string | number | null;
+};
 
 type SilentBoomTodEnum = 'AM_open' | 'MID' | 'LUNCH' | 'PM' | 'LATE';
 type SilentBoomDteBucket = '0' | '1-3' | '4+';
@@ -666,6 +690,33 @@ export default async function handler(
       )) as AlertRow[];
     }
 
+    // Day-scoped cluster-candidate query — runs after the page query so
+    // it covers ALL 0DTE fires for the date, not just the current page.
+    const clusterRows = (await withDbRetry(() =>
+      db`
+        SELECT underlying_symbol, option_type, strike, dte, entry_price,
+               underlying_price_at_spike, ask_pct
+        FROM silent_boom_alerts
+        WHERE date = ${date}::date AND dte = 0
+      `,
+    )) as ClusterQueryRow[];
+    const clusterCandidates: ClusterCandidateRow[] = clusterRows.map((r) => ({
+      underlyingSymbol: r.underlying_symbol,
+      optionType: r.option_type,
+      strike: Number(r.strike),
+      dte: Number(r.dte),
+      entryPrice:
+        r.entry_price == null
+          ? Number.POSITIVE_INFINITY
+          : Number(r.entry_price),
+      spot:
+        r.underlying_price_at_spike == null
+          ? null
+          : Number(r.underlying_price_at_spike),
+      askPct: r.ask_pct == null ? 0 : Number(r.ask_pct),
+    }));
+    const clusterLookup = computeSuspiciousClusters(clusterCandidates);
+
     const alerts: SilentBoomAlertResponse[] = rows.map((r) => {
       // Round-trip score deduct (migration #154 / spec
       // round-trip-score-deduct-production-2026-05-16.md). Same brackets
@@ -685,6 +736,7 @@ export default async function handler(
       const effectiveTier: SilentBoomTierOrNull = directionGated
         ? 'tier3'
         : (tierFromScore as SilentBoomTierOrNull);
+      const ck = clusterKey(r.underlying_symbol, r.option_type);
       return {
         id: Number(r.id),
         date: toDateIso(r.date),
@@ -749,6 +801,8 @@ export default async function handler(
           enrichedAt: toIsoOrNull(r.enriched_at),
         },
         insertedAt: toIso(r.inserted_at),
+        suspiciousCluster: clusterLookup.has(ck),
+        clusterStrikeCount: clusterLookup.get(ck) ?? 0,
       };
     });
 

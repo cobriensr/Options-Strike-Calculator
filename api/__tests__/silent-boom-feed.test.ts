@@ -118,7 +118,8 @@ describe('silent-boom-feed handler', () => {
   it('returns alerts with the new score + scoreTier + mktTideDiff fields', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }]) // count
-      .mockResolvedValueOnce([makeAlert()]); // list
+      .mockResolvedValueOnce([makeAlert()]) // list
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -149,7 +150,8 @@ describe('silent-boom-feed handler', () => {
       .mockResolvedValueOnce([{ n: 1 }])
       .mockResolvedValueOnce([
         makeAlert({ underlying_symbol: 'QQQ', score_tier: 'tier1' }),
-      ]);
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -162,14 +164,17 @@ describe('silent-boom-feed handler', () => {
   it('applies round-trip score deduct and re-derives tier (-3 demotes tier2 → tier3)', async () => {
     // silent-boom tiers: tier1 ≥ 21, tier2 ≥ 8, else tier3.
     // score=10 + deduct -3 → effective 7 → tier3 (was tier2).
-    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
-      makeAlert({
-        score: 10,
-        score_tier: 'tier2',
-        round_trip_net_pct: '-0.75',
-        round_trip_score_deduct: -3,
-      }),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 10,
+          score_tier: 'tier2',
+          round_trip_net_pct: '-0.75',
+          round_trip_score_deduct: -3,
+        }),
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
     await handler(req, res);
@@ -192,14 +197,17 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('demotes tier1 → tier2 when -3 deduct drops score below 21', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
-      makeAlert({
-        score: 23,
-        score_tier: 'tier1',
-        round_trip_net_pct: '-0.60',
-        round_trip_score_deduct: -3,
-      }),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 23,
+          score_tier: 'tier1',
+          round_trip_net_pct: '-0.60',
+          round_trip_score_deduct: -3,
+        }),
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
     await handler(req, res);
@@ -210,14 +218,17 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('preserves tier1 when -1 deduct keeps score >= 21', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
-      makeAlert({
-        score: 25,
-        score_tier: 'tier1',
-        round_trip_net_pct: '-0.20',
-        round_trip_score_deduct: -1,
-      }),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 25,
+          score_tier: 'tier1',
+          round_trip_net_pct: '-0.20',
+          round_trip_score_deduct: -1,
+        }),
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
     await handler(req, res);
@@ -228,13 +239,16 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('passes through deduct=0 cleanly when no round-trip evaluation yet', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
-      makeAlert({
-        score: 24,
-        round_trip_net_pct: null,
-        round_trip_score_deduct: null,
-      }),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 24,
+          round_trip_net_pct: null,
+          round_trip_score_deduct: null,
+        }),
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
     await handler(req, res);
@@ -257,7 +271,8 @@ describe('silent-boom-feed handler', () => {
   it('returns null mktTideDiff for rows lacking a market_tide tick', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert({ mkt_tide_diff: null })]);
+      .mockResolvedValueOnce([makeAlert({ mkt_tide_diff: null })])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -274,7 +289,8 @@ describe('silent-boom-feed handler', () => {
       .mockResolvedValueOnce([{ n: 1 }])
       .mockResolvedValueOnce([
         makeAlert({ underlying_price_at_spike: '1170.25' }),
-      ]);
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -289,7 +305,8 @@ describe('silent-boom-feed handler', () => {
   it('passes through multi_leg_share as multiLegShare', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert({ multi_leg_share: '0.25' })]);
+      .mockResolvedValueOnce([makeAlert({ multi_leg_share: '0.25' })])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -304,7 +321,8 @@ describe('silent-boom-feed handler', () => {
   it('returns null multiLegShare for pre-#146 rows missing the attribution', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert({ multi_leg_share: null })]);
+      .mockResolvedValueOnce([makeAlert({ multi_leg_share: null })])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -317,12 +335,15 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('exposes fire-time ticker net flow via tickerCumNcp/NppAtFire', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
-      makeAlert({
-        fire_time_cum_ncp: '4250.50',
-        fire_time_cum_npp: '-1800.75',
-      }),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          fire_time_cum_ncp: '4250.50',
+          fire_time_cum_npp: '-1800.75',
+        }),
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -343,7 +364,8 @@ describe('silent-boom-feed handler', () => {
       .mockResolvedValueOnce([{ n: 1 }])
       .mockResolvedValueOnce([
         makeAlert({ fire_time_cum_ncp: null, fire_time_cum_npp: null }),
-      ]);
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -367,7 +389,8 @@ describe('silent-boom-feed handler', () => {
     // docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md.
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]);
+      .mockResolvedValueOnce([makeAlert()])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -388,7 +411,8 @@ describe('silent-boom-feed handler', () => {
   it('returns null underlyingPriceAtSpike for pre-#152 rows missing the spot snapshot', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert({ underlying_price_at_spike: null })]);
+      .mockResolvedValueOnce([makeAlert({ underlying_price_at_spike: null })])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -406,7 +430,8 @@ describe('silent-boom-feed handler', () => {
     // into the rendered list while `total` reflected the filtered count.
     mockSql
       .mockResolvedValueOnce([{ n: 1 }]) // count
-      .mockResolvedValueOnce([makeAlert({ score: 25 })]); // list
+      .mockResolvedValueOnce([makeAlert({ score: 25 })]) // list
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -416,13 +441,14 @@ describe('silent-boom-feed handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(mockSql).toHaveBeenCalledTimes(3);
 
     // Tagged-template helper passes the raw template strings array as
-    // the first argument. We check both calls (count + list) include
-    // the minScore filter literal so a regression that only filters
-    // the count fails this test.
-    for (const call of mockSql.mock.calls) {
+    // the first argument. We check the count + list calls (first two)
+    // include the minScore filter literal so a regression that only
+    // filters the count fails this test. The 3rd call is the cluster
+    // candidate query which does not carry the minScore filter by design.
+    for (const call of mockSql.mock.calls.slice(0, 2)) {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
       expect(sqlText).toContain('score >=');
@@ -436,7 +462,8 @@ describe('silent-boom-feed handler', () => {
     // the small extra query keeps the code straightforward.
     mockSql
       .mockResolvedValueOnce([{ n: 0 }]) // count
-      .mockResolvedValueOnce([]); // list
+      .mockResolvedValueOnce([]) // list
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -449,12 +476,15 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('maps direction_gated + realized_trail30_10_pct into the response (Phase 4)', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
-      makeAlert({
-        direction_gated: true,
-        realized_trail30_10_pct: '47.5',
-      }),
-    ]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          direction_gated: true,
+          realized_trail30_10_pct: '47.5',
+        }),
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -474,7 +504,8 @@ describe('silent-boom-feed handler', () => {
   it('defaults directionGated=false and trail=null when the DB columns are unset', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]); // both fields use fixture defaults
+      .mockResolvedValueOnce([makeAlert()]) // both fields use fixture defaults
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -508,7 +539,8 @@ describe('silent-boom-feed handler', () => {
   it('binds tod into BOTH the count AND the list query', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]);
+      .mockResolvedValueOnce([makeAlert()])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -518,11 +550,13 @@ describe('silent-boom-feed handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(2);
-    for (const call of mockSql.mock.calls) {
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    // Count and list queries (first two) must extract CT minute-of-day and
+    // gate it. The 3rd call is the cluster-candidate query which doesn't
+    // carry TOD filters by design.
+    for (const call of mockSql.mock.calls.slice(0, 2)) {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
-      // Both queries must extract CT minute-of-day and gate it.
       expect(sqlText).toContain("AT TIME ZONE 'America/Chicago'");
     }
 
@@ -533,7 +567,8 @@ describe('silent-boom-feed handler', () => {
   it('binds dte into the SQL when supplied', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]);
+      .mockResolvedValueOnce([makeAlert()])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -543,7 +578,9 @@ describe('silent-boom-feed handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    for (const call of mockSql.mock.calls) {
+    // Check only the count + list queries (first two) for dte BETWEEN.
+    // The cluster-candidate query uses dte = 0 unconditionally.
+    for (const call of mockSql.mock.calls.slice(0, 2)) {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
       expect(sqlText).toContain('dte BETWEEN');
@@ -555,7 +592,8 @@ describe('silent-boom-feed handler', () => {
   it('binds burst into the SQL when supplied', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]);
+      .mockResolvedValueOnce([makeAlert()])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -566,9 +604,9 @@ describe('silent-boom-feed handler', () => {
 
     expect(res._status).toBe(200);
     // The burst filter compiles to spike_ratio range bounds — check
-    // BOTH count AND list query carry the gate so a regression that
-    // only filters the count fails this test.
-    for (const call of mockSql.mock.calls) {
+    // BOTH count AND list query (first two calls) carry the gate so a
+    // regression that only filters the count fails this test.
+    for (const call of mockSql.mock.calls.slice(0, 2)) {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
       expect(sqlText).toContain('spike_ratio >=');
@@ -603,7 +641,8 @@ describe('silent-boom-feed handler', () => {
   it('binds askPctBand into the SQL when supplied', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]);
+      .mockResolvedValueOnce([makeAlert()])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -614,8 +653,8 @@ describe('silent-boom-feed handler', () => {
 
     expect(res._status).toBe(200);
     // The askPctBand filter compiles to ask_pct range bounds — check
-    // BOTH count AND list query carry the gate.
-    for (const call of mockSql.mock.calls) {
+    // BOTH count AND list query (first two calls) carry the gate.
+    for (const call of mockSql.mock.calls.slice(0, 2)) {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
       expect(sqlText).toContain('ask_pct >=');
@@ -637,7 +676,10 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('omits askPctBand (null) from filters when not supplied', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
     await handler(req, res);
@@ -658,7 +700,10 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('echoes minScore in the filters block of the response', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({
       method: 'GET',
       query: { date: '2026-05-07', minScore: '8' },
@@ -672,7 +717,10 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('omits minScore (null) from filters when not supplied', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
     await handler(req, res);
@@ -715,16 +763,19 @@ describe('silent-boom-feed handler', () => {
     const inserted = new Date('2026-05-07T13:30:30Z');
     const dateObj = new Date('2026-05-07T00:00:00Z');
 
-    mockSql.mockResolvedValueOnce([{ n: 1 }]).mockResolvedValueOnce([
-      {
-        ...makeAlert(),
-        // Override the timestamps with Date instances.
-        bucket_ct: bucket as unknown as string,
-        inserted_at: inserted as unknown as string,
-        date: dateObj as unknown as string,
-        enriched_at: null, // hits toIsoOrNull(null) → null branch
-      },
-    ]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        {
+          ...makeAlert(),
+          // Override the timestamps with Date instances.
+          bucket_ct: bucket as unknown as string,
+          inserted_at: inserted as unknown as string,
+          date: dateObj as unknown as string,
+          enriched_at: null, // hits toIsoOrNull(null) → null branch
+        },
+      ])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -751,7 +802,8 @@ describe('silent-boom-feed handler', () => {
   it('binds dte 1-3 BETWEEN range into SQL (line 209)', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert({ dte: 2 })]);
+      .mockResolvedValueOnce([makeAlert({ dte: 2 })])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -763,7 +815,8 @@ describe('silent-boom-feed handler', () => {
     expect(res._status).toBe(200);
     const body = res._json as { filters: { dte: string | null } };
     expect(body.filters.dte).toBe('1-3');
-    for (const call of mockSql.mock.calls) {
+    // Check count + list only (first two calls); cluster query uses dte = 0.
+    for (const call of mockSql.mock.calls.slice(0, 2)) {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
       expect(sqlText).toContain('dte BETWEEN');
@@ -773,7 +826,8 @@ describe('silent-boom-feed handler', () => {
   it('binds dte 4+ range into SQL', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert({ dte: 7 })]);
+      .mockResolvedValueOnce([makeAlert({ dte: 7 })])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -790,7 +844,8 @@ describe('silent-boom-feed handler', () => {
   it('binds burst red range into SQL (line 221)', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert({ spike_ratio: '60' })]);
+      .mockResolvedValueOnce([makeAlert({ spike_ratio: '60' })])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -807,7 +862,8 @@ describe('silent-boom-feed handler', () => {
   it('binds burst yellow range into SQL (line 222)', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert({ spike_ratio: '30' })]);
+      .mockResolvedValueOnce([makeAlert({ spike_ratio: '30' })])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -824,7 +880,8 @@ describe('silent-boom-feed handler', () => {
   it('uses spike_ratio sort branch (line 266)', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]);
+      .mockResolvedValueOnce([makeAlert()])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -848,7 +905,8 @@ describe('silent-boom-feed handler', () => {
   it('uses vol_oi sort branch (line 289)', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]);
+      .mockResolvedValueOnce([makeAlert()])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -870,7 +928,8 @@ describe('silent-boom-feed handler', () => {
   it('uses peak sort branch (line 312)', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
-      .mockResolvedValueOnce([makeAlert()]);
+      .mockResolvedValueOnce([makeAlert()])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({
       method: 'GET',
@@ -909,7 +968,10 @@ describe('silent-boom-feed handler', () => {
   it('defaults date to today (getETDateStr) when no date query param', async () => {
     // Exercises the `date = q.date ?? getETDateStr(new Date())` path
     // so the response echoes a YYYY-MM-DD calendar string.
-    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({ method: 'GET', query: {} });
     const res = mockResponse();
     await handler(req, res);
@@ -920,7 +982,10 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('binds MIN_ALERT_ENTRY_PRICE (0.10) into both count + list SQL templates', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]); // cluster-candidate query
 
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
@@ -928,7 +993,8 @@ describe('silent-boom-feed handler', () => {
 
     // Two SQL calls: the count + the list. Both must bind 0.1 as a
     // parameter (the entry-price floor) so sub-$0.10 algo prints are
-    // excluded from the rollup at the source.
+    // excluded from the rollup at the source. The 3rd call is the cluster
+    // candidate query which does not bind the entry-price floor.
     const callsWithFloor = mockSql.mock.calls.filter((args) =>
       args.slice(1).some((v) => v === 0.1),
     );
@@ -936,7 +1002,10 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('defaults aggressivePremium=false; binds false into both queries', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
     const res = mockResponse();
     await handler(req, res);
@@ -944,7 +1013,8 @@ describe('silent-boom-feed handler', () => {
     const body = res._json as { filters: { aggressivePremium: boolean } };
     expect(body.filters.aggressivePremium).toBe(false);
     // Both queries see the boolean false bind so the OR-gated clause
-    // short-circuits and matches every row.
+    // short-circuits and matches every row. The 3rd call (cluster query)
+    // does not bind the aggressivePremium boolean.
     const callsWithFalse = mockSql.mock.calls.filter((args) =>
       args.slice(1).some((v) => v === false),
     );
@@ -952,7 +1022,10 @@ describe('silent-boom-feed handler', () => {
   });
 
   it('echoes aggressivePremium=true and binds true into both queries', async () => {
-    mockSql.mockResolvedValueOnce([{ n: 0 }]).mockResolvedValueOnce([]);
+    mockSql
+      .mockResolvedValueOnce([{ n: 0 }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]); // cluster-candidate query
     const req = mockRequest({
       method: 'GET',
       query: { date: '2026-05-07', aggressivePremium: 'true' },
@@ -966,5 +1039,94 @@ describe('silent-boom-feed handler', () => {
       args.slice(1).some((v) => v === true),
     );
     expect(callsWithTrue.length).toBe(2);
+  });
+
+  // ------------------------------------------------------------------
+  // Suspicious-cluster detection tests.
+  // ------------------------------------------------------------------
+
+  it('stamps suspiciousCluster + clusterStrikeCount from the day cluster query', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }]) // count
+      .mockResolvedValueOnce([
+        makeAlert({ underlying_symbol: 'META', option_type: 'C', strike: '617.5' }),
+      ]) // page
+      .mockResolvedValueOnce([
+        {
+          underlying_symbol: 'META',
+          option_type: 'C',
+          strike: '617.5',
+          dte: 0,
+          entry_price: '0.34',
+          underlying_price_at_spike: '613',
+          ask_pct: '0.74',
+        },
+        {
+          underlying_symbol: 'META',
+          option_type: 'C',
+          strike: '615',
+          dte: 0,
+          entry_price: '0.91',
+          underlying_price_at_spike: '613',
+          ask_pct: '0.75',
+        },
+        {
+          underlying_symbol: 'META',
+          option_type: 'C',
+          strike: '622.5',
+          dte: 0,
+          entry_price: '1.25',
+          underlying_price_at_spike: '613',
+          ask_pct: '0.71',
+        },
+      ]); // cluster-candidate query
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-27' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const alert = (
+      res._json as {
+        alerts: Array<{
+          suspiciousCluster: boolean;
+          clusterStrikeCount: number;
+        }>;
+      }
+    ).alerts[0];
+    expect(alert?.suspiciousCluster).toBe(true);
+    expect(alert?.clusterStrikeCount).toBe(3);
+  });
+
+  it('stamps suspiciousCluster=false and clusterStrikeCount=0 for a ticker with no cluster', async () => {
+    // SNDK with only 1 cluster candidate — below MIN_CLUSTER_STRIKES=3
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }]) // count
+      .mockResolvedValueOnce([makeAlert()]) // page (underlying_symbol='SNDK')
+      .mockResolvedValueOnce([
+        {
+          underlying_symbol: 'SNDK',
+          option_type: 'C',
+          strike: '1175',
+          dte: 0,
+          entry_price: '0.40',
+          underlying_price_at_spike: '1170',
+          ask_pct: '0.90',
+        },
+      ]); // cluster-candidate query — only 1 strike, won't fire
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const alert = (
+      res._json as {
+        alerts: Array<{
+          suspiciousCluster: boolean;
+          clusterStrikeCount: number;
+        }>;
+      }
+    ).alerts[0];
+    expect(alert?.suspiciousCluster).toBe(false);
+    expect(alert?.clusterStrikeCount).toBe(0);
   });
 });
