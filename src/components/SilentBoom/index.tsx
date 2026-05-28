@@ -788,7 +788,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
       ? alerts.filter((a) => a.underlyingPriceAtSpike == null).length
       : 0;
   const hiddenTakeitCount =
-    takeitFloor > 0
+    takeitFloor > 0 && bucketIso == null
       ? alerts.filter((a) => a.takeitProb == null || a.takeitProb < takeitFloor)
           .length
       : 0;
