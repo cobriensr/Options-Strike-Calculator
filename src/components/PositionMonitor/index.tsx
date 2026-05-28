@@ -4,6 +4,7 @@ import { SectionBox } from '../ui';
 import { computeAggregatePortfolioRisk } from '../../utils/portfolio-risk';
 import { parseStatement, applyBSEstimates } from './statement-parser';
 import { formatPositionSummaryForClaude } from './position-helpers';
+import { validateUploadFile } from './upload-validate';
 import AccountOverview from './AccountOverview';
 import DataQualityAlerts from './DataQualityAlerts';
 import ExecutionQuality from './ExecutionQuality';
@@ -142,6 +143,14 @@ export default function PositionMonitor({
       if (!file) return;
 
       setError(null);
+
+      const sizeError = validateUploadFile(file);
+      if (sizeError) {
+        setError(sizeError);
+        e.target.value = '';
+        return;
+      }
+
       file.text().then(
         (text) => {
           try {
