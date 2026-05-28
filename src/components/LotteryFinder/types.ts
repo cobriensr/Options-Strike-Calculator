@@ -171,6 +171,15 @@ export interface LotteryFire {
    * "Hide counter-trend" filter chip.
    */
   directionGated: boolean;
+  /**
+   * True when this row's ticker+side has >=3 cheap-OTM-ask 0DTE strikes
+   * co-firing today (descriptive only — cohort is net negative-expectancy;
+   * see suspicious-flow design spec).
+   */
+  suspiciousCluster?: boolean;
+  /** Distinct cheap-OTM-ask 0DTE strike count for this row's ticker+side
+   *  (0 when not a cluster). */
+  clusterStrikeCount?: number;
   /** Pre-deduct score as stored on the row. Same as `score` when no
    *  round-trip deduct has been applied (migration #154 / Phase 2C). */
   rawScore?: number | null;
