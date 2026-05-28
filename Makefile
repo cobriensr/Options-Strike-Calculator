@@ -235,7 +235,7 @@ update: enrich refit
 	@# rolling enriched window. Runs AFTER the refit prereq so the AUC is
 	@# measured against the current weights. Writes docs/tmp/takeit-drift-
 	@# YYYY-MM-DD.md + ml/plots/takeit-drift/reliability_<feed>_<date>.png.
-	$(MAKE) takeit-drift
+	$(MAKE) --no-print-directory takeit-drift
 	@echo ""
 	@echo "  ✅ daily research artifacts:"
 	@echo "     docs/tmp/lottery-exit-policy-search-YYYY-MM-DD.md"
