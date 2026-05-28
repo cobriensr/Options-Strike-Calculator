@@ -230,7 +230,9 @@ describe('scoreSilentBoom', () => {
 
     const result = scoreSilentBoom(detectCtx, row);
     expect(result.prob).toBe(0.55);
-    expect(result.features).toBe(fakeFeatures);
+    // sanitizeScoringInputs returns a fresh object; deep-equal instead of
+    // identity. All-finite inputs are passed through value-equal.
+    expect(result.features).toEqual(fakeFeatures);
     expect(featuresForSilentBoom).toHaveBeenCalledOnce();
     expect(featuresForLottery).not.toHaveBeenCalled();
   });

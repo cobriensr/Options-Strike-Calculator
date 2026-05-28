@@ -32,8 +32,12 @@ import {
  * to undefined branching. We coerce non-finite numerics to null so the
  * model gets a known "missing" sentinel instead.
  *
- * Returned counts are surfaced to Sentry by the cron-level wrapper so we
- * can backtrack what's emitting bad inputs.
+ * When rejectedCount > 0, the calling score function (scoreLottery /
+ * scoreSilentBoom) fires Sentry.captureMessage at level 'info' with the
+ * row's option_chain_id in extra, so we can backtrack what's emitting bad
+ * inputs. Per-row Sentry events are intentional — Sentry groups by message
+ * fingerprint by default, so 1000 rows with the same sanitize-trigger
+ * produce ONE issue with N occurrences, not N separate issues.
  */
 export function sanitizeScoringInputs(
   rec: Record<string, number | null | undefined>,
