@@ -17,6 +17,7 @@ import contextlib
 import os
 import signal
 
+import notify
 from channel_registry import handler_class_for_channel
 from config import settings
 from connector import Connector
@@ -115,21 +116,28 @@ async def _run() -> None:
         extra={"maxsize": receive_queue_size},
     )
 
-    tasks: list[asyncio.Task] = [
+    # Producers: the connector (WS receive) and router (parse + dispatch).
+    # These must stop FIRST on shutdown so no new payloads reach the
+    # handler queues while their drain loops are emptying them.
+    producer_tasks: list[asyncio.Task] = [
         asyncio.create_task(connector.run(), name="connector"),
         asyncio.create_task(router.run(receive_queue), name="router"),
+    ]
+    # Background services that aren't part of the data pipeline.
+    background_tasks: list[asyncio.Task] = [
         asyncio.create_task(run_server(), name="health"),
     ]
     # Spawn one drain task per UNIQUE handler instance — many channels
     # can share one handler (e.g. every option_trades:<TICKER> entry
     # points at the same OptionTradesHandler) so iterating over
     # handlers.items() would spawn duplicate drains on the same queue.
+    handler_tasks: list[asyncio.Task] = []
     seen_handlers: set[int] = set()
     for ch_name, handler in handlers.items():
         if id(handler) in seen_handlers:
             continue
         seen_handlers.add(id(handler))
-        tasks.append(
+        handler_tasks.append(
             asyncio.create_task(handler.run(), name=f"handler:{handler.name}"),
         )
         log.info("started handler drain", extra={"handler": handler.name, "first_channel": ch_name})
@@ -146,24 +154,60 @@ async def _run() -> None:
 
     # Wait for either a signal or any task to die unexpectedly.
     done_task = asyncio.create_task(stop.wait(), name="stop_wait")
-    done, pending = await asyncio.wait(
-        [*tasks, done_task],
+    done, _pending = await asyncio.wait(
+        [*producer_tasks, *handler_tasks, *background_tasks, done_task],
         return_when=asyncio.FIRST_COMPLETED,
     )
 
     log.info("shutdown initiated", extra={"reason": _describe_done(done)})
 
-    # Drain in-flight handler batches BEFORE cancelling tasks. Railway
-    # sends SIGTERM on every deploy; without this, any rows still in
-    # the per-channel queue or in the in-memory batch are silently lost
-    # (~hundreds of tape rows per deploy). Drain is concurrent across
-    # handlers and bounded by each handler's deadline.
     unique_handlers = list({id(h): h for h in handlers.values()}.values())
+    await _shutdown(
+        producer_tasks=producer_tasks,
+        handlers=unique_handlers,
+        other_tasks=[*handler_tasks, *background_tasks, done_task],
+    )
+
+    await close_pool()
+    log.info("uw-stream stopped")
+
+
+async def _shutdown(
+    *,
+    producer_tasks: list[asyncio.Task],
+    handlers: list[Handler],
+    other_tasks: list[asyncio.Task],
+) -> None:
+    """Graceful shutdown sequence — ORDER MATTERS.
+
+    1. Cancel the producers (connector + router) first so no new payloads
+       can reach a handler queue. Draining the consumers while the router
+       is still alive races it: the router could ``enqueue`` a payload
+       AFTER a handler's drain loop has already emptied its queue, and
+       that row would be lost.
+    2. Drain the consumer handlers against a now-static queue. Railway
+       sends SIGTERM on every deploy; without the drain any rows still in
+       the per-channel queue or in-memory batch are silently lost
+       (~hundreds of tape rows per deploy). Concurrent across handlers,
+       bounded by each handler's own deadline.
+    3. Flush any in-flight fire-and-forget push notifications (the final
+       drained batch's ``schedule_notify`` tasks) before the loop tears
+       down, then close the shared HTTP session.
+    4. Cancel the remaining background tasks (handler drain loops, health
+       server, signal waiter). We don't await indefinitely — Railway
+       SIGKILLs us after its grace window regardless.
+    """
+    # 1. Stop inflow.
+    for t in producer_tasks:
+        t.cancel()
+    await asyncio.gather(*producer_tasks, return_exceptions=True)
+
+    # 2. Drain consumers.
     drain_results = await asyncio.gather(
-        *(h.drain() for h in unique_handlers),
+        *(h.drain() for h in handlers),
         return_exceptions=True,
     )
-    for handler, result in zip(unique_handlers, drain_results, strict=True):
+    for handler, result in zip(handlers, drain_results, strict=True):
         if isinstance(result, BaseException):
             log.error(
                 "handler drain raised",
@@ -175,15 +219,14 @@ async def _run() -> None:
                 extra={"handler": handler.name, "rows_attempted": result},
             )
 
-    # Cancel everything still running and wait briefly for them to wind
-    # down. We don't await indefinitely because Railway will SIGKILL us
-    # after a few seconds anyway.
-    for t in pending:
-        t.cancel()
-    await asyncio.gather(*pending, return_exceptions=True)
+    # 3. Flush in-flight push notifications, then close the HTTP session.
+    await notify.drain_pending()
+    await notify.close_session()
 
-    await close_pool()
-    log.info("uw-stream stopped")
+    # 4. Cancel everything still running.
+    for t in other_tasks:
+        t.cancel()
+    await asyncio.gather(*other_tasks, return_exceptions=True)
 
 
 def _describe_done(done: set) -> str:

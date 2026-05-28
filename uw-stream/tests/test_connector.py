@@ -289,6 +289,95 @@ async def test_invalid_handshake_logs_warning_not_capture_exception(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_backoff_resets_after_established_connection(monkeypatch) -> None:
+    """A healthy session that drops must reset the reconnect backoff.
+
+    Regression: backoff used to reset only on a graceful close, never on a
+    successful connect. So an initial rough start that escalated the
+    backoff (e.g. a UW outage at deploy) would leave the escalated value
+    in place; a connection that then streamed for hours and dropped once
+    inherited the stale (up to 60s) delay instead of restarting at 1s.
+
+    Sequence: iter1 fails WITHOUT establishing (escalates 1→2), iter2
+    establishes a healthy session then drops (must reset to 1), iter3
+    cancels to end the loop. The recorded sleeps prove iter2 slept the
+    reset 1.0s, not the escalated 2.0s.
+    """
+    import connector as connector_mod
+
+    sleeps: list[float] = []
+
+    async def _record_sleep(d: float) -> None:
+        sleeps.append(d)
+
+    monkeypatch.setattr(connector_mod.asyncio, "sleep", _record_sleep)
+    monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 1.0)
+    monkeypatch.setattr(connector_mod, "_MAX_BACKOFF_S", 60.0)
+
+    calls = 0
+
+    async def _conn(self) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # Connect failure with no healthy session — escalates backoff.
+            raise OSError("connect failed")
+        if calls == 2:
+            # Healthy session established, then the socket drops. The
+            # established flag is what run() keys the reset on.
+            self._established = True
+            state.ws_connected = True
+            raise OSError("drop after healthy session")
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(Connector, "_connect_once", _conn)
+
+    connector = Connector(
+        channels=["flow-alerts"],
+        receive_queue=asyncio.Queue(maxsize=10),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await connector.run()
+
+    # iter1: not established → sleep(1.0), then escalate to 2.0
+    # iter2: established → reset to 1.0, sleep(1.0), no escalation
+    # iter3: CancelledError before any sleep
+    assert sleeps == [1.0, 1.0], (
+        "iter2 should have reset backoff to 1.0s after the healthy session "
+        f"dropped, but the recorded sleeps were {sleeps}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_subscribe_all_paces_joins_between_frames(monkeypatch) -> None:
+    """Joins are paced BETWEEN frames (not after the last) so a large
+    universe doesn't fire its whole join burst in one tick. A single
+    channel adds zero delay; N channels add N-1 pacing sleeps.
+    """
+    import connector as connector_mod
+
+    sleeps: list[float] = []
+
+    async def _record_sleep(d: float) -> None:
+        sleeps.append(d)
+
+    monkeypatch.setattr(connector_mod.asyncio, "sleep", _record_sleep)
+
+    ws = FakeWebSocket()
+    connector = Connector(
+        channels=["flow-alerts", "option_trades:SPY", "net_flow:QQQ"],
+        receive_queue=asyncio.Queue(maxsize=10),
+    )
+
+    await connector._subscribe_all(ws)
+
+    assert len(ws.sent) == 3
+    # 3 channels → 2 inter-frame pacing sleeps, each _JOIN_PACING_S.
+    assert sleeps == [connector_mod._JOIN_PACING_S] * 2
+
+
+@pytest.mark.asyncio
 async def test_ws_connected_set_to_true_when_subscribe_succeeds(monkeypatch) -> None:
     """Mirror of the previous test: when subscribe completes cleanly,
     the flag does flip to True before the receive loop starts.

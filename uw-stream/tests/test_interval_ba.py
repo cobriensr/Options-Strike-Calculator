@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections import deque
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -26,6 +27,7 @@ from handlers.interval_ba import (
     SPYIntervalBAHandler,
     _ct_date_from_utc,
     _has_tag,
+    _occ_root,
 )
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "interval_ba_sample.json"
@@ -448,7 +450,11 @@ class TestFilters:
         assert handler._pending_alerts == []
 
     def test_non_spxw_ticker_filtered_out(self, handler, base_payload):
-        """Defensive: an AAPL print routed to this handler must be ignored."""
+        """Defensive: an AAPL contract routed to this handler must be ignored.
+
+        The guard keys on the OCC root from option_chain, so the AAPL
+        chain (root "AAPL") is rejected regardless of underlying_symbol.
+        """
         p = _payload(
             base_payload,
             underlying_symbol="AAPL",
@@ -459,6 +465,36 @@ class TestFilters:
         )
         handler._transform(p)
         assert handler._pending_alerts == []
+
+    def test_spxw_fires_when_underlying_symbol_is_spx(self, handler, base_payload):
+        """Regression for the silent-SPXW bug: UW reports
+        ``underlying_symbol="SPX"`` (the cash index) on SPXW option
+        payloads. The handler MUST guard on the OCC root parsed from
+        option_chain ("SPXW…" → "SPXW"), not on that field — otherwise
+        every SPXW tick is rejected and the alert path is silently dead.
+        """
+        p = _payload(
+            base_payload,
+            underlying_symbol="SPX",  # cash index, NOT the contract root
+            executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+            price="4.60",
+            size=888,  # ~$408K ask — clears the $250K floor and 75% ratio
+        )
+        handler._transform(p)
+        assert len(handler._pending_alerts) == 1, (
+            "an SPXW contract whose underlying_symbol is 'SPX' must still "
+            "fire — the guard reads the OCC root, not underlying_symbol"
+        )
+        alert = handler._pending_alerts[0]
+        # Alert is stamped with the contract root, not the underlying field.
+        assert alert[_AI["ticker"]] == "SPXW"
+        assert alert[_AI["option_chain"]] == "SPXW260512C07360000"
+
+    def test_occ_root_extracts_listing_symbol(self):
+        """_occ_root is the authoritative contract identity."""
+        assert _occ_root("SPXW260512C07360000") == "SPXW"
+        assert _occ_root("SPY260512C00500000") == "SPY"
+        assert _occ_root("AAPL260512C00200000") == "AAPL"
 
     def test_put_side_supported(self, handler, base_payload):
         """SPXW put contracts fire the same as calls."""
@@ -477,6 +513,46 @@ class TestFilters:
         alert = handler._pending_alerts[0]
         assert alert[_AI["option_type"]] == "P"
         assert alert[_AI["option_chain"]] == "SPXW260512P07350000"
+
+
+# ----------------------------------------------------------------------
+# Memory bound: stale-chain eviction from self._ticks
+# ----------------------------------------------------------------------
+
+
+class TestTicksEviction:
+    def test_prune_drops_stale_and_empty_chains_over_cap(self, handler):
+        """Over the soft cap, chains whose newest bucket fell outside the
+        retention window (or that hold no buckets) are evicted; fresh
+        chains within the window survive.
+        """
+        handler._CHAINS_PRUNE_THRESHOLD = 2  # force the sweep with few chains
+        sec = handler._bucket_sec
+        latest = 1778605500
+        # Within the retention window (newest >= latest - KEEP*sec).
+        handler._ticks["FRESH_NOW"] = {latest: deque()}
+        handler._ticks["FRESH_PREV"] = {latest - sec: deque()}
+        # Stale: newest bucket far older than the retention window.
+        handler._ticks["STALE"] = {latest - 10 * sec: deque()}
+        # Degenerate: chain key with no buckets left.
+        handler._ticks["EMPTY"] = {}
+
+        handler._prune_ticks_if_needed(latest)
+
+        assert set(handler._ticks) == {"FRESH_NOW", "FRESH_PREV"}
+
+    def test_prune_is_noop_under_cap(self, handler):
+        """Below the soft cap the sweep does nothing, even for stale
+        chains — the steady-state hot path must not scan every chain.
+        """
+        handler._CHAINS_PRUNE_THRESHOLD = 100
+        sec = handler._bucket_sec
+        latest = 1778605500
+        handler._ticks["STALE"] = {latest - 99 * sec: deque()}
+
+        handler._prune_ticks_if_needed(latest)
+
+        assert "STALE" in handler._ticks
 
 
 # ----------------------------------------------------------------------
@@ -1245,7 +1321,7 @@ class TestSubclassFiltering:
         """SPY handler fires on SPY 0DTE ask-side flow that clears both gates.
 
         SPY 0DTE strike layout differs from SPXW (3-digit underlying so
-        OCC strikes are 5-digit ×1000), but the handler is ticker-agnostic
+        OCC strikes are 5-digit x1000), but the handler is ticker-agnostic
         below the filter — same ratio + premium-floor logic applies.
         """
         h = SPYIntervalBAHandler()

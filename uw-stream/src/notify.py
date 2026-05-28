@@ -57,6 +57,56 @@ _BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
 # every process start so a redeploy re-arms the alert.
 _SENTRY_SEEN: set[str] = set()
 
+# Single shared ClientSession for the process lifetime. Created lazily on
+# first use (so it binds to the running event loop) and reused across
+# every notification — a fresh session per call would pay full connector
+# + DNS setup each time and forgo keep-alive to Vercel. Closed on
+# shutdown via ``close_session``.
+_session: aiohttp.ClientSession | None = None
+
+
+def _get_session() -> aiohttp.ClientSession:
+    """Return the shared ClientSession, creating it on first use."""
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=_TIMEOUT_S),
+        )
+    return _session
+
+
+async def close_session() -> None:
+    """Close the shared ClientSession. Safe to call on shutdown / when unset."""
+    global _session
+    if _session is not None and not _session.closed:
+        await _session.close()
+    _session = None
+
+
+async def drain_pending(timeout: float = 2.0) -> None:
+    """Await in-flight fire-and-forget notify tasks before shutdown.
+
+    ``schedule_notify`` spawns tasks tracked only in ``_BACKGROUND_TASKS``;
+    on a normal ``asyncio.run`` teardown they would be cancelled
+    mid-flight, losing the final flushed batch's push notifications. Call
+    this during graceful shutdown (after the handler drains) to give them
+    a bounded window to finish. Bounded so a slow Vercel can't stall the
+    Railway graceful-shutdown deadline.
+    """
+    if not _BACKGROUND_TASKS:
+        return
+    pending = list(_BACKGROUND_TASKS)
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*pending, return_exceptions=True),
+            timeout=timeout,
+        )
+    except TimeoutError:
+        log.warning(
+            "notify drain timed out; some push notifications may be lost",
+            extra={"pending": len(pending), "timeout_s": timeout},
+        )
+
 
 def _should_report(key: str) -> bool:
     """Return True on first occurrence of `key`, False thereafter.
@@ -100,15 +150,12 @@ async def notify_alert(payload: dict[str, Any]) -> None:
         return
 
     try:
-        timeout = aiohttp.ClientTimeout(total=_TIMEOUT_S)
-        async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.post(
-                url,
-                json=payload,
-                headers={_SECRET_HEADER: secret},
-            ) as resp,
-        ):
+        session = _get_session()
+        async with session.post(
+            url,
+            json=payload,
+            headers={_SECRET_HEADER: secret},
+        ) as resp:
             if resp.status >= 400:
                 body_text = await resp.text()
                 log.warning(
@@ -193,8 +240,15 @@ def build_payload(
     top_trade_is_sweep = alert_row[idx["top_trade_is_sweep"]]
     top_trade_is_floor = alert_row[idx["top_trade_is_floor"]]
 
+    strike_f = float(strike)
+    # Integer strikes render bare ("7360"); fractional strikes (e.g.
+    # 7360.5) are preserved rather than rounded to the nearest dollar with
+    # ``:.0f`` — a half-dollar ETF strike would otherwise show the wrong
+    # number in the lock-screen title. ``:g`` trims trailing zeros and
+    # never uses scientific notation at the strike magnitudes we deal with
+    # (< 100000).
     strike_str = (
-        str(int(strike)) if float(strike) == int(strike) else f"{float(strike):.0f}"
+        str(int(strike_f)) if strike_f == int(strike_f) else f"{strike_f:g}"
     )
     title = f"{ticker} {strike_str}{option_type} {float(ratio_pct):.0f}% ASK"
     if partners:

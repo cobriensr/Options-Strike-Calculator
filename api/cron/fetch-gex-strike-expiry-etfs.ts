@@ -211,6 +211,13 @@ async function storeStrikes(
   // WS payloads can arrive in different strike orders for the same
   // (ticker, expiry, ts_minute) batch and trigger AB-BA deadlocks
   // (SQLSTATE 40P01) on overlapping UPSERTs.
+  //
+  // DEADLOCK INVARIANT (paired with uw-stream's GexStrikeExpiryHandler):
+  // this function UPSERTs a SINGLE (ticker, expiry) per transaction, so
+  // sorting by strike here == the WS side's (ticker, expiry, strike,
+  // ts_minute) tuple sort within any contended group. Keep BOTH the
+  // single-(ticker, expiry)-per-tx scope here AND `strike` as a sort key
+  // on both sides; changing either reopens the AB-BA window.
   filtered.sort(
     (a, b) => Number.parseFloat(a.strike) - Number.parseFloat(b.strike),
   );

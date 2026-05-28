@@ -7,7 +7,8 @@ directly — no shared lock because asyncio is single-threaded.
 from __future__ import annotations
 
 import hmac
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
@@ -19,6 +20,31 @@ from state import state
 # least one channel within this window. Conservative; tighten if false
 # positives ever happen.
 HEALTH_STALE_AFTER = timedelta(minutes=5)
+
+# Trading-hours window for the "connected but no recent data" check.
+# Spans the widest of the products we stream: equities open 09:30 ET and
+# SPX/SPXW index options run to 16:15 ET. OUTSIDE this window (overnight,
+# weekends) the upstream channels are legitimately silent, so a connected
+# socket with no recent message is healthy, not stalled — see
+# ``_is_trading_hours``. Market holidays are deliberately NOT modelled
+# (no holiday calendar in this daemon): on a holiday weekday a connected
+# daemon reports "stale", which is harmless while no healthcheckPath is
+# wired (Railway ignores /healthz today — it only flips the Docker
+# HEALTHCHECK status, not restarts).
+_ET = ZoneInfo("America/New_York")
+_RTH_OPEN_ET = time(9, 30)
+_RTH_CLOSE_ET = time(16, 15)
+
+
+def _is_trading_hours(now: datetime) -> bool:
+    """True if ``now`` (UTC-aware) is within US equity/index RTH.
+
+    Mon-Fri, 09:30-16:15 ET (half-open). DST is handled by ZoneInfo.
+    """
+    et = now.astimezone(_ET)
+    if et.weekday() >= 5:  # Saturday / Sunday
+        return False
+    return _RTH_OPEN_ET <= et.time() < _RTH_CLOSE_ET
 
 # Window after process start during which /healthz returns 200 even when
 # the WS hasn't connected yet AND no message has arrived. Without this,
@@ -53,14 +79,30 @@ async def healthz(_request: web.Request) -> web.Response:
     if not state.ws_connected:
         return web.json_response({"status": "ws_disconnected"}, status=503)
 
+    # Data flowing within the window is unambiguously healthy, any hour.
+    if (
+        state.last_message_ts is not None
+        and now - state.last_message_ts <= HEALTH_STALE_AFTER
+    ):
+        return web.json_response({"status": "ok"}, status=200)
+
+    # Past here the socket is connected but no recent data has arrived
+    # (either none ever, or the last message is older than the stale
+    # window). That is only a FAILURE during trading hours. Outside RTH —
+    # overnight, weekends — the upstream channels are legitimately silent,
+    # so reporting 503 would needlessly fail the check the whole time the
+    # market is closed (and drive a Railway restart loop the moment a
+    # healthcheckPath is ever added). Treat connected-but-quiet as healthy
+    # when the market is closed.
+    if not _is_trading_hours(now):
+        return web.json_response({"status": "ok_market_closed"}, status=200)
+
     if state.last_message_ts is None:
-        # Past the startup grace window without any message — fail.
+        # In-hours, past the startup grace, never received a message.
         return web.json_response({"status": "no_messages"}, status=503)
 
-    if now - state.last_message_ts > HEALTH_STALE_AFTER:
-        return web.json_response({"status": "stale"}, status=503)
-
-    return web.json_response({"status": "ok"}, status=200)
+    # In-hours and the last message is older than the stale window.
+    return web.json_response({"status": "stale"}, status=503)
 
 
 async def metrics(request: web.Request) -> web.Response:

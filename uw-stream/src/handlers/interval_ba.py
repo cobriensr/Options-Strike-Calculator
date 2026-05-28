@@ -47,8 +47,8 @@ import db
 from config import settings
 from handlers.option_trades import _COLUMNS as _RAW_COLUMNS
 from handlers.option_trades import OptionTradesHandler
-from logger_setup import log
 from handlers.recent_fires import lookup_confluence, record
+from logger_setup import log
 from notify import build_payload, schedule_notify
 from sentry_setup import capture_exception
 
@@ -161,6 +161,12 @@ class IntervalBAHandler(OptionTradesHandler):
     # something has gone wrong with bucket detection.
     _FIRED_PRUNE_THRESHOLD = 50_000
 
+    # Soft cap on the number of per-chain entries in ``self._ticks``.
+    # Sits far above a single day's distinct 0DTE chains (a few hundred
+    # strikes x 2 types per ticker), so the amortised sweep only fires
+    # when stale-date chains have actually accumulated across days.
+    _CHAINS_PRUNE_THRESHOLD = 5_000
+
     def __init__(self) -> None:
         if not self._TICKER:
             raise NotImplementedError(
@@ -240,13 +246,26 @@ class IntervalBAHandler(OptionTradesHandler):
 
     def _observe(self, payload: dict, row: tuple) -> None:
         """Update rolling state for one tick; queue alert if it fires."""
-        ticker = row[_C["ticker"]]
-        if ticker != self._TICKER:
-            # Defensive — each subclass is only registered for one
-            # option_trades:<TICKER> channel, but a future routing change
-            # must not silently start computing ratios on the wrong
-            # universe (e.g. SPY ticks landing on the SPXW handler).
+        chain: str = row[_C["option_chain"]]
+        # Guard on the OCC ROOT (authoritative contract identity), NOT the
+        # underlying-symbol-derived ``ticker`` column. UW reports
+        # ``underlying_symbol`` as the cash index ("SPX") on SPXW option
+        # payloads — so a row[ticker]-based guard would reject every SPXW
+        # tick and SILENTLY disable the entire SPXW alert path (raw ticks
+        # still write, /metrics stays green, _observe swallows exceptions,
+        # and interval_ba_enabled defaults False — so the silence is
+        # invisible). The OCC root parsed from option_chain
+        # ("SPXW260512C..." → "SPXW") is the value that actually matches
+        # this subclass's _TICKER. (A row only exists when
+        # OptionTradesHandler._transform parsed the OCC, so chain[:-15] is
+        # guaranteed to be the root.) Still defends against a future
+        # routing change landing the wrong universe's ticks here.
+        if _occ_root(chain) != self._TICKER:
             return
+        # Stamp alerts / confluence / push notifications with the contract
+        # root so the confluence registry keys and the notification title
+        # agree with _TICKER regardless of what underlying_symbol carried.
+        ticker = self._TICKER
 
         executed_at: datetime = row[_C["executed_at"]]
         expiry: date = row[_C["expiry"]]
@@ -254,7 +273,6 @@ class IntervalBAHandler(OptionTradesHandler):
             # 0DTE filter: only fire on contracts expiring today (CT).
             return
 
-        chain: str = row[_C["option_chain"]]
         bucket_start_epoch = self._bucket_epoch(executed_at)
         dedupe_key = (chain, bucket_start_epoch)
         if dedupe_key in self._fired:
@@ -301,6 +319,14 @@ class IntervalBAHandler(OptionTradesHandler):
             cutoff = newest - (self._BUCKETS_TO_KEEP - 1) * self._bucket_sec
             for stale_epoch in [e for e in chain_buckets if e < cutoff]:
                 del chain_buckets[stale_epoch]
+
+        # Evict whole-chain entries that have gone quiet (e.g. yesterday's
+        # 0DTE contracts, which never re-enter this code path because the
+        # 0DTE filter rejects them earlier). The per-chain prune above
+        # bounds memory WITHIN a chain but never removes the chain key
+        # itself — across days that is slow unbounded growth. Amortised so
+        # the steady-state hot path pays nothing.
+        self._prune_ticks_if_needed(bucket_start_epoch)
 
         # Re-evaluate aggregates over THIS tick's bucket only.
         ask_premium, total_premium, multi_leg_premium, top_tick = _aggregate(
@@ -399,6 +425,29 @@ class IntervalBAHandler(OptionTradesHandler):
         cutoff = latest_bucket_epoch - 24 * 3600
         self._fired = {(c, b) for (c, b) in self._fired if b >= cutoff}
 
+    def _prune_ticks_if_needed(self, latest_bucket_epoch: int) -> None:
+        """Drop per-chain tick state for contracts that have gone quiet.
+
+        ``self._ticks`` is keyed by OCC chain. The per-chain bucket prune
+        in ``_observe`` bounds memory inside a chain but never removes the
+        chain key, so a stale-date contract (rejected by the 0DTE filter
+        before it can re-enter the bucket code) would live until the next
+        deploy. Amortised like ``_prune_fired_if_needed``: only sweeps
+        when the chain count exceeds the soft cap. A chain is dead when
+        its newest bucket is older than the retention window relative to
+        the latest bucket we've observed (or it holds no buckets at all).
+        """
+        if len(self._ticks) <= self._CHAINS_PRUNE_THRESHOLD:
+            return
+        cutoff = latest_bucket_epoch - self._BUCKETS_TO_KEEP * self._bucket_sec
+        dead = [
+            chain
+            for chain, buckets in self._ticks.items()
+            if not buckets or max(buckets) < cutoff
+        ]
+        for chain in dead:
+            del self._ticks[chain]
+
     # ------------------------------------------------------------------
     # Flush — write raw ticks via super(), then any pending alert rows.
     # ------------------------------------------------------------------
@@ -493,6 +542,20 @@ def _aggregate(
 def _is_multi_leg_code(code: Any) -> bool:
     """True iff ``code`` is one of the OPRA multi-leg sale conditions."""
     return isinstance(code, str) and code.lower() in _MULTI_LEG_CODES
+
+
+def _occ_root(symbol: str) -> str:
+    """Extract the OCC root (listing symbol) from a chain string.
+
+    The trailing 15 chars are fixed-width (6 date + 1 type + 8 strike),
+    so the root is everything before them — see ``utils.occ_parser``.
+    Symbols reaching here already parsed cleanly in
+    ``OptionTradesHandler._transform`` (the row would be None otherwise),
+    so the slice is safe. This is the authoritative contract identity:
+    "SPXW260512C07360000" → "SPXW" even when the payload's
+    ``underlying_symbol`` says "SPX".
+    """
+    return symbol[:-15]
 
 
 def _build_alert_row(

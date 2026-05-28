@@ -1,2 +1,11 @@
 [deploy]
 watchPatterns = ["uw-stream/**"]
+# NOTE: healthcheckPath is intentionally UNSET. /healthz reports
+# "ok_market_closed" overnight and on weekends (the UW channels are
+# legitimately silent then), but it does NOT model market holidays — on a
+# holiday weekday a connected-but-silent daemon reports 503 "stale". If
+# you wire up `healthcheckPath = "/healthz"` here, Railway will restart
+# the container on those holiday 503s (and on any future window where the
+# health gate is stricter than reality). Only enable it after extending
+# health._is_trading_hours with a holiday calendar. See src/health.py and
+# docs/superpowers/specs/uw-stream-review-fixes-2026-05-28.md.

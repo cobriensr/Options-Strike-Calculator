@@ -219,14 +219,26 @@ class GexStrikeExpiryHandler(Handler):
         #
         # Sort rows by the conflict key BEFORE insert. The REST-side cron
         # `/api/cron/fetch-gex-strike-expiry-etfs` (which writes to the
-        # same table on overlapping minutes) sorts its rows by strike
-        # before insert. Without a matching sort here the two writers
-        # acquire row locks in different orders → AB-BA deadlock,
+        # same table on overlapping minutes) sorts its rows by numeric
+        # strike before insert. Without a matching sort here the two
+        # writers acquire row locks in different orders → AB-BA deadlock,
         # surfaced as `NeonDbError: deadlock detected` (Sentry issue 4G)
         # on the cron and `asyncpg.protocol.bind_execute_many`
         # DeadlockDetectedError (issue 4M) on this side. Canonicalizing
         # the order here makes Postgres acquire locks in the same
         # sequence regardless of which writer arrives first.
+        #
+        # WHY the orders are compatible even though the keys differ: the
+        # cron UPSERTs ONE (ticker, expiry) per transaction sorted by
+        # numeric strike. This handler can batch multiple (ticker, expiry)
+        # groups, but within any single contended group the tuple sort
+        # below reduces to strike order — and `strike` is a Decimal, which
+        # sorts numerically, identical to the cron's `Number.parseFloat`
+        # order. So for any set of rows BOTH writers touch, both acquire
+        # locks strike-ascending. INVARIANT: keep `strike` as a sort
+        # component on BOTH sides, and keep the cron's transactions scoped
+        # to a single (ticker, expiry). If the cron ever batches multiple
+        # tickers/expiries per transaction, revisit this together.
         #
         # WS arrival order (the original `rows` ordering) carries no
         # data semantics — UPSERT is "last write wins per (ticker,

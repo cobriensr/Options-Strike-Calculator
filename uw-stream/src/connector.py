@@ -35,6 +35,17 @@ _PING_TIMEOUT_S = 20.0
 # Threshold for raising a Sentry warning if reconnects pile up.
 _RECONNECT_STORM_THRESHOLD = 5
 
+# Inter-join pacing. With the Lottery universe expanded across
+# option_trades / net_flow / gex_strike_expiry shorthands we send ~150
+# join frames on every (re)connect. UW does not document a join-rate
+# limit, but firing 150 control frames back-to-back is exactly the kind
+# of burst a server-side throttle would drop — and a dropped join is a
+# silently-unsubscribed channel. A few ms between joins spreads the burst
+# (150 * 10ms = ~1.5s added to a reconnect) without meaningfully delaying
+# the small-channel common case. Override-free: this is deliberately a
+# constant, not an env knob, to keep the surface small.
+_JOIN_PACING_S = 0.01
+
 
 class Connector:
     """Manages the lifecycle of a single multiplexed UW WS connection."""
@@ -50,11 +61,20 @@ class Connector:
         # receive task can never block on JSON parsing or handler
         # dispatch — those happen on the router task.
         self._receive_queue = receive_queue
+        # Set True by ``_connect_once`` once a connection is fully
+        # established (subscribe succeeded, ws_connected flipped). ``run``
+        # reads it to decide whether the next reconnect resets the backoff
+        # (healthy session dropped → start fresh at 1s) or escalates it
+        # (string of connect failures with no healthy session between).
+        self._established = False
 
     async def run(self) -> None:
         """Run forever, reconnecting as needed."""
         backoff = _INITIAL_BACKOFF_S
         while True:
+            # Reset per iteration; ``_connect_once`` flips it to True only
+            # once the connection is fully established (subscribe ok).
+            self._established = False
             try:
                 await self._connect_once()
                 # _connect_once returns cleanly only on graceful close.
@@ -65,8 +85,6 @@ class Connector:
                 state.ws_connected = False
                 state.record_reconnect()
                 log.info("WS closed cleanly, reconnecting after grace")
-                backoff = _INITIAL_BACKOFF_S
-                await asyncio.sleep(backoff)
             except (
                 websockets.ConnectionClosed,
                 # Handshake-rejection variants (HTTP 503, 502, 504, etc. on the
@@ -86,8 +104,6 @@ class Connector:
                     extra={"err": str(exc), "backoff": backoff},
                 )
                 self._maybe_alert_storm()
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _MAX_BACKOFF_S)
             except (TimeoutError, OSError) as exc:
                 state.ws_connected = False
                 state.record_reconnect()
@@ -96,8 +112,6 @@ class Connector:
                     extra={"err": str(exc), "backoff": backoff},
                 )
                 self._maybe_alert_storm()
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _MAX_BACKOFF_S)
             except Exception as exc:
                 # Anything we didn't anticipate — Sentry it, then keep
                 # trying. The daemon must not exit while market hours
@@ -105,7 +119,24 @@ class Connector:
                 state.ws_connected = False
                 state.record_reconnect()
                 capture_exception(exc, tags={"component": "connector"})
-                await asyncio.sleep(backoff)
+
+            # Backoff schedule, applied uniformly across the clean-close
+            # and every exception branch:
+            #
+            # - If THIS attempt established a healthy connection (subscribe
+            #   succeeded, ``ws_connected`` flipped True), reset to the
+            #   initial 1s so the NEXT reconnect starts fresh. A connection
+            #   that streamed for hours and then dropped should not inherit
+            #   an escalated backoff left over from an earlier rough start.
+            #   This mirrors UW's own reference consumer, which resets
+            #   backoff to 1 immediately after the join frames go out.
+            # - Otherwise (connect/subscribe failed with no healthy session
+            #   in between), sleep the current backoff and then escalate it
+            #   toward the cap — the original sustained-outage behavior.
+            if self._established:
+                backoff = _INITIAL_BACKOFF_S
+            await asyncio.sleep(backoff)
+            if not self._established:
                 backoff = min(backoff * 2, _MAX_BACKOFF_S)
 
     async def _connect_once(self) -> None:
@@ -143,6 +174,9 @@ class Connector:
                 )
                 raise
             state.ws_connected = True
+            # Mark this attempt as a healthy session so ``run`` resets the
+            # reconnect backoff after the socket eventually drops.
+            self._established = True
             log.info("WS connected, awaiting messages")
             async for raw in ws:
                 # Hand off to the router via a bounded queue. We never
@@ -177,8 +211,18 @@ class Connector:
                     state.receive_queue_drops += 1
 
     async def _subscribe_all(self, ws) -> None:
-        """Send a join frame for every configured channel."""
-        for ch in self.channels:
+        """Send a join frame for every configured channel.
+
+        Joins are paced by ``_JOIN_PACING_S`` so a large universe (~150
+        channels via the Lottery shorthands) doesn't fire its entire join
+        burst in one event-loop tick — a server-side join-rate throttle
+        would otherwise drop some frames, leaving those channels silently
+        unsubscribed. Pacing goes BETWEEN frames, not after the last one,
+        so a single-channel subscribe adds no delay.
+        """
+        for i, ch in enumerate(self.channels):
+            if i > 0:
+                await asyncio.sleep(_JOIN_PACING_S)
             # MUST send as a WS TEXT frame (opcode 0x1), not BINARY (0x2):
             # UW's server only reads join control messages from text frames
             # and silently drops binary ones. orjson.dumps() returns bytes

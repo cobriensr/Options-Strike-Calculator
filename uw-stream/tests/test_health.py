@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from config import settings
-from health import HEALTH_STARTUP_GRACE_S, healthz, metrics
+from health import HEALTH_STARTUP_GRACE_S, _is_trading_hours, healthz, metrics
 from state import state
 
 
@@ -86,10 +86,11 @@ async def test_healthz_ws_connected_no_message_during_grace_returns_starting():
     assert body == {"status": "starting"}
 
 
-async def test_healthz_ws_connected_no_message_post_grace_is_no_messages():
-    """Past grace, WS connected but never received a message → 503 with
-    the existing ``no_messages`` status preserved.
+async def test_healthz_ws_connected_no_message_post_grace_is_no_messages(monkeypatch):
+    """Past grace, IN TRADING HOURS, WS connected but never received a
+    message → 503 with the existing ``no_messages`` status preserved.
     """
+    monkeypatch.setattr("health._is_trading_hours", lambda _now: True)
     state.started_at = datetime.now(UTC) - timedelta(seconds=HEALTH_STARTUP_GRACE_S + 60)
     state.ws_connected = True
     state.last_message_ts = None
@@ -116,8 +117,9 @@ async def test_healthz_returns_ok_when_recent_message():
     assert body == {"status": "ok"}
 
 
-async def test_healthz_returns_stale_when_message_gap_too_large():
-    """Steady state: last message older than HEALTH_STALE_AFTER → 503."""
+async def test_healthz_returns_stale_when_message_gap_too_large(monkeypatch):
+    """In trading hours: last message older than HEALTH_STALE_AFTER → 503."""
+    monkeypatch.setattr("health._is_trading_hours", lambda _now: True)
     state.started_at = datetime.now(UTC) - timedelta(hours=1)
     state.ws_connected = True
     state.last_message_ts = datetime.now(UTC) - timedelta(minutes=10)
@@ -127,6 +129,95 @@ async def test_healthz_returns_stale_when_message_gap_too_large():
 
     assert resp.status == 503
     assert body == {"status": "stale"}
+
+
+async def test_healthz_market_closed_no_message_is_healthy(monkeypatch):
+    """OUTSIDE trading hours, a connected socket with no message is
+    healthy — the upstream channels are legitimately silent overnight /
+    on weekends, so we must NOT 503 (which would restart-loop the daemon
+    if a healthcheckPath were wired up).
+    """
+    monkeypatch.setattr("health._is_trading_hours", lambda _now: False)
+    state.started_at = datetime.now(UTC) - timedelta(seconds=HEALTH_STARTUP_GRACE_S + 60)
+    state.ws_connected = True
+    state.last_message_ts = None
+
+    resp = await healthz(None)  # type: ignore[arg-type]
+    body = await _read_json(resp)
+
+    assert resp.status == 200
+    assert body == {"status": "ok_market_closed"}
+
+
+async def test_healthz_market_closed_stale_is_healthy(monkeypatch):
+    """Outside trading hours, a stale last-message gap is expected, not a
+    failure → 200.
+    """
+    monkeypatch.setattr("health._is_trading_hours", lambda _now: False)
+    state.started_at = datetime.now(UTC) - timedelta(hours=1)
+    state.ws_connected = True
+    state.last_message_ts = datetime.now(UTC) - timedelta(minutes=30)
+
+    resp = await healthz(None)  # type: ignore[arg-type]
+    body = await _read_json(resp)
+
+    assert resp.status == 200
+    assert body == {"status": "ok_market_closed"}
+
+
+async def test_healthz_disconnected_is_503_even_when_market_closed(monkeypatch):
+    """ws_disconnected is always unhealthy — the market-closed allowance
+    only relaxes the data-flow checks, never the connection check.
+    """
+    monkeypatch.setattr("health._is_trading_hours", lambda _now: False)
+    state.started_at = datetime.now(UTC) - timedelta(hours=1)
+    state.ws_connected = False
+    state.last_message_ts = datetime.now(UTC) - timedelta(minutes=30)
+
+    resp = await healthz(None)  # type: ignore[arg-type]
+    body = await _read_json(resp)
+
+    assert resp.status == 503
+    assert body == {"status": "ws_disconnected"}
+
+
+async def test_healthz_ok_when_recent_message_even_if_market_closed(monkeypatch):
+    """Recent data == healthy regardless of clock; the trading-hours gate
+    is only consulted when there's no recent message.
+    """
+    monkeypatch.setattr("health._is_trading_hours", lambda _now: False)
+    state.started_at = datetime.now(UTC) - timedelta(hours=1)
+    state.ws_connected = True
+    state.last_message_ts = datetime.now(UTC) - timedelta(seconds=5)
+
+    resp = await healthz(None)  # type: ignore[arg-type]
+    body = await _read_json(resp)
+
+    assert resp.status == 200
+    assert body == {"status": "ok"}
+
+
+# ── _is_trading_hours ────────────────────────────────────────
+
+
+def test_is_trading_hours_true_midday_weekday():
+    # 2026-05-28 is a Thursday. 15:00 UTC → 11:00 ET (EDT) → in RTH.
+    assert _is_trading_hours(datetime(2026, 5, 28, 15, 0, tzinfo=UTC)) is True
+
+
+def test_is_trading_hours_false_overnight_weekday():
+    # 2026-05-28 06:00 UTC → 02:00 ET → outside RTH.
+    assert _is_trading_hours(datetime(2026, 5, 28, 6, 0, tzinfo=UTC)) is False
+
+
+def test_is_trading_hours_false_weekend():
+    # 2026-05-30 is a Saturday. 15:00 UTC → 11:00 ET but weekend.
+    assert _is_trading_hours(datetime(2026, 5, 30, 15, 0, tzinfo=UTC)) is False
+
+
+def test_is_trading_hours_false_after_close():
+    # 2026-05-28 (Thu) 20:30 UTC → 16:30 ET → past the 16:15 close.
+    assert _is_trading_hours(datetime(2026, 5, 28, 20, 30, tzinfo=UTC)) is False
 
 
 # ── /metrics auth gate ───────────────────────────────────────

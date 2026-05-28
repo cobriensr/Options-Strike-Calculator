@@ -7,14 +7,29 @@ shape produced by SPXWIntervalBAHandler._build_alert_row.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import notify
 from handlers.interval_ba import _ALERT_COLUMNS
-from notify import build_payload, notify_alert
+from notify import build_payload, close_session, drain_pending, notify_alert
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_session():
+    """Reset the module-level shared ClientSession between tests.
+
+    notify caches one session for the process lifetime; without this the
+    mock from one test (or a session bound to a closed event loop) would
+    leak into the next.
+    """
+    notify._session = None
+    yield
+    notify._session = None
 
 # Mirror the alert tuple shape from SPXWIntervalBAHandler. NOT every
 # field is used by the payload formatter — the rest are passed through
@@ -115,6 +130,15 @@ class TestBuildPayload:
         row[idx["strike"]] = Decimal("7350.000")
         payload = build_payload(tuple(row), _ALERT_COLUMNS)
         assert payload["title"] == "SPXW 7350P 71% ASK"
+
+    def test_fractional_strike_preserved_in_title(self):
+        """Half-dollar strikes must show the fraction, not round to the
+        nearest dollar (the old ``:.0f`` would render 7360.5 as '7360')."""
+        row = list(_FIXTURE_ROW)
+        idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
+        row[idx["strike"]] = Decimal("7360.500")
+        payload = build_payload(tuple(row), _ALERT_COLUMNS)
+        assert payload["title"] == "SPXW 7360.5C 71% ASK"
 
 
 class TestConfluenceDecoration:
@@ -388,3 +412,96 @@ class TestSentryThrottle:
                 await notify_alert({"title": "x", "body": "y"})
 
         assert mock_capture.call_count == 1
+
+
+class TestSharedSession:
+    """The ClientSession is created once and reused, then closed on
+    shutdown — instead of a fresh session (connector + DNS) per call."""
+
+    @pytest.mark.asyncio
+    async def test_session_created_once_and_reused(self, monkeypatch):
+        monkeypatch.setattr(
+            "notify.settings.vercel_notify_url", "https://example.com/x",
+        )
+        monkeypatch.setattr("notify.settings.internal_notify_secret", "s")
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_session = MagicMock()
+        mock_session.closed = False  # a live, reusable session
+        mock_session.post = MagicMock(return_value=mock_resp)
+
+        with patch(
+            "aiohttp.ClientSession", return_value=mock_session,
+        ) as ctor:
+            await notify_alert({"title": "x", "body": "y"})
+            await notify_alert({"title": "x", "body": "y"})
+
+        # One session constructed, two POSTs through it.
+        assert ctor.call_count == 1
+        assert mock_session.post.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_close_session_closes_and_clears(self, monkeypatch):
+        mock_session = MagicMock()
+        mock_session.closed = False
+        mock_session.close = AsyncMock()
+        monkeypatch.setattr("notify._session", mock_session)
+
+        await close_session()
+
+        mock_session.close.assert_awaited_once()
+        assert notify._session is None
+
+    @pytest.mark.asyncio
+    async def test_close_session_safe_when_unset(self):
+        notify._session = None
+        await close_session()  # must not raise
+        assert notify._session is None
+
+
+class TestDrainPending:
+    """Fire-and-forget notify tasks are awaited before shutdown so the
+    final batch's notifications aren't cancelled mid-flight."""
+
+    @pytest.mark.asyncio
+    async def test_drain_awaits_in_flight_tasks(self):
+        notify._BACKGROUND_TASKS.clear()
+        done: list[bool] = []
+
+        async def _work() -> None:
+            await asyncio.sleep(0)
+            done.append(True)
+
+        task = asyncio.create_task(_work())
+        notify._BACKGROUND_TASKS.add(task)
+        task.add_done_callback(notify._BACKGROUND_TASKS.discard)
+
+        await drain_pending(timeout=1.0)
+
+        assert done == [True]
+        assert not notify._BACKGROUND_TASKS
+
+    @pytest.mark.asyncio
+    async def test_drain_noop_when_no_tasks(self):
+        notify._BACKGROUND_TASKS.clear()
+        await drain_pending(timeout=0.1)  # returns immediately, no raise
+
+    @pytest.mark.asyncio
+    async def test_drain_bounded_by_timeout(self):
+        notify._BACKGROUND_TASKS.clear()
+
+        async def _slow() -> None:
+            await asyncio.sleep(5)
+
+        task = asyncio.create_task(_slow())
+        notify._BACKGROUND_TASKS.add(task)
+        task.add_done_callback(notify._BACKGROUND_TASKS.discard)
+
+        # Must return within the deadline rather than blocking on _slow.
+        await drain_pending(timeout=0.01)
+        task.cancel()
