@@ -243,6 +243,11 @@ class _TopOfBookWriter(BatchedWriter[TopOfBookRow]):
         # Raise on failure: BatchedWriter._write_or_requeue captures the
         # exception centrally and re-queues these rows (bounded) for the
         # next flush. Do NOT swallow here.
+        # NOTE: futures_top_of_book has no UNIQUE constraint (migration #71),
+        # so the re-queue is NOT exactly-once: an in-doubt commit (server
+        # commits, then the Neon socket drops before the ACK) will re-insert
+        # these rows on retry. That's acceptable here — the table is built to
+        # absorb Databento resend duplicates and Phase 2b compute aggregates.
         tuples = [(r.symbol, r.ts, r.bid, r.bid_size, r.ask, r.ask_size) for r in rows]
         batch_insert_top_of_book(tuples)
 
@@ -254,6 +259,9 @@ class _TradeTickWriter(BatchedWriter[TradeTickRow]):
     def _write(self, rows: list[TradeTickRow]) -> None:
         # Raise on failure — see _TopOfBookWriter._write. The base class
         # captures + re-queues; swallowing here would defeat the retry.
+        # Same non-idempotency caveat: futures_trade_ticks has no UNIQUE
+        # constraint (migration #72), so an in-doubt commit can duplicate
+        # rows on retry — tolerated, the schema absorbs resend duplicates.
         tuples = [(r.symbol, r.ts, r.price, r.size, r.aggressor_side) for r in rows]
         batch_insert_trade_ticks(tuples)
 
