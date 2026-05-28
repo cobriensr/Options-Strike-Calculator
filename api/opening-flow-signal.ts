@@ -92,10 +92,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       throw err;
     }
   } catch (err) {
+    // Don't surface raw exception messages to the client — they can
+    // leak DB connection strings, internal query text, or driver
+    // internals. Sentry + pino retain the full details server-side.
     Sentry.captureException(err);
     logger.error({ err }, 'opening-flow-signal error');
-    res.status(500).json({
-      error: err instanceof Error ? err.message : String(err),
-    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 }
