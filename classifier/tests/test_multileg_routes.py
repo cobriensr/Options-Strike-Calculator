@@ -560,13 +560,18 @@ def test_size_tolerance_above_cap_returns_422(
     assert "call_count" not in mock_classify_trades
 
 
-def test_inf_in_tolerance_returns_422(
-    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+def test_bareword_infinity_in_tolerance_returns_400_at_parse_time(
+    mock_classify_trades,
 ) -> None:
-    """``strike_tolerance`` has ``allow_inf_nan=False`` too — a finite
-    value above the cap returns 422 via ``le=``; an infinite value goes
-    via the ``allow_inf_nan`` gate. Both should land at 422. The 400
-    parse-time gate also picks up bareword Infinity.
+    """The outer 400 parse-time gate (``parse_constant=_reject_constant``)
+    fires before Pydantic sees the payload. A bareword ``Infinity`` in
+    any field — tolerance or trade — returns 400 here, NOT 422.
+
+    This test documents that ordering. See
+    ``test_overflow_literal_in_tolerance_returns_422_via_allow_inf_nan``
+    for the independent ``allow_inf_nan=False`` 422 path (defense in
+    depth: the 422 gate catches infinities that slip past the 400 gate
+    via overflow literals like ``1e9999``).
     """
     body = (
         b'{"trades": [{"id":"t1","underlying_symbol":"AAPL",'
@@ -577,8 +582,51 @@ def test_inf_in_tolerance_returns_422(
         b'"premium":1250.0,"delta":0.4}],"strike_tolerance":Infinity}'
     )
     status, _ = multileg_routes.handle_classify_payload(body)
-    # Parse-time gate fires first → 400.
     assert status == 400
+    assert "call_count" not in mock_classify_trades
+
+
+def test_overflow_literal_in_tolerance_returns_422_via_allow_inf_nan(
+    mock_classify_trades,
+) -> None:
+    """An overflow literal like ``1e9999`` is a STANDARD JSON number
+    token. ``json.loads`` parses it via ``float()`` which silently
+    overflows to ``math.inf`` WITHOUT invoking ``parse_constant``
+    (``parse_constant`` only catches the bareword tokens ``NaN``,
+    ``Infinity``, ``-Infinity``). The 400 parse-time gate therefore
+    does NOT fire here.
+
+    Pydantic's ``allow_inf_nan=False`` on ``strike_tolerance`` catches
+    the infinity at validation time → 422. This proves the
+    defense-in-depth claim in the module docstring (the 422 backstop
+    isn't dead code; it covers overflow literals the parse-time gate
+    can't see).
+    """
+    body = (
+        b'{"trades": [{"id":"t1","underlying_symbol":"AAPL",'
+        b'"executed_at":"2026-05-15T15:30:00Z",'
+        b'"option_chain_id":"AAPL-2026-05-15-C-190",'
+        b'"strike":190.0,"expiry":"2026-05-15","option_type":"call",'
+        b'"size":10.0,"price":1.25,"nbbo_bid":1.2,"nbbo_ask":1.3,'
+        b'"premium":1250.0,"delta":0.4}],"strike_tolerance":1e9999}'
+    )
+    status, body_out = multileg_routes.handle_classify_payload(body)
+    assert status == 422, (
+        f"expected 422 via allow_inf_nan=False, got {status} body={body_out}"
+    )
+    assert body_out["error"] == "schema validation failed"
+    # The Pydantic error message for allow_inf_nan failures mentions
+    # the allow_inf_nan / finite-number constraint; assert the locus
+    # is strike_tolerance regardless of the exact phrasing.
+    details = body_out["details"]
+    assert any(
+        "strike_tolerance" in str(d.get("loc", "")) for d in details
+    ), f"expected strike_tolerance in details, got {details}"
+    # And confirm at least one detail references the finite-number rule.
+    assert any(
+        "finite" in str(d).lower() or "inf" in str(d).lower()
+        for d in details
+    ), f"expected finite/inf phrasing, got {details}"
     assert "call_count" not in mock_classify_trades
 
 

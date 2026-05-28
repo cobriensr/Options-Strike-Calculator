@@ -23,9 +23,19 @@ Endpoint contract (HTTP shape lives in ``server.py``):
     POST /multileg-classify
     Body: JSON matching ``MultilegClassifyRequest``
     → 200: {"classifications": [MultilegClassification, ...]}
-    → 400: empty or missing trades
-    → 422: schema validation error (Pydantic)
-    → 500: matcher raised unexpectedly (reported to Sentry)
+    → 400: empty or missing trades, malformed JSON, or non-standard JSON
+           constants (bareword ``NaN`` / ``Infinity`` / ``-Infinity``
+           are rejected at parse time before Pydantic ever sees them).
+    → 422: schema validation error (Pydantic). Notable triggers:
+           ``executed_at`` must be tz-aware ISO 8601 (naive datetime
+           is rejected because the polars cast would relabel it as UTC
+           without conversion); NaN / ±Infinity in any numeric field
+           is rejected here as a defense-in-depth backstop to the 400
+           parse-time gate (covers non-JSON future code paths);
+           ``window_seconds`` must be in [1, 600], ``strike_tolerance``
+           in [0.0, 0.5], ``size_tolerance`` in [0.0, 1.0]; strict-mode
+           rejects ``bool`` → ``float`` and ``str`` → number coercion.
+    → 500: matcher raised unexpectedly (reported to Sentry).
 
 The matcher's required-fields contract is encoded in
 ``MultilegTradeInput``: id, underlying_symbol, executed_at, strike,
@@ -37,9 +47,8 @@ the matcher tolerates absence.
 from __future__ import annotations
 
 import logging
-import typing
 from datetime import date, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 from pydantic import (
     BaseModel,
@@ -96,7 +105,7 @@ class MultilegTradeInput(BaseModel):
     nbbo_bid: _StrictFloat
     nbbo_ask: _StrictFloat
     premium: _StrictFloat
-    delta: Annotated[float, Field(allow_inf_nan=False)] | None = None
+    delta: _StrictFloat | None = None
 
     @field_validator("executed_at")
     @classmethod
@@ -140,11 +149,14 @@ class MultilegClassifyRequest(BaseModel):
 class MultilegClassification(BaseModel):
     """One row in the classify response — keyed by input ``id``.
 
-    Fields beyond ``id`` are ``Optional`` (Finding 1.1 server side) because
-    the matcher's ``_MAX_CELL_ROWS_PER_CLASSIFY`` overload-skip path emits
-    ``null`` for every classification column when a ticker is skipped.
-    Without this, the TS Zod client (Task 5) reports those legitimate
-    skip events as opaque ``schema_mismatch`` failures.
+    Fields beyond ``id`` must be present in every row but may carry a
+    ``null`` value (Finding 1.1 server side). This is "key required,
+    value nullable" — NOT "key may be omitted". The matcher's
+    ``_MAX_CELL_ROWS_PER_CLASSIFY`` overload-skip path emits a row with
+    every classification column set to ``null`` when a ticker is
+    skipped, and the TS Zod client (Task 5) needs to accept that shape
+    to stop reporting legitimate skip events as opaque
+    ``schema_mismatch`` failures.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -152,7 +164,7 @@ class MultilegClassification(BaseModel):
     id: str
     inferred_structure: str | None
     is_isolated_leg: bool | None
-    match_confidence: Annotated[float, Field(allow_inf_nan=False)] | None
+    match_confidence: _StrictFloat | None
     pattern_group_id: str | None
 
 
@@ -251,7 +263,7 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
     # ``{"strike": NaN}`` body returns 400 here rather than slipping
     # through to Pydantic with ``strike=float('nan')`` and downstream
     # silent isolated_leg classifications (Finding 1.2).
-    def _reject_constant(c: str) -> typing.NoReturn:
+    def _reject_constant(c: str) -> NoReturn:
         raise ValueError(f"non-standard JSON constant: {c}")
 
     try:
