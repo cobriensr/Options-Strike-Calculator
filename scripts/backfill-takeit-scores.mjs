@@ -28,8 +28,24 @@ dotenvConfig({ path: '.env.local' });
 
 const FEED = process.env.FEED ?? 'both';
 const SINCE = process.env.SINCE ?? null; // YYYY-MM-DD
-const LIMIT = process.env.LIMIT ? Number(process.env.LIMIT) : null;
+const LIMIT = process.env.LIMIT ? Number.parseInt(process.env.LIMIT, 10) : null;
+// 2000 rows keeps the in-memory updates[] array and the per-batch transaction
+// payload small (~2000 x {id, prob, version} objects). At 10k+ the tagged-
+// template objects in sql.transaction() become measurable; leave this at 2000
+// unless profiled.
 const BATCH_SIZE = 2000;
+
+if (SINCE && !/^\d{4}-\d{2}-\d{2}$/.test(SINCE)) {
+  console.error(`Invalid SINCE format: "${SINCE}". Expected YYYY-MM-DD.`);
+  process.exit(1);
+}
+
+if (LIMIT !== null && (Number.isNaN(LIMIT) || LIMIT <= 0)) {
+  console.error(
+    `Invalid LIMIT: "${process.env.LIMIT}". Expected a positive integer.`,
+  );
+  process.exit(1);
+}
 
 const sql = neon(process.env.DATABASE_URL);
 const runId = new Date().toISOString().replace(/[:.]/g, '-');
@@ -53,6 +69,11 @@ async function main() {
     // reconstructed accurately from NOW() queries. Stubs return empty arrays
     // so sequential features resolve to 0 / null — correct for retrospective
     // ML analysis. The bundle + row-level features are unchanged.
+    //
+    // NOTE: backfilled takeit_prob values will differ from live-cron values
+    // for rows where sequential context would have been non-empty. For ML
+    // training purposes, treat backfilled rows as "no-session-context" samples
+    // — they are valid training data but not directly comparable to live scores.
     const ctx = await loadTakeitDetectContext(ctxKey, {
       fetchRecentSameType: async () => [],
       fetchRecentOtherTypeByChain: async () => [],
@@ -106,7 +127,10 @@ async function main() {
         updates.push({ id: row.id, prob, version });
       }
 
-      // Persist in a single transaction per batch
+      // Persist in a single transaction per batch.
+      // Atomicity: if this transaction throws, none of the 2000 rows are updated.
+      // Re-running the script is safe — WHERE takeit_prob IS NULL re-selects the
+      // same batch from the same lastId checkpoint.
       await sql.transaction(
         updates.map(
           (u) => sql`

@@ -496,7 +496,7 @@ takeit-rollback:
 		node scripts/takeit-rollback.mjs
 
 # Backfill takeit_prob + takeit_model_version on historical rows that were
-# inserted before the TAKE-IT scorer was wired into the detect cronsrons.
+# inserted before the TAKE-IT scorer was wired into the detect crons.
 # Uses the production scoring code path (scoreLottery / scoreSilentBoom)
 # for parity — no Python drift risk.
 #
