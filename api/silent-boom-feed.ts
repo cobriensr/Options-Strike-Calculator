@@ -692,13 +692,15 @@ export default async function handler(
 
     // Day-scoped cluster-candidate query — runs after the page query so
     // it covers ALL 0DTE fires for the date, not just the current page.
-    const clusterRows = (await withDbRetry(() =>
-      db`
+    const clusterRows = (await withDbRetry(
+      () => db`
         SELECT underlying_symbol, option_type, strike, dte, entry_price,
                underlying_price_at_spike, ask_pct
         FROM silent_boom_alerts
         WHERE date = ${date}::date AND dte = 0
       `,
+      2,
+      10000,
     )) as ClusterQueryRow[];
     const clusterCandidates: ClusterCandidateRow[] = clusterRows.map((r) => ({
       underlyingSymbol: r.underlying_symbol,
