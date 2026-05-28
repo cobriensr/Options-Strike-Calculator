@@ -626,10 +626,16 @@ class TestSeedArchivePost:
         status, _body = _run_post_request(path="/some-other")
         assert status == 404
 
-    def test_post_503_when_seed_archive_not_configured(self) -> None:
+    def test_post_401_when_seed_archive_not_configured(self) -> None:
+        """All admin-auth rejection paths return 401 with the same body so
+        an external probe can't distinguish 'disabled' from 'wrong token'
+        — that distinction was an enumeration oracle for the admin
+        surface. Operators can still tell the two states apart via the
+        ``seed endpoint not configured`` server-side log line.
+        """
         status, body = _run_post_request()
-        assert status == 503
-        assert body["error"] == "seed endpoint not configured"
+        assert status == 401
+        assert body["error"] == "unauthorized"
 
     def test_post_401_when_token_missing(self) -> None:
         HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})

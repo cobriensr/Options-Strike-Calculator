@@ -294,13 +294,16 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Not found")
             return
 
+        # Unify all auth-rejection paths to 401 so an external probe can't
+        # distinguish "endpoint disabled" from "wrong token" — that
+        # distinction is an enumeration oracle for the admin surface.
+        # Operators can still tell the two states apart via server logs.
         if self.seed_archive is None:
-            self.send_response(503)
+            log.warning("seed endpoint not configured (seed_archive is None)")
+            self.send_response(401)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": "seed endpoint not configured"}).encode()
-            )
+            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
             return
 
         # Auth gate — single-owner token from env. `hmac.compare_digest`
