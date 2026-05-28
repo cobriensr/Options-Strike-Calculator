@@ -26,6 +26,7 @@ import {
 } from '../../utils/ticker-rollup-aggregates.js';
 import { useTickerGrouping } from '../../hooks/useTickerGrouping.js';
 import { deltaFromAtFire } from '../../utils/macro-badges.js';
+import { estimateFilteredTotalPages } from '../../utils/filtered-pagination.js';
 import {
   SILENT_BOOM_EXIT_POLICY_LABELS,
   SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
@@ -901,8 +902,20 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     setTickerExpandedMap((prev) => ({ ...prev, [ticker]: !prev[ticker] }));
   }, []);
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+
+  // totalPages derived AFTER the client-filter pass so the estimate uses
+  // the real post-filter visible count (displayedAlerts.length) as the
+  // numerator. Includes the bucketIso scrub filter — reflecting bucket
+  // scoping in the page count is correct behaviour (users see fewer rows
+  // when scrubbing to a narrow bucket).
+  const totalPages = estimateFilteredTotalPages({
+    serverTotal: total,
+    pageSize: PAGE_SIZE,
+    currentPage,
+    currentPageRequested: alerts.length,
+    currentPageVisible: displayedAlerts.length,
+  });
 
   return (
     <SectionBox label="Silent Boom" collapsible>

@@ -45,6 +45,7 @@ import {
   type FilterChipColor,
 } from '../ui/filter-toolbar-tokens.js';
 import { FilterChip } from '../ui/FilterChip.js';
+import { estimateFilteredTotalPages } from '../../utils/filtered-pagination.js';
 
 const PAGE_SIZE = 50;
 /** localStorage keys for persisting user preferences. */
@@ -595,7 +596,6 @@ export function LotteryFinderSection({
     [fires],
   );
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
   // Late-PM cutoff is applied client-side: keep `total` and pagination
@@ -745,7 +745,7 @@ export function LotteryFinderSection({
   // renders in EXACTLY ONE place (reignited list OR ticker group);
   // `tickerGroupFires` drops any reignited rows that happen to live
   // in the page slice.
-  const { tickerGroupFires, reignitedFires } = useMemo(() => {
+  const { filteredFires, tickerGroupFires, reignitedFires } = useMemo(() => {
     const filtered = applyClientFilters(fires);
     const filteredReignited = [...applyClientFilters(rawReignitedFires)].sort(
       (a, b) => {
@@ -758,10 +758,24 @@ export function LotteryFinderSection({
       },
     );
     return {
+      filteredFires: filtered,
       tickerGroupFires: filtered.filter((f) => f.reignited !== true),
       reignitedFires: filteredReignited,
     };
   }, [fires, rawReignitedFires, applyClientFilters]);
+
+  // totalPages derived AFTER the client-filter pass so the estimate uses
+  // the real post-filter visible count (filteredFires.length) as the
+  // numerator. Placement here — after the applyClientFilters memo — is
+  // intentional; moving it back above the filter pipeline would break the
+  // extrapolation.
+  const totalPages = estimateFilteredTotalPages({
+    serverTotal: total,
+    pageSize: PAGE_SIZE,
+    currentPage,
+    currentPageRequested: fires.length,
+    currentPageVisible: filteredFires.length,
+  });
 
   // Group displayed fires by ticker so each underlying renders as one
   // collapsible row. Grouping + ordering + conviction/storm rollups
