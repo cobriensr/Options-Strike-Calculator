@@ -50,6 +50,9 @@ async function withRetry<T>(
     } catch (err) {
       // Schema errors are deterministic — retrying won't fix them.
       // Re-throw immediately so the caller's fail-closed path runs.
+      // Match on `.name` so the check survives any module-level
+      // class-identity surprises that `instanceof` is sensitive to
+      // (same defensive pattern as the catch block in getBundle).
       const isSchemaErr =
         err instanceof BundleSchemaError ||
         (err instanceof Error && err.name === 'BundleSchemaError');
