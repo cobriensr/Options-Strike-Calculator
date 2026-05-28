@@ -29,6 +29,16 @@ dotenvConfig({ path: '.env.local' });
 const FEED = process.env.FEED ?? 'both';
 const SINCE = process.env.SINCE ?? null; // YYYY-MM-DD
 const LIMIT = process.env.LIMIT ? Number.parseInt(process.env.LIMIT, 10) : null;
+
+// Guard against typos like FEED=silentboom (TAKE-IT AlertType spelling) — the
+// dispatch below silently routes anything non-'lottery'/'both' to silent_boom,
+// which would corrupt the wrong table. Mirrors scripts/takeit-rollback.mjs.
+if (FEED !== 'both' && FEED !== 'lottery' && FEED !== 'silent_boom') {
+  console.error(
+    `Invalid FEED: "${FEED}". Expected 'lottery', 'silent_boom', or 'both'.`,
+  );
+  process.exit(1);
+}
 // 2000 rows keeps the in-memory updates[] array and the per-batch transaction
 // payload small (~2000 x {id, prob, version} objects). At 10k+ the tagged-
 // template objects in sql.transaction() become measurable; leave this at 2000
