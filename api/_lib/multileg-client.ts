@@ -1,9 +1,12 @@
 /**
- * Thin client for the Railway sidecar's POST /takeit/multileg-classify
- * endpoint.
+ * Thin client for the multileg classifier service. Calls
+ * POST /multileg-classify on the new standalone classifier service or
+ * POST /takeit/multileg-classify on the legacy multi-purpose sidecar
+ * (fallback for one deploy cycle during the Phase 1 service split).
  *
  * The matcher itself lives in `ml/src/multileg_assembler.py` and is
- * wrapped by `sidecar/src/multileg_routes.py`. This module is the
+ * wrapped by `classifier/src/classifier_routes.py` (new) /
+ * `sidecar/src/multileg_routes.py` (legacy). This module is the
  * Vercel-side wrapper that the detect crons (lottery / silent-boom)
  * use to label each Full Tape print with its inferred multileg
  * structure (vertical / strangle / risk_reversal / butterfly /
@@ -11,22 +14,26 @@
  *
  * Policy:
  *   - Empty input → empty Map (no fetch round-trip).
- *   - The sidecar response array MUST match the input array in
+ *   - The classifier response array MUST match the input array in
  *     length and order; we validate both at the boundary so a
- *     drifted sidecar contract fails loudly here, not silently
- *     downstream in scoring code.
+ *     drifted contract fails loudly here, not silently downstream
+ *     in scoring code.
  *   - Failures throw a typed `MultilegClassifyError` so callers
  *     can choose fail-loud (default everything to isolated_leg)
  *     vs. fail-open (skip the structure flag).
  *   - Sentry captures the error category as a message so the
- *     sidecar's first 5xx pages immediately rather than waiting
- *     for the metric counter to climb.
+ *     first 5xx pages immediately rather than waiting for the
+ *     metric counter to climb.
  *
- * Env:
- *   SIDECAR_URL — required. Same env var as `archive-sidecar.ts`.
- *                 When unset, the client throws on call (callers
- *                 should gate on the env var if they want
- *                 fail-open behavior for missing config).
+ * Env (rollout: Phase 1 task 5 of the classifier service split):
+ *   CLASSIFIER_URL — preferred. Points at the new standalone
+ *                    Railway classifier service. Path: /multileg-classify.
+ *   SIDECAR_URL    — fallback for one deploy cycle. Same env var as
+ *                    `archive-sidecar.ts`. Path: /takeit/multileg-classify.
+ *                    Removed in a follow-up commit after the
+ *                    one-trading-day soak completes.
+ *   If both are unset, the client throws `MultilegClassifyError`
+ *   with kind 'config_missing' on call.
  */
 
 import { z } from 'zod';
@@ -135,17 +142,61 @@ const responseSchema = z.object({
 // ── Internals ──────────────────────────────────────────────────────────────
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const ENDPOINT_PATH = '/takeit/multileg-classify';
 
-function resolveSidecarBase(): string {
-  const raw = process.env.SIDECAR_URL?.trim();
-  if (!raw) {
-    throw new MultilegClassifyError(
-      'config_missing',
-      'SIDECAR_URL is not configured',
-    );
+/** Path on the new standalone classifier service. */
+const CLASSIFIER_PATH = '/multileg-classify';
+/** Path on the legacy multi-purpose sidecar (one-deploy-cycle fallback). */
+const SIDECAR_FALLBACK_PATH = '/takeit/multileg-classify';
+
+/**
+ * Tracks whether the fallback-in-effect warning has been logged in
+ * the current process. Module-level so a single warm Vercel Function
+ * instance logs once per cold start, not once per call.
+ */
+let sidecarFallbackWarned = false;
+
+interface ResolvedClassifierTarget {
+  /** Fully qualified URL the request will be POSTed to. */
+  url: string;
+  /** Which env var supplied the base, for observability / tests. */
+  source: 'classifier' | 'sidecar-fallback';
+}
+
+/**
+ * Resolve the classifier target. Prefers CLASSIFIER_URL; falls back
+ * to SIDECAR_URL for one deploy cycle. Returns both the URL and the
+ * source so callers (and tests) can verify which path was hit.
+ *
+ * Design note: path selection lives here next to env resolution so a
+ * single function owns "where does the classifier live" — keeping
+ * `classifyMultilegBatch` focused on request/response handling and
+ * avoiding a second source-of-truth for the path mapping.
+ */
+function resolveClassifierBase(): ResolvedClassifierTarget {
+  const classifierRaw = process.env.CLASSIFIER_URL?.trim();
+  if (classifierRaw) {
+    const base = classifierRaw.replace(/\/$/, '');
+    return { url: `${base}${CLASSIFIER_PATH}`, source: 'classifier' };
   }
-  return raw.replace(/\/$/, '');
+  const sidecarRaw = process.env.SIDECAR_URL?.trim();
+  if (sidecarRaw) {
+    if (!sidecarFallbackWarned) {
+      sidecarFallbackWarned = true;
+      logger.warn(
+        {},
+        'multileg-classify CLASSIFIER_URL unset; falling back to SIDECAR_URL',
+      );
+    }
+    const base = sidecarRaw.replace(/\/$/, '');
+    return {
+      url: `${base}${SIDECAR_FALLBACK_PATH}`,
+      source: 'sidecar-fallback',
+    };
+  }
+  throw new MultilegClassifyError(
+    'config_missing',
+    'Neither CLASSIFIER_URL nor SIDECAR_URL is configured',
+  );
 }
 
 interface SidecarRequestTrade {
@@ -215,8 +266,10 @@ function buildRequestBody(
 
 /**
  * Classify a batch of trades for multileg-structure membership. Calls
- * the Railway sidecar's POST /takeit/multileg-classify endpoint and
- * returns one classification per input trade.
+ * the classifier service (POST /multileg-classify on the standalone
+ * classifier, or POST /takeit/multileg-classify on the legacy sidecar
+ * during the fallback window) and returns one classification per
+ * input trade.
  *
  * Returns a Map keyed by trade id for O(1) lookups in caller code.
  *
@@ -235,8 +288,7 @@ export async function classifyMultilegBatch(
     return new Map();
   }
 
-  const base = resolveSidecarBase();
-  const url = `${base}${ENDPOINT_PATH}`;
+  const { url } = resolveClassifierBase();
   const body = buildRequestBody(trades, options);
 
   const controller = new AbortController();
