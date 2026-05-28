@@ -353,3 +353,394 @@ def test_classify_with_polars_runs_real_matcher_end_to_end(
     assert row["is_isolated_leg"] is True
     assert "match_confidence" in row
     assert "pattern_group_id" in row
+
+
+# ── Finding 1.2: bareword NaN/Infinity + allow_inf_nan=False ─────────────
+
+
+def test_bareword_nan_in_body_returns_400(mock_classify_trades) -> None:
+    """``{"strike": NaN}`` is bareword non-standard JSON. CPython would
+    accept it without ``parse_constant``; the route rejects it at parse
+    time so the silent ``isolated_leg`` floor never gets reached.
+    """
+    body = b'{"trades": [{"id": "t1", "strike": NaN}]}'
+    status, body_out = multileg_routes.handle_classify_payload(body)
+    assert status == 400
+    assert body_out == {"error": "body must be valid JSON"}
+    assert "call_count" not in mock_classify_trades
+
+
+def test_bareword_infinity_in_body_returns_400(mock_classify_trades) -> None:
+    body = b'{"trades": [{"id": "t1", "nbbo_bid": Infinity}]}'
+    status, body_out = multileg_routes.handle_classify_payload(body)
+    assert status == 400
+    assert body_out == {"error": "body must be valid JSON"}
+    assert "call_count" not in mock_classify_trades
+
+
+def test_bareword_negative_infinity_in_body_returns_400(mock_classify_trades) -> None:
+    body = b'{"trades": [{"id": "t1", "premium": -Infinity}]}'
+    status, body_out = multileg_routes.handle_classify_payload(body)
+    assert status == 400
+    assert body_out == {"error": "body must be valid JSON"}
+    assert "call_count" not in mock_classify_trades
+
+
+def test_string_nan_in_float_field_returns_422(
+    mock_classify_trades, sample_trade: dict[str, Any]
+) -> None:
+    """A *string* ``"NaN"`` passes JSON parse but Pydantic strict mode
+    rejects string→float coercion AND ``allow_inf_nan=False`` would
+    reject the NaN even in lax mode. Either gate must fire.
+    """
+    bad = dict(sample_trade)
+    bad["strike"] = "NaN"
+    status, body = multileg_routes.handle_classify_payload(
+        json.dumps({"trades": [bad]}).encode()
+    )
+    assert status == 422
+    assert body["error"] == "schema validation failed"
+    assert "call_count" not in mock_classify_trades
+
+
+def test_match_confidence_boundary_allow_inf_nan(
+    mock_classify_trades, sample_trade: dict[str, Any]
+) -> None:
+    """A finite ``match_confidence`` round-trips through the response
+    model; ``MultilegClassification`` uses ``allow_inf_nan=False`` too,
+    so direct model construction with NaN raises.
+    """
+    from pydantic import ValidationError
+
+    # Finite value: accepted.
+    ok = multileg_routes.MultilegClassification.model_validate(
+        {
+            "id": "t1",
+            "inferred_structure": "isolated_leg",
+            "is_isolated_leg": True,
+            "match_confidence": 0.42,
+            "pattern_group_id": "g1",
+        }
+    )
+    assert ok.match_confidence == 0.42
+
+    # NaN: rejected.
+    with pytest.raises(ValidationError):
+        multileg_routes.MultilegClassification.model_validate(
+            {
+                "id": "t1",
+                "inferred_structure": "isolated_leg",
+                "is_isolated_leg": True,
+                "match_confidence": float("nan"),
+                "pattern_group_id": "g1",
+            }
+        )
+
+
+# ── Finding 1.3: naive datetime rejection on executed_at ─────────────────
+
+
+def test_naive_executed_at_returns_422(
+    mock_classify_trades, sample_trade: dict[str, Any]
+) -> None:
+    """The polars cast at ``_classify_with_polars`` *relabels* a naive
+    datetime as UTC without converting it. A trade stamped ``10:30:00``
+    intended as ET (14:30 UTC) would silently bucket at 10:30 UTC. The
+    field validator must reject any naive value.
+    """
+    bad = dict(sample_trade)
+    bad["executed_at"] = "2026-05-15T10:30:00"  # naive — no tz
+    status, body = multileg_routes.handle_classify_payload(
+        json.dumps({"trades": [bad]}).encode()
+    )
+    assert status == 422
+    assert body["error"] == "schema validation failed"
+    assert any("executed_at" in str(d.get("loc", "")) for d in body["details"])
+    assert "call_count" not in mock_classify_trades
+
+
+@pytest.mark.parametrize(
+    "tz_form",
+    [
+        "2026-05-15T15:30:00Z",
+        "2026-05-15T15:30:00+00:00",
+        "2026-05-15T10:30:00-05:00",
+        "2026-05-15T15:30:00.123456+00:00",
+    ],
+)
+def test_tz_aware_executed_at_accepted(
+    mock_classify_trades,
+    sample_trade: dict[str, Any],
+    tz_form: str,
+) -> None:
+    """All standard tz-aware ISO 8601 forms continue to validate."""
+    trade = dict(sample_trade)
+    trade["executed_at"] = tz_form
+    status, _ = multileg_routes.handle_classify_payload(
+        json.dumps({"trades": [trade]}).encode()
+    )
+    assert status == 200, f"tz_form={tz_form!r} should be accepted"
+
+
+# ── Finding 1.8: upper-bound caps on tolerances ──────────────────────────
+
+
+def test_window_seconds_at_upper_cap_accepted(
+    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+) -> None:
+    status, _ = multileg_routes.handle_classify_payload(
+        make_payload(trades=[sample_trade], window_seconds=600)
+    )
+    assert status == 200
+    assert mock_classify_trades["window_seconds"] == 600
+
+
+def test_window_seconds_above_cap_returns_422(
+    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+) -> None:
+    """86400 (one day) used to be accepted; the matcher's cross-join is
+    ~quadratic in bucket size → trillions of intermediate rows → OOM.
+    """
+    status, body = multileg_routes.handle_classify_payload(
+        make_payload(trades=[sample_trade], window_seconds=601)
+    )
+    assert status == 422
+    assert body["error"] == "schema validation failed"
+    assert any(
+        "window_seconds" in str(d.get("loc", "")) for d in body["details"]
+    )
+    assert "call_count" not in mock_classify_trades
+
+
+def test_strike_tolerance_at_upper_cap_accepted(
+    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+) -> None:
+    status, _ = multileg_routes.handle_classify_payload(
+        make_payload(trades=[sample_trade], strike_tolerance=0.5)
+    )
+    assert status == 200
+    assert mock_classify_trades["strike_tolerance"] == 0.5
+
+
+def test_strike_tolerance_above_cap_returns_422(
+    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+) -> None:
+    status, body = multileg_routes.handle_classify_payload(
+        make_payload(trades=[sample_trade], strike_tolerance=0.501)
+    )
+    assert status == 422
+    assert body["error"] == "schema validation failed"
+    assert any(
+        "strike_tolerance" in str(d.get("loc", "")) for d in body["details"]
+    )
+    assert "call_count" not in mock_classify_trades
+
+
+def test_size_tolerance_at_upper_cap_accepted(
+    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+) -> None:
+    status, _ = multileg_routes.handle_classify_payload(
+        make_payload(trades=[sample_trade], size_tolerance=1.0)
+    )
+    assert status == 200
+    assert mock_classify_trades["size_tolerance"] == 1.0
+
+
+def test_size_tolerance_above_cap_returns_422(
+    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+) -> None:
+    status, body = multileg_routes.handle_classify_payload(
+        make_payload(trades=[sample_trade], size_tolerance=1.001)
+    )
+    assert status == 422
+    assert body["error"] == "schema validation failed"
+    assert any(
+        "size_tolerance" in str(d.get("loc", "")) for d in body["details"]
+    )
+    assert "call_count" not in mock_classify_trades
+
+
+def test_inf_in_tolerance_returns_422(
+    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+) -> None:
+    """``strike_tolerance`` has ``allow_inf_nan=False`` too — a finite
+    value above the cap returns 422 via ``le=``; an infinite value goes
+    via the ``allow_inf_nan`` gate. Both should land at 422. The 400
+    parse-time gate also picks up bareword Infinity.
+    """
+    body = (
+        b'{"trades": [{"id":"t1","underlying_symbol":"AAPL",'
+        b'"executed_at":"2026-05-15T15:30:00Z",'
+        b'"option_chain_id":"AAPL-2026-05-15-C-190",'
+        b'"strike":190.0,"expiry":"2026-05-15","option_type":"call",'
+        b'"size":10.0,"price":1.25,"nbbo_bid":1.2,"nbbo_ask":1.3,'
+        b'"premium":1250.0,"delta":0.4}],"strike_tolerance":Infinity}'
+    )
+    status, _ = multileg_routes.handle_classify_payload(body)
+    # Parse-time gate fires first → 400.
+    assert status == 400
+    assert "call_count" not in mock_classify_trades
+
+
+# ── Finding 3.5: strict mode rejects coerce-from-wrong-type ──────────────
+
+
+def test_bool_strike_rejected_under_strict(
+    mock_classify_trades, sample_trade: dict[str, Any]
+) -> None:
+    """Pydantic v2 default lax mode coerces ``True``/``False`` to
+    1.0/0.0 — a payload with ``"strike": true`` would store as 1.0,
+    silently garbage. ``strict=True`` blocks the coercion.
+    """
+    bad = dict(sample_trade)
+    bad["strike"] = True
+    status, body = multileg_routes.handle_classify_payload(
+        json.dumps({"trades": [bad]}).encode()
+    )
+    assert status == 422
+    assert any("strike" in str(d.get("loc", "")) for d in body["details"])
+    assert "call_count" not in mock_classify_trades
+
+
+def test_bool_size_rejected_under_strict(
+    mock_classify_trades, sample_trade: dict[str, Any]
+) -> None:
+    bad = dict(sample_trade)
+    bad["size"] = False
+    status, body = multileg_routes.handle_classify_payload(
+        json.dumps({"trades": [bad]}).encode()
+    )
+    assert status == 422
+    assert any("size" in str(d.get("loc", "")) for d in body["details"])
+    assert "call_count" not in mock_classify_trades
+
+
+def test_string_strike_rejected_under_strict(
+    mock_classify_trades, sample_trade: dict[str, Any]
+) -> None:
+    """``"450"`` → 450.0 used to be accepted. Strict mode rejects it."""
+    bad = dict(sample_trade)
+    bad["strike"] = "450"
+    status, body = multileg_routes.handle_classify_payload(
+        json.dumps({"trades": [bad]}).encode()
+    )
+    assert status == 422
+    assert any("strike" in str(d.get("loc", "")) for d in body["details"])
+    assert "call_count" not in mock_classify_trades
+
+
+def test_int_to_float_still_accepted_under_strict(
+    mock_classify_trades, sample_trade: dict[str, Any]
+) -> None:
+    """Integer literals for float fields are still accepted — Pydantic
+    strict mode treats int→float as an exact numeric widening, not a
+    coercion.
+    """
+    trade = dict(sample_trade)
+    trade["strike"] = 450  # bare int, no decimal
+    status, _ = multileg_routes.handle_classify_payload(
+        json.dumps({"trades": [trade]}).encode()
+    )
+    assert status == 200, "int → float widening should still be accepted"
+
+
+def test_string_int_for_window_seconds_rejected_under_strict(
+    mock_classify_trades, make_payload, sample_trade: dict[str, Any]
+) -> None:
+    """``"90"`` for ``window_seconds`` used to silently coerce; strict
+    mode rejects.
+    """
+    status, body = multileg_routes.handle_classify_payload(
+        make_payload(trades=[sample_trade], window_seconds="90")
+    )
+    assert status == 422
+    assert any(
+        "window_seconds" in str(d.get("loc", "")) for d in body["details"]
+    )
+    assert "call_count" not in mock_classify_trades
+
+
+# ── Finding 1.1 (server side): Optional response fields ──────────────────
+
+
+def test_classification_accepts_all_nulls_for_skipped_ticker(
+    sample_trade: dict[str, Any],
+) -> None:
+    """When the matcher's ``_MAX_CELL_ROWS_PER_CLASSIFY`` overload-skip
+    path fires, classification columns come back as nulls. The Pydantic
+    response model must accept that contract end-to-end so the (future)
+    TS Zod client doesn't reject it as ``schema_mismatch``.
+    """
+    skipped = multileg_routes.MultilegClassification.model_validate(
+        {
+            "id": "t1",
+            "inferred_structure": None,
+            "is_isolated_leg": None,
+            "match_confidence": None,
+            "pattern_group_id": None,
+        }
+    )
+    assert skipped.id == "t1"
+    assert skipped.inferred_structure is None
+    assert skipped.is_isolated_leg is None
+    assert skipped.match_confidence is None
+    assert skipped.pattern_group_id is None
+
+
+def test_handle_payload_passes_null_classification_through(
+    monkeypatch, sample_classify_request_body: bytes
+) -> None:
+    """A matcher that emits null structure columns for one row (the
+    overload-skip contract) round-trips through ``handle_classify_payload``
+    without being transformed or stripped.
+    """
+
+    def fake(_request):
+        return [
+            {
+                "id": "t1",
+                "inferred_structure": None,
+                "is_isolated_leg": None,
+                "match_confidence": None,
+                "pattern_group_id": None,
+            }
+        ]
+
+    monkeypatch.setattr(multileg_routes, "_classify_with_polars", fake)
+    status, body = multileg_routes.handle_classify_payload(
+        sample_classify_request_body
+    )
+    assert status == 200
+    assert body == {
+        "classifications": [
+            {
+                "id": "t1",
+                "inferred_structure": None,
+                "is_isolated_leg": None,
+                "match_confidence": None,
+                "pattern_group_id": None,
+            }
+        ]
+    }
+
+
+def test_classification_rejects_extra_field(
+    sample_trade: dict[str, Any],
+) -> None:
+    """``MultilegClassification`` keeps ``extra='forbid'`` under strict
+    mode. An unexpected response column raises rather than silently
+    propagating.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        multileg_routes.MultilegClassification.model_validate(
+            {
+                "id": "t1",
+                "inferred_structure": "isolated_leg",
+                "is_isolated_leg": True,
+                "match_confidence": 0.42,
+                "pattern_group_id": "g1",
+                "rogue_field": "nope",
+            }
+        )
