@@ -1716,6 +1716,97 @@ describe('lottery-finder endpoint', () => {
       });
     });
   });
+
+  // ============================================================
+  // Suspicious-flow cluster detection (Task 2)
+  // ============================================================
+
+  it('stamps suspiciousCluster=true and clusterStrikeCount on rows whose ticker+side clusters', async () => {
+    // META call row — option_type must be 'C' to match the cluster mock below.
+    const ROW_META: typeof ROW = {
+      ...ROW,
+      id: 77,
+      underlying_symbol: 'META',
+      option_type: 'C',
+      option_chain_id: 'META260527C00617500',
+      strike: '617.5',
+      spot_at_first: '613',
+    };
+    // Re-create the FULL mock sequence the handler expects, in order.
+    // Slot order: rows, count, chainExtras, clusterByMinute, sbChains,
+    // reignitedRows, clusterCandidates (7th = new slot).
+    mockSql
+      .mockResolvedValueOnce([ROW_META]) // rows (main page)
+      .mockResolvedValueOnce([{ total: 1 }]) // count
+      .mockResolvedValueOnce([]) // chainExtras
+      .mockResolvedValueOnce([]) // clusterByMinute
+      .mockResolvedValueOnce([]) // sbChains
+      .mockResolvedValueOnce([]) // reignitedRows
+      .mockResolvedValueOnce([
+        // 3 cheap OTM ask-side META calls → triggers suspicious cluster
+        {
+          underlying_symbol: 'META',
+          option_type: 'C',
+          strike: '617.5',
+          dte: 0,
+          entry_price: '0.34',
+          spot_at_first: '613',
+          trigger_ask_pct: '0.74',
+        },
+        {
+          underlying_symbol: 'META',
+          option_type: 'C',
+          strike: '615',
+          dte: 0,
+          entry_price: '0.91',
+          spot_at_first: '613',
+          trigger_ask_pct: '0.75',
+        },
+        {
+          underlying_symbol: 'META',
+          option_type: 'C',
+          strike: '622.5',
+          dte: 0,
+          entry_price: '1.25',
+          spot_at_first: '613',
+          trigger_ask_pct: '0.71',
+        },
+      ]); // clusterCandidates
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-27' } });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    const fire = (
+      res._json as {
+        fires: Array<{ suspiciousCluster: boolean; clusterStrikeCount: number }>;
+      }
+    ).fires[0];
+    expect(fire!.suspiciousCluster).toBe(true);
+    expect(fire!.clusterStrikeCount).toBe(3);
+  });
+
+  it('stamps suspiciousCluster=false and clusterStrikeCount=0 when no cluster for that ticker+side', async () => {
+    // SNDK is not in the cluster candidates at all.
+    mockSql
+      .mockResolvedValueOnce([ROW]) // rows (main page)
+      .mockResolvedValueOnce([{ total: 1 }]) // count
+      .mockResolvedValueOnce([]) // chainExtras
+      .mockResolvedValueOnce([]) // clusterByMinute
+      .mockResolvedValueOnce([]) // sbChains
+      .mockResolvedValueOnce([]) // reignitedRows
+      .mockResolvedValueOnce([]); // clusterCandidates — empty
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-27' } });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    const fire = (
+      res._json as {
+        fires: Array<{ suspiciousCluster: boolean; clusterStrikeCount: number }>;
+      }
+    ).fires[0];
+    expect(fire!.suspiciousCluster).toBe(false);
+    expect(fire!.clusterStrikeCount).toBe(0);
+  });
 });
 
 describe('degradeOnTimeout', () => {

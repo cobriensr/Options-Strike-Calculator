@@ -38,12 +38,28 @@ import {
   REIGNITION_TOP_N_PER_DAY,
 } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
+import {
+  computeSuspiciousClusters,
+  clusterKey,
+  type ClusterCandidateRow,
+} from './_lib/suspicious-cluster.js';
 
 type DbId = number | string;
 type DbNumeric = string | number;
 type DbNullableNumeric = DbNumeric | null;
 type DbTimestamp = string | Date;
 type DbOptionType = 'C' | 'P';
+
+/** Minimal row shape returned by the day-scoped cluster-candidate query. */
+interface ClusterCandidateDbRow {
+  underlying_symbol: string;
+  option_type: 'C' | 'P';
+  strike: string | number;
+  dte: number;
+  entry_price: DbNullableNumeric;
+  spot_at_first: DbNullableNumeric;
+  trigger_ask_pct: DbNullableNumeric;
+}
 
 interface FireRow {
   id: DbId;
@@ -423,6 +439,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       clusterByMinute,
       sbChains,
       reignitedRows,
+      clusterCandidateRows,
     ] = (await Promise.all([
       sort === 'score'
         ? withDbRetry(
@@ -843,6 +860,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       //
       // Spec: docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md
       // Phase 3 ("REIGNITED section is always visible on every page").
+      // Day-scoped cluster-candidate query — ALL 0DTE fires for the date,
+      // minimal columns. Fed to computeSuspiciousClusters to detect
+      // (ticker, side) pairs with ≥3 distinct cheap OTM ask-side strikes.
+      // Must be a full-day scan (not page-scoped) because the paginated
+      // row slice doesn't contain all of a ticker's strikes.
+      withDbRetry(
+        () => db`
+        SELECT underlying_symbol, option_type, strike, dte, entry_price,
+               spot_at_first, trigger_ask_pct
+        FROM lottery_finder_fires
+        WHERE date = ${targetDate}::date AND dte = 0
+      `,
+        2,
+        10000,
+      ),
       degradeOnTimeout(
         () => db`
         WITH ordered AS (
@@ -975,9 +1007,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ClusterByMinuteRow[],
       { option_chain_id: string }[],
       FireRow[],
+      ClusterCandidateDbRow[],
     ];
 
     const total = totalRows[0]?.total ?? 0;
+
+    // Build the suspicious-cluster lookup from the day-scoped 0DTE scan.
+    // clusterLookup is keyed by clusterKey(symbol, side) with value =
+    // distinct qualifying strike count. Empty Map is the common case
+    // (most days have no clustering (ticker, side) pairs).
+    const clusterCandidates: ClusterCandidateRow[] = clusterCandidateRows.map(
+      (r) => ({
+        underlyingSymbol: r.underlying_symbol,
+        optionType: r.option_type,
+        strike: Number(r.strike),
+        dte: Number(r.dte),
+        entryPrice:
+          r.entry_price == null
+            ? Number.POSITIVE_INFINITY
+            : Number(r.entry_price),
+        spot: r.spot_at_first == null ? null : Number(r.spot_at_first),
+        askPct: r.trigger_ask_pct == null ? 0 : Number(r.trigger_ask_pct),
+      }),
+    );
+    const clusterLookup = computeSuspiciousClusters(clusterCandidates);
 
     // Build a Map keyed on (ticker | strike | option_type | expiry) for
     // O(1) lookup when assembling the row payload. expiry comes back as
@@ -1108,8 +1161,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Shared FireRow → API payload mapper. Closes over the lookup maps
-    // (chainExtraByKey, megaClusterByMinute, sbChainSet) and the
-    // hoursToNextMacroEvent helper, so the same logic powers both the
+    // (chainExtraByKey, megaClusterByMinute, sbChainSet, clusterLookup) and
+    // the hoursToNextMacroEvent helper, so the same logic powers both the
     // paginated page slice (`fires`) and the pinned reignited rows
     // (`reignitedFires`). Keeping a single mapper guarantees the two
     // surfaces never drift.
@@ -1297,6 +1350,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // (docs/tmp/lf-vs-sb-backtest-findings-2026-05-17.md, 25-day
         // window). Highest-conviction cohort in the alert stack.
         dualFlag: sbChainSet.has(r.option_chain_id),
+        // SUSPICIOUS CLUSTER — (ticker, side) had ≥3 distinct cheap OTM
+        // ask-side 0DTE strikes co-firing on the same day. Descriptive
+        // attention-flag only — this cohort is net negative-expectancy
+        // (spec: 2026-05-27-suspicious-flow-and-takeit-floor-design.md).
+        suspiciousCluster: clusterLookup.has(
+          clusterKey(r.underlying_symbol, r.option_type),
+        ),
+        clusterStrikeCount:
+          clusterLookup.get(clusterKey(r.underlying_symbol, r.option_type)) ??
+          0,
 
         trigger: {
           volToOiWindow: Number(r.trigger_vol_to_oi_window),
