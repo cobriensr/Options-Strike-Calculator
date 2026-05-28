@@ -173,8 +173,8 @@ function TakeItScoreInner(props: TakeItScoreProps) {
         className={`inline-flex items-center gap-1 rounded border ${cls} ${padding} text-[10px] font-semibold tracking-wide uppercase`}
         title={
           prob == null
-            ? 'No score (bundle missing at detect time)'
-            : 'Calibrated P(peak ≥ +20%) from XGBoost'
+            ? 'No score — the model bundle was unavailable when this alert fired.'
+            : 'How confident the model is this trade reaches at least +20% above entry. 0–1, higher is better; ~0.70+ is where the historical edge concentrates.'
         }
         data-testid="takeit-score-chip"
       >

@@ -149,4 +149,27 @@ describe('<TakeItScore>', () => {
     // Just the chip — no crash, no flag rendering.
     expect(screen.getByTestId('takeit-score-chip')).toHaveTextContent('0.60');
   });
+
+  describe('tooltip plain-language copy', () => {
+    it('uses plain-language tooltip for a scored chip', () => {
+      render(<TakeItScore prob={0.78} topFeatures={null} />);
+      const title = screen
+        .getByTestId('takeit-score-chip')
+        .getAttribute('title');
+      expect(title).toContain('reaches at least +20%');
+    });
+
+    it('uses plain-language null-state tooltip', () => {
+      render(
+        <TakeItScore
+          prob={null}
+          topFeatures={{ positive: [], negative: [] }}
+        />,
+      );
+      const title = screen
+        .getByTestId('takeit-score-chip')
+        .getAttribute('title');
+      expect(title).toContain('model bundle was unavailable');
+    });
+  });
 });
