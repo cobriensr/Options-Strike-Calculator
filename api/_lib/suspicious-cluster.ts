@@ -27,6 +27,7 @@ function isClusterMember(r: ClusterCandidateRow): boolean {
   if (r.spot == null) return false;
   if (r.entryPrice > MAX_CHEAP_ENTRY) return false;
   if (r.askPct < MIN_CLUSTER_ASK_PCT) return false;
+  // ATM (strike == spot) counts as OTM, per the design-spec definition.
   const otm = r.optionType === 'C' ? r.strike >= r.spot : r.strike <= r.spot;
   return otm;
 }

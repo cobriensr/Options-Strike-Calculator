@@ -3,6 +3,8 @@ import {
   computeSuspiciousClusters,
   clusterKey,
   MIN_CLUSTER_STRIKES,
+  MAX_CHEAP_ENTRY,
+  MIN_CLUSTER_ASK_PCT,
   type ClusterCandidateRow,
 } from '../_lib/suspicious-cluster.js';
 
@@ -78,4 +80,12 @@ describe('computeSuspiciousClusters', () => {
 
 describe('MIN_CLUSTER_STRIKES', () => {
   it('is 3', () => expect(MIN_CLUSTER_STRIKES).toBe(3));
+});
+
+describe('MAX_CHEAP_ENTRY', () => {
+  it('is 1.5', () => expect(MAX_CHEAP_ENTRY).toBe(1.5));
+});
+
+describe('MIN_CLUSTER_ASK_PCT', () => {
+  it('is 0.7', () => expect(MIN_CLUSTER_ASK_PCT).toBe(0.7));
 });
