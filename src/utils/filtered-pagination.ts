@@ -47,7 +47,10 @@ export function estimateFilteredTotalPages(opts: {
 
   const visibleRatio = currentPageVisible / currentPageRequested;
   const estimatedVisibleTotal = serverTotal * visibleRatio;
-  const estimatedPages = Math.max(1, Math.ceil(estimatedVisibleTotal / pageSize));
+  const estimatedPages = Math.max(
+    1,
+    Math.ceil(estimatedVisibleTotal / pageSize),
+  );
 
   // Never claim fewer pages than the user is actually viewing.
   return Math.max(currentPage, estimatedPages);
