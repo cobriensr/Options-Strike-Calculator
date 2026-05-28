@@ -8,6 +8,7 @@ batch size is.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from typing import Any, TypeVar
 
@@ -17,6 +18,31 @@ import orjson
 
 from config import settings
 from logger_setup import log
+
+# SQL identifiers are interpolated into the INSERT template as a literal
+# (parameterized SQL doesn't accept table or column names as bind values).
+# Today every caller passes module-level constants, so this regex is
+# defense-in-depth: it stops a future handler from accidentally wiring a
+# user-derived value (UW root symbol, request param, etc.) through these
+# helpers and turning the bulk-insert path into a SQL injection sink.
+# `re.ASCII` forces \w to match [A-Za-z0-9_] only — without the flag,
+# \w matches Unicode word characters too, which would let an attacker
+# sneak homoglyph-style identifiers past the gate.
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$", re.ASCII)
+
+
+def _validate_identifier(name: str, *, kind: str) -> None:
+    """Reject any string that isn't a safe unquoted Postgres identifier.
+
+    Raises ValueError with a descriptive message so the failure surfaces
+    loudly at the call site rather than as a Postgres syntax error miles
+    away in the stack.
+    """
+    if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f"Invalid SQL identifier ({kind}): {name!r}. "
+            r"Must match ^[A-Za-z_]\w*$ (ASCII)"
+        )
 
 _pool: asyncpg.Pool | None = None
 
@@ -128,6 +154,9 @@ def _build_multi_row_insert(
     `suffix` is appended verbatim, e.g. ``"ON CONFLICT (...) DO NOTHING"``
     or ``"ON CONFLICT (...) DO UPDATE SET col = EXCLUDED.col"``.
     """
+    _validate_identifier(table, kind="table")
+    for col in cols:
+        _validate_identifier(col, kind="column")
     params_per_row = len(cols)
     if not rows:
         return "", []
@@ -284,6 +313,8 @@ async def bulk_insert_ignore_conflict(
     if not rows:
         return 0
 
+    for cc in conflict_cols:
+        _validate_identifier(cc, kind="conflict_col")
     conflict_clause = ", ".join(conflict_cols)
     suffix = f"ON CONFLICT ({conflict_clause}) DO NOTHING"
 
@@ -338,6 +369,8 @@ async def bulk_upsert_replace(
     if not rows:
         return 0
 
+    for cc in conflict_cols:
+        _validate_identifier(cc, kind="conflict_col")
     update_cols = [c for c in columns if c not in conflict_cols]
     if not update_cols:
         # Pathological: every column is a conflict key. Falling back to
