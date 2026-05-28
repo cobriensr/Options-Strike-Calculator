@@ -5127,6 +5127,9 @@ export const MIGRATIONS: Migration[] = [
         CREATE TABLE IF NOT EXISTS takeit_health_daily (
           id              SERIAL PRIMARY KEY,
           date            DATE NOT NULL,
+          /* 'silent_boom' (with underscore) matches the table-name vocabulary used
+             by silent_boom_alerts. The TAKE-IT alert_type convention 'silentboom'
+             (no underscore) is intentionally NOT used here. */
           feed            VARCHAR(20) NOT NULL CHECK (feed IN ('lottery', 'silent_boom')),
           metric_name     VARCHAR(60) NOT NULL,
           metric_value    NUMERIC,
