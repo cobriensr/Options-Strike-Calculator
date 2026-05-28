@@ -23,6 +23,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 import databento as db
+import pandas as pd
 from databento import ReconnectPolicy
 
 from config import settings
@@ -495,7 +496,7 @@ class DatabentoClient:
     RECONNECT_GAP_WARNING_S = 60.0
     RECONNECT_FIRST_BAR_SANITY_PCT = 2.0
 
-    def _on_reconnect(self, last_ts: int, new_start_ts: int) -> None:
+    def _on_reconnect(self, gap_start: pd.Timestamp, gap_end: pd.Timestamp) -> None:
         """Called when the client reconnects after a disconnect.
 
         Computes the gap duration and reports to Sentry via the
@@ -507,18 +508,40 @@ class DatabentoClient:
         """
         self._connected = True
 
-        # Databento passes timestamps as nanoseconds since epoch.
-        # Convert to seconds for the gap duration calculation.
+        # The SDK's ReconnectCallback signature is
+        # ``Callable[[pd.Timestamp, pd.Timestamp], None]`` (databento
+        # common/types.py); ``live/session.py`` dispatches
+        # ``callback(gap_start, gap_end)`` with both args as
+        # ``pd.Timestamp(..., tz="UTC")``. A ``pd.Timestamp`` subtraction
+        # yields a ``Timedelta`` whose ``.total_seconds()`` gives the gap.
+        #
+        # A narrow guard (NOT a bare ``except``) catches only the
+        # arithmetic failure modes that a future SDK signature drift
+        # would surface (e.g. ints passed instead of Timestamps), and
+        # reports them to Sentry so the drift is LOUD rather than
+        # silently clamping the gap to 0 and disarming the SIDE-011
+        # alarm — which is exactly the bug this fix removes.
         try:
-            last_s = last_ts / 1e9
-            new_s = new_start_ts / 1e9
-            gap_s = max(0.0, new_s - last_s)
-        except Exception:
+            gap_s = max(0.0, (gap_end - gap_start).total_seconds())
+        except (TypeError, AttributeError) as exc:
+            from sentry_setup import capture_exception
+
+            capture_exception(
+                exc,
+                tags={"component": "databento_client", "stage": "reconnect_gap"},
+                context={"gap_start": repr(gap_start), "gap_end": repr(gap_end)},
+            )
+            log.error(
+                "Databento reconnect callback received unexpected arg types "
+                "(%s, %s); gap duration unavailable",
+                type(gap_start).__name__,
+                type(gap_end).__name__,
+            )
             gap_s = 0.0
 
         context = {
-            "last_ts_ns": last_ts,
-            "new_start_ts_ns": new_start_ts,
+            "gap_start": str(gap_start),
+            "gap_end": str(gap_end),
             "gap_s": round(gap_s, 2),
         }
 
@@ -548,6 +571,44 @@ class DatabentoClient:
         self._reconnect_sanity_check_pending = set(
             self._last_close_before_disconnect.keys()
         )
+
+        # SIDE-017: re-seed the ES option definition snapshot.
+        #
+        # On reconnect the SDK resubscribes every stored subscription
+        # with ``start=None`` and ``snapshot=bool(sub.snapshot)``
+        # (databento live/session.py:714-722). Our initial definition
+        # subscribe uses ``start=0`` (not ``snapshot=True`` — the SDK's
+        # ``snapshot`` kwarg is only supported on the ``mbo`` schema and
+        # is mutually exclusive with ``start``, per Live.subscribe's
+        # docstring/validation in live/client.py), so the SDK's
+        # automatic resubscribe replays NO instrument snapshot. Without
+        # re-seeding, ``_option_definitions`` is never repopulated and
+        # every post-reconnect ES option trade silently hits the
+        # definition-lag drop path (options_router.py). We therefore
+        # explicitly re-issue the definition subscribe with ``start=0``
+        # on the freshly-established connection to pull the current
+        # instrument snapshot again.
+        self._reseed_option_definitions()
+
+    def _reseed_option_definitions(self) -> None:
+        """Re-issue the ES option definition snapshot subscribe.
+
+        Called from ``_on_reconnect`` because the SDK's automatic
+        resubscribe drops our ``start=0`` snapshot request (see SIDE-017
+        note in ``_on_reconnect``). A new ``subscribe(..., start=0)`` on
+        the reconnected session pulls the full current ES option
+        instrument set so ``_option_definitions`` repopulates.
+        """
+        if not self._client:
+            return
+        self._client.subscribe(
+            dataset=DATASET_CME,
+            schema="definition",
+            symbols=["ES.OPT"],
+            stype_in="parent",
+            start=0,
+        )
+        log.info("Re-seeded ES.OPT definition snapshot after reconnect (SIDE-017)")
 
     def _resolve_symbol(self, record: Any) -> str | None:
         """Resolve a record's instrument_id to our internal symbol.

@@ -35,6 +35,8 @@ from datetime import date
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
+
 # Required env vars for config.py's pydantic-settings validation.
 # These must be set BEFORE importing any module that loads config.
 # The DATABASE_URL is a throwaway test fixture: psycopg2 is mocked
@@ -271,20 +273,27 @@ class TestDefinitionLagDrops:
 class TestReconnectGap:
     def test_small_gap_does_not_fire_sentry(self, client: DatabentoClient) -> None:
         """A gap under RECONNECT_GAP_WARNING_S is logged but not sent
-        to Sentry."""
-        last_ts = 1_000_000_000_000_000_000  # 1s in ns
+        to Sentry. The SDK passes two pd.Timestamps (gap_start, gap_end),
+        NOT nanosecond ints — see databento common/types.py ReconnectCallback
+        and live/session.py:740-747."""
+        gap_start = pd.Timestamp("2024-01-01T00:00:00", tz="UTC")
         # 10s later (under the 60s threshold)
-        new_ts = last_ts + 10 * 1_000_000_000
-        client._on_reconnect(last_ts, new_ts)
+        gap_end = gap_start + pd.Timedelta(seconds=10)
+        client._on_reconnect(gap_start, gap_end)
 
         client._test_capture_message.assert_not_called()
         assert client._connected is True
 
     def test_large_gap_fires_sentry_warning(self, client: DatabentoClient) -> None:
-        """A gap of 120s (> 60s threshold) fires a structured warning."""
-        last_ts = 1_000_000_000_000_000_000
-        new_ts = last_ts + 120 * 1_000_000_000
-        client._on_reconnect(last_ts, new_ts)
+        """A gap of 120s (> 60s threshold) fires a structured warning.
+
+        This test would have FAILED before the Finding 1 fix: the old
+        handler did ``pd.Timestamp / 1e9`` which raises TypeError,
+        swallowed by a bare except, so gap_s was ALWAYS 0.0 and the
+        warning never fired."""
+        gap_start = pd.Timestamp("2024-01-01T00:00:00", tz="UTC")
+        gap_end = gap_start + pd.Timedelta(seconds=120)
+        client._on_reconnect(gap_start, gap_end)
 
         client._test_capture_message.assert_called_once()
         call = client._test_capture_message.call_args
@@ -299,7 +308,8 @@ class TestReconnectGap:
         """Symbols with a recorded last-close should be armed for the
         next-bar sanity check after reconnect."""
         client._last_close_before_disconnect = {"ES": 5800.0, "NQ": 20000.0}
-        client._on_reconnect(0, 0)
+        t = pd.Timestamp("2024-01-01T00:00:00", tz="UTC")
+        client._on_reconnect(t, t)
         assert client._reconnect_sanity_check_pending == {"ES", "NQ"}
 
     def test_handle_ohlcv_updates_last_close(self, client: DatabentoClient) -> None:
@@ -1268,16 +1278,91 @@ class TestOnError:
 
 
 class TestOnReconnectExceptions:
-    def test_bad_timestamps_default_to_zero_gap(self, client: DatabentoClient) -> None:
-        """If timestamp arithmetic blows up (non-numeric inputs), the
-        exception path must clamp gap_s to 0.0 and not fire the warning."""
-        # Pass non-numeric values to force the float division to TypeError
-        # inside the try/except.
+    def test_bad_timestamps_capture_exception_and_clamp_zero(
+        self, client: DatabentoClient
+    ) -> None:
+        """If a future SDK signature drift passes non-Timestamp args, the
+        narrow guard must (a) clamp gap_s to 0.0, (b) NOT fire the gap
+        warning, and (c) report the drift to Sentry via capture_exception
+        so it's LOUD — not silently swallowed by a bare except (which was
+        the original Finding 1 bug). Strings have no .total_seconds(), so
+        ``gap_end - gap_start`` raises TypeError here."""
         client._on_reconnect("not-a-number", "also-not-a-number")  # type: ignore[arg-type]
 
         # gap_s defaulted to 0.0, so no warning fires
         client._test_capture_message.assert_not_called()
+        # ...but the drift was reported loudly, not swallowed.
+        client._test_capture_exception.assert_called_once()
+        exc_arg = client._test_capture_exception.call_args.args[0]
+        assert isinstance(exc_arg, (TypeError, AttributeError))
         assert client._connected is True
+
+
+# ---------------------------------------------------------------------------
+# SIDE-017 — definition snapshot must be re-seeded on reconnect
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectReseedsDefinitions:
+    """On reconnect the SDK resubscribes every stored subscription with
+    ``start=None`` and ``snapshot=bool(sub.snapshot)`` (databento
+    live/session.py:714-722). Our initial definition subscribe uses
+    ``start=0`` (NOT ``snapshot=True`` — the SDK only supports
+    ``snapshot`` on the ``mbo`` schema and rejects ``snapshot + start``
+    together, per Live.subscribe in live/client.py). So the automatic
+    resubscribe replays no instrument snapshot, and ``_option_definitions``
+    is never repopulated — every post-reconnect ES option trade then hits
+    the silent definition-lag drop path. _on_reconnect must explicitly
+    re-issue the definition subscribe with ``start=0``.
+    """
+
+    def test_reconnect_reissues_definition_subscribe_with_start_zero(
+        self, client: DatabentoClient
+    ) -> None:
+        client._client = MagicMock()
+        t = pd.Timestamp("2024-01-01T00:00:00", tz="UTC")
+        client._on_reconnect(t, t)
+
+        definition_calls = [
+            call
+            for call in client._client.subscribe.call_args_list
+            if call.kwargs.get("schema") == "definition"
+        ]
+        assert len(definition_calls) == 1
+        assert definition_calls[0].kwargs["start"] == 0
+        assert definition_calls[0].kwargs["symbols"] == ["ES.OPT"]
+        assert definition_calls[0].kwargs["stype_in"] == "parent"
+        # Must NOT pass snapshot=True — the SDK rejects snapshot for the
+        # definition schema (only mbo) and snapshot is mutually exclusive
+        # with start.
+        assert definition_calls[0].kwargs.get("snapshot") in (None, False)
+
+    def test_reseed_is_noop_without_client(self, client: DatabentoClient) -> None:
+        """If the Live client was torn down (e.g. mid-shutdown), the
+        re-seed path must be a safe no-op rather than raising."""
+        client._client = None
+        t = pd.Timestamp("2024-01-01T00:00:00", tz="UTC")
+        client._on_reconnect(t, t)  # must not raise
+
+    def test_initial_definition_subscribe_does_not_use_snapshot_kwarg(
+        self, client: DatabentoClient
+    ) -> None:
+        """Regression guard for Finding 2's rejected ``snapshot=True``
+        route: the initial definition subscribe must rely on ``start=0``,
+        never ``snapshot=True`` (which the SDK rejects for the definition
+        schema). The re-seed on reconnect — not snapshot replay — is what
+        keeps definitions fresh across reconnects."""
+        client._client = MagicMock()
+        client._subscribe_es_options_streams()
+
+        definition_calls = [
+            call
+            for call in client._client.subscribe.call_args_list
+            if call.kwargs.get("schema") == "definition"
+        ]
+        assert len(definition_calls) == 1
+        assert definition_calls[0].kwargs.get("snapshot") in (None, False)
+        assert definition_calls[0].kwargs["start"] == 0
 
 
 # ---------------------------------------------------------------------------
