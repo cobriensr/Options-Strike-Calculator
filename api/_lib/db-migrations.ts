@@ -5118,4 +5118,29 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS gex_captured_at TIMESTAMPTZ`,
     ],
   },
+  {
+    id: 182,
+    description:
+      'Add takeit_health_daily table tracking daily TAKE-IT operational + ML drift metrics per feed. Phase 2 audit-takeit-health cron writes operational rows (null_rate_pct, prob_p50, etc.); Phase 3 ml/src/takeit_drift_monitor.py writes ml_-prefixed rows (rolling AUC, per-segment AUC, etc.). UNIQUE (date, feed, metric_name) so re-runs of the same day overwrite cleanly.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS takeit_health_daily (
+          id              SERIAL PRIMARY KEY,
+          date            DATE NOT NULL,
+          feed            VARCHAR(20) NOT NULL CHECK (feed IN ('lottery', 'silent_boom')),
+          metric_name     VARCHAR(60) NOT NULL,
+          metric_value    NUMERIC,
+          baseline_value  NUMERIC,
+          threshold       NUMERIC,
+          alert_fired     BOOLEAN NOT NULL DEFAULT FALSE,
+          computed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (date, feed, metric_name)
+        )
+      `,
+      sql`
+        CREATE INDEX IF NOT EXISTS takeit_health_daily_date_idx
+          ON takeit_health_daily(date DESC)
+      `,
+    ],
+  },
 ];
