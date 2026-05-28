@@ -787,6 +787,13 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      totalFires: 1,
+      inserted: 1,
+    });
+    expect(mockScoreSilentBoom).toHaveBeenCalledTimes(1);
     const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
     expect(binds.get('direction_gated')).toBe(true);
     expect(binds.get('score_tier')).toBe('tier3');
@@ -831,6 +838,13 @@ describe('detect-silent-boom handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      totalFires: 1,
+      inserted: 1,
+    });
+    expect(mockScoreSilentBoom).toHaveBeenCalledTimes(1);
     const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
     expect(binds.get('direction_gated')).toBe(true);
     expect(binds.get('score_tier')).toBe('tier3');

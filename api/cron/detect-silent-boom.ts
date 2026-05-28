@@ -28,6 +28,7 @@ import {
   computeSilentBoomScore,
   silentBoomScoreTier,
   silentBoomTodFromMinuteCt,
+  type SilentBoomScoreTier,
 } from '../_lib/silent-boom-score.js';
 import {
   withCronInstrumentation,
@@ -765,7 +766,7 @@ export default withCronInstrumentation(
       // (post-gate rows). Feed THIS to scoreSilentBoom — never the raw
       // `tier` — to preserve model parity. The exemption only affects
       // the final INSERT value, not the model's input.
-      const gateAppliedTier: 'tier1' | 'tier2' | 'tier3' = directionGated
+      const gateAppliedTier: SilentBoomScoreTier = directionGated
         ? 'tier3'
         : tier;
 
@@ -808,7 +809,7 @@ export default withCronInstrumentation(
       // calibration. Otherwise apply the standard gate-applied tier.
       // `direction_gated` itself stays true on the row so the UI/audit
       // can still see the gate fired.
-      const effectiveTier: 'tier1' | 'tier2' | 'tier3' =
+      const effectiveTier: SilentBoomScoreTier =
         directionGated &&
         takeitProb != null &&
         takeitProb >= TAKEIT_GATE_EXEMPT_MIN_PROB
