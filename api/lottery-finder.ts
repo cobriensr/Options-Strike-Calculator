@@ -860,21 +860,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       //
       // Spec: docs/superpowers/specs/lottery-reignition-ui-2026-05-17.md
       // Phase 3 ("REIGNITED section is always visible on every page").
-      // Day-scoped cluster-candidate query — ALL 0DTE fires for the date,
-      // minimal columns. Fed to computeSuspiciousClusters to detect
-      // (ticker, side) pairs with ≥3 distinct cheap OTM ask-side strikes.
-      // Must be a full-day scan (not page-scoped) because the paginated
-      // row slice doesn't contain all of a ticker's strikes.
-      withDbRetry(
-        () => db`
-        SELECT underlying_symbol, option_type, strike, dte, entry_price,
-               spot_at_first, trigger_ask_pct
-        FROM lottery_finder_fires
-        WHERE date = ${targetDate}::date AND dte = 0
-      `,
-        2,
-        10000,
-      ),
       degradeOnTimeout(
         () => db`
         WITH ordered AS (
@@ -999,6 +984,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as FireRow[],
         'reignitedRows',
+      ),
+      // Day-scoped cluster-candidate query — ALL 0DTE fires for the date,
+      // minimal columns. Fed to computeSuspiciousClusters to detect
+      // (ticker, side) pairs with ≥3 distinct cheap OTM ask-side strikes.
+      // Must be a full-day scan (not page-scoped) because the paginated
+      // row slice doesn't contain all of a ticker's strikes. MUST remain
+      // the LAST element so its position aligns with `clusterCandidateRows`
+      // in the destructuring above.
+      withDbRetry(
+        () => db`
+        SELECT underlying_symbol, option_type, strike, dte, entry_price,
+               spot_at_first, trigger_ask_pct
+        FROM lottery_finder_fires
+        WHERE date = ${targetDate}::date AND dte = 0
+      `,
+        2,
+        10000,
       ),
     ])) as [
       FireRow[],
