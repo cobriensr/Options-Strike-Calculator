@@ -250,3 +250,157 @@ class TestCaptureException:
         out = capsys.readouterr().out
         assert "capture_exception failed" in out
         assert "scope blew up" in out
+
+
+class TestCaptureMessage:
+    """Phase 1.5 Task 4: warn-level capture for slow polars cold start."""
+
+    def test_capture_message_is_noop_when_disabled(self, fresh_sentry_setup) -> None:
+        with patch("sentry_sdk.capture_message") as mock_capture:
+            fresh_sentry_setup.capture_message("hi", level="warning")
+        assert mock_capture.call_count == 0
+
+    def test_capture_message_forwards_with_extra(
+        self, fresh_sentry_setup, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://fake@sentry.example.com/1")
+        with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
+            fresh_sentry_setup.init()
+
+        scope_mock = MagicMock()
+        scope_cm = MagicMock()
+        scope_cm.__enter__ = MagicMock(return_value=scope_mock)
+        scope_cm.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("sentry_sdk.new_scope", return_value=scope_cm),
+            patch("sentry_sdk.capture_message") as mock_capture,
+        ):
+            fresh_sentry_setup.capture_message(
+                "slow cold-start: 6000ms",
+                level="warning",
+                extra={"import_ms": 6000, "threshold_ms": 5000},
+            )
+
+        mock_capture.assert_called_once_with(
+            "slow cold-start: 6000ms", level="warning"
+        )
+        scope_mock.set_extra.assert_any_call("import_ms", 6000)
+        scope_mock.set_extra.assert_any_call("threshold_ms", 5000)
+        assert scope_mock.set_extra.call_count == 2
+
+    def test_capture_message_with_no_extra_still_captures(
+        self, fresh_sentry_setup, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://fake@sentry.example.com/1")
+        with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
+            fresh_sentry_setup.init()
+
+        scope_mock = MagicMock()
+        scope_cm = MagicMock()
+        scope_cm.__enter__ = MagicMock(return_value=scope_mock)
+        scope_cm.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("sentry_sdk.new_scope", return_value=scope_cm),
+            patch("sentry_sdk.capture_message") as mock_capture,
+        ):
+            fresh_sentry_setup.capture_message("hello")
+
+        scope_mock.set_extra.assert_not_called()
+        mock_capture.assert_called_once_with("hello", level="info")
+
+    def test_capture_message_swallows_internal_exception(
+        self,
+        fresh_sentry_setup,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://fake@sentry.example.com/1")
+        with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
+            fresh_sentry_setup.init()
+
+        with patch(
+            "sentry_sdk.new_scope", side_effect=RuntimeError("scope blew up")
+        ):
+            # Must not raise — the caller (cold-start log) needs to
+            # continue serving the matcher request.
+            fresh_sentry_setup.capture_message("msg", level="warning")
+        out = capsys.readouterr().out
+        assert "capture_message failed" in out
+        assert "scope blew up" in out
+
+
+class TestAddBreadcrumb:
+    """Phase 1.5 Task 4: breadcrumb for queue-wait pressure."""
+
+    def test_add_breadcrumb_is_noop_when_disabled(self, fresh_sentry_setup) -> None:
+        with patch("sentry_sdk.add_breadcrumb") as mock_bc:
+            fresh_sentry_setup.add_breadcrumb(
+                category="classifier.queue_wait",
+                message="wait 7s",
+                level="warning",
+                data={"queue_wait_sec": 7.0},
+            )
+        assert mock_bc.call_count == 0
+
+    def test_add_breadcrumb_forwards_to_sdk(
+        self, fresh_sentry_setup, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://fake@sentry.example.com/1")
+        with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
+            fresh_sentry_setup.init()
+
+        with patch("sentry_sdk.add_breadcrumb") as mock_bc:
+            fresh_sentry_setup.add_breadcrumb(
+                category="classifier.queue_wait",
+                message="queue wait 6.50s exceeded threshold",
+                level="warning",
+                data={"queue_wait_sec": 6.5, "concurrency_cap": 8},
+            )
+
+        mock_bc.assert_called_once_with(
+            category="classifier.queue_wait",
+            message="queue wait 6.50s exceeded threshold",
+            level="warning",
+            data={"queue_wait_sec": 6.5, "concurrency_cap": 8},
+        )
+
+    def test_add_breadcrumb_with_no_data_passes_empty_dict(
+        self, fresh_sentry_setup, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://fake@sentry.example.com/1")
+        with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
+            fresh_sentry_setup.init()
+
+        with patch("sentry_sdk.add_breadcrumb") as mock_bc:
+            fresh_sentry_setup.add_breadcrumb(
+                category="cat", message="msg"
+            )
+
+        mock_bc.assert_called_once_with(
+            category="cat", message="msg", level="info", data={}
+        )
+
+    def test_add_breadcrumb_swallows_internal_exception(
+        self,
+        fresh_sentry_setup,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://fake@sentry.example.com/1")
+        with patch("sentry_sdk.init"), patch("sentry_sdk.set_tag"):
+            fresh_sentry_setup.init()
+
+        with patch(
+            "sentry_sdk.add_breadcrumb",
+            side_effect=RuntimeError("breadcrumb blew up"),
+        ):
+            # Must not raise — the caller's request path must keep
+            # serving even if breadcrumb plumbing breaks.
+            fresh_sentry_setup.add_breadcrumb(
+                category="c", message="m", level="warning"
+            )
+        out = capsys.readouterr().out
+        assert "add_breadcrumb failed" in out
+        assert "breadcrumb blew up" in out

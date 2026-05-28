@@ -47,6 +47,8 @@ the matcher tolerates absence.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from datetime import date, datetime
 from typing import Annotated, Literal, NoReturn
 
@@ -60,6 +62,37 @@ from pydantic import (
 from pydantic.types import Strict
 
 logger = logging.getLogger(__name__)
+
+
+# ── Concurrency / observability knobs (Phase 1.5 Task 4) ──────────────────
+#
+# Finding 1.6 (promoted from Phase 2): cap parallel matcher invocations to
+# prevent the polars build phase from holding the GIL long enough to push
+# ``/health`` past Railway's 5s healthcheck timeout under burst load.
+#
+# A ``BoundedSemaphore`` (not regular ``Semaphore``) is used so an
+# accidental over-release raises ``ValueError`` — defence-in-depth against
+# a future refactor that double-frees on exit.
+_CLASSIFY_CONCURRENCY = 8
+_classify_semaphore = threading.BoundedSemaphore(_CLASSIFY_CONCURRENCY)
+# 30s is the hard ceiling on how long a request will sit in the matcher
+# queue before we 503 the caller. The TS client retries on 503 with
+# jitter, so a brief queue spike doesn't drop work — it just bounces.
+_QUEUE_WAIT_TIMEOUT_SEC = 30.0
+# Queue waits below this threshold are normal under burst load. Above it
+# we emit a Sentry breadcrumb so the next captured exception carries the
+# pressure context — operational signal, not an alert.
+_QUEUE_WAIT_BREADCRUMB_THRESHOLD_SEC = 5.0
+# Retry-After hint (seconds) returned to the caller on 503 queue timeout.
+_RETRY_AFTER_SEC = 5
+
+# Finding 2.3: cold-start visibility for the lazy polars import. polars'
+# binary is ~46 MB and the first ``import polars`` after process boot
+# takes a few hundred ms today; a future upgrade could push that into
+# multi-second territory and silently eat into Railway's healthcheck
+# budget. Log it once per process; Sentry-capture if it crosses 5s.
+_polars_import_logged = False
+_COLD_START_SLOW_THRESHOLD_MS = 5000
 
 
 # ── Pydantic models ────────────────────────────────────────────────────────
@@ -184,9 +217,45 @@ def _classify_with_polars(request: MultilegClassifyRequest) -> list[dict]:
     Imports polars + multileg_assembler lazily so the module import is
     cheap when the endpoint isn't being hit (matters: polars binary is
     ~46 MB and only this route needs it).
+
+    The first call also records ``import_ms`` for cold-start visibility
+    (Phase 1.5 Finding 2.3). Subsequent calls skip the timing since the
+    imports are cached in ``sys.modules`` and add no measurable cost.
     """
+    global _polars_import_logged
+
+    measure_import = not _polars_import_logged
+    if measure_import:
+        import_start = time.monotonic()
+
     import polars as pl
     from multileg_assembler import classify_trades
+
+    if measure_import:
+        import_ms = int((time.monotonic() - import_start) * 1000)
+        # Flip the flag BEFORE emitting so a side-effect crash in
+        # print/Sentry can't cause the message to repeat.
+        _polars_import_logged = True
+        # stdout shows up in Railway's log stream — primary surface for
+        # operational visibility (no metrics pipeline yet).
+        print(f"classifier: lazy import_ms={import_ms}", flush=True)
+        if import_ms > _COLD_START_SLOW_THRESHOLD_MS:
+            # Slow cold start → Sentry signal so we get alerted before
+            # the next polars upgrade silently doubles healthcheck risk.
+            try:
+                from sentry_setup import capture_message
+
+                capture_message(
+                    f"classifier slow cold-start import: {import_ms}ms",
+                    level="warning",
+                    extra={
+                        "import_ms": import_ms,
+                        "threshold_ms": _COLD_START_SLOW_THRESHOLD_MS,
+                    },
+                )
+            except Exception:
+                # Never let a Sentry hiccup break the request path.
+                pass
 
     # Build row dicts with normalized option_type. The matcher matches on
     # lower-case 'call' / 'put' (see _two_leg_cross_type_from_batch's
@@ -288,22 +357,72 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
     except ValidationError as exc:
         return 422, {"error": "schema validation failed", "details": exc.errors()}
 
-    try:
-        results = _classify_with_polars(request)
-    except Exception as exc:
-        logger.exception("multileg classify failed: unexpected")
-        # Sentry capture is best-effort — sentry_setup is a no-op when
-        # SENTRY_DSN is unset. Tagged ``component=classifier`` so the
-        # dedicated-service events are filterable from the old sidecar
-        # ones still in the Sentry history.
-        try:
-            from sentry_setup import capture_exception
+    # Phase 1.5 Finding 1.6: cap parallel matcher invocations behind a
+    # BoundedSemaphore so the polars build phase can't hold the GIL long
+    # enough to push ``/health`` past Railway's 5s healthcheck timeout
+    # under burst load. Wait up to _QUEUE_WAIT_TIMEOUT_SEC; on timeout
+    # 503 the caller with a Retry-After hint so the TS client retries
+    # with jitter instead of failing the cron loop outright.
+    start_wait = time.monotonic()
+    acquired = _classify_semaphore.acquire(timeout=_QUEUE_WAIT_TIMEOUT_SEC)
+    queue_wait_sec = time.monotonic() - start_wait
+    if not acquired:
+        # Queue timeout. The server reads ``retry_after_sec`` out of the
+        # body and adds a ``Retry-After`` HTTP header so well-behaved
+        # callers (and any future curl-based probe) both see the hint.
+        return 503, {
+            "error": "classifier queue timeout; retry in a few seconds",
+            "queue_wait_sec": round(queue_wait_sec, 2),
+            "concurrency_cap": _CLASSIFY_CONCURRENCY,
+            "retry_after_sec": _RETRY_AFTER_SEC,
+        }
 
-            capture_exception(
-                exc, tags={"component": "classifier", "route": "classify"}
-            )
-        except Exception:
-            pass
-        return 500, {"error": str(exc)}
+    try:
+        # Operational signal when the queue was non-trivially backed up
+        # but the request still made it through. Breadcrumb (not capture)
+        # because this isn't actionable on its own — it gives the next
+        # captured exception the pressure context.
+        if queue_wait_sec > _QUEUE_WAIT_BREADCRUMB_THRESHOLD_SEC:
+            try:
+                from sentry_setup import add_breadcrumb
+
+                add_breadcrumb(
+                    category="classifier.queue_wait",
+                    message=(
+                        f"queue wait {queue_wait_sec:.2f}s exceeded "
+                        f"{_QUEUE_WAIT_BREADCRUMB_THRESHOLD_SEC:.1f}s threshold"
+                    ),
+                    level="warning",
+                    data={
+                        "queue_wait_sec": round(queue_wait_sec, 2),
+                        "concurrency_cap": _CLASSIFY_CONCURRENCY,
+                        "threshold_sec": _QUEUE_WAIT_BREADCRUMB_THRESHOLD_SEC,
+                    },
+                )
+            except Exception:
+                # Breadcrumb failure must never break the request path.
+                pass
+
+        try:
+            results = _classify_with_polars(request)
+        except Exception as exc:
+            logger.exception("multileg classify failed: unexpected")
+            # Sentry capture is best-effort — sentry_setup is a no-op when
+            # SENTRY_DSN is unset. Tagged ``component=classifier`` so the
+            # dedicated-service events are filterable from the old sidecar
+            # ones still in the Sentry history.
+            try:
+                from sentry_setup import capture_exception
+
+                capture_exception(
+                    exc, tags={"component": "classifier", "route": "classify"}
+                )
+            except Exception:
+                pass
+            return 500, {"error": str(exc)}
+    finally:
+        # BoundedSemaphore.release() raises ValueError on over-release —
+        # defence against a future refactor that double-frees on exit.
+        _classify_semaphore.release()
 
     return 200, {"classifications": results}

@@ -156,6 +156,7 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         body: dict,
         *,
         close_connection: bool = False,
+        retry_after_sec: int | None = None,
     ) -> None:
         """Send a JSON response with the right headers.
 
@@ -164,6 +165,11 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         ``default=str`` argument to ``json.dumps`` matches the sidecar
         contract — pydantic validation_error details include datetime
         / Decimal-ish values that need string coercion.
+
+        ``retry_after_sec`` adds an RFC 9110 §10.2.3 ``Retry-After``
+        header — used by the 503 queue-timeout path (Phase 1.5 Task 4)
+        so the TS client retries with jitter instead of failing the
+        cron loop. None (default) omits the header entirely.
         """
         payload = json.dumps(body, default=str).encode()
         self.send_response(status)
@@ -171,6 +177,8 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         if close_connection:
             self.send_header("Connection", "close")
+        if retry_after_sec is not None:
+            self.send_header("Retry-After", str(retry_after_sec))
         self.end_headers()
         self.wfile.write(payload)
 
@@ -352,7 +360,22 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         # HTTP/1.0 where keep-alive is off unless the client explicitly
         # requests it, so this is "don't force-close" rather than
         # "actively enable pipelining".
-        self._write_json(status, body, close_connection=status >= 400)
+        #
+        # 503 queue-timeout responses carry ``retry_after_sec`` in the
+        # body (set by ``handle_classify_payload``). Lift it into a
+        # ``Retry-After`` HTTP header so RFC-aware clients (and Railway's
+        # edge) see it without parsing JSON.
+        retry_after = None
+        if status == 503 and isinstance(body, dict):
+            ra = body.get("retry_after_sec")
+            if isinstance(ra, int) and ra > 0:
+                retry_after = ra
+        self._write_json(
+            status,
+            body,
+            close_connection=status >= 400,
+            retry_after_sec=retry_after,
+        )
 
     # ---- access log -------------------------------------------------------
 
