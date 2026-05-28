@@ -310,7 +310,9 @@ describe('SilentBoomRow: badges', () => {
 
 describe('SilentBoomRow: direction-gate pill', () => {
   it('renders the Gated pill when directionGated is true', () => {
-    renderRow(makeAlert({ directionGated: true }));
+    // scoreTier: 'tier3' is explicit so this remains the hard-gate case
+    // after the Soft-variant change (default scoreTier is tier2).
+    renderRow(makeAlert({ directionGated: true, scoreTier: 'tier3' }));
     const pill = screen.getByTestId('silent-boom-gated-pill');
     expect(pill).toBeInTheDocument();
     expect(pill).toHaveTextContent('Gated');
@@ -321,6 +323,22 @@ describe('SilentBoomRow: direction-gate pill', () => {
     expect(
       screen.queryByTestId('silent-boom-gated-pill'),
     ).not.toBeInTheDocument();
+  });
+
+  it('renders a "Soft" Gated pill when directionGated is true AND scoreTier is non-tier3', () => {
+    renderRow(makeAlert({ directionGated: true, scoreTier: 'tier2' }));
+    const pill = screen.getByTestId('silent-boom-gated-pill');
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveTextContent(/Gated.*Soft/);
+    expect(pill.getAttribute('title')).toMatch(/TAKE-IT|conviction|preserved/i);
+  });
+
+  it('renders the standard "Gated" pill (no Soft suffix) when directionGated is true AND scoreTier is tier3', () => {
+    renderRow(makeAlert({ directionGated: true, scoreTier: 'tier3' }));
+    const pill = screen.getByTestId('silent-boom-gated-pill');
+    expect(pill).toBeInTheDocument();
+    expect(pill).toHaveTextContent('Gated');
+    expect(pill).not.toHaveTextContent(/Soft/);
   });
 });
 

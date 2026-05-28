@@ -157,16 +157,39 @@ const tierBadge = (
  * Direction-gated pill — Phase 4 (spec:
  * silent-boom-direction-gate-and-trail-ui-2026-05-14.md). Surfaced
  * next to the tier badge when the alert was counter-trend per Market
- * Tide at fire time. The detector already demoted score_tier to
- * 'tier3' on insert; the pill explains the demote so the user knows
- * it isn't a noisy score but a deliberate macro gate.
+ * Tide at fire time.
+ *
+ * Two variants:
+ * - Hard gate (tierPreserved=false): detector demoted score_tier to
+ *   'tier3'; pill explains the demote so the user knows it isn't a
+ *   noisy score but a deliberate macro gate.
+ * - Soft gate (tierPreserved=true): TAKE-IT ≥ 0.70 exempted this row
+ *   from the tier3 demotion; original tier is preserved but the gate
+ *   flag is retained for audit (Task 2 of gate-fix plan).
  */
-const gatedPill = (): { label: string; cls: string; tooltip: string } => ({
-  label: 'Gated',
-  cls: 'border-amber-500/60 bg-amber-950/40 text-amber-200',
-  tooltip:
-    'Counter-trend per Market Tide at fire time — demoted to tier3 by the direction gate (T=±100M on mkt_tide_diff). Score is preserved on the row; only the displayed tier is forced down.',
-});
+const gatedPill = (
+  tierPreserved: boolean,
+): { label: string; cls: string; tooltip: string } => {
+  if (tierPreserved) {
+    return {
+      label: 'Gated (Soft)',
+      cls: 'border-amber-500/60 bg-amber-950/40 text-amber-200',
+      tooltip:
+        'Counter-trend per Market Tide at fire time, but TAKE-IT ≥ 0.70 ' +
+        'preserved the original tier. The gate flag is retained for audit; ' +
+        'conviction was high enough to exempt this fire from the tier3 ' +
+        'demotion (T=±100M on mkt_tide_diff).',
+    };
+  }
+  return {
+    label: 'Gated',
+    cls: 'border-amber-500/60 bg-amber-950/40 text-amber-200',
+    tooltip:
+      'Counter-trend per Market Tide at fire time — demoted to tier3 by the ' +
+      'direction gate (T=±100M on mkt_tide_diff). Score is preserved on the ' +
+      'row; only the displayed tier is forced down.',
+  };
+};
 
 /**
  * Flow Inverted badge — amber. Fires only when the alert had a flow
@@ -406,7 +429,8 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   const flow = flowBadge(
     deltaFromAtFire(alert.tickerCumNcpAtFire, alert.tickerCumNppAtFire),
   );
-  const gated = alert.directionGated ? gatedPill() : null;
+  const tierPreserved = alert.directionGated && alert.scoreTier !== 'tier3';
+  const gated = alert.directionGated ? gatedPill(tierPreserved) : null;
   const spreadConfirmed = spreadConfirmedBadge(alert.multiLegShare);
   const gexbot = gexbotBadge(alert.gex);
   const flowMatch = flowMatchBadge(alert.optionType, liveFlowSnapshot ?? null);
