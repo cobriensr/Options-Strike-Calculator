@@ -54,6 +54,7 @@ import {
   mapToGexbotTicker,
   type FireTimeGexbotSnapshot,
 } from '../_lib/gexbot-queries.js';
+import { TAKEIT_GATE_EXEMPT_MIN_PROB } from '../_lib/takeit-score.js';
 import { withRetry } from '../_lib/uw-fetch.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -760,7 +761,13 @@ export default withCronInstrumentation(
         }
         return false;
       })();
-      const effectiveTier = directionGated ? 'tier3' : tier;
+      // Gate-applied tier matches what the TAKE-IT model was trained on
+      // (post-gate rows). Feed THIS to scoreSilentBoom — never the raw
+      // `tier` — to preserve model parity. The exemption only affects
+      // the final INSERT value, not the model's input.
+      const gateAppliedTier: 'tier1' | 'tier2' | 'tier3' = directionGated
+        ? 'tier3'
+        : tier;
 
       // Take-It probability (Phase 3c). Mirrors the lottery cron pattern.
       const takeitRow: SilentBoomAlertRow = {
@@ -785,7 +792,7 @@ export default withCronInstrumentation(
         multi_leg_share: f.multiLegShare,
         underlying_price_at_spike: f.underlyingPriceAtSpike,
         score,
-        score_tier: effectiveTier,
+        score_tier: gateAppliedTier,
         direction_gated: directionGated,
       };
       const {
@@ -793,6 +800,20 @@ export default withCronInstrumentation(
         version: takeitVersion,
         features: takeitFeatures,
       } = scoreSilentBoom(takeitCtx, takeitRow);
+
+      // TAKE-IT-conditioned gate exemption (spec:
+      // docs/superpowers/specs/2026-05-27-takeit-conditioned-gate-fix-design.md).
+      // When gated AND TAKE-IT >= the exemption threshold, keep the original
+      // pre-gate tier — the gate is pure downside above 0.70 per the
+      // calibration. Otherwise apply the standard gate-applied tier.
+      // `direction_gated` itself stays true on the row so the UI/audit
+      // can still see the gate fired.
+      const effectiveTier: 'tier1' | 'tier2' | 'tier3' =
+        directionGated &&
+        takeitProb != null &&
+        takeitProb >= TAKEIT_GATE_EXEMPT_MIN_PROB
+          ? tier
+          : gateAppliedTier;
       // Persist the bundle-shaped feature dict so the SHAP fill cron can
       // hand it straight to the sidecar — no re-derivation in TS, no
       // raw-row passthrough that would miss one-hots + derived features.

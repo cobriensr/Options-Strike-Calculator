@@ -45,15 +45,15 @@ vi.mock('../_lib/multileg-classify-batch.js', () => ({
   classifyAlertMultileg: mockClassifyAlertMultileg,
 }));
 
-// Take-It scoring is fail-open. Mock loadTakeitDetectContext to return
-// null so no Blob fetch happens; scoreSilentBoom returns nulls; INSERT
-// gets null takeit_prob + takeit_model_version + takeit_features at the
-// tail (Phase 3d tail-append). Use plain functions inside the factory —
-// chained vi.fn().mockReturnValue can lose the return value through
-// vi.mock factory resolution.
+// Take-It scoring is fail-open. mockScoreSilentBoom is hoisted so the
+// same vi.fn() instance is both registered in the factory AND available
+// for per-test mockReturnValueOnce overrides via vi.mocked(scoreSilentBoom).
+const mockScoreSilentBoom = vi.hoisted(() =>
+  vi.fn().mockReturnValue({ prob: null, version: null, features: null }),
+);
 vi.mock('../_lib/takeit-detect.js', () => ({
   loadTakeitDetectContext: () => Promise.resolve(null),
-  scoreSilentBoom: () => ({ prob: null, version: null, features: null }),
+  scoreSilentBoom: mockScoreSilentBoom,
 }));
 
 // GexBot context lookup is fail-open (migration #180). Default the
@@ -179,6 +179,14 @@ describe('detect-silent-boom handler', () => {
     mockMapToGexbotTicker.mockImplementation((t: string) => t);
     mockGetLatestGexbotSnapshotAt.mockResolvedValue(null);
     process.env.CRON_SECRET = 'test-secret';
+    // vi.resetAllMocks() clears the default return value set on the
+    // hoisted vi.fn(). Restore the null-prob default so tests that
+    // don't override scoreSilentBoom still get null takeit_* columns.
+    mockScoreSilentBoom.mockReturnValue({
+      prob: null,
+      version: null,
+      features: null,
+    });
   });
 
   it('returns skipped when no ticks are in the scan window', async () => {
@@ -677,6 +685,156 @@ describe('detect-silent-boom handler', () => {
     expect(binds.get('mkt_tide_diff')).toBe(150_000_000);
     expect(binds.get('direction_gated')).toBe(true);
     expect(binds.get('score_tier')).toBe('tier3');
+  });
+
+  it('preserves original score_tier when gated AND takeit_prob >= 0.70 (TAKE-IT exemption)', async () => {
+    // Phase 4 gate exemption (spec:
+    // docs/superpowers/specs/2026-05-27-takeit-conditioned-gate-fix-design.md):
+    // when takeit_prob >= 0.70 the gate demotion is skipped so the
+    // alert keeps its real tier. direction_gated stays true for UI/audit.
+    //
+    // IMPORTANT: the fixture must NOT use ask_pct=1.0 (all-ask side)
+    // because ASK_PCT_SATURATED_PENALTY (-38) forces raw tier to tier3
+    // regardless of gating, making the exemption unobservable. Use
+    // askSize=90%, bidSize=10% so ask_pct=0.9 (0.85–0.95 bucket) → +1,
+    // yielding a score of ~28 (tier1) before any gate is applied.
+    mockScoreSilentBoom.mockReturnValueOnce({
+      prob: 0.78,
+      version: 'test',
+      features: { dummy: 0 },
+    });
+    const putStream = fireableSilentBoomStream().map((b) => ({
+      ...b,
+      option_type: 'P' as const,
+      option_chain: 'SNDK260507P01175000',
+      // Override ask/bid split to avoid saturated-ask penalty
+      ask_size: Math.round(b.size * 0.9),
+      bid_size: Math.round(b.size * 0.1),
+    }));
+    const tickMs = Date.parse('2026-05-07T13:18:00Z');
+    mockSql
+      .mockResolvedValueOnce(putStream) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { ts_ms: String(tickMs), ncp: '200000000', npp: '50000000' },
+      ]) // tide ticks → diff +150_000_000 (counter-trend for puts)
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      totalFires: 1,
+      inserted: 1,
+    });
+    // Verify mock was actually called (diagnose if 0 calls → real fn used)
+    expect(mockScoreSilentBoom).toHaveBeenCalledTimes(1);
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBe(150_000_000);
+    expect(binds.get('direction_gated')).toBe(true); // flag preserved
+    expect(binds.get('takeit_prob')).toBe(0.78); // must be 0.78 for exemption to fire
+    expect(binds.get('score_tier')).not.toBe('tier3'); // NOT demoted
+  });
+
+  it('still demotes to tier3 when gated AND takeit_prob < 0.70', async () => {
+    // Below the exemption threshold — standard demotion applies.
+    // Same non-saturated fixture as the exemption test (ask_pct=0.9
+    // so raw tier is tier1), confirming that sub-threshold TAKE-IT
+    // still gates down to tier3.
+    mockScoreSilentBoom.mockReturnValueOnce({
+      prob: 0.6,
+      version: 'test',
+      features: { dummy: 0 },
+    });
+    const putStream = fireableSilentBoomStream().map((b) => ({
+      ...b,
+      option_type: 'P' as const,
+      option_chain: 'SNDK260507P01175000',
+      ask_size: Math.round(b.size * 0.9),
+      bid_size: Math.round(b.size * 0.1),
+    }));
+    const tickMs = Date.parse('2026-05-07T13:18:00Z');
+    mockSql
+      .mockResolvedValueOnce(putStream) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { ts_ms: String(tickMs), ncp: '200000000', npp: '50000000' },
+      ]) // tide ticks → diff +150_000_000 (counter-trend for puts)
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('direction_gated')).toBe(true);
+    expect(binds.get('score_tier')).toBe('tier3');
+    expect(binds.get('takeit_prob')).toBe(0.6);
+  });
+
+  it('still demotes to tier3 when gated AND takeit_prob is null (no exemption on null)', async () => {
+    // Explicit null — no exemption. Same non-saturated fixture as the
+    // exemption test so raw tier is tier1 before any gate; with null
+    // prob the standard gate-applied tier3 must still win.
+    mockScoreSilentBoom.mockReturnValueOnce({
+      prob: null,
+      version: null,
+      features: null,
+    });
+    const putStream = fireableSilentBoomStream().map((b) => ({
+      ...b,
+      option_type: 'P' as const,
+      option_chain: 'SNDK260507P01175000',
+      ask_size: Math.round(b.size * 0.9),
+      bid_size: Math.round(b.size * 0.1),
+    }));
+    const tickMs = Date.parse('2026-05-07T13:18:00Z');
+    mockSql
+      .mockResolvedValueOnce(putStream) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { ts_ms: String(tickMs), ncp: '200000000', npp: '50000000' },
+      ]) // tide ticks → diff +150_000_000 (counter-trend for puts)
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('direction_gated')).toBe(true);
+    expect(binds.get('score_tier')).toBe('tier3');
+    expect(binds.get('takeit_prob')).toBeNull();
   });
 
   it('persists multileg classification columns when classifier returns a result (Phase 2 migration #160)', async () => {
