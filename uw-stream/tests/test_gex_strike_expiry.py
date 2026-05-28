@@ -440,7 +440,7 @@ class TestExpiryNotTodayFilter:
     payloads whose expiry doesn't match the current ET trading date.
     Without this filter the table accumulates rows for each future
     expiry every minute it stays on UW's emit list, which (verified
-    2026-05-15) inflates the SPY/0DTE slice 8-9× and pushes the
+    2026-05-15) inflates the SPY/0DTE slice 8-9x and pushes the
     Greek Heatmap snapshot query to ~18 seconds.
     """
 

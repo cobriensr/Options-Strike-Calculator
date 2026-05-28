@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable, Iterator, Sequence
-from typing import Any, TypeVar
+from typing import Any
 
 import asyncpg
 import asyncpg.exceptions
@@ -67,8 +67,6 @@ _TRANSIENT_DB_EXC: tuple[type[BaseException], ...] = (
 _DB_RETRY_MAX_ATTEMPTS = 3
 _DB_RETRY_BACKOFF_S: tuple[float, ...] = (0.5, 1.5)
 
-T = TypeVar("T")
-
 
 def is_transient_db_error(exc: BaseException) -> bool:
     """Return True iff ``exc`` is a connection-class failure worth retrying.
@@ -81,7 +79,7 @@ def is_transient_db_error(exc: BaseException) -> bool:
     return isinstance(exc, _TRANSIENT_DB_EXC)
 
 
-async def _with_db_retry(
+async def _with_db_retry[T](
     label: str,
     func: Callable[[], Awaitable[T]],
 ) -> T:
