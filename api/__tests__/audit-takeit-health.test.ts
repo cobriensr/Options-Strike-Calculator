@@ -175,4 +175,59 @@ describe('audit-takeit-health cron', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
   });
+
+  it('emits an empty-trading-day warning when one feed has 0 rows on a weekday', async () => {
+    // Pin Date.now() so yesterday is a known weekday (Wed 2026-05-27).
+    // 2026-05-28 is a Thursday → yesterday-in-UTC = 2026-05-27 (Wed).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-28T12:00:00Z'));
+    try {
+      mockSql
+        .mockResolvedValueOnce([
+          {
+            rows_scored: '1000',
+            null_count: '30',
+            prob_p10: '0.45',
+            prob_p50: '0.71',
+            prob_p90: '0.85',
+            prob_p99: '0.93',
+            bundle_versions_seen: '1',
+          },
+        ]) // lottery — healthy
+        .mockResolvedValueOnce([
+          {
+            rows_scored: '0',
+            null_count: '0',
+            prob_p10: null,
+            prob_p50: null,
+            prob_p90: null,
+            prob_p99: null,
+            bundle_versions_seen: '0',
+          },
+        ]); // silent_boom — empty, weekday → should alert
+
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(res._status).toBe(200);
+      // Only the silent_boom feed triggered captureMessage (lottery is healthy).
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('silent_boom'),
+        expect.objectContaining({
+          level: 'warning',
+          tags: expect.objectContaining({ 'takeit.feed': 'silent_boom' }),
+        }),
+      );
+      // The message text mentions the rows_scored=0 trigger specifically.
+      const messageArg = vi.mocked(Sentry.captureMessage).mock.calls[0]![0];
+      expect(messageArg).toContain('rows_scored=0');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

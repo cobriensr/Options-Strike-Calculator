@@ -15,6 +15,8 @@
  * Alerts (via Sentry captureMessage at 'warning'):
  *   - null_rate_pct > NULL_RATE_ALERT_PCT (5%)
  *   - bundle_versions_seen > BUNDLE_VERSION_MAX_PER_DAY (1)
+ *   - rows_scored === 0 on a weekday (possible scoring outage or holiday;
+ *     weekends are intentionally skipped — those are normal empty days)
  */
 
 import { cronGuard } from '../_lib/api-helpers.js';
@@ -45,11 +47,24 @@ interface FeedSummary extends FeedAgg {
 /** Raw DB column value — Neon driver returns numeric columns as strings. */
 type DbNumeric = string | number | null;
 
+/**
+ * True when `dateStr` (YYYY-MM-DD, UTC) is a Mon–Fri. Used by applyAlerts to
+ * suppress empty-day warnings on weekends — Sat/Sun produce zero fires by
+ * design, so they should not page. Holidays will produce ~9 false positives
+ * a year (manageable; the alert is informational, not paging).
+ */
+function isWeekday(dateStr: string): boolean {
+  const day = new Date(`${dateStr}T00:00:00Z`).getUTCDay();
+  return day >= 1 && day <= 5;
+}
+
 async function summarizeFeed(
   sql: ReturnType<typeof getDb>,
   table: 'lottery_finder_fires' | 'silent_boom_alerts',
   date: string,
 ): Promise<FeedAgg> {
+  // sql.unsafe(table) is safe here — `table` is a hardcoded TypeScript
+  // union ('lottery_finder_fires' | 'silent_boom_alerts'), never user input.
   const rows = (await withDbRetry(() =>
     sql`
       SELECT
@@ -87,6 +102,7 @@ async function summarizeFeed(
 function applyAlerts(
   agg: FeedAgg,
   feed: 'lottery' | 'silent_boom',
+  dateStr: string,
 ): FeedSummary {
   const alerts: string[] = [];
   const null_rate_pct =
@@ -100,6 +116,11 @@ function applyAlerts(
   if (agg.bundle_versions_seen > BUNDLE_VERSION_MAX_PER_DAY) {
     alerts.push(
       `bundle_versions_seen=${agg.bundle_versions_seen} > ${BUNDLE_VERSION_MAX_PER_DAY}`,
+    );
+  }
+  if (agg.rows_scored === 0 && isWeekday(dateStr)) {
+    alerts.push(
+      'rows_scored=0 on a weekday (possible scoring outage or holiday)',
     );
   }
 
@@ -193,8 +214,8 @@ export default withCronCheckin('audit-takeit-health', async (req, res) => {
         yesterday,
       );
 
-      const lotterySummary = applyAlerts(lottery, 'lottery');
-      const sbSummary = applyAlerts(silentBoom, 'silent_boom');
+      const lotterySummary = applyAlerts(lottery, 'lottery', yesterday);
+      const sbSummary = applyAlerts(silentBoom, 'silent_boom', yesterday);
 
       await persistMetrics(sql, yesterday, 'lottery', lotterySummary);
       await persistMetrics(sql, yesterday, 'silent_boom', sbSummary);
