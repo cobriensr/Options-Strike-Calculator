@@ -94,3 +94,73 @@ class TestBeforeSendFingerprinting:
         # Pass a hint shape that would trip the hook internally
         out = _before_send(event, {"exc_info": (None,)})
         assert out == event
+
+
+class TestTokenScrubbing:
+    """UW API key in WS URL must be redacted before any event leaves the process."""
+
+    def test_scrubs_token_in_exception_value(self):
+        event = {
+            "exception": {
+                "values": [
+                    {
+                        "value": (
+                            "handshake failed for "
+                            "wss://api.unusualwhales.com/socket?token=SECRET123"
+                        )
+                    }
+                ]
+            }
+        }
+        out = _before_send(event, {})
+        rendered = out["exception"]["values"][0]["value"]
+        assert "SECRET123" not in rendered
+        assert "token=REDACTED" in rendered
+
+    def test_scrubs_token_when_followed_by_extra_params(self):
+        event = {
+            "message": (
+                "url=wss://api.unusualwhales.com/socket?token=ABCDEFG&trace=1"
+            )
+        }
+        out = _before_send(event, {})
+        assert "ABCDEFG" not in out["message"]
+        assert "token=REDACTED&trace=1" in out["message"]
+
+    def test_scrubs_token_in_nested_breadcrumb_dict(self):
+        event = {
+            "breadcrumbs": {
+                "values": [
+                    {
+                        "category": "websocket",
+                        "data": {
+                            "url": (
+                                "wss://api.unusualwhales.com/socket"
+                                "?token=NESTED_KEY"
+                            )
+                        },
+                    }
+                ]
+            }
+        }
+        out = _before_send(event, {})
+        url_out = out["breadcrumbs"]["values"][0]["data"]["url"]
+        assert "NESTED_KEY" not in url_out
+        assert "token=REDACTED" in url_out
+
+    def test_scrub_preserves_non_token_strings(self):
+        event = {"message": "ordinary log line, no secret"}
+        out = _before_send(event, {})
+        assert out["message"] == "ordinary log line, no secret"
+
+    def test_scrub_runs_even_when_fingerprint_branch_fires(self):
+        event = {
+            "exception": {
+                "values": [
+                    {"value": "url=wss://x/y?token=COMBO_KEY (transient)"}
+                ]
+            }
+        }
+        out = _before_send(event, _hint_with(TimeoutError("flush")))
+        assert "COMBO_KEY" not in out["exception"]["values"][0]["value"]
+        assert out["fingerprint"] == ["uw-stream-transient-db", "TimeoutError"]
