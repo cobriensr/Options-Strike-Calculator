@@ -16,6 +16,8 @@ import {
   positionCsvSchema,
   analyzeImageSchema,
   analyzeBodySchema,
+  MAX_CONTEXT_STRING_LEN,
+  MAX_CONTEXT_KEYS,
   preMarketBodySchema,
   snapshotBodySchema,
   analysisResponseSchema,
@@ -139,6 +141,57 @@ describe('analyzeBodySchema', () => {
   it('rejects missing context', () => {
     const result = analyzeBodySchema.safeParse({ images: [baseImage] });
     expect(result.success).toBe(false);
+  });
+
+  it('accepts context string at the per-field length boundary', () => {
+    const result = analyzeBodySchema.safeParse({
+      images: [baseImage],
+      context: { dataNote: 'x'.repeat(MAX_CONTEXT_STRING_LEN) },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects context string exceeding the per-field length cap', () => {
+    const result = analyzeBodySchema.safeParse({
+      images: [baseImage],
+      context: { dataNote: 'x'.repeat(MAX_CONTEXT_STRING_LEN + 1) },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(['context', 'dataNote']);
+    }
+  });
+
+  it('accepts context with up to MAX_CONTEXT_KEYS keys', () => {
+    const ctx: Record<string, unknown> = {};
+    for (let i = 0; i < MAX_CONTEXT_KEYS; i++) ctx[`k${String(i)}`] = i;
+    const result = analyzeBodySchema.safeParse({
+      images: [baseImage],
+      context: ctx,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects context with more than MAX_CONTEXT_KEYS keys', () => {
+    const ctx: Record<string, unknown> = {};
+    for (let i = 0; i <= MAX_CONTEXT_KEYS; i++) ctx[`k${String(i)}`] = i;
+    const result = analyzeBodySchema.safeParse({
+      images: [baseImage],
+      context: ctx,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('passes non-string context values through unchanged (numbers, nested objects)', () => {
+    const result = analyzeBodySchema.safeParse({
+      images: [baseImage],
+      context: {
+        spx: 5950.5,
+        strikes: { put: 5900, call: 6000 },
+        eventNames: ['CPI', 'FOMC'],
+      },
+    });
+    expect(result.success).toBe(true);
   });
 });
 

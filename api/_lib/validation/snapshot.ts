@@ -28,6 +28,15 @@ export type PositionCsvBody = z.infer<typeof positionCsvSchema>;
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB in base64 chars
 
+// Defensive bounds on the free-form context bag. Many fields here flow
+// verbatim into the Anthropic prompt (dataNote, currentPosition,
+// previousRecommendation, gexLandscapeBias …). Without per-string caps a
+// compromised owner session could push an oversized payload that either
+// blows the prompt window or smuggles instructions. 8000 chars/field is
+// well above any legitimate value but blocks payload-by-volume.
+export const MAX_CONTEXT_STRING_LEN = 8000;
+export const MAX_CONTEXT_KEYS = 200;
+
 export const analyzeImageSchema = z.object({
   data: z
     .string()
@@ -42,7 +51,31 @@ export const analyzeBodySchema = z.object({
     .array(analyzeImageSchema)
     .min(1, 'At least one image is required')
     .max(2, 'Maximum 2 images allowed'),
-  context: z.record(z.string(), z.unknown()),
+  context: z
+    .record(z.string(), z.unknown())
+    .superRefine((ctx, refinementCtx) => {
+      const keys = Object.keys(ctx);
+      if (keys.length > MAX_CONTEXT_KEYS) {
+        refinementCtx.addIssue({
+          code: 'custom',
+          message: `context exceeds ${String(MAX_CONTEXT_KEYS)} keys`,
+        });
+        return;
+      }
+      for (const key of keys) {
+        const value = ctx[key];
+        if (
+          typeof value === 'string' &&
+          value.length > MAX_CONTEXT_STRING_LEN
+        ) {
+          refinementCtx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: `context.${key} exceeds ${String(MAX_CONTEXT_STRING_LEN)} chars`,
+          });
+        }
+      }
+    }),
 });
 
 export type AnalyzeBody = z.infer<typeof analyzeBodySchema>;
