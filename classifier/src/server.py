@@ -190,8 +190,13 @@ class ClassifierHandler(BaseHTTPRequestHandler):
             return
 
         status, body = handle_classify_payload(body_bytes)
-        # 4xx/5xx get Connection: close; 2xx keeps keep-alive default
-        # behavior so the TS client can pipeline subsequent calls.
+        # 4xx/5xx get Connection: close so Railway's edge proxy doesn't
+        # pool a broken upstream socket. 2xx omits Connection: close so
+        # an HTTP/1.1 client that opted into keep-alive can keep the
+        # socket pooled — note that BaseHTTPRequestHandler defaults to
+        # HTTP/1.0 where keep-alive is off unless the client explicitly
+        # requests it, so this is "don't force-close" rather than
+        # "actively enable pipelining".
         self._write_json(status, body, close_connection=status >= 400)
 
     # ---- access log -------------------------------------------------------

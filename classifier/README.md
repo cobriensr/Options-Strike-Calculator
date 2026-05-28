@@ -40,11 +40,31 @@ Co-resident on port 8080 with two routes:
   trade window and returns per-trade classifications.
 - `GET /health` — liveness probe (used by the Docker `HEALTHCHECK`).
 
-The server is `ThreadingHTTPServer` fronted by a
-`threading.BoundedSemaphore(8)` cap on parallel matcher runs (sized
-for a dedicated 24 GB box with no JVM competing). Requests above the
-cap queue; if queue wait exceeds 30s, the server returns `503` with
-`Retry-After: 5`.
+### What ships today (Phase 1)
+
+The server is a `ThreadingHTTPServer` (subclassed as
+`_QuietThreadingHTTPServer` to swallow client-disconnect tracebacks
+that would otherwise alert as log noise). Each request runs on its
+own thread — there is **no concurrency cap** in Phase 1, so parallel
+matcher invocations are bounded only by the underlying box's memory
+and CPU.
+
+Request-body size is capped at 50 MB; payloads above the cap
+short-circuit to `413` before the body is read off the wire (DoS
+floor, well clear of the ~3-4 MB a realistic 7500-trade payload
+weighs in at). `Connection: close` is set on every 4xx/5xx so
+Railway's edge proxy does not pool a broken upstream socket.
+
+### Phase 2 — not yet deployed
+
+The full spec at
+`docs/superpowers/specs/multileg-classifier-service-split-2026-05-28.md`
+calls for bounded concurrency in front of the matcher:
+`threading.BoundedSemaphore(8)` cap on parallel runs, with a 30s queue
+wait timeout returning `503 Retry-After: 5`. The TS client will also
+drop `MAX_WINDOW_TRADES` from 10000 to 7500 to match the new cap.
+**None of that has shipped yet** — Phase 1 is fault isolation only;
+back-pressure lands in Phase 2.
 
 ## Deploy
 
