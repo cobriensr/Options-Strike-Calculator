@@ -1,0 +1,17 @@
+.env
+.env.*
+.git
+*.md
+__pycache__
+*.pyc
+*.pyo
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+*.egg-info
+.coverage
+htmlcov/
+tests/
+conftest.py
+README.md

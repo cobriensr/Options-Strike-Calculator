@@ -1,0 +1,9 @@
+# Multileg classifier service deps — see
+# docs/superpowers/specs/multileg-classifier-service-split-2026-05-28.md
+polars>=1.40.0
+pydantic>=2.7.0
+sentry-sdk>=2.0.0
+numpy>=1.26.0
+pytest>=8.0.0
+pytest-cov>=6.0
+ruff>=0.11
