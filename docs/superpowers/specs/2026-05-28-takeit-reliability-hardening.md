@@ -15,8 +15,11 @@ the live edge does).
 
 Make TAKE-IT scoring robust against operational outages, data-pipeline
 drift, and slow model decay — WITHOUT touching the trained model itself.
-Three phases that share a daily-cron + Sentry-alert backbone and one new
-`takeit_health_daily` Postgres table.
+Four phases. The first three share a daily-cron + Sentry-alert backbone
+and one new `takeit_health_daily` Postgres table. The fourth is a
+one-shot backfill tool that populates `takeit_prob` on historical rows
+so retrospective ML analysis (and the eventual realized-target retrain)
+have a complete prediction series to work against.
 
 ## Out of scope (deliberate; tracked as follow-up)
 
@@ -223,6 +226,77 @@ re-doing the full nightly cycle.
 - Modify: the project `Makefile` — add (or fold into) the nightly target
 - Output dirs (committed alongside other nightly artifacts):
   `ml/output/takeit-drift/`, `ml/plots/takeit-drift/`
+
+---
+
+---
+
+## Phase 4 — Backfill historical TAKE-IT scores (one-shot tool)
+
+Independent of Phases 2/3 but depends on Phase 1's defensive scoring (so
+the backfill doesn't crash mid-run on a NaN feature). Re-runnable
+whenever a meaningfully-different bundle ships and you want consistent
+historical scores against it.
+
+### 4.1 Why
+
+The `takeit_prob` column was added in a Phase-3c migration; rows inserted
+before TAKE-IT went live have `takeit_prob IS NULL`. ML training and
+retrospective analysis (cohort comparisons, threshold validation, the
+eventual realized-target retrain experiments) need a consistent score
+across the full history, not just rows that happened to be inserted
+after the column landed.
+
+### 4.2 Approach
+
+- **Snapshot-time bundle, not as-of bundle.** Score every NULL-takeit row
+  with the CURRENTLY-active bundle (whatever `bundles/active.json` points
+  to). This gives a consistent baseline across history — "what today's
+  model would have predicted on past data." An as-of approach (different
+  bundle per row's date) is more historically faithful but much more
+  complex and doesn't actually help ML training, which wants a consistent
+  prediction series.
+- **TS implementation, not Python.** Reuses `scoreLottery` /
+  `scoreSilentBoom` from `api/_lib/takeit-detect.ts` directly. Same code
+  path as production; eliminates the parity-drift risk that a second
+  Python implementation would introduce (the existing
+  `takeit-score.parity.test.ts` exists for exactly this concern).
+- **Idempotent + resumable.** `WHERE takeit_prob IS NULL` makes it safe
+  to re-run after interruption. Batches of 1000–5000 rows with COMMIT
+  between batches so a crash doesn't lose all progress.
+- **Off-hours.** Run outside market hours to avoid sharing DB capacity
+  with the detect crons (no row contention either way since backfill
+  only touches historical rows, but Neon connection pressure is
+  considerate).
+- **Genuinely-unscoreable rows stay NULL.** Pre-migration rows missing
+  required features (gex_*, spot_at_trigger, etc.) trip the Phase 1.3
+  NaN/null guard and produce `prob: null`. Those stay NULL and are
+  tallied in the run summary. No Sentry flood — write counts to a local
+  log file, summarize at end.
+- **Bundle version stamped.** `takeit_model_version` gets written
+  alongside `takeit_prob` so future queries can tell which model
+  produced each historical score.
+
+### 4.3 Files
+
+- Create: `scripts/backfill-takeit-scores.mjs` (Node, uses the production
+  scoring helpers + `@neondatabase/serverless`)
+- Modify: the project `Makefile` — add `takeit-backfill` target. Support
+  optional flags: `FEED=lottery|silent_boom|both`, `SINCE=YYYY-MM-DD`,
+  `LIMIT=N` (for testing).
+- Output: `scripts/output/backfill-takeit-<run-id>.log` — per-batch row
+  counts, NULL-result tallies, total runtime, bundle version used.
+
+### 4.4 Time / cost estimate
+
+- ~660k lottery fires + ~65k silent-boom alerts ≈ 725k rows total. Subset
+  with `takeit_prob IS NULL` is probably 200k–400k depending on when the
+  Phase-3c migration landed.
+- Per-row cost: ~5ms scoring + ~1ms DB round-trip in batches. With 2000
+  per batch and per-batch overhead, ballpark 30–90 minutes total for a
+  full backfill.
+- Idempotent re-runs against the same bundle: ~0 (everything has
+  `takeit_prob` set, predicate short-circuits the WHERE).
 
 ---
 
