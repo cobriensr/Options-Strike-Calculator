@@ -262,6 +262,11 @@ def test_main_handles_sigterm_via_installed_handler(
         return None
 
     def fire_sigterm():
+        # First assert the captured handler is the canonical _on_sigterm,
+        # not some other callable that happens to raise. Catches a
+        # regression where `main` installs the wrong handler for SIGTERM
+        # (e.g. swapped with a SIGINT handler or a stub).
+        assert captured_handler[0] is main._on_sigterm
         # Invoke the captured handler the same way the OS signal
         # delivery does.
         captured_handler[0](signal.SIGTERM, None)

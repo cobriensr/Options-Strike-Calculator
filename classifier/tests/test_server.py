@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
 import threading
 import urllib.error
@@ -24,6 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import multileg_assembler
 import pytest
 
 import server
@@ -663,8 +665,6 @@ def test_get_version_returns_matcher_sha_and_patterns(running_server) -> None:
     assert set(data.keys()) == {"matcher_sha", "release", "patterns"}
 
     # matcher_sha is the sha256 of the imported multileg_assembler file.
-    import multileg_assembler
-
     expected_path = multileg_assembler.__file__
     assert expected_path is not None
     with open(expected_path, "rb") as fh:
@@ -673,8 +673,6 @@ def test_get_version_returns_matcher_sha_and_patterns(running_server) -> None:
     assert len(data["matcher_sha"]) == 64
 
     # release: either a real RAILWAY_DEPLOYMENT_ID or 'local'.
-    import os
-
     expected_release = os.environ.get("RAILWAY_DEPLOYMENT_ID", "local")
     assert data["release"] == expected_release
 
@@ -710,15 +708,17 @@ def test_get_version_caches_matcher_sha(running_server) -> None:
     assert data["matcher_sha"] != "unknown"
 
 
-def test_post_to_version_returns_405(running_server) -> None:
-    """``/version`` is GET-only. POST should 405 with Allow: GET."""
+def test_post_to_version_returns_405_with_allow_get(running_server) -> None:
+    """``/version`` is GET-only. POST should 405 with Allow: GET, mirroring
+    the POST /health response shape so a TS-client author hitting the
+    wrong verb gets a consistent diagnostic on either endpoint.
+    """
     _httpd, base_url = running_server
-    # No POST handler for /version → falls through to 404 in the current
-    # design (we didn't add a POST /version branch). Document that.
     status, headers, body = _do_post(f"{base_url}/version", body=b"{}")
-    assert status == 404
+    assert status == 405
+    assert headers["allow"] == "GET"
     assert headers["connection"] == "close"
-    assert json.loads(body) == {"error": "not found"}
+    assert json.loads(body) == {"error": "method not allowed"}
 
 
 def test_compute_matcher_sha_returns_unknown_on_read_error() -> None:
@@ -734,11 +734,8 @@ def test_compute_matcher_sha_returns_unknown_when_module_file_is_none() -> None:
     """Defensive: ``__file__`` can be None for namespace packages. Verify
     the function doesn't choke on that edge case.
     """
-    with patch.object(server, "_compute_matcher_sha", wraps=server._compute_matcher_sha):
-        import multileg_assembler
-
-        with patch.object(multileg_assembler, "__file__", None):
-            result = server._compute_matcher_sha()
+    with patch.object(multileg_assembler, "__file__", None):
+        result = server._compute_matcher_sha()
     assert result == "unknown"
 
 

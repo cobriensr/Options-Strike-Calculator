@@ -221,6 +221,12 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._send_405("GET")
             return
+        if self.path == "/version":
+            # GET-only sibling of /health — mirror the 405 + Allow: GET
+            # response so a TS-client author hitting the wrong verb gets
+            # the same diagnostic shape on either endpoint.
+            self._send_405("GET")
+            return
         if self.path != "/multileg-classify":
             self._send_404()
             return
@@ -301,8 +307,8 @@ class ClassifierHandler(BaseHTTPRequestHandler):
         # 30s timeout fired during the body read — translate to 408
         # Request Timeout and drop a Sentry breadcrumb so the soak
         # exposes whether 30s is too tight. In Python 3.10+
-        # ``socket.timeout`` is an alias for ``TimeoutError``; we catch
-        # the canonical name to satisfy ruff UP041.
+        # ``socket.timeout`` is a deprecated alias for ``TimeoutError``;
+        # we catch the canonical name.
         try:
             body_bytes = self.rfile.read(content_length)
         except (BrokenPipeError, ConnectionResetError):
