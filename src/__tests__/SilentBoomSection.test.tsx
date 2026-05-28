@@ -90,6 +90,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
       capturedAt: null,
     },
     avgHoldMinutes: 197,
+    takeitProb: 0.75,
     outcomes: {
       peakCeilingPct: null,
       minutesToPeak: null,
@@ -789,5 +790,81 @@ describe('hide-counter-flow filter', () => {
     const chip = screen.getByTestId('silent-boom-hide-counter-flow-chip');
     fireEvent.click(chip);
     expect(chip).toHaveTextContent('−2');
+  });
+});
+
+// ============================================================
+// TAKE-IT FLOOR CHIP
+// ============================================================
+
+describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('renders the TAKE-IT floor chip group with default 0.70 chip active', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    const chip = screen.getByTestId('takeit-floor-0.7');
+    expect(chip).toBeInTheDocument();
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('default 0.70 floor hides an alert with takeitProb: 0.3', () => {
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        underlyingSymbol: 'AAPL',
+        strike: 200,
+        takeitProb: 0.8,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'TSLA260508C00250000',
+        underlyingSymbol: 'TSLA',
+        strike: 250,
+        takeitProb: 0.3,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    // High takeitProb is visible.
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    // Low takeitProb is hidden by the default 0.70 floor.
+    expect(
+      screen.queryByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('clicking takeit-floor-0 ("all") reveals the previously-hidden alert', () => {
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'TSLA260508C00250000',
+        underlyingSymbol: 'TSLA',
+        strike: 250,
+        takeitProb: 0.3,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 1 }));
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    // Default 0.70 floor hides the low-takeitProb alert.
+    expect(
+      screen.queryByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
+
+    // Click the "all" preset to disable the floor.
+    fireEvent.click(screen.getByTestId('takeit-floor-0'));
+
+    // Alert is now visible.
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
   });
 });

@@ -266,6 +266,45 @@ const BURST_FILTERS: Array<{
   },
 ];
 
+// ============================================================
+// TAKE-IT FLOOR — calibrated XGBoost P(peak ≥ +20%) floor
+// ============================================================
+//
+// 0.70 is the empirical threshold where realized return stops being
+// negative historically (calibration docs in
+// takeit-phase3-production-scoring-2026-05-16.md). Default ON at 0.70.
+
+const TAKEIT_FLOOR_LS_KEY = 'silentBoom.takeitFloor';
+
+const TAKEIT_FLOOR_OPTIONS: Array<{
+  value: number;
+  label: string;
+  tooltip: string;
+}> = [
+  { value: 0, label: 'all', tooltip: 'No TAKE-IT floor.' },
+  {
+    value: 0.6,
+    label: '≥0.60',
+    tooltip: 'Hide fires below 0.60 calibrated P(peak ≥ +20%).',
+  },
+  {
+    value: 0.7,
+    label: '≥0.70',
+    tooltip:
+      'Default. ~0.70 is where historical realized return stops being negative.',
+  },
+  {
+    value: 0.75,
+    label: '≥0.75',
+    tooltip: 'Stricter — clearly positive expectancy historically.',
+  },
+  {
+    value: 0.8,
+    label: '≥0.80',
+    tooltip: 'Rare elite tail (≈1–4% of fires).',
+  },
+];
+
 interface ExportUrlParams {
   date: string;
   ticker?: string | null;
@@ -516,6 +555,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     'realized60mPct',
     exitPolicyPersistOpts,
   );
+  // TAKE-IT floor — calibrated XGBoost P(peak ≥ +20%) floor. Default 0.70.
+  const [takeitFloor, setTakeitFloor] = usePersistedState<number>(
+    TAKEIT_FLOOR_LS_KEY,
+    0.7,
+    floatPersistOpts,
+  );
   /** ISO of the 5-min bucket the scrubber is on; null = whole day. */
   const [bucketIso, setBucketIso] = useState<string | null>(null);
   const [page, setPage] = useState<number>(0);
@@ -681,6 +726,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
         return moneynessMode === 'otm' ? isOtm : !isOtm;
       });
     }
+    if (takeitFloor > 0) {
+      out = out.filter(
+        (a) => a.takeitProb != null && a.takeitProb >= takeitFloor,
+      );
+    }
     return out;
   }, [
     alerts,
@@ -691,6 +741,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
     hideRoundTrippedAnyDte,
     hideCounterFlow,
     moneynessMode,
+    takeitFloor,
   ]);
   // Per-filter hidden counts — computed against the unfiltered set
   // so each chip's "−N" count reflects what THAT filter is hiding,
@@ -735,6 +786,11 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const hiddenNoSpotCount =
     bucketIso == null && moneynessMode !== 'all'
       ? alerts.filter((a) => a.underlyingPriceAtSpike == null).length
+      : 0;
+  const hiddenTakeitCount =
+    takeitFloor > 0
+      ? alerts.filter((a) => a.takeitProb == null || a.takeitProb < takeitFloor)
+          .length
       : 0;
 
   // All tickers with at least one alert today, from the dedicated
@@ -1084,6 +1140,24 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   ariaPressed={active}
                 >
                   {b.label}
+                </FilterChip>
+              );
+            })}
+            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+            <span className={SECTION_LABEL}>TAKE-IT</span>
+            {TAKEIT_FLOOR_OPTIONS.map((o) => {
+              const active = takeitFloor === o.value;
+              return (
+                <FilterChip
+                  key={o.value}
+                  active={active}
+                  activeColor="sky"
+                  onClick={() => setTakeitFloor(o.value)}
+                  title={o.tooltip}
+                  ariaPressed={active}
+                  testId={`takeit-floor-${o.value}`}
+                >
+                  {o.label}
                 </FilterChip>
               );
             })}
@@ -1541,6 +1615,12 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                 {hideRoundTripped && hiddenRoundTrippedCount > 0 && (
                   <span className="ml-2 text-amber-300/80">
                     ({hiddenRoundTrippedCount} round-tripped hidden)
+                  </span>
+                )}
+                {takeitFloor > 0 && hiddenTakeitCount > 0 && (
+                  <span className="ml-2 text-sky-300/80">
+                    ({hiddenTakeitCount} hidden below TAKE-IT{' '}
+                    {takeitFloor.toFixed(2)})
                   </span>
                 )}
               </span>
