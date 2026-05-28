@@ -26,7 +26,6 @@ import {
 } from '../../utils/ticker-rollup-aggregates.js';
 import { useTickerGrouping } from '../../hooks/useTickerGrouping.js';
 import { deltaFromAtFire } from '../../utils/macro-badges.js';
-import { estimateFilteredTotalPages } from '../../utils/filtered-pagination.js';
 import {
   SILENT_BOOM_EXIT_POLICY_LABELS,
   SILENT_BOOM_EXIT_POLICY_TOOLTIPS,
@@ -908,24 +907,6 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
-  // totalPages derived AFTER the client-filter pass so the estimate uses
-  // the real post-filter visible count (displayedAlerts.length) as the
-  // numerator. `null` means the denominator is unknown — the label drops
-  // to "page N" rather than lying with a fabricated total.
-  //
-  // When the user is scrubbed to a single bucket (bucketIso != null) the
-  // visible count is structurally tiny relative to the day total — the
-  // pagination block is suppressed entirely below, so the value of
-  // totalPages doesn't reach the screen in that case anyway.
-  const totalPages = estimateFilteredTotalPages({
-    serverTotal: total,
-    pageSize: PAGE_SIZE,
-    currentPage,
-    currentPageRequested: alerts.length,
-    currentPageVisible: displayedAlerts.length,
-    hasMore,
-  });
-
   return (
     <SectionBox label="Silent Boom" collapsible>
       <div className="space-y-3">
@@ -1699,9 +1680,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                     ← prev
                   </button>
                   <span className="font-mono text-xs text-neutral-400">
-                    {totalPages != null
-                      ? `${currentPage} / ${totalPages}`
-                      : `page ${currentPage}`}
+                    page {currentPage}
                   </span>
                   <button
                     type="button"

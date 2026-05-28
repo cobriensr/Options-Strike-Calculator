@@ -45,7 +45,6 @@ import {
   type FilterChipColor,
 } from '../ui/filter-toolbar-tokens.js';
 import { FilterChip } from '../ui/FilterChip.js';
-import { estimateFilteredTotalPages } from '../../utils/filtered-pagination.js';
 
 const PAGE_SIZE = 50;
 /** localStorage keys for persisting user preferences. */
@@ -767,21 +766,6 @@ export function LotteryFinderSection({
       reignitedFires: filteredReignited,
     };
   }, [fires, rawReignitedFires, applyClientFilters]);
-
-  // totalPages derived AFTER the client-filter pass so the estimate uses
-  // the real post-filter visible count (filteredFires.length) as the
-  // numerator. Placement here — after the applyClientFilters memo — is
-  // intentional; moving it back above the filter pipeline would break the
-  // extrapolation. `null` means the denominator is unknown — the label
-  // drops to "page N" rather than lying with a fabricated total.
-  const totalPages = estimateFilteredTotalPages({
-    serverTotal: total,
-    pageSize: PAGE_SIZE,
-    currentPage,
-    currentPageRequested: fires.length,
-    currentPageVisible: filteredFires.length,
-    hasMore,
-  });
 
   // Group displayed fires by ticker so each underlying renders as one
   // collapsible row. Grouping + ordering + conviction/storm rollups
@@ -1619,9 +1603,7 @@ export function LotteryFinderSection({
                     ← prev
                   </button>
                   <span className="font-mono text-xs text-neutral-400">
-                    {totalPages != null
-                      ? `${currentPage} / ${totalPages}`
-                      : `page ${currentPage}`}
+                    page {currentPage}
                   </span>
                   <button
                     type="button"
