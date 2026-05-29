@@ -41,6 +41,7 @@ const {
 
   const timeScale = {
     fitContent: vi.fn(),
+    setVisibleRange: vi.fn(),
     timeToCoordinate,
     subscribeVisibleTimeRangeChange: vi.fn(),
     unsubscribeVisibleTimeRangeChange: vi.fn(),
@@ -308,6 +309,80 @@ describe('TickerNetFlowChart: cleanup', () => {
     expect(mockApplyOptions).toHaveBeenCalledWith(
       expect.objectContaining({ height: 300 }),
     );
+  });
+});
+
+// ============================================================
+// SESSION-SPAN WHITESPACE SCAFFOLD
+// ============================================================
+// When `date` is provided, the flow series must be bracketed with
+// minute-cadence whitespace points spanning 08:30–15:00 CT so
+// lightweight-charts' (index-based) time scale spans the full session.
+// Without this, setVisibleRange() clamps to the data extent — it cannot
+// extrapolate time — so a ticker the daemon only indexed for the last
+// few minutes collapses the axis to a sliding window and the fixed-time
+// fire marker appears to drift between polls.
+
+describe('TickerNetFlowChart: session-span whitespace scaffold', () => {
+  const ticks = [
+    makeTick({ ts: '2026-05-08T14:30:00Z', cumNcp: 100 }),
+    makeTick({ ts: '2026-05-08T14:31:00Z', cumNcp: 200 }),
+  ];
+  // 2026-05-08 is CDT (UTC-5): 08:30 CT = 13:30Z, 15:00 CT = 20:00Z.
+  const openSec = Math.floor(Date.parse('2026-05-08T13:30:00Z') / 1000);
+  const closeSec = Math.floor(Date.parse('2026-05-08T20:00:00Z') / 1000);
+  const firstTickSec = Math.floor(Date.parse('2026-05-08T14:30:00Z') / 1000);
+
+  type Item = { time: number; value?: number };
+  const flowArrays = (): Item[][] =>
+    mockSetData.mock.calls
+      .map((c) => c[0] as Item[])
+      .filter((arr) => Array.isArray(arr) && arr.length >= 2);
+
+  it('brackets flow data with session-bound whitespace when date is provided', () => {
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        date="2026-05-08"
+        ariaLabel="t"
+      />,
+    );
+    const arrays = flowArrays();
+    const scaffolded = arrays.find(
+      (arr) => arr[0]!.time === openSec && arr.at(-1)!.time === closeSec,
+    );
+    expect(scaffolded).toBeDefined();
+    // Endpoints are whitespace (no value); the real ticks survive inside.
+    expect(scaffolded![0]!.value).toBeUndefined();
+    expect(scaffolded!.at(-1)!.value).toBeUndefined();
+    expect(
+      scaffolded!.some((p) => p.value === 100 && p.time === firstTickSec),
+    ).toBe(true);
+    // Minute-cadence fill — no gap between consecutive points exceeds 60s,
+    // so the axis is time-proportional rather than collapsing the empty
+    // region into a single bar-width.
+    const maxGap = scaffolded!.reduce(
+      (m, p, i) =>
+        i === 0 ? m : Math.max(m, p.time - scaffolded![i - 1]!.time),
+      0,
+    );
+    expect(maxGap).toBeLessThanOrEqual(60);
+    // The scaffold exists so this pin actually holds (vs. clamping to the
+    // data extent) — assert it fires with the full-session bounds.
+    expect(mockChart.timeScale().setVisibleRange).toHaveBeenCalledWith({
+      from: openSec,
+      to: closeSec,
+    });
+  });
+
+  it('does not scaffold flow data when date is absent (back-compat)', () => {
+    render(<TickerNetFlowChart series={ticks} candles={[]} ariaLabel="t" />);
+    const arrays = flowArrays();
+    // No array starts at the session-open whitespace point; flow arrays
+    // start at the first real tick, unchanged from pre-fix behavior.
+    expect(arrays.every((arr) => arr[0]!.time !== openSec)).toBe(true);
+    expect(arrays.some((arr) => arr[0]!.time === firstTickSec)).toBe(true);
   });
 });
 

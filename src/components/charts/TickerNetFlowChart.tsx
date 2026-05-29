@@ -106,6 +106,55 @@ const fmtHeaderTime = (iso: string): string => {
 /** Local time-pinned alias — narrower than the library's Time union. */
 type Point = { time: UTCTimestamp; value: number };
 
+/**
+ * A drawn point or a whitespace point. lightweight-charts treats a data
+ * item with no `value` as whitespace: it reserves a slot on the (index-
+ * based) time scale without painting anything.
+ */
+type FlowPoint = Point | { time: UTCTimestamp };
+
+/** Whitespace cadence — one slot per minute, matching the per-minute data. */
+const SESSION_STEP_SEC = 60;
+
+/**
+ * Bracket a deduped value series with minute-cadence whitespace points so
+ * the chart's time scale spans the full 08:30–15:00 CT session.
+ *
+ * Why this is needed: lightweight-charts' time scale is index-based and
+ * `setVisibleRange` cannot extrapolate time — it clamps to the first/last
+ * data point. When the WS daemon has only indexed the last few minutes
+ * for a ticker, the unscaffolded axis collapses to that sliding window,
+ * which makes the fixed-time fire marker appear to drift between polls.
+ *
+ * Whitespace only fills the EMPTY regions (open→first tick, last tick→
+ * close) at minute cadence; the real data region keeps its own cadence.
+ * Filling at one slot per minute keeps consecutive gaps small so the axis
+ * stays time-proportional instead of compressing the empty span into a
+ * single bar-width. No-op when `date` is absent (tests / legacy callers).
+ */
+function sessionScaffold(
+  points: Point[],
+  date: string | undefined,
+): FlowPoint[] {
+  if (date == null || points.length === 0) return points;
+  const bounds = ctSessionBounds(date);
+  const openSec = Math.floor(Date.parse(bounds.min) / 1000);
+  const closeSec = Math.floor(Date.parse(bounds.max) / 1000);
+  if (!Number.isFinite(openSec) || !Number.isFinite(closeSec)) return points;
+
+  const first = points[0]!.time as number;
+  const last = points.at(-1)!.time as number;
+  const out: FlowPoint[] = [];
+  for (let t = openSec; t < first; t += SESSION_STEP_SEC) {
+    out.push({ time: t as UTCTimestamp });
+  }
+  out.push(...points);
+  for (let t = last + SESSION_STEP_SEC; t <= closeSec; t += SESSION_STEP_SEC) {
+    out.push({ time: t as UTCTimestamp });
+  }
+  return out;
+}
+
 interface TickerNetFlowChartProps {
   /** Per-tick rows with cumNcp / cumNpp / cumNcv / cumNpv populated. */
   series: NetFlowTick[];
@@ -253,12 +302,14 @@ function TickerNetFlowChartInner({
       time: isoToUtcSec(r.ts),
       value: r.cumNcv - r.cumNpv,
     }));
+    // Bracket each series with session-spanning whitespace so the time
+    // scale covers the full 08:30–15:00 CT window (see sessionScaffold).
     return {
-      ncp: dedupAscending(ncpRaw),
-      npp: dedupAscending(nppRaw),
-      netVol: dedupAscending(netVolRaw),
+      ncp: sessionScaffold(dedupAscending(ncpRaw), date),
+      npp: sessionScaffold(dedupAscending(nppRaw), date),
+      netVol: sessionScaffold(dedupAscending(netVolRaw), date),
     };
-  }, [series]);
+  }, [series, date]);
 
   const priceData = useMemo<Point[] | null>(() => {
     if (candles.length === 0) return null;
