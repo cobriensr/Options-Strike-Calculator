@@ -189,7 +189,12 @@ describe('detect-silent-boom handler', () => {
     });
   });
 
-  it('returns skipped when no ticks are in the scan window', async () => {
+  it('returns skipped + warns when no ticks are in the scan window (active session)', async () => {
+    // Fake only the clock to a clearly-active session time (11:00 ET) so
+    // the isPastCashOpen() gate on the empty-window warning is satisfied
+    // deterministically regardless of when CI runs.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-05-29T15:00:00Z')); // 11:00 ET, active
     mockSentryCaptureMessage.mockClear();
     mockSql.mockResolvedValueOnce([]);
 
@@ -206,8 +211,7 @@ describe('detect-silent-boom handler', () => {
       message: 'no ticks in scan window',
     });
     expect(mockSql).toHaveBeenCalledTimes(1);
-    // Empty bucket window during market hours is anomalous (the cron-
-    // instrumentation gate guarantees we're inside open hours) — emit
+    // Empty bucket window during active market hours is anomalous — emit
     // a Sentry warning so silent stalls like the 2026-05-18 Neon blip
     // surface as alerts instead of zero-row DB hours.
     expect(mockSentryCaptureMessage).toHaveBeenCalledTimes(1);
@@ -221,6 +225,33 @@ describe('detect-silent-boom handler', () => {
         }),
       }),
     );
+    vi.useRealTimers();
+  });
+
+  it('returns skipped WITHOUT warning when the empty window is pre-open', async () => {
+    // 13:29 UTC = 9:29 ET = 8:29 CT — inside the isMarketHours 5-min
+    // pre-open buffer but before the cash open. An empty scan here is
+    // normal (the tape has not started), so the anomaly warning must be
+    // suppressed (Sentry DESERT-97 false alarm).
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-05-29T13:29:00Z')); // 9:29 ET, pre-open
+    mockSentryCaptureMessage.mockClear();
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      message: 'no ticks in scan window',
+    });
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it('inserts an alert when the silent-boom pattern matches', async () => {

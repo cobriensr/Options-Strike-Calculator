@@ -123,6 +123,14 @@ export default withCronInstrumentation(
     const db = getDb();
     const { apiKey } = ctx;
 
+    // Each fire with post-entry ticks makes one UW /option-contract
+    // intraday call. Steady state is ~52 fires/day, but a backlog (cron
+    // outage) could otherwise queue 1000s of UW calls in one run —
+    // throttled to the shared 115/min UW cap, that overruns the 300s
+    // maxDuration and spews "UW 429" warnings. Cap the batch so a run
+    // always fits the budget + timeout; leftover fires roll to the next
+    // run (ORDER BY inserted_at ASC drains oldest first). Paired with the
+    // 21:40 schedule slot (staggered off the 21:30 enrich-* pile-up).
     const fires = (await withDbRetry(
       () => db`
         SELECT
@@ -138,7 +146,7 @@ export default withCronInstrumentation(
         FROM lottery_finder_fires
         WHERE enriched_at IS NULL
         ORDER BY inserted_at ASC
-        LIMIT 1000
+        LIMIT 300
       `,
       2,
       10_000,

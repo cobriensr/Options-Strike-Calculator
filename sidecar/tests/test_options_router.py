@@ -36,6 +36,7 @@ from options_router import (  # noqa: E402
     STAT_TYPE_OPENING_PRICE,
     STAT_TYPE_SETTLEMENT,
     STAT_TYPE_TO_KWARG,
+    WINDOW_FILTER_STALE_DROP_THRESHOLD,
     OptionsRecordRouter,
 )
 
@@ -476,12 +477,13 @@ class TestWindowFilterSummaryThrottle:
         router._maybe_log_window_filter_summary()
         mocks["capture_message"].assert_not_called()
 
-    def test_repeated_off_window_drops_throttle_to_one_summary(
+    def test_routine_off_window_drops_do_not_page(
         self, router_setup: tuple[OptionsRecordRouter, dict]
     ) -> None:
-        """Multiple off-window drops within the throttle interval produce
-        only one summary — same throttle mechanics as the lag summary, but
-        on its own independent throttle state."""
+        """Sub-threshold off-window drops are EXPECTED trending-session
+        filtering (we track ATM +/-10 only). They are counted + info-logged
+        locally but must NOT page Sentry — this is the DESERT-DG false
+        alarm we are silencing."""
         router, mocks = router_setup
         router.option_definitions[99] = {
             "strike": 6500.0,
@@ -491,7 +493,52 @@ class TestWindowFilterSummaryThrottle:
         router.options_strikes = MagicMock()
         router.options_strikes.strikes = [5850]
 
-        # First drop fires immediately because last_window_summary_ts = 0.
+        # One off-window drop: summary runs (last_window_summary_ts = 0) but
+        # drops (1) is far below the stale threshold -> info log, no page.
+        router.handle_trade(_make_trade_record(iid=99))
+        mocks["capture_message"].assert_not_called()
+
+    def test_stale_window_drop_burst_pages_sentry(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """A burst >= WINDOW_FILTER_STALE_DROP_THRESHOLD in one interval
+        signals a likely FROZEN ATM window (ES bars stalled) and IS the
+        actionable case — it pages with a stale-window message."""
+        router, mocks = router_setup
+        router.option_definitions[99] = {
+            "strike": 6500.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+        router.options_strikes = MagicMock()
+        router.options_strikes.strikes = [5850]
+
+        # Preload the counter to one below threshold; the next drop crosses
+        # it and the summary (last_window_summary_ts = 0) escalates to Sentry.
+        router.window_filter_drops = WINDOW_FILTER_STALE_DROP_THRESHOLD - 1
+        router.handle_trade(_make_trade_record(iid=99))
+
+        mocks["capture_message"].assert_called_once()
+        msg = mocks["capture_message"].call_args.args[0]
+        assert "STALE" in msg
+        assert mocks["capture_message"].call_args.kwargs["level"] == "warning"
+
+    def test_stale_summary_throttles_to_one_per_interval(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """Even above threshold, the summary fires at most once per
+        interval — own throttle state, independent of the lag summary."""
+        router, mocks = router_setup
+        router.option_definitions[99] = {
+            "strike": 6500.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+        router.options_strikes = MagicMock()
+        router.options_strikes.strikes = [5850]
+
+        # First burst crosses the threshold and pages.
+        router.window_filter_drops = WINDOW_FILTER_STALE_DROP_THRESHOLD - 1
         router.handle_trade(_make_trade_record(iid=99))
         assert mocks["capture_message"].call_count == 1
 
@@ -499,11 +546,11 @@ class TestWindowFilterSummaryThrottle:
 
         router.last_window_summary_ts = real_time.time()
 
-        for _ in range(5):
-            router.handle_trade(_make_trade_record(iid=99))
-
+        # A second above-threshold burst within the interval is throttled.
+        router.window_filter_drops = WINDOW_FILTER_STALE_DROP_THRESHOLD + 10
+        router._maybe_log_window_filter_summary()
         assert mocks["capture_message"].call_count == 1
-        assert router.window_filter_drops == 5
+        assert router.window_filter_drops == WINDOW_FILTER_STALE_DROP_THRESHOLD + 10
 
 
 # ---------------------------------------------------------------------------

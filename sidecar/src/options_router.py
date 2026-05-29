@@ -69,6 +69,20 @@ DEFINITION_LAG_SUMMARY_INTERVAL_S = 60.0
 # FINDING 4: emit a window-filter-drop summary at most once per this interval.
 WINDOW_FILTER_SUMMARY_INTERVAL_S = 60.0
 
+# Window-filter drops are EXPECTED during trending sessions: as ES trends,
+# the ATM window recenters and previously-subscribed (now off-window) strikes
+# keep printing — we deliberately track only ATM +/-10, so filtering those is
+# healthy, not data loss. Routine drop counts (tens/min on a trending day) are
+# therefore logged locally at INFO and must NOT page. The one genuinely
+# actionable failure mode is a STALE/FROZEN window (e.g. ES OHLCV bars stop
+# arriving, so recentering halts): then the entire near-ATM tape — hundreds to
+# thousands of trades/min — starts failing the filter. Only escalate to a
+# Sentry warning once drops in the summary interval cross this threshold, which
+# sits well above observed trending-session noise (~40/min on 2026-05-29) yet
+# far below a frozen-window tape. Heuristic — tune against future trending days
+# if benign sessions start tripping it.
+WINDOW_FILTER_STALE_DROP_THRESHOLD = 150
+
 # FINDING 4: ATM-window strikes sit on a 5-point grid; a half-point band
 # absorbs float-representation noise (e.g. 5849.9999999 vs 5850) without
 # false-matching a genuinely off-grid / off-window strike.
@@ -380,15 +394,30 @@ class OptionsRecordRouter:
         self.window_filter_drops = 0
         self.last_window_summary_ts = now
 
+        # Routine trending-session filtering: log locally, do not page.
+        if drops < WINDOW_FILTER_STALE_DROP_THRESHOLD:
+            log.info(
+                "Filtered %d off-ATM-window ES option trades in last %.0fs "
+                "(expected as ES trends; tracking ATM +/-10 only)",
+                drops,
+                WINDOW_FILTER_SUMMARY_INTERVAL_S,
+            )
+            return
+
+        # Above the stale-window threshold: the ATM window is likely frozen
+        # (ES OHLCV bars stalled, so recentering halted) and we are dropping
+        # the live near-ATM tape. THIS is the actionable case — page Sentry.
         from sentry_setup import capture_message
 
         capture_message(
-            f"Dropped {drops} ES option trades outside the ATM strike "
-            f"window (known instruments, strike not within "
-            f"±{STRIKE_MATCH_TOLERANCE} of any window strike)",
+            f"Dropped {drops} ES option trades outside the ATM strike window "
+            f"in {WINDOW_FILTER_SUMMARY_INTERVAL_S:.0f}s "
+            f"(>= {WINDOW_FILTER_STALE_DROP_THRESHOLD}/interval — ATM window "
+            f"may be STALE; check ES OHLCV bar arrival / recentering)",
             level="warning",
             context={
                 "drops": drops,
                 "interval_s": round(WINDOW_FILTER_SUMMARY_INTERVAL_S, 1),
+                "stale_threshold": WINDOW_FILTER_STALE_DROP_THRESHOLD,
             },
         )

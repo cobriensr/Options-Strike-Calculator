@@ -227,15 +227,15 @@
     },
     {
       "path": "/api/cron/enrich-lottery-outcomes",
-      "schedule": "30 21 * * 1-5"
+      "schedule": "40 21 * * 1-5"
     },
     {
       "path": "/api/cron/enrich-silent-boom-outcomes",
-      "schedule": "30 21 * * 1-5"
+      "schedule": "45 21 * * 1-5"
     },
     {
       "path": "/api/cron/enrich-periscope-lottery-outcomes",
-      "schedule": "30 21 * * 1-5"
+      "schedule": "50 21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-nope",

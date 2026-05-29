@@ -119,6 +119,18 @@ def _connection() -> duckdb.DuckDBPyConnection:
         # 2 GB is comfortably larger than any single intermediate the current
         # queries produce yet well under the Railway volume / overlay budget.
         conn.execute("SET max_temp_directory_size = '2GB'")
+        # SIDE: the long-horizon TBBO queries (tbbo_ofi_percentile with
+        # horizon_days=252 over a 1h rolling window) build large minute-grain
+        # window-function intermediates that spill to temp. On the Railway
+        # container the effective temp ceiling is ~1.8 GiB (actual free disk,
+        # below the 2GB setting above), and the spill blew past it
+        # ("failed to offload data block ... 1.8 GiB/1.8 GiB used"). DuckDB's
+        # own remedy for that error is to drop insertion-order preservation,
+        # which lets the engine pipeline + aggregate without buffering rows to
+        # preserve input order — a large temp-footprint reduction. Safe here
+        # because every analytical query in this module ends with an explicit
+        # ORDER BY, so output ordering does not depend on insertion order.
+        conn.execute("SET preserve_insertion_order = false")
         _tls.conn = conn
         log.debug(
             "DuckDB connection initialized for thread %s",

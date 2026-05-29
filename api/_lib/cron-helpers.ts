@@ -52,6 +52,35 @@ export function isMarketHours(): boolean {
 }
 
 /**
+ * True when the current ET time is at/after the regular cash open
+ * (9:30 ET / 8:30 CT) plus an optional grace, and still at/before close.
+ *
+ * Distinct from `isMarketHours()`, which deliberately opens its gate 5
+ * minutes early (9:25 ET / 8:25 CT) so top-of-minute crons capture the
+ * opening auction. That pre-open buffer legitimately has zero *executed*
+ * trades, so "empty window" anomaly checks must gate on the actual open —
+ * not the buffered window — or they false-alarm in the 8:25-8:29 CT
+ * pre-open minutes (observed 2026-05-28/29: detect-lottery-fires and
+ * detect-silent-boom paging at 13:29 UTC = 8:29 CT, one minute before
+ * cash open). `graceMinutes` gives the tape a moment to start printing
+ * after the bell before an empty scan is treated as anomalous.
+ */
+export function isPastCashOpen(graceMinutes = 0): boolean {
+  const now = new Date();
+  const day = getETDayOfWeek(now);
+  if (day === 0 || day === 6) return false;
+
+  const dateStr = getETDateStr(now);
+  const closeHour = getMarketCloseHourET(dateStr);
+  if (closeHour == null) return false; // holiday
+
+  const { hour, minute } = getETTime(now);
+  const totalMin = hour * 60 + minute;
+  const closeMin = closeHour * 60;
+  return totalMin >= MARKET_MINUTES.OPEN + graceMinutes && totalMin <= closeMin;
+}
+
+/**
  * Futures-tied RTH window: 08:30–15:55 CT (== 09:30–16:55 ET).
  *
  * Wider than `isMarketHours()` on the close side (15:55 CT vs equity

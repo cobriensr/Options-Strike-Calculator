@@ -118,7 +118,7 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'enrich-periscope-lottery-outcomes': {
-    schedule: '30 21 * * 1-5',
+    schedule: '50 21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
@@ -134,12 +134,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'enrich-lottery-outcomes': {
-    schedule: '30 21 * * 1-5',
+    schedule: '40 21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
   'enrich-silent-boom-outcomes': {
-    schedule: '30 21 * * 1-5',
+    schedule: '45 21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },

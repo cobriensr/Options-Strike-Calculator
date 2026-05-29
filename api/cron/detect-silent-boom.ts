@@ -34,6 +34,7 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { isPastCashOpen } from '../_lib/cron-helpers.js';
 import {
   loadTakeitDetectContext,
   scoreSilentBoom,
@@ -297,16 +298,26 @@ export default withCronInstrumentation(
       // warning so the silent-skip pattern from 2026-05-18 (where hours
       // 18-20 UTC showed zero alerts with no Sentry event) can't recur
       // without surfacing.
-      Sentry.captureMessage(
-        'detect-silent-boom: empty bucket scan during market hours',
-        {
-          level: 'warning',
-          tags: {
-            'cron.job': 'detect-silent-boom',
-            'cron.anomaly': 'empty-window',
+      //
+      // BUT: the cronGuard gate (isMarketHours) opens 5 min before the
+      // cash open to catch the auction, and the scan window reaches back
+      // into the pre-open minutes. An empty scan in that pre-open sliver
+      // is normal, not a stall — gate the alarm on isPastCashOpen() (with
+      // a 2-min grace for the tape to start printing) so we stop false-
+      // paging at 8:25-8:31 CT while still catching real stalls once the
+      // session is genuinely active.
+      if (isPastCashOpen(2)) {
+        Sentry.captureMessage(
+          'detect-silent-boom: empty bucket scan during market hours',
+          {
+            level: 'warning',
+            tags: {
+              'cron.job': 'detect-silent-boom',
+              'cron.anomaly': 'empty-window',
+            },
           },
-        },
-      );
+        );
+      }
       return {
         status: 'skipped',
         message: 'no ticks in scan window',

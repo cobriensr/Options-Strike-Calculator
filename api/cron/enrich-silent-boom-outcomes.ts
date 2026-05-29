@@ -91,7 +91,11 @@ export default withCronInstrumentation(
         FROM silent_boom_alerts
         WHERE enriched_at IS NULL
         ORDER BY inserted_at ASC
-        LIMIT 1000
+        -- Bound the batch so a backlog can't queue 1000s of UW intraday
+        -- calls in one run, overrunning the shared 115/min UW cap + 300s
+        -- maxDuration (the "UW 429" pile-up fix). Leftover alerts drain
+        -- oldest-first on the next run. Mirrors enrich-lottery-outcomes.
+        LIMIT 300
       `,
       2,
       10_000,
