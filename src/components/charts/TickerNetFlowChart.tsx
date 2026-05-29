@@ -280,9 +280,12 @@ function TickerNetFlowChartInner({
     return {
       time: last.ts,
       spot: candles.at(-1)?.close ?? null,
-      ncp: last.cumNcp,
-      npp: last.cumNpp,
-      netVol: last.cumNcv - last.cumNpv,
+      ncp: last.cumNcp, // cumulative net call premium $
+      npp: last.cumNpp, // cumulative net put premium $
+      diff: last.cumNcp - last.cumNpp, // premium divergence (Δ$)
+      ncv: last.cumNcv, // cumulative net call volume (contracts)
+      npv: last.cumNpv, // cumulative net put volume (contracts)
+      diffVol: last.cumNcv - last.cumNpv, // volume divergence (Δv) = bottom pane
     };
   }, [series, candles]);
 
@@ -623,6 +626,7 @@ function TickerNetFlowChartInner({
           <span className="text-neutral-500">
             {fmtHeaderTime(headerStats.time)}
           </span>
+          {/* Charted-line metrics carry a color dot mapping to their series. */}
           {headerStats.spot != null && (
             <span className="inline-flex items-center gap-1.5">
               <span
@@ -637,20 +641,20 @@ function TickerNetFlowChartInner({
           )}
           <span
             className="inline-flex items-center gap-1.5"
-            title="Net volume (contracts): cumulative net call − net put volume"
+            title="Cumulative Net Call Premium $ (call buys − call sells)"
           >
             <span
               aria-hidden
-              className="inline-block h-1.5 w-1.5 rounded-full bg-slate-400"
+              className="inline-block h-1.5 w-1.5 rounded-full bg-green-400"
             />
-            <span className="text-neutral-400">Vol</span>
+            <span className="text-neutral-400">NCP</span>
             <span className="text-neutral-100">
-              {fmtHeaderVol(headerStats.netVol)}
+              {fmtHeaderPremium(headerStats.ncp)}
             </span>
           </span>
           <span
             className="inline-flex items-center gap-1.5"
-            title="Cumulative Net Put Premium $"
+            title="Cumulative Net Put Premium $ (put buys − put sells)"
           >
             <span
               aria-hidden
@@ -661,17 +665,48 @@ function TickerNetFlowChartInner({
               {fmtHeaderPremium(headerStats.npp)}
             </span>
           </span>
+          {/* Premium divergence — derived, signed color, no dot. */}
+          <span title="Premium divergence: NCP − NPP. Positive = bull $-flow; negative = bear $-flow.">
+            <span className="text-neutral-400">Δ$</span>{' '}
+            <span
+              className={
+                headerStats.diff >= 0 ? 'text-green-300' : 'text-red-300'
+              }
+            >
+              {fmtHeaderPremium(headerStats.diff)}
+            </span>
+          </span>
+          {/* Contract-volume split — distinguishes big-money $ flow from
+              retail-contract flow that the dollar Δ alone can hide. */}
+          <span title="Cumulative net call volume (contracts)">
+            <span className="text-neutral-400">NCV</span>{' '}
+            <span className="text-neutral-100">
+              {fmtHeaderVol(headerStats.ncv)}
+            </span>
+          </span>
+          <span title="Cumulative net put volume (contracts)">
+            <span className="text-neutral-400">NPV</span>{' '}
+            <span className="text-neutral-100">
+              {fmtHeaderVol(headerStats.npv)}
+            </span>
+          </span>
+          {/* Net volume (Δv = NCV − NPV) — the bottom pane's series; slate
+              dot maps it to that pane. Signed color. */}
           <span
             className="inline-flex items-center gap-1.5"
-            title="Cumulative Net Call Premium $"
+            title="Net volume (contracts): NCV − NPV. Bottom-pane series."
           >
             <span
               aria-hidden
-              className="inline-block h-1.5 w-1.5 rounded-full bg-green-400"
+              className="inline-block h-1.5 w-1.5 rounded-full bg-slate-400"
             />
-            <span className="text-neutral-400">NCP</span>
-            <span className="text-neutral-100">
-              {fmtHeaderPremium(headerStats.ncp)}
+            <span className="text-neutral-400">Δv</span>
+            <span
+              className={
+                headerStats.diffVol >= 0 ? 'text-green-300' : 'text-red-300'
+              }
+            >
+              {fmtHeaderVol(headerStats.diffVol)}
             </span>
           </span>
         </div>

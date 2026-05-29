@@ -30,9 +30,12 @@ consumers consistent.
   - `netVol` = `last.cumNcv − last.cumNpv` (contracts, comma-formatted)
   - `npp` = `last.cumNpp`, `ncp` = `last.cumNcp` (compact $M/$K)
   - freshness label = M/D + last-tick CT time (12h)
-- Render inline header row above the canvas: `{date time} • {SYM}: {spot} •
-  Vol: {netVol} • NPP: {npp} • NCP: {ncp}`, each metric prefixed by a colored
-  dot matching its series (amber=price, slate=vol, red=NPP, green=NCP).
+- Render inline header row above the canvas with the full metric set:
+  `{date time} • {SYM}: {spot} • NCP • NPP • Δ$ • NCV • NPV • Δv`. Charted-line
+  metrics carry a colored dot mapping to their series (amber=price, green=NCP,
+  red=NPP, slate=Δv→volume pane); derived/volume metrics (Δ$, NCV, NPV) are
+  plain neutral text, with signed green/red coloring on the Δ values. (User
+  wants the contract-volume split visible, not just net Vol — 2026-05-29.)
 - Add `Net Premiums` / `Net Volume` pane-title overlays (absolute, top-left of
   each pane; volume-pane Y computed from `chart.panes()[1]` geometry like the
   existing marker-X recompute).

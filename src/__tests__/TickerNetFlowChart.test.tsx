@@ -451,7 +451,7 @@ describe('TickerNetFlowChart: UW-style inline header', () => {
     expect(screen.getByText('757.44')).toBeInTheDocument();
   });
 
-  it('renders compact NCP / NPP and comma-formatted net Vol in the header', () => {
+  it('renders premium ($) and contract-volume metrics in the header', () => {
     render(
       <TickerNetFlowChart
         series={ticks}
@@ -460,10 +460,31 @@ describe('TickerNetFlowChart: UW-style inline header', () => {
         ariaLabel="t"
       />,
     );
-    // cumNcp = -76.1M, cumNpp = 656K, netVol = cumNcv - cumNpv = -55,440.
+    // Premium $ (compact): NCP = -76.1M, NPP = 656K,
+    // Δ$ = -76.1M - 656K = -76,756,000 → -76.8M.
     expect(screen.getByText('-76.1M')).toBeInTheDocument();
     expect(screen.getByText('656K')).toBeInTheDocument();
+    expect(screen.getByText('-76.8M')).toBeInTheDocument();
+    // Contract volume (comma int): NCV = -10,000, NPV = 45,440,
+    // Δv = NCV - NPV = -55,440.
+    expect(screen.getByText('-10,000')).toBeInTheDocument();
+    expect(screen.getByText('45,440')).toBeInTheDocument();
     expect(screen.getByText('-55,440')).toBeInTheDocument();
+  });
+
+  it('shows the NCV / NPV / Δv volume labels alongside premiums', () => {
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[makeCandle({ ts: '2026-05-29T16:37:00Z', close: 757.44 })]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(screen.getByText('NCV')).toBeInTheDocument();
+    expect(screen.getByText('NPV')).toBeInTheDocument();
+    expect(screen.getByText('Δv')).toBeInTheDocument();
+    expect(screen.getByText('Δ$')).toBeInTheDocument();
   });
 
   it('renders the Net Premiums and Net Volume pane titles when populated', () => {
