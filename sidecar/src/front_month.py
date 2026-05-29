@@ -76,7 +76,9 @@ def front_month_cte(
         symbology_path_param: SQL token referencing the symbology
             parquet path. Same convention as ``parquet_path_param``.
         date_filter_sql: SQL predicate (without the ``WHERE`` keyword)
-            applied to ``CAST(date_trunc('day', bars.<ts_column>) AS DATE)``.
+            applied to the CME *session date* of ``bars.<ts_column>``
+            (the 17:00 CT roll, NOT the UTC calendar day — see the
+            ``session_date_sql`` note in the body).
             Examples: ``"= ?::DATE"`` for a single date, or
             ``"BETWEEN ?::DATE AND ?::DATE"`` for a range. Bind values
             via the caller's ``execute(query, [...])`` parameter list in
@@ -86,7 +88,7 @@ def front_month_cte(
             (correct for OHLCV bars); ``'ts_recv'`` is the
             Databento-receive time (correct for TBBO trade ticks where
             ``ts_event`` is sometimes absent or coarse). Picking the
-            wrong one shifts trades across UTC day boundaries and
+            wrong one shifts trades across the CME session boundary and
             silently corrupts aggregates.
         tiebreak: Tiebreaker for ``ROW_NUMBER() ... ORDER BY total_vol DESC``.
             ``'contract_asc'`` (the default) appends ``, contract ASC``
@@ -142,6 +144,19 @@ def front_month_cte(
     base_cols.extend(extra_select_cols)
     select_list = ",\n                   ".join(base_cols)
 
+    # The `day` bucket is the CME *session* date (FINDING A), NOT the UTC
+    # calendar day. The Globex equity-index session runs ~17:00 CT (T-1) ->
+    # 16:00 CT (T) and CME dates it by its close, so the overnight slice
+    # (>= 17:00 CT) belongs to the NEXT session. Converting the exchange
+    # timestamp to America/Chicago wall-clock and shifting +7h maps 17:00 CT
+    # onto the next midnight, so CAST(... AS DATE) yields the session date.
+    # AT TIME ZONE is DST-aware (CDT/CST). Defined once, reused below so the
+    # SELECT, GROUP-BY-feeding `day`, and the WHERE filter can never drift.
+    session_date_sql = (
+        f"CAST((bars.{ts_column} AT TIME ZONE 'America/Chicago') "
+        f"+ INTERVAL 7 HOUR AS DATE)"
+    )
+
     if tiebreak == "contract_asc":
         order_by = f"ORDER BY total_vol DESC, {contract_col} ASC"
     else:
@@ -154,12 +169,12 @@ def front_month_cte(
     return f"""WITH filtered AS (
             SELECT {select_list},
                    sym.symbol AS {contract_col},
-                   CAST(date_trunc('day', bars.{ts_column}) AS DATE) AS day
+                   {session_date_sql} AS day
             FROM read_parquet({parquet_path_param}) AS bars
             JOIN read_parquet({symbology_path_param}) AS sym USING (instrument_id)
             WHERE sym.symbol LIKE {symbol_like}
               AND strpos(sym.symbol, ' ') = 0{hyphen_clause}
-              AND CAST(date_trunc('day', bars.{ts_column}) AS DATE)
+              AND {session_date_sql}
                   {date_filter_sql}
         ),
         contract_volume AS (

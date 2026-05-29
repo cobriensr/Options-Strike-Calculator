@@ -11,6 +11,8 @@ in code review surfaces as a clear text-diff.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import duckdb
 import pytest
 
@@ -92,9 +94,9 @@ def test_ts_recv_replaces_ts_event_everywhere() -> None:
 
     assert "bars.ts_recv" in sql
     assert "bars.ts_event" not in sql
-    # ``ts_recv`` flows through to the ``date_trunc`` filter clause too,
+    # ``ts_recv`` flows through to the CME-session-date expression too,
     # not just the SELECT list.
-    assert "date_trunc('day', bars.ts_recv)" in sql
+    assert "bars.ts_recv AT TIME ZONE 'America/Chicago'" in sql
 
 
 def test_tiebreak_none_omits_contract_asc() -> None:
@@ -301,3 +303,141 @@ def test_rendered_sql_parses_in_duckdb() -> None:
         assert len(statements) == 1
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CME session-date bucketing (FINDING A)
+# ---------------------------------------------------------------------------
+
+
+def test_day_bucket_uses_cme_session_date_not_utc_day() -> None:
+    """The ``day`` bucket must be the CME session date (17:00 CT roll),
+    NOT ``date_trunc('day', ...)`` over the UTC calendar day. The
+    overnight slice (after 17:00 CT) belongs to the NEXT session.
+    """
+    sql = front_month_cte(
+        symbol_like="'ES%'",
+        parquet_path_param="?",
+        symbology_path_param="?",
+        date_filter_sql="= ?::DATE",
+    )
+
+    # The old UTC-day derivation must be gone everywhere.
+    assert "date_trunc('day'" not in sql
+    # The CME-session-date expression must be present.
+    assert "AT TIME ZONE 'America/Chicago'" in sql
+    assert "INTERVAL 7 HOUR" in sql
+
+
+def _build_roll_archive(root: Path) -> None:
+    """Write a tiny ohlcv_1m + symbology archive straddling a CME roll.
+
+    Two ES contracts active across the 2024-06-03 -> 2024-06-04 boundary:
+
+    - ``ESM4`` (front) dominates the *daytime* 2024-06-03 session.
+    - ``ESU4`` (back) is rolled into and dominates the *overnight* slice
+      that opens 2024-06-03 17:00 CT (= 22:00 UTC) and the 2024-06-04
+      daytime session.
+
+    The overnight bar at 2024-06-03 22:30 UTC (= 17:30 CT) must bucket
+    into the 2024-06-04 session, where ESU4 is the front month — a
+    UTC-day bucket would wrongly fold it into 2024-06-03 and let the
+    daytime ESM4 volume win.
+    """
+    from datetime import datetime, timezone
+
+    iid_m4, iid_u4 = 1, 2
+    # (ts_event, instrument_id, open, high, low, close, volume)
+    bars = [
+        # 2024-06-03 daytime: ESM4 dominates this session.
+        (datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc), iid_m4, 1, 1, 1, 1, 1000),
+        (datetime(2024, 6, 3, 20, 0, tzinfo=timezone.utc), iid_u4, 1, 1, 1, 1, 10),
+        # 2024-06-03 22:30 UTC = 17:30 CT -> belongs to 2024-06-04 session.
+        # ESU4 dominates here.
+        (datetime(2024, 6, 3, 22, 30, tzinfo=timezone.utc), iid_u4, 1, 1, 1, 1, 5000),
+        (datetime(2024, 6, 3, 23, 0, tzinfo=timezone.utc), iid_m4, 1, 1, 1, 1, 5),
+        # 2024-06-04 daytime continues the new session.
+        (datetime(2024, 6, 4, 14, 30, tzinfo=timezone.utc), iid_u4, 1, 1, 1, 1, 2000),
+    ]
+    sym_open = datetime(2024, 5, 1, 0, 0, tzinfo=timezone.utc)
+    sym_close = datetime(2024, 7, 1, 0, 0, tzinfo=timezone.utc)
+    symbology = [
+        (iid_m4, "ESM4", sym_open, sym_close),
+        (iid_u4, "ESU4", sym_open, sym_close),
+    ]
+
+    conn = duckdb.connect()
+    year_dir = root / "ohlcv_1m" / "year=2024"
+    year_dir.mkdir(parents=True, exist_ok=True)
+    conn.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE bars_tmp (
+            ts_event TIMESTAMPTZ, instrument_id INTEGER,
+            open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume BIGINT
+        )
+        """
+    )
+    conn.executemany("INSERT INTO bars_tmp VALUES (?, ?, ?, ?, ?, ?, ?)", bars)
+    conn.execute(f"COPY bars_tmp TO '{year_dir / 'part.parquet'}' (FORMAT PARQUET)")
+
+    conn.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE sym_tmp (
+            instrument_id INTEGER, symbol VARCHAR,
+            first_seen TIMESTAMPTZ, last_seen TIMESTAMPTZ
+        )
+        """
+    )
+    conn.executemany("INSERT INTO sym_tmp VALUES (?, ?, ?, ?)", symbology)
+    conn.execute(f"COPY sym_tmp TO '{root / 'symbology.parquet'}' (FORMAT PARQUET)")
+    conn.close()
+
+
+def test_overnight_bar_buckets_into_next_session_and_picks_front(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: run the rendered CTE against a real in-memory DuckDB
+    over a fixture straddling the 17:00 CT roll.
+
+    The overnight bar (2024-06-03 22:30 UTC = 17:30 CT) must land in the
+    2024-06-04 session, and the front-month pick for that session must be
+    ESU4 (5000+2000 vol) — not ESM4. A UTC-day bucket would put the
+    overnight ESU4 volume on 2024-06-03 and pick ESM4 instead.
+    """
+    _build_roll_archive(tmp_path)
+
+    fragment = front_month_cte(
+        symbol_like="'ES%'",
+        parquet_path_param="?",
+        symbology_path_param="?",
+        date_filter_sql="BETWEEN ?::DATE AND ?::DATE",
+    )
+    # Per-day front-month contract picked by the chain. The fragment ends
+    # with a trailing comma (for CTE chaining), so tack on a wrapping CTE
+    # rather than a bare SELECT.
+    query = (
+        fragment
+        + " result AS (SELECT DISTINCT day, symbol FROM fb)"
+        + " SELECT day, symbol FROM result ORDER BY day, symbol"
+    )
+
+    conn = duckdb.connect(":memory:")
+    try:
+        conn.execute("SET TimeZone = 'UTC'")
+        rows = conn.execute(
+            query,
+            [
+                str(tmp_path / "ohlcv_1m" / "**" / "*.parquet"),
+                str(tmp_path / "symbology.parquet"),
+                "2024-06-03",
+                "2024-06-04",
+            ],
+        ).fetchall()
+    finally:
+        conn.close()
+
+    by_day = {str(day): symbol for day, symbol in rows}
+    # 2024-06-03 daytime session -> ESM4 (1000 vol) beats ESU4 (10 vol).
+    assert by_day["2024-06-03"] == "ESM4"
+    # 2024-06-04 session (incl. the 17:30 CT overnight bar) -> ESU4.
+    assert by_day["2024-06-04"] == "ESU4"
