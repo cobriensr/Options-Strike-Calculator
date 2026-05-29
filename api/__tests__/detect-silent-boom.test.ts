@@ -926,6 +926,212 @@ describe('detect-silent-boom handler', () => {
     expect(binds.get('pattern_group_id')).toBeNull();
   });
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Task 6 / Finding 0.2 — multileg null-rate counters + Sentry alert.
+  // Counters track the classifier's fail-open rate so a silent matcher
+  // regression (5% → 95% null) surfaces operationally. The Sentry
+  // capture fires ONLY when inserted > 10 AND hit-rate < 50%; low-volume
+  // ticks (≤10 inserts) are protected from spurious alerting.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Build N independent firing chains by varying strike on the silent
+   * boom fixture. Each chain produces one fire when its INSERT mock
+   * returns a row. Used by the null-rate tests below to cross the
+   * `inserted > 10` threshold without writing bespoke per-chain fixtures.
+   */
+  function manyFireableSilentBoomStreams(count: number) {
+    const all: ReturnType<typeof bucketRow>[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const strike = 1175 + i;
+      const chain = `SNDK260507C0${String(strike * 1000).padStart(7, '0')}`;
+      const stream = fireableSilentBoomStream().map((b) => ({
+        ...b,
+        option_chain: chain,
+        strike,
+      }));
+      all.push(...stream);
+    }
+    return all;
+  }
+
+  /**
+   * Queue per-fire SQL mocks after the four (tide/tide_otm/zero_dte/
+   * spx_gamma) macro lookups. Per-fire shape: pre_trade_count + INSERT.
+   * The ticker_flow_snapshot lookup is cached per (ticker, date), so
+   * only the FIRST fire on a given ticker issues that query — every
+   * subsequent fire on SNDK in the same tick hits the cache.
+   */
+  function queueSilentBoomPerFireMocks(count: number, inserted: boolean) {
+    for (let i = 0; i < count; i += 1) {
+      mockSql.mockResolvedValueOnce([{ cnt: 0 }]); // pre_trade_count
+      if (i === 0) {
+        mockSql.mockResolvedValueOnce([]); // ticker_flow_snapshot (cache miss only on fire 0)
+      }
+      mockSql.mockResolvedValueOnce(inserted ? [{ id: 200 + i }] : []); // INSERT
+    }
+  }
+
+  it('counts multilegHits when every classify call returns a populated result (no Sentry alert)', async () => {
+    mockSentryCaptureMessage.mockClear();
+    mockClassifyAlertMultileg.mockResolvedValue({
+      id: 'anchor',
+      inferredStructure: 'vertical',
+      isIsolatedLeg: false,
+      matchConfidence: 0.85,
+      patternGroupId: 'pg-1',
+    });
+    mockSql
+      .mockResolvedValueOnce(manyFireableSilentBoomStreams(3)) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide
+      .mockResolvedValueOnce([]) // tide_otm
+      .mockResolvedValueOnce([]) // zero_dte
+      .mockResolvedValueOnce([]); // spx_gamma
+    queueSilentBoomPerFireMocks(3, true);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      multilegHits: 3,
+      multilegMisses: 0,
+    });
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+      'multileg-classify.high_null_rate',
+      expect.anything(),
+    );
+  });
+
+  it('captures Sentry warning when inserted>10 AND multileg hit-rate<50%', async () => {
+    // 11 fires, all classify return null → hits=0, misses=11.
+    mockSentryCaptureMessage.mockClear();
+    mockClassifyAlertMultileg.mockResolvedValue(null);
+    mockSql
+      .mockResolvedValueOnce(manyFireableSilentBoomStreams(11))
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide
+      .mockResolvedValueOnce([]) // tide_otm
+      .mockResolvedValueOnce([]) // zero_dte
+      .mockResolvedValueOnce([]); // spx_gamma
+    queueSilentBoomPerFireMocks(11, true);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      multilegHits: 0,
+      multilegMisses: 11,
+      inserted: 11,
+    });
+    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+      'multileg-classify.high_null_rate',
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({
+          cron: 'detect-silent-boom',
+          multilegHits: 0,
+          multilegMisses: 11,
+          inserted: 11,
+        }),
+      }),
+    );
+  });
+
+  it('does NOT capture Sentry warning at exactly 50% hit-rate (threshold is strict <)', async () => {
+    // 12 fires, alternating hit/miss → ratio == 0.5 (not <). No alert.
+    mockSentryCaptureMessage.mockClear();
+    let call = 0;
+    mockClassifyAlertMultileg.mockImplementation(() => {
+      call += 1;
+      return Promise.resolve(
+        call % 2 === 1
+          ? {
+              id: 'anchor',
+              inferredStructure: 'vertical',
+              isIsolatedLeg: false,
+              matchConfidence: 0.8,
+              patternGroupId: 'pg-1',
+            }
+          : null,
+      );
+    });
+    mockSql
+      .mockResolvedValueOnce(manyFireableSilentBoomStreams(12))
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    queueSilentBoomPerFireMocks(12, true);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      multilegHits: 6,
+      multilegMisses: 6,
+      inserted: 12,
+    });
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+      'multileg-classify.high_null_rate',
+      expect.anything(),
+    );
+  });
+
+  it('does NOT capture Sentry warning at 100% miss rate when inserted<=10 (low-volume protection)', async () => {
+    // Single fire, classify returns null → hit-rate 0% but inserted=1.
+    mockSentryCaptureMessage.mockClear();
+    mockClassifyAlertMultileg.mockResolvedValue(null);
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide
+      .mockResolvedValueOnce([]) // tide_otm
+      .mockResolvedValueOnce([]) // zero_dte
+      .mockResolvedValueOnce([]) // spx_gamma
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      inserted: 1,
+      multilegHits: 0,
+      multilegMisses: 1,
+    });
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+      'multileg-classify.high_null_rate',
+      expect.anything(),
+    );
+  });
+
   it('still fires when prior-fire is older than the 60-min cooldown', async () => {
     // Spike at 13:20:00Z, prior at 12:00:00Z (80 min before — outside
     // the 60-min cooldown). The detector lets the new fire through.

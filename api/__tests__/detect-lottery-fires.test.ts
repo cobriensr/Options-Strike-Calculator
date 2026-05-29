@@ -868,6 +868,206 @@ describe('detect-lottery-fires handler', () => {
     expect(binds.get('pattern_group_id')).toBeNull();
   });
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Task 6 / Finding 0.2 — multileg null-rate counters + Sentry alert.
+  // Counters track the classifier's fail-open rate so a silent matcher
+  // regression (5% → 95% null) surfaces operationally. The Sentry
+  // capture fires ONLY when inserted > 10 AND hit-rate < 50%; low-volume
+  // ticks (≤10 inserts) are protected from spurious alerting.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Build N independent firing chains by varying the strike on the
+   * SNDK fixture. Each chain produces exactly one fire when paired with
+   * the right SQL mock sequence. Used by the null-rate tests below to
+   * cross the `inserted > 10` threshold without bespoke per-chain
+   * fixtures.
+   */
+  function manyFireableSndkStreams(count: number) {
+    const all: ReturnType<typeof tick>[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const strike = 1175 + i;
+      const chain = `SNDK260501C0${String(strike * 1000).padStart(7, '0')}`;
+      const ticks = fireableSndkStream().map((t) => ({
+        ...t,
+        option_chain: chain,
+        strike,
+      }));
+      all.push(...ticks);
+    }
+    return all;
+  }
+
+  /**
+   * Queue the per-fire SQL mocks once per chain. With `inserted=true`
+   * each chain returns `[{ id }]` from its INSERT; with `inserted=false`
+   * the INSERT returns `[]` to simulate ON CONFLICT.
+   *
+   * Per-fire shape: flow_data + spot_exposures + INSERT. The
+   * `ticker_flow_snapshot` lookup is cached per (ticker, date), so it
+   * fires once on the FIRST SNDK fire only — every subsequent SNDK fire
+   * hits the in-memory cache. `strike_exposures` is gated on
+   * `TICKERS_WITH_GEX_STRIKE`, which excludes SNDK, so no DB call.
+   */
+  function queuePerFireMocks(count: number, inserted: boolean) {
+    // Prior-fires lookup is one query at the start (covers all eligible
+    // chains in a single ANY()), not per-fire.
+    mockSql.mockResolvedValueOnce([]); // prior-fires
+    for (let i = 0; i < count; i += 1) {
+      mockSql
+        .mockResolvedValueOnce([]) // flow_data
+        .mockResolvedValueOnce([]); // spot_exposures
+      if (i === 0) {
+        mockSql.mockResolvedValueOnce([]); // ticker_flow_snapshot (cache miss on fire 0 only)
+      }
+      mockSql.mockResolvedValueOnce(inserted ? [{ id: 100 + i }] : []); // INSERT
+    }
+  }
+
+  it('counts multilegHits when every classify call returns a populated result (no Sentry alert)', async () => {
+    // 3 fires, every classify returns non-null → hits=3, misses=0,
+    // inserted=3 (below the >10 alert threshold so no Sentry capture).
+    mockSentryCaptureMessage.mockClear();
+    mockClassifyAlertMultileg.mockResolvedValue({
+      id: 'anchor',
+      inferredStructure: 'vertical',
+      isIsolatedLeg: false,
+      matchConfidence: 0.8,
+      patternGroupId: 'pg-1',
+    });
+    mockTicks(manyFireableSndkStreams(3));
+    queuePerFireMocks(3, true);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      multilegHits: 3,
+      multilegMisses: 0,
+    });
+    // No Sentry capture — inserted (3) is below the >10 protection floor.
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+      'multileg-classify.high_null_rate',
+      expect.anything(),
+    );
+  });
+
+  it('captures Sentry warning when inserted>10 AND multileg hit-rate<50%', async () => {
+    // 11 fires, classify returns null for every one → hits=0, misses=11.
+    // Hit-rate 0 < 0.5 AND inserted=11 > 10 → captureMessage fires.
+    mockSentryCaptureMessage.mockClear();
+    mockClassifyAlertMultileg.mockResolvedValue(null);
+    mockTicks(manyFireableSndkStreams(11));
+    queuePerFireMocks(11, true);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      multilegHits: 0,
+      multilegMisses: 11,
+      inserted: 11,
+    });
+    expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
+      'multileg-classify.high_null_rate',
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({
+          cron: 'detect-lottery-fires',
+          multilegHits: 0,
+          multilegMisses: 11,
+          inserted: 11,
+        }),
+      }),
+    );
+  });
+
+  it('does NOT capture Sentry warning at exactly 50% hit-rate (threshold is strict <)', async () => {
+    // 12 fires, alternating hit/miss → hits=6, misses=6, ratio = 0.5.
+    // Threshold check is `< 0.5`, so exactly-equal must NOT alert.
+    mockSentryCaptureMessage.mockClear();
+    let call = 0;
+    mockClassifyAlertMultileg.mockImplementation(() => {
+      call += 1;
+      return Promise.resolve(
+        call % 2 === 1
+          ? {
+              id: 'anchor',
+              inferredStructure: 'vertical',
+              isIsolatedLeg: false,
+              matchConfidence: 0.8,
+              patternGroupId: 'pg-1',
+            }
+          : null,
+      );
+    });
+    mockTicks(manyFireableSndkStreams(12));
+    queuePerFireMocks(12, true);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      multilegHits: 6,
+      multilegMisses: 6,
+      inserted: 12,
+    });
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+      'multileg-classify.high_null_rate',
+      expect.anything(),
+    );
+  });
+
+  it('does NOT capture Sentry warning at 100% miss rate when inserted<=10 (low-volume protection)', async () => {
+    // Single fire, classify returns null → hit-rate 0% but inserted=1.
+    // The >10 inserts gate suppresses the alert so quiet days don't page.
+    mockSentryCaptureMessage.mockClear();
+    mockClassifyAlertMultileg.mockResolvedValue(null);
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      inserted: 1,
+      multilegHits: 0,
+      multilegMisses: 1,
+    });
+    expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+      'multileg-classify.high_null_rate',
+      expect.anything(),
+    );
+  });
+
   // Skipped 2026-05-23 (v2.3 cleanup): V2.2 Phase D retrain shifted weights;
   // SOUN's synthesized score under this fixture is 10 (verified by debug),
   // below the new t1=11. committedFires doesn't include it as a tier1 peer

@@ -322,5 +322,22 @@ async function classifyAlertMultilegInner(
     return null;
   }
 
-  return classifications.get(anchorRow.ws_trade_id) ?? null;
+  const classification = classifications.get(anchorRow.ws_trade_id) ?? null;
+  if (classification == null) {
+    return null;
+  }
+
+  // Defensive null on synthetic NBBO (Task 6 / Finding 1.5 cron-side).
+  // For 'mid' and 'no_side' anchor trades, synthesizeNbbo() above
+  // returns the 0.01 × 9999 wide-spread sentinel that round-trips
+  // through the matcher's side-classification rule to 'mid'. The
+  // sidecar's match_confidence formula uses bid/ask spread width as
+  // an input — on those synthesized spreads the score is meaningless.
+  // We preserve the structure label (which is derived from the leg
+  // graph and is still valid) but null out the confidence so Take-It
+  // scoring downstream cannot trust a synthetic number.
+  if (anchorRow.side === 'mid' || anchorRow.side === 'no_side') {
+    return { ...classification, matchConfidence: null };
+  }
+  return classification;
 }

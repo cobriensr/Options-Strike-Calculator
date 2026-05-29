@@ -341,6 +341,18 @@ export default withCronInstrumentation(
     let gexHits = 0;
     let gexMisses = 0;
     let gexOutOfUniverse = 0;
+    // Multileg classifier observability (Task 6 / Finding 0.2). The
+    // matcher fail-open path returns null for: DB query failure, empty
+    // window, oversized window, missing anchor trade, sidecar error.
+    // Without per-tick counters, a sidecar regression (e.g. classifier
+    // returning null for 95% of inputs) is silent: detect-cron logs
+    // still report healthy `inserted` counts because alert insertion
+    // does not depend on a populated classification. The hit/miss split
+    // makes that regression observable and alertable; the Sentry capture
+    // below fires when the ratio drops under 50% on a meaningful sample
+    // (see threshold rationale next to the captureMessage call).
+    let multilegHits = 0;
+    let multilegMisses = 0;
 
     // Seed cooldown state from the DB so successive cron runs don't
     // re-qualify the next tick within the 5-min window. Without this,
@@ -599,6 +611,16 @@ export default withCronInstrumentation(
           rec.optionChainId,
           rec.triggerTimeCt,
         );
+        // Hit/miss split observability (Task 6 / Finding 0.2). Null is a
+        // legitimate fail-open return — we don't want to throw — but a
+        // sustained spike in misses is the silent regression we need to
+        // see. Logged in the structured payload below and Sentry-captured
+        // when the ratio crosses the threshold for the tick.
+        if (multilegResult === null) {
+          multilegMisses += 1;
+        } else {
+          multilegHits += 1;
+        }
         const inferredStructure = multilegResult?.inferredStructure ?? null;
         const isIsolatedLeg = multilegResult?.isIsolatedLeg ?? null;
         const matchConfidence = multilegResult?.matchConfidence ?? null;
@@ -847,6 +869,37 @@ export default withCronInstrumentation(
       }
     }
 
+    // Multileg null-rate alert (Task 6 / Finding 0.2). When more than
+    // half of attempted classifications return null AND we actually
+    // inserted enough rows to make the ratio meaningful, capture a
+    // warning. Threshold rationale:
+    //   - 50% strict (`<`, not `<=`): a 50/50 split is plausible on
+    //     thin tape (small-cap tickers with few neighboring legs); we
+    //     only alert when nulls clearly dominate.
+    //   - inserted > 10: low-volume protection. On quiet days a couple
+    //     of fail-open misses can drag a small denominator under 50%
+    //     and produce spurious pages. Ten inserts represents an active
+    //     tick worth investigating.
+    // This is observability, not a hard failure — captureMessage, not
+    // throw — the cron's job is to insert alerts; classifier nulls do
+    // not block that.
+    const multilegTotal = multilegHits + multilegMisses;
+    if (
+      inserted > 10 &&
+      multilegTotal > 0 &&
+      multilegHits / multilegTotal < 0.5
+    ) {
+      Sentry.captureMessage('multileg-classify.high_null_rate', {
+        level: 'warning',
+        extra: {
+          cron: 'detect-lottery-fires',
+          multilegHits,
+          multilegMisses,
+          inserted,
+        },
+      });
+    }
+
     // Phase 6: per-tier counts live in the structured log payload below.
     // Sentry alert for "zero tier1 fires for 3 consecutive trading days"
     // is configured in the Sentry UI to alert on log queries against
@@ -871,6 +924,8 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
+        multilegHits,
+        multilegMisses,
       },
       'detect-lottery-fires completed',
     );
@@ -893,6 +948,8 @@ export default withCronInstrumentation(
         gexHits,
         gexMisses,
         gexOutOfUniverse,
+        multilegHits,
+        multilegMisses,
       },
     };
   },

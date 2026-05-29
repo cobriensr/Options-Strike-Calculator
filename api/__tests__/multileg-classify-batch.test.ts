@@ -298,6 +298,99 @@ describe('classifyAlertMultileg', () => {
     expect(db).toHaveBeenCalledTimes(1);
   });
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Task 6 / Finding 1.5 (cron side): defensive null on match_confidence
+  // when the anchor trade's side ∈ {mid, no_side}. synthesizeNbbo() builds
+  // a 0.01 × 9999 wide-spread sentinel for those trades so the matcher's
+  // side-classification rule still round-trips to 'mid' — but that fake
+  // bid/ask makes the matcher's confidence formula meaningless. We
+  // preserve structure (still valid from the leg graph) but null the
+  // confidence so downstream Take-It scoring can't trust a synthetic
+  // number.
+  // ──────────────────────────────────────────────────────────────────────
+  it.each(['mid', 'no_side'] as const)(
+    'nulls match_confidence when anchor side is %s (synthesized NBBO defensive guard)',
+    async (anchorSide) => {
+      const anchorId = `anchor-${anchorSide}`;
+      const rows = [
+        makeRow({
+          ws_trade_id: anchorId,
+          option_chain: optionChain,
+          side: anchorSide,
+        }),
+      ];
+      const classification: MultilegClassification = {
+        id: anchorId,
+        inferredStructure: 'vertical',
+        isIsolatedLeg: false,
+        // Matcher returned a number on the synthetic spread — we must
+        // override to null on the way out.
+        matchConfidence: 0.91,
+        patternGroupId: 'pg-fake',
+      };
+      mockClassifyMultilegBatch.mockResolvedValueOnce(
+        new Map([[anchorId, classification]]),
+      );
+
+      const db = makeDb([rows]);
+      const cache: MultilegClassifyCache = new Map();
+      const result = await classifyAlertMultileg(
+        db,
+        cache,
+        ticker,
+        optionChain,
+        triggerTimeCt,
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.matchConfidence).toBeNull();
+      // Structure label must still come through unchanged.
+      expect(result?.inferredStructure).toBe('vertical');
+      expect(result?.isIsolatedLeg).toBe(false);
+      expect(result?.patternGroupId).toBe('pg-fake');
+    },
+  );
+
+  it.each(['ask', 'bid'] as const)(
+    'preserves match_confidence when anchor side is %s (true NBBO inferred from price)',
+    async (anchorSide) => {
+      const anchorId = `anchor-${anchorSide}`;
+      const rows = [
+        makeRow({
+          ws_trade_id: anchorId,
+          option_chain: optionChain,
+          side: anchorSide,
+        }),
+      ];
+      const classification: MultilegClassification = {
+        id: anchorId,
+        inferredStructure: 'vertical',
+        isIsolatedLeg: false,
+        matchConfidence: 0.77,
+        patternGroupId: 'pg-real',
+      };
+      mockClassifyMultilegBatch.mockResolvedValueOnce(
+        new Map([[anchorId, classification]]),
+      );
+
+      const db = makeDb([rows]);
+      const cache: MultilegClassifyCache = new Map();
+      const result = await classifyAlertMultileg(
+        db,
+        cache,
+        ticker,
+        optionChain,
+        triggerTimeCt,
+      );
+
+      // For ask/bid trades, synthesizeNbbo() builds a real-looking NBBO
+      // anchored to the executed price; the matcher's confidence is
+      // computed against a non-degenerate spread and we trust it.
+      expect(result?.matchConfidence).toBe(0.77);
+      expect(result?.inferredStructure).toBe('vertical');
+    },
+  );
+
   it('memoizes null results so a transient failure does not cause N retries in one tick', async () => {
     // First call: sidecar throws → null cached. Second call: cache hit.
     const rows = [makeRow({ option_chain: optionChain })];
