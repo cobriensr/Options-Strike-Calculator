@@ -4,7 +4,9 @@ Handles:
 - Quarterly rolls for ES, NQ, ZN, RTY (Mar/Jun/Sep/Dec)
 - Monthly rolls for CL
 - ES options ATM +/-10 strike discovery using Databento Definition schema
-- Re-centering when ES price moves +/-50 pts from last center
+- Re-centering when ES price moves +/-40 pts from last center
+  (kept below the +/-50 pt window so the subscribed strikes always
+  cover the price with a margin -- see ES_RECENTER_THRESHOLD)
 """
 
 from __future__ import annotations
@@ -66,8 +68,27 @@ SYMBOL_DISPLAY = {
 
 # Strike spacing for ES options (5-point increments)
 ES_STRIKE_SPACING = 5
-ES_RECENTER_THRESHOLD = 50  # Re-center when ES moves +/-50 pts
-ES_STRIKES_EACH_SIDE = 10  # ATM +/-10 strikes = ~20 contracts
+# ATM +/-10 strikes => subscribed window half-width = 10 * 5 = 50 pts.
+ES_STRIKES_EACH_SIDE = 10  # ATM +/-10 strikes = ~20 contracts (50-pt window)
+# Re-center when ES moves +/-40 pts. This is deliberately SMALLER than the
+# subscribed window half-width (ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING =
+# 50 pts) so the window always covers the price with a margin — this is
+# the recenter hysteresis (Finding D).
+#
+# A recenter sets center = current price (see
+# databento_client._update_atm_strikes), so after every recenter the price
+# sits dead-center. It can then drift up to the next trigger boundary
+# (+/-40 pts) before another recenter fires. Because the window reaches
+# +/-50 pts, the price stays covered with a 10-pt (>= one strike) buffer
+# the whole way. A price chopping +/-2 pts right at the +/-40 boundary
+# never falls outside the subscribed strikes and never thrashes the
+# re-subscribe path: after the single recenter at the boundary, center
+# becomes that price and the chop is well inside the new +/-40 band.
+#
+# Invariant: window_half_width - recenter_threshold >= ES_STRIKE_SPACING
+#   (50 - 40 = 10 >= 5).  Lowering the trigger keeps the 21-strike window
+#   (and every downstream consumer) unchanged while adding coverage margin.
+ES_RECENTER_THRESHOLD = 40
 
 
 @dataclass
@@ -95,10 +116,13 @@ class OptionsStrikeSet:
 
 
 def compute_atm_strikes(es_price: float) -> list[float]:
-    """Compute ATM +/-10 strike prices for ES options.
+    """Compute ATM +/-ES_STRIKES_EACH_SIDE strike prices for ES options.
 
     ES options have 5-point strike spacing. Round to nearest 5, then
-    generate 10 strikes above and 10 below.
+    generate ES_STRIKES_EACH_SIDE strikes above and below. The window
+    half-width is deliberately wider than ES_RECENTER_THRESHOLD so the
+    subscribed strikes always cover the price with a margin — see the
+    ES_STRIKES_EACH_SIDE constant for the hysteresis invariant.
     """
     atm = round(es_price / ES_STRIKE_SPACING) * ES_STRIKE_SPACING
     strikes = []

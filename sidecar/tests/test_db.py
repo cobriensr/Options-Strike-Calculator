@@ -998,6 +998,87 @@ class TestIsDbHealthy:
         mock_conn_pool.execute.side_effect = RuntimeError("connection reset")
         assert db.is_db_healthy() is False
 
+    def test_uses_short_timeout_for_fast_fail(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe must borrow with a SHORT timeout so a saturated pool
+        fails fast (Finding E) rather than hanging the full default 10s
+        and tripping a spurious 503 -> Railway restart."""
+        calls: list[dict] = []
+
+        def fake_get_conn(*_a: object, **kwargs: object) -> MagicMock:
+            calls.append(dict(kwargs))
+            ctx = MagicMock()
+            ctx.__enter__.return_value = MagicMock()
+            ctx.__exit__.return_value = None
+            return ctx
+
+        monkeypatch.setattr(db, "get_conn", fake_get_conn)
+
+        db.is_db_healthy()
+
+        assert len(calls) == 1
+        timeout = calls[0].get("timeout_s")
+        assert timeout is not None
+        # Strictly shorter than the default borrow timeout.
+        assert timeout < db.DEFAULT_GETCONN_TIMEOUT_S
+
+    def test_pool_saturated_returns_true_and_warns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Finding E: a saturated pool (PoolTimeoutError) means the DB is
+        alive but busy — the probe must return True (busy != dead) and
+        surface a Sentry warning so saturation stays observable."""
+
+        def boom_get_conn(*_a: object, **_kw: object) -> MagicMock:
+            raise db.PoolTimeoutError("db pool saturated")
+
+        monkeypatch.setattr(db, "get_conn", boom_get_conn)
+
+        captured: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            "sentry_setup.capture_message",
+            lambda msg, **kw: captured.append((msg, kw)),
+        )
+
+        assert db.is_db_healthy() is True
+        assert len(captured) == 1
+        msg, kwargs = captured[0]
+        assert kwargs.get("level") == "warning"
+        assert "saturat" in msg.lower() or "busy" in msg.lower()
+
+    def test_pool_saturated_returns_true_even_if_sentry_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The healthy-but-busy verdict must never depend on Sentry — if
+        capture_message raises, still return True."""
+
+        def boom_get_conn(*_a: object, **_kw: object) -> MagicMock:
+            raise db.PoolTimeoutError("db pool saturated")
+
+        monkeypatch.setattr(db, "get_conn", boom_get_conn)
+
+        def boom_sentry(*_a: object, **_kw: object) -> None:
+            raise RuntimeError("sentry SDK exploded")
+
+        monkeypatch.setattr("sentry_setup.capture_message", boom_sentry)
+
+        assert db.is_db_healthy() is True
+
+    def test_real_connection_error_returns_false(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A genuine connection/query error (not pool saturation) means
+        the DB is actually unreachable — return False so the health
+        endpoint reports 503."""
+
+        def boom_get_conn(*_a: object, **_kw: object) -> MagicMock:
+            raise RuntimeError("could not connect to server")
+
+        monkeypatch.setattr(db, "get_conn", boom_get_conn)
+
+        assert db.is_db_healthy() is False
+
 
 # ---------------------------------------------------------------------------
 # upsert_futures_bar — single-row execute SQL shape

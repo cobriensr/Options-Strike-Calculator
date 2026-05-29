@@ -31,6 +31,14 @@ DEFAULT_GETCONN_TIMEOUT_S = 10.0
 # timeout kicks in.
 SLOW_GETCONN_WARNING_MS = 1000
 
+# Short borrow timeout used ONLY by the /health probe. The probe shares
+# the same 5-conn pool as the ingest path, so under burst all conns are
+# busy. With the default 10s timeout the probe would hang then return
+# False -> HTTP 503 -> Railway may restart a HEALTHY-but-busy container.
+# A 2s deadline fails fast; pool saturation is then reported as
+# healthy-but-busy (see is_db_healthy). See Finding E.
+HEALTH_PROBE_TIMEOUT_S = 2.0
+
 # Default chunk size handed to ``psycopg2.extras.execute_values`` for
 # every batch insert in this module. Tuned for Neon's round-trip
 # overhead: smaller pages let RTT dominate; larger pages risk
@@ -187,12 +195,38 @@ def verify_connection() -> None:
 
 
 def is_db_healthy() -> bool:
-    """Quick health check for the HTTP health endpoint."""
+    """Quick health check for the HTTP health endpoint.
+
+    Distinguishes "pool saturated (alive but busy)" from "DB actually
+    unreachable" so an ingest burst doesn't trip a spurious 503 and a
+    Railway restart of a healthy container (Finding E):
+
+    - Borrows with a SHORT timeout (``HEALTH_PROBE_TIMEOUT_S``) so the
+      probe fails fast instead of hanging the full default 10s.
+    - A ``PoolTimeoutError`` means every pooled connection is in use but
+      the DB itself is reachable -> treat as healthy (return True) and
+      surface a Sentry warning so saturation stays observable.
+    - Any other exception (real connection/query failure) -> False.
+    """
     try:
-        with get_conn() as conn:
+        with get_conn(timeout_s=HEALTH_PROBE_TIMEOUT_S) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
                 return True
+    except PoolTimeoutError:
+        # Pool is saturated but the DB is alive — do NOT report unhealthy,
+        # or Railway may restart a container that's simply busy ingesting.
+        try:
+            from sentry_setup import capture_message
+
+            capture_message(
+                "db health probe: pool saturated (healthy but busy)",
+                level="warning",
+            )
+        except Exception:
+            # Observability must never flip the healthy-but-busy verdict.
+            log.warning("db health probe: pool saturated (healthy but busy)")
+        return True
     except Exception:
         return False
 

@@ -105,13 +105,15 @@ class TestOptionsStrikeSet:
 
     def test_needs_recenter_false_within_threshold(self):
         oss = OptionsStrikeSet(center_price=5850.0)
+        # Just inside the recenter trigger (threshold minus one point).
+        just_inside = ES_RECENTER_THRESHOLD - 1
         assert oss.needs_recenter(5850.0) is False
         assert oss.needs_recenter(5849.0) is False
-        assert oss.needs_recenter(5899.0) is False  # 49 pts away
-        assert oss.needs_recenter(5801.0) is False  # 49 pts away
+        assert oss.needs_recenter(5850.0 + just_inside) is False
+        assert oss.needs_recenter(5850.0 - just_inside) is False
 
     def test_needs_recenter_true_at_threshold(self):
-        """Exactly ES_RECENTER_THRESHOLD (50 pts) triggers recenter."""
+        """A move of exactly ES_RECENTER_THRESHOLD triggers recenter."""
         oss = OptionsStrikeSet(center_price=5850.0)
         assert oss.needs_recenter(5850.0 + ES_RECENTER_THRESHOLD) is True
         assert oss.needs_recenter(5850.0 - ES_RECENTER_THRESHOLD) is True
@@ -128,6 +130,99 @@ class TestOptionsStrikeSet:
         assert oss.call_symbols == []
         assert oss.put_symbols == []
         assert oss.nearest_expiry is None
+
+
+# ---------------------------------------------------------------------------
+# Recenter hysteresis (Finding D) — the subscribed window must always
+# contain the current price with a coverage margin, so a price chopping
+# across the exact trigger boundary cannot thrash recenters.
+# ---------------------------------------------------------------------------
+
+
+class TestRecenterHysteresis:
+    """The recenter trigger (ES_RECENTER_THRESHOLD) must be strictly less
+    than the subscribed window half-width (ES_STRIKES_EACH_SIDE *
+    ES_STRIKE_SPACING) so that, after a recenter (which sets center =
+    current price), the window keeps covering the price even as it drifts
+    right up to the next trigger boundary.
+
+    Documented invariant:
+        window_half_width - recenter_threshold >= one_strike (>= 5pt)
+    """
+
+    @staticmethod
+    def _window_half_width() -> float:
+        return ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING
+
+    def test_margin_invariant_holds(self):
+        """Window half-width must exceed the trigger by at least one strike."""
+        margin = self._window_half_width() - ES_RECENTER_THRESHOLD
+        assert margin >= ES_STRIKE_SPACING
+
+    def test_chop_across_trigger_boundary_does_not_thrash(self):
+        """A price chopping +/-2 pts across the exact trigger boundary
+        (center +/- ES_RECENTER_THRESHOLD) causes AT MOST ONE recenter.
+
+        Simulate the databento_client flow: each time needs_recenter is
+        True we recenter (center := current price, exactly as
+        _update_atm_strikes does). A +/-2 pt chop right at the boundary
+        must not produce a back-and-forth re-subscribe loop."""
+        center = 5850.0
+        oss = OptionsStrikeSet(center_price=center)
+        boundary = center + ES_RECENTER_THRESHOLD  # 5900.0
+
+        recenter_count = 0
+        # Oscillate just below and just above the boundary repeatedly.
+        for price in (
+            boundary - 2,
+            boundary + 2,
+            boundary - 2,
+            boundary + 2,
+            boundary - 2,
+            boundary + 2,
+        ):
+            if oss.needs_recenter(price):
+                recenter_count += 1
+                # Mirror _update_atm_strikes: new center IS the price.
+                oss.center_price = price
+
+        # At most one recenter despite six boundary crossings.
+        assert recenter_count <= 1
+
+    def test_window_covers_price_after_chop(self):
+        """After the single recenter from a boundary chop, the current
+        chopping price stays inside the subscribed strike window."""
+        center = 5850.0
+        oss = OptionsStrikeSet(center_price=center)
+        boundary = center + ES_RECENTER_THRESHOLD
+
+        for price in (boundary - 2, boundary + 2, boundary - 2, boundary + 2):
+            if oss.needs_recenter(price):
+                oss.center_price = price
+            strikes = compute_atm_strikes(oss.center_price)
+            # Price is within the subscribed window (inclusive of edges).
+            assert strikes[0] <= price <= strikes[-1]
+
+    def test_price_within_window_after_recenter_with_margin(self):
+        """After a recenter, the current price is always within the
+        subscribed strikes with the documented margin: the window edge
+        sits at least one strike beyond the next trigger boundary."""
+        es_price = 5847.3
+        strikes = compute_atm_strikes(es_price)
+        half_width = self._window_half_width()
+        # The window must extend a full margin past the recenter trigger.
+        assert strikes[-1] - es_price >= ES_RECENTER_THRESHOLD
+        assert es_price - strikes[0] >= ES_RECENTER_THRESHOLD
+        # And the window half-width itself carries the margin over trigger.
+        assert half_width - ES_RECENTER_THRESHOLD >= ES_STRIKE_SPACING
+
+    def test_genuine_large_move_still_recenters(self):
+        """A move larger than the window half-width must still trigger a
+        recenter — hysteresis adds margin, it does not disable recentering."""
+        oss = OptionsStrikeSet(center_price=5850.0)
+        big_move = 5850.0 + self._window_half_width() + ES_STRIKE_SPACING
+        assert oss.needs_recenter(big_move) is True
+        assert oss.needs_recenter(5850.0 - self._window_half_width()) is True
 
 
 # ---------------------------------------------------------------------------

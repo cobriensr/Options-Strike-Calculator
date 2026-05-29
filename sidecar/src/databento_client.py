@@ -414,8 +414,8 @@ class DatabentoClient:
         """Recenter the ATM +/-10 strike window on the current ES price.
 
         Called on the first ES bar (to set the initial window) and on
-        any subsequent re-center trigger (±50 pt move from the last
-        center). No subscribe() calls — subscriptions are established
+        any subsequent re-center trigger (a move of ES_RECENTER_THRESHOLD
+        pts from the last center). No subscribe() calls — subscriptions are established
         once in _subscribe_es_options_streams() at startup. This method
         only updates the in-memory filter list that
         _handle_trade/_handle_stat consult before persisting a record.
