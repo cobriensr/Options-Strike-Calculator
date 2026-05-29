@@ -706,30 +706,39 @@ function TickerNetFlowChartInner({
       ? readout.ncp - readout.npp
       : null;
 
-  /** UW-style inline metric header — opt-in via `symbol`, hidden while the
-   *  chart is still waiting for its first two ticks. */
-  const showHeader = symbol != null && !showPlaceholder && headerStats != null;
+  /** UW-style inline metric header — opt-in via a non-empty `symbol`,
+   *  hidden while the chart is still waiting for its first two ticks. */
+  const showHeader =
+    symbol != null && symbol !== '' && !showPlaceholder && headerStats != null;
 
   return (
     <div className="w-full">
       {showHeader && (
-        <div className="mb-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 font-mono text-[11px] leading-tight">
+        <div
+          className="mb-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 font-mono text-[11px] leading-tight"
+          role="group"
+          aria-label={`Net-flow summary for ${symbol}`}
+        >
           <span className="text-neutral-500">
             {fmtHeaderTime(headerStats.time)}
           </span>
-          {/* Charted-line metrics carry a color dot mapping to their series. */}
-          {headerStats.spot != null && (
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                aria-hidden
-                className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
-              />
-              <span className="text-neutral-400">{symbol}</span>
+          {/* Ticker + spot. The symbol always renders (it identifies the
+              chart); the spot price is appended only once candles arrive —
+              candles and net-flow come from separate fetches, so the symbol
+              must not hide while spot is still loading. Amber dot maps to
+              the price line. */}
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
+            />
+            <span className="text-neutral-400">{symbol}</span>
+            {headerStats.spot != null && (
               <span className="text-neutral-100">
                 {headerStats.spot.toFixed(2)}
               </span>
-            </span>
-          )}
+            )}
+          </span>
           <span
             className="inline-flex items-center gap-1.5"
             title="Cumulative Net Call Premium $ (call buys − call sells)"

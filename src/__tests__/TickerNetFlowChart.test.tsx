@@ -535,16 +535,17 @@ describe('TickerNetFlowChart: UW-style inline header', () => {
         ariaLabel="t"
       />,
     );
-    // Premium $ (compact): NCP = -76.1M, NPP = 656K,
-    // Δ$ = -76.1M - 656K = -76,756,000 → -76.8M.
-    expect(screen.getByText('-76.1M')).toBeInTheDocument();
+    // Premium $ (compact): NCP = −76.1M, NPP = 656K,
+    // Δ$ = −76.1M − 656K = −76,756,000 → −76.8M. Negatives use the
+    // U+2212 minus glyph (matching the crosshair tooltip), not ASCII '-'.
+    expect(screen.getByText('−76.1M')).toBeInTheDocument();
     expect(screen.getByText('656K')).toBeInTheDocument();
-    expect(screen.getByText('-76.8M')).toBeInTheDocument();
-    // Contract volume (comma int): NCV = -10,000, NPV = 45,440,
-    // Δv = NCV - NPV = -55,440.
-    expect(screen.getByText('-10,000')).toBeInTheDocument();
+    expect(screen.getByText('−76.8M')).toBeInTheDocument();
+    // Contract volume (comma int): NCV = −10,000, NPV = 45,440,
+    // Δv = NCV − NPV = −55,440.
+    expect(screen.getByText('−10,000')).toBeInTheDocument();
     expect(screen.getByText('45,440')).toBeInTheDocument();
-    expect(screen.getByText('-55,440')).toBeInTheDocument();
+    expect(screen.getByText('−55,440')).toBeInTheDocument();
   });
 
   it('shows the NCV / NPV / Δv volume labels alongside premiums', () => {
@@ -592,9 +593,56 @@ describe('TickerNetFlowChart: UW-style inline header', () => {
   it('omits the inline metric header when no symbol is provided (back-compat)', () => {
     render(<TickerNetFlowChart series={ticks} candles={[]} ariaLabel="t" />);
     // The freshness label / metric chips key off `symbol`; without it the
-    // header row is absent. `-76.1M` (cumNcp) only appears in that header,
+    // header row is absent. `−76.1M` (cumNcp) only appears in that header,
     // so its absence proves the header didn't render.
-    expect(screen.queryByText('-76.1M')).not.toBeInTheDocument();
+    expect(screen.queryByText('−76.1M')).not.toBeInTheDocument();
+  });
+
+  it('omits the header when symbol is an empty string', () => {
+    // `'' != null` is true, so a naive guard would render an orphan dot.
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        symbol=""
+        ariaLabel="t"
+      />,
+    );
+    expect(screen.queryByText('−76.1M')).not.toBeInTheDocument();
+    expect(screen.queryByRole('group')).not.toBeInTheDocument();
+  });
+
+  it('still renders the ticker symbol when candles are absent (spot lagging)', () => {
+    // Candles and net-flow come from separate fetches. When flow has data
+    // but candles have not arrived, the symbol must still identify the
+    // chart even though the spot price is not yet available.
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(screen.getByText('SPY')).toBeInTheDocument();
+    // Premium/volume metrics still render…
+    expect(screen.getByText('−76.1M')).toBeInTheDocument();
+    // …but no spot price (no candle close to show).
+    expect(screen.queryByText('757.44')).not.toBeInTheDocument();
+  });
+
+  it('exposes the header as a labelled group for assistive tech', () => {
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(
+      screen.getByRole('group', { name: /net-flow summary for SPY/i }),
+    ).toBeInTheDocument();
   });
 
   it('does not render the header in the waiting state', () => {
