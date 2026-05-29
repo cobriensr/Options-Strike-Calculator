@@ -218,6 +218,10 @@
       "schedule": "30 23 * * *"
     },
     {
+      "path": "/api/cron/audit-migration-drift",
+      "schedule": "0 12 * * *"
+    },
+    {
       "path": "/api/cron/fetch-net-flow-history",
       "schedule": "25 21 * * 1-5"
     },

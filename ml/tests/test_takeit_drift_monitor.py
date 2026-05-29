@@ -60,6 +60,18 @@ def test_per_segment_auc_drops_nan_segments():
     assert not any(isinstance(k, float) for k in result)
 
 
+def test_per_segment_auc_returns_empty_when_all_segments_null():
+    # All-NaN segments (e.g. every row has a null/out-of-bin DTE): the label
+    # set is empty after dropna, so the helper returns {} without raising and
+    # without inventing a 'nan' bucket. Callers (render_markdown_report) iterate
+    # an empty dict harmlessly.
+    y_true = np.array([0, 1, 0, 1])
+    y_pred = np.array([0.2, 0.7, 0.3, 0.8])
+    segments = np.array([float('nan')] * 4, dtype=object)
+    result = per_segment_auc(y_true, y_pred, segments, min_n=1)
+    assert result == {}
+
+
 def test_feature_zscore_against_baseline():
     today = np.array([1.0, 2.0, 3.0])
     z = feature_zscore(today, baseline_mean=0.0, baseline_std=1.0)
