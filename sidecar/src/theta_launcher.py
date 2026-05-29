@@ -77,6 +77,10 @@ class _LauncherState:
     last_error: str | None = None
     stderr_tail: deque[str] = field(default_factory=lambda: deque(maxlen=50))
     shutdown: bool = False
+    # Handles for the per-proc stderr/stdout drain threads. Tracked so a
+    # respawn can close the old pipes and join the old threads instead of
+    # leaking 2 threads + 2 FDs every restart (FINDING A).
+    drain_threads: list[threading.Thread] = field(default_factory=list)
 
 
 _state = _LauncherState()
@@ -205,23 +209,75 @@ def _write_creds(email: str, password: str) -> None:
     log.info("Wrote Theta creds.txt at %s (user=%s)", creds, email)
 
 
-def _spawn_subprocess() -> None:
-    """Popen the jar and kick off stderr/stdout drain threads."""
-    with _state_lock:
-        _state.proc = subprocess.Popen(
-            ["java", "-jar", str(_JAR_PATH)],
-            cwd=str(_THETA_HOME),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-        _state.started_at = time.time()
+# How long to wait for the old drain threads to hit EOF and exit after
+# we close the dead proc's pipes on respawn. Bounded so a wedged thread
+# can never stall the monitor loop's restart path.
+_DRAIN_JOIN_TIMEOUT_S = 5
 
-    threading.Thread(target=_stderr_tail_loop, name="theta-stderr", daemon=True).start()
-    threading.Thread(
+
+def _reap_old_proc(
+    old_proc: subprocess.Popen[str] | None,
+    old_drain_threads: list[threading.Thread],
+) -> None:
+    """Close a dead proc's pipes and join its drain threads (FINDING A).
+
+    Closing stdout/stderr makes the old drain loops (blocked on those
+    pipe iterators) hit EOF and return, so we can join them with a
+    bounded timeout instead of leaking 2 threads + 2 FDs per respawn.
+    All steps are best-effort — a respawn must never raise here.
+    """
+    if old_proc is not None:
+        for pipe in (old_proc.stdout, old_proc.stderr):
+            if pipe is not None:
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+
+    for thread in old_drain_threads:
+        # is_alive() is False for a thread that was never started (or
+        # already finished) — guards join()'s "cannot join thread before
+        # it is started" RuntimeError on those handles.
+        if thread.is_alive():
+            thread.join(timeout=_DRAIN_JOIN_TIMEOUT_S)
+
+
+def _spawn_subprocess() -> None:
+    """Popen the jar and kick off stderr/stdout drain threads.
+
+    On respawn, the previous proc's pipes are closed and its drain
+    threads joined BEFORE the new proc spawns, so a flapping jar can't
+    exhaust the thread/FD table over long uptime (FINDING A).
+    """
+    with _state_lock:
+        old_proc = _state.proc
+        old_drain_threads = list(_state.drain_threads)
+
+    _reap_old_proc(old_proc, old_drain_threads)
+
+    new_proc = subprocess.Popen(
+        ["java", "-jar", str(_JAR_PATH)],
+        cwd=str(_THETA_HOME),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+
+    stderr_thread = threading.Thread(
+        target=_stderr_tail_loop, name="theta-stderr", daemon=True
+    )
+    stdout_thread = threading.Thread(
         target=_stdout_drain_loop, name="theta-stdout", daemon=True
-    ).start()
+    )
+
+    with _state_lock:
+        _state.proc = new_proc
+        _state.started_at = time.time()
+        _state.drain_threads = [stderr_thread, stdout_thread]
+
+    stderr_thread.start()
+    stdout_thread.start()
 
 
 def _wait_for_ready() -> bool:
@@ -334,7 +390,7 @@ def _monitor_loop() -> None:
         try:
             _spawn_subprocess()
             if not _wait_for_ready():
-                log.warning("Theta restart did not reach ready state within timeout")
+                _handle_restart_not_ready()
         except Exception as exc:
             capture_exception(
                 exc,
@@ -343,3 +399,34 @@ def _monitor_loop() -> None:
             )
 
         backoff = min(backoff * 2, max_backoff)
+
+
+def _handle_restart_not_ready() -> None:
+    """Kill a half-up restart so is_running() reflects reality (FINDING B).
+
+    A jar whose process is up but whose HTTP server never came up reads
+    as "running but not ingesting" — a zombie the fetcher keeps
+    scheduling against. We kill the proc (so is_running() flips False),
+    report to Sentry, and let the monitor loop's backoff retry.
+    """
+    log.warning("Theta restart did not reach ready state within timeout")
+    with _state_lock:
+        proc = _state.proc
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            # Reap the killed child so it isn't left defunct until the next
+            # poll(); bounded best-effort (SIGKILL should be near-instant).
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                log.error("Theta proc did not reap after SIGKILL")
+    capture_message(
+        "Theta restart did not reach ready state — killed half-up subprocess",
+        level="error",
+        context={"timeout_s": _READINESS_TIMEOUT_S},
+        tags={"component": "theta"},
+    )

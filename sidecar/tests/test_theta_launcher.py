@@ -365,6 +365,173 @@ def test_spawn_subprocess_calls_popen_with_jar_and_starts_threads(
 
 
 # ---------------------------------------------------------------------------
+# _spawn_subprocess — FINDING A: respawn closes old pipes + joins old threads
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_subprocess_reaps_old_proc_before_replacing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On respawn the old pipes are closed and old drain threads joined."""
+    import theta_launcher
+
+    # Seed state with a "previous" proc + its drain threads.
+    old_proc = MagicMock()
+    old_stdout = MagicMock()
+    old_stderr = MagicMock()
+    old_proc.stdout = old_stdout
+    old_proc.stderr = old_stderr
+    old_t1 = MagicMock()
+    old_t2 = MagicMock()
+    theta_launcher._state.proc = old_proc
+    theta_launcher._state.drain_threads = [old_t1, old_t2]
+
+    new_proc = MagicMock()
+    monkeypatch.setattr(
+        theta_launcher.subprocess, "Popen", lambda *_a, **_kw: new_proc
+    )
+
+    # Stub out Thread so the new drain loops don't actually run.
+    real_thread = theta_launcher.threading.Thread
+
+    def _capture_thread(*args: object, **kwargs: object) -> object:
+        t = real_thread(*args, **kwargs)
+        t.start = lambda: None  # type: ignore[method-assign]
+        return t
+
+    monkeypatch.setattr(theta_launcher.threading, "Thread", _capture_thread)
+
+    theta_launcher._spawn_subprocess()
+
+    # Old pipes were closed so the old drain loops hit EOF.
+    old_stdout.close.assert_called_once()
+    old_stderr.close.assert_called_once()
+    # Old drain threads were joined with a bounded timeout.
+    old_t1.join.assert_called_once_with(timeout=theta_launcher._DRAIN_JOIN_TIMEOUT_S)
+    old_t2.join.assert_called_once_with(timeout=theta_launcher._DRAIN_JOIN_TIMEOUT_S)
+
+    # New proc installed; drain_threads replaced (exactly two fresh handles).
+    assert theta_launcher._state.proc is new_proc
+    assert len(theta_launcher._state.drain_threads) == 2
+    assert old_t1 not in theta_launcher._state.drain_threads
+    assert old_t2 not in theta_launcher._state.drain_threads
+
+
+def test_spawn_subprocess_drain_threads_bounded_across_respawns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N respawns never grow _state.drain_threads past two handles."""
+    import theta_launcher
+
+    monkeypatch.setattr(
+        theta_launcher.subprocess, "Popen", lambda *_a, **_kw: MagicMock()
+    )
+
+    real_thread = theta_launcher.threading.Thread
+
+    def _capture_thread(*args: object, **kwargs: object) -> object:
+        t = real_thread(*args, **kwargs)
+        t.start = lambda: None  # type: ignore[method-assign]
+        return t
+
+    monkeypatch.setattr(theta_launcher.threading, "Thread", _capture_thread)
+
+    for _ in range(5):
+        theta_launcher._spawn_subprocess()
+        assert len(theta_launcher._state.drain_threads) == 2
+
+
+def test_reap_old_proc_is_noop_when_no_old_proc() -> None:
+    """First-ever spawn (no prior proc) reaps cleanly without raising."""
+    import theta_launcher
+
+    # Should not raise with None proc and empty thread list.
+    theta_launcher._reap_old_proc(None, [])
+
+
+def test_reap_old_proc_swallows_pipe_close_errors() -> None:
+    """A close() that raises OSError is swallowed (best-effort)."""
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.stdout.close.side_effect = OSError("already closed")
+    proc.stderr = None
+    # Should not raise.
+    theta_launcher._reap_old_proc(proc, [])
+
+
+# ---------------------------------------------------------------------------
+# _monitor_loop — FINDING B: half-up restart is killed + reported to Sentry
+# ---------------------------------------------------------------------------
+
+
+def test_monitor_loop_kills_proc_when_restart_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Restart spawns a proc but readiness fails -> proc killed + Sentry fired."""
+    import theta_launcher
+
+    dead_proc = MagicMock()
+    dead_proc.poll.return_value = 1  # original proc exited
+    theta_launcher._state.proc = dead_proc
+
+    monkeypatch.setattr(theta_launcher.time, "sleep", lambda _s: None)
+
+    captured: list[str] = []
+    monkeypatch.setattr(
+        theta_launcher,
+        "capture_message",
+        lambda msg, **_kw: captured.append(msg),
+    )
+
+    # The respawned (half-up) proc: process alive, HTTP never came up.
+    half_up = MagicMock()
+    half_up.poll.return_value = None  # alive
+
+    def _fake_spawn() -> None:
+        theta_launcher._state.proc = half_up
+        # Stop the loop after this restart attempt.
+        theta_launcher._state.shutdown = True
+
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", _fake_spawn)
+    monkeypatch.setattr(theta_launcher, "_wait_for_ready", lambda: False)
+
+    theta_launcher._monitor_loop()
+
+    # Half-up proc was terminated so is_running() reflects reality.
+    half_up.terminate.assert_called_once()
+    half_up.wait.assert_called_once_with(timeout=5)
+    # Sentry got the not-ready signal.
+    assert any("did not reach ready state" in m for m in captured)
+
+    # is_running() now returns False (process killed -> poll reports exit).
+    half_up.poll.return_value = 143  # SIGTERM exit
+    assert theta_launcher.is_running() is False
+
+
+def test_handle_restart_not_ready_escalates_to_kill_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If terminate()'d proc ignores the timeout, escalate to kill()."""
+    import theta_launcher
+
+    proc = MagicMock()
+    proc.poll.return_value = None
+    # First wait() (after terminate) times out -> escalate to kill(); the
+    # second wait() (reap after kill) succeeds so the child isn't defunct.
+    proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="java", timeout=5), 0]
+    theta_launcher._state.proc = proc
+
+    monkeypatch.setattr(theta_launcher, "capture_message", lambda *_a, **_kw: None)
+
+    theta_launcher._handle_restart_not_ready()
+
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+    assert proc.wait.call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # _stderr_tail_loop — line capture + sentry forwarding
 # ---------------------------------------------------------------------------
 

@@ -300,6 +300,121 @@ def test_fetch_eod_5xx_retries_then_fails() -> None:
     assert mock_urlopen.call_count == 2
 
 
+def _http_error(code: int, msg: str) -> HTTPError:
+    return HTTPError(
+        url="http://127.0.0.1:25503/v2/hist/option/eod",
+        code=code,
+        msg=msg,
+        hdrs=None,  # type: ignore[arg-type]
+        fp=None,
+    )
+
+
+def _fetch_eod_single_close(client: ThetaClient) -> list[EodRow]:
+    return client.fetch_eod(
+        root="SPX",
+        expiration=date(2024, 3, 15),
+        strike=Decimal("5100.00"),
+        option_type="C",
+        start_date=date(2024, 3, 15),
+        end_date=date(2024, 3, 15),
+    )
+
+
+# ---------------------------------------------------------------------------
+# FINDING D — throttle codes 429/476 are retried on the 5xx backoff path
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_eod_476_then_200_succeeds_after_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 476 = Theta MDDS transient disconnect — retry, don't hard-fail.
+    monkeypatch.setattr("theta_client.time.sleep", lambda _s: None)
+    ok = {
+        "header": {"format": ["close", "date"]},
+        "response": [[1.23, 20240315]],
+    }
+    side_effects = [_http_error(476, "MDDS disconnect"), _http_response(ok)]
+    with patch("theta_client.urlopen", side_effect=side_effects):
+        client = ThetaClient(max_retries=3)
+        rows = _fetch_eod_single_close(client)
+    assert len(rows) == 1
+    assert rows[0].close == Decimal("1.23")
+
+
+def test_fetch_eod_429_then_200_succeeds_after_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 429 = rate limit — retry, don't hard-fail.
+    monkeypatch.setattr("theta_client.time.sleep", lambda _s: None)
+    ok = {
+        "header": {"format": ["close", "date"]},
+        "response": [[4.56, 20240315]],
+    }
+    side_effects = [_http_error(429, "Too Many Requests"), _http_response(ok)]
+    with patch("theta_client.urlopen", side_effect=side_effects):
+        client = ThetaClient(max_retries=3)
+        rows = _fetch_eod_single_close(client)
+    assert len(rows) == 1
+    assert rows[0].close == Decimal("4.56")
+
+
+def test_fetch_eod_persistent_476_fails_after_max_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("theta_client.time.sleep", lambda _s: None)
+    with patch(
+        "theta_client.urlopen", side_effect=_http_error(476, "MDDS disconnect")
+    ) as mock_urlopen:
+        client = ThetaClient(max_retries=2)
+        with pytest.raises(ThetaClientError):
+            _fetch_eod_single_close(client)
+    # 476 is retryable -> exhausts all attempts before raising.
+    assert mock_urlopen.call_count == 2
+
+
+def test_fetch_eod_472_still_raises_subscription_error_immediately() -> None:
+    # 472 must NOT be swept into the retry set — it's an immediate denial.
+    with patch(
+        "theta_client.urlopen", side_effect=_http_error(472, "Not entitled")
+    ) as mock_urlopen:
+        client = ThetaClient(max_retries=3)
+        with pytest.raises(ThetaSubscriptionError):
+            _fetch_eod_single_close(client)
+    # Raised on the first try — no retries.
+    assert mock_urlopen.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# FINDING C — row/format length mismatch fails loudly (no silent truncation)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_eod_row_longer_than_format_raises() -> None:
+    # Row has an extra trailing column the format doesn't name.
+    payload = {
+        "header": {"format": ["close", "date"]},
+        "response": [[1.23, 20240315, 999]],
+    }
+    with patch("theta_client.urlopen", return_value=_http_response(payload)):
+        client = ThetaClient()
+        with pytest.raises(ThetaClientError, match="length mismatch"):
+            _fetch_eod_single_close(client)
+
+
+def test_fetch_eod_row_shorter_than_format_raises() -> None:
+    # Format names a column the row doesn't supply.
+    payload = {
+        "header": {"format": ["close", "volume", "date"]},
+        "response": [[1.23, 20240315]],
+    }
+    with patch("theta_client.urlopen", return_value=_http_response(payload)):
+        client = ThetaClient()
+        with pytest.raises(ThetaClientError, match="length mismatch"):
+            _fetch_eod_single_close(client)
+
+
 # ---------------------------------------------------------------------------
 # Option-type normalization
 # ---------------------------------------------------------------------------

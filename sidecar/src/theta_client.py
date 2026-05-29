@@ -45,6 +45,19 @@ DEFAULT_BASE_URL = "http://127.0.0.1:25503"
 DEFAULT_TIMEOUT_S = 15
 DEFAULT_MAX_RETRIES = 3
 
+# Non-5xx HTTP codes that are transient and worth retrying on the same
+# backoff path as 5xx (FINDING D):
+#   429 — rate limit
+#   476 — Theta MDDS transient disconnect
+# 472 ("Not entitled") is intentionally excluded — it raises
+# ThetaSubscriptionError immediately so the fetcher can skip the root.
+_RETRYABLE_THROTTLE_CODES = frozenset({429, 476})
+
+
+def _is_retryable_http(code: int) -> bool:
+    """True for HTTP codes that should retry with backoff (5xx + throttles)."""
+    return (500 <= code < 600) or (code in _RETRYABLE_THROTTLE_CODES)
+
 # Strikes are stored on the wire as integer thousandths of a dollar.
 # 5100000 wire -> $5100.00 human. Divisor lives in one place so tests
 # can assert against it symbolically.
@@ -182,7 +195,7 @@ class ThetaClient:
                     raise ThetaSubscriptionError(
                         f"Theta denied request (HTTP 472): {url}"
                     ) from exc
-                if 500 <= exc.code < 600 and attempt < self.max_retries:
+                if _is_retryable_http(exc.code) and attempt < self.max_retries:
                     log.warning(
                         "Theta %s returned %d; retrying (%d/%d)",
                         path,
@@ -286,7 +299,17 @@ def _row_to_eod(
     # The format list names every column in the wire row. The single-
     # contract endpoint doesn't echo symbol/strike/right/exp back — those
     # are request-side knowns we inject here.
-    cells = dict(zip(fmt, row, strict=False))
+    #
+    # strict=True so a format/row length mismatch (Theta adds or removes a
+    # column) fails loudly instead of silently truncating to wrong/null
+    # fields (FINDING C).
+    try:
+        cells = dict(zip(fmt, row, strict=True))
+    except ValueError as exc:
+        raise ThetaClientError(
+            f"Theta row/format length mismatch: "
+            f"len(format)={len(fmt)} len(row)={len(row)} row={row!r}"
+        ) from exc
 
     def _num(field: str) -> Decimal | None:
         value = cells.get(field)
