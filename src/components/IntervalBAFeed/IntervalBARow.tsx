@@ -47,14 +47,6 @@ const formatPremium = (n: number): string => {
   return `$${n.toFixed(0)}`;
 };
 
-const formatSignedPremium = (n: number): string => {
-  const sign = n >= 0 ? '+' : '−';
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}$${abs.toFixed(0)}`;
-};
-
 const formatVol = (n: number): string => {
   if (Math.abs(n) >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (Math.abs(n) >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -206,8 +198,8 @@ export const IntervalBARow = memo(function IntervalBARow({
     enabled: expanded,
     marketOpen,
   });
-  // Memo for stable identity — `flowStats` lists `netFlowSeries` as a
-  // useMemo dep, so a fresh `[]` per render would force re-computation.
+  // Memo for stable identity — `netFlowSeries` is passed to the memoized
+  // TickerNetFlowChart, so a fresh `[]` per render would defeat its memo.
   const netFlowSeries = useMemo(
     () => netFlow.data?.series ?? [],
     [netFlow.data],
@@ -248,17 +240,6 @@ export const IntervalBARow = memo(function IntervalBARow({
       avgFill: volSum > 0 ? priceVolSum / volSum : null,
     };
   }, [tapeSeries]);
-
-  const flowStats = useMemo(() => {
-    if (netFlowSeries.length === 0) return null;
-    const last = netFlowSeries.at(-1);
-    if (last == null) return null;
-    return {
-      cumNcp: last.cumNcp,
-      cumNpp: last.cumNpp,
-      diff: last.cumNcp - last.cumNpp,
-    };
-  }, [netFlowSeries]);
 
   return (
     <div
@@ -477,58 +458,9 @@ export const IntervalBARow = memo(function IntervalBARow({
             )}
           </div>
 
-          {/* NET FLOW PANEL */}
+          {/* NET FLOW PANEL — header (symbol · spot · Vol · NPP · NCP) and
+              pane titles are rendered by TickerNetFlowChart itself. */}
           <div className="rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2.5">
-            <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase">
-                  net flow
-                </span>
-                <span className="font-mono text-xs font-semibold text-neutral-100">
-                  {alert.ticker}
-                </span>
-                <span className="text-[10px] text-neutral-500">
-                  cumulative · session-to-date
-                </span>
-              </div>
-              <span className="text-[10px] tracking-wide text-neutral-600 uppercase">
-                price · NCP · NPP · net vol
-              </span>
-            </div>
-            {flowStats != null && (
-              <div className="mb-2 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
-                {candles.length > 0 && (
-                  <span>
-                    <span className="text-amber-300">spot</span>{' '}
-                    <span className="text-neutral-200">
-                      {candles.at(-1)!.close.toFixed(2)}
-                    </span>
-                  </span>
-                )}
-                <span>
-                  <span className="text-green-300">NCP</span>{' '}
-                  <span className="text-neutral-200">
-                    {formatSignedPremium(flowStats.cumNcp)}
-                  </span>
-                </span>
-                <span>
-                  <span className="text-red-300">NPP</span>{' '}
-                  <span className="text-neutral-200">
-                    {formatSignedPremium(flowStats.cumNpp)}
-                  </span>
-                </span>
-                <span>
-                  Δ{' '}
-                  <span
-                    className={
-                      flowStats.diff >= 0 ? 'text-green-300' : 'text-red-300'
-                    }
-                  >
-                    {formatSignedPremium(flowStats.diff)}
-                  </span>
-                </span>
-              </div>
-            )}
             {netFlow.loading && netFlowSeries.length === 0 ? (
               <div className="text-[10px] text-neutral-500">
                 Loading net flow…
@@ -544,6 +476,7 @@ export const IntervalBARow = memo(function IntervalBARow({
                 previousClose={previousClose}
                 markerTs={alert.fired_at}
                 date={date}
+                symbol={alert.ticker}
                 ariaLabel={`${alert.ticker} cumulative net call/put premium with stock price overlay`}
               />
             )}

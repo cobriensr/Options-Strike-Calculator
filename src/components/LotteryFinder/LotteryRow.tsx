@@ -128,22 +128,6 @@ const formatVol = (n: number): string => {
   return n.toFixed(0);
 };
 
-/**
- * Compact $ formatter for net premium tallies (signed).
- *
- * Local LotteryRow variant — kept distinct from the canonical
- * `formatPremium` in src/utils/format-magnitude.ts because this one
- * shows the leading `+` / `−` sign (canonical coalesces negatives to
- * `$0` since premium magnitudes are unsigned by convention).
- */
-const formatPremium = (n: number): string => {
-  const sign = n >= 0 ? '+' : '−';
-  const abs = Math.abs(n);
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}$${abs.toFixed(0)}`;
-};
-
 const pctClass = (n: number | null): string => {
   if (n == null) return 'text-neutral-500';
   if (n >= 50) return 'text-green-300';
@@ -444,9 +428,9 @@ export const LotteryRow = memo(function LotteryRow({
     enabled: expanded,
     marketOpen,
   });
-  // Memo for stable identity — both `tapeStats` and `flowStats` list
-  // `netFlowSeries` as a useMemo dep, so a fresh `[]` per render would
-  // force re-computation. Same pattern as the `candles` memo below.
+  // Memo for stable identity — `netFlowSeries` is passed to
+  // TickerNetFlowChart (a memoized child), so a fresh `[]` per render
+  // would defeat its memo. Same pattern as the `candles` memo below.
   const netFlowSeries = useMemo(
     () => netFlow.data?.series ?? [],
     [netFlow.data],
@@ -499,26 +483,6 @@ export const LotteryRow = memo(function LotteryRow({
       avgFill: volSum > 0 ? priceVolSum / volSum : null,
     };
   }, [tapeSeries]);
-
-  /**
-   * Latest cumulative NCP / NPP / NCV / NPV plus signed call-minus-put
-   * divergence (both premium $ and volume contracts). Surfaced in the
-   * NET FLOW header strip so the user reads the regime in one glance:
-   * who's loading on what side, both by dollars and contracts.
-   */
-  const flowStats = useMemo(() => {
-    if (netFlowSeries.length === 0) return null;
-    const last = netFlowSeries.at(-1);
-    if (last == null) return null;
-    return {
-      cumNcp: last.cumNcp,
-      cumNpp: last.cumNpp,
-      cumNcv: last.cumNcv,
-      cumNpv: last.cumNpv,
-      diff: last.cumNcp - last.cumNpp,
-      diffVol: last.cumNcv - last.cumNpv,
-    };
-  }, [netFlowSeries]);
 
   /**
    * Spot at fire time — frozen snapshot, not live. Prefers
@@ -1309,116 +1273,9 @@ export const LotteryRow = memo(function LotteryRow({
             )}
           </div>
 
-          {/* NET FLOW PANEL */}
+          {/* NET FLOW PANEL — header (symbol · spot · Vol · NPP · NCP) and
+              pane titles are rendered by TickerNetFlowChart itself. */}
           <div className="rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2.5">
-            <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase">
-                  net flow
-                </span>
-                <span className="font-mono text-xs font-semibold text-neutral-100">
-                  {fire.underlyingSymbol}
-                </span>
-                <span className="text-[10px] text-neutral-500">
-                  cumulative · session-to-date
-                </span>
-              </div>
-              <span className="text-[10px] tracking-wide text-neutral-600 uppercase">
-                price · NCP · NPP · net vol
-              </span>
-            </div>
-            {/* Latest cum NCP / NPP / divergence + last spot strip.
-                Includes both premium-$ (NCP/NPP/Δ) and contract-vol
-                (NCV/NPV/Δv) so the reader can tell big-money flow from
-                retail-contract flow — the dollar Δ alone can be misled
-                by a few mega-prints. Colored swatches mirror the chart
-                lines. */}
-            {flowStats != null && (
-              <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10px] text-neutral-400">
-                {candles.length > 0 && (
-                  <span className="inline-flex items-center gap-1">
-                    <span
-                      aria-hidden
-                      className="inline-block h-1.5 w-1.5 rounded-sm bg-amber-400"
-                    />
-                    <span className="text-amber-300">spot</span>{' '}
-                    <span className="text-neutral-200">
-                      {candles.at(-1)!.close.toFixed(2)}
-                    </span>
-                  </span>
-                )}
-                <span
-                  className="inline-flex items-center gap-1"
-                  title="Cumulative Net Call Premium $ (call buys − call sells)"
-                >
-                  <span
-                    aria-hidden
-                    className="inline-block h-1.5 w-1.5 rounded-sm bg-green-400"
-                  />
-                  <span className="text-green-300">NCP</span>{' '}
-                  <span className="text-neutral-200">
-                    {formatPremium(flowStats.cumNcp)}
-                  </span>
-                </span>
-                <span
-                  className="inline-flex items-center gap-1"
-                  title="Cumulative Net Put Premium $ (put buys − put sells)"
-                >
-                  <span
-                    aria-hidden
-                    className="inline-block h-1.5 w-1.5 rounded-sm bg-red-400"
-                  />
-                  <span className="text-red-300">NPP</span>{' '}
-                  <span className="text-neutral-200">
-                    {formatPremium(flowStats.cumNpp)}
-                  </span>
-                </span>
-                <span title="Premium divergence: NCP − NPP. Positive = bull $-flow regime; negative = bear $-flow regime.">
-                  Δ$
-                  <span
-                    className={
-                      flowStats.diff >= 0 ? 'text-green-300' : 'text-red-300'
-                    }
-                  >
-                    {' '}
-                    {formatPremium(flowStats.diff)}
-                  </span>
-                </span>
-                <span
-                  className="text-neutral-500"
-                  title="Cumulative net call volume (contracts)"
-                >
-                  NCV{' '}
-                  <span className="text-neutral-200">
-                    {formatVol(flowStats.cumNcv)}
-                  </span>
-                </span>
-                <span
-                  className="text-neutral-500"
-                  title="Cumulative net put volume (contracts)"
-                >
-                  NPV{' '}
-                  <span className="text-neutral-200">
-                    {formatVol(flowStats.cumNpv)}
-                  </span>
-                </span>
-                <span
-                  className="text-neutral-500"
-                  title="Volume divergence: NCV − NPV. Bottom-pane series."
-                >
-                  Δv
-                  <span
-                    className={
-                      flowStats.diffVol >= 0 ? 'text-green-300' : 'text-red-300'
-                    }
-                  >
-                    {' '}
-                    {flowStats.diffVol >= 0 ? '+' : ''}
-                    {formatVol(flowStats.diffVol)}
-                  </span>
-                </span>
-              </div>
-            )}
             {netFlow.loading && netFlowSeries.length === 0 ? (
               <div className="text-[10px] text-neutral-500">
                 Loading net flow…
@@ -1434,6 +1291,7 @@ export const LotteryRow = memo(function LotteryRow({
                 previousClose={previousClose}
                 markerTs={fire.triggerTimeCt}
                 date={fire.date}
+                symbol={fire.underlyingSymbol}
                 syncHoverTime={hoverTime}
                 onHoverTime={onHoverTimeChange}
                 ariaLabel={`${fire.underlyingSymbol} cumulative net call/put premium with stock price overlay`}

@@ -1,9 +1,12 @@
 {
   "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-05-27T22:15:40.323165+00:00",
+  "trained_at": "2026-05-29T01:13:56.995971+00:00",
   "training_sample": {
-    "n": 161849,
-    "date_range": ["2026-02-26 00:00:00", "2026-05-27 00:00:00"],
+    "n": 159251,
+    "date_range": [
+      "2026-03-03 00:00:00",
+      "2026-05-28 00:00:00"
+    ],
     "filters_applied": [
       "last 90 days",
       "aligned only (cum_ncp > cum_npp for calls, vice versa for puts)",
@@ -33,18 +36,44 @@
       "2": 0,
       "3": 1
     },
-    "vol_oi_quintile_weights": [1, 0, 2, 0, -3],
+    "vol_oi_quintile_weights": [
+      1,
+      0,
+      2,
+      0,
+      -3
+    ],
     "vol_oi_quintile_boundaries": [
-      0.05985147295934173, 0.09635974304068523, 0.15552076871759463,
-      0.3817829457364341
+      0.05996843766438716,
+      0.09682150774205377,
+      0.1565040650406504,
+      0.38517179023508136
     ],
-    "gamma_quintile_weights": [3, -2, -2, -2, -1],
+    "gamma_quintile_weights": [
+      3,
+      -2,
+      -2,
+      -2,
+      -1
+    ],
     "gamma_quintile_boundaries": [
-      0.01234385266008575, 0.02559131, 0.0426539571228536, 0.0692641349936143
+      0.012314985530921642,
+      0.02554117154869061,
+      0.042568723904775466,
+      0.06920657150330813
     ],
-    "ask_pct_quintile_weights": [-1, 1, 1, 2, -4],
+    "ask_pct_quintile_weights": [
+      -1,
+      1,
+      1,
+      2,
+      -4
+    ],
     "ask_pct_quintile_boundaries": [
-      0.5333333333333333, 0.5714285714285714, 0.625, 0.75
+      0.5333333333333333,
+      0.5714285714285714,
+      0.625,
+      0.75
     ],
     "option_type_weights": {
       "C": 2,
@@ -62,15 +91,15 @@
       "AVGO": 0,
       "BA": 2,
       "BABA": 0,
-      "BE": 0,
+      "BE": -1,
       "CAR": 0,
       "COIN": 0,
       "CRCL": 0,
       "CRWD": 0,
       "CRWV": 0,
       "CSCO": 0,
-      "CVNA": -1,
-      "DELL": 1,
+      "CVNA": 0,
+      "DELL": 0,
       "GME": 0,
       "GOOG": 1,
       "GOOGL": 0,
@@ -81,7 +110,7 @@
       "INTC": 0,
       "IONQ": 0,
       "IREN": 0,
-      "IWM": -1,
+      "IWM": 0,
       "LITE": 0,
       "LLY": 0,
       "META": 0,
@@ -103,10 +132,10 @@
       "RBLX": -1,
       "RDDT": 1,
       "RGTI": -1,
-      "RIOT": -1,
+      "RIOT": 0,
       "RIVN": 0,
       "RKLB": 3,
-      "RUTW": -1,
+      "RUTW": 0,
       "SHOP": 0,
       "SLV": -1,
       "SMCI": 1,
@@ -115,7 +144,7 @@
       "SNOW": 0,
       "SOFI": -1,
       "SOUN": 5,
-      "SOXL": -1,
+      "SOXL": 0,
       "SOXS": -1,
       "SPXW": 0,
       "SPY": 0,
@@ -128,7 +157,7 @@
       "TSLA": 0,
       "TSLL": 1,
       "TSM": 1,
-      "UBER": -1,
+      "UBER": 0,
       "UNH": 1,
       "USAR": -1,
       "USO": -1,
@@ -220,13 +249,13 @@
     "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift."
   },
   "validation": {
-    "tier1_count": 11714,
-    "tier2_count": 12992,
-    "tier3_count": 137143,
-    "tier1_mean_outcome_pct": 34.72686067052401,
-    "tier2_mean_outcome_pct": 27.170991193835754,
-    "tier3_mean_outcome_pct": 4.249664202404794,
-    "spearman_score_outcome": 0.18272730370995333,
+    "tier1_count": 11506,
+    "tier2_count": 12939,
+    "tier3_count": 134806,
+    "tier1_mean_outcome_pct": 36.02913198441431,
+    "tier2_mean_outcome_pct": 27.062491295589943,
+    "tier3_mean_outcome_pct": 4.356241686974387,
+    "spearman_score_outcome": 0.18214845737931545,
     "spearman_p_value": 0.0
   }
 }

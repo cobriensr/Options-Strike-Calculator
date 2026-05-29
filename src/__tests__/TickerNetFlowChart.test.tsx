@@ -51,11 +51,26 @@ const {
   const subscribeCrosshairMove = vi.fn();
   const setCrosshairPosition = vi.fn();
   const clearCrosshairPosition = vi.fn();
+  // Two-pane geometry: price pane (index 0) reports 150px tall so the
+  // "Net Volume" label can be positioned at its bottom edge.
+  const pane0 = {
+    setStretchFactor: vi.fn(),
+    getStretchFactor: vi.fn().mockReturnValue(3),
+    getHeight: vi.fn().mockReturnValue(150),
+    paneIndex: vi.fn().mockReturnValue(0),
+  };
+  const pane1 = {
+    setStretchFactor: vi.fn(),
+    getStretchFactor: vi.fn().mockReturnValue(1),
+    getHeight: vi.fn().mockReturnValue(50),
+    paneIndex: vi.fn().mockReturnValue(1),
+  };
   const chart = {
     addSeries: vi.fn().mockImplementation(() => series),
     applyOptions: vi.fn(),
     remove: vi.fn(),
     timeScale: vi.fn().mockReturnValue(timeScale),
+    panes: vi.fn().mockReturnValue([pane0, pane1]),
     subscribeCrosshairMove,
     unsubscribeCrosshairMove: vi.fn(),
     setCrosshairPosition,
@@ -398,5 +413,104 @@ describe('TickerNetFlowChart: cross-panel hover sync', () => {
     );
     expect(mockSetCrosshairPosition).toHaveBeenCalled();
     expect(onHoverTime).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// UW-STYLE HEADER + PANE TITLES
+// ============================================================
+
+describe('TickerNetFlowChart: UW-style inline header', () => {
+  const ticks = [
+    makeTick({
+      ts: '2026-05-29T14:30:00Z',
+      cumNcp: -76_100_000,
+      cumNpp: 656_000,
+      cumNcv: -10_000,
+      cumNpv: 45_440,
+    }),
+    makeTick({
+      ts: '2026-05-29T16:37:00Z',
+      cumNcp: -76_100_000,
+      cumNpp: 656_000,
+      cumNcv: -10_000,
+      cumNpv: 45_440,
+    }),
+  ];
+
+  it('renders the symbol and latest spot when symbol + candles are provided', () => {
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[makeCandle({ ts: '2026-05-29T16:37:00Z', close: 757.44 })]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(screen.getByText('SPY')).toBeInTheDocument();
+    expect(screen.getByText('757.44')).toBeInTheDocument();
+  });
+
+  it('renders compact NCP / NPP and comma-formatted net Vol in the header', () => {
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[makeCandle({ ts: '2026-05-29T16:37:00Z', close: 757.44 })]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    // cumNcp = -76.1M, cumNpp = 656K, netVol = cumNcv - cumNpv = -55,440.
+    expect(screen.getByText('-76.1M')).toBeInTheDocument();
+    expect(screen.getByText('656K')).toBeInTheDocument();
+    expect(screen.getByText('-55,440')).toBeInTheDocument();
+  });
+
+  it('renders the Net Premiums and Net Volume pane titles when populated', () => {
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(screen.getByText('Net Premiums')).toBeInTheDocument();
+    expect(screen.getByText('Net Volume')).toBeInTheDocument();
+  });
+
+  it('sets pane stretch factors 3:1 (premiums:volume) on the two panes', () => {
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    const [pane0, pane1] = mockChart.panes();
+    expect(pane0.setStretchFactor).toHaveBeenCalledWith(3);
+    expect(pane1.setStretchFactor).toHaveBeenCalledWith(1);
+  });
+
+  it('omits the inline metric header when no symbol is provided (back-compat)', () => {
+    render(<TickerNetFlowChart series={ticks} candles={[]} ariaLabel="t" />);
+    // The freshness label / metric chips key off `symbol`; without it the
+    // header row is absent. `-76.1M` (cumNcp) only appears in that header,
+    // so its absence proves the header didn't render.
+    expect(screen.queryByText('-76.1M')).not.toBeInTheDocument();
+  });
+
+  it('does not render the header in the waiting state', () => {
+    render(
+      <TickerNetFlowChart
+        series={[]}
+        candles={[]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(screen.queryByText('SPY')).not.toBeInTheDocument();
+    expect(screen.queryByText('Net Premiums')).not.toBeInTheDocument();
   });
 });

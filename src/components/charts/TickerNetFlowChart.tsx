@@ -68,6 +68,41 @@ const fmtSignedVol = (n: number): string => {
   return `${sign}${abs.toFixed(0)}`;
 };
 
+/**
+ * Compact premium formatter for the inline header — matches the UW chart's
+ * top strip ("656K", "-76.1M"): negatives carry a "-", positives are bare,
+ * no "$" prefix (the colored dot already labels the series).
+ */
+const fmtHeaderPremium = (n: number): string => {
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(0)}K`;
+  return `${sign}${abs.toFixed(0)}`;
+};
+
+/** Net-volume formatter for the header — raw integer with thousands commas
+ *  ("-55,440"), matching UW's "Vol:" readout. */
+const fmtHeaderVol = (n: number): string =>
+  Math.round(n).toLocaleString('en-US');
+
+/** Freshness label for the header — "M/D h:mm AM" in CT, from the last tick. */
+const fmtHeaderTime = (iso: string): string => {
+  const d = new Date(iso);
+  const md = d.toLocaleDateString('en-US', {
+    month: 'numeric',
+    day: 'numeric',
+    timeZone: 'America/Chicago',
+  });
+  const tm = d.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'America/Chicago',
+  });
+  return `${md} ${tm}`;
+};
+
 /** Local time-pinned alias — narrower than the library's Time union. */
 type Point = { time: UTCTimestamp; value: number };
 
@@ -105,6 +140,13 @@ interface TickerNetFlowChartProps {
   onHoverTime?: (t: number | null) => void;
   /** Total chart height in pixels. Default 220. */
   height?: number;
+  /**
+   * Underlying ticker symbol. When provided (and ≥1 tick is present), the
+   * chart renders the UW-style inline metric header (symbol/spot · Vol ·
+   * NPP · NCP) above the canvas. Omitted callers get the bare chart — the
+   * header is opt-in for back-compat with tests and older consumers.
+   */
+  symbol?: string;
   ariaLabel: string;
 }
 
@@ -154,6 +196,7 @@ function TickerNetFlowChartInner({
   syncHoverTime,
   onHoverTime,
   height = 220,
+  symbol,
   ariaLabel,
 }: TickerNetFlowChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -169,6 +212,10 @@ function TickerNetFlowChartInner({
   /** Pixel x-coordinate of the fire-time marker, recomputed on every
    *  data update + resize. `null` when off-chart or unmeasurable. */
   const [markerX, setMarkerX] = useState<number | null>(null);
+  /** Pixel y-coordinate of the volume pane's top edge, used to pin the
+   *  "Net Volume" pane-title overlay. Recomputed on data/resize. `null`
+   *  until the chart reports pane geometry. */
+  const [volPaneTop, setVolPaneTop] = useState<number | null>(null);
   /**
    * Crosshair-driven readout for the floating tooltip strip. lightweight-
    * charts already paints a per-series legend, but it's spread across the
@@ -221,6 +268,23 @@ function TickerNetFlowChartInner({
     }));
     return dedupAscending(raw);
   }, [candles]);
+
+  // ── Latest values for the UW-style inline header ────────────────
+  // Derived from the same series/candles the chart already renders, so
+  // the header can't drift from the lines. `spot` is null until the
+  // first candle arrives; the premium/volume values come from the last
+  // cumulative tick.
+  const headerStats = useMemo(() => {
+    const last = series.at(-1);
+    if (!last) return null;
+    return {
+      time: last.ts,
+      spot: candles.at(-1)?.close ?? null,
+      ncp: last.cumNcp,
+      npp: last.cumNpp,
+      netVol: last.cumNcv - last.cumNpv,
+    };
+  }, [series, candles]);
 
   // ── Create chart once ──────────────────────────────────────────
   // Deps are intentionally empty — the container is always mounted
@@ -310,6 +374,16 @@ function TickerNetFlowChartInner({
       axisLabelVisible: false,
       title: '',
     });
+
+    // Premium-dominant pane split (3:1), matching the UW reference where
+    // Net Premiums gets the bulk of the height and Net Volume is a thin
+    // strip below. Feature-checked rather than try/caught so a library
+    // shape change surfaces instead of silently swallowing.
+    if (typeof chart.panes === 'function') {
+      const panes = chart.panes();
+      panes[0]?.setStretchFactor(3);
+      panes[1]?.setStretchFactor(1);
+    }
 
     // ── Crosshair subscription drives the floating readout strip ──
     // Called on every mouse move within the chart canvas. When the
@@ -492,6 +566,28 @@ function TickerNetFlowChartInner({
     };
   }, [markerTs, flowData, priceData]);
 
+  // ── Volume-pane top edge, for the "Net Volume" title overlay ─────
+  // The price pane (index 0) height equals the y-offset of the volume
+  // pane's top. Recompute on data + height + size changes so the label
+  // tracks the pane boundary as it reflows.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || typeof chart.panes !== 'function') {
+      setVolPaneTop(null);
+      return;
+    }
+    const recompute = () => {
+      const pricePane = chart.panes()[0];
+      const h = pricePane?.getHeight();
+      setVolPaneTop(typeof h === 'number' && h > 0 ? h : null);
+    };
+    recompute();
+    chart.timeScale().subscribeSizeChange(recompute);
+    return () => {
+      chart.timeScale().unsubscribeSizeChange(recompute);
+    };
+  }, [flowData, priceData, height]);
+
   // ── Width-only responsive resize ───────────────────────────────
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return;
@@ -516,116 +612,198 @@ function TickerNetFlowChartInner({
       ? readout.ncp - readout.npp
       : null;
 
+  /** UW-style inline metric header — opt-in via `symbol`, hidden while the
+   *  chart is still waiting for its first two ticks. */
+  const showHeader = symbol != null && !showPlaceholder && headerStats != null;
+
   return (
-    <div
-      className="relative w-full"
-      style={{ height }}
-      role="img"
-      aria-label={ariaLabel}
-    >
-      <div ref={containerRef} className="absolute inset-0" />
-      {showPlaceholder && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center font-mono text-[10px] text-neutral-500">
-          waiting for ≥2 net-flow ticks…
+    <div className="w-full">
+      {showHeader && (
+        <div className="mb-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 font-mono text-[11px] leading-tight">
+          <span className="text-neutral-500">
+            {fmtHeaderTime(headerStats.time)}
+          </span>
+          {headerStats.spot != null && (
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                aria-hidden
+                className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"
+              />
+              <span className="text-neutral-400">{symbol}</span>
+              <span className="text-neutral-100">
+                {headerStats.spot.toFixed(2)}
+              </span>
+            </span>
+          )}
+          <span
+            className="inline-flex items-center gap-1.5"
+            title="Net volume (contracts): cumulative net call − net put volume"
+          >
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full bg-slate-400"
+            />
+            <span className="text-neutral-400">Vol</span>
+            <span className="text-neutral-100">
+              {fmtHeaderVol(headerStats.netVol)}
+            </span>
+          </span>
+          <span
+            className="inline-flex items-center gap-1.5"
+            title="Cumulative Net Put Premium $"
+          >
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full bg-red-400"
+            />
+            <span className="text-neutral-400">NPP</span>
+            <span className="text-neutral-100">
+              {fmtHeaderPremium(headerStats.npp)}
+            </span>
+          </span>
+          <span
+            className="inline-flex items-center gap-1.5"
+            title="Cumulative Net Call Premium $"
+          >
+            <span
+              aria-hidden
+              className="inline-block h-1.5 w-1.5 rounded-full bg-green-400"
+            />
+            <span className="text-neutral-400">NCP</span>
+            <span className="text-neutral-100">
+              {fmtHeaderPremium(headerStats.ncp)}
+            </span>
+          </span>
         </div>
       )}
-      {/* Crosshair readout strip — pinned top-right so it doesn't
+      <div
+        className="relative w-full"
+        style={{ height }}
+        role="img"
+        aria-label={ariaLabel}
+      >
+        <div ref={containerRef} className="absolute inset-0" />
+        {/* Pane-title overlays — "Net Premiums" pinned to the top pane,
+            "Net Volume" pinned to the volume pane's top edge. Mirrors the
+            UW reference's in-pane labels. */}
+        {!showPlaceholder && (
+          <>
+            <div className="pointer-events-none absolute top-1 left-1 z-[5] text-[10px] font-medium text-neutral-400">
+              Net Premiums
+            </div>
+            {volPaneTop != null && (
+              <div
+                className="pointer-events-none absolute left-1 z-[5] text-[10px] font-medium text-neutral-400"
+                style={{ top: volPaneTop + 4 }}
+              >
+                Net Volume
+              </div>
+            )}
+          </>
+        )}
+        {showPlaceholder && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center font-mono text-[10px] text-neutral-500">
+            waiting for ≥2 net-flow ticks…
+          </div>
+        )}
+        {/* Crosshair readout strip — pinned top-right so it doesn't
           collide with the fire-time marker label on the left. Only
           shown while the cursor is over the chart. The unified value
           row is denser than lightweight-charts' built-in per-series
           gutter labels. */}
-      {!showPlaceholder && readout != null && (
-        <div
-          className="pointer-events-none absolute top-1 right-1 z-10 flex flex-wrap items-center gap-x-2 rounded border border-neutral-700/80 bg-neutral-950/85 px-1.5 py-0.5 font-mono text-[9px] whitespace-nowrap text-neutral-300 shadow-md backdrop-blur-sm"
-          role="status"
-          aria-live="polite"
-        >
-          <span className="text-neutral-500">@</span>
-          <span className="text-neutral-100">{formatCt(readout.time)}</span>
-          {readout.price != null && (
-            <span>
-              <span className="text-amber-300">$</span>
-              <span className="text-neutral-100">
-                {readout.price.toFixed(2)}
+        {!showPlaceholder && readout != null && (
+          <div
+            className="pointer-events-none absolute top-1 right-1 z-10 flex flex-wrap items-center gap-x-2 rounded border border-neutral-700/80 bg-neutral-950/85 px-1.5 py-0.5 font-mono text-[9px] whitespace-nowrap text-neutral-300 shadow-md backdrop-blur-sm"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="text-neutral-500">@</span>
+            <span className="text-neutral-100">{formatCt(readout.time)}</span>
+            {readout.price != null && (
+              <span>
+                <span className="text-amber-300">$</span>
+                <span className="text-neutral-100">
+                  {readout.price.toFixed(2)}
+                </span>
               </span>
-            </span>
-          )}
-          {readout.ncp != null && (
-            <span>
-              <span className="text-emerald-300">N</span>
-              <span className="text-neutral-100">
-                {fmtSignedDollar(readout.ncp)}
+            )}
+            {readout.ncp != null && (
+              <span>
+                <span className="text-emerald-300">N</span>
+                <span className="text-neutral-100">
+                  {fmtSignedDollar(readout.ncp)}
+                </span>
               </span>
-            </span>
-          )}
-          {readout.npp != null && (
-            <span>
-              <span className="text-rose-300">P</span>
-              <span className="text-neutral-100">
-                {fmtSignedDollar(readout.npp)}
+            )}
+            {readout.npp != null && (
+              <span>
+                <span className="text-rose-300">P</span>
+                <span className="text-neutral-100">
+                  {fmtSignedDollar(readout.npp)}
+                </span>
               </span>
-            </span>
-          )}
-          {readoutDiff != null && (
-            <span>
-              <span className="text-neutral-500">Δ</span>
-              <span
-                className={
-                  readoutDiff >= 0 ? 'text-emerald-300' : 'text-rose-300'
-                }
-              >
-                {fmtSignedDollar(readoutDiff)}
+            )}
+            {readoutDiff != null && (
+              <span>
+                <span className="text-neutral-500">Δ</span>
+                <span
+                  className={
+                    readoutDiff >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                  }
+                >
+                  {fmtSignedDollar(readoutDiff)}
+                </span>
               </span>
-            </span>
-          )}
-          {readout.netVol != null && (
-            <span>
-              <span className="text-neutral-500">v</span>
-              <span
-                className={
-                  readout.netVol >= 0 ? 'text-emerald-300' : 'text-rose-300'
-                }
-              >
-                {fmtSignedVol(readout.netVol)}
+            )}
+            {readout.netVol != null && (
+              <span>
+                <span className="text-neutral-500">v</span>
+                <span
+                  className={
+                    readout.netVol >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                  }
+                >
+                  {fmtSignedVol(readout.netVol)}
+                </span>
               </span>
-            </span>
-          )}
-        </div>
-      )}
-      {/* Fire-time vertical marker — purple, dashed. Painted as an
+            )}
+          </div>
+        )}
+        {/* Fire-time vertical marker — purple, dashed. Painted as an
           overlay so it can sit above the chart without fighting the
           imperative chart canvas. Now carries a small CT-time label
           near the top so the reader knows what the line represents. */}
-      {!showPlaceholder && markerX != null && markerTs != null && (
-        <>
-          <div
-            className="pointer-events-none absolute top-0 bottom-6 w-px"
-            style={{
-              left: markerX,
-              background:
-                'repeating-linear-gradient(to bottom, rgb(196,181,253) 0 3px, transparent 3px 6px)',
-            }}
-            aria-hidden
-          />
-          <div
-            className="pointer-events-none absolute top-0.5 rounded border border-violet-500/40 bg-violet-950/80 px-1 py-px font-mono text-[9px] leading-none text-violet-200"
-            style={{
-              left: markerX,
-              transform: 'translateX(-50%)',
-              whiteSpace: 'nowrap',
-            }}
-            aria-hidden
-          >
-            ⚡{' '}
-            {new Date(markerTs).toLocaleTimeString('en-US', {
-              hour: '2-digit',
-              minute: '2-digit',
-              hour12: false,
-              timeZone: 'America/Chicago',
-            })}
-          </div>
-        </>
-      )}
+        {!showPlaceholder && markerX != null && markerTs != null && (
+          <>
+            <div
+              className="pointer-events-none absolute top-0 bottom-6 w-px"
+              style={{
+                left: markerX,
+                background:
+                  'repeating-linear-gradient(to bottom, rgb(196,181,253) 0 3px, transparent 3px 6px)',
+              }}
+              aria-hidden
+            />
+            <div
+              className="pointer-events-none absolute top-0.5 rounded border border-violet-500/40 bg-violet-950/80 px-1 py-px font-mono text-[9px] leading-none text-violet-200"
+              style={{
+                left: markerX,
+                transform: 'translateX(-50%)',
+                whiteSpace: 'nowrap',
+              }}
+              aria-hidden
+            >
+              ⚡{' '}
+              {new Date(markerTs).toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false,
+                timeZone: 'America/Chicago',
+              })}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

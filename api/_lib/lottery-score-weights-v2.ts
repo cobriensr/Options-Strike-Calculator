@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-05-27T22:15:40.323165+00:00
+ * Trained at    : 2026-05-29T01:13:56.995971+00:00
  *
  * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
  * Until then the old lottery-score-weights.ts continues to drive production.
@@ -29,15 +29,15 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   AVGO: 0,
   BA: 2,
   BABA: 0,
-  BE: 0,
+  BE: -1,
   CAR: 0,
   COIN: 0,
   CRCL: 0,
   CRWD: 0,
   CRWV: 0,
   CSCO: 0,
-  CVNA: -1,
-  DELL: 1,
+  CVNA: 0,
+  DELL: 0,
   GME: 0,
   GOOG: 1,
   GOOGL: 0,
@@ -48,7 +48,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   INTC: 0,
   IONQ: 0,
   IREN: 0,
-  IWM: -1,
+  IWM: 0,
   LITE: 0,
   LLY: 0,
   META: 0,
@@ -70,10 +70,10 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   RBLX: -1,
   RDDT: 1,
   RGTI: -1,
-  RIOT: -1,
+  RIOT: 0,
   RIVN: 0,
   RKLB: 3,
-  RUTW: -1,
+  RUTW: 0,
   SHOP: 0,
   SLV: -1,
   SMCI: 1,
@@ -82,7 +82,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   SNOW: 0,
   SOFI: -1,
   SOUN: 5,
-  SOXL: -1,
+  SOXL: 0,
   SOXS: -1,
   SPXW: 0,
   SPY: 0,
@@ -95,7 +95,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   TSLA: 0,
   TSLL: 1,
   TSM: 1,
-  UBER: -1,
+  UBER: 0,
   UNH: 1,
   USAR: -1,
   USO: -1,
@@ -168,8 +168,8 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
  * Quintile 4 : value >= boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.05985147295934173, 0.09635974304068523, 0.15552076871759463,
-  0.3817829457364341,
+  0.05996843766438716, 0.09682150774205377, 0.1565040650406504,
+  0.38517179023508136,
 ];
 
 // ---------------------------------------------------------------------------
@@ -180,7 +180,8 @@ export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
   3, -2, -2, -2, -1,
 ];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.01234385266008575, 0.02559131, 0.0426539571228536, 0.0692641349936143,
+  0.012314985530921642, 0.02554117154869061, 0.042568723904775466,
+  0.06920657150330813,
 ];
 
 // ---------------------------------------------------------------------------

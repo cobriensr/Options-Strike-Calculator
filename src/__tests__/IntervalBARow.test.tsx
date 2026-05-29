@@ -37,8 +37,18 @@ vi.mock('../components/charts/ContractTapeChart', () => ({
   ),
 }));
 vi.mock('../components/charts/TickerNetFlowChart', () => ({
-  TickerNetFlowChart: ({ ariaLabel }: { ariaLabel: string }) => (
-    <div data-testid="ticker-netflow-chart" aria-label={ariaLabel} />
+  TickerNetFlowChart: ({
+    ariaLabel,
+    symbol,
+  }: {
+    ariaLabel: string;
+    symbol?: string;
+  }) => (
+    <div
+      data-testid="ticker-netflow-chart"
+      aria-label={ariaLabel}
+      data-symbol={symbol}
+    />
   ),
 }));
 
@@ -325,7 +335,10 @@ describe('IntervalBARow — expand toggle', () => {
     expect(screen.getByText(/Avg fill/i)).toBeInTheDocument();
   });
 
-  it('renders cumulative NCP / NPP / Δ stats when netFlow series has data', () => {
+  it('renders the net-flow chart wired with the ticker symbol when series has data', () => {
+    // The cumulative NCP/NPP/Δ header now lives inside TickerNetFlowChart
+    // (covered by its own unit tests). Here we verify the row wires the
+    // chart up with the ticker symbol so that header can render.
     mockUseNetFlowHistory.mockReturnValue({
       data: {
         series: [
@@ -341,51 +354,8 @@ describe('IntervalBARow — expand toggle', () => {
     fireEvent.click(
       screen.getByRole('button', { name: /Expand charts for SPXW/i }),
     );
-    expect(screen.getByText('NCP')).toBeInTheDocument();
-    expect(screen.getByText('NPP')).toBeInTheDocument();
-    // Δ block uses the green tint when the difference is positive.
-    expect(screen.getByText(/Δ/)).toBeInTheDocument();
-  });
-
-  it('renders the spot price from ticker candles when available in expanded mode', () => {
-    mockUseTickerCandles.mockReturnValue({
-      data: {
-        ticker: 'SPXW',
-        date: '2026-03-27',
-        previousClose: 5800,
-        count: 1,
-        candles: [
-          {
-            ts: '2026-03-27T17:00:00Z',
-            open: 5790,
-            high: 5810,
-            low: 5785,
-            close: 5795.12,
-            volume: 1000,
-          },
-        ],
-        marketOpen: false,
-        asOf: '2026-03-27T20:00:00Z',
-      },
-      loading: false,
-      error: null,
-      fetchedAt: null,
-      refresh: vi.fn(),
-    });
-    mockUseNetFlowHistory.mockReturnValue({
-      data: {
-        series: [{ ts: '2026-03-27T17:00:00Z', cumNcp: 1, cumNpp: 0 }],
-      },
-      loading: false,
-      error: null,
-      fetchedAt: null,
-      refresh: vi.fn(),
-    });
-    renderRow(makeAlert());
-    fireEvent.click(
-      screen.getByRole('button', { name: /Expand charts for SPXW/i }),
-    );
-    expect(screen.getByText('5795.12')).toBeInTheDocument();
-    expect(screen.getByText('spot')).toBeInTheDocument();
+    const chart = screen.getByTestId('ticker-netflow-chart');
+    expect(chart).toBeInTheDocument();
+    expect(chart).toHaveAttribute('data-symbol', 'SPXW');
   });
 });
