@@ -216,7 +216,11 @@ describe('lottery-finder-ticker-counts handler', () => {
     expect(body.filters.minTakeitProb).toBe(0.7);
 
     const sql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(' ');
-    expect(sql).toContain('takeit_prob >=');
+    // Gates on the chain-level peak (chain_max_takeit), not the latest
+    // fire's takeit_prob, so chip counts match the monotonic feed
+    // (spec lottery-no-vanish-2026-05-29.md).
+    expect(sql).toContain('chain_max_takeit >=');
+    expect(sql).not.toContain('OR takeit_prob >=');
     expect((mockSql.mock.calls[0] as unknown[]).slice(1)).toContain(0.7);
   });
 

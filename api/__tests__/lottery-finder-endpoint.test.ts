@@ -136,6 +136,13 @@ const ROW = {
   // populate for a 4-7 fire chain-day.
   fire_count_score_adjustment: 0,
   first_fire_time_ct: '2026-05-01T18:55:00Z',
+  // Chain-level peak TAKE-IT + its timestamp (spec
+  // lottery-no-vanish-2026-05-29.md). The chain is gated on
+  // chain_max_takeit so a chain that ever cleared the floor never
+  // disappears intraday. Here the latest rep fire's takeit_prob is null
+  // but the chain peaked at 0.78 at 18:58 — the row stays visible.
+  chain_max_takeit: '0.78',
+  peak_takeit_at: '2026-05-01T18:58:00Z',
   // Ticker net flow snapshot at trigger_time_ct (LATERAL on
   // ws_net_flow_per_ticker + history). Used by Flow Match / Flow
   // Inverted badges. Null is the cold-start default.
@@ -214,6 +221,50 @@ describe('lottery-finder endpoint', () => {
       tickerCumNcpAtFire: 4250.5,
       tickerCumNppAtFire: -1800.75,
     });
+  });
+
+  it('surfaces chain peak TAKE-IT (chain_max_takeit / peak_takeit_at) so a chain stays visible on its peak, not its latest fire', async () => {
+    // Regression guard for the "alerts disappear intraday" bug
+    // (spec lottery-no-vanish-2026-05-29.md). The rep ROW's own
+    // takeit_prob is null, but the chain peaked at 0.78 — the mapper
+    // must emit that peak so the UI can keep the chain visible + badge it.
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      fires: Array<Record<string, unknown>>;
+    };
+    expect(body.fires[0]).toMatchObject({
+      peakTakeitProb: 0.78,
+      peakTakeitAt: '2026-05-01T18:58:00Z',
+    });
+  });
+
+  it('gates chains on chain_max_takeit (monotonic), never the latest rep fire', async () => {
+    // The whole bug was the TAKE-IT floor being applied to the LATEST
+    // fire (rn=1). Once a chain re-fired below 0.70 it vanished even
+    // though earlier fires cleared the floor. The fix gates on the
+    // chain-level MAX, which only grows → a chain that ever qualified
+    // can never disappear. Assert the generated SQL reflects that and
+    // never reverts to per-representative gating.
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+    const req = mockRequest({ method: 'GET', query: { minTakeitProb: '0.7' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const allSql = mockSql.mock.calls
+      .map((c) => (Array.isArray(c[0]) ? (c[0] as string[]).join('?') : ''))
+      .join('\n');
+    // Both the rows query and the COUNT(*) total query must gate on the
+    // chain-level peak, not the rep row's scalar.
+    expect(allSql).toContain('f.chain_max_takeit >=');
+    expect(allSql).toContain('chain_max_takeit >=');
+    // The old, non-monotonic gates must be gone.
+    expect(allSql).not.toContain('f.takeit_prob >=');
+    expect(allSql).not.toContain('OR takeit_prob >=');
   });
 
   it('falls through to null tickerCumNcp/Npp at fire when LATERAL has no rows', async () => {

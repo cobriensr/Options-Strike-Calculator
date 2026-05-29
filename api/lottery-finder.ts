@@ -205,6 +205,15 @@ interface FireRow {
   fire_count: number;
   first_fire_time_ct: DbTimestamp;
 
+  // Chain-level peak TAKE-IT probability + the trigger time of the fire
+  // that hit it (spec lottery-no-vanish-2026-05-29.md). The feed gates a
+  // chain on chain_max_takeit — not the latest rep row's takeit_prob —
+  // so a chain that ever cleared the floor stays visible for the rest of
+  // the day (monotonic, never disappears intraday). NULL when every fire
+  // in the chain has a NULL takeit_prob.
+  chain_max_takeit: DbNullableNumeric;
+  peak_takeit_at: DbTimestamp | null;
+
   // Ticker net flow snapshotted at trigger_time_ct via LATERAL.
   // NULL when the ws/REST tables hold no rows for this ticker at or
   // before the fire (older fires pre-WS-daemon, or universes not yet
@@ -475,7 +484,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ROW_NUMBER() OVER (
               PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
               ORDER BY f.trigger_time_ct DESC, f.id DESC
-            ) AS rn
+            ) AS rn,
+            -- Chain-level peak TAKE-IT + the timestamp of the fire that
+            -- hit it. The chain is gated on chain_max_takeit (NOT the
+            -- rep row's takeit_prob) so a chain that ever cleared the
+            -- floor stays visible for the rest of the day — monotonic,
+            -- never disappears (spec lottery-no-vanish-2026-05-29.md).
+            -- peak_takeit_at feeds the "peak TAKE-IT 0.XX @ HH:MM" badge.
+            MAX(f.takeit_prob) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            ) AS chain_max_takeit,
+            FIRST_VALUE(f.trigger_time_ct) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+              ORDER BY f.takeit_prob DESC NULLS LAST, f.trigger_time_ct ASC
+            ) AS peak_takeit_at
           FROM lottery_finder_fires f
           WHERE f.date = ${targetDate}::date
             AND f.trigger_time_ct >= ${windowStart}::timestamptz
@@ -520,6 +542,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
+          f.chain_max_takeit, f.peak_takeit_at,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -536,7 +559,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
-          AND (${minTakeitProb}::numeric IS NULL OR f.takeit_prob >= ${minTakeitProb}::numeric)
+          AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -559,7 +582,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ROW_NUMBER() OVER (
               PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
               ORDER BY f.trigger_time_ct DESC, f.id DESC
-            ) AS rn
+            ) AS rn,
+            -- Chain-level peak TAKE-IT + the timestamp of the fire that
+            -- hit it. The chain is gated on chain_max_takeit (NOT the
+            -- rep row's takeit_prob) so a chain that ever cleared the
+            -- floor stays visible for the rest of the day — monotonic,
+            -- never disappears (spec lottery-no-vanish-2026-05-29.md).
+            -- peak_takeit_at feeds the "peak TAKE-IT 0.XX @ HH:MM" badge.
+            MAX(f.takeit_prob) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            ) AS chain_max_takeit,
+            FIRST_VALUE(f.trigger_time_ct) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+              ORDER BY f.takeit_prob DESC NULLS LAST, f.trigger_time_ct ASC
+            ) AS peak_takeit_at
           FROM lottery_finder_fires f
           WHERE f.date = ${targetDate}::date
             AND f.trigger_time_ct >= ${windowStart}::timestamptz
@@ -604,6 +640,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
+          f.chain_max_takeit, f.peak_takeit_at,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -620,7 +657,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
-          AND (${minTakeitProb}::numeric IS NULL OR f.takeit_prob >= ${minTakeitProb}::numeric)
+          AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -642,7 +679,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ROW_NUMBER() OVER (
               PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
               ORDER BY f.trigger_time_ct DESC, f.id DESC
-            ) AS rn
+            ) AS rn,
+            -- Chain-level peak TAKE-IT + the timestamp of the fire that
+            -- hit it. The chain is gated on chain_max_takeit (NOT the
+            -- rep row's takeit_prob) so a chain that ever cleared the
+            -- floor stays visible for the rest of the day — monotonic,
+            -- never disappears (spec lottery-no-vanish-2026-05-29.md).
+            -- peak_takeit_at feeds the "peak TAKE-IT 0.XX @ HH:MM" badge.
+            MAX(f.takeit_prob) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            ) AS chain_max_takeit,
+            FIRST_VALUE(f.trigger_time_ct) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+              ORDER BY f.takeit_prob DESC NULLS LAST, f.trigger_time_ct ASC
+            ) AS peak_takeit_at
           FROM lottery_finder_fires f
           WHERE f.date = ${targetDate}::date
             AND f.trigger_time_ct >= ${windowStart}::timestamptz
@@ -687,6 +737,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
+          f.chain_max_takeit, f.peak_takeit_at,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -703,7 +754,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
-          AND (${minTakeitProb}::numeric IS NULL OR f.takeit_prob >= ${minTakeitProb}::numeric)
+          AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -726,7 +777,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ) AS rn,
             COUNT(*) OVER (
               PARTITION BY underlying_symbol, strike, option_type, expiry
-            )::int AS fc
+            )::int AS fc,
+            MAX(takeit_prob) OVER (
+              PARTITION BY underlying_symbol, strike, option_type, expiry
+            ) AS chain_max_takeit
           FROM lottery_finder_fires
           WHERE date = ${targetDate}::date
             AND trigger_time_ct >= ${windowStart}::timestamptz
@@ -741,15 +795,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
             AND (${minPremium}::numeric IS NULL OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric)
         )
-        -- Count chains (rn=1) whose LATEST fire passes the TAKE-IT
-        -- floor; mirrors the row queries shape exactly so total and
+        -- Count chains (rn=1) whose CHAIN-MAX TAKE-IT passes the floor
+        -- (chain_max_takeit, not the rep row's takeit_prob) so the count
+        -- mirrors the row queries' monotonic gating exactly — total and
         -- displayed page rows always match. fc (window-function fire
         -- count) gates the Burst chip the same way the rows do.
         SELECT COUNT(*)::int AS total
         FROM ranked
         WHERE rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR fc >= ${minFireCount ?? 0})
-          AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
+          AND (${minTakeitProb}::numeric IS NULL OR chain_max_takeit >= ${minTakeitProb}::numeric)
       `,
         2,
         10000,
@@ -957,7 +1012,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ROW_NUMBER() OVER (
               PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
               ORDER BY f.trigger_time_ct DESC, f.id DESC
-            ) AS rn
+            ) AS rn,
+            -- Chain-level peak TAKE-IT + the timestamp of the fire that
+            -- hit it. The chain is gated on chain_max_takeit (NOT the
+            -- rep row's takeit_prob) so a chain that ever cleared the
+            -- floor stays visible for the rest of the day — monotonic,
+            -- never disappears (spec lottery-no-vanish-2026-05-29.md).
+            -- peak_takeit_at feeds the "peak TAKE-IT 0.XX @ HH:MM" badge.
+            MAX(f.takeit_prob) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+            ) AS chain_max_takeit,
+            FIRST_VALUE(f.trigger_time_ct) OVER (
+              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
+              ORDER BY f.takeit_prob DESC NULLS LAST, f.trigger_time_ct ASC
+            ) AS peak_takeit_at
           FROM lottery_finder_fires f
           INNER JOIN top_reignited t USING (underlying_symbol, strike, option_type, expiry)
           WHERE f.date = ${targetDate}::date
@@ -1002,6 +1070,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
+          f.chain_max_takeit, f.peak_takeit_at,
           s.n_fires AS ticker_n_fires,
           s.high_peak_rate AS ticker_high_peak_rate,
           s.ci_lower AS ticker_ci_lower,
@@ -1017,7 +1086,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
-          AND (${minTakeitProb}::numeric IS NULL OR f.takeit_prob >= ${minTakeitProb}::numeric)
+          AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
         ORDER BY f.trigger_time_ct DESC, f.id DESC
       `,
         [] as FireRow[],
@@ -1343,6 +1412,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ? null
             : (r.takeit_top_features as Record<string, unknown>),
         takeitModelVersion: r.takeit_model_version,
+        // Chain-level peak TAKE-IT + when it occurred. The chain is
+        // gated on this peak (not the latest fire's prob) so it never
+        // disappears intraday; the UI badges it as "peak TAKE-IT 0.XX @
+        // HH:MM" when the latest fire is below the peak.
+        peakTakeitProb: num(r.chain_max_takeit),
+        peakTakeitAt: r.peak_takeit_at == null ? null : toIso(r.peak_takeit_at),
         // Phase 3 inversion-quality filter outputs. `qualityAdjustedScore`
         // is `score + inversionQualityBonus(quintile)`; `scoreTier` above
         // is derived from it. The four `inversion*` fields surface the

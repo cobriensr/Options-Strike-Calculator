@@ -122,15 +122,20 @@ export default async function handler(
       () => db`
       WITH ranked AS (
         -- One row per fire, decorated with per-chain aggregates +
-        -- ROW_NUMBER so we can filter on the LATEST fire's
-        -- takeit_prob (per-fire value; latest is what /api/lottery-finder
-        -- shows on the row). Mirrors the count subquery shape there.
+        -- ROW_NUMBER. The chain is gated on chain_max_takeit (the
+        -- chain's PEAK TAKE-IT, not the latest fire's prob) so the chip
+        -- counts here match /api/lottery-finder's monotonic feed gating
+        -- exactly — a chain that ever cleared the floor is counted all
+        -- day (spec lottery-no-vanish-2026-05-29.md).
         SELECT
           underlying_symbol,
           strike,
           option_type,
           expiry,
           takeit_prob,
+          MAX(takeit_prob) OVER (
+            PARTITION BY underlying_symbol, strike, option_type, expiry
+          ) AS chain_max_takeit,
           MAX(peak_ceiling_pct) OVER (
             PARTITION BY underlying_symbol, strike, option_type, expiry
           ) AS chain_peak_pct,
@@ -169,7 +174,7 @@ export default async function handler(
         FROM ranked
         WHERE rn = 1
           AND (${minFireCount}::int IS NULL OR fc >= ${minFireCount ?? 0})
-          AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
+          AND (${minTakeitProb}::numeric IS NULL OR chain_max_takeit >= ${minTakeitProb}::numeric)
       )
       SELECT
         cd.underlying_symbol AS ticker,
