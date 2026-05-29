@@ -287,6 +287,15 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
 
   // ── withCronCheckin (lighter wrap, original handler shape preserved) ──
 
+  'audit-gexbot-health': {
+    // Daily NULL-rate tripwire for the GexBot classic-basic merge. Single
+    // schedule (unlike the multi-window fetch-gexbot crons), so it can carry
+    // a Sentry heartbeat — alerts if the monitor itself stops running. Low
+    // frequency → default failure threshold of 1 (a single miss is real).
+    schedule: '30 22 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'backfill-futures-gaps': {
     schedule: '0 6 * * 1-6',
     checkinMargin: DEFAULT_MARGIN,
