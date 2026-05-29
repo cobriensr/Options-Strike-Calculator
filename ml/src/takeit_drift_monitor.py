@@ -86,9 +86,16 @@ def per_segment_auc(
     segments: np.ndarray,
     min_n: int = PER_SEGMENT_MIN_N,
 ) -> dict[str, dict[str, float | int]]:
-    """AUC per segment label. Segments with count < min_n are skipped."""
+    """AUC per segment label. Segments with count < min_n are skipped.
+
+    Null segments are dropped before computing the label set. pandas 3.0's
+    Categorical.astype(str) leaves missing values as float NaN rather than the
+    string 'nan', so segments can be an object array mixing str and float —
+    np.unique would raise TypeError sorting across those types.
+    """
     out: dict[str, dict[str, float | int]] = {}
-    for seg in np.unique(segments):
+    labels = sorted(pd.Series(segments).dropna().unique())
+    for seg in labels:
         mask = segments == seg
         n = int(mask.sum())
         if n < min_n:

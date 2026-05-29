@@ -47,6 +47,19 @@ def test_per_segment_auc_skips_segments_below_min_n():
     assert result['A']['auc'] == pytest.approx(1.0)
 
 
+def test_per_segment_auc_drops_nan_segments():
+    # pandas 3.0 Categorical.astype(str) leaves missing values as float NaN,
+    # producing an object array that mixes str labels with float NaN. np.unique
+    # cannot sort across those types, so per_segment_auc must drop nulls first.
+    y_true = np.array([0, 1, 0, 1, 0, 1])
+    y_pred = np.array([0.2, 0.7, 0.3, 0.8, 0.4, 0.9])
+    segments = np.array(['A', 'A', 'A', float('nan'), float('nan'), 'A'], dtype=object)
+    result = per_segment_auc(y_true, y_pred, segments, min_n=3)
+    assert 'A' in result
+    assert 'nan' not in result
+    assert not any(isinstance(k, float) for k in result)
+
+
 def test_feature_zscore_against_baseline():
     today = np.array([1.0, 2.0, 3.0])
     z = feature_zscore(today, baseline_mean=0.0, baseline_std=1.0)
