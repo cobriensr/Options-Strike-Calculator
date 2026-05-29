@@ -32,9 +32,15 @@ vi.mock('../_lib/axiom.js', () => ({
   reportCronRun: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { mockCronGuard } = vi.hoisted(() => ({ mockCronGuard: vi.fn() }));
+const { mockCronGuard, mockIsTradingDayET } = vi.hoisted(() => ({
+  mockCronGuard: vi.fn(),
+  mockIsTradingDayET: vi.fn(),
+}));
 
-vi.mock('../_lib/api-helpers.js', () => ({ cronGuard: mockCronGuard }));
+vi.mock('../_lib/api-helpers.js', () => ({
+  cronGuard: mockCronGuard,
+  isTradingDayET: mockIsTradingDayET,
+}));
 
 vi.mock('../_lib/cron-instrumentation.js', () => ({
   withCronCheckin: (_name: string, fn: unknown) => fn,
@@ -68,6 +74,7 @@ function healthRow(
 beforeEach(() => {
   vi.clearAllMocks();
   mockCronGuard.mockReturnValue({ apiKey: '' });
+  mockIsTradingDayET.mockReturnValue(true); // default: today is a trading day
   process.env.CRON_SECRET = 'test-secret';
 });
 
@@ -156,5 +163,45 @@ describe('audit-gexbot-health cron', () => {
     const [msg] = (Sentry.captureMessage as ReturnType<typeof vi.fn>).mock
       .calls[0] as [string];
     expect(msg).toMatch(/no gexbot_snapshots in last 12h/);
+  });
+
+  it('does NOT alert on zero snapshots when today is a market holiday', async () => {
+    // GexBot is gated to futures RTH; a weekday holiday produces 0 rows by
+    // design. The cron still runs (it is not market-gated), so the holiday
+    // guard is what prevents ~10 false "outage" pages per year.
+    mockIsTradingDayET.mockReturnValue(false);
+    mockSql.mockResolvedValueOnce([healthRow({ rows_all: 0, rows_spx: 0 })]);
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('skips the SPX check (no crash, no alert) when SPX has zero rows but overall is healthy', async () => {
+    // Overall populating fine; SPX simply absent from the window. The
+    // `rowsSpx > 0` guard must prevent a divide-by-zero false SPX alert.
+    mockSql.mockResolvedValueOnce([
+      healthRow({
+        rows_all: 7000,
+        zg_null_all: 0,
+        rows_spx: 0,
+        zg_null_spx: 0,
+      }),
+    ]);
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ success: true, zgNullSpxPct: 0 });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 });

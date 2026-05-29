@@ -108,6 +108,20 @@ export function isFuturesRthCt(): boolean {
 }
 
 /**
+ * True when today (ET) is a regular trading day — Mon–Fri and not a market
+ * holiday — regardless of the time of day. Unlike `isMarketHours` /
+ * `isFuturesRthCt` it has no intraday window gate, so a post-session monitor
+ * can ask "should there have been market data today?" without caring whether
+ * the session is currently live. Early-close days count as trading days.
+ */
+export function isTradingDayET(): boolean {
+  const now = new Date();
+  const day = getETDayOfWeek(now);
+  if (day === 0 || day === 6) return false;
+  return getMarketCloseHourET(getETDateStr(now)) != null; // null → holiday
+}
+
+/**
  * Check if US equity markets are currently open.
  * Accounts for weekends, holidays, and early-close days
  * using the event calendar. Used to adjust cache durations.

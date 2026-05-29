@@ -25,7 +25,7 @@
  * Re-run scripts/_probe-gexbot-capture-2026-05-29.ts for the full readout.
  */
 
-import { cronGuard } from '../_lib/api-helpers.js';
+import { cronGuard, isTradingDayET } from '../_lib/api-helpers.js';
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { reportCronRun } from '../_lib/axiom.js';
@@ -76,7 +76,7 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
           count(*) FILTER (WHERE ticker = 'SPX')::int AS rows_spx,
           count(*) FILTER (WHERE ticker = 'SPX' AND zero_gamma IS NULL)::int AS zg_null_spx
         FROM gexbot_snapshots
-        WHERE captured_at > NOW() - (${LOOKBACK_HOURS} || ' hours')::interval
+        WHERE captured_at > NOW() - make_interval(hours => ${LOOKBACK_HOURS})
       `,
       )) as HealthRow[];
 
@@ -90,9 +90,15 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
 
       const alerts: string[] = [];
       if (rowsAll === 0) {
-        alerts.push(
-          `no gexbot_snapshots in last ${LOOKBACK_HOURS}h (capture outage?)`,
-        );
+        // GexBot is gated to futures RTH, so weekends/holidays legitimately
+        // produce zero snapshots — not an outage. Only a real trading day with
+        // no rows is a capture failure worth paging on. (This cron runs Mon–Fri
+        // UTC, but a weekday market holiday would otherwise false-alarm.)
+        if (isTradingDayET()) {
+          alerts.push(
+            `no gexbot_snapshots in last ${LOOKBACK_HOURS}h (capture outage?)`,
+          );
+        }
       } else {
         if (zgNullAllPct > ZG_NULL_ALERT_PCT) {
           alerts.push(

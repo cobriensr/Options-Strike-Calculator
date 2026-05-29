@@ -250,6 +250,57 @@ describe('fetch-gexbot-fast handler', () => {
     expect(spxSnapshot?.[4]).toBe(CLASSIC_ZERO_GAMMA);
   });
 
+  it('fails open: classic-basic failure for a ticker still stores its snapshot with NULL aggregates', async () => {
+    // SPX/classic/gex_zero fails (400, non-retryable), but SPX/orderflow
+    // succeeds. The SPX snapshot must still be stored — with zero_gamma NULL
+    // (orderflow omits it) — and `enriched` must drop to 15, not 16.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/SPX/classic/gex_zero')) {
+          return {
+            ok: false,
+            status: 400,
+            text: async () => 'bad request',
+          } as Response;
+        }
+        const ticker =
+          url.split('/').find((seg) => GEXBOT_TICKERS.includes(seg as never)) ??
+          'SPX';
+        let body: Record<string, unknown>;
+        if (url.includes('/orderflow/orderflow')) {
+          body = makeOrderflowBody(ticker);
+        } else if (CLASSIC_BASIC_RE.test(url)) {
+          body = makeClassicBasicBody(ticker);
+        } else {
+          body = makeMaxchangeBody(ticker);
+        }
+        return { ok: true, status: 200, json: async () => body } as Response;
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      snapshots: GEXBOT_TICKERS.length, // orderflow still succeeded for all 16
+      enriched: GEXBOT_TICKERS.length - 1, // SPX classic missing
+      failed: 1,
+    });
+    // SPX snapshot stored, but zero_gamma is NULL (orderflow omits it and the
+    // classic merge never happened for SPX).
+    const spxSnapshot = mockSql.mock.calls.find((c) => c[1] === 'SPX');
+    expect(spxSnapshot).toBeDefined();
+    expect(spxSnapshot?.[4]).toBeNull();
+  });
+
   // ── Partial failure ───────────────────────────────────────
 
   it('continues on per-ticker fetch failures and reports partial', async () => {

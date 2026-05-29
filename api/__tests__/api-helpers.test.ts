@@ -82,6 +82,7 @@ import {
   isMarketOpen,
   isMarketHours,
   isFuturesRthCt,
+  isTradingDayET,
   sendError,
   withRetry,
   uwFetch,
@@ -395,6 +396,25 @@ describe('api-helpers', () => {
   describe('isMarketOpen', () => {
     it('returns a boolean', () => {
       expect(typeof isMarketOpen()).toBe('boolean');
+    });
+  });
+
+  describe('isTradingDayET', () => {
+    it('true on a normal weekday with a market close hour', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValueOnce(2); // Tuesday
+      vi.mocked(getMarketCloseHourET).mockReturnValueOnce(16);
+      expect(isTradingDayET()).toBe(true);
+    });
+
+    it('false on weekends (no holiday lookup needed)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValueOnce(6); // Saturday
+      expect(isTradingDayET()).toBe(false);
+    });
+
+    it('false on a weekday market holiday (null close hour)', () => {
+      vi.mocked(getETDayOfWeek).mockReturnValueOnce(4); // Thursday
+      vi.mocked(getMarketCloseHourET).mockReturnValueOnce(null);
+      expect(isTradingDayET()).toBe(false);
     });
   });
 

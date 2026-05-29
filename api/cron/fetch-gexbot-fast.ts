@@ -120,6 +120,11 @@ interface SnapshotRow {
  * for spot/ticker/timestamp and the flow scalars; classic supplies only the
  * 10 fields orderflow drops. Returns the orderflow body unchanged when no
  * classic row is available (fail-open — those 10 columns stay NULL).
+ *
+ * Note: the 10 merged fields come from a separate /classic call whose
+ * timestamp may differ from orderflow's by the fetch fan-out (sub-second to
+ * ~2.5s within the same tick). `source_timestamp` reflects orderflow; the
+ * intra-tick skew is immaterial for minute-cadence 0DTE aggregates.
  */
 function mergeClassic(
   body: GexbotResponse,
