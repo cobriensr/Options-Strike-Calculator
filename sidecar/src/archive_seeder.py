@@ -11,11 +11,24 @@ Design notes:
   keep the sidecar's dependency surface minimal. No new pip deps.
 - **Atomic file writes.** Each file downloads to `<path>.tmp`, verifies
   SHA-256 on completion, then atomically renames into place. A crash
-  mid-download leaves a `.tmp` that's ignored on resume and re-fetched.
-- **Resumable via SHA.** If `<dest>/<path>` already exists AND its
-  on-disk SHA-256 matches the manifest's expected SHA, the file is
-  skipped. Re-triggering the seed is therefore safe and nearly free
-  when the volume is already populated.
+  mid-download leaves a `.tmp` that's discarded on resume and re-fetched
+  from byte 0 — there is NO byte-range resume of a partial `.tmp`.
+- **Whole-file SHA skip (not byte-resume).** "Resume" here means exactly
+  one thing: if `<dest>/<path>` already exists AND its on-disk SHA-256
+  matches the manifest's expected SHA, the file is skipped entirely.
+  A partial download is never continued — the `.tmp` is unlinked and the
+  next attempt re-fetches the whole file. Re-triggering the seed is
+  therefore safe and nearly free when the volume is already populated,
+  but an interrupted large file costs a full re-download.
+  (`REQUEST_TIMEOUT_S` is a per-socket-operation timeout, not a total
+  transfer deadline — a steadily-streaming large file does not trip it,
+  so whole-file re-fetch is acceptable. Byte-range resume is a possible
+  future improvement, not implemented here.)
+- **Blob URL allowlist.** Every per-file `blob_url` from the manifest is
+  validated against an HTTPS-only host allowlist BEFORE the bearer token
+  is attached or any connection is opened, so a tampered manifest cannot
+  exfiltrate `BLOB_READ_WRITE_TOKEN` to an attacker host or a cloud
+  metadata endpoint. See `_validate_blob_url`.
 - **Single-flight.** A module-level `threading.Lock` prevents two
   concurrent seed requests from stomping on each other. The HTTP layer
   returns 423 Locked if a seed is already in progress.
@@ -27,11 +40,13 @@ Design notes:
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -51,6 +66,13 @@ MAX_ATTEMPTS = 3
 BACKOFF_SEQ_S = (1.0, 4.0, 16.0)
 CHUNK_SIZE = 1024 * 1024  # 1 MiB streaming read
 
+# SSRF guard: env var holding extra comma-separated hostnames that the
+# per-file `blob_url` is permitted to point at, beyond the manifest URL's
+# own host (which is always allowed — manifest and blobs live together on
+# Vercel Blob). Lets an operator split blobs onto a second host if needed
+# without code changes; absent/empty means "manifest host only".
+ARCHIVE_BLOB_ALLOWED_HOSTS_ENV = "ARCHIVE_BLOB_ALLOWED_HOSTS"
+
 
 class SeedIntegrityError(RuntimeError):
     """Raised when a downloaded file's SHA-256 doesn't match the manifest."""
@@ -66,6 +88,21 @@ class SeedPathError(RuntimeError):
     A malicious or broken manifest could list `..` components or an
     absolute path like `/etc/passwd`. We reject those up-front so a
     single bad entry can't corrupt arbitrary files on the volume.
+    """
+
+
+class SeedUrlError(RuntimeError):
+    """Raised when a manifest entry's `blob_url` is not safe to fetch.
+
+    The manifest URL itself is operator-controlled (env
+    `ARCHIVE_MANIFEST_URL`), but the per-file `blob_url` values inside
+    the fetched manifest are attacker-influenceable if the manifest is
+    tampered with. Since every request carries the Blob bearer token
+    (`BLOB_READ_WRITE_TOKEN`), an unvalidated `blob_url` is an SSRF /
+    token-exfiltration vector: a hostile manifest could point it at
+    `file://`, a cloud metadata endpoint (169.254.169.254), or any
+    attacker host. We reject anything that isn't HTTPS on an allowlisted
+    host BEFORE the token is attached or a connection is opened.
     """
 
 
@@ -188,6 +225,83 @@ def _safe_dest_path(dest_root: Path, rel_path: str) -> Path:
     return candidate
 
 
+def _allowed_blob_hosts(manifest_url: str) -> frozenset[str]:
+    """The set of hostnames a `blob_url` may target.
+
+    Always includes the manifest URL's own host (manifest + blobs live on
+    the same Vercel Blob host). Additional hosts can be supplied via the
+    `ARCHIVE_BLOB_ALLOWED_HOSTS` env var (comma-separated). Hosts are
+    compared case-insensitively.
+    """
+    hosts: set[str] = set()
+    manifest_host = urllib.parse.urlsplit(manifest_url).hostname
+    if manifest_host:
+        hosts.add(manifest_host.lower())
+    extra = os.environ.get(ARCHIVE_BLOB_ALLOWED_HOSTS_ENV, "")
+    for raw in extra.split(","):
+        host = raw.strip().lower()
+        if host:
+            hosts.add(host)
+    return frozenset(hosts)
+
+
+def _is_blocked_address(host: str) -> bool:
+    """True if `host` is a literal loopback / link-local / metadata /
+    private IP address.
+
+    Catches the obvious SSRF targets when the manifest hands us a raw IP
+    (e.g. `169.254.169.254` cloud metadata, `127.0.0.1`, RFC-1918 ranges).
+    Hostnames that *resolve* to such addresses (DNS-rebind) are out of
+    scope here — the host allowlist is the primary control; this is a
+    belt-and-suspenders literal-IP check.
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # not a literal IP; allowlist handles hostnames
+    return (
+        ip.is_loopback
+        or ip.is_link_local  # 169.254.0.0/16 + fe80::/10 (incl. metadata)
+        or ip.is_private  # 10/8, 172.16/12, 192.168/16, ::1 via loopback
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def _validate_blob_url(blob_url: str, manifest_url: str) -> None:
+    """Reject any `blob_url` not safe to fetch with the Blob bearer token.
+
+    Enforced BEFORE `_build_request`/`urlopen` for every manifest entry:
+      - scheme MUST be `https` (no http/file/ftp/etc.);
+      - host MUST be on the allowlist derived from `manifest_url`
+        (+ `ARCHIVE_BLOB_ALLOWED_HOSTS`);
+      - host MUST NOT be a literal loopback/link-local/metadata/private IP.
+
+    Raises `SeedUrlError` on any violation. The token is only ever sent to
+    an allowlisted host because this gate runs first.
+    """
+    parts = urllib.parse.urlsplit(blob_url)
+    if parts.scheme.lower() != "https":
+        raise SeedUrlError(
+            f"blob_url scheme must be https, got {parts.scheme!r}: {blob_url!r}"
+        )
+    host = parts.hostname
+    if not host:
+        raise SeedUrlError(f"blob_url has no host: {blob_url!r}")
+    host_lower = host.lower()
+    if _is_blocked_address(host_lower):
+        raise SeedUrlError(
+            f"blob_url host is a blocked (loopback/link-local/private) "
+            f"address: {host!r}"
+        )
+    allowed = _allowed_blob_hosts(manifest_url)
+    if host_lower not in allowed:
+        raise SeedUrlError(
+            f"blob_url host {host!r} not in allowlist {sorted(allowed)}: {blob_url!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Per-file seeding
 # ---------------------------------------------------------------------------
@@ -197,12 +311,14 @@ def _seed_one_file(
     entry: dict[str, Any],
     dest_root: Path,
     token: str,
+    manifest_url: str,
 ) -> tuple[str, int, bool]:
     """Seed one file from its manifest entry.
 
     Returns (path, bytes_downloaded, was_skipped).
 
     Raises SeedIntegrityError on SHA mismatch after download.
+    Raises SeedUrlError if `blob_url` fails the SSRF allowlist.
     Raises the last underlying error after MAX_ATTEMPTS retries.
     """
     # Pull required keys up front so a missing field is a clear error,
@@ -213,6 +329,10 @@ def _seed_one_file(
     rel_path = entry["path"]
     expected_sha = entry["sha256"]
     blob_url = entry["blob_url"]
+    # Validate the remote URL BEFORE the token is ever attached or a
+    # connection opened — a tampered manifest must not exfiltrate the
+    # Blob bearer token to a file://, metadata, or attacker host.
+    _validate_blob_url(blob_url, manifest_url)
     # Resolve + validate BEFORE any filesystem work — stops path traversal
     # from a hostile or broken manifest at the gate.
     dest = _safe_dest_path(dest_root, rel_path)
@@ -307,7 +427,9 @@ def seed_from_manifest(
         # Use a small pool — Blob is bandwidth-bound, not concurrency-bound.
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = {
-                pool.submit(_seed_one_file, entry, dest, token): entry["path"]
+                pool.submit(
+                    _seed_one_file, entry, dest, token, manifest_url
+                ): entry["path"]
                 for entry in files
             }
             for fut in as_completed(futures):

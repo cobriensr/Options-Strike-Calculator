@@ -1227,6 +1227,36 @@ def test_connection_sets_memory_limit_and_temp_directory(tmp_path: Path) -> None
         archive_query.reset_connection_for_tests()
 
 
+def test_connection_caps_temp_directory_size(tmp_path: Path) -> None:
+    """Every DuckDB connection must cap on-disk temp spill. Without
+    max_temp_directory_size, a cold TBBO scan can fill the container
+    overlay even though memory_limit forces the spill in the first place."""
+    archive_query.reset_connection_for_tests()
+    try:
+        conn = archive_query._connection()
+
+        row = conn.execute(
+            "SELECT value FROM duckdb_settings() "
+            "WHERE name = 'max_temp_directory_size'"
+        ).fetchone()
+        assert row is not None, "max_temp_directory_size should be set"
+        cap_str = str(row[0])
+        # DuckDB reports the cap in GiB (1024-based): our 2GB SET becomes
+        # "1.8 GiB" (2_000_000_000 / 1024^3). Assert it's a bounded,
+        # ~2 GB cap rather than the unlimited default.
+        import re as _re
+
+        match = _re.search(r"([\d.]+)", cap_str)
+        assert match is not None, f"no number in {cap_str!r}"
+        cap = float(match.group(1))
+        # Accept GiB-denominated (~1.8) or raw-GB value (~2).
+        assert 1.0 < cap < 3.0, (
+            f"max_temp_directory_size should be ~2GB (≈1.8 GiB), got {cap_str!r}"
+        )
+    finally:
+        archive_query.reset_connection_for_tests()
+
+
 # ---------------------------------------------------------------------------
 # Regression tests for Phase 2b — front_month_cte adoption
 # ---------------------------------------------------------------------------

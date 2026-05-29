@@ -112,6 +112,13 @@ def _connection() -> duckdb.DuckDBPyConnection:
         # correctness and process stability take priority.
         conn.execute("SET memory_limit = '500MB'")
         conn.execute("SET temp_directory = '/tmp/duckdb'")
+        # SIDE-Phase6: cap the on-disk spill too. memory_limit forces DuckDB
+        # to spill to temp_directory, but the temp directory itself defaults
+        # to unlimited — a cold TBBO scan can then fill the container's
+        # overlay filesystem and crash the process just as surely as an OOM.
+        # 2 GB is comfortably larger than any single intermediate the current
+        # queries produce yet well under the Railway volume / overlay budget.
+        conn.execute("SET max_temp_directory_size = '2GB'")
         _tls.conn = conn
         log.debug(
             "DuckDB connection initialized for thread %s",

@@ -352,6 +352,124 @@ def test_path_traversal_is_rejected(tmp_path: Path, malicious_path: str) -> None
 
 
 # ---------------------------------------------------------------------------
+# SSRF — blob_url validation (token-exfiltration guard)
+# ---------------------------------------------------------------------------
+
+
+def _ssrf_manifest(blob_url: str) -> dict[str, object]:
+    """Manifest with a single entry whose blob_url is attacker-controlled."""
+    return {
+        "schema": 1,
+        "files": [
+            {
+                "path": "a.parquet",
+                "size": 3,
+                "sha256": _sha(b"pwn"),
+                "blob_url": blob_url,
+                "content_type": "application/octet-stream",
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "blob_url",
+    [
+        "file:///etc/passwd",  # local file scheme
+        "http://blob.example/a.parquet",  # non-https on allowlisted host
+        "https://169.254.169.254/latest/meta-data/",  # AWS metadata IP
+        "https://127.0.0.1/a.parquet",  # loopback
+        "https://10.0.0.5/a.parquet",  # RFC-1918 private
+        "https://evil.attacker.example/a.parquet",  # non-allowlisted host
+    ],
+)
+def test_ssrf_blob_url_is_rejected_without_downloading(
+    tmp_path: Path, blob_url: str
+) -> None:
+    """A tampered blob_url must be rejected BEFORE any urlopen call, so the
+    Blob bearer token is never sent to an attacker host / metadata endpoint."""
+    manifest = _ssrf_manifest(blob_url)
+    manifest_url = "https://blob.example/manifest.json"
+
+    blob_requests: list[object] = []
+
+    def fake(req, *, timeout=None):  # noqa: ARG001
+        url = req.full_url if hasattr(req, "full_url") else req
+        if url == manifest_url:
+            return _FakeResp(json.dumps(manifest).encode())
+        # Any non-manifest request means the SSRF guard failed to stop the
+        # download — record it so the assertion below catches the leak.
+        blob_requests.append(req)
+        return _FakeResp(b"pwn")
+
+    with patch.object(archive_seeder.urllib.request, "urlopen", fake):
+        result = archive_seeder.seed_from_manifest(
+            manifest_url, tmp_path, token="secret-token"
+        )
+
+    assert result.failed == 1
+    assert result.downloaded == 0
+    # Critically: the blob URL was never fetched, so the token never left.
+    assert blob_requests == [], (
+        f"SSRF guard failed — token-bearing request issued to {blob_url!r}"
+    )
+    # And nothing was written to the volume.
+    assert list(tmp_path.rglob("*")) == []
+
+
+def test_ssrf_valid_https_on_allowlisted_host_passes(tmp_path: Path) -> None:
+    """The legitimate case: an https blob_url on the manifest's own host
+    downloads normally."""
+    files = {"a.parquet": b"legit-bytes"}
+    manifest = _make_manifest(list(files.items()))  # blob_url on blob.example
+    fake, manifest_url = _urlopen_stub(manifest, files)
+
+    with patch.object(archive_seeder.urllib.request, "urlopen", fake):
+        result = archive_seeder.seed_from_manifest(
+            manifest_url, tmp_path, token="test-token"
+        )
+
+    assert result.downloaded == 1
+    assert result.failed == 0
+    assert (tmp_path / "a.parquet").read_bytes() == b"legit-bytes"
+
+
+def test_ssrf_extra_allowed_host_env_permits_second_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blob_url on a second host is allowed only when listed in
+    ARCHIVE_BLOB_ALLOWED_HOSTS."""
+    blob_url = "https://cdn.example/a.parquet"
+    manifest = _ssrf_manifest(blob_url)
+    manifest_url = "https://blob.example/manifest.json"
+
+    def fake(req, *, timeout=None):  # noqa: ARG001
+        url = req.full_url if hasattr(req, "full_url") else req
+        if url == manifest_url:
+            return _FakeResp(json.dumps(manifest).encode())
+        assert url == blob_url
+        return _FakeResp(b"pwn")
+
+    # Without the env var the second host is rejected.
+    monkeypatch.delenv(archive_seeder.ARCHIVE_BLOB_ALLOWED_HOSTS_ENV, raising=False)
+    with patch.object(archive_seeder.urllib.request, "urlopen", fake):
+        rejected = archive_seeder.seed_from_manifest(
+            manifest_url, tmp_path, token="t"
+        )
+    assert rejected.failed == 1
+    assert rejected.downloaded == 0
+
+    # With the env var it is permitted.
+    monkeypatch.setenv(archive_seeder.ARCHIVE_BLOB_ALLOWED_HOSTS_ENV, "cdn.example")
+    with patch.object(archive_seeder.urllib.request, "urlopen", fake):
+        allowed = archive_seeder.seed_from_manifest(
+            manifest_url, tmp_path, token="t"
+        )
+    assert allowed.downloaded == 1
+    assert allowed.failed == 0
+
+
+# ---------------------------------------------------------------------------
 # Manifest-shape failures
 # ---------------------------------------------------------------------------
 
