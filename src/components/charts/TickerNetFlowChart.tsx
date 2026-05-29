@@ -120,54 +120,63 @@ type Point = { time: UTCTimestamp; value: number };
  */
 type FlowPoint = Point | { time: UTCTimestamp };
 
-/**
- * Whitespace cadence for the empty session regions. The live WS feed is
- * per-tick (sub-minute, irregular) and the REST backfill is per-minute, so
- * this 1-slot-per-minute fill is an axis-granularity choice, not a match to
- * the source cadence. It keeps the empty span from collapsing to a single
- * bar-width. NOTE: because lightweight-charts logical indices count points
- * (not wall-clock minutes), the fixed-time marker is only *perfectly* pinned
- * when the real data is also ~1/minute; busy tickers with multiple ticks per
- * minute leave a small residual drift. A uniform full-session minute grid
- * would remove it — see net-flow-panel redesign notes.
- */
+/** Grid cadence — one slot per minute across the whole session. */
 const SESSION_STEP_SEC = 60;
 
 /**
- * Bracket a deduped value series with minute-cadence whitespace points so
- * the chart's time scale spans the full 08:30–15:00 CT session.
+ * Lay a value series onto a uniform one-point-per-minute grid spanning the
+ * full 08:30→close CT session. Minutes with a tick carry that minute's last
+ * cumulative value; empty minutes are whitespace (a `{time}`-only item that
+ * reserves an axis slot without painting).
  *
- * Why this is needed: lightweight-charts' time scale is index-based and
- * `setVisibleRange` cannot extrapolate time — it clamps to the first/last
- * data point. When the WS daemon has only indexed the last few minutes
- * for a ticker, the unscaffolded axis collapses to that sliding window,
- * which makes the fixed-time fire marker appear to drift between polls.
+ * Why a uniform grid (not just bracketing the data with whitespace at the
+ * ends): lightweight-charts' time scale is index-based — a point's pixel
+ * position is driven by its ORDINAL position, not its wall-clock time, and
+ * `setVisibleRange` cannot extrapolate beyond the data. With a uniform
+ * minute grid the logical index of any time is exactly its minute-offset
+ * from the session open, so:
+ *   - `setVisibleRange(open→close)` spans the full session even when the WS
+ *     daemon has only indexed the last few minutes, and
+ *   - the fixed-time fire marker maps to a STABLE coordinate regardless of
+ *     how many (sub-minute, irregular) live ticks have arrived — the live
+ *     feed is per-tick, so a non-uniform layout would let busy tickers
+ *     drift the marker as point-count grew between polls.
  *
- * Whitespace only fills the EMPTY regions (open→first tick, last tick→
- * close) at minute cadence; the real data region keeps its own cadence.
- * Filling at one slot per minute keeps consecutive gaps small so the axis
- * stays time-proportional instead of compressing the empty span into a
- * single bar-width. No-op when `date` is absent (tests / legacy callers).
+ * The grid extends past the session bounds only if real ticks fall outside
+ * them (rare pre-open / post-close prints) so no data point is dropped.
+ * No-op fallback to deduped raw points when `date` is absent (legacy/tests).
  */
-function sessionScaffold(
+function sessionMinuteGrid(
   points: Point[],
   date: string | undefined,
 ): FlowPoint[] {
-  if (date == null || points.length === 0) return points;
+  if (date == null) return dedupAscending(points);
+  if (points.length === 0) return points;
   const bounds = ctSessionBounds(date);
   const openSec = Math.floor(Date.parse(bounds.min) / 1000);
   const closeSec = Math.floor(Date.parse(bounds.max) / 1000);
-  if (!Number.isFinite(openSec) || !Number.isFinite(closeSec)) return points;
-
-  const first = points[0]!.time as number;
-  const last = points.at(-1)!.time as number;
-  const out: FlowPoint[] = [];
-  for (let t = openSec; t < first; t += SESSION_STEP_SEC) {
-    out.push({ time: t as UTCTimestamp });
+  if (!Number.isFinite(openSec) || !Number.isFinite(closeSec)) {
+    return dedupAscending(points);
   }
-  out.push(...points);
-  for (let t = last + SESSION_STEP_SEC; t <= closeSec; t += SESSION_STEP_SEC) {
-    out.push({ time: t as UTCTimestamp });
+
+  // Bucket to the minute; the last cumulative value within a minute wins.
+  // `points` is ts-ascending (API ORDER BY ts), so a later set() overwrites.
+  const byMinute = new Map<number, number>();
+  for (const p of points) {
+    byMinute.set(Math.floor((p.time as number) / 60) * 60, p.value);
+  }
+  const minutes = [...byMinute.keys()];
+  const gridStart = Math.min(openSec, ...minutes);
+  const gridEnd = Math.max(closeSec, ...minutes);
+
+  const out: FlowPoint[] = [];
+  for (let t = gridStart; t <= gridEnd; t += SESSION_STEP_SEC) {
+    const v = byMinute.get(t);
+    out.push(
+      v == null
+        ? { time: t as UTCTimestamp }
+        : { time: t as UTCTimestamp, value: v },
+    );
   }
   return out;
 }
@@ -319,12 +328,13 @@ function TickerNetFlowChartInner({
       time: isoToUtcSec(r.ts),
       value: r.cumNcv - r.cumNpv,
     }));
-    // Bracket each series with session-spanning whitespace so the time
-    // scale covers the full 08:30–15:00 CT window (see sessionScaffold).
+    // Lay each series on a uniform full-session minute grid so the time
+    // scale spans 08:30→close and the fire marker stays pinned regardless
+    // of live tick density (see sessionMinuteGrid).
     return {
-      ncp: sessionScaffold(dedupAscending(ncpRaw), date),
-      npp: sessionScaffold(dedupAscending(nppRaw), date),
-      netVol: sessionScaffold(dedupAscending(netVolRaw), date),
+      ncp: sessionMinuteGrid(ncpRaw, date),
+      npp: sessionMinuteGrid(nppRaw, date),
+      netVol: sessionMinuteGrid(netVolRaw, date),
     };
   }, [series, date]);
 

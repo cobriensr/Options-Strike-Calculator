@@ -384,6 +384,45 @@ describe('TickerNetFlowChart: session-span whitespace scaffold', () => {
     expect(arrays.every((arr) => arr[0]!.time !== openSec)).toBe(true);
     expect(arrays.some((arr) => arr[0]!.time === firstTickSec)).toBe(true);
   });
+
+  it('lays a uniform 1-point-per-minute grid (sub-minute ticks collapse, gaps fill)', () => {
+    // Sub-minute ticks (the live WS feed is per-tick) plus an interior
+    // 2-minute gap. The grid must collapse the two 14:30:xx ticks into one
+    // 14:30 slot (last value wins) and fill 14:31/14:32 with whitespace —
+    // so EVERY consecutive gap is exactly 60s. That uniform spacing is what
+    // makes the time→logical-index map a pure function of wall-clock time,
+    // which is what perfectly pins the fire marker.
+    const m1430 = Math.floor(Date.parse('2026-05-08T14:30:00Z') / 1000);
+    const m1431 = Math.floor(Date.parse('2026-05-08T14:31:00Z') / 1000);
+    const subMinuteTicks = [
+      makeTick({ ts: '2026-05-08T14:30:05Z', cumNcp: 10 }),
+      makeTick({ ts: '2026-05-08T14:30:55Z', cumNcp: 30 }), // same minute, later
+      makeTick({ ts: '2026-05-08T14:33:10Z', cumNcp: 40 }), // 14:31/14:32 empty
+    ];
+    render(
+      <TickerNetFlowChart
+        series={subMinuteTicks}
+        candles={[]}
+        date="2026-05-08"
+        ariaLabel="t"
+      />,
+    );
+    const grid = flowArrays().find(
+      (arr) => arr[0]!.time === openSec && arr.at(-1)!.time === closeSec,
+    );
+    expect(grid).toBeDefined();
+    // Every consecutive gap is exactly one minute — no sub-minute doubling,
+    // no compressed interior gap.
+    for (let i = 1; i < grid!.length; i++) {
+      expect(grid![i]!.time - grid![i - 1]!.time).toBe(60);
+    }
+    // The 14:30 slot carries the LAST in-minute cumulative value (30, not 10).
+    expect(grid!.find((p) => p.time === m1430)?.value).toBe(30);
+    // The empty 14:31 minute is whitespace (no value → line breaks there).
+    const slot1431 = grid!.find((p) => p.time === m1431);
+    expect(slot1431).toBeDefined();
+    expect(slot1431!.value).toBeUndefined();
+  });
 });
 
 // ============================================================
