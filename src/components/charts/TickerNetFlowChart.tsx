@@ -74,7 +74,9 @@ const fmtSignedVol = (n: number): string => {
  * no "$" prefix (the colored dot already labels the series).
  */
 const fmtHeaderPremium = (n: number): string => {
-  const sign = n < 0 ? '-' : '';
+  // U+2212 minus (not ASCII hyphen) to match the crosshair-tooltip
+  // formatters (fmtSignedDollar/fmtSignedVol) in this same component.
+  const sign = n < 0 ? '−' : '';
   const abs = Math.abs(n);
   if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
   if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(0)}K`;
@@ -82,9 +84,14 @@ const fmtHeaderPremium = (n: number): string => {
 };
 
 /** Net-volume formatter for the header — raw integer with thousands commas
- *  ("-55,440"), matching UW's "Vol:" readout. */
-const fmtHeaderVol = (n: number): string =>
-  Math.round(n).toLocaleString('en-US');
+ *  ("−55,440"), matching UW's "Vol:" readout. Builds the sign explicitly
+ *  with a U+2212 minus so the glyph matches the rest of the component and
+ *  a rounded −0 never renders as "-0". */
+const fmtHeaderVol = (n: number): string => {
+  const rounded = Math.round(n);
+  const abs = Math.abs(rounded).toLocaleString('en-US');
+  return rounded < 0 ? `−${abs}` : abs;
+};
 
 /** Freshness label for the header — "M/D h:mm AM" in CT, from the last tick. */
 const fmtHeaderTime = (iso: string): string => {
@@ -113,7 +120,17 @@ type Point = { time: UTCTimestamp; value: number };
  */
 type FlowPoint = Point | { time: UTCTimestamp };
 
-/** Whitespace cadence — one slot per minute, matching the per-minute data. */
+/**
+ * Whitespace cadence for the empty session regions. The live WS feed is
+ * per-tick (sub-minute, irregular) and the REST backfill is per-minute, so
+ * this 1-slot-per-minute fill is an axis-granularity choice, not a match to
+ * the source cadence. It keeps the empty span from collapsing to a single
+ * bar-width. NOTE: because lightweight-charts logical indices count points
+ * (not wall-clock minutes), the fixed-time marker is only *perfectly* pinned
+ * when the real data is also ~1/minute; busy tickers with multiple ticks per
+ * minute leave a small residual drift. A uniform full-session minute grid
+ * would remove it — see net-flow-panel redesign notes.
+ */
 const SESSION_STEP_SEC = 60;
 
 /**
@@ -622,8 +639,15 @@ function TickerNetFlowChartInner({
 
   // ── Volume-pane top edge, for the "Net Volume" title overlay ─────
   // The price pane (index 0) height equals the y-offset of the volume
-  // pane's top. Recompute on data + height + size changes so the label
-  // tracks the pane boundary as it reflows.
+  // pane's top. Getting this right is fiddly: getHeight() read
+  // synchronously during commit returns the PRE-stretch geometry, before
+  // lightweight-charts applies the 3:1 split in its next layout pass — so
+  // the synchronous read alone leaves the label at ~50%. And
+  // subscribeSizeChange is a *time-scale* (width) signal that does not
+  // fire on a purely vertical pane reflow. So we: (1) read synchronously
+  // for an immediate value, (2) re-read after layout via rAF for the
+  // correct post-stretch position, and (3) observe the price pane's own
+  // DOM element so any later vertical reflow re-pins the label.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || typeof chart.panes !== 'function') {
@@ -636,8 +660,24 @@ function TickerNetFlowChartInner({
       setVolPaneTop(typeof h === 'number' && h > 0 ? h : null);
     };
     recompute();
+    // Double-rAF: the stretch factor is applied in a layout pass, so one
+    // frame isn't always enough for getHeight() to report the split.
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(recompute);
+    });
+
+    let ro: ResizeObserver | undefined;
+    const paneEl = chart.panes()[0]?.getHTMLElement?.();
+    if (typeof ResizeObserver !== 'undefined' && paneEl) {
+      ro = new ResizeObserver(() => recompute());
+      ro.observe(paneEl);
+    }
     chart.timeScale().subscribeSizeChange(recompute);
     return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      ro?.disconnect();
       chart.timeScale().unsubscribeSizeChange(recompute);
     };
   }, [flowData, priceData, height]);
