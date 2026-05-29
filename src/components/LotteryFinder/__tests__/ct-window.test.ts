@@ -71,4 +71,17 @@ describe('ctSessionBounds', () => {
     expect(min).toBe('2026-01-15T14:30:00.000Z');
     expect(max).toBe('2026-01-15T21:00:00.000Z');
   });
+
+  it('caps max at the early-close hour (12:00 CT) on a half-day', () => {
+    // 2026-11-27 Black Friday → 13:00 ET = 12:00 CST close. Open unchanged.
+    const { min, max } = ctSessionBounds('2026-11-27');
+    expect(min).toBe('2026-11-27T14:30:00.000Z'); // 08:30 CST
+    expect(max).toBe('2026-11-27T18:00:00.000Z'); // 12:00 CST, not 15:00
+  });
+
+  it('uses the regular 15:00 CT close on a normal trading day', () => {
+    // Sanity: a non-half-day adjacent in season still closes at 15:00 CT.
+    const { max } = ctSessionBounds('2026-11-20');
+    expect(max).toBe('2026-11-20T21:00:00.000Z'); // 15:00 CST
+  });
 });

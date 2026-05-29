@@ -7,6 +7,8 @@
  * had a TZ-dependent bug — see ct-window.test.ts for the regression.
  */
 
+import { getEarlyCloseHourET } from '../../data/marketHours.js';
+
 const pad = (n: number): string => String(n).padStart(2, '0');
 
 /**
@@ -48,7 +50,15 @@ export function ctToUtc(date: string, hh: number, mm: number): string {
   return new Date(guess.getTime() + diffMin * 60_000).toISOString();
 }
 
-/** Shorthand: regular session bounds (08:30 → 15:00 CT) for a date. */
+/**
+ * Session bounds (08:30 CT open → close CT) for a date. The close is
+ * normally 15:00 CT, but NYSE half-days (Black Friday, Christmas Eve, …)
+ * close at 13:00 ET = 12:00 CT. ET is always CT+1, so the CT close hour
+ * is the ET close hour minus one. Mirrors the early-close awareness the
+ * calculator (`useCalculation` via `getEarlyCloseHourET`) already uses,
+ * so the chart axis / scrubbers don't paint phantom post-close time.
+ */
 export function ctSessionBounds(date: string): { min: string; max: string } {
-  return { min: ctToUtc(date, 8, 30), max: ctToUtc(date, 15, 0) };
+  const closeHourEt = getEarlyCloseHourET(date) ?? 16;
+  return { min: ctToUtc(date, 8, 30), max: ctToUtc(date, closeHourEt - 1, 0) };
 }
