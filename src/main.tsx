@@ -17,7 +17,6 @@ if (import.meta.env.DEV) {
       // Dev-only toolbar — failure to load is not user-visible. Log so
       // the failure isn't silently swallowed; matches the .catch policy
       // used on every other dynamic import() in this codebase.
-      // eslint-disable-next-line no-console
       console.warn('Vercel toolbar failed to mount', err);
     });
 }

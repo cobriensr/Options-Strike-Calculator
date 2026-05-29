@@ -617,14 +617,14 @@ export function detectE1(
  * - docs/superpowers/specs/gamma-node-composite-detector-2026-05-21.md
  * - backfill validation 2026-05-23 (see commit messages around d4fa331d)
  */
-/* eslint-disable @typescript-eslint/no-unused-vars, sonarjs/no-invariant-returns -- stub: args kept for call-site stability + future reactivation */
+/* eslint-disable @typescript-eslint/no-unused-vars -- stub: args kept for call-site stability + future reactivation */
 export function detectE5(
   _bars: ReadonlyArray<Bar>,
   _nodes: ReadonlyArray<GammaNode>,
 ): { wickBar: Bar; breakBar: Bar; node: GammaNode } | null {
   return null;
 }
-/* eslint-enable @typescript-eslint/no-unused-vars, sonarjs/no-invariant-returns */
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 /**
  * PCS Monday rejection detector.
