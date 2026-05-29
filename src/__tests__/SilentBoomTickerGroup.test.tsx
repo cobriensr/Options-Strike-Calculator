@@ -646,6 +646,63 @@ describe('SilentBoomTickerGroup', () => {
       ).toHaveTextContent('conviction');
     });
 
+    it('renders the ✦✦ strong tier and hides the base ✦ when strongConviction is true', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="XOM"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={true}
+          strongConviction={true}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-strong-conviction-XOM'),
+      ).toHaveTextContent('conviction');
+      // The tiers are mutually exclusive — ✦✦ replaces the base ✦.
+      expect(
+        screen.queryByTestId('silent-boom-ticker-conviction-XOM'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders the base ✦ (not ✦✦) when conviction is true but strongConviction is false', () => {
+      const alerts = [
+        makeAlert({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <SilentBoomTickerGroup
+          ticker="XOM"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={true}
+          strongConviction={false}
+        />,
+      );
+      expect(
+        screen.getByTestId('silent-boom-ticker-conviction-XOM'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('silent-boom-ticker-strong-conviction-XOM'),
+      ).not.toBeInTheDocument();
+    });
+
     it('renders the storm badge when the storm prop is true', () => {
       const alerts = [
         makeAlert({

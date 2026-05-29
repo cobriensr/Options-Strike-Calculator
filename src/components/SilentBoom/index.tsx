@@ -780,6 +780,9 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
         ),
         premium: a.entryPrice * a.spikeVolume * 100,
         intensity: a.spikeRatio,
+        // Raw per-fire entry ($/contract) — drives the strong-conviction
+        // tier (every fire ≤ $1). Distinct from aggregate `premium`.
+        entryPrice: a.entryPrice,
       };
       return {
         ticker: a.underlyingSymbol,
@@ -1635,6 +1638,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
                   marketOpen={marketOpen}
                   exitPolicy={exitPolicy}
                   conviction={g.conviction}
+                  strongConviction={g.strongConviction}
                   storm={g.storm}
                   clusterStrikes={g.clusterStrikes}
                   wasConvictionAt={g.wasConvictionAt}

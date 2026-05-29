@@ -19,6 +19,7 @@ import {
   formatSpreadDuration,
   formatTideLabel,
   HIGH_CONVICTION_BADGE_LABEL,
+  STRONG_CONVICTION_BADGE_LABEL,
   type Bias,
   type RollupAlertSummary,
   type TideAggregate,
@@ -70,6 +71,12 @@ interface LotteryFinderTickerGroupProps {
    * omitted (legacy/test fixtures).
    */
   conviction?: boolean;
+  /**
+   * Stronger conviction tier (cheap ≤ $1 + pre-PM). When true, the
+   * group renders the louder `✦✦ conviction` badge instead of `✦`.
+   * Higher spike potential, NOT a profit signal. Defaults to false.
+   */
+  strongConviction?: boolean;
   storm?: boolean;
   /**
    * Highest OTM-sweep cluster-strike count for this ticker, computed
@@ -176,6 +183,7 @@ function LotteryFinderTickerGroupBase({
   marketOpen,
   exitPolicy,
   conviction = false,
+  strongConviction = false,
   storm = false,
   clusterStrikes = 0,
   wasConvictionAt = null,
@@ -230,6 +238,7 @@ function LotteryFinderTickerGroupBase({
   // don't silently erase a ticker's true-footprint badges. See the
   // hook's `unfilteredItems` option for the source of truth.
   const showConvictionBadge = conviction;
+  const showStrongConvictionBadge = strongConviction;
   const showStormBadge = storm;
   const showClusterBadge = clusterStrikes >= 3;
 
@@ -264,15 +273,24 @@ function LotteryFinderTickerGroupBase({
           >
             {count} fire{count === 1 ? '' : 's'}
           </span>
-          {showConvictionBadge && (
-            <span
-              className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/60"
-              title="≥3 fires, single direction, multi-strike, within 15 min"
-              data-testid={`lottery-ticker-conviction-${ticker}`}
-            >
-              {HIGH_CONVICTION_BADGE_LABEL}
-            </span>
-          )}
+          {showConvictionBadge &&
+            (showStrongConvictionBadge ? (
+              <span
+                className="rounded bg-amber-400/30 px-1.5 py-0.5 font-mono text-[11px] font-bold text-amber-100 ring-1 ring-amber-300/80"
+                title="Conviction cluster that is also cheap (every fire ≤ $1) and pre-PM (before 12:30 CT) — historically reaches bigger % peaks (higher spike potential). NOT a profit guarantee: realized-$ edge is flat. Use as a 'watch this' cue, not a buy signal."
+                data-testid={`lottery-ticker-strong-conviction-${ticker}`}
+              >
+                {STRONG_CONVICTION_BADGE_LABEL}
+              </span>
+            ) : (
+              <span
+                className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[11px] font-bold text-amber-300 ring-1 ring-amber-400/60"
+                title="≥3 fires, single direction, multi-strike, within 15 min"
+                data-testid={`lottery-ticker-conviction-${ticker}`}
+              >
+                {HIGH_CONVICTION_BADGE_LABEL}
+              </span>
+            ))}
           {!showConvictionBadge &&
             wasConvictionAt != null &&
             wasConvictionFireCount > 0 && (

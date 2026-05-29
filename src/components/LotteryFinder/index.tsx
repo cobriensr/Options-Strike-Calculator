@@ -771,6 +771,9 @@ export function LotteryFinderSection({
         ),
         premium: f.entry.price * f.trigger.windowSize * 100,
         intensity: f.fireCount,
+        // Raw per-fire entry ($/contract) — drives the strong-conviction
+        // tier (every fire ≤ $1). Distinct from aggregate `premium`.
+        entryPrice: f.entry.price,
       };
       return {
         ticker: f.underlyingSymbol,
@@ -1614,6 +1617,7 @@ export function LotteryFinderSection({
                   marketOpen={marketOpen}
                   exitPolicy={exitPolicy}
                   conviction={g.conviction}
+                  strongConviction={g.strongConviction}
                   storm={g.storm}
                   clusterStrikes={g.clusterStrikes}
                   wasConvictionAt={g.wasConvictionAt}

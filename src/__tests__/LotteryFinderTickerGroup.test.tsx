@@ -719,6 +719,63 @@ describe('LotteryFinderTickerGroup', () => {
       ).toHaveTextContent('conviction');
     });
 
+    it('renders the ✦✦ strong tier and hides the base ✦ when strongConviction is true', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={true}
+          strongConviction={true}
+        />,
+      );
+      expect(
+        screen.getByTestId('lottery-ticker-strong-conviction-XOM'),
+      ).toHaveTextContent('conviction');
+      // The tiers are mutually exclusive — ✦✦ replaces the base ✦.
+      expect(
+        screen.queryByTestId('lottery-ticker-conviction-XOM'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('renders the base ✦ (not ✦✦) when conviction is true but strongConviction is false', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={true}
+          strongConviction={false}
+        />,
+      );
+      expect(
+        screen.getByTestId('lottery-ticker-conviction-XOM'),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('lottery-ticker-strong-conviction-XOM'),
+      ).not.toBeInTheDocument();
+    });
+
     it('renders the storm badge when the storm prop is true', () => {
       const fires = [
         makeFire({

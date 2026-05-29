@@ -12,6 +12,10 @@ import {
   HIGH_CONVICTION_BADGE_LABEL,
   isBurstStorm,
   isHighConviction,
+  isStrongConviction,
+  STRONG_CONVICTION_BADGE_LABEL,
+  STRONG_CONVICTION_MAX_ENTRY,
+  STRONG_CONVICTION_PM_START_CT_HOUR,
   type RollupAlertSummary,
 } from '../../utils/ticker-rollup-aggregates';
 
@@ -655,6 +659,117 @@ describe('isHighConviction', () => {
 
   it('exports a label constant for chip rendering', () => {
     expect(HIGH_CONVICTION_BADGE_LABEL).toBe('✦ conviction');
+  });
+});
+
+describe('isStrongConviction', () => {
+  // A clean ✦ conviction cluster: 3 calls, 3 strikes, within 15 min,
+  // all in the AM (13:30Z = 8:30 CT). `over` lets each case set
+  // entryPrice / triggeredAt per row.
+  function cluster(over: Partial<RollupAlertSummary>[]): RollupAlertSummary[] {
+    const base = [
+      { strike: 100, triggeredAt: '2026-05-15T13:30:00Z' },
+      { strike: 105, triggeredAt: '2026-05-15T13:34:00Z' },
+      { strike: 110, triggeredAt: '2026-05-15T13:38:00Z' },
+    ];
+    return base.map((b, i) =>
+      makeRow({ optionType: 'C', entryPrice: 0.5, ...b, ...over[i] }),
+    );
+  }
+
+  it('accepts a cheap, pre-PM conviction cluster', () => {
+    const rows = cluster([
+      { entryPrice: 0.3 },
+      { entryPrice: 0.45 },
+      { entryPrice: 0.2 },
+    ]);
+    const agg = computeRollupAggregates(rows);
+    expect(isHighConviction(agg, rows.length)).toBe(true);
+    expect(isStrongConviction(agg, rows.length, rows)).toBe(true);
+  });
+
+  it('rejects when the base conviction predicate fails (only 2 fires)', () => {
+    const rows = [
+      makeRow({
+        strike: 100,
+        entryPrice: 0.3,
+        triggeredAt: '2026-05-15T13:30:00Z',
+      }),
+      makeRow({
+        strike: 105,
+        entryPrice: 0.3,
+        triggeredAt: '2026-05-15T13:32:00Z',
+      }),
+    ];
+    const agg = computeRollupAggregates(rows);
+    expect(isStrongConviction(agg, rows.length, rows)).toBe(false);
+  });
+
+  it('rejects when any fire is above the cheap ceiling', () => {
+    const rows = cluster([
+      { entryPrice: 0.3 },
+      { entryPrice: 1.5 }, // one pricey ticket disqualifies the cluster
+      { entryPrice: 0.2 },
+    ]);
+    const agg = computeRollupAggregates(rows);
+    expect(isHighConviction(agg, rows.length)).toBe(true);
+    expect(isStrongConviction(agg, rows.length, rows)).toBe(false);
+  });
+
+  it('rejects when a fire is missing its entry price', () => {
+    const rows = cluster([{ entryPrice: 0.3 }, { entryPrice: null }, {}]);
+    const agg = computeRollupAggregates(rows);
+    expect(isStrongConviction(agg, rows.length, rows)).toBe(false);
+  });
+
+  it('accepts at the cheap-ceiling boundary (entry == $1.00)', () => {
+    const rows = cluster([
+      { entryPrice: STRONG_CONVICTION_MAX_ENTRY },
+      { entryPrice: STRONG_CONVICTION_MAX_ENTRY },
+      { entryPrice: STRONG_CONVICTION_MAX_ENTRY },
+    ]);
+    const agg = computeRollupAggregates(rows);
+    expect(isStrongConviction(agg, rows.length, rows)).toBe(true);
+  });
+
+  it('rejects a PM cluster (>= 12:30 CT)', () => {
+    // 18:00/18:04/18:08Z = 13:00–13:08 CT — cheap and clean, but PM.
+    const rows = cluster([
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T18:00:00Z' },
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T18:04:00Z' },
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T18:08:00Z' },
+    ]);
+    const agg = computeRollupAggregates(rows);
+    expect(isHighConviction(agg, rows.length)).toBe(true);
+    expect(isStrongConviction(agg, rows.length, rows)).toBe(false);
+  });
+
+  it('treats exactly 12:30 CT as PM (excluded)', () => {
+    // 17:30Z = 12:30 CT (CDT) — the PM boundary is inclusive.
+    const rows = cluster([
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T17:30:00Z' },
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T17:31:00Z' },
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T17:32:00Z' },
+    ]);
+    const agg = computeRollupAggregates(rows);
+    expect(isStrongConviction(agg, rows.length, rows)).toBe(false);
+  });
+
+  it('accepts a cluster ending just before PM (12:29 CT)', () => {
+    // 17:21/17:25/17:29Z = 12:21–12:29 CT — all < 12:30, still qualifies.
+    const rows = cluster([
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T17:21:00Z' },
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T17:25:00Z' },
+      { entryPrice: 0.3, triggeredAt: '2026-05-15T17:29:00Z' },
+    ]);
+    const agg = computeRollupAggregates(rows);
+    expect(isStrongConviction(agg, rows.length, rows)).toBe(true);
+  });
+
+  it('exposes the canonical constants and label', () => {
+    expect(STRONG_CONVICTION_MAX_ENTRY).toBe(1.0);
+    expect(STRONG_CONVICTION_PM_START_CT_HOUR).toBe(12.5);
+    expect(STRONG_CONVICTION_BADGE_LABEL).toBe('✦✦ conviction');
   });
 });
 

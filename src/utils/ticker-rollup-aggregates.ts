@@ -8,6 +8,8 @@
  * minimal — only the fields needed by the five chips.
  */
 
+import { getCTTime } from './timezone.js';
+
 export interface RollupAlertSummary {
   /** 'C' for call, 'P' for put — matches the project-wide OptionType. */
   optionType: 'C' | 'P';
@@ -39,6 +41,13 @@ export interface RollupAlertSummary {
    * without a value contribute nothing to `maxIntensity`.
    */
   intensity?: number | null;
+  /**
+   * Per-fire entry price ($/contract) at trigger. Optional — only the
+   * "strong" conviction tier (isStrongConviction) consumes it; rows
+   * without it can't qualify for that tier. Distinct from `premium`
+   * (entry × size × 100, an aggregate $ figure).
+   */
+  entryPrice?: number | null;
 }
 
 export type Bias = 'bull' | 'bear' | 'mixed';
@@ -286,6 +295,56 @@ export function isHighConviction(
 
 /** Display label for the high-conviction badge chip. */
 export const HIGH_CONVICTION_BADGE_LABEL = '✦ conviction';
+
+/**
+ * Entry-price ceiling ($/contract) for the "strong" conviction tier.
+ * Cheap tickets are where the coordinated footprint reliably reaches
+ * bigger % peaks out-of-sample (2026-05-29 study). NOT an expectancy
+ * claim — realized-$ outcomes were flat-to-negative; this only marks
+ * higher spike potential.
+ */
+export const STRONG_CONVICTION_MAX_ENTRY = 1.0;
+
+/**
+ * PM-session start in CT decimal hours (12:30 CT). Mirrors the backend
+ * tod boundary in api/_lib/lottery-finder.ts
+ * (getTimeOfDayFromCtHourMin: PM = h >= 12.5). The strong tier excludes
+ * PM clusters — late-session 0DTE theta erases the peak-reachability edge.
+ */
+export const STRONG_CONVICTION_PM_START_CT_HOUR = 12.5;
+
+/**
+ * "Strong" conviction tier: a {@link isHighConviction} cluster whose
+ * fires are ALL cheap (entry <= {@link STRONG_CONVICTION_MAX_ENTRY}) and
+ * ALL struck before the PM session (< 12:30 CT). This is the only filter
+ * that held out-of-sample on % peak-reachability in the 2026-05-29 study
+ * — it routes attention to clusters more likely to SPIKE. It is NOT a
+ * mechanical profit edge (realized-$ tests were flat/negative); treat it
+ * as a louder "watch this," not a buy signal.
+ *
+ * Conservative on partial data: any row missing a finite `entryPrice`
+ * or carrying an unparseable `triggeredAt` fails the tier, so the louder
+ * badge never fires on incomplete inputs.
+ */
+export function isStrongConviction(
+  agg: RollupAggregates,
+  fireCount: number,
+  rows: readonly RollupAlertSummary[],
+): boolean {
+  if (!isHighConviction(agg, fireCount)) return false;
+  for (const r of rows) {
+    if (r.entryPrice == null || !Number.isFinite(r.entryPrice)) return false;
+    if (r.entryPrice > STRONG_CONVICTION_MAX_ENTRY) return false;
+    const ms = Date.parse(r.triggeredAt);
+    if (!Number.isFinite(ms)) return false;
+    const { hour, minute } = getCTTime(new Date(ms));
+    if (hour + minute / 60 >= STRONG_CONVICTION_PM_START_CT_HOUR) return false;
+  }
+  return true;
+}
+
+/** Display label for the strong (cheap, pre-PM) conviction tier. */
+export const STRONG_CONVICTION_BADGE_LABEL = '✦✦ conviction';
 
 /**
  * One past-tense conviction window's metadata. Surfaced by

@@ -18,6 +18,7 @@ import {
   findEarliestConvictionWindow,
   isBurstStorm,
   isHighConviction,
+  isStrongConviction,
   type RollupAlertSummary,
 } from '../utils/ticker-rollup-aggregates.js';
 
@@ -52,6 +53,14 @@ export interface TickerGroup<T> {
   /** Items in their within-group order (peak desc for 'peak' mode). */
   items: T[];
   conviction: boolean;
+  /**
+   * Stronger conviction tier: a conviction cluster that is also cheap
+   * (every fire ≤ $1 entry) and pre-PM (< 12:30 CT) — higher spike
+   * potential, NOT a profit/expectancy signal. Computed from the
+   * unfiltered set (same back-compat fallback as `conviction`). See
+   * {@link isStrongConviction}.
+   */
+  strongConviction: boolean;
   storm: boolean;
   peakBest: number | null;
   latestTriggerMs: number;
@@ -146,6 +155,7 @@ export function useTickerGrouping<T>(
       string,
       {
         conviction: boolean;
+        strongConviction: boolean;
         storm: boolean;
         wasConvictionAt: number | null;
         wasConvictionFireCount: number;
@@ -162,12 +172,9 @@ export function useTickerGrouping<T>(
       }
       for (const [ticker, list] of fullByTicker) {
         const summaries = list.map(extract);
-        const agg = computeRollupAggregates(
-          summaries.map((s) => s.rollupSummary),
-        );
-        const window = findEarliestConvictionWindow(
-          summaries.map((s) => s.rollupSummary),
-        );
+        const rollupSummaries = summaries.map((s) => s.rollupSummary);
+        const agg = computeRollupAggregates(rollupSummaries);
+        const window = findEarliestConvictionWindow(rollupSummaries);
         // Reduce-with-0-seed matches the peakBest pattern below and
         // handles the empty-list case naturally (no need for a
         // Math.max-spread + empty guard).
@@ -177,6 +184,11 @@ export function useTickerGrouping<T>(
         );
         unfilteredFlags.set(ticker, {
           conviction: isHighConviction(agg, list.length),
+          strongConviction: isStrongConviction(
+            agg,
+            list.length,
+            rollupSummaries,
+          ),
           storm: isBurstStorm(agg, list.length, stormIntensityThreshold),
           wasConvictionAt: window?.firstFireMs ?? null,
           wasConvictionFireCount: window?.fireCount ?? 0,
@@ -195,9 +207,8 @@ export function useTickerGrouping<T>(
             })
           : list;
       const summaries = orderedItems.map(extract);
-      const agg = computeRollupAggregates(
-        summaries.map((s) => s.rollupSummary),
-      );
+      const rollupSummaries = summaries.map((s) => s.rollupSummary);
+      const agg = computeRollupAggregates(rollupSummaries);
       const peakBest = summaries.reduce<number | null>((best, s) => {
         const p = s.peakPct;
         if (p == null) return best;
@@ -228,6 +239,9 @@ export function useTickerGrouping<T>(
         items: orderedItems,
         conviction:
           unfiltered?.conviction ?? isHighConviction(agg, orderedItems.length),
+        strongConviction:
+          unfiltered?.strongConviction ??
+          isStrongConviction(agg, orderedItems.length, rollupSummaries),
         storm:
           unfiltered?.storm ??
           isBurstStorm(agg, orderedItems.length, stormIntensityThreshold),
