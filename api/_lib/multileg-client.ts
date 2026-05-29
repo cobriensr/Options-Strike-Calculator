@@ -265,7 +265,11 @@ function resolveClassifierBase(): ResolvedClassifierTarget {
         'multileg.classify.classifier_url_unset_falling_back_to_sidecar',
         {
           level: 'warning',
-          extra: { sidecarHost: host, fallback: true },
+          extra: {
+            target: 'sidecar-fallback' as const,
+            sidecarHost: host,
+            fallback: true,
+          },
         },
       );
     }

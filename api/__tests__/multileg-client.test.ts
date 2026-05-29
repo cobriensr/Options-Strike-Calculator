@@ -750,6 +750,7 @@ describe('classifyMultilegBatch', () => {
         expect.objectContaining({
           level: 'warning',
           extra: expect.objectContaining({
+            target: 'sidecar-fallback',
             sidecarHost: 'sidecar.example',
             fallback: true,
           }),
