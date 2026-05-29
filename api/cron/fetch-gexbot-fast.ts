@@ -4,16 +4,25 @@
  * Fast-cron half of the GEXBot Orderflow-tier capture pipeline. Polls
  * the small-payload endpoints once per minute for all 16 tickers:
  *
- *   - 16 × /{ticker}/orderflow/orderflow         → gexbot_snapshots
+ *   - 16 × /{ticker}/orderflow/orderflow             → gexbot_snapshots
+ *   - 16 × /{ticker}/classic/gex_zero (basic)        → merged into snapshot
  *   - 48 × /{ticker}/classic/{gex_zero|gex_one|gex_full}/maxchange
- *                                                  → gexbot_api_capture
- *   - 128 × /{ticker}/state/{gamma|delta|vanna|charm}_{zero|one}/maxchange
- *                                                  → gexbot_api_capture
+ *                                                      → gexbot_api_capture
+ *   - 48 × /{ticker}/state/{gex_zero|gex_one|gex_full}/maxchange
+ *                                                      → gexbot_api_capture
  *
- * Total: 192 HTTP calls per invocation, all small payloads. State
- * per-strike (heavy ~30 KB rows, 128 calls) lives in the sibling
- * `fetch-gexbot-strikes` cron so the two payload classes don't share
- * a wall-time budget.
+ * Total: 128 HTTP calls per invocation, all small payloads. The classic
+ * `gex_zero` basic call supplies the 10 aggregate fields (zero_gamma,
+ * sum_gex_*, major_*, delta_risk_reversal, min_dte/sec_min_dte) that the
+ * /orderflow payload omits despite the spec listing them — they're merged
+ * into the same per-ticker snapshot row. See
+ * docs/superpowers/specs/gexbot-classic-basic-capture-2026-05-29.md.
+ *
+ * The `/state/.../maxchange` sub-route accepts only the 3 DTE buckets
+ * (gex_zero|gex_one|gex_full) — the per-strike Greek×DTE categories
+ * ({gamma,delta,vanna,charm}_{zero,one}, heavy ~30 KB rows, 128 calls)
+ * live in the sibling `fetch-gexbot-strikes` cron so the two payload
+ * classes don't share a wall-time budget.
  *
  * See: docs/superpowers/specs/gexbot-trial-capture-2026-05-16.md
  *
@@ -29,6 +38,7 @@ import {
 } from '../_lib/cron-instrumentation.js';
 import {
   fetchOrderflow,
+  fetchClassicBasic,
   fetchMaxchange,
   fetchStateMaxchange,
   GEXBOT_TICKERS,
@@ -61,8 +71,8 @@ function i(v: unknown): number | null {
 
 /**
  * Concurrency cap for the per-tick fetch fan-out. Sized to keep wall time
- * tight while preventing all 192 calls from launching simultaneously — a
- * 192-way burst paired with the per-call HTTP timeout can produce 192
+ * tight while preventing all 128 calls from launching simultaneously — a
+ * 128-way burst paired with the per-call HTTP timeout can produce 128
  * Sentry events in a single tick if GEXBot has a slow minute.
  */
 const FETCH_CONCURRENCY = 32;
@@ -74,15 +84,61 @@ const FETCH_CONCURRENCY = 32;
  */
 const SENTRY_CAPTURE_CAP = 10;
 
+/**
+ * DTE bucket whose classic basic_response feeds the snapshot aggregate
+ * columns. We're a 0DTE tool and the snapshot scalars are single-valued,
+ * so we take the 0DTE bucket. gex_one/gex_full basic capture is out of scope.
+ */
+const CLASSIC_BASIC_CATEGORY: MaxchangeCategory = 'gex_zero';
+
+/**
+ * The 10 aggregate fields the live /orderflow payload omits but the classic
+ * basic_response carries. Merged from the classic gex_zero call into the
+ * per-ticker orderflow snapshot row. See spec dated 2026-05-29.
+ */
+const CLASSIC_BASIC_FIELDS = [
+  'zero_gamma',
+  'sum_gex_vol',
+  'sum_gex_oi',
+  'major_pos_vol',
+  'major_pos_oi',
+  'major_neg_vol',
+  'major_neg_oi',
+  'delta_risk_reversal',
+  'min_dte',
+  'sec_min_dte',
+] as const;
+
 interface SnapshotRow {
   ticker: GexbotTicker;
   body: GexbotResponse;
 }
 
-async function storeSnapshots(rows: SnapshotRow[]): Promise<void> {
+/**
+ * Merge the classic gex_zero aggregate fields into the orderflow body so a
+ * single INSERT writes one enriched snapshot row. Orderflow stays canonical
+ * for spot/ticker/timestamp and the flow scalars; classic supplies only the
+ * 10 fields orderflow drops. Returns the orderflow body unchanged when no
+ * classic row is available (fail-open — those 10 columns stay NULL).
+ */
+function mergeClassic(
+  body: GexbotResponse,
+  classic: GexbotResponse | undefined,
+): GexbotResponse {
+  if (!classic) return body;
+  const merged: GexbotResponse = { ...body };
+  for (const field of CLASSIC_BASIC_FIELDS) merged[field] = classic[field];
+  return merged;
+}
+
+async function storeSnapshots(
+  rows: SnapshotRow[],
+  classicByTicker: Map<GexbotTicker, GexbotResponse>,
+): Promise<void> {
   if (rows.length === 0) return;
   const sql = getDb();
-  for (const { ticker, body } of rows) {
+  for (const { ticker, body: orderflowBody } of rows) {
+    const body = mergeClassic(orderflowBody, classicByTicker.get(ticker));
     await withDbRetry(
       () => sql`
       INSERT INTO gexbot_snapshots (
@@ -135,10 +191,15 @@ export default withCronInstrumentation(
       throw new Error('GEXBOT_API_KEY is not configured');
     }
 
-    // Full work list: 16 orderflow + (16 × 3) classic maxchange +
-    // (16 × 8) state maxchange = 192 calls.
+    // Full work list: 16 orderflow + 16 classic gex_zero basic +
+    // (16 × 3) classic maxchange + (16 × 3) state maxchange = 128 calls.
     type Task =
       | { kind: 'orderflow'; ticker: GexbotTicker }
+      | {
+          kind: 'classic-basic';
+          ticker: GexbotTicker;
+          category: MaxchangeCategory;
+        }
       | {
           kind: 'classic-maxchange';
           ticker: GexbotTicker;
@@ -152,6 +213,11 @@ export default withCronInstrumentation(
 
     const tasks: Task[] = [
       ...GEXBOT_TICKERS.map<Task>((ticker) => ({ kind: 'orderflow', ticker })),
+      ...GEXBOT_TICKERS.map<Task>((ticker) => ({
+        kind: 'classic-basic',
+        ticker,
+        category: CLASSIC_BASIC_CATEGORY,
+      })),
       ...GEXBOT_TICKERS.flatMap<Task>((ticker) =>
         MAXCHANGE_CATEGORIES.map<Task>((category) => ({
           kind: 'classic-maxchange',
@@ -170,7 +236,7 @@ export default withCronInstrumentation(
 
     // Wrap each fetch so the rejection carries `task` context for
     // Sentry tagging — Promise.allSettled exposes only `reason`.
-    // Concurrency-capped (FETCH_CONCURRENCY) to avoid a 192-way burst on
+    // Concurrency-capped (FETCH_CONCURRENCY) to avoid a 128-way burst on
     // every cron tick.
     const results = await mapWithConcurrency(
       tasks,
@@ -188,6 +254,11 @@ export default withCronInstrumentation(
           switch (task.kind) {
             case 'orderflow':
               body = await withRetry(() => fetchOrderflow(apiKey, task.ticker));
+              break;
+            case 'classic-basic':
+              body = await withRetry(() =>
+                fetchClassicBasic(apiKey, task.ticker, task.category),
+              );
               break;
             case 'classic-maxchange':
               body = await withRetry(() =>
@@ -217,6 +288,7 @@ export default withCronInstrumentation(
 
     const snapshots: SnapshotRow[] = [];
     const captures: CaptureRow[] = [];
+    const classicByTicker = new Map<GexbotTicker, GexbotResponse>();
     let failed = 0;
     let sentryCaptured = 0;
 
@@ -244,6 +316,11 @@ export default withCronInstrumentation(
       switch (task.kind) {
         case 'orderflow':
           snapshots.push({ ticker: task.ticker, body });
+          break;
+        case 'classic-basic':
+          // Not a stored row of its own — merged into the orderflow
+          // snapshot for the same ticker in storeSnapshots().
+          classicByTicker.set(task.ticker, body);
           break;
         case 'classic-maxchange':
           captures.push({
@@ -285,8 +362,15 @@ export default withCronInstrumentation(
       );
     }
 
-    await storeSnapshots(snapshots);
+    await storeSnapshots(snapshots, classicByTicker);
     await insertCaptureRows(captures);
+
+    // How many snapshot rows received their classic gex_zero aggregate
+    // merge — the live health signal for the 10-column revival. A drop to
+    // 0 means GexBot stopped serving /classic/gex_zero basic.
+    const enriched = snapshots.filter((s) =>
+      classicByTicker.has(s.ticker),
+    ).length;
 
     const stored = snapshots.length + captures.length;
     ctx.logger.info(
@@ -294,6 +378,7 @@ export default withCronInstrumentation(
         stored,
         snapshots: snapshots.length,
         captures: captures.length,
+        enriched,
         failed,
       },
       'fetch-gexbot-fast completed',
@@ -305,6 +390,7 @@ export default withCronInstrumentation(
       metadata: {
         snapshots: snapshots.length,
         captures: captures.length,
+        enriched,
         failed,
       },
     };

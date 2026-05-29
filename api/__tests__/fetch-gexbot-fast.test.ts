@@ -42,19 +42,29 @@ const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 // Fixed weekend date: Saturday
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 
+const CLASSIC_BASIC_COUNT = GEXBOT_TICKERS.length;
 const CLASSIC_MAXCHANGE_COUNT =
   GEXBOT_TICKERS.length * MAXCHANGE_CATEGORIES.length;
 const STATE_MAXCHANGE_COUNT =
   GEXBOT_TICKERS.length * STATE_MAXCHANGE_CATEGORIES.length;
 const CAPTURE_COUNT = CLASSIC_MAXCHANGE_COUNT + STATE_MAXCHANGE_COUNT;
-const TOTAL_TASKS = GEXBOT_TICKERS.length + CAPTURE_COUNT;
+// Stored DB rows = orderflow snapshots + captures. The classic-basic calls
+// enrich the snapshot rows (merged in) rather than creating rows of their own.
+const STORED_ROWS = GEXBOT_TICKERS.length + CAPTURE_COUNT;
+// Total outbound HTTP calls per tick (includes the 16 classic-basic merges).
+const FETCH_TASKS = STORED_ROWS + CLASSIC_BASIC_COUNT;
 
+// Distinctive classic-basic zero_gamma so the merge test can assert the value
+// flows from the classic call (and is NOT sourced from orderflow).
+const CLASSIC_ZERO_GAMMA = 4242;
+
+// Realistic orderflow body — the LIVE payload omits zero_gamma / sum_gex_* /
+// major_* / delta_risk_reversal / min_dte / sec_min_dte (spec-vs-live drift).
 function makeOrderflowBody(ticker: string) {
   return {
     timestamp: 1_700_000_000,
     ticker,
     spot: 100.5,
-    zero_gamma: 99.0,
     z_mlgamma: 102,
     z_msgamma: 98,
     zcvr: 1.25,
@@ -62,10 +72,26 @@ function makeOrderflowBody(ticker: string) {
     dexoflow: 1234.5,
     gexoflow: 567.8,
     cvroflow: 0.12,
-    sum_gex_oi: 1_000_000,
+  };
+}
+
+// classic gex_zero basic_response — the live source of the 10 aggregate fields.
+function makeClassicBasicBody(ticker: string) {
+  return {
+    timestamp: 1_700_000_000,
+    ticker,
+    spot: 100.5,
+    zero_gamma: CLASSIC_ZERO_GAMMA,
+    sum_gex_vol: 111,
+    sum_gex_oi: 222,
+    major_pos_vol: 1,
+    major_pos_oi: 2,
+    major_neg_vol: 3,
+    major_neg_oi: 4,
     delta_risk_reversal: 0.05,
     min_dte: 0,
     sec_min_dte: 1,
+    strikes: [[100, 50]],
   };
 }
 
@@ -80,10 +106,13 @@ function makeMaxchangeBody(ticker: string) {
   };
 }
 
+// /SPX/classic/gex_zero (basic) — but NOT /SPX/classic/gex_zero/maxchange.
+const CLASSIC_BASIC_RE = /\/classic\/(gex_zero|gex_one|gex_full)$/;
+
 /**
  * Stub fetch to return per-URL bodies. Each (ticker, endpoint) pair
  * gets the appropriate shape so happy-path inserts pick up both
- * snapshot and capture rows.
+ * snapshot and capture rows, and the classic-basic merge has real fields.
  */
 function stubFetchHappyPath() {
   vi.stubGlobal(
@@ -93,9 +122,14 @@ function stubFetchHappyPath() {
       const ticker =
         url.split('/').find((seg) => GEXBOT_TICKERS.includes(seg as never)) ??
         'SPX';
-      const body = url.includes('/orderflow/orderflow')
-        ? makeOrderflowBody(ticker)
-        : makeMaxchangeBody(ticker);
+      let body: Record<string, unknown>;
+      if (url.includes('/orderflow/orderflow')) {
+        body = makeOrderflowBody(ticker);
+      } else if (CLASSIC_BASIC_RE.test(url)) {
+        body = makeClassicBasicBody(ticker);
+      } else {
+        body = makeMaxchangeBody(ticker);
+      }
       return { ok: true, status: 200, json: async () => body } as Response;
     }),
   );
@@ -182,15 +216,38 @@ describe('fetch-gexbot-fast handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       status: 'success',
-      rows: TOTAL_TASKS,
+      rows: STORED_ROWS,
       snapshots: GEXBOT_TICKERS.length,
       captures: CAPTURE_COUNT,
+      enriched: GEXBOT_TICKERS.length,
       failed: 0,
     });
     // GEXBOT_TICKERS.length per-row snapshot INSERTs + 1 batched UNNEST
-    // captures INSERT. Stays correct when the ticker list grows.
+    // captures INSERT. The classic-basic calls add no INSERTs (merged into
+    // the snapshot rows). Stays correct when the ticker list grows.
     expect(mockSql).toHaveBeenCalledTimes(GEXBOT_TICKERS.length + 1);
     expect(mockSentryCapture).not.toHaveBeenCalled();
+  });
+
+  // ── Classic-basic merge ───────────────────────────────────
+
+  it('merges classic gex_zero aggregate fields into the orderflow snapshot row', async () => {
+    // The 10 fields orderflow omits (zero_gamma, sum_gex_*, major_*,
+    // delta_risk_reversal, min_dte/sec_min_dte) must be sourced from the
+    // classic gex_zero basic call and land in the same snapshot INSERT.
+    stubFetchHappyPath();
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    // Snapshot INSERTs are tagged-template calls; arg[1] is the ticker and
+    // the VALUES order is (ticker, source_timestamp, spot, zero_gamma, …),
+    // so zero_gamma is arg[4]. Find SPX's snapshot insert.
+    const spxSnapshot = mockSql.mock.calls.find((c) => c[1] === 'SPX');
+    expect(spxSnapshot).toBeDefined();
+    expect(spxSnapshot?.[4]).toBe(CLASSIC_ZERO_GAMMA);
   });
 
   // ── Partial failure ───────────────────────────────────────
@@ -230,7 +287,7 @@ describe('fetch-gexbot-fast handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       status: 'partial',
-      rows: TOTAL_TASKS - 1,
+      rows: STORED_ROWS - 1,
       failed: 1,
     });
     // One Sentry capture for the SPX/orderflow 500
@@ -256,6 +313,7 @@ describe('fetch-gexbot-fast handler', () => {
     ).mock.calls.map((c) => String(c[0]));
 
     const hasOrderflow = urls.some((u) => u.includes('/orderflow/orderflow'));
+    const hasClassicBasic = urls.some((u) => CLASSIC_BASIC_RE.test(u));
     const hasClassicMax = urls.some((u) =>
       /\/classic\/(gex_zero|gex_one|gex_full)\/maxchange/.test(u),
     );
@@ -263,8 +321,11 @@ describe('fetch-gexbot-fast handler', () => {
       /\/state\/(gex_zero|gex_one|gex_full)\/maxchange/.test(u),
     );
     expect(hasOrderflow).toBe(true);
+    expect(hasClassicBasic).toBe(true);
     expect(hasClassicMax).toBe(true);
     expect(hasStateMax).toBe(true);
+    // 16 orderflow + 16 classic-basic + 48 classic-max + 48 state-max = 128
+    expect(urls).toHaveLength(FETCH_TASKS);
   });
 
   it('tags Sentry with full per-failure context (ticker + endpoint + category)', async () => {

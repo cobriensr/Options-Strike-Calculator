@@ -3,6 +3,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import {
+  fetchClassicBasic,
   fetchMaxchange,
   fetchOrderflow,
   fetchStateMaxchange,
@@ -144,6 +145,16 @@ describe('gexbot-client', () => {
       const url = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0] as string;
       expect(url).toBe('https://api.gex.bot/v2/SPX/state/gex_zero/maxchange');
+    });
+
+    it('fetchClassicBasic hits /{ticker}/classic/{category} (no /maxchange suffix)', async () => {
+      // The basic (non-maxchange) classic endpoint — the only live source
+      // for zero_gamma / sum_gex_* / major_* / delta_risk_reversal. The
+      // /orderflow payload omits them despite the spec listing them.
+      await fetchClassicBasic('s', 'SPX', 'gex_zero');
+      const url = (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0] as string;
+      expect(url).toBe('https://api.gex.bot/v2/SPX/classic/gex_zero');
     });
   });
 

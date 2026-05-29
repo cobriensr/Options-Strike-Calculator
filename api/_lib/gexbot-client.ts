@@ -174,15 +174,40 @@ async function gexbotFetch(
 
 /**
  * GET /{ticker}/orderflow/orderflow — the Orderflow-tier snapshot
- * containing the proprietary scalars (zcvr, zgr, dexoflow, gexoflow,
- * cvroflow, etc.) plus the basic_response fields (spot, zero_gamma,
- * strikes[], delta_risk_reversal). See spec for the full field list.
+ * containing the proprietary flow scalars (zcvr, zgr, dexoflow, gexoflow,
+ * cvroflow, the dex family, and the z-prefixed / o-prefixed moneyness
+ * gammas) plus spot/ticker/timestamp.
+ *
+ * NOTE: the OpenAPI `orderflow_response` schema *lists* zero_gamma,
+ * sum_gex_*, major_*, delta_risk_reversal, and min_dte/sec_min_dte, but the
+ * LIVE payload omits all of them (verified 2026-05-29 — spec-vs-live drift).
+ * Those fields are sourced from `fetchClassicBasic` instead. See
+ * docs/superpowers/specs/gexbot-classic-basic-capture-2026-05-29.md.
  */
 export function fetchOrderflow(
   apiKey: string,
   ticker: GexbotTicker,
 ): Promise<GexbotResponse> {
   return gexbotFetch(apiKey, `/${ticker}/orderflow/orderflow`);
+}
+
+/**
+ * GET /{ticker}/classic/{category} — the basic (non-maxchange) classic
+ * endpoint. Returns the `basic_response` aggregate scalars for one DTE
+ * bucket: zero_gamma (gamma-flip price), sum_gex_vol/oi, major_pos/neg_vol/oi,
+ * delta_risk_reversal, min_dte/sec_min_dte, plus a strikes[] GEX profile.
+ *
+ * This is the live home of the 10 aggregate fields the /orderflow payload
+ * drops. We poll `gex_zero` (0DTE) and merge them into the orderflow
+ * snapshot row. Distinct from `fetchMaxchange` (`/classic/{cat}/maxchange`),
+ * which returns biggest-mover strikes over the lookback windows.
+ */
+export function fetchClassicBasic(
+  apiKey: string,
+  ticker: GexbotTicker,
+  category: MaxchangeCategory,
+): Promise<GexbotResponse> {
+  return gexbotFetch(apiKey, `/${ticker}/classic/${category}`);
 }
 
 /**
