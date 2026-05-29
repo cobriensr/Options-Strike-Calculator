@@ -953,7 +953,7 @@ describe('detect-lottery-fires handler', () => {
     });
     // No Sentry capture — inserted (3) is below the >10 protection floor.
     expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg-classify.high_null_rate',
+      'multileg.classify.high_null_rate',
       expect.anything(),
     );
   });
@@ -981,7 +981,7 @@ describe('detect-lottery-fires handler', () => {
       inserted: 11,
     });
     expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
-      'multileg-classify.high_null_rate',
+      'multileg.classify.high_null_rate',
       expect.objectContaining({
         level: 'warning',
         extra: expect.objectContaining({
@@ -1031,7 +1031,7 @@ describe('detect-lottery-fires handler', () => {
       inserted: 12,
     });
     expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg-classify.high_null_rate',
+      'multileg.classify.high_null_rate',
       expect.anything(),
     );
   });
@@ -1063,7 +1063,7 @@ describe('detect-lottery-fires handler', () => {
       multilegMisses: 1,
     });
     expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg-classify.high_null_rate',
+      'multileg.classify.high_null_rate',
       expect.anything(),
     );
   });

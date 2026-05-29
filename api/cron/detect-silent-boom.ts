@@ -939,7 +939,7 @@ export default withCronInstrumentation(
       multilegTotal > 0 &&
       multilegHits / multilegTotal < 0.5
     ) {
-      Sentry.captureMessage('multileg-classify.high_null_rate', {
+      Sentry.captureMessage('multileg.classify.high_null_rate', {
         level: 'warning',
         extra: {
           cron: 'detect-silent-boom',

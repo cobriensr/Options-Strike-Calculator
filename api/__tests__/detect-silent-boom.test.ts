@@ -1004,7 +1004,7 @@ describe('detect-silent-boom handler', () => {
       multilegMisses: 0,
     });
     expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg-classify.high_null_rate',
+      'multileg.classify.high_null_rate',
       expect.anything(),
     );
   });
@@ -1037,7 +1037,7 @@ describe('detect-silent-boom handler', () => {
       inserted: 11,
     });
     expect(mockSentryCaptureMessage).toHaveBeenCalledWith(
-      'multileg-classify.high_null_rate',
+      'multileg.classify.high_null_rate',
       expect.objectContaining({
         level: 'warning',
         extra: expect.objectContaining({
@@ -1092,7 +1092,7 @@ describe('detect-silent-boom handler', () => {
       inserted: 12,
     });
     expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg-classify.high_null_rate',
+      'multileg.classify.high_null_rate',
       expect.anything(),
     );
   });
@@ -1127,7 +1127,7 @@ describe('detect-silent-boom handler', () => {
       multilegMisses: 1,
     });
     expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
-      'multileg-classify.high_null_rate',
+      'multileg.classify.high_null_rate',
       expect.anything(),
     );
   });
