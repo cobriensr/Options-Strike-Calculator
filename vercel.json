@@ -222,6 +222,10 @@
       "schedule": "0 12 * * *"
     },
     {
+      "path": "/api/cron/audit-gexbot-health",
+      "schedule": "30 22 * * 1-5"
+    },
+    {
       "path": "/api/cron/fetch-net-flow-history",
       "schedule": "25 21 * * 1-5"
     },
