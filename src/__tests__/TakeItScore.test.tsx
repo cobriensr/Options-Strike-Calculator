@@ -168,6 +168,72 @@ describe('<TakeItScore>', () => {
     expect(screen.getByTestId('takeit-score-chip')).toHaveTextContent('0.60');
   });
 
+  describe('chain peak marker (lottery-no-vanish-2026-05-29)', () => {
+    it('shows the peak marker when the chain peaked above the latest fire', () => {
+      // Latest fire cooled to 0.62 but the chain hit 0.78 earlier — the
+      // feed keeps the chain visible on its peak, so the row explains why.
+      render(
+        <TakeItScore
+          prob={0.62}
+          topFeatures={null}
+          peakProb={0.78}
+          peakAt="2026-05-29T14:28:00Z"
+        />,
+      );
+      const marker = screen.getByTestId('takeit-peak-marker');
+      expect(marker).toHaveTextContent('peak 0.78');
+      // 14:28 UTC → 09:28 CT
+      expect(marker).toHaveTextContent('09:28');
+    });
+
+    it('hides the marker when the latest fire IS the peak (single-fire / still hot)', () => {
+      render(<TakeItScore prob={0.78} topFeatures={null} peakProb={0.78} />);
+      expect(
+        screen.queryByTestId('takeit-peak-marker'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('hides the marker when peak rounds equal to the latest (sub-0.01 gap)', () => {
+      render(<TakeItScore prob={0.78} topFeatures={null} peakProb={0.782} />);
+      expect(
+        screen.queryByTestId('takeit-peak-marker'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows the chain peak even when the latest fire prob AND flags are null (real bundle-unreachable shape)', () => {
+      // The production shape of a fire whose model bundle was unreachable
+      // at detect time: takeitProb null AND takeitTopFeatures null. The
+      // chain is still on the feed because an EARLIER fire peaked at 0.71,
+      // so the tile must render the peak marker rather than suppress
+      // itself via the empty-state early return.
+      render(
+        <TakeItScore
+          prob={null}
+          topFeatures={null}
+          peakProb={0.71}
+          peakAt="2026-05-29T13:30:00Z"
+        />,
+      );
+      expect(screen.getByTestId('takeit-peak-marker')).toHaveTextContent(
+        'peak 0.71',
+      );
+    });
+
+    it('still hides the whole tile when prob, flags, AND peak are all absent', () => {
+      const { container } = render(
+        <TakeItScore prob={null} topFeatures={null} peakProb={null} />,
+      );
+      expect(container).toBeEmptyDOMElement();
+    });
+
+    it('omits the timestamp gracefully when peakAt is missing', () => {
+      render(<TakeItScore prob={0.5} topFeatures={null} peakProb={0.72} />);
+      const marker = screen.getByTestId('takeit-peak-marker');
+      expect(marker).toHaveTextContent('peak 0.72');
+      expect(marker).not.toHaveTextContent('@');
+    });
+  });
+
   describe('tooltip plain-language copy', () => {
     it('uses plain-language tooltip for a scored chip', () => {
       render(<TakeItScore prob={0.78} topFeatures={null} />);

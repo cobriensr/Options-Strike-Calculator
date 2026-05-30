@@ -727,6 +727,8 @@ export const LotteryRow = memo(function LotteryRow({
         <TakeItScore
           prob={fire.takeitProb}
           topFeatures={fire.takeitTopFeatures}
+          peakProb={fire.peakTakeitProb}
+          peakAt={fire.peakTakeitAt}
           expanded
         />
         {/* Sibling-asset confirmation bar (gexbot-frontend spec Phase 4).

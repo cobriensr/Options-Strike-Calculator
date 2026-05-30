@@ -45,12 +45,37 @@ export interface TakeItScoreProps {
   compact?: boolean;
   /** Expanded mode appends an inline flag list. */
   expanded?: boolean;
+  /**
+   * Chain-level PEAK Take-It probability (MAX over all fires in the
+   * chain). When this is meaningfully above the displayed `prob`, the
+   * chain qualified for the feed on an earlier, hotter fire but the
+   * latest fire has cooled off — we badge "peak 0.XX @ HH:MM" so the
+   * trader sees why a now-cooler chain is still on the list (the feed
+   * gates on the peak, not the latest fire — spec
+   * lottery-no-vanish-2026-05-29.md).
+   */
+  peakProb?: number | null;
+  /** ISO timestamp of the fire that hit `peakProb`. */
+  peakAt?: string | null;
 }
 
 /** Human-readable two-decimal probability or "—" when missing. */
 function formatProb(prob: number | null | undefined): string {
   if (prob == null || Number.isNaN(prob)) return '—';
   return prob.toFixed(2);
+}
+
+/** HH:MM in Central Time, or '' when the timestamp is missing/invalid. */
+function formatPeakTimeCt(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'America/Chicago',
+  });
 }
 
 /**
@@ -153,16 +178,39 @@ function FlagChips({
 }
 
 function TakeItScoreInner(props: TakeItScoreProps) {
-  const { prob, topFeatures, compact = false, expanded = false } = props;
+  const {
+    prob,
+    topFeatures,
+    compact = false,
+    expanded = false,
+    peakProb,
+    peakAt,
+  } = props;
   const parsed = parseTopFeatures(topFeatures);
+  // Show the peak marker only when the chain peaked meaningfully above
+  // the latest fire's prob (≥ 0.01 at 2-dp display resolution). Equal /
+  // latest-is-peak chains don't need it. `prob == null` (bundle missing
+  // on the latest fire) still benefits from showing the chain's peak.
+  const peakRounded = peakProb != null ? Number(peakProb.toFixed(2)) : null;
+  const probRounded = prob != null ? Number(prob.toFixed(2)) : null;
+  const showPeak =
+    peakRounded != null && (probRounded == null || peakRounded > probRounded);
+  const peakTime = showPeak ? formatPeakTimeCt(peakAt) : '';
+  // Built outside the JSX to avoid a nested template literal (SonarJS).
+  const peakWhen = peakTime ? ` at ${peakTime} CT` : '';
+  const peakTitle = showPeak
+    ? `Chain peaked at TAKE-IT ${peakRounded!.toFixed(2)}${peakWhen}. The feed keeps a chain visible on its peak (not the latest fire), so it never disappears intraday once it clears the floor.`
+    : undefined;
   const cls = takeitProbClass(prob);
   const padding = compact ? 'px-1.5 py-0.5' : 'px-2 py-1';
   const labelPrefix = compact ? '' : 'Take-It ';
 
-  // Hide entirely when prob is null AND no flags — nothing useful to show.
-  // (When prob is null but flags exist, that's an inconsistent DB state worth
-  // surfacing; same applies the other way.)
-  if (prob == null && parsed == null) return null;
+  // Hide entirely when there's nothing useful to show: no latest-fire
+  // prob, no flags, AND no chain peak to surface. When `showPeak` is true
+  // the chain is on the feed BECAUSE of its peak (the latest fire's
+  // bundle was unreachable, so prob/flags are both null) — keep the tile
+  // so the peak marker still renders and explains its presence.
+  if (prob == null && parsed == null && !showPeak) return null;
 
   return (
     <div
@@ -181,6 +229,16 @@ function TakeItScoreInner(props: TakeItScoreProps) {
         <span className="opacity-70">{labelPrefix}</span>
         <span className="tabular-nums">{formatProb(prob)}</span>
       </span>
+      {showPeak && (
+        <span
+          className="inline-flex items-center gap-1 rounded border border-emerald-700/50 bg-emerald-950/30 px-1.5 py-0.5 text-[10px] font-medium tracking-wide text-emerald-300/90 uppercase"
+          title={peakTitle}
+          data-testid="takeit-peak-marker"
+        >
+          peak {peakRounded!.toFixed(2)}
+          {peakTime && <span className="opacity-70">@ {peakTime}</span>}
+        </span>
+      )}
       {prob != null && parsed == null && (
         <span
           className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-[10px] text-neutral-500"

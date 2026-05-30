@@ -230,6 +230,18 @@ export interface LotteryFire {
    */
   takeitProb?: number | null;
   /**
+   * Chain-level PEAK Take-It probability — MAX(takeit_prob) over every
+   * fire in this (ticker, strike, type, expiry) chain today. The feed
+   * gates a chain on this peak (not the latest fire's prob) so it never
+   * disappears intraday once it clears the floor (spec
+   * lottery-no-vanish-2026-05-29.md). When the latest fire's `takeitProb`
+   * is below this peak, the row badges "peak TAKE-IT 0.XX @ HH:MM" so the
+   * trader sees why a now-cooler chain is still shown.
+   */
+  peakTakeitProb?: number | null;
+  /** ISO timestamp of the fire that hit `peakTakeitProb`. */
+  peakTakeitAt?: string | null;
+  /**
    * SHAP top-3 green + top-3 red flags as JSON. NULL until the Phase 3d
    * SHAP fill cron has back-populated it (~2 min after fire).
    */
