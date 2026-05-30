@@ -35,9 +35,10 @@ Each held contract is a per-minute sequence of HOLD/EXIT choices — an optimal-
 Because the full historical post-entry path is known, the future-from-any-point is known, so the
 stopping boundary is learnable and the policy is honestly backtestable.
 
-- **Primary objective (Phase 1):** maximize **summed realized R across all trades**, out-of-sample,
-  walk-forward. The tail dominates; the engine may give back on a winner if that's the price of
-  catching the runner.
+- **Primary objective (Phase 1):** maximize **summed realized R across all trades, equal-weighted per
+  trade**, out-of-sample, walk-forward. (Equal-weight ≈ real P&L because the owner stakes roughly equal
+  dollars per lottery — see Scorecard weighting.) The tail dominates; the engine may give back on a
+  winner if that's the price of catching the runner.
 - **Frontier (Phase 2):** maximize `realized_R − λ · giveback_from_peak − (downside term)`, sweeping
   λ from 0 upward. Report the full frontier so a *followable* operating point can be chosen — the
   cost of protecting gains is measured, not assumed.
@@ -48,15 +49,29 @@ stopping boundary is learnable and the policy is honestly backtestable.
 At minute *t* (relative to entry), build causal features; the supervised target is the
 **future behaviour of the executable-mid path from *t* onward.** Default framing:
 
-- **Classification:** `P(future_max_mid_return_from_t − current_return_t ≥ δ)` — probability that
-  meaningful further upside remains. Exit at the first minute the score drops below a tuned threshold
-  (with an arming guard so we don't exit on minute-1 noise).
-- **Alternative (decided in plan):** regression on `log1p(future_max_return_from_t)`; exit when
-  predicted future max no longer exceeds current + cost. `log1p(peak)` is the most predictable target
-  per prior EDA, so this stays a live option.
+**Upside is measured from the current mark, not from entry** (resolved 2026-05-29). What's at risk
+when deciding to hold is the contract's *current* value, so "how much higher from here" is the honest
+quantity — and it stays meaningful whether the trade is +10% or +800% (a move from $9 → $10 on an
++800% winner is only +11% from here, not "+100 points"). All targets below use forward move from the
+current price.
+
+- **Classification:** `P(price rises ≥ θ% above the current mark before the path ends)`. Exit at the
+  first minute the score drops below a tuned threshold (with an arming guard so we don't exit on
+  minute-1 noise).
+- **Alternative (decided in plan):** regression on `log1p(future_max_mid / current_mid)` — "how much
+  higher from here." `log1p` of the forward max is the most predictable target per prior EDA, so this
+  stays a live option. Exit when predicted forward upside no longer exceeds holding cost.
 
 Greedy stopping (exit at first sub-threshold minute) is an approximation to true optimal stopping —
 accepted for v1; the exit threshold is tuned directly on the Phase-1 objective on train folds.
+
+**Mode B — the overnight decision is its own model (resolved 2026-05-29).** Multi-day trades can't be
+managed minute-by-minute overnight (market closed), so the "carry into tomorrow vs flatten before the
+close" call is a **separate, once-per-day, end-of-day decision** trained and tuned on its own — it
+answers a structurally different question (time left on the option, close-strength, overnight gap
+risk) than the intraday "still climbing?" model. This decision targets the headline pain ("should've
+held one more day") directly. The intraday per-minute model is shared across modes A and B; the EOD
+carry model fires only for mode-B positions still open near the close.
 
 **Baseline — parametric dynamic-rule family.**
 Generalize the shipped exits into one searchable rule: trail activation `A%`, trail width `W%`
@@ -159,24 +174,26 @@ plots in `ml/plots/`.
 
 - `COMMISSION_USD_PER_CONTRACT_RT = 0.65` (round-trip).
 - `SLIPPAGE_PCT_OF_SPREAD = 0.5` per leg → total `2 × 0.5 × spread_pct_of_price`. Exits on **NBBO mid**.
-- `δ` (minimum "meaningful further upside" for the classification target) — **open**, default start
-  **+25pp** of remaining upside; swept in A3.
+- `θ` (minimum meaningful further upside, **measured from the current mark** — forward % move from
+  where the contract is *now*, not from entry) — default **+15%**, swept in A3.
 - Exit-score threshold, trail `A`/`W`, hard-stop `M`, walk-forward train/test block sizes — all tuned
   in-phase; record final values here when locked.
 - `λ` frontier grid — set in A4; start at 0 (pure expectancy).
 
 ## Open questions (with default picks)
 
-1. **Classification vs regression target** for the brain → default **classification** (`P(≥δ upside
-   remains)`); regression on `log1p(peak)` benchmarked in A3.
-2. **`δ` value** → default **+25pp**, swept.
-3. **Mode-B overnight modeling** — single cross-session path with an overnight-state feature
-   (default) vs separate intraday-vs-overnight sub-models. Default: **one model + overnight flag**;
-   revisit if mode B underperforms.
-4. **Training depth** — how far back `-fulltape` parquet is usable/clean for path reconstruction
-   (sets walk-forward fold count). Resolve empirically in A1.
-5. **Per-fire vs per-day-fold weighting** — whether to weight trades by premium/size so the tail
-   isn't drowned by fizzlers. Default: report both equal-weight and size-weight realized R.
+1. **Reference frame** → **RESOLVED 2026-05-29: measure forward upside from the current mark, not
+   from entry.** Classification-vs-regression target form and the exact threshold are tuning details
+   resolved during the build (A3), not pre-committed here.
+2. **Mode-B overnight modeling** → **RESOLVED 2026-05-29: a dedicated end-of-day "carry vs flatten"
+   model**, separate from the intraday per-minute model (see Model & baseline). Aimed straight at the
+   "should've held one more day" leak.
+3. **Training depth** → **RESOLVED 2026-05-29: 90+ days of parquet full-tape confirmed available and
+   sufficient.** A1 still reports the exact clean day count (sets walk-forward fold count), but data
+   volume is not a constraint.
+4. **Scorecard weighting** → **RESOLVED 2026-05-29: equal-weight per-trade % return.** The owner sizes
+   each lottery to roughly equal dollars (entry price sets contract count, dollar stake ~constant), so
+   equal-weight % return ≈ real account P&L. No size-weighting in the primary metric.
 
 ## Out of scope (later projects)
 
