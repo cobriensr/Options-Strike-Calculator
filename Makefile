@@ -343,7 +343,10 @@ ingest-fulltape:
 # parquet is still on disk. `nightly` auto-dispatches into this when
 # the CSV gate fails but a parquet exists.
 nightly-resume: plots backfill-flow enrich
-	@# No prereq on the CSV — assumes ingest already happened.
+	@# No prereq on the CSV — assumes ingest already happened. Regenerate the
+	@# cumulative rollup too, so a parquet-only resume produces the same closing
+	@# artifacts as a full CSV run. Idempotent: reads the by-day parquets only.
+	$(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only
 
 nightly:
 ifdef DATE_EXPLICIT
@@ -355,8 +358,12 @@ ifdef DATE_EXPLICIT
 	  $(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only; \
 	  $(MAKE) --no-print-directory plots; \
 	elif ls -1 $(PARQUET_DIR)/$(DATE)-trades.parquet >/dev/null 2>&1; then \
-	  echo "  CSV gone but parquet on disk — running backfill-flow + enrich + plots only for $(DATE)"; \
-	  $(MAKE) --no-print-directory backfill-flow-one enrich-one plots DATE=$(DATE); \
+	  echo "  CSV gone but parquet on disk — replaying parquet for $(DATE) (idempotent)"; \
+	  $(MAKE) --no-print-directory backfill-flow-one enrich-one DATE=$(DATE); \
+	  echo ""; \
+	  echo "═══ Closing pass (cumulative rollup + plots) ═══"; \
+	  $(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only; \
+	  $(MAKE) --no-print-directory plots; \
 	else \
 	  echo "❌ Neither $(CSV_PATH) nor $(PARQUET_DIR)/$(DATE)-trades.parquet exists."; \
 	  exit 2; \
