@@ -530,6 +530,10 @@ export function LotteryFinderSection({
     [lotteryFinder.data],
   );
   const total = lotteryFinder.data?.total ?? 0;
+  // Chains hidden by the server-side Q1/Q2 inversion-quality suppression.
+  // `total` now excludes these (server counts the reachable set), so we
+  // surface this separately as a "(N hidden by quality filter)" hint.
+  const suppressedCount = lotteryFinder.data?.suppressedCount ?? 0;
   const offset = lotteryFinder.data?.offset ?? 0;
   const hasMore = lotteryFinder.data?.hasMore ?? false;
 
@@ -1469,15 +1473,16 @@ export function LotteryFinderSection({
                   </button>
                 </p>
               </>
-            ) : !showFilteredTickers && total > 0 ? (
+            ) : !showFilteredTickers && suppressedCount > 0 ? (
               <>
-                {total} fire{total === 1 ? '' : 's'} for {date} matched the
-                filters but every one was suppressed by the inversion-quality
-                filter (bottom-quintile ticker). Toggle{' '}
+                {suppressedCount} chain{suppressedCount === 1 ? '' : 's'} for{' '}
+                {date} matched the filters but{' '}
+                {suppressedCount === 1 ? 'was' : 'were'} hidden by the
+                inversion-quality filter (bottom-quintile ticker). Toggle{' '}
                 <span className="font-medium text-neutral-200">
                   Show filtered tickers
                 </span>{' '}
-                in the MODE row to view them.
+                in the MODE row to view {suppressedCount === 1 ? 'it' : 'them'}.
               </>
             ) : reloadOnly || cheapCallPmOnly || modeFilter ? (
               <>
@@ -1512,6 +1517,14 @@ export function LotteryFinderSection({
                 {total > 0 && (
                   <span className="ml-2 text-neutral-600">
                     showing {filteredFires.length} of {total}
+                  </span>
+                )}
+                {suppressedCount > 0 && !showFilteredTickers && (
+                  <span
+                    className="ml-2 text-neutral-600"
+                    title="Chains in bottom-quintile (Q1/Q2) inversion-quality tickers, hidden by default. Toggle “Show filtered tickers” in the MODE row to include them."
+                  >
+                    ({suppressedCount} hidden by quality filter)
                   </span>
                 )}
                 {convictionFloor !== 'all' && (

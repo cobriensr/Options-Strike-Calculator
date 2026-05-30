@@ -412,8 +412,19 @@ export interface LotteryFinderResponse {
   };
   /** Number of fires actually returned in this response (≤ limit). */
   count: number;
-  /** Total matching rows BEFORE limit/offset — for "page X of Y" UI. */
+  /**
+   * Total REACHABLE chains BEFORE limit/offset — for "page X of Y" UI.
+   * Excludes chains hidden by the Q1/Q2 inversion-quality suppression
+   * (those are counted in `suppressedCount`), so the page counter never
+   * implies missing fires.
+   */
   total: number;
+  /**
+   * Chains that matched every other filter but were hidden by the Q1/Q2
+   * inversion-quality suppression (0 when the "Show filtered tickers"
+   * toggle is on). Surfaced as a "(N hidden by quality filter)" hint.
+   */
+  suppressedCount?: number;
   /** The effective limit applied. */
   limit: number;
   /** Page offset (0 = first page). */

@@ -560,6 +560,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
+          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -658,6 +659,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
+          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -755,6 +757,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
+          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -796,12 +799,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${minPremium}::numeric IS NULL OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric)
         )
         -- Count chains (rn=1) whose CHAIN-MAX TAKE-IT passes the floor
-        -- (chain_max_takeit, not the rep row's takeit_prob) so the count
-        -- mirrors the row queries' monotonic gating exactly — total and
-        -- displayed page rows always match. fc (window-function fire
-        -- count) gates the Burst chip the same way the rows do.
-        SELECT COUNT(*)::int AS total
+        -- (chain_max_takeit, not the rep row takeit_prob) so the count
+        -- mirrors the row queries monotonic gating exactly. The Q1/Q2
+        -- inversion-quality suppression is applied here too (same LEFT
+        -- JOIN + quintile predicate as the row queries) so total is the
+        -- REACHABLE chain count, not an overcount. suppressed carries
+        -- how many otherwise-matching chains the quality filter hid, for
+        -- the UI hidden-by-quality-filter hint.
+        SELECT
+          COUNT(*) FILTER (
+            WHERE ${showAll ?? false}::boolean
+              OR s.inversion_quintile IS NULL
+              OR s.inversion_quintile > 2
+          )::int AS total,
+          COUNT(*) FILTER (
+            WHERE NOT (
+              ${showAll ?? false}::boolean
+              OR s.inversion_quintile IS NULL
+              OR s.inversion_quintile > 2
+            )
+          )::int AS suppressed
         FROM ranked
+        LEFT JOIN lottery_ticker_stats s ON s.ticker = ranked.underlying_symbol
         WHERE rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR fc >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR chain_max_takeit >= ${minTakeitProb}::numeric)
@@ -1087,6 +1106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
+          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
         ORDER BY f.trigger_time_ct DESC, f.id DESC
       `,
         [] as FireRow[],
@@ -1116,7 +1136,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ),
     ])) as [
       FireRow[],
-      { total: number }[],
+      { total: number; suppressed: number }[],
       ChainExtrasRow[],
       ClusterByMinuteRow[],
       { option_chain_id: string }[],
@@ -1125,6 +1145,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ];
 
     const total = totalRows[0]?.total ?? 0;
+    const suppressedCount = totalRows[0]?.suppressed ?? 0;
 
     // Build the suspicious-cluster lookup from the day-scoped 0DTE scan.
     // clusterLookup is keyed by clusterKey(symbol, side) with value =
@@ -1582,27 +1603,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
     };
 
-    // Phase 3 inversion-quality filter: drop fires whose ticker is in
-    // inversion quintile 1 or 2 unless ?showAll=true is passed. NULL
-    // quintile (cold-start tickers) is never filtered. The filter is
-    // applied post-SELECT in JS — the SQL COUNT(*) `total` does NOT
-    // include this filter. `hasMore` is computed against the pre-filter
-    // SQL window length (`rows.length`) so it matches the SQL pagination
-    // cleanly; `count` reflects the post-filter page that's actually
-    // returned. The visible tradeoff is that `total` overstates the
-    // displayed-feed size when many Q1/Q2 rows exist — Phase 4 can
-    // surface a "showing N of M after quality filter" hint.
-    const passesQuintileFilter = (
-      f: ReturnType<typeof toLotteryFire>,
-    ): boolean =>
-      showAll || f.inversionQuintile == null || f.inversionQuintile > 2;
-    const fires = rows.map(toLotteryFire).filter(passesQuintileFilter);
+    // Inversion-quality (Q1/Q2) suppression now runs in SQL on BOTH the
+    // row queries and the COUNT(*) totals (LEFT JOIN lottery_ticker_stats
+    // + `${showAll} OR inversion_quintile IS NULL OR inversion_quintile >
+    // 2`). So `total` is the reachable chain count, LIMIT/OFFSET slice
+    // full pages of reachable chains, and `hasMore` matches — no more
+    // "showing 35 of 66" overcount. `suppressedCount` (from the same
+    // count query) reports how many otherwise-matching chains the filter
+    // hid so the UI can surface a hint instead of silently dropping them.
+    // NULL quintile (cold-start tickers) is never suppressed.
+    const fires = rows.map(toLotteryFire);
     // Pinned reignited rows ride alongside the page slice, independent
     // of pagination. The SQL already orders by trigger_time_ct DESC, so
     // the array is freshest-first ready for ReignitionSection.
-    const reignitedFires = reignitedRows
-      .map(toLotteryFire)
-      .filter(passesQuintileFilter);
+    const reignitedFires = reignitedRows.map(toLotteryFire);
 
     // No CDN cache — the feed is an alert surface and the UI polls
     // every 30s. Caching at the edge means most polls land on a stale
@@ -1631,6 +1645,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // page-N-of-M display + prev/next controls.
       count: fires.length,
       total,
+      // Chains that matched every other filter but were hidden by the
+      // Q1/Q2 inversion-quality suppression (0 when ?showAll=true). Lets
+      // the UI show "(N hidden by quality filter)" instead of leaving the
+      // user wondering why total < the raw fire count.
+      suppressedCount,
       limit,
       offset,
       hasMore: offset + rows.length < total,

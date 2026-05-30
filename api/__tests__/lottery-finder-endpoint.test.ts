@@ -1619,36 +1619,58 @@ describe('lottery-finder endpoint', () => {
       ticker_inversion_quintile: quintile as never,
     });
 
-    it('suppresses Q1 and Q2 by default; Q3 + null pass through', async () => {
+    it('applies Q1/Q2 suppression in SQL by default (not post-SELECT JS) and surfaces suppressedCount', async () => {
+      // Phase 2 (spec lottery-no-vanish-2026-05-29.md) moved the
+      // inversion-quality suppression from a post-SELECT JS filter into
+      // the SQL — on BOTH the row queries and the COUNT(*) totals — so
+      // `total`/`hasMore` reflect the reachable set and the page counter
+      // never implies missing fires. The mock can't enforce a WHERE, so
+      // we assert (a) the generated SQL carries the quintile predicate,
+      // (b) the handler no longer JS-filters rows (all mocked rows pass
+      // through), and (c) suppressedCount comes straight from the count
+      // query.
       const rows = [
         rowWithQuintile(1, 'AAA', 1),
         rowWithQuintile(2, 'BBB', 2),
         rowWithQuintile(3, 'CCC', 3),
         rowWithQuintile(4, 'DDD', null),
       ];
-      mockSql.mockResolvedValueOnce(rows).mockResolvedValueOnce([{ total: 4 }]);
+      mockSql
+        .mockResolvedValueOnce(rows)
+        .mockResolvedValueOnce([{ total: 2, suppressed: 2 }]);
 
       const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
       const res = mockResponse();
       await handler(req, res);
 
+      const allSql = mockSql.mock.calls
+        .map((c) => (Array.isArray(c[0]) ? (c[0] as string[]).join('?') : ''))
+        .join('\n');
+      // Quintile predicate present (row queries + count query).
+      expect(allSql).toContain('inversion_quintile > 2');
+      expect(allSql).toContain('inversion_quintile IS NULL');
+      // No post-SELECT JS filter — every mocked row passes through; the
+      // SQL (not the handler) drops Q1/Q2.
       const body = res._json as {
         count: number;
-        fires: Array<{ id: number; underlyingSymbol: string }>;
+        total: number;
+        suppressedCount: number;
+        fires: Array<{ underlyingSymbol: string }>;
       };
-      const tickers = body.fires.map((f) => f.underlyingSymbol).sort();
-      expect(tickers).toEqual(['CCC', 'DDD']);
-      expect(body.count).toBe(2);
+      expect(body.fires.map((f) => f.underlyingSymbol).sort()).toEqual([
+        'AAA',
+        'BBB',
+        'CCC',
+        'DDD',
+      ]);
+      expect(body.total).toBe(2);
+      expect(body.suppressedCount).toBe(2);
     });
 
-    it('?showAll=true returns all rows including Q1 and Q2', async () => {
-      const rows = [
-        rowWithQuintile(1, 'AAA', 1),
-        rowWithQuintile(2, 'BBB', 2),
-        rowWithQuintile(3, 'CCC', 3),
-        rowWithQuintile(4, 'DDD', null),
-      ];
-      mockSql.mockResolvedValueOnce(rows).mockResolvedValueOnce([{ total: 4 }]);
+    it('?showAll=true passes the bypass boolean into the SQL', async () => {
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 1)])
+        .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]);
 
       const req = mockRequest({
         method: 'GET',
@@ -1657,17 +1679,16 @@ describe('lottery-finder endpoint', () => {
       const res = mockResponse();
       await handler(req, res);
 
-      const body = res._json as {
-        count: number;
-        fires: Array<{ id: number; underlyingSymbol: string }>;
-      };
-      expect(body.fires.map((f) => f.underlyingSymbol).sort()).toEqual([
-        'AAA',
-        'BBB',
-        'CCC',
-        'DDD',
-      ]);
-      expect(body.count).toBe(4);
+      // showAll=true is interpolated into the quintile predicate so it
+      // short-circuits to TRUE (no suppression). Assert the boolean true
+      // reached the SQL params.
+      expect(
+        mockSql.mock.calls.some((c) =>
+          (c as unknown[]).slice(1).includes(true),
+        ),
+      ).toBe(true);
+      const body = res._json as { suppressedCount: number };
+      expect(body.suppressedCount).toBe(0);
     });
 
     it('NULL quintile is never filtered (cold-start protection)', async () => {
