@@ -20,9 +20,12 @@ import sys
 import urllib.parse
 from datetime import UTC, date as dt_date, datetime, time
 from pathlib import Path
+from typing import Callable
 
 import polars as pl
 import requests
+
+from _pipeline_retry import is_retryable_http_status, retry_call
 
 # --- Schema (frozen — pinned to docs/superpowers/specs/options-flow-archive-2026-04-28.md) ---
 
@@ -197,6 +200,50 @@ def _put_option_headers(token: str) -> dict[str, str]:
     }
 
 
+# Vercel Blob / CDN can throw transient 429/5xx and socket-level errors on a
+# ~550 MB multipart upload. Without retry, one blip on any of the ~11 sequential
+# part POSTs aborts the whole upload (and the source CSV is preserved, so it just
+# means a manual re-run). These wrappers back off on transient HTTP statuses and
+# requests transport errors; a permanent non-2xx still raises RuntimeError.
+_RETRYABLE_REQUESTS_EXC = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+
+class _TransientHTTP(RuntimeError):
+    """Retryable HTTP status — signals retry_call to back off and retry."""
+
+
+def _request_with_retry(
+    send: Callable[[], requests.Response], *, label: str
+) -> requests.Response:
+    """Run send() (-> Response) with backoff on transient statuses/transport errors.
+
+    Returns the Response (2xx or permanent non-2xx); the caller still inspects
+    resp.ok and raises its own RuntimeError on a permanent failure. send() must
+    be idempotent across calls — callers streaming a file body must seek(0)
+    inside send() so a retry re-reads from the start.
+    """
+
+    def _attempt() -> requests.Response:
+        resp = send()
+        if not resp.ok and is_retryable_http_status(resp.status_code):
+            raise _TransientHTTP(
+                f"{label} transient {resp.status_code}: {resp.text[:200]}"
+            )
+        return resp
+
+    return retry_call(
+        _attempt,
+        retryable=lambda exc: isinstance(
+            exc, (_TransientHTTP, *_RETRYABLE_REQUESTS_EXC)
+        ),
+        label=label,
+    )
+
+
 def _upload_singleshot(parquet_path: Path, pathname: str, token: str) -> dict:
     """Single-shot PUT for files under MULTIPART_THRESHOLD."""
     size = parquet_path.stat().st_size
@@ -208,12 +255,16 @@ def _upload_singleshot(parquet_path: Path, pathname: str, token: str) -> dict:
         "content-type": "application/vnd.apache.parquet",
     }
     with parquet_path.open("rb") as f:
-        resp = requests.put(
-            f"{BLOB_API_BASE}/?{qs}",
-            headers=headers,
-            data=f,
-            timeout=BLOB_UPLOAD_TIMEOUT_S,
-        )
+        def _send() -> requests.Response:
+            f.seek(0)  # rewind so a retry re-reads the full body
+            return requests.put(
+                f"{BLOB_API_BASE}/?{qs}",
+                headers=headers,
+                data=f,
+                timeout=BLOB_UPLOAD_TIMEOUT_S,
+            )
+
+        resp = _request_with_retry(_send, label="Blob single-shot upload")
     if not resp.ok:
         raise RuntimeError(
             f"Blob upload failed ({resp.status_code}): {resp.text[:500]}"
@@ -232,8 +283,11 @@ def _mpu_create(pathname: str, token: str) -> dict:
     """Initiate multipart upload — returns {key, uploadId}."""
     qs = urllib.parse.urlencode({"pathname": pathname})
     headers = {**_put_option_headers(token), "x-mpu-action": "create"}
-    resp = requests.post(
-        f"{BLOB_API_BASE}/mpu?{qs}", headers=headers, timeout=60
+    resp = _request_with_retry(
+        lambda: requests.post(
+            f"{BLOB_API_BASE}/mpu?{qs}", headers=headers, timeout=60
+        ),
+        label="mpu create",
     )
     if not resp.ok:
         raise RuntimeError(
@@ -260,11 +314,15 @@ def _mpu_upload_part(
         "x-mpu-part-number": str(part_number),
         "content-length": str(len(body)),
     }
-    resp = requests.post(
-        f"{BLOB_API_BASE}/mpu?{qs}",
-        headers=headers,
-        data=body,
-        timeout=BLOB_UPLOAD_TIMEOUT_S,
+    # body is bytes already in memory, so a retry re-sends it safely.
+    resp = _request_with_retry(
+        lambda: requests.post(
+            f"{BLOB_API_BASE}/mpu?{qs}",
+            headers=headers,
+            data=body,
+            timeout=BLOB_UPLOAD_TIMEOUT_S,
+        ),
+        label=f"mpu part {part_number}",
     )
     if not resp.ok:
         raise RuntimeError(
@@ -289,8 +347,11 @@ def _mpu_complete(
         "x-mpu-upload-id": upload_id,
         "content-type": "application/json",
     }
-    resp = requests.post(
-        f"{BLOB_API_BASE}/mpu?{qs}", headers=headers, json=parts, timeout=60
+    resp = _request_with_retry(
+        lambda: requests.post(
+            f"{BLOB_API_BASE}/mpu?{qs}", headers=headers, json=parts, timeout=60
+        ),
+        label="mpu complete",
     )
     if not resp.ok:
         raise RuntimeError(

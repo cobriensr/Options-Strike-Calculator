@@ -57,8 +57,19 @@ echo "→ GET $URL"
 # 600s timeout because full tape can be multi-GB; UW's CDN streams it
 # slowly. -L follows any redirects. -sS keeps it quiet but surfaces
 # real errors. The token is passed via header, never in the URL.
+#
+# --retry covers the transient cases natively: curl retries on 408/429/5xx
+# and (with --retry-connrefused) connection-refused, with 5,10,20,40,80s
+# backoff capped at --retry-max-time. Deliberately NOT --retry-all-errors:
+# the common "zip not posted yet" 404 must fail FAST to the handler below,
+# not burn 5 retries. A real 403 (no subscription) also isn't retried by
+# curl, so it fails fast — correct for this best-effort, soft-failed step.
 HTTP_CODE=$(curl -sS -L \
   --max-time 600 \
+  --retry 5 \
+  --retry-delay 5 \
+  --retry-max-time 120 \
+  --retry-connrefused \
   -H "Authorization: Bearer $UW_API_KEY" \
   -o "$TMP_ZIP" \
   -w '%{http_code}' \

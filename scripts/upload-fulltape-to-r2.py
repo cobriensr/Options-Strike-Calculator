@@ -40,7 +40,7 @@ from pathlib import Path
 
 import boto3
 from botocore.client import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 
 KEY_PREFIX = "fulltape/"
@@ -89,7 +89,16 @@ def make_client():
         # Force path-style addressing for non-AWS S3-compatible stores.
         # The boto default would try virtual-hosted-style which R2's
         # endpoint doesn't support cleanly when the bucket name has dots.
-        config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        #
+        # Adaptive retries (5 attempts) cover BOTH list_objects_v2 and
+        # upload_file at the botocore layer — transient R2 throttling (429)
+        # and 5xx are retried with client-side rate limiting before any
+        # exception surfaces to our handler below.
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+            retries={"max_attempts": 5, "mode": "adaptive"},
+        ),
     )
 
 
@@ -194,7 +203,11 @@ def main() -> int:
                 Key=key,
                 ExtraArgs={"ContentType": "application/x-parquet"},
             )
-        except ClientError as e:
+        except (ClientError, BotoCoreError) as e:
+            # Catch BotoCoreError too — transient transport failures
+            # (EndpointConnectionError, ReadTimeoutError, ConnectTimeoutError)
+            # are NOT ClientError subclasses and would otherwise crash the
+            # whole batch after botocore exhausts its own retries.
             # Don't abandon the batch — every upload is idempotent (skip-if-
             # present), so we record the failure and keep going. Operator gets
             # a full list at the end and can re-run to retry just the failures.
