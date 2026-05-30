@@ -45,6 +45,7 @@ and `make` aborted the night.
 ### Phase 1 — Shared retry helper + UW REST fix (the reported bug)
 
 Files:
+
 - CREATE `scripts/_pipeline_retry.py` — transport-agnostic helpers:
   - `RETRYABLE_HTTP_STATUS` frozenset
   - `retry_call(fn, *, attempts, base_delay, max_delay, retryable, label, sleep)`
@@ -59,6 +60,7 @@ Files:
 ### Phase 2 — Blob / R2 / curl (the other network calls)
 
 Files:
+
 - MODIFY `scripts/ingest-flow.py` — wrap the single-shot PUT + all 3 multipart
   POSTs in `retry_call`, catching `requests` 5xx/429 + `ConnectionError`/`Timeout`/
   `ChunkedEncodingError`. Preserve the CSV-deletion-only-after-clean-upload guard.
@@ -73,6 +75,7 @@ Files:
 ### Phase 3 — Neon DB connect retry + Makefile loop isolation
 
 Files:
+
 - MODIFY `ml/src/utils/__init__.py` — `get_connection` retries transient
   connect errors before its existing `sys.exit(1)` (covers `takeit_drift_monitor.py`,
   `lottery_scoring.py`). No semantic change on permanent failure.

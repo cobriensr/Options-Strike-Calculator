@@ -41,6 +41,8 @@ from pathlib import Path
 import pandas as pd
 import psycopg2
 
+from _pipeline_retry import connect_with_retry
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -121,7 +123,7 @@ def fetch_today_fires() -> pd.DataFrame:
         sys.exit("DATABASE_URL not set — run load_env() first")
 
     print("Connecting to database...")
-    conn = psycopg2.connect(db_url, sslmode="require", connect_timeout=15)
+    conn = connect_with_retry(db_url, sslmode="require", connect_timeout=15)
     print("Fetching today's fires...")
     df = pd.read_sql_query(TODAY_QUERY, conn)
     conn.close()

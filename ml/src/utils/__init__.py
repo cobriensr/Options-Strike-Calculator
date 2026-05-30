@@ -8,6 +8,7 @@ used across clustering.py, eda.py, and visualize.py.
 import json
 import os
 import sys
+import time
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
@@ -234,20 +235,43 @@ def load_env() -> dict[str, str]:
 
 
 def get_connection() -> psycopg2.extensions.connection:
-    """Get a Postgres connection with error handling."""
+    """Get a Postgres connection, retrying transient Neon blips.
+
+    Neon's serverless Postgres has multi-hour windows where connect() raises
+    OperationalError/InterfaceError. Retry with bounded exponential backoff
+    (6 attempts: 1,2,4,8,16,32s) so a single blip can't abort `make update`.
+    A permanent failure (bad URL/auth) still exits 1 after the last attempt —
+    semantics unchanged, we only paper over the transient case.
+
+    Mirrors scripts/_pipeline_retry.connect_with_retry; kept inline here
+    because ml/src/ and scripts/ aren't on a shared import path at runtime.
+    """
     env = load_env()
     database_url = env.get("DATABASE_URL", "")
     if not database_url:
         print("Error: DATABASE_URL not found in .env")
         sys.exit(1)
 
-    try:
-        conn = psycopg2.connect(database_url, sslmode="require", connect_timeout=10)
-    except psycopg2.OperationalError as e:
-        print(f"Error: Could not connect to database: {e}")
-        print("  Check DATABASE_URL in .env and network connectivity.")
-        sys.exit(1)
-    return conn
+    attempts = 6
+    for attempt in range(attempts):
+        try:
+            return psycopg2.connect(
+                database_url, sslmode="require", connect_timeout=10
+            )
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            if attempt == attempts - 1:
+                print(f"Error: Could not connect to database: {e}")
+                print("  Check DATABASE_URL in .env and network connectivity.")
+                sys.exit(1)
+            wait = min(60, 2**attempt)
+            print(
+                f"  [retry] DB connect attempt {attempt + 1}/{attempts} failed "
+                f"({type(e).__name__}); retrying in {wait}s...",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
+    # Unreachable: the loop returns a connection or sys.exit()s.
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def load_data(query: str) -> pd.DataFrame:

@@ -41,6 +41,8 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 
+from _pipeline_retry import connect_with_retry
+
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 PARQUET_DIR = Path.home() / 'Desktop' / 'Bot-Eod-parquet'
@@ -261,8 +263,12 @@ def main() -> None:
     args = parser.parse_args()
 
     load_env()
-    db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
-    conn = psycopg2.connect(db_url)
+    db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get(
+        'DATABASE_URL'
+    )
+    if not db_url:
+        sys.exit('DATABASE_URL_UNPOOLED / DATABASE_URL not set')
+    conn = connect_with_retry(db_url)
     try:
         if args.all_unenriched:
             dates = list_unenriched_dates(conn, args.backfill_mode)

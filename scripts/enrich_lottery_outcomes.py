@@ -44,6 +44,8 @@ import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
 
+from _pipeline_retry import connect_with_retry
+
 
 # ============================================================
 # Ticker inversion-quality refit (Phase 2 of the inversion-quality filter)
@@ -1036,7 +1038,7 @@ def main() -> None:
     if not db_url:
         sys.exit('DATABASE_URL_UNPOOLED / DATABASE_URL not set')
 
-    conn = psycopg2.connect(db_url)
+    conn = connect_with_retry(db_url)
     try:
         if args.all_unenriched:
             dates = list_unenriched_dates(conn)

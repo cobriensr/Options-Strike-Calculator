@@ -40,6 +40,8 @@ from pathlib import Path
 import psycopg2
 from psycopg2.extras import execute_values
 
+from _pipeline_retry import connect_with_retry
+
 ROOT = Path(__file__).resolve().parent.parent
 JSON_PATH = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
 ENV_FILE = ROOT / '.env.local'
@@ -266,7 +268,7 @@ def main() -> None:
     if not db_url:
         sys.exit('DATABASE_URL_UNPOOLED / DATABASE_URL not set')
 
-    conn = psycopg2.connect(db_url)
+    conn = connect_with_retry(db_url)
     try:
         cur = conn.cursor()
 

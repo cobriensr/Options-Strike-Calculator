@@ -360,15 +360,27 @@ else
 	  count=$$(echo "$(PENDING_DATES)" | wc -w | tr -d ' '); \
 	  echo "→ Found $$count pending CSV(s) in $(INPUT_DIR):"; \
 	  for d in $(PENDING_DATES); do echo "   • $$d"; done; \
+	  failed_dates=""; \
 	  for d in $(PENDING_DATES); do \
 	    echo ""; \
 	    echo "▶▶▶ Processing $$d ◀◀◀"; \
-	    $(MAKE) --no-print-directory nightly-one DATE=$$d; \
+	    if ! $(MAKE) --no-print-directory nightly-one DATE=$$d; then \
+	      echo "⚠️  $$d FAILED after retries — isolating, continuing with remaining dates" >&2; \
+	      failed_dates="$$failed_dates $$d"; \
+	    fi; \
 	  done; \
 	  echo ""; \
 	  echo "═══ Closing pass (cumulative rollup + plots, once across all dates) ═══"; \
 	  $(PYTHON) scripts/eod-flow-analysis/analyze.py --rollup-only; \
 	  $(MAKE) --no-print-directory plots; \
+	  if [[ -n "$$failed_dates" ]]; then \
+	    echo "" >&2; \
+	    echo "⚠️  Nightly completed with FAILED date(s):$$failed_dates" >&2; \
+	    echo "   The closing pass ran on the dates that succeeded; failed dates'" >&2; \
+	    echo "   enrichment is retried by 'make update' (--all-unenriched). To re-run" >&2; \
+	    echo "   one date in full: make nightly DATE=YYYY-MM-DD" >&2; \
+	    nightly_failed=1; \
+	  fi; \
 	elif ls -1 $(PARQUET_DIR)/*-trades.parquet >/dev/null 2>&1; then \
 	  echo "→ No CSV in $(INPUT_DIR), but parquet already on disk in $(PARQUET_DIR)"; \
 	  echo "  (CSV was consumed by a previous invocation — running plots + backfill-flow + enrich only)"; \
@@ -384,6 +396,15 @@ endif
 	@# but does NOT abort `nightly` and does NOT block a chained `make update`.
 	@# Re-run via `make ingest-fulltape` once UW posts.
 	$(MAKE) --no-print-directory ingest-fulltape || echo "⚠️  Full Tape ingest failed (UW lag or network); re-run with 'make ingest-fulltape' after UW posts. Bot-eod pipeline succeeded."
+	@# Surface per-date failures isolated above. The closing pass + Full Tape
+	@# have already run; exit non-zero now so the failure is visible (CI / shell
+	@# exit code) without having aborted the rest of the night. nightly_failed is
+	@# only ever set in the multi-date loop; :- guards the single-date branch
+	@# under set -u.
+	@if [[ -n "$${nightly_failed:-}" ]]; then \
+	  echo "❌ nightly: one or more dates failed after retries (see above)." >&2; \
+	  exit 1; \
+	fi
 
 # Per-date inner pipeline. Called once per pending CSV by `nightly`, or directly
 # by `nightly DATE=YYYY-MM-DD`. Per-date steps are analyze, ingest, backfill-flow,
