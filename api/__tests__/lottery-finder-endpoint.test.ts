@@ -606,41 +606,57 @@ describe('lottery-finder endpoint', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('minPremium binds to the reignited-section query (5th SQL touch)', async () => {
-    // The reignited-rows query (page-0 only, separate from the rows
-    // and COUNT queries) MUST also bind the minPremium floor — otherwise
-    // a "Hot Right Now" chain whose entry premium falls below the floor
-    // would appear in the reignited strip while being filtered out of
-    // the main feed. The query string at api/lottery-finder.ts:815
-    // contains the binding; this test pins it.
+  it('does NOT apply quality floors to the reignited query — Hot Right Now is floor-blind', async () => {
+    // Reversed by design (spec hot-right-now-floorblind-2026-05-29.md):
+    // the "Hot Right Now" reignited payload is FLOOR-BLIND — it ignores
+    // the quality floors (TAKE-IT / score / premium / Q1-Q2 quintile) so
+    // it surfaces the day's most re-ignited chains by cadence even when
+    // the model scored them below the floor (the case that hid SNDK
+    // 1670C +1974%). It still respects structural scoping
+    // (ticker/type/mode/tod). This pins that the quality GATES are absent
+    // from the reignited query while remaining on the main feed.
     mockSql
       .mockResolvedValueOnce([ROW]) // rows
-      .mockResolvedValueOnce([{ total: 1 }]) // COUNT
-      .mockResolvedValueOnce([]) // chainExtras
-      .mockResolvedValueOnce([]) // mega-cluster (if invoked)
-      .mockResolvedValueOnce([]) // reignited-rows
-      .mockResolvedValueOnce([]); // safety pad
+      .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]) // COUNT
+      .mockResolvedValue([]); // chainExtras, mega-cluster, reignited, …
 
     const req = mockRequest({
       method: 'GET',
-      query: { date: '2026-05-01', minPremium: '100000' },
+      query: {
+        date: '2026-05-01',
+        minPremium: '100000',
+        minTakeitProb: '0.7',
+        minScore: '12',
+      },
     });
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(200);
 
-    // Find every call whose SQL strings contain the reignited section
-    // marker (`top_reignited`) — these are the queries the test cares
-    // about. Each must bind 100000.
     const reignitedCalls = mockSql.mock.calls.filter((call) => {
       const strings = call[0] as TemplateStringsArray | undefined;
-      if (!strings) return false;
-      return strings.join(' ').includes('top_reignited');
+      return strings ? strings.join(' ').includes('top_reignited') : false;
     });
     expect(reignitedCalls.length).toBeGreaterThan(0);
     for (const call of reignitedCalls) {
-      expect((call as unknown[]).slice(1)).toContain(100000);
+      const sql = (call[0] as TemplateStringsArray).join('?');
+      // No quality GATES (columns may still be SELECTed for display).
+      expect(sql).not.toContain('chain_max_takeit >=');
+      expect(sql).not.toContain('inversion_quintile > 2');
+      expect(sql).not.toContain('f.score >=');
+      expect(sql).not.toContain('trigger_window_size * 100 >=');
+      // And the quality-floor VALUES are not bound to this query.
+      const values = (call as unknown[]).slice(1);
+      expect(values).not.toContain(100000); // minPremium
+      expect(values).not.toContain(0.7); // minTakeitProb
     }
+
+    // Sanity: the MAIN rows query DOES still gate on chain-max (the
+    // no-vanish guard must remain intact for the main feed).
+    const mainSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+      '?',
+    );
+    expect(mainSql).toContain('f.chain_max_takeit >=');
   });
 
   it('rows query reads cum_ncp/cum_npp from the snapshot column on the row', async () => {

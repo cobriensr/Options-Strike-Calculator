@@ -1047,6 +1047,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ) AS peak_takeit_at
           FROM lottery_finder_fires f
           INNER JOIN top_reignited t USING (underlying_symbol, strike, option_type, expiry)
+          -- FLOOR-BLIND (spec hot-right-now-floorblind-2026-05-29.md):
+          -- Hot Right Now respects only STRUCTURAL scoping (date / ticker /
+          -- type / mode / tod / reload+cheapCallPm tags), NOT the quality
+          -- floors. minScore + minPremium are intentionally absent here (and
+          -- the TAKE-IT + Q1/Q2 quintile gates are absent from the outer
+          -- WHERE) so the section surfaces the day's most re-ignited chains
+          -- by cadence even when the model scored them below the floor —
+          -- the case that hid SNDK 1670C (+1974%, chain_max_takeit 0.685).
           WHERE f.date = ${targetDate}::date
             AND f.trigger_time_ct < ${reignitionWindowEnd}::timestamptz
             AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
@@ -1055,9 +1063,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
             AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-            AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
             AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
-            AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
         )
         SELECT
           f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
@@ -1105,8 +1111,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM filtered f
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
-          AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
+        -- Floor-blind: no TAKE-IT / Q1-Q2 quintile gate here (see CTE
+        -- comment above). The cadence-top-N chains show regardless of the
+        -- quality floors the main feed applies.
         ORDER BY f.trigger_time_ct DESC, f.id DESC
       `,
         [] as FireRow[],

@@ -190,6 +190,23 @@ describe('ReignitionSection: populated', () => {
     expect(screen.getByTestId('row-3')).toBeInTheDocument();
   });
 
+  it('labels the section floor-blind so the cadence-ranked / floor-ignoring behavior is explicit', () => {
+    // spec hot-right-now-floorblind-2026-05-29.md — the section ignores
+    // the TAKE-IT floor + quality filters by design, so it must say so.
+    render(
+      <ReignitionSection
+        fires={[makeFire({ id: 1, underlyingSymbol: 'QQQ' })]}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={true}
+        getFlowSnapshot={() => null}
+      />,
+    );
+    expect(screen.getByTestId('reignition-floorblind-pill')).toHaveTextContent(
+      'floor-blind',
+    );
+    expect(screen.getByText(/ignores the TAKE-IT floor/i)).toBeInTheDocument();
+  });
+
   it('forwards per-ticker liveFlowSnapshot from getFlowSnapshot to each row', () => {
     const snapshots = new Map<string, { ts: string; cumNcp: number }>([
       ['QQQ', { ts: 'qqq-snap', cumNcp: 1 }],

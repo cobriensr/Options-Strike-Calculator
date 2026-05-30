@@ -73,10 +73,18 @@ function ReignitionSectionInner({
           <span className="rounded border border-orange-400/40 bg-orange-900/50 px-1.5 py-0.5 font-mono text-[10px] tracking-normal text-orange-100">
             {fires.length}
           </span>
+          <span
+            className="rounded border border-amber-400/40 bg-amber-900/40 px-1.5 py-0.5 font-mono text-[9px] tracking-normal text-amber-100"
+            title="Floor-blind: this panel ranks by fire cadence and ignores the TAKE-IT floor, score, premium, and quality filters (it still respects ticker/type/mode/TOD). It surfaces the day's most re-ignited chains even when the model scored them below your floor — so it can show movers the main list hides."
+            data-testid="reignition-floorblind-pill"
+          >
+            floor-blind
+          </span>
         </h3>
         <p className="hidden text-[10px] text-orange-200/70 sm:block">
-          Chains that fired, went quiet ≥30 min, then re-ignited — daily top{' '}
-          {fires.length}.
+          Cadence-ranked · ignores the TAKE-IT floor — fired, went quiet ≥30
+          min, then re-ignited. Daily top {fires.length}; can surface movers the
+          filtered list hides.
         </p>
       </header>
 
