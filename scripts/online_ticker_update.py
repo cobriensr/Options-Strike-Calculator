@@ -39,7 +39,6 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-import psycopg2
 
 from _pipeline_retry import connect_with_retry
 

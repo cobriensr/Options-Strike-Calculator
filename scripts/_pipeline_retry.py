@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import sys
 import time
-from typing import Callable, Iterable, TypeVar
+from typing import Callable, TypeVar
 
 T = TypeVar('T')
 
@@ -80,6 +80,11 @@ def retry_call(
     the final attempt the last exception propagates unchanged, so callers keep
     their existing fail-loud behavior.
 
+    NOTE: the loop catches BaseException so the predicate has full control, which
+    means `retryable` MUST return False for KeyboardInterrupt / SystemExit (all
+    production predicates here are isinstance-checks that naturally exclude them)
+    — otherwise a Ctrl-C would be swallowed and retried.
+
     `sleep` is injectable so tests don't wait real seconds.
     """
     last_exc: BaseException | None = None
@@ -127,28 +132,3 @@ def connect_with_retry(
         label='psycopg2.connect',
         sleep=sleep,
     )
-
-
-def status_retryable(status_codes: Iterable[int] = RETRYABLE_HTTP_STATUS):
-    """Build a `retryable` predicate for a known set of HTTP status codes.
-
-    Returns a predicate over exceptions that pulls a status code off the
-    exception via a `.code` (urllib HTTPError) or `.status_code` attribute,
-    falling back to a `_pipeline_status` attribute callers can stamp on a
-    custom exception. Exceptions with no discoverable status are treated as
-    transport errors and retried.
-    """
-    codes = frozenset(status_codes)
-
-    def predicate(exc: BaseException) -> bool:
-        code = (
-            getattr(exc, 'code', None)
-            or getattr(exc, 'status_code', None)
-            or getattr(exc, '_pipeline_status', None)
-        )
-        if code is None:
-            # No HTTP status => transport-level error (reset/timeout/DNS).
-            return True
-        return code in codes
-
-    return predicate

@@ -39,6 +39,12 @@ INPUT_DIR_FULLTAPE   ?= $(HOME)/Downloads/EOD-FullTape
 PARQUET_DIR_FULLTAPE ?= $(HOME)/Desktop/Eod-Full-Tape-parquet
 ENV_FILE    := .env.local
 
+# Sentinel file for cross-shell failure signalling in the nightly loop. This
+# machine runs GNU Make 3.81, which IGNORES .ONESHELL — every recipe line runs
+# in its own shell, so a shell variable set in the per-date loop cannot be read
+# by the final exit-check line. A sentinel file persists across those shells.
+NIGHTLY_FAIL_SENTINEL := /tmp/.strike-nightly-failed
+
 # Every bot-eod-report-YYYY-MM-DD.csv in INPUT_DIR, ascending.
 PENDING_DATES := $(shell ls -1 $(INPUT_DIR)/bot-eod-report-*.csv 2>/dev/null \
                        | sed -nE 's|.*bot-eod-report-([0-9]{4}-[0-9]{2}-[0-9]{2})\.csv|\1|p' \
@@ -360,6 +366,7 @@ else
 	  count=$$(echo "$(PENDING_DATES)" | wc -w | tr -d ' '); \
 	  echo "→ Found $$count pending CSV(s) in $(INPUT_DIR):"; \
 	  for d in $(PENDING_DATES); do echo "   • $$d"; done; \
+	  rm -f "$(NIGHTLY_FAIL_SENTINEL)"; \
 	  failed_dates=""; \
 	  for d in $(PENDING_DATES); do \
 	    echo ""; \
@@ -367,6 +374,7 @@ else
 	    if ! $(MAKE) --no-print-directory nightly-one DATE=$$d; then \
 	      echo "⚠️  $$d FAILED after retries — isolating, continuing with remaining dates" >&2; \
 	      failed_dates="$$failed_dates $$d"; \
+	      touch "$(NIGHTLY_FAIL_SENTINEL)"; \
 	    fi; \
 	  done; \
 	  echo ""; \
@@ -379,7 +387,6 @@ else
 	    echo "   The closing pass ran on the dates that succeeded; failed dates'" >&2; \
 	    echo "   enrichment is retried by 'make update' (--all-unenriched). To re-run" >&2; \
 	    echo "   one date in full: make nightly DATE=YYYY-MM-DD" >&2; \
-	    nightly_failed=1; \
 	  fi; \
 	elif ls -1 $(PARQUET_DIR)/*-trades.parquet >/dev/null 2>&1; then \
 	  echo "→ No CSV in $(INPUT_DIR), but parquet already on disk in $(PARQUET_DIR)"; \
@@ -398,10 +405,11 @@ endif
 	$(MAKE) --no-print-directory ingest-fulltape || echo "⚠️  Full Tape ingest failed (UW lag or network); re-run with 'make ingest-fulltape' after UW posts. Bot-eod pipeline succeeded."
 	@# Surface per-date failures isolated above. The closing pass + Full Tape
 	@# have already run; exit non-zero now so the failure is visible (CI / shell
-	@# exit code) without having aborted the rest of the night. nightly_failed is
-	@# only ever set in the multi-date loop; :- guards the single-date branch
-	@# under set -u.
-	@if [[ -n "$${nightly_failed:-}" ]]; then \
+	@# exit code) without having aborted the rest of the night. The sentinel file
+	@# carries the failure flag across recipe-line shell boundaries (Make 3.81
+	@# ignores .ONESHELL). Only the multi-date loop ever creates it.
+	@if [[ -f "$(NIGHTLY_FAIL_SENTINEL)" ]]; then \
+	  rm -f "$(NIGHTLY_FAIL_SENTINEL)"; \
 	  echo "❌ nightly: one or more dates failed after retries (see above)." >&2; \
 	  exit 1; \
 	fi

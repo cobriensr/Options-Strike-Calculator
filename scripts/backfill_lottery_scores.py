@@ -37,7 +37,6 @@ import time
 from datetime import date as date_type, datetime
 from pathlib import Path
 
-import psycopg2
 from psycopg2.extras import execute_values
 
 from _pipeline_retry import connect_with_retry

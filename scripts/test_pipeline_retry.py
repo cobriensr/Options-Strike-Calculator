@@ -21,19 +21,18 @@ from _pipeline_retry import (  # noqa: E402
     is_retryable_db_error,
     is_retryable_http_status,
     retry_call,
-    status_retryable,
 )
 
 
 def test_backoff_sequence_matches_documented_cadence() -> None:
     delays = [backoff_delay(i) for i in range(6)]
-    assert delays == [1, 2, 4, 8, 16, 32]
+    assert delays == pytest.approx([1, 2, 4, 8, 16, 32])
 
 
 def test_backoff_caps_at_max_delay() -> None:
     # 2**6 = 64 would exceed the 60s cap.
-    assert backoff_delay(6) == 60.0
-    assert backoff_delay(10, max_delay=60.0) == 60.0
+    assert backoff_delay(6) == pytest.approx(60.0)
+    assert backoff_delay(10, max_delay=60.0) == pytest.approx(60.0)
 
 
 @pytest.mark.parametrize('code', sorted(RETRYABLE_HTTP_STATUS))
@@ -122,22 +121,3 @@ def test_retry_call_does_not_retry_permanent_error() -> None:
         )
     assert calls['n'] == 1  # tried exactly once
     assert sleeps == []
-
-
-def test_status_retryable_predicate_reads_code_attr() -> None:
-    predicate = status_retryable()
-
-    class FakeHttpError(Exception):
-        code = 503
-
-    class FakeRequestsError(Exception):
-        status_code = 404
-
-    assert predicate(FakeHttpError()) is True  # 503 retryable
-    assert predicate(FakeRequestsError()) is False  # 404 not retryable
-
-
-def test_status_retryable_treats_no_status_as_transport_error() -> None:
-    predicate = status_retryable()
-    # A bare connection error has no HTTP status => transport-level => retry.
-    assert predicate(ConnectionResetError('reset')) is True

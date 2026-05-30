@@ -38,7 +38,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import psycopg2
 from psycopg2.extras import execute_values
 
 from _pipeline_retry import connect_with_retry
