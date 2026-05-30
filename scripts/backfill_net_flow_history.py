@@ -35,6 +35,8 @@ from zoneinfo import ZoneInfo
 import psycopg2
 from psycopg2.extras import execute_values
 
+from _pipeline_retry import is_retryable_http_status, retry_call
+
 _CT_TZ = ZoneInfo('America/Chicago')
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -133,33 +135,36 @@ def fetch_ticker(
         'Authorization': f'Bearer {api_key}',
         'Accept': 'application/json',
     })
-    # Exponential backoff on 429. UW's rate-limit window is bursty —
-    # under load we've seen sustained 429s for 20-40s. Older code did
-    # 3 attempts maxing at 4.5s of total wait, which was too short and
-    # silently dropped tickers per backfill run. Now: 6 attempts with
-    # 1, 2, 4, 8, 16, 32s waits = ~63s max per ticker.
-    max_attempts = 6
-    for attempt in range(max_attempts):
-        try:
-            with urlopen(req, timeout=30) as resp:
-                payload = json.loads(resp.read())
-            return payload.get('data', []) if isinstance(payload, dict) else []
-        except HTTPError as e:
-            if e.code == 429 and attempt < max_attempts - 1:
-                wait = min(60, 2 ** attempt)
-                time.sleep(wait)
-                continue
-            reason = f'HTTPError {e.code}: {e.reason}'
-            print(f'[backfill-flow] {ticker} {reason}', file=sys.stderr)
-            return FetchError(reason)
-        except URLError as e:
-            if attempt < max_attempts - 1:
-                time.sleep(min(30, 2 ** attempt))
-                continue
-            reason = f'URLError: {e.reason}'
-            print(f'[backfill-flow] {ticker} {reason}', file=sys.stderr)
-            return FetchError(reason)
-    return FetchError('max retries exhausted')
+
+    def _do_fetch() -> list[dict[str, Any]]:
+        with urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read())
+        return payload.get('data', []) if isinstance(payload, dict) else []
+
+    # Bounded exponential backoff (6 attempts: 1,2,4,8,16,32s ≈ 63s max).
+    # Retries transient UW failures — 429 rate-limit bursts (20-40s windows),
+    # 5xx, the momentary edge 403 that wiped the whole 2026-05-29 run, and any
+    # transport-level URLError (reset/timeout/DNS). A genuine auth 403 just
+    # exhausts the retries and still returns FetchError — fail-loud preserved.
+    def _is_retryable(exc: BaseException) -> bool:
+        if isinstance(exc, HTTPError):
+            return is_retryable_http_status(exc.code)
+        return isinstance(exc, URLError)  # transport-level
+
+    try:
+        return retry_call(
+            _do_fetch,
+            retryable=_is_retryable,
+            label=f'UW net-prem-ticks {ticker}',
+        )
+    except HTTPError as e:
+        reason = f'HTTPError {e.code}: {e.reason}'
+        print(f'[backfill-flow] {ticker} {reason}', file=sys.stderr)
+        return FetchError(reason)
+    except URLError as e:
+        reason = f'URLError: {e.reason}'
+        print(f'[backfill-flow] {ticker} {reason}', file=sys.stderr)
+        return FetchError(reason)
 
 
 def parse_row(raw: dict[str, Any]) -> tuple:
