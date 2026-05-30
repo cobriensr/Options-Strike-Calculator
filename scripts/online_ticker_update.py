@@ -266,30 +266,77 @@ def write_weights_json(weights: dict, ticker_weights: dict[str, int]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def append_history_csv(today: date, updates: list[dict]) -> None:
-    """Append one row per (date, ticker) pair to the history CSV."""
-    needs_header = not HISTORY_CSV.exists() or HISTORY_CSV.stat().st_size == 0
+def upsert_history_csv(today: date, updates: list[dict]) -> None:
+    """Write today's rows to the history CSV, replacing any prior same-day rows.
 
+    Upsert-by-date (not append) so repeated `make update` runs don't accumulate
+    duplicate (date, ticker) rows — mirrors daily_tracker.py's idempotent
+    one-row-per-day pattern.
+    """
     HISTORY_CSV.parent.mkdir(parents=True, exist_ok=True)
+    date_str = today.isoformat()
 
-    with HISTORY_CSV.open("a", newline="", encoding="utf-8") as fh:
+    # Keep every prior row except an earlier write for today's date.
+    kept: list[dict] = []
+    if HISTORY_CSV.exists():
+        with HISTORY_CSV.open(newline="", encoding="utf-8") as fh:
+            kept = [r for r in csv.DictReader(fh) if r.get("date") != date_str]
+
+    today_rows = [
+        {
+            "date": date_str,
+            "ticker": u["ticker"],
+            "old_weight": u["old_weight"],
+            "new_weight": u["new_weight"],
+            "today_n": u["today_n"],
+            "today_mean": u["today_mean"],
+        }
+        for u in updates
+    ]
+
+    with HISTORY_CSV.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_FIELDNAMES)
-        if needs_header:
-            writer.writeheader()
-        date_str = today.isoformat()
-        for u in updates:
-            writer.writerow(
-                {
-                    "date": date_str,
-                    "ticker": u["ticker"],
-                    "old_weight": u["old_weight"],
-                    "new_weight": u["new_weight"],
-                    "today_n": u["today_n"],
-                    "today_mean": u["today_mean"],
-                }
-            )
+        writer.writeheader()
+        writer.writerows(kept)
+        writer.writerows(today_rows)
 
-    print(f"Appended {len(updates):,} rows to {HISTORY_CSV}")
+    print(
+        f"Wrote {len(today_rows):,} rows for {date_str} to {HISTORY_CSV} "
+        f"(replaced any prior same-day rows; {len(kept):,} earlier rows kept)"
+    )
+
+
+def already_applied_today(
+    today: date, current_ticker_weights: dict[str, int]
+) -> bool:
+    """True if today's EMA nudge is already reflected in the live weights.
+
+    Idempotence guard for a standalone re-run. The history CSV records the
+    post-nudge weight per ticker for the date it was applied. If the live
+    ticker_weights already equal today's recorded new_weights, the nudge has
+    already been applied and re-running would blend the same day onto it again
+    (double-applied drift) — so skip.
+
+    Composition-safe with `make update`: the preceding `refit` (lottery_scoring.py)
+    RESETS ticker_weights to the from-scratch baseline, so on a second
+    `make update` the live weights differ from today's recorded new_weights and
+    the EMA correctly re-applies from the fresh baseline. This guard only
+    short-circuits a bare re-run that has no intervening refit.
+    """
+    if not HISTORY_CSV.exists():
+        return False
+    date_str = today.isoformat()
+    with HISTORY_CSV.open(newline="", encoding="utf-8") as fh:
+        recorded = {
+            r["ticker"]: int(r["new_weight"])
+            for r in csv.DictReader(fh)
+            if r.get("date") == date_str
+        }
+    if not recorded:
+        return False
+    return all(
+        current_ticker_weights.get(t) == w for t, w in recorded.items()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +356,18 @@ def main() -> None:
     )
     print(f"Loaded weights: {weights['model_version']}")
     print(f"  {len(ticker_weights):,} tickers in model")
+
+    # Idempotence guard: if today's nudge is already baked into the live
+    # weights (a bare re-run with no intervening refit), skip — re-applying
+    # would double-blend. In `make update`, refit resets the baseline first,
+    # so this never blocks a legitimate re-apply.
+    today = date.today()
+    if already_applied_today(today, ticker_weights):
+        print(
+            f"SKIP: today's EMA nudge ({today.isoformat()}) is already reflected "
+            "in the live ticker_weights — re-run would double-apply it. No-op."
+        )
+        return
 
     # Fetch today's fires
     df = fetch_today_fires()
@@ -377,9 +436,10 @@ def main() -> None:
     # Write JSON back
     write_weights_json(weights, dict(sorted(ticker_weights.items())))
 
-    # Append history CSV (all tickers that had >= MIN_TICKER_FIRES today,
-    # including unchanged ones — gives a complete daily snapshot)
-    append_history_csv(date.today(), updates)
+    # Upsert history CSV (all tickers that had >= MIN_TICKER_FIRES today,
+    # including unchanged ones — gives a complete daily snapshot). Replaces
+    # any prior same-day rows so repeated runs don't duplicate.
+    upsert_history_csv(today, updates)
 
 
 if __name__ == "__main__":
