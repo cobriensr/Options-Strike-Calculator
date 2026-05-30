@@ -78,6 +78,11 @@ TICKERS: list[str] = sorted(
 )
 
 UW_BASE = 'https://api.unusualwhales.com/api'
+# UW's edge/WAF returns 403 Forbidden for the default 'Python-urllib/x.y' User-
+# Agent (treated as bot traffic). Any explicit UA passes. Verified 2026-05-30:
+# default UA -> 403, this UA -> 200 on the exact same key + endpoint. Without
+# this header every request 403s and the retry loop just exhausts.
+_USER_AGENT = 'strike-calculator-backfill/1.0'
 SESSION_OPEN_MIN = 8 * 60 + 30   # 08:30 CT
 SESSION_CLOSE_MIN = 15 * 60      # 15:00 CT (exclusive)
 
@@ -134,6 +139,7 @@ def fetch_ticker(
     req = Request(url, headers={
         'Authorization': f'Bearer {api_key}',
         'Accept': 'application/json',
+        'User-Agent': _USER_AGENT,
     })
 
     def _do_fetch() -> list[dict[str, Any]]:
