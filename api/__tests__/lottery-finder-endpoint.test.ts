@@ -267,6 +267,70 @@ describe('lottery-finder endpoint', () => {
     expect(allSql).not.toContain('OR takeit_prob >=');
   });
 
+  // ============================================================
+  // MONOTONIC-VISIBILITY INVARIANT (lottery-no-vanish-2026-05-29)
+  // ============================================================
+  //
+  // The vanish bug: each chain collapses to one representative row = the
+  // LATEST fire (rn=1), and the TAKE-IT floor was tested on THAT row's
+  // takeit_prob. Since the representative changes every re-fire, a chain
+  // blinked in/out as its newest fire crossed the floor. The fix gates on
+  // chain_max_takeit (MAX over the chain), which only grows → a chain
+  // that ever cleared the floor can never disappear.
+  //
+  // The mock can't enforce a WHERE, so this locks the invariant at the
+  // SQL-shape level for EVERY sort branch independently — each is its own
+  // query that could regress on its own. If any branch ever reverts to
+  // per-representative gating, this fails.
+  describe('monotonic visibility invariant', () => {
+    it.each(['chronological', 'score', 'peak'] as const)(
+      'sort=%s gates the rows query on chain-max TAKE-IT, never the latest fire',
+      async (sort) => {
+        mockSql
+          .mockResolvedValueOnce([ROW])
+          .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]);
+
+        const req = mockRequest({
+          method: 'GET',
+          query: { sort, minTakeitProb: '0.7' },
+        });
+        const res = mockResponse();
+        await handler(req, res);
+
+        // calls[0] is the rows query for the selected sort branch.
+        const rowsSql = (
+          mockSql.mock.calls[0]![0] as TemplateStringsArray
+        ).join('?');
+        // The chain-level MAX window must be present and the gate must
+        // reference it — not the representative row's scalar.
+        expect(rowsSql).toContain('MAX(f.takeit_prob) OVER');
+        expect(rowsSql).toContain('f.chain_max_takeit >=');
+        expect(rowsSql).not.toContain('f.takeit_prob >=');
+      },
+    );
+
+    it('the COUNT(*) total query also gates on chain-max (so total matches reachable rows)', async () => {
+      mockSql
+        .mockResolvedValueOnce([ROW])
+        .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]);
+
+      const req = mockRequest({
+        method: 'GET',
+        query: { minTakeitProb: '0.7' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      // calls[1] is the COUNT(*) total query.
+      const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+        '?',
+      );
+      expect(countSql).toContain('MAX(takeit_prob) OVER');
+      expect(countSql).toContain('chain_max_takeit >=');
+      expect(countSql).not.toContain('OR takeit_prob >=');
+    });
+  });
+
   it('falls through to null tickerCumNcp/Npp at fire when LATERAL has no rows', async () => {
     // Older fires + tickers not yet in the WS subscription list will
     // produce nulls from the LATERAL aggregate. Mapper must coerce
