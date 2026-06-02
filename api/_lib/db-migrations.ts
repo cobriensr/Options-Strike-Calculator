@@ -5155,4 +5155,21 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS uw_url TEXT`,
     ],
   },
+  {
+    id: 184,
+    description:
+      'Add partial backlog indexes on lottery_finder_fires and silent_boom_alerts for the takeit-fill-shap cron. That cron selects the most-recent unfilled rows via `WHERE takeit_prob IS NOT NULL AND takeit_features IS NOT NULL AND takeit_top_features IS NULL ORDER BY id DESC LIMIT 100`. With no matching index it did an Index Scan Backward over the id PK with a heap Filter — when caught up (backlog ~5 of 670k rows) it scanned the entire table every tick (~7.8s, 670k Rows Removed by Filter), right at the 10s per-attempt withDbRetry timeout. All 3 attempts then timed out during any Neon slow moment, producing the recurring "db attempt timeout" Sentry storm (SENTRY-EMERALD-DESERT-7J) and burning Neon I/O on every run. A partial index keyed (id DESC) over exactly the unfilled-backlog predicate contains only the few outstanding rows, so the query is a tiny index scan that returns instantly when caught up. Same remedy as migration #174 (ws_option_trades composite for enrich-periscope-lottery-outcomes). Applied to prod directly via CREATE INDEX CONCURRENTLY (pre-market, no write contention); the IF NOT EXISTS form here is an idempotent no-op where the index already exists and seeds a fresh DB.',
+    statements: (sql) => [
+      sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_shap_backlog_idx
+            ON lottery_finder_fires (id DESC)
+            WHERE takeit_prob IS NOT NULL
+              AND takeit_features IS NOT NULL
+              AND takeit_top_features IS NULL`,
+      sql`CREATE INDEX IF NOT EXISTS silent_boom_alerts_shap_backlog_idx
+            ON silent_boom_alerts (id DESC)
+            WHERE takeit_prob IS NOT NULL
+              AND takeit_features IS NOT NULL
+              AND takeit_top_features IS NULL`,
+    ],
+  },
 ];
