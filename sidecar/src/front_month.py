@@ -42,6 +42,29 @@ Tiebreak = Literal["none", "contract_asc"]
 SizeColumn = Literal["volume", "size"]
 
 
+def session_date_expr(ts_column: TsColumn = "ts_event") -> str:
+    """Return the SQL expression that maps ``bars.<ts_column>`` to its CME
+    *session* date (the 17:00 CT roll), NOT the UTC calendar day.
+
+    The Globex equity-index session runs ~17:00 CT (T-1) -> 16:00 CT (T) and
+    CME dates it by its close, so the overnight slice (>= 17:00 CT) belongs to
+    the NEXT session. Converting the exchange timestamp to America/Chicago
+    wall-clock and shifting +7h maps 17:00 CT onto the next midnight, so
+    ``CAST(... AS DATE)`` yields the session date. ``AT TIME ZONE`` is
+    DST-aware (CDT/CST).
+
+    This is the single source of truth for the session-date bucket. Both
+    :func:`front_month_cte` and any caller that needs to pre-compute a
+    horizon cutoff over the same buckets (e.g.
+    ``archive_query.tbbo_ofi_percentile``) MUST use this expression so the
+    day grouping can never drift between the cutoff scan and the main query.
+    """
+    return (
+        f"CAST((bars.{ts_column} AT TIME ZONE 'America/Chicago') "
+        f"+ INTERVAL 7 HOUR AS DATE)"
+    )
+
+
 def front_month_cte(
     symbol_like: str,
     parquet_path_param: str,
@@ -145,17 +168,11 @@ def front_month_cte(
     select_list = ",\n                   ".join(base_cols)
 
     # The `day` bucket is the CME *session* date (FINDING A), NOT the UTC
-    # calendar day. The Globex equity-index session runs ~17:00 CT (T-1) ->
-    # 16:00 CT (T) and CME dates it by its close, so the overnight slice
-    # (>= 17:00 CT) belongs to the NEXT session. Converting the exchange
-    # timestamp to America/Chicago wall-clock and shifting +7h maps 17:00 CT
-    # onto the next midnight, so CAST(... AS DATE) yields the session date.
-    # AT TIME ZONE is DST-aware (CDT/CST). Defined once, reused below so the
-    # SELECT, GROUP-BY-feeding `day`, and the WHERE filter can never drift.
-    session_date_sql = (
-        f"CAST((bars.{ts_column} AT TIME ZONE 'America/Chicago') "
-        f"+ INTERVAL 7 HOUR AS DATE)"
-    )
+    # calendar day. Defined once via session_date_expr() and reused below so
+    # the SELECT, GROUP-BY-feeding `day`, and the WHERE filter can never
+    # drift — and so any external caller computing a cutoff over the same
+    # buckets shares the exact expression. See session_date_expr's docstring.
+    session_date_sql = session_date_expr(ts_column)
 
     if tiebreak == "contract_asc":
         order_by = f"ORDER BY total_vol DESC, {contract_col} ASC"

@@ -31,7 +31,7 @@ from typing import Any
 
 import duckdb
 
-from front_month import front_month_cte
+from front_month import front_month_cte, session_date_expr
 from logger_setup import log
 
 _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
@@ -1390,17 +1390,61 @@ def tbbo_ofi_percentile(
     # (DuckDB's ROWS BETWEEN doesn't accept runtime scalars in older
     # versions). We validated `window` against a fixed allowlist above so
     # the interpolation is safe.
+    # SIDE-OOM: bound the heavy pipeline to the requested horizon BEFORE the
+    # per-minute rolling-window stage. Without a date filter the `filtered`
+    # CTE materializes every TBBO trade in the entire archive, and DuckDB
+    # cannot push the final `LIMIT horizon_days` down through the window
+    # functions — so the full-archive intermediate spills to /tmp and, once
+    # the archive grows past the container's disk ceiling, crashes with
+    # "failed to offload data block ... 1.8 GiB/1.8 GiB used". (The prior
+    # memory_limit / temp-cap / preserve_insertion_order mitigations only
+    # delayed this growth-driven OOM.) Fix: first find the horizon_days-th
+    # most-recent distinct *session* date in a cheap streaming DISTINCT scan
+    # (a few hundred date groups — bounded memory, no spill), then restrict
+    # the main query to days >= that cutoff. Distinct-day based, NOT a
+    # calendar estimate, so it stays exact for sparse / gapped archives.
+    # session_date_expr() is shared with front_month_cte so the cutoff scan
+    # and the main query bucket days identically (no off-by-one at the CME
+    # 17:00 CT session boundary).
+    session_day = session_date_expr("ts_recv")
+    cutoff_row = conn.execute(
+        f"""
+        SELECT day
+        FROM (
+            SELECT DISTINCT {session_day} AS day
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol LIKE ?
+              AND strpos(sym.symbol, ' ') = 0
+              AND strpos(sym.symbol, '-') = 0
+        )
+        ORDER BY day DESC
+        LIMIT 1 OFFSET ?
+        """,
+        [tbbo, symbology, f"{symbol_root}%", horizon_days - 1],
+    ).fetchone()
+
+    if cutoff_row is not None:
+        horizon_date_filter = ">= ?::DATE"
+        date_filter_binds: list[Any] = [cutoff_row[0]]
+    else:
+        # Fewer distinct days than the horizon: the whole archive is within
+        # the requested window and is therefore already bounded by the day
+        # count — leave the chain unfiltered.
+        horizon_date_filter = "IS NOT NULL"
+        date_filter_binds = []
+
     # Standardized via `front_month_cte` (Phase 2b). TBBO already used
     # `contract ASC` as the volume-tie tiebreak, so this site is
     # behaviorally unchanged — only the SQL text moves into the shared
-    # builder. The percentile-rank query has no date filter on the
-    # `filtered` CTE; pass an always-true predicate so the builder's
-    # required `date_filter_sql` slot is satisfied.
+    # builder. The `filtered` CTE is scoped to the horizon cutoff computed
+    # above; the final `ORDER BY day DESC LIMIT horizon_days` is retained as
+    # an exactness belt-and-suspenders on top of that bound.
     front_month_sql = front_month_cte(
         symbol_like="?",  # bound below via execute(..., [..., f"{root}%", ...])
         parquet_path_param="?",
         symbology_path_param="?",
-        date_filter_sql="IS NOT NULL",  # no date filter; archive is bounded by horizon_days LIMIT
+        date_filter_sql=horizon_date_filter,
         ts_column="ts_recv",
         contract_col="contract",
         size_col="size",
@@ -1456,6 +1500,7 @@ def tbbo_ofi_percentile(
             tbbo,
             symbology,
             f"{symbol_root}%",
+            *date_filter_binds,
             _TBBO_OFI_MIN_TRADES_PER_WINDOW,
             horizon_days,
         ],

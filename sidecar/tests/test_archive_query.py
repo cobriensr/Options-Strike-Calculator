@@ -1084,6 +1084,96 @@ def test_tbbo_ofi_percentile_respects_horizon_days(tmp_path: Path) -> None:
     assert result3["count"] == 3
 
 
+def test_tbbo_ofi_percentile_horizon_excludes_pre_gap_days(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SIDE-OOM regression: the heavy distribution query must be DATE-FILTERED
+    to the distinct-day horizon cutoff (``>= ?::DATE``) so the per-minute /
+    rolling-window intermediate is bounded to ``horizon_days`` instead of
+    scanning the whole archive (the cause of the temp-spill OOM).
+
+    The final ``LIMIT horizon_days`` belt makes the *output* correct even
+    without the filter, so output assertions alone can't catch a regression.
+    We therefore spy on the executed SQL and assert the heavy query carries
+    the cutoff predicate and the correct distinct-day cutoff bind — then keep
+    the output assertions as a secondary correctness check.
+    """
+    from datetime import date, datetime, timezone
+
+    # Old cluster: 3 days in January 2024 with NEGATIVE / neutral OFI.
+    old = _spread_days(
+        (2024, 1, 8),
+        101,
+        "ESH4",
+        [(1, 9), (2, 8), (5, 5)],  # -0.8, -0.6, 0.0
+    )
+    # Recent cluster: 3 days in June 2024 with POSITIVE OFI, ~5 months later.
+    recent = _spread_days(
+        (2024, 6, 3),
+        101,
+        "ESM4",
+        [(8, 2), (9, 1), (10, 0)],  # +0.6, +0.8, +1.0
+    )
+    sym = [
+        (
+            101,
+            "ESH4",
+            datetime(2024, 1, 8, 14, 0, tzinfo=timezone.utc),
+            datetime(2024, 6, 5, 20, 0, tzinfo=timezone.utc),
+        )
+    ]
+    _build_tbbo_archive(tmp_path, old + recent, sym)
+
+    # Record every SQL the function executes while delegating to the real
+    # DuckDB connection, so we can inspect how the heavy query was scoped.
+    executed: list[tuple[str, object]] = []
+    real_connection = archive_query._connection
+
+    class _RecordingConn:
+        def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: str, params: object = None):  # type: ignore[no-untyped-def]
+            executed.append((sql, params))
+            if params is None:
+                return self._conn.execute(sql)
+            return self._conn.execute(sql, params)
+
+    monkeypatch.setattr(
+        archive_query, "_connection", lambda: _RecordingConn(real_connection())
+    )
+
+    # horizon_days=3 must capture ONLY the recent cluster.
+    result = archive_query.tbbo_ofi_percentile(
+        "ES", 0.5, window="1h", horizon_days=3, root=tmp_path
+    )
+
+    # --- Primary: the heavy windowed query is bounded by the cutoff. ---
+    heavy = [(sql, params) for (sql, params) in executed if "per_minute" in sql]
+    assert len(heavy) == 1, "expected exactly one per-minute/rolling query"
+    heavy_sql, heavy_params = heavy[0]
+    # The filtered CTE must carry the horizon date filter, not the unbounded
+    # full-archive scan that caused the OOM. With the filter disabled (the
+    # pre-fix `IS NOT NULL` fallback) this predicate and the cutoff bind below
+    # are both absent — so these two assertions are what discriminate the fix.
+    assert ">= ?::DATE" in heavy_sql
+    # The cutoff bind is the 3rd-most-recent DISTINCT session day = the recent
+    # cluster's first day (2024-06-03). A calendar-based cutoff or an
+    # off-by-one would bind a different date.
+    assert isinstance(heavy_params, list)
+    assert date(2024, 6, 3) in heavy_params
+
+    # --- Secondary: output correctness (the old cluster is excluded). ---
+    assert result["count"] == 3
+    # Mean of only the recent cluster (+0.6, +0.8, +1.0) = 0.8. With the old
+    # cluster leaking in the mean would be ~0.333.
+    assert result["mean"] == pytest.approx(0.8, rel=1e-6)
+    # 0.5 is below every recent value, so percentile 0. If the old negative
+    # days were included, 0.5 would rank above them (percentile ~50).
+    assert result["percentile"] == 0.0
+
+
 # ---------------------------------------------------------------------------
 # TZ-boundary regression (Phase 4b rework — Phase 4c bug re-landed)
 # ---------------------------------------------------------------------------
@@ -1236,8 +1326,7 @@ def test_connection_caps_temp_directory_size(tmp_path: Path) -> None:
         conn = archive_query._connection()
 
         row = conn.execute(
-            "SELECT value FROM duckdb_settings() "
-            "WHERE name = 'max_temp_directory_size'"
+            "SELECT value FROM duckdb_settings() WHERE name = 'max_temp_directory_size'"
         ).fetchone()
         assert row is not None, "max_temp_directory_size should be set"
         cap_str = str(row[0])
