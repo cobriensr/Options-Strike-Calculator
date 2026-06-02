@@ -23,8 +23,14 @@ async function visibleSNDK1670C(floor: number | null) {
 
 (async () => {
   // Mirror useLotteryFinder: chip "off" (0) sends NO param → server floor null.
-  for (const [label, floor] of [['off (chip=0 → no param)', null],['0.60', 0.60],['0.70 (default)', 0.70]] as const) {
+  for (const [label, floor] of [
+    ['off (chip=0 → no param)', null],
+    ['0.60', 0.6],
+    ['0.70 (default)', 0.7],
+  ] as const) {
     const r = await visibleSNDK1670C(floor as number | null);
-    console.log(`chip=${label}: ${r.total} chains visible | SNDK 1670C present: ${Number(r.has_sndk_1670c) > 0 ? 'YES ✅' : 'no'}`);
+    console.log(
+      `chip=${label}: ${r.total} chains visible | SNDK 1670C present: ${Number(r.has_sndk_1670c) > 0 ? 'YES ✅' : 'no'}`,
+    );
   }
 })();

@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-05-30T03:23:52.896125+00:00
+ * Trained at    : 2026-06-02T04:23:27.252269+00:00
  *
  * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
  * Until then the old lottery-score-weights.ts continues to drive production.
@@ -48,7 +48,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   INTC: 0,
   IONQ: 0,
   IREN: 0,
-  IWM: 0,
+  IWM: -1,
   LITE: 0,
   LLY: 0,
   META: 0,
@@ -115,7 +115,7 @@ export const TOD_WEIGHTS_V2: Readonly<
   AM_open: 4,
   MID: 0,
   LUNCH: -4,
-  PM: -4,
+  PM: -3,
 };
 
 // ---------------------------------------------------------------------------
@@ -168,8 +168,8 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
  * Quintile 4 : value >= boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.05996843766438716, 0.09682150774205377, 0.1565040650406504,
-  0.38517179023508136,
+  0.05992115293557509, 0.09659890046673275, 0.15559753876247626,
+  0.3815561975226663,
 ];
 
 // ---------------------------------------------------------------------------
@@ -180,8 +180,8 @@ export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
   3, -2, -2, -2, -1,
 ];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.012314985530921642, 0.02554117154869061, 0.042568723904775466,
-  0.06920657150330813,
+  0.012299567798653053, 0.025527090706568927, 0.042553862563493534,
+  0.06926151636531477,
 ];
 
 // ---------------------------------------------------------------------------
