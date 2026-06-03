@@ -30,6 +30,7 @@ import {
   computeLotteryScoreV2,
   LOTTERY_TIER_THRESHOLDS_V2,
 } from '../_lib/lottery-score-weights-v2.js';
+import { tierFromQualityScore } from '../_lib/lottery-tier.js';
 import {
   computeRangePos,
   fetchStockCandles1m,
@@ -871,11 +872,32 @@ export default withCronInstrumentation(
         )) as { id: number }[];
         if (result.length > 0) {
           inserted += 1;
-          // Bucket by V2 tier for the per-run structured log + Sentry metrics.
+          // Bucket by the FEED's tier function (api/_lib/lottery-tier.ts) so
+          // the monitor and the user-facing feed share a single cutoff source
+          // and can never silently diverge again — the decoupling that hid the
+          // 24/22-vs-V2-scale bug (feed showed 0 tier1/2 for weeks while this
+          // monitor, keyed on the bare-score 9/7 thresholds, saw ~159 tier1/day
+          // and never fired). See spec lottery-feed-tier-recalibration-2026-06-03.
+          //
+          // Approximation, not a strict bound: at insert time we only have the
+          // bare score, not the read-time qas (which adds the per-ticker
+          // inversion bonus [-5..+5] + fire_count/gamma adjustments, and
+          // demotes direction-gated rows to tier3). Positive-bonus fires
+          // undercount the feed (errs toward alerting); negative-bonus
+          // (quintile 1-2) or direction-gated fires can overcount. To hide a
+          // genuinely-broken cutoff an entire day's tier1-eligible fires would
+          // all have to carry negative bonuses/gating — and the "3 consecutive
+          // days" guard makes a sustained miss unlikely. The structural win is
+          // that monitor + feed now share one cutoff source (tierFromQualityScore)
+          // and cannot silently diverge. LOTTERY_TIER_THRESHOLDS_V2 (9/7) is
+          // still used below for the V2.2 cluster-bonus, a separate mechanism.
           if (score == null) insertedGated += 1;
-          else if (score >= LOTTERY_TIER_THRESHOLDS_V2.t1) insertedTier1 += 1;
-          else if (score >= LOTTERY_TIER_THRESHOLDS_V2.t2) insertedTier2 += 1;
-          else insertedTier3 += 1;
+          else {
+            const tier = tierFromQualityScore(score);
+            if (tier === 'tier1') insertedTier1 += 1;
+            else if (tier === 'tier2') insertedTier2 += 1;
+            else insertedTier3 += 1;
+          }
         }
       }
     }
@@ -916,9 +938,11 @@ export default withCronInstrumentation(
     // is configured in the Sentry UI to alert on log queries against
     // `message:"detect-lottery-fires completed" insertedTier1:0` —
     // matching the JSON structure logged by ctx.logger.info just below.
-    // The failure mode the alert catches: the original 2026-05-19 +
-    // 2026-05-21 days that triggered this rescore project, when the v1
-    // cutoffs returned zero visible fires for two of three trading days.
+    // insertedTier1 is now bucketed via the FEED's tierFromQualityScore
+    // (shared cutoffs), so a cutoff/scale mismatch that zeroes out the feed's
+    // tier1 (the 2026-06-03 24/22-vs-V2-scale bug) now also zeroes this count
+    // and trips the alert — previously the monitor used decoupled 9/7
+    // thresholds and stayed silent through weeks of an all-tier3 feed.
     ctx.logger.info(
       {
         scanned: rows.length,
