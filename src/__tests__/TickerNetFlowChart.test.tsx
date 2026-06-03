@@ -376,6 +376,25 @@ describe('TickerNetFlowChart: session-span whitespace scaffold', () => {
     });
   });
 
+  it('falls back to fitContent (never setVisibleRange) when there is no flow grid — guards the "Value is null" crash', () => {
+    // Regression: a ticker with <2 net-flow ticks → flowData is null → no
+    // uniform full-session grid spans 08:30→close. With candles present the
+    // old code still called setVisibleRange(open→close), which lightweight-
+    // charts rejects with "Value is null" (no series reaches the bounds),
+    // and the ErrorBoundary blanked the entire Lottery/SilentBoom panel.
+    // Now we fitContent to whatever data exists instead.
+    render(
+      <TickerNetFlowChart
+        series={[makeTick({ ts: '2026-05-08T14:30:00Z', cumNcp: 100 })]}
+        candles={[makeCandle({ ts: '2026-05-08T14:30:00Z', close: 145 })]}
+        date="2026-05-08"
+        ariaLabel="sparse"
+      />,
+    );
+    expect(mockChart.timeScale().setVisibleRange).not.toHaveBeenCalled();
+    expect(mockChart.timeScale().fitContent).toHaveBeenCalled();
+  });
+
   it('does not scaffold flow data when date is absent (back-compat)', () => {
     render(<TickerNetFlowChart series={ticks} candles={[]} ariaLabel="t" />);
     const arrays = flowArrays();

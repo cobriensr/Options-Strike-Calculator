@@ -14,7 +14,7 @@
  * user catches the BOOM moment before scrolling.
  */
 
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { LotteryRow } from './LotteryRow.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
@@ -47,6 +47,11 @@ function ReignitionSectionInner({
   marketOpen,
   getFlowSnapshot,
 }: ReignitionSectionProps) {
+  // Collapsible (default expanded). Local state — the panel is pinned at
+  // the top of the feed, so a per-session collapse is enough; no need to
+  // persist across reloads.
+  const [collapsed, setCollapsed] = useState(false);
+
   // Empty state — section hides entirely. Per spec: "don't show empty
   // box". Returning null keeps the DOM clean and avoids a layout shift
   // when the daily top-N becomes populated mid-session.
@@ -63,16 +68,34 @@ function ReignitionSectionInner({
           id="reignition-heading"
           className="flex items-center gap-2 text-[11px] font-semibold tracking-[0.10em] text-orange-200 uppercase"
         >
-          <span
-            className="inline-block animate-pulse text-base leading-none"
-            aria-hidden="true"
+          {/* Heading-wrapped disclosure button (the count stays visible
+              when collapsed so the panel is still scannable). The
+              floor-blind pill sits OUTSIDE the button so its tooltip
+              doesn't toggle the section. */}
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            aria-expanded={!collapsed}
+            aria-controls="reignition-list"
+            className="-mx-1 flex items-center gap-2 rounded px-1 text-orange-200 transition-colors hover:text-orange-100 focus-visible:ring-2 focus-visible:ring-orange-400/60 focus-visible:outline-none"
           >
-            🔥
-          </span>
-          <span>Hot Right Now</span>
-          <span className="rounded border border-orange-400/40 bg-orange-900/50 px-1.5 py-0.5 font-mono text-[10px] tracking-normal text-orange-100">
-            {fires.length}
-          </span>
+            <span
+              className="text-[10px] leading-none text-orange-300/70"
+              aria-hidden="true"
+            >
+              {collapsed ? '▸' : '▾'}
+            </span>
+            <span
+              className="inline-block animate-pulse text-base leading-none"
+              aria-hidden="true"
+            >
+              🔥
+            </span>
+            <span>Hot Right Now</span>
+            <span className="rounded border border-orange-400/40 bg-orange-900/50 px-1.5 py-0.5 font-mono text-[10px] tracking-normal text-orange-100">
+              {fires.length}
+            </span>
+          </button>
           <span
             className="rounded border border-amber-400/40 bg-amber-900/40 px-1.5 py-0.5 font-mono text-[9px] tracking-normal text-amber-100"
             title="Floor-blind: this panel ranks by fire cadence and ignores the TAKE-IT floor, score, premium, and quality filters (it still respects ticker/type/mode/TOD). It surfaces the day's most re-ignited chains even when the model scored them below your floor — so it can show movers the main list hides."
@@ -88,7 +111,16 @@ function ReignitionSectionInner({
         </p>
       </header>
 
-      <ul className="divide-y divide-orange-900/40">
+      {/* Toggle `hidden` rather than unmounting so aria-controls always
+          resolves to a live node, and each LotteryRow's per-row expand
+          state + in-flight chart fetches survive a collapse/expand cycle
+          (no refetch storm on re-expand) — matches the disclosure pattern
+          in LotteryFinderTickerGroup. */}
+      <ul
+        id="reignition-list"
+        hidden={collapsed}
+        className="divide-y divide-orange-900/40"
+      >
         {fires.map((fire) => (
           <li key={fire.id} className="px-1 py-1">
             <LotteryRow

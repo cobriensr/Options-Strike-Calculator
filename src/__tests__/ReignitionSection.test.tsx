@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import type {
   LotteryFire,
   LotteryFireMacro,
@@ -188,6 +188,37 @@ describe('ReignitionSection: populated', () => {
     expect(screen.getByTestId('row-1')).toBeInTheDocument();
     expect(screen.getByTestId('row-2')).toBeInTheDocument();
     expect(screen.getByTestId('row-3')).toBeInTheDocument();
+  });
+
+  it('collapses and re-expands the row list via the header toggle (count stays visible)', () => {
+    render(
+      <ReignitionSection
+        fires={[
+          makeFire({ id: 1, underlyingSymbol: 'QQQ' }),
+          makeFire({ id: 2, underlyingSymbol: 'AMD' }),
+        ]}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={true}
+        getFlowSnapshot={() => null}
+      />,
+    );
+    // Default expanded — rows visible.
+    const toggle = screen.getByRole('button', { name: /Hot Right Now/i });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('row-1')).toBeInTheDocument();
+
+    // Collapse — rows hidden (kept mounted so aria-controls resolves),
+    // header + count still scannable.
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByTestId('row-1')).not.toBeVisible();
+    expect(screen.getByTestId('row-2')).not.toBeVisible();
+    expect(screen.getByText('2')).toBeInTheDocument();
+
+    // Re-expand — rows visible again.
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('row-1')).toBeVisible();
   });
 
   it('labels the section floor-blind so the cadence-ranked / floor-ignoring behavior is explicit', () => {
