@@ -967,15 +967,15 @@ describe('lottery-finder endpoint', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('applies round-trip score deduct and re-derives tier (-3 demotes tier1 → tier3)', async () => {
-    // V2 tiers (Phase 3): tier1 ≥ 24, tier2 ≥ 22, else tier3.
+  it('applies round-trip score deduct and re-derives tier (-3 demotes tier2 → tier3)', async () => {
+    // V2 tiers (recalibrated 2026-06-03): tier1 ≥ 13, tier2 ≥ 10, else tier3.
     // Default ROW fixture has inversion_quintile=5 (+5 bonus).
-    // score=14 + deduct=-3 = 11 → qas = 11 + 5 = 16 → tier3.
+    // score=7 + deduct=-3 = 4 → qas = 4 + 5 = 9 → tier3 (was tier2 at qas=12).
     mockSql
       .mockResolvedValueOnce([
         {
           ...ROW,
-          score: 14,
+          score: 7,
           round_trip_net_pct: '-0.65',
           round_trip_score_deduct: -3,
         },
@@ -995,8 +995,8 @@ describe('lottery-finder endpoint', () => {
       }[];
     };
     expect(body.fires[0]).toMatchObject({
-      score: 11,
-      rawScore: 14,
+      score: 4,
+      rawScore: 7,
       roundTripNetPct: -0.65,
       roundTripScoreDeduct: -3,
       scoreTier: 'tier3',
@@ -1004,13 +1004,14 @@ describe('lottery-finder endpoint', () => {
   });
 
   it('demotes tier1 → tier2 when -3 deduct lands score on the V2 tier2 cutoff', async () => {
-    // V2 tiers: tier1 ≥ 24, tier2 ≥ 22. Default ROW Q5 (+5 bonus).
-    // score=20 + deduct=-3 = 17 → qas = 17 + 5 = 22 → tier2 (at cutoff).
+    // V2 tiers: tier1 ≥ 13, tier2 ≥ 10. Default ROW Q5 (+5 bonus).
+    // score=8 + deduct=-3 = 5 → qas = 5 + 5 = 10 → tier2 (at cutoff;
+    // pre-deduct qas = 8 + 5 = 13 = tier1).
     mockSql
       .mockResolvedValueOnce([
         {
           ...ROW,
-          score: 20,
+          score: 8,
           round_trip_net_pct: '-0.55',
           round_trip_score_deduct: -3,
         },
@@ -1028,8 +1029,8 @@ describe('lottery-finder endpoint', () => {
       }[];
     };
     expect(body.fires[0]).toMatchObject({
-      score: 17,
-      qualityAdjustedScore: 22,
+      score: 5,
+      qualityAdjustedScore: 10,
       inversionQuintile: 5,
       scoreTier: 'tier2',
     });
@@ -1058,7 +1059,7 @@ describe('lottery-finder endpoint', () => {
 
   it('floors negative effective score at 0', async () => {
     // score=1 + deduct=-3 → −2 → floored to 0. Then qas = 0 + 5 (Q5)
-    // = 5 → tier3 under V2 cutoffs (< 22). The Math.max(0, ...) floor
+    // = 5 → tier3 under V2 cutoffs (< 10). The Math.max(0, ...) floor
     // is on the displayed `score` field, not on `qualityAdjustedScore`.
     mockSql
       .mockResolvedValueOnce([
@@ -1377,7 +1378,8 @@ describe('lottery-finder endpoint', () => {
     expect(body.fires[0]!.rawScore).toBe(20);
     expect(body.fires[0]!.fireCountScoreAdjustment).toBe(-3);
     expect(body.fires[0]!.score).toBe(17);
-    expect(body.fires[0]!.scoreTier).toBe('tier2');
+    // rawScore 20 + adj -3 = 17 → qas = 17 + 5 (Q5) = 22 → tier1 (>= 13).
+    expect(body.fires[0]!.scoreTier).toBe('tier1');
   });
 
   it('applies -1 score adjustment for 2-3 fire chains (still below baseline)', async () => {
@@ -1399,15 +1401,13 @@ describe('lottery-finder endpoint', () => {
       fires: Array<{
         score: number | null;
         rawScore: number | null;
-        scoreTier: string;
         fireCountScoreAdjustment: number;
       }>;
     };
     expect(body.fires[0]!.fireCountScoreAdjustment).toBe(-1);
-    // V2 tiers: tier1 ≥ 24, default Q5 (+5 bonus).
-    // rawScore 20 + adj -1 = 19 → qas = 19 + 5 = 24 → tier1.
+    // rawScore 20 + adj -1 = 19 (displayed score). Tier derivation is
+    // covered by lottery-tier.test.ts + the round-trip-deduct tests.
     expect(body.fires[0]!.score).toBe(19);
-    expect(body.fires[0]!.scoreTier).toBe('tier1');
   });
 
   it('applies +1 score adjustment for 8-15 fire chains', async () => {
@@ -1429,16 +1429,13 @@ describe('lottery-finder endpoint', () => {
       fires: Array<{
         score: number | null;
         rawScore: number | null;
-        scoreTier: string;
         fireCountScoreAdjustment: number;
       }>;
     };
     expect(body.fires[0]!.rawScore).toBe(20);
     expect(body.fires[0]!.fireCountScoreAdjustment).toBe(1);
-    // V2 tiers: tier1 ≥ 24, default Q5 (+5 bonus).
-    // rawScore 20 + adj +1 = 21 → qas = 21 + 5 = 26 → tier1.
+    // rawScore 20 + adj +1 = 21 (displayed score).
     expect(body.fires[0]!.score).toBe(21);
-    expect(body.fires[0]!.scoreTier).toBe('tier1');
   });
 
   it('applies +2 score adjustment for ≥16 fire chains (highest-edge cohort)', async () => {
@@ -1460,8 +1457,7 @@ describe('lottery-finder endpoint', () => {
       fires: Array<{ fireCountScoreAdjustment: number; score: number | null }>;
     };
     expect(body.fires[0]!.fireCountScoreAdjustment).toBe(2);
-    // V2 tiers: tier1 ≥ 24, default Q5 (+5 bonus).
-    // rawScore 20 + adj +2 = 22 → qas = 22 + 5 = 27 → tier1.
+    // rawScore 20 + adj +2 = 22 (displayed score).
     expect(body.fires[0]!.score).toBe(22);
   });
 
@@ -1685,7 +1681,7 @@ describe('lottery-finder endpoint', () => {
   // (cold-start tickers without 21-day inversion history) is never
   // filtered. `qualityAdjustedScore` = combined_score + bonus(quintile)
   // and `scoreTier` is derived from it under the V2 cutoffs
-  // (Tier 1 >= 24, Tier 2 >= 22).
+  // (Tier 1 >= 13, Tier 2 >= 10).
   describe('inversion-quality filter', () => {
     const rowWithQuintile = (
       id: number,
@@ -1795,10 +1791,10 @@ describe('lottery-finder endpoint', () => {
     });
 
     it('qualityAdjustedScore = score + inversionQualityBonus(quintile)', async () => {
-      // score = 20, quintile = 4 (+3) → qas = 23 → tier2
+      // score = 8, quintile = 4 (+3) → qas = 11 → tier2 (>= 10, < 13)
       const row = {
         ...ROW,
-        score: 20,
+        score: 8,
         ticker_inversion_quintile: 4,
       };
       mockSql
@@ -1818,18 +1814,18 @@ describe('lottery-finder endpoint', () => {
         }>;
       };
       expect(body.fires[0]).toMatchObject({
-        score: 20,
-        qualityAdjustedScore: 23,
+        score: 8,
+        qualityAdjustedScore: 11,
         inversionQuintile: 4,
         scoreTier: 'tier2',
       });
     });
 
-    it('scoreTier reflects V2 cutoffs: 24→tier1, 22→tier2, 21→tier3', async () => {
+    it('scoreTier reflects V2 cutoffs: 13→tier1, 10→tier2, 9→tier3', async () => {
       // Use quintile 3 (bonus 0) so qas == score for direct cutoff verification.
-      const t1 = { ...ROW, id: 101, score: 24, ticker_inversion_quintile: 3 };
-      const t2 = { ...ROW, id: 102, score: 22, ticker_inversion_quintile: 3 };
-      const t3 = { ...ROW, id: 103, score: 21, ticker_inversion_quintile: 3 };
+      const t1 = { ...ROW, id: 101, score: 13, ticker_inversion_quintile: 3 };
+      const t2 = { ...ROW, id: 102, score: 10, ticker_inversion_quintile: 3 };
+      const t3 = { ...ROW, id: 103, score: 9, ticker_inversion_quintile: 3 };
       mockSql
         .mockResolvedValueOnce([t1, t2, t3])
         .mockResolvedValueOnce([{ total: 3 }]);

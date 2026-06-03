@@ -4,9 +4,9 @@ import { tierFromQualityScore, TIER_CUTOFFS_V2 } from '../_lib/lottery-tier.js';
 describe('tierFromQualityScore', () => {
   const { tier1MinScore, tier2MinScore } = TIER_CUTOFFS_V2;
 
-  it('matches Phase 2 locked cutoffs', () => {
-    expect(tier1MinScore).toBe(24);
-    expect(tier2MinScore).toBe(22);
+  it('matches the recalibrated 2026-06-03 cutoffs', () => {
+    expect(tier1MinScore).toBe(13);
+    expect(tier2MinScore).toBe(10);
   });
   it('returns tier1 at and above tier1MinScore', () => {
     expect(tierFromQualityScore(tier1MinScore)).toBe('tier1');

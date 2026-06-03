@@ -1358,10 +1358,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const directionGated = r.direction_gated === true;
       // Phase 3 inversion-quality filter: tier is derived from
       // qualityAdjustedScore (combined_score + per-ticker inversion
-      // bonus) using V2 cutoffs (Tier 1 >= 24 / Tier 2 >= 22 from the
-      // Phase 2 simulation). Raw `score` stays as the combined_score
-      // value; `qualityAdjustedScore` is exposed as an additional
-      // field on the row.
+      // bonus) using V2 cutoffs (Tier 1 >= 13 / Tier 2 >= 10,
+      // recalibrated 2026-06-03 — spec
+      // lottery-feed-tier-recalibration-2026-06-03.md). Raw `score` stays
+      // as the combined_score value; `qualityAdjustedScore` is exposed as
+      // an additional field on the row.
       const inversionQuintile =
         r.ticker_inversion_quintile != null
           ? Number(r.ticker_inversion_quintile)
