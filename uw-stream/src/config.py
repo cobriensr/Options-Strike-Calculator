@@ -74,6 +74,14 @@ _OPTION_TRADES_LOTTERY = "option_trades_lottery"
 _NET_FLOW_LOTTERY = "net_flow_lottery"
 _GEX_STRIKE_EXPIRY_LOTTERY = "gex_strike_expiry_lottery"
 
+# UW caps channel subscriptions at 50 PER CONNECTION (confirmed 2026-06-03 —
+# a single socket joining the full ~260-channel universe hit the cap and left
+# net_flow + gex_strike_expiry silently unsubscribed for ~20h). We shard the
+# channel list across N connections, each ≤ PER_CONN_MAX, with margin under 50
+# for the 2 global channels + future ticker additions. See
+# docs/superpowers/specs/uw-stream-ml-feature-capture-2026-06-03.md.
+PER_CONN_MAX = 45
+
 
 class Settings(BaseSettings):
     """All environment variables required by uw-stream."""
@@ -295,6 +303,50 @@ class Settings(BaseSettings):
                 seen.add(ch)
                 out.append(ch)
         return out
+
+    @property
+    def channel_shards(self) -> list[list[str]]:
+        """Split ``channels`` into per-connection groups of ≤ ``PER_CONN_MAX``.
+
+        UW caps channels at 50 per CONNECTION, so we open one WS connection per
+        shard rather than joining everything on one socket. Partitioning is:
+
+        - **family-contiguous** — a shard holds channels from a single
+          per-ticker family (``option_trades:``/``net_flow:``/...), so a socket
+          drop degrades one family's ticker-slice, not "whichever sorts first";
+        - **deterministic** — derived from the already-sorted ``channels``, so a
+          reconnect re-subscribes the exact same set and ops can map a shard to
+          a known channel range;
+        - global exact channels (``flow-alerts``, ``off_lit_trades``) fold into
+          the first shard with room, else their own shard.
+
+        Returns ``[[...]]`` (one shard) for a small channel set — single-channel
+        deployments and tests are unaffected.
+        """
+        chans = self.channels
+        globals_ = [c for c in chans if ":" not in c]
+        per_ticker = [c for c in chans if ":" in c]
+
+        # Group per-ticker channels by family, preserving channels' order.
+        families: dict[str, list[str]] = {}
+        for c in per_ticker:
+            families.setdefault(c.split(":", 1)[0], []).append(c)
+
+        shards: list[list[str]] = []
+        for fam_channels in families.values():
+            for i in range(0, len(fam_channels), PER_CONN_MAX):
+                shards.append(fam_channels[i : i + PER_CONN_MAX])
+
+        # Fold globals into the first shard with room; else give them their own.
+        if globals_:
+            for shard in shards:
+                if len(shard) + len(globals_) <= PER_CONN_MAX:
+                    shard[:0] = globals_
+                    break
+            else:
+                shards.append(globals_)
+
+        return shards or [[]]
 
     @property
     def interval_ba_tickers(self) -> frozenset[str]:

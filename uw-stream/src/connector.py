@@ -54,8 +54,13 @@ class Connector:
         self,
         channels: list[str],
         receive_queue: asyncio.Queue,
+        name: str = "ws",
     ) -> None:
         self.channels = channels
+        # Shard label — distinguishes this connection in logs/metrics when
+        # the channel set is sharded across multiple connections. Connection
+        # health is tracked per-name in ``state.connections``.
+        self.name = name
         # Bounded queue between the connector (producer) and the router
         # (consumer). Connector only does ``put_nowait`` so the WS
         # receive task can never block on JSON parsing or handler
@@ -82,7 +87,7 @@ class Connector:
                 # we do reconnect rather than exit the daemon. We mark
                 # disconnect + reconnect for symmetry with the exception
                 # branches so /metrics' reconnects_last_hour is accurate.
-                state.ws_connected = False
+                state.set_connection(self.name, False)
                 state.record_reconnect()
                 log.info("WS closed cleanly, reconnecting after grace")
             except (
@@ -97,7 +102,7 @@ class Connector:
                 # alert at >=5 reconnects/hour still surfaces the incident.
                 websockets.InvalidHandshake,
             ) as exc:
-                state.ws_connected = False
+                state.set_connection(self.name, False)
                 state.record_reconnect()
                 log.warning(
                     "WS connection unavailable",
@@ -105,7 +110,7 @@ class Connector:
                 )
                 self._maybe_alert_storm()
             except (TimeoutError, OSError) as exc:
-                state.ws_connected = False
+                state.set_connection(self.name, False)
                 state.record_reconnect()
                 log.warning(
                     "WS transport error",
@@ -116,7 +121,7 @@ class Connector:
                 # Anything we didn't anticipate — Sentry it, then keep
                 # trying. The daemon must not exit while market hours
                 # are live.
-                state.ws_connected = False
+                state.set_connection(self.name, False)
                 state.record_reconnect()
                 capture_exception(exc, tags={"component": "connector"})
 
@@ -149,7 +154,10 @@ class Connector:
         join to fail. The socket would stay open with no data flowing
         and the daemon would report green until the next disconnect.
         """
-        log.info("connecting to WS", extra={"channels": self.channels})
+        log.info(
+            "connecting to WS",
+            extra={"shard": self.name, "channels": self.channels},
+        )
         async with websockets.connect(
             settings.ws_url,
             ping_interval=_PING_INTERVAL_S,
@@ -173,11 +181,11 @@ class Connector:
                     tags={"component": "connector", "stage": "subscribe"},
                 )
                 raise
-            state.ws_connected = True
+            state.set_connection(self.name, True)
             # Mark this attempt as a healthy session so ``run`` resets the
             # reconnect backoff after the socket eventually drops.
             self._established = True
-            log.info("WS connected, awaiting messages")
+            log.info("WS connected, awaiting messages", extra={"shard": self.name})
             async for raw in ws:
                 # Hand off to the router via a bounded queue. We never
                 # ``await`` here — the WS receive task must never block

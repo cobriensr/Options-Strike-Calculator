@@ -110,19 +110,40 @@ async def _run() -> None:
     router = Router(handlers)
     receive_queue_size = _receive_queue_size()
     receive_queue: asyncio.Queue = asyncio.Queue(maxsize=receive_queue_size)
-    connector = Connector(channels=settings.channels, receive_queue=receive_queue)
+
+    # UW caps channels at 50 PER CONNECTION, so the channel universe is sharded
+    # across N WS connections (≤45 each). Every connector feeds the SAME
+    # receive_queue → one router → shared handlers (the router dispatches by
+    # channel name regardless of which socket delivered the frame), so this is
+    # purely additive: handlers, router, and DB writes are unchanged. One
+    # socket dropping reconnects only its shard; the others keep streaming.
+    shards = settings.channel_shards
+    connectors = [
+        Connector(
+            channels=shard,
+            receive_queue=receive_queue,
+            name=f"conn{i}",
+        )
+        for i, shard in enumerate(shards)
+    ]
     log.info(
-        "receive queue configured",
-        extra={"maxsize": receive_queue_size},
+        "receive queue + shards configured",
+        extra={
+            "maxsize": receive_queue_size,
+            "shard_count": len(connectors),
+            "shard_sizes": [len(s) for s in shards],
+        },
     )
 
-    # Producers: the connector (WS receive) and router (parse + dispatch).
+    # Producers: every connector (WS receive) + the router (parse + dispatch).
     # These must stop FIRST on shutdown so no new payloads reach the
     # handler queues while their drain loops are emptying them.
     producer_tasks: list[asyncio.Task] = [
-        asyncio.create_task(connector.run(), name="connector"),
-        asyncio.create_task(router.run(receive_queue), name="router"),
+        asyncio.create_task(c.run(), name=f"connector:{c.name}") for c in connectors
     ]
+    producer_tasks.append(
+        asyncio.create_task(router.run(receive_queue), name="router"),
+    )
     # Background services that aren't part of the data pipeline.
     background_tasks: list[asyncio.Task] = [
         asyncio.create_task(run_server(), name="health"),

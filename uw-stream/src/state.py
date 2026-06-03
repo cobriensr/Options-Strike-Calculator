@@ -41,7 +41,10 @@ class State:
     """Process-wide state for /healthz and /metrics."""
 
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
-    ws_connected: bool = False
+    # Per-connection (shard) connected flags. With channel sharding there are
+    # N WS connections; ``ws_connected`` (below) is True only when ALL of them
+    # are up, so /healthz doesn't read green while a shard is mid-reconnect.
+    connections: dict[str, bool] = field(default_factory=dict)
     last_message_ts: datetime | None = None
     reconnect_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=64))
     channels: dict[str, ChannelMetrics] = field(default_factory=dict)
@@ -52,6 +55,32 @@ class State:
     # (drop-oldest semantics — the newest frame still gets enqueued).
     receive_queue_depth: int = 0
     receive_queue_drops: int = 0
+
+    @property
+    def ws_connected(self) -> bool:
+        """True only when every WS shard connection is currently up.
+
+        No shards registered yet (pre-connect) reads False, matching the old
+        single-connection default. Health treats all-up as the green state.
+        """
+        return bool(self.connections) and all(self.connections.values())
+
+    @ws_connected.setter
+    def ws_connected(self, value: bool) -> None:
+        """Force the aggregate connection state to a single boolean.
+
+        Production reports per-shard via ``set_connection``; this setter is a
+        convenience for callers that think in one boolean (tests, the
+        health-state snapshot/restore fixture). ``True`` → one up connection;
+        ``False`` → no up connections (empty), so a later per-shard
+        ``set_connection(..., True)`` isn't dragged False by a lingering
+        synthetic entry. Either way ``ws_connected`` reads back the same bool.
+        """
+        self.connections = {"_aggregate": True} if value else {}
+
+    def set_connection(self, name: str, connected: bool) -> None:
+        """Record a shard connection's up/down state (keyed by shard name)."""
+        self.connections[name] = connected
 
     def reconnects_last_hour(self) -> int:
         """Count reconnect events that fell within the last hour."""
