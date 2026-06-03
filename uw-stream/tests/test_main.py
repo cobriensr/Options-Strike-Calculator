@@ -15,6 +15,7 @@ import pytest
 
 import main
 import notify
+import ws_lease
 
 
 @pytest.fixture(autouse=True)
@@ -124,4 +125,227 @@ async def test_shutdown_logs_but_survives_a_drain_failure(_reset_notify_state):
     assert "drain:good" in events
     # Notify flush + close still happened.
     assert calls == ["notify_drain", "notify_close"]
+    assert producer.cancelled()
+
+
+class _FakeLeaseSession:
+    """Minimal aiohttp.ClientSession stand-in for lease wiring tests."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
+    """The lease invariant: a booting daemon must NOT open any UW socket
+    until it holds the lease. If acquire times out (a wedged prior gen
+    still holds it), _run must exit non-zero (SystemExit) BEFORE building
+    any Connector — never force-stealing — so Railway restarts + retries.
+    """
+    # No real Sentry / DB / aiohttp.
+    monkeypatch.setattr(main, "init_sentry", lambda: None)
+
+    pool_calls: list[str] = []
+
+    async def _fake_init_pool() -> None:
+        pool_calls.append("init")
+
+    async def _fake_close_pool() -> None:
+        pool_calls.append("close")
+
+    monkeypatch.setattr(main, "init_pool", _fake_init_pool)
+    monkeypatch.setattr(main, "close_pool", _fake_close_pool)
+
+    # Lease enabled with creds present so _run takes the lease branch.
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", True, raising=False)
+    monkeypatch.setattr(
+        main.settings, "kv_rest_api_url", "https://test.upstash.io", raising=False
+    )
+    monkeypatch.setattr(
+        main.settings, "kv_rest_api_token", "tok", raising=False
+    )
+
+    fake_session = _FakeLeaseSession()
+    monkeypatch.setattr(
+        main.aiohttp, "ClientSession", lambda *a, **k: fake_session
+    )
+
+    built_connectors: list[object] = []
+    monkeypatch.setattr(
+        main, "Connector", lambda *a, **k: built_connectors.append(object())
+    )
+
+    class _FakeLease:
+        def __init__(self, **_kwargs) -> None:
+            self.released = False
+
+        async def acquire(self, _timeout_s: float) -> bool:
+            return False  # contended past timeout — wedged prior gen.
+
+        async def release(self) -> bool:
+            self.released = True
+            return False
+
+    monkeypatch.setattr(main, "WsLease", _FakeLease)
+
+    with pytest.raises(SystemExit) as exc_info:
+        await main._run()
+
+    assert exc_info.value.code == 1
+    # Pool was opened then closed on the fail path.
+    assert pool_calls == ["init", "close"]
+    # The lease's session was closed (no leaked connector pool).
+    assert fake_session.closed is True
+    # CRITICAL: we exited before building ANY connector / opening a socket.
+    assert built_connectors == []
+
+
+@pytest.mark.asyncio
+async def test_run_wires_renewal_task_with_stop_as_on_lost(monkeypatch):
+    """_run must start the lease renewal task and bind ``on_lost`` to the
+    stop Event's ``.set`` — so a confirmed lease loss routes into the SAME
+    graceful-shutdown path as a SIGTERM. Also confirms the lease is released
+    on shutdown.
+    """
+    monkeypatch.setattr(main, "init_sentry", lambda: None)
+
+    async def _noop_pool() -> None:
+        return None
+
+    monkeypatch.setattr(main, "init_pool", _noop_pool)
+    monkeypatch.setattr(main, "close_pool", _noop_pool)
+
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", True, raising=False)
+    monkeypatch.setattr(
+        main.settings, "kv_rest_api_url", "https://t.upstash.io", raising=False
+    )
+    monkeypatch.setattr(main.settings, "kv_rest_api_token", "tok", raising=False)
+    monkeypatch.setattr(
+        main.aiohttp, "ClientSession", lambda *a, **k: _FakeLeaseSession()
+    )
+
+    # Stub the data pipeline so _run reaches the renewal wiring + asyncio.wait
+    # cleanly without real connectors/router/health/watchdog.
+    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
+
+    class _ForeverConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            # main pre-registers each shard via c.name before tasks start.
+            self.name = kwargs.get("name", "conn")
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    class _ForeverRouter:
+        def __init__(self, *_a, **_k) -> None: ...
+
+        async def run(self, _q) -> None:
+            await asyncio.sleep(3600)
+
+    async def _forever_bg() -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "Connector", _ForeverConnector)
+    monkeypatch.setattr(main, "Router", _ForeverRouter)
+    monkeypatch.setattr(main, "run_server", _forever_bg)
+    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
+
+    captured: dict[str, object] = {}
+
+    class _FakeLease:
+        def __init__(self, **_k) -> None:
+            self.released = False
+
+        async def acquire(self, _t: float) -> bool:
+            return True
+
+        async def run_renewal(self, on_lost) -> None:
+            captured["on_lost"] = on_lost
+            captured["lease"] = self
+            # Simulate a confirmed loss: fire on_lost (= stop.set) so the
+            # main asyncio.wait wakes deterministically → graceful shutdown.
+            on_lost()
+
+        async def release(self) -> bool:
+            self.released = True
+            return True
+
+    monkeypatch.setattr(main, "WsLease", _FakeLease)
+
+    await main._run()
+
+    on_lost = captured.get("on_lost")
+    assert on_lost is not None, "renewal task was never started"
+    # on_lost must be the stop Event's bound .set — the wiring under test.
+    assert getattr(on_lost, "__name__", None) == "set"
+    assert isinstance(getattr(on_lost, "__self__", None), asyncio.Event)
+    # And the lease was released during shutdown.
+    assert captured["lease"].released is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_releases_lease_after_producers_then_closes_session(
+    _reset_notify_state,
+):
+    """Release ordering: the lease may only be released AFTER our sockets
+    are closed (producers cancelled), and the lease's session closes after
+    the release. Releasing earlier would let the next gen connect while our
+    sockets are still open — the overlap the lease exists to prevent.
+    """
+    events: list[str] = []
+
+    producer = asyncio.create_task(_forever(events, "connector"))
+
+    class _RecordingLease(ws_lease.WsLease):  # type: ignore[misc]
+        def __init__(self, events_list: list[str]) -> None:
+            # Skip the real __init__ — we only exercise release().
+            self._events = events_list
+
+        async def release(self) -> bool:
+            # By the time release runs, the producer must be cancelled
+            # (our sockets closed) — that's the invariant under test.
+            assert producer.done(), (
+                "lease must be released only after producers are cancelled"
+            )
+            self._events.append("lease_release")
+            return True
+
+    lease = _RecordingLease(events)
+    session = _FakeLeaseSession()
+
+    await asyncio.sleep(0.02)  # let the producer reach its await point
+
+    await main._shutdown(
+        producer_tasks=[producer],
+        handlers=[],
+        other_tasks=[],
+        lease=lease,
+        lease_session=session,
+    )
+
+    # Producer cancelled, lease released, session closed — in order.
+    assert events.index("cancelled:connector") < events.index("lease_release")
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_without_lease_is_unchanged(_reset_notify_state):
+    """When no lease is active (kill switch off), _shutdown must behave
+    exactly as before — no lease release, no session close, no error.
+    """
+    events: list[str] = []
+    producer = asyncio.create_task(_forever(events, "connector"))
+
+    await asyncio.sleep(0.02)
+
+    # lease/lease_session default to None — must not raise.
+    await main._shutdown(
+        producer_tasks=[producer],
+        handlers=[],
+        other_tasks=[],
+    )
+
     assert producer.cancelled()

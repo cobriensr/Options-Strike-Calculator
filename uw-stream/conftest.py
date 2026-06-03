@@ -30,3 +30,9 @@ if str(_SRC) not in sys.path:
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 os.environ.setdefault("UW_API_KEY", "test-key")
 os.environ.setdefault("LOG_LEVEL", "WARNING")
+# WS_LEASE_ENABLED defaults True and then requires both KV vars (see
+# config.Settings._validate_ws_lease), so the module-level
+# `settings = Settings()` singleton would fail collection without these.
+# Real env still wins via setdefault.
+os.environ.setdefault("KV_REST_API_URL", "https://test.upstash.io")
+os.environ.setdefault("KV_REST_API_TOKEN", "test-token")

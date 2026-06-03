@@ -77,6 +77,13 @@ the migration plan.
 | `WS_BACKPRESSURE_POLICY` | no       | `drop_oldest` (default), `drop_newest`, or `block`                                                                                                 |
 | `WS_LOG_SAMPLE_RATE`     | no       | Default 0.001 (1 in 1000 messages logged)                                                                                                          |
 | `WS_CHANNELS`            | no       | Comma-separated. Default `flow-alerts`. Shorthand `option_trades_lottery` expands to one `option_trades:<TICKER>` per Lottery Finder ticker (~50). |
+| `WS_LEASE_ENABLED`       | no       | Default `true`. WS connection lease (deploy-overlap guard, see below). `false` bypasses it. When `true`, BOTH KV vars below are REQUIRED.           |
+| `KV_REST_API_URL`        | cond.    | Upstash REST base URL, same store the main app uses. Required when `WS_LEASE_ENABLED=true`.                                                        |
+| `KV_REST_API_TOKEN`      | cond.    | Upstash REST bearer token. Required when `WS_LEASE_ENABLED=true`.                                                                                  |
+| `WS_LEASE_TTL_MS`        | no       | Default 30000. Lease TTL; lapses on its own if the holder dies without releasing.                                                                  |
+| `WS_LEASE_RENEW_MS`      | no       | Default 10000 (ttl/3). Renew interval; MUST be `< WS_LEASE_TTL_MS` (validated at boot).                                                            |
+| `WS_LEASE_ACQUIRE_TIMEOUT_S` | no   | Default 60. Boot poll window before exiting non-zero for Railway to restart + retry (never force-steals).                                          |
+| `WS_LEASE_KEY`           | no       | Default `uw-stream:ws-conn-lease`. The Upstash key the lease lives under.                                                                          |
 
 ## Local development
 
@@ -128,3 +135,18 @@ api/ migration chain. Going forward, all schema changes live there.)
 - **Single point of failure.** One process, one connection. If it dies
   during market hours, data goes dark until Railway restarts it.
   Acceptable for a personal trading tool but worth knowing.
+- **WS connection lease (deploy-overlap guard).** UW caps the token at 10
+  websocket connections; steady-state is ~8 sharded sockets. The exposure
+  is the Railway deploy handoff, where the new container boots while the
+  old is still draining, so both briefly hold ~8 sockets (16 > 10) and the
+  new gen's joins get silently rejected. To prevent this, every boot
+  acquires a single Upstash-backed TTL'd lease (`WS_LEASE_KEY`) BEFORE
+  opening any socket: a new deploy waits for the old gen to release (or for
+  the TTL to lapse) before connecting. On clean shutdown the lease is
+  released only AFTER our sockets close, so the next gen never connects
+  while ours are open. If acquire times out (a wedged old gen), the daemon
+  exits non-zero and lets Railway restart + retry rather than force-stealing
+  the lease (stealing would re-introduce the overlap). A confirmed
+  mid-life loss of the lease routes into the normal graceful shutdown.
+  Implementation in `src/ws_lease.py`; spec in
+  `docs/superpowers/specs/uw-stream-ws-connection-lease-2026-06-03.md`.

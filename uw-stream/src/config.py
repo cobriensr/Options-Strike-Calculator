@@ -183,6 +183,23 @@ class Settings(BaseSettings):
     # surface is locked down.
     internal_metrics_token: str = ""
 
+    # WS connection lease (deploy-overlap guard — see
+    # docs/superpowers/specs/uw-stream-ws-connection-lease-2026-06-03.md).
+    # A single Upstash-backed TTL'd key gates every WS socket open so only
+    # one daemon generation holds UW connections at a time, preventing the
+    # Railway deploy-handoff overlap that would exceed UW's 10-connection
+    # cap. ``ws_lease_enabled`` is the kill switch for local dev / incident
+    # bypass; the KV_* vars point at the same Upstash store the main app
+    # uses. When enabled, both KV vars MUST be set (validated below) so the
+    # daemon never boots thinking it's protected when it isn't.
+    ws_lease_enabled: bool = True
+    kv_rest_api_url: str = ""
+    kv_rest_api_token: str = ""
+    ws_lease_ttl_ms: int = 30_000
+    ws_lease_renew_ms: int = 10_000
+    ws_lease_acquire_timeout_s: int = 60
+    ws_lease_key: str = "uw-stream:ws-conn-lease"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("ws_log_sample_rate")
@@ -260,6 +277,41 @@ class Settings(BaseSettings):
             raise ValueError(
                 "WS_CHANNELS resolved to an empty list "
                 "(check the WS_CHANNELS env var)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ws_lease(self) -> Settings:
+        """Fail fast on a misconfigured WS connection lease.
+
+        The lease is a safety mechanism; a daemon that boots with the
+        lease *enabled* but unreachable (blank KV creds) would believe it
+        is protected against the deploy-overlap while actually never
+        acquiring anything — the worst failure mode (silent false
+        confidence). So when ``ws_lease_enabled`` is True we require BOTH
+        Upstash REST vars, and we require ``ws_lease_renew_ms`` to be
+        strictly tighter than ``ws_lease_ttl_ms`` (otherwise the renewal
+        interval never extends the TTL before it lapses, fencing the
+        process on the first renew tick). When the lease is disabled the
+        KV vars are irrelevant, so we don't require them.
+        """
+        if not self.ws_lease_enabled:
+            return self
+        if not self.kv_rest_api_url.strip() or not self.kv_rest_api_token.strip():
+            raise ValueError(
+                "WS_LEASE_ENABLED is true but KV_REST_API_URL and/or "
+                "KV_REST_API_TOKEN is blank. The WS connection lease needs "
+                "both Upstash REST credentials to acquire the lease; refusing "
+                "to boot a daemon that thinks it's protected but isn't. Set "
+                "both vars, or set WS_LEASE_ENABLED=false to bypass the lease."
+            )
+        if self.ws_lease_renew_ms >= self.ws_lease_ttl_ms:
+            raise ValueError(
+                "WS_LEASE_RENEW_MS must be strictly less than WS_LEASE_TTL_MS "
+                f"(got renew={self.ws_lease_renew_ms}ms, "
+                f"ttl={self.ws_lease_ttl_ms}ms). The renewal interval must be "
+                "tighter than the TTL so the lease is extended before it "
+                "lapses (convention: renew = ttl / 3)."
             )
         return self
 
