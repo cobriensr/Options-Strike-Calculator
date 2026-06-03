@@ -464,6 +464,28 @@ describe('TickerNetFlowChart: cross-panel hover sync', () => {
     expect(lastCall?.[1]).toBe(t);
   });
 
+  it('survives a setCrosshairPosition throw without crashing the panel', () => {
+    // lightweight-charts throws "Value is null" from setCrosshairPosition when
+    // the synced time can't be mapped to a logical coordinate (no net-flow
+    // ticks AND candles not yet loaded — an empty/degenerate series). The
+    // cross-pane crosshair sync is cosmetic, so the throw must be caught, not
+    // bubble to the ErrorBoundary. Regression for the 2026-06-05 expand crash.
+    mockSetCrosshairPosition.mockImplementationOnce(() => {
+      throw new Error('Value is null');
+    });
+    const t = Math.floor(Date.parse('2026-05-08T14:32:00Z') / 1000);
+    expect(() =>
+      render(
+        <TickerNetFlowChart
+          series={[]}
+          candles={[]}
+          syncHoverTime={t}
+          ariaLabel="t"
+        />,
+      ),
+    ).not.toThrow();
+  });
+
   it('calls clearCrosshairPosition when syncHoverTime is null', () => {
     render(
       <TickerNetFlowChart

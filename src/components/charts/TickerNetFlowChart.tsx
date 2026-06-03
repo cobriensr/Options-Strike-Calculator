@@ -640,6 +640,20 @@ function TickerNetFlowChartInner({
           priceSeries,
         );
       }
+    } catch (err) {
+      // setCrosshairPosition throws "Value is null" when the requested time
+      // can't be mapped to a logical coordinate — i.e. the target series is
+      // empty/degenerate (no net-flow ticks AND candles not yet loaded). The
+      // cross-pane crosshair sync is purely cosmetic, so never let it bubble
+      // to the ErrorBoundary and blank the whole alert panel. Same class as
+      // the setVisibleRange guard above.
+      Sentry.captureMessage('TickerNetFlowChart.setCrosshairPosition skipped', {
+        level: 'warning',
+        extra: {
+          syncHoverTime,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
     } finally {
       isSyncingRef.current = false;
     }
