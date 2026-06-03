@@ -998,6 +998,46 @@ def test_tbbo_ofi_percentile_ranks_value_against_history(
     assert result_max["percentile"] == 100.0
 
 
+def test_tbbo_ofi_percentile_uses_front_contract_only(tmp_path: Path) -> None:
+    """With two contracts on the same day, the daily-mean OFI must come from
+    the higher-volume (front) contract only.
+
+    Guards the aggregate-early rewrite (SIDE-OOM NQ): it pre-aggregates to
+    (day, contract, minute) and then joins to front_contract, so the
+    lower-volume back month must not bleed into the rolling-window OFI. A
+    regression that aggregated both contracts together would blend +1 and -1
+    toward the volume-weighted ~+0.33 instead of the front's +1.0.
+    """
+    from datetime import datetime, timezone
+
+    # Front month (NQU4): buy-only, 80 min x 10 -> volume 800, OFI = +1.
+    front = _tbbo_day_trades(
+        (2024, 6, 3), 101, "NQU4", [(m, "B", 10) for m in range(80)]
+    )
+    # Back month (NQZ4): sell-only, 80 min x 5 -> volume 400 (< front), OFI = -1.
+    back = _tbbo_day_trades(
+        (2024, 6, 3), 202, "NQZ4", [(m, "A", 5) for m in range(80)]
+    )
+    sym_open = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
+    sym_close = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)
+    _build_tbbo_archive(
+        tmp_path,
+        front + back,
+        [
+            (101, "NQU4", sym_open, sym_close),
+            (202, "NQZ4", sym_open, sym_close),
+        ],
+    )
+
+    result = archive_query.tbbo_ofi_percentile(
+        "NQ", 0.5, window="1h", horizon_days=252, root=tmp_path
+    )
+    # One session; daily-mean OFI reflects the front contract (+1.0), not the
+    # volume-weighted blend of both contracts (~+0.33).
+    assert result["count"] == 1
+    assert result["mean"] == pytest.approx(1.0, rel=1e-6)
+
+
 def test_tbbo_ofi_percentile_validates_inputs(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="symbol must be"):
         archive_query.tbbo_ofi_percentile("CL", 0.1, window="1h", root=tmp_path)

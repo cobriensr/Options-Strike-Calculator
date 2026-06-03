@@ -1434,36 +1434,69 @@ def tbbo_ofi_percentile(
         horizon_date_filter = "IS NOT NULL"
         date_filter_binds = []
 
-    # Standardized via `front_month_cte` (Phase 2b). TBBO already used
-    # `contract ASC` as the volume-tie tiebreak, so this site is
-    # behaviorally unchanged — only the SQL text moves into the shared
-    # builder. The `filtered` CTE is scoped to the horizon cutoff computed
-    # above; the final `ORDER BY day DESC LIMIT horizon_days` is retained as
-    # an exactness belt-and-suspenders on top of that bound.
-    front_month_sql = front_month_cte(
-        symbol_like="?",  # bound below via execute(..., [..., f"{root}%", ...])
-        parquet_path_param="?",
-        symbology_path_param="?",
-        date_filter_sql=horizon_date_filter,
-        ts_column="ts_recv",
-        contract_col="contract",
-        size_col="size",
-        exclude_hyphenated=True,
-        extra_select_cols=("bars.side",),
-    )
+    # SIDE-OOM (NQ): aggregate-early rewrite. The previous version built the
+    # front-month CTE chain off a per-trade `filtered` CTE that DuckDB inlined
+    # and scanned TWICE — once for contract_day_volume -> front_contract and
+    # once for per_minute — joining the full per-trade set against
+    # front_contract on both passes. EXPLAIN ANALYZE on a 9.45M-row NQ archive
+    # showed two TABLE_SCANs at 9.45M rows feeding two HASH_JOINs at ~9.4M
+    # rows, only collapsing to per-minute (23,400 rows) AFTER the joins; the
+    # rolling WINDOW ran on the already-tiny minute grain. At production NQ
+    # volume those doubled per-trade joins are what spilled past the
+    # container's ~1.8 GiB /tmp ceiling (the prior horizon bound capped days
+    # but not NQ's per-day trade density).
+    #
+    # Fix: collapse per-trade rows to per-(day, contract, minute) buy/sell
+    # volume in ONE streaming GROUP BY (`minute_vol`), then derive
+    # front_contract from that minute grain and join front-month minutes for
+    # the rolling window. Per-trade rows are read once and never join at trade
+    # granularity, cutting the heavy intermediate ~400x (≈ days × contracts ×
+    # 390 min). OFI is a per-minute statistic so results are unchanged; the
+    # `total_vol DESC, contract ASC` front-month tiebreak matches the prior
+    # front_month_cte behavior. The `ORDER BY day DESC LIMIT horizon_days` is
+    # retained as an exactness belt-and-suspenders on top of the cutoff bound.
+    # `session_day` (defined above) = session_date_expr("ts_recv"), which the
+    # helper renders as `bars.<col>` — matching the `AS bars` alias below and
+    # the cutoff pre-query, so day buckets can't drift between the two.
     daily = conn.execute(
-        front_month_sql
-        + f"""
-        per_minute AS (
-            SELECT f.day,
-                   CAST(date_trunc('minute', f.ts_recv) AS TIMESTAMP) AS minute,
-                   COALESCE(SUM(f.size) FILTER (WHERE f.side = 'B'), 0)
+        f"""
+        WITH minute_vol AS (
+            SELECT {session_day} AS day,
+                   sym.symbol AS contract,
+                   CAST(date_trunc('minute', bars.ts_recv) AS TIMESTAMP) AS minute,
+                   COALESCE(SUM(bars.size) FILTER (WHERE bars.side = 'B'), 0)
                        AS buy_vol,
-                   COALESCE(SUM(f.size) FILTER (WHERE f.side = 'A'), 0)
-                       AS sell_vol
-            FROM filtered f
+                   COALESCE(SUM(bars.size) FILTER (WHERE bars.side = 'A'), 0)
+                       AS sell_vol,
+                   SUM(bars.size) AS tot_vol
+            FROM read_parquet(?) AS bars
+            JOIN read_parquet(?) AS sym USING (instrument_id)
+            WHERE sym.symbol LIKE ?
+              AND strpos(sym.symbol, ' ') = 0
+              AND strpos(sym.symbol, '-') = 0
+              AND {session_day} {horizon_date_filter}
+            GROUP BY 1, 2, 3
+        ),
+        contract_day_volume AS (
+            SELECT day, contract, SUM(tot_vol) AS total_vol
+            FROM minute_vol
+            GROUP BY day, contract
+        ),
+        front_contract AS (
+            SELECT day, contract
+            FROM (
+                SELECT day, contract,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY day ORDER BY total_vol DESC, contract ASC
+                       ) AS rk
+                FROM contract_day_volume
+            ) ranked
+            WHERE rk = 1
+        ),
+        per_minute AS (
+            SELECT mv.day, mv.minute, mv.buy_vol, mv.sell_vol
+            FROM minute_vol mv
             JOIN front_contract fc USING (day, contract)
-            GROUP BY f.day, 2
         ),
         rolling AS (
             SELECT day,
