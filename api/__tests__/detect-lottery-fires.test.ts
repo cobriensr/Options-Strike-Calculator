@@ -327,6 +327,78 @@ describe('detect-lottery-fires handler', () => {
     });
   });
 
+  it('feed-tier monitor counts today fires via qas (combined_score + inversion bonus), demoting null/gated to tier3', async () => {
+    // After the insert loop, the cron queries today's fires and tiers them
+    // through the EXACT feed logic (qualityAdjustedScore + tierFromQualityScore,
+    // cutoffs 13/10). This is the post-loop query (the last mockSql call).
+    // Rows chosen to exercise every branch:
+    //   combined 13, q3(+0) -> qas 13 -> tier1
+    //   combined  8, q5(+5) -> qas 13 -> tier1  (bonus inclusion)
+    //   combined 10, q3(+0) -> qas 10 -> tier2
+    //   combined  5, q3(+0) -> qas  5 -> tier3
+    //   gated (direction_gated=true)        -> tier3
+    //   null score                          -> tier3
+    // => feedTier1=2, feedTier2=1, feedTier3=3
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]) // insert
+      .mockResolvedValueOnce([
+        {
+          score: 5,
+          combined_score: 13,
+          direction_gated: false,
+          inversion_quintile: 3,
+        },
+        {
+          score: 5,
+          combined_score: 8,
+          direction_gated: false,
+          inversion_quintile: 5,
+        },
+        {
+          score: 5,
+          combined_score: 10,
+          direction_gated: false,
+          inversion_quintile: 3,
+        },
+        {
+          score: 5,
+          combined_score: 5,
+          direction_gated: false,
+          inversion_quintile: 3,
+        },
+        {
+          score: 5,
+          combined_score: 20,
+          direction_gated: true,
+          inversion_quintile: 3,
+        },
+        {
+          score: null,
+          combined_score: 8,
+          direction_gated: false,
+          inversion_quintile: 5,
+        },
+      ]); // post-loop feed-tier monitor query
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      feedTier1: 2,
+      feedTier2: 1,
+      feedTier3: 3,
+    });
+  });
+
   it('persists computeLotteryScoreV2() output on the inserted row', async () => {
     // Same fixture as the basic insert test. V2 score is null here
     // because the ticker_flow_snapshot returns [] → cumNcpAtFire and
@@ -602,7 +674,8 @@ describe('detect-lottery-fires handler', () => {
     // spot_exposures and INSERT — bumps the SPY path from 6 to 7 calls.
     // 2026-05-22: ticks SELECT now batched into 3 parallel queries
     // (SENTRY-EMERALD-DESERT-CB), so total = 7 + 2 extra ticks calls = 9.
-    expect(mockSql).toHaveBeenCalledTimes(9);
+    // 2026-06-03: + the post-loop feed-tier monitor query (today's fires) = 10.
+    expect(mockSql).toHaveBeenCalledTimes(10);
   });
 
   it('skips chains with fewer than the per-chain min prints', async () => {
@@ -652,7 +725,8 @@ describe('detect-lottery-fires handler', () => {
     // 3-batch ticks SELECT + prior-fires lookup — fire was detected but
     // mode classifier dropped it as OUT_OF_UNIVERSE so no macro lookups
     // happen. (Ticks SELECT split into 3 parallel batches 2026-05-22.)
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // 2026-06-03: + the post-loop feed-tier monitor query = 5.
+    expect(mockSql).toHaveBeenCalledTimes(5);
   });
 
   it('continues with EMPTY_MACRO when the macro snapshot lookup throws', async () => {
@@ -746,7 +820,8 @@ describe('detect-lottery-fires handler', () => {
     });
     // Four SQL calls: 3 ticks-batch SELECTs (split 2026-05-22) + the
     // prior-fires lookup. No macro queries, no insert.
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // 2026-06-03: + the post-loop feed-tier monitor query = 5.
+    expect(mockSql).toHaveBeenCalledTimes(5);
   });
 
   it('does NOT gate a counter-trend put fire even when mkt_tide_otm_diff > +150M (V2.2 C.9)', async () => {

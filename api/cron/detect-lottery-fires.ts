@@ -31,6 +31,7 @@ import {
   LOTTERY_TIER_THRESHOLDS_V2,
 } from '../_lib/lottery-score-weights-v2.js';
 import { tierFromQualityScore } from '../_lib/lottery-tier.js';
+import { qualityAdjustedScore } from '../_lib/lottery-inversion-bonus.js';
 import {
   computeRangePos,
   fetchStockCandles1m,
@@ -336,14 +337,13 @@ export default withCronInstrumentation(
     let inserted = 0;
     // Phase 6 observability: per-tier counts on each cron run. Lets us
     // detect "zero tier1+ for N consecutive runs" without re-querying
-    // the DB. Tracked at insert time so the totals reflect only rows
-    // that actually landed (ON CONFLICT DO NOTHING dedupes idempotent
-    // re-runs out of the count). See spec
-    // docs/superpowers/specs/lottery-rescore-2026-05-22.md Phase 6.
-    let insertedTier1 = 0;
-    let insertedTier2 = 0;
-    let insertedTier3 = 0;
-    let insertedGated = 0;
+    // the DB. The per-tier counts are computed AFTER the insert loop by
+    // querying today's fires through the exact feed tier logic (see the
+    // post-loop block below) — not bucketed per-insert, because the feed
+    // tier needs the read-time qas (combined_score + per-ticker inversion
+    // bonus) which isn't available at insert time. See spec
+    // docs/superpowers/specs/lottery-rescore-2026-05-22.md Phase 6 and
+    // lottery-feed-tier-recalibration-2026-06-03.md.
     let skippedNoOi = 0;
     let skippedShort = 0;
     // GexBot lookup counters (migration #181). Same observability shape
@@ -872,34 +872,68 @@ export default withCronInstrumentation(
         )) as { id: number }[];
         if (result.length > 0) {
           inserted += 1;
-          // Bucket by the FEED's tier function (api/_lib/lottery-tier.ts) so
-          // the monitor and the user-facing feed share a single cutoff source
-          // and can never silently diverge again — the decoupling that hid the
-          // 24/22-vs-V2-scale bug (feed showed 0 tier1/2 for weeks while this
-          // monitor, keyed on the bare-score 9/7 thresholds, saw ~159 tier1/day
-          // and never fired). See spec lottery-feed-tier-recalibration-2026-06-03.
-          //
-          // Approximation, not a strict bound: at insert time we only have the
-          // bare score, not the read-time qas (which adds the per-ticker
-          // inversion bonus [-5..+5] + fire_count/gamma adjustments, and
-          // demotes direction-gated rows to tier3). Positive-bonus fires
-          // undercount the feed (errs toward alerting); negative-bonus
-          // (quintile 1-2) or direction-gated fires can overcount. To hide a
-          // genuinely-broken cutoff an entire day's tier1-eligible fires would
-          // all have to carry negative bonuses/gating — and the "3 consecutive
-          // days" guard makes a sustained miss unlikely. The structural win is
-          // that monitor + feed now share one cutoff source (tierFromQualityScore)
-          // and cannot silently diverge. LOTTERY_TIER_THRESHOLDS_V2 (9/7) is
-          // still used below for the V2.2 cluster-bonus, a separate mechanism.
-          if (score == null) insertedGated += 1;
-          else {
-            const tier = tierFromQualityScore(score);
-            if (tier === 'tier1') insertedTier1 += 1;
-            else if (tier === 'tier2') insertedTier2 += 1;
-            else insertedTier3 += 1;
-          }
         }
       }
+    }
+
+    // Feed-tier monitor (Phase 6 + lottery-feed-tier-recalibration-2026-06-03).
+    // Count today's fires through the EXACT feed tier logic so the
+    // "zero tier1 for N consecutive days" Sentry alert (keyed on feedTier1:0)
+    // shares fate with what the user actually sees. We reuse the feed's own
+    // functions — qualityAdjustedScore (api/_lib/lottery-inversion-bonus.ts) +
+    // tierFromQualityScore (api/_lib/lottery-tier.ts), the same ones
+    // api/lottery-finder.ts uses — so there are NO duplicated cutoffs/bonus
+    // here and the monitor cannot silently diverge from the feed again (the
+    // 24/22-vs-V2-scale bug that hid for weeks). Mirrors the default feed
+    // view (per-row demotion below: null score / direction_gated / Q1-Q2
+    // suppression → tier3, else tier on qas). Best-effort: a failure here
+    // logs but never aborts the cron (inserts already succeeded).
+    let feedTier1 = 0;
+    let feedTier2 = 0;
+    let feedTier3 = 0;
+    try {
+      const todays = (await withDbRetry(
+        () => db`
+          SELECT f.score, f.combined_score, f.direction_gated,
+                 s.inversion_quintile
+          FROM lottery_finder_fires f
+          LEFT JOIN lottery_ticker_stats s
+            ON s.ticker = f.underlying_symbol
+          WHERE f.date = ${ctx.today}::date
+        `,
+        2,
+        10_000,
+      )) as {
+        score: number | null;
+        combined_score: number | null;
+        direction_gated: boolean | null;
+        inversion_quintile: number | null;
+      }[];
+      for (const f of todays ?? []) {
+        // Mirror the DEFAULT feed view: null score / direction_gated / the
+        // quintile-1-2 suppression (lottery-finder.ts: `showAll OR
+        // inversion_quintile IS NULL OR inversion_quintile > 2`) all render
+        // as tier3, else tier on qas = combined_score + inversion bonus.
+        const suppressed =
+          f.inversion_quintile === 1 || f.inversion_quintile === 2;
+        const tier =
+          f.score == null || f.direction_gated === true || suppressed
+            ? 'tier3'
+            : tierFromQualityScore(
+                qualityAdjustedScore(
+                  f.combined_score ?? 0,
+                  f.inversion_quintile,
+                ),
+              );
+        if (tier === 'tier1') feedTier1 += 1;
+        else if (tier === 'tier2') feedTier2 += 1;
+        else feedTier3 += 1;
+      }
+    } catch (err) {
+      ctx.logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'detect-lottery-fires: feed-tier monitor query failed (non-fatal)',
+      );
     }
 
     // Multileg null-rate alert (Task 6 / Finding 0.2). When more than
@@ -934,15 +968,15 @@ export default withCronInstrumentation(
     }
 
     // Phase 6: per-tier counts live in the structured log payload below.
-    // Sentry alert for "zero tier1 fires for 3 consecutive trading days"
-    // is configured in the Sentry UI to alert on log queries against
-    // `message:"detect-lottery-fires completed" insertedTier1:0` —
-    // matching the JSON structure logged by ctx.logger.info just below.
-    // insertedTier1 is now bucketed via the FEED's tierFromQualityScore
-    // (shared cutoffs), so a cutoff/scale mismatch that zeroes out the feed's
-    // tier1 (the 2026-06-03 24/22-vs-V2-scale bug) now also zeroes this count
-    // and trips the alert — previously the monitor used decoupled 9/7
-    // thresholds and stayed silent through weeks of an all-tier3 feed.
+    // Sentry alert for "zero tier1 fires for N consecutive trading days"
+    // MUST be (re)configured in the Sentry UI to query
+    // `message:"detect-lottery-fires completed" feedTier1:0` — the feedTier*
+    // counts are computed above through the exact feed tier logic (today's
+    // fires, qas = combined_score + inversion bonus), so a cutoff/scale
+    // mismatch that zeroes the feed's tier1 (the 2026-06-03 bug) also zeroes
+    // feedTier1 and trips the alert. NOTE: the legacy alert keyed on
+    // `insertedTier1` (per-insert bare-score 9/7) is now stale — that field
+    // was removed; repoint the Sentry query to feedTier1.
     ctx.logger.info(
       {
         scanned: rows.length,
@@ -951,10 +985,9 @@ export default withCronInstrumentation(
         skippedNoOi,
         totalFires,
         inserted,
-        insertedTier1,
-        insertedTier2,
-        insertedTier3,
-        insertedGated,
+        feedTier1,
+        feedTier2,
+        feedTier3,
         priorSeeds: priorByChain.size,
         gexHits,
         gexMisses,
@@ -975,10 +1008,9 @@ export default withCronInstrumentation(
         skippedNoOi,
         totalFires,
         inserted,
-        insertedTier1,
-        insertedTier2,
-        insertedTier3,
-        insertedGated,
+        feedTier1,
+        feedTier2,
+        feedTier3,
         priorSeeds: priorByChain.size,
         gexHits,
         gexMisses,

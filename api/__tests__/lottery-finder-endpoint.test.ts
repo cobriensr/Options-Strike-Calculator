@@ -1461,6 +1461,43 @@ describe('lottery-finder endpoint', () => {
     expect(body.fires[0]!.score).toBe(22);
   });
 
+  it('fire_count_score_adjustment drives the derived tier (boundary crossing)', async () => {
+    // End-to-end guard that the fire_count adjustment flows into the
+    // score→qas→tier path (not just the displayed score). Quintile 3 (+0)
+    // and null gamma isolate fire_count_adj as the sole tier driver:
+    // rawScore 12 + adj -3 = 9 → qas 9 → tier3. Without the -3, qas would be
+    // 12 → tier2, so the adjustment is what demotes it.
+    mockSql
+      .mockResolvedValueOnce([
+        {
+          ...ROW,
+          score: 12,
+          fire_count: 1,
+          fire_count_score_adjustment: -3,
+          ticker_inversion_quintile: 3,
+          gamma_at_trigger: null,
+        },
+      ])
+      .mockResolvedValueOnce([{ total: 1 }]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      fires: Array<{
+        score: number | null;
+        fireCountScoreAdjustment: number;
+        qualityAdjustedScore: number;
+        scoreTier: string;
+      }>;
+    };
+    expect(body.fires[0]).toMatchObject({
+      score: 9,
+      fireCountScoreAdjustment: -3,
+      qualityAdjustedScore: 9,
+      scoreTier: 'tier3',
+    });
+  });
+
   it('attaches megaCluster + megaClusterSize when this fire is in a ≥12-ticker minute', async () => {
     // The mega-cluster query (4th Promise.all element) returns rows
     // for any minute with >= MEGA_CLUSTER_MIN_DISTINCT_TICKERS distinct
