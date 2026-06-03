@@ -412,6 +412,114 @@ describe('fetch-strike-all handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
+  // ── All-zero snapshot rejection ───────────────────────────
+
+  it('rejects an all-zero gamma snapshot without storing', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // 11 in-range strikes, every gamma field zero — the garbage snapshot
+    // signature UW returns at early-session runs.
+    const zeroFields = {
+      call_gamma_oi: '0',
+      put_gamma_oi: '0',
+      call_gamma_ask: '0',
+      call_gamma_bid: '0',
+      put_gamma_ask: '0',
+      put_gamma_bid: '0',
+    };
+    const strikes = Array.from({ length: 11 }, (_, i) =>
+      makeStrikeRow({
+        strike: String(5750 + i * 5),
+        price: '5800.5',
+        ...zeroFields,
+      }),
+    );
+    stubFetch(strikes);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      success: true,
+      stored: 0,
+      rejected: true,
+    });
+    // Neither the insert transaction nor the data-quality SELECT should run.
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('treats null/empty gamma fields as zero when rejecting', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    const blankFields = {
+      call_gamma_oi: '',
+      put_gamma_oi: '',
+      call_gamma_ask: '',
+      call_gamma_bid: '',
+      put_gamma_ask: '',
+      put_gamma_bid: '',
+    };
+    const strikes = Array.from({ length: 11 }, (_, i) =>
+      makeStrikeRow({
+        strike: String(5750 + i * 5),
+        price: '5800.5',
+        ...blankFields,
+      }),
+    );
+    stubFetch(strikes);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      success: true,
+      stored: 0,
+      rejected: true,
+    });
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it('stores normally when at least one strike carries gamma', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+
+    // Ten zero strikes plus one with real gamma → snapshot has signal.
+    const zeroStrikes = Array.from({ length: 10 }, (_, i) =>
+      makeStrikeRow({
+        strike: String(5750 + i * 5),
+        price: '5800.5',
+        call_gamma_oi: '0',
+        put_gamma_oi: '0',
+      }),
+    );
+    const liveStrike = makeStrikeRow({ strike: '5805', price: '5800.5' });
+    stubFetch([...zeroStrikes, liveStrike]);
+
+    mockSql.mockResolvedValueOnce([{ total: 11, nonzero: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ success: true, stored: 11 });
+    expect(res._json).not.toMatchObject({ rejected: true });
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+  });
+
   // ── ATM range filtering edge cases ────────────────────────
 
   it('includes strikes exactly at ATM ± 200 boundary', async () => {

@@ -74,10 +74,16 @@ async function fetchStrikeAll(apiKey: string): Promise<StrikeRow[]> {
 
 // ── Store helper ────────────────────────────────────────────
 
+/** Coerce a UW numeric string to a number, treating null/blank/NaN as 0. */
+function toNumber(v: string): number {
+  const n = Number.parseFloat(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 async function storeStrikes(
   rows: StrikeRow[],
   today: string,
-): Promise<{ stored: number; skipped: number }> {
+): Promise<{ stored: number; skipped: number; rejected?: boolean }> {
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const price = Number.parseFloat(rows[0]!.price);
@@ -90,6 +96,21 @@ async function storeStrikes(
   });
 
   if (filtered.length === 0) return { stored: 0, skipped: 0 };
+
+  // Reject a garbage snapshot: UW occasionally returns a full strike ladder
+  // with every gamma field zero/null (seen at early-session runs). Persisting
+  // it poisons the all-expiry backdrop with a flat-zero snapshot and trips the
+  // data-quality alert. Drop the whole batch if no strike carries any gamma.
+  const hasSignal = filtered.some(
+    (r) => toNumber(r.call_gamma_oi) !== 0 || toNumber(r.put_gamma_oi) !== 0,
+  );
+  if (!hasSignal) {
+    logger.warn(
+      { rows: filtered.length, date: today },
+      'fetch-strike-all: rejecting all-zero gamma snapshot',
+    );
+    return { stored: 0, skipped: filtered.length, rejected: true };
+  }
 
   // Round timestamp to 5-min
   const timestamp = roundTo5Min(new Date(rows[0]!.time)).toISOString();
