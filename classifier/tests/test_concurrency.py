@@ -4,7 +4,7 @@ in Phase 1.5 Task 4 (Findings 1.6 and 2.3).
 These cover four behaviours:
 
 1.  ``_classify_semaphore`` caps simultaneous in-flight matcher
-    invocations at ``_CLASSIFY_CONCURRENCY`` (default 8). Excess
+    invocations at ``_CLASSIFY_CONCURRENCY`` (default 4). Excess
     requests queue rather than running.
 2.  When the queue wait exceeds ``_QUEUE_WAIT_TIMEOUT_SEC``, the route
     returns 503 with ``retry_after_sec`` in the body. (Server-side
