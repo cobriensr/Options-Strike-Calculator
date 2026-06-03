@@ -28,6 +28,7 @@ from logger_setup import log
 from router import Router
 from sentry_setup import capture_exception, init_sentry
 from state import state
+from subscription_watchdog import run_subscription_watchdog
 
 # Bounded buffer between the connector (WS receive) and the router
 # (parse + dispatch). At ~10k msgs/sec peak this gives ~1s of headroom
@@ -126,6 +127,12 @@ async def _run() -> None:
         )
         for i, shard in enumerate(shards)
     ]
+    # Pre-register every shard as down so ws_connected ("all up") and
+    # ws_any_connected are honest from boot — without this, the connections
+    # dict is empty until the first shard connects, which would read
+    # ws_connected=True off a single connected shard (false green).
+    for c in connectors:
+        state.set_connection(c.name, False)
     log.info(
         "receive queue + shards configured",
         extra={
@@ -147,6 +154,9 @@ async def _run() -> None:
     # Background services that aren't part of the data pipeline.
     background_tasks: list[asyncio.Task] = [
         asyncio.create_task(run_server(), name="health"),
+        asyncio.create_task(
+            run_subscription_watchdog(), name="subscription_watchdog"
+        ),
     ]
     # Spawn one drain task per UNIQUE handler instance — many channels
     # can share one handler (e.g. every option_trades:<TICKER> entry

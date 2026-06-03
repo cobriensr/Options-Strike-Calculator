@@ -17,12 +17,15 @@ FULL_LOTTERY = (
 )
 
 
-def _settings(channels_env: str) -> Settings:
-    return Settings(
-        database_url="postgresql://test",
-        uw_api_key="test",
-        ws_channels=channels_env,
-    )
+def _settings(channels_env: str, cap: int | None = None) -> Settings:
+    kwargs = {
+        "database_url": "postgresql://test",
+        "uw_api_key": "test",
+        "ws_channels": channels_env,
+    }
+    if cap is not None:
+        kwargs["ws_max_channels_per_conn"] = cap
+    return Settings(**kwargs)
 
 
 class TestChannelShards:
@@ -77,3 +80,24 @@ class TestChannelShards:
         flat = [c for shard in _settings(FULL_LOTTERY).channel_shards for c in shard]
         assert flat.count("flow-alerts") == 1
         assert flat.count("off_lit_trades") == 1
+
+    def test_configurable_cap_changes_shard_sizes(self):
+        # WS_MAX_CHANNELS_PER_CONN lets us retune when UW raises/removes the 50
+        # cap. A smaller cap must produce more, smaller shards; a larger one
+        # fewer, larger — with no channel lost either way.
+        tight = _settings("option_trades_lottery", cap=10).channel_shards
+        loose = _settings("option_trades_lottery", cap=200).channel_shards
+        assert all(len(s) <= 10 for s in tight)
+        assert len(tight) > len(loose)
+        # cap=200 > 86 tickers → single shard.
+        assert len(loose) == 1
+        # No loss under either cap.
+        for shards in (tight, loose):
+            flat = [c for s in shards for c in s]
+            assert len(flat) == len(set(flat)) == 86
+
+    def test_cap_respected_for_full_universe_override(self):
+        shards = _settings(FULL_LOTTERY, cap=25).channel_shards
+        assert all(len(s) <= 25 for s in shards)
+        flat = [c for s in shards for c in s]
+        assert sorted(flat) == sorted(_settings(FULL_LOTTERY).channels)

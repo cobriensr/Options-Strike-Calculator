@@ -197,6 +197,46 @@ async def test_healthz_ok_when_recent_message_even_if_market_closed(monkeypatch)
     assert body == {"status": "ok"}
 
 
+async def test_healthz_partial_outage_one_shard_up_is_200(monkeypatch):
+    """Partial outage: one shard down, one up → ws_any_connected True → 200.
+
+    With N sharded sockets a single shard mid-reconnect is routine. /healthz
+    gates on ws_any_connected, so it must NOT flap the daemon red while another
+    shard is still streaming data.
+    """
+    monkeypatch.setattr("health._is_trading_hours", lambda _now: True)
+    state.started_at = datetime.now(UTC) - timedelta(seconds=HEALTH_STARTUP_GRACE_S + 60)
+    state.connections = {}
+    state.set_connection("conn0", False)  # one shard mid-reconnect
+    state.set_connection("conn1", True)  # the rest still up
+    state.last_message_ts = datetime.now(UTC) - timedelta(seconds=5)
+
+    resp = await healthz(None)  # type: ignore[arg-type]
+    body = await _read_json(resp)
+
+    assert resp.status == 200
+    assert body == {"status": "ok"}
+
+
+async def test_healthz_all_shards_down_is_503(monkeypatch):
+    """Total outage: every shard down → ws_any_connected False → 503.
+
+    Only when NO shard is up does /healthz report ws_disconnected.
+    """
+    monkeypatch.setattr("health._is_trading_hours", lambda _now: True)
+    state.started_at = datetime.now(UTC) - timedelta(seconds=HEALTH_STARTUP_GRACE_S + 60)
+    state.connections = {}
+    state.set_connection("conn0", False)
+    state.set_connection("conn1", False)
+    state.last_message_ts = None
+
+    resp = await healthz(None)  # type: ignore[arg-type]
+    body = await _read_json(resp)
+
+    assert resp.status == 503
+    assert body == {"status": "ws_disconnected"}
+
+
 # ── _is_trading_hours ────────────────────────────────────────
 
 

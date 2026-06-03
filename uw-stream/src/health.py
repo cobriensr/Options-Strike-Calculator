@@ -76,7 +76,12 @@ async def healthz(_request: web.Request) -> web.Response:
     ):
         return web.json_response({"status": "starting"}, status=200)
 
-    if not state.ws_connected:
+    # 503 only on a TOTAL disconnect (no shard up). With N sharded sockets a
+    # single shard mid-reconnect is routine — gating on ws_connected ("all
+    # shards up") would flap the daemon red on every per-shard reconnect. A
+    # shard that silently stays unsubscribed is surfaced by the subscription
+    # watchdog, not by this check.
+    if not state.ws_any_connected:
         return web.json_response({"status": "ws_disconnected"}, status=503)
 
     # Data flowing within the window is unambiguously healthy, any hour.
@@ -123,6 +128,9 @@ async def metrics(request: web.Request) -> web.Response:
     body = {
         "uptime_seconds": int((now - state.started_at).total_seconds()),
         "ws_connected": state.ws_connected,
+        # Per-shard connection state so an operator can see WHICH shard is down
+        # during a partial outage (the aggregate ws_connected can't localize it).
+        "connections": dict(state.connections),
         "last_message_ts": _iso(state.last_message_ts),
         "reconnects_last_hour": state.reconnects_last_hour(),
         "receive_queue_depth": state.receive_queue_depth,

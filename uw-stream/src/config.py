@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     # `channels` property. Defaults to flow-alerts only (Phase 1 scope).
     ws_channels: str = "flow-alerts"
 
+    # Max channels per WS connection (UW's per-connection cap, with margin).
+    # Env-overridable (WS_MAX_CHANNELS_PER_CONN) because UW stated the 50 cap
+    # is a temporary perf patch they'll raise/remove — so we can retune the
+    # shard size without a redeploy. ``channel_shards`` splits on this.
+    ws_max_channels_per_conn: int = PER_CONN_MAX
+
     # Backpressure tuning.
     ws_queue_size: int = 50_000
     ws_batch_size: int = 500
@@ -306,7 +312,7 @@ class Settings(BaseSettings):
 
     @property
     def channel_shards(self) -> list[list[str]]:
-        """Split ``channels`` into per-connection groups of ≤ ``PER_CONN_MAX``.
+        """Split ``channels`` into per-connection groups of ≤ ``ws_max_channels_per_conn``.
 
         UW caps channels at 50 per CONNECTION, so we open one WS connection per
         shard rather than joining everything on one socket. Partitioning is:
@@ -318,11 +324,13 @@ class Settings(BaseSettings):
           reconnect re-subscribes the exact same set and ops can map a shard to
           a known channel range;
         - global exact channels (``flow-alerts``, ``off_lit_trades``) fold into
-          the first shard with room, else their own shard.
+          the first shard with room; if they don't all fit anywhere they are
+          chunked onto their own shard(s) — never an over-cap shard.
 
-        Returns ``[[...]]`` (one shard) for a small channel set — single-channel
-        deployments and tests are unaffected.
+        ``channels`` is validated non-empty at construction, so this always
+        returns at least one shard.
         """
+        cap = self.ws_max_channels_per_conn
         chans = self.channels
         globals_ = [c for c in chans if ":" not in c]
         per_ticker = [c for c in chans if ":" in c]
@@ -334,19 +342,21 @@ class Settings(BaseSettings):
 
         shards: list[list[str]] = []
         for fam_channels in families.values():
-            for i in range(0, len(fam_channels), PER_CONN_MAX):
-                shards.append(fam_channels[i : i + PER_CONN_MAX])
+            for i in range(0, len(fam_channels), cap):
+                shards.append(fam_channels[i : i + cap])
 
-        # Fold globals into the first shard with room; else give them their own.
+        # Fold globals into the first family shard that fits them all; else
+        # chunk them onto their own shard(s) so no shard ever exceeds the cap.
         if globals_:
             for shard in shards:
-                if len(shard) + len(globals_) <= PER_CONN_MAX:
+                if len(shard) + len(globals_) <= cap:
                     shard[:0] = globals_
                     break
             else:
-                shards.append(globals_)
+                for i in range(0, len(globals_), cap):
+                    shards.append(globals_[i : i + cap])
 
-        return shards or [[]]
+        return shards
 
     @property
     def interval_ba_tickers(self) -> frozenset[str]:

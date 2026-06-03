@@ -244,12 +244,20 @@ class Connector:
             log.info("sent join frame", extra={"channel": ch})
 
     def _maybe_alert_storm(self) -> None:
-        """Raise a Sentry warning if reconnects pile up in the last hour."""
+        """Raise a Sentry warning if reconnects pile up in the last hour.
+
+        ``reconnects_last_hour`` is process-global, so with N sharded
+        connections it counts reconnects across ALL shards. Scale the threshold
+        by the shard count (``_RECONNECT_STORM_THRESHOLD`` per shard) so routine
+        independent per-shard reconnect churn doesn't trip a storm alert tuned
+        for a single socket — a real storm still crosses N*base quickly.
+        """
         count = state.reconnects_last_hour()
-        if count >= _RECONNECT_STORM_THRESHOLD:
+        threshold = _RECONNECT_STORM_THRESHOLD * max(1, len(settings.channel_shards))
+        if count >= threshold:
             capture_message(
                 "uw-stream reconnect storm",
                 level="warning",
                 tags={"component": "connector"},
-                context={"reconnects_last_hour": count},
+                context={"reconnects_last_hour": count, "threshold": threshold},
             )

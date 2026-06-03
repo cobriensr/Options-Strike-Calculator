@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -375,6 +375,52 @@ async def test_subscribe_all_paces_joins_between_frames(monkeypatch) -> None:
     assert len(ws.sent) == 3
     # 3 channels → 2 inter-frame pacing sleeps, each _JOIN_PACING_S.
     assert sleeps == [connector_mod._JOIN_PACING_S] * 2
+
+
+@pytest.mark.asyncio
+async def test_storm_threshold_scales_with_shard_count(monkeypatch) -> None:
+    """The storm threshold scales by shard count, not the bare base.
+
+    ``reconnects_last_hour()`` is process-global and now aggregates reconnects
+    across all N sharded connections. Without scaling, routine independent
+    per-shard reconnect churn would trip a storm alert tuned for one socket.
+    With 3 shards the threshold is ``_RECONNECT_STORM_THRESHOLD * 3`` — the
+    alert must NOT fire at the bare base but MUST fire once the count crosses
+    the scaled threshold.
+    """
+    import connector as connector_mod
+
+    class _FakeSettings:
+        channel_shards: ClassVar[list[list[str]]] = [["a"], ["b"], ["c"]]  # 3 shards
+
+    monkeypatch.setattr(connector_mod, "settings", _FakeSettings())
+
+    captured: list[str] = []
+    monkeypatch.setattr(
+        connector_mod,
+        "capture_message",
+        lambda msg, **_kw: captured.append(msg),
+    )
+
+    base = connector_mod._RECONNECT_STORM_THRESHOLD
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=1))
+
+    state.reconnect_times.clear()
+    try:
+        for _ in range(base):  # base reconnects, below the scaled 3*base
+            state.record_reconnect()
+        connector._maybe_alert_storm()
+        assert captured == [], (
+            "base reconnects across 3 shards must not trip a single-socket storm"
+        )
+
+        # Push to the scaled threshold (3 * base) — now it fires once.
+        while state.reconnects_last_hour() < base * 3:
+            state.record_reconnect()
+        connector._maybe_alert_storm()
+        assert captured == ["uw-stream reconnect storm"]
+    finally:
+        state.reconnect_times.clear()
 
 
 @pytest.mark.asyncio

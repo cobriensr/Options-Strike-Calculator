@@ -46,7 +46,11 @@ class State:
     # are up, so /healthz doesn't read green while a shard is mid-reconnect.
     connections: dict[str, bool] = field(default_factory=dict)
     last_message_ts: datetime | None = None
-    reconnect_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=64))
+    # Sized for N sharded connections: a multi-shard reconnect burst can
+    # produce many events/minute, so 64 (the single-connection era size) would
+    # churn through an hour's window in seconds and undercount
+    # reconnects_last_hour. 512 comfortably covers an hour across ~6+ shards.
+    reconnect_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=512))
     channels: dict[str, ChannelMetrics] = field(default_factory=dict)
     # Bounded queue between connector (producer) and router (consumer).
     # Depth is set by the router on each loop iteration so /metrics can
@@ -60,10 +64,23 @@ class State:
     def ws_connected(self) -> bool:
         """True only when every WS shard connection is currently up.
 
-        No shards registered yet (pre-connect) reads False, matching the old
-        single-connection default. Health treats all-up as the green state.
+        With sharding the shard names are pre-registered False at startup (see
+        main), so this is honest from boot. Used by /metrics as the ideal-state
+        signal; /healthz uses ``ws_any_connected`` instead so one shard
+        reconnecting doesn't flap the whole daemon red.
         """
         return bool(self.connections) and all(self.connections.values())
+
+    @property
+    def ws_any_connected(self) -> bool:
+        """True when at least one WS shard connection is up.
+
+        /healthz gates on this, not ``ws_connected``: with N sharded sockets a
+        single shard mid-reconnect is routine and must NOT 503 the daemon while
+        the others stream. A shard that silently fails to subscribe is caught by
+        the subscription watchdog (a targeted alert), not by flapping health.
+        """
+        return any(self.connections.values())
 
     @ws_connected.setter
     def ws_connected(self, value: bool) -> None:
