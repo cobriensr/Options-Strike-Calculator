@@ -8,6 +8,7 @@ import json
 from typing import Any, ClassVar
 
 import pytest
+import websockets
 
 from connector import Connector
 from state import state
@@ -462,3 +463,99 @@ async def test_ws_connected_set_to_true_when_subscribe_succeeds(monkeypatch) -> 
 
     assert subscribe_called is True
     assert state.ws_connected is True
+
+
+# ── self-healing re-subscribe (_reconcile_once / _reconcile_subscriptions) ──
+
+
+@pytest.mark.asyncio
+async def test_reconcile_once_rejoins_only_unacked_channels() -> None:
+    """Self-healing core: re-send a join for every channel still
+    subscribed=False, and skip the ones the router has already acked.
+    """
+    ws = FakeWebSocket()
+    connector = Connector(
+        channels=["a", "b", "c"], receive_queue=asyncio.Queue(maxsize=1)
+    )
+    state.channel("a").subscribed = True  # acked → must NOT re-join
+    state.channel("b").subscribed = False  # stuck → re-join
+    state.channel("c").subscribed = False  # stuck → re-join
+
+    rejoined = await connector._reconcile_once(ws)
+
+    assert rejoined == ["b", "c"]
+    sent_channels = [json.loads(f)["channel"] for f in ws.sent]
+    assert sent_channels == ["b", "c"]
+    # Frames go out as WS TEXT (str), never BINARY (bytes) — UW drops binary.
+    assert all(isinstance(f, str) for f in ws.sent)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_once_noop_when_all_acked() -> None:
+    """When every channel is acked, reconcile sends nothing."""
+    ws = FakeWebSocket()
+    connector = Connector(channels=["a", "b"], receive_queue=asyncio.Queue(maxsize=1))
+    state.channel("a").subscribed = True
+    state.channel("b").subscribed = True
+
+    rejoined = await connector._reconcile_once(ws)
+
+    assert rejoined == []
+    assert ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_once_ignores_other_shards_channels() -> None:
+    """A shard only re-joins ITS OWN channels — never another shard's stuck
+    channel (each shard owns a different socket).
+    """
+    ws = FakeWebSocket()
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=1))
+    state.channel("a").subscribed = True  # this shard, acked
+    state.channel("z").subscribed = False  # ANOTHER shard's stuck channel
+
+    rejoined = await connector._reconcile_once(ws)
+
+    assert rejoined == []  # must not touch z
+    assert ws.sent == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_reset_subscribed_flag() -> None:
+    """Re-joining must NOT clear an acked channel's flag, and must leave a
+    stuck channel's flag False (the ack from the re-join flips it True later).
+    """
+    ws = FakeWebSocket()
+    connector = Connector(channels=["a", "b"], receive_queue=asyncio.Queue(maxsize=1))
+    state.channel("a").subscribed = True
+    state.channel("b").subscribed = False
+
+    await connector._reconcile_once(ws)
+
+    assert state.channel("a").subscribed is True  # untouched
+    assert state.channel("b").subscribed is False  # still pending its ack
+
+
+@pytest.mark.asyncio
+async def test_reconcile_subscriptions_returns_on_connection_closed(
+    monkeypatch,
+) -> None:
+    """If the socket drops mid-reconcile, the loop returns cleanly (no raise)
+    so the connect loop can reconnect + resubscribe from scratch.
+    """
+    import connector as connector_mod
+
+    async def _no_sleep(_d: float) -> None:
+        return None
+
+    monkeypatch.setattr(connector_mod.asyncio, "sleep", _no_sleep)
+
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=1))
+    state.channel("a").subscribed = False  # stuck → reconcile will try to send
+
+    class _ClosedWS:
+        async def send(self, _frame) -> None:
+            raise websockets.ConnectionClosed(None, None)
+
+    # Must complete without raising — the loop catches ConnectionClosed.
+    await connector._reconcile_subscriptions(_ClosedWS())

@@ -13,6 +13,7 @@ is a pure transport.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import orjson
 import websockets
@@ -45,6 +46,19 @@ _RECONNECT_STORM_THRESHOLD = 5
 # the small-channel common case. Override-free: this is deliberately a
 # constant, not an env knob, to keep the surface small.
 _JOIN_PACING_S = 0.01
+
+# Self-healing re-subscribe. A join frame can be silently lost — UW dropping a
+# control-frame burst, a transient throttle, or a server-side reject the router
+# discards. The connector joins each channel once on connect, so a lost join
+# leaves that channel ``subscribed=False`` forever. While connected, each shard
+# re-sends joins for its still-unacked channels every _RESUBSCRIBE_INTERVAL_S,
+# after an initial delay so the first burst's acks can arrive before we
+# reconcile (else we'd re-join channels that are merely pending). This heals
+# faster than the subscription watchdog's alert window, so a dropped join
+# self-corrects silently and the watchdog only fires for channels that survive
+# repeated re-joins (a genuine upstream reject, not a lost frame).
+_RESUBSCRIBE_INITIAL_DELAY_S = 30.0
+_RESUBSCRIBE_INTERVAL_S = 60.0
 
 
 class Connector:
@@ -186,37 +200,50 @@ class Connector:
             # reconnect backoff after the socket eventually drops.
             self._established = True
             log.info("WS connected, awaiting messages", extra={"shard": self.name})
-            async for raw in ws:
-                # Hand off to the router via a bounded queue. We never
-                # ``await`` here — the WS receive task must never block
-                # on parsing or dispatch (those run on the router task).
-                # On overflow, drop the oldest frame to make room: under
-                # sustained overload we'd rather lose stale ticks than
-                # back up the OS receive buffer.
-                try:
-                    self._receive_queue.put_nowait(raw)
-                except asyncio.QueueFull:
-                    try:
-                        self._receive_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        pass
-                    else:
-                        # task_done() balances the get_nowait we just did
-                        # so receive_queue.join() (if anyone calls it)
-                        # stays correct.
-                        self._receive_queue.task_done()
-                    # Should be impossible — we just made room — but
-                    # defensive in case another producer ever exists.
-                    # Log if it ever does happen so we don't drop frames
-                    # silently in an "impossible" branch.
+            # Self-healing re-subscribe runs concurrently with the receive loop
+            # on the same socket (websockets >=12 allows concurrent send+recv).
+            # Cancelled in the finally when the socket drops — the next connect
+            # re-subscribes from scratch, so a stale reconcile must not linger.
+            reconcile_task = asyncio.create_task(
+                self._reconcile_subscriptions(ws),
+                name=f"reconcile:{self.name}",
+            )
+            try:
+                async for raw in ws:
+                    # Hand off to the router via a bounded queue. We never
+                    # ``await`` here — the WS receive task must never block
+                    # on parsing or dispatch (those run on the router task).
+                    # On overflow, drop the oldest frame to make room: under
+                    # sustained overload we'd rather lose stale ticks than
+                    # back up the OS receive buffer.
                     try:
                         self._receive_queue.put_nowait(raw)
                     except asyncio.QueueFull:
-                        log.warning(
-                            "receive_queue overflow even after eviction "
-                            "— dropping new frame",
-                        )
-                    state.receive_queue_drops += 1
+                        try:
+                            self._receive_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            pass
+                        else:
+                            # task_done() balances the get_nowait we just did
+                            # so receive_queue.join() (if anyone calls it)
+                            # stays correct.
+                            self._receive_queue.task_done()
+                        # Should be impossible — we just made room — but
+                        # defensive in case another producer ever exists.
+                        # Log if it ever does happen so we don't drop frames
+                        # silently in an "impossible" branch.
+                        try:
+                            self._receive_queue.put_nowait(raw)
+                        except asyncio.QueueFull:
+                            log.warning(
+                                "receive_queue overflow even after eviction "
+                                "— dropping new frame",
+                            )
+                        state.receive_queue_drops += 1
+            finally:
+                reconcile_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reconcile_task
 
     async def _subscribe_all(self, ws) -> None:
         """Send a join frame for every configured channel.
@@ -231,17 +258,68 @@ class Connector:
         for i, ch in enumerate(self.channels):
             if i > 0:
                 await asyncio.sleep(_JOIN_PACING_S)
-            # MUST send as a WS TEXT frame (opcode 0x1), not BINARY (0x2):
-            # UW's server only reads join control messages from text frames
-            # and silently drops binary ones. orjson.dumps() returns bytes
-            # which the websockets lib would send as BINARY — decode to str
-            # so it goes out as TEXT.
-            frame = orjson.dumps({"channel": ch, "msg_type": "join"}).decode()
-            await ws.send(frame)
+            await self._send_join(ws, ch)
             # Subscription is pending until the server's ok ack arrives;
             # router flips this flag when it sees the ack.
             state.channel(ch).subscribed = False
             log.info("sent join frame", extra={"channel": ch})
+
+    async def _send_join(self, ws, channel: str) -> None:
+        """Send one join frame for ``channel`` as a WS TEXT frame.
+
+        MUST be TEXT (opcode 0x1), not BINARY (0x2): UW's server only reads
+        join control messages from text frames and silently drops binary ones.
+        ``orjson.dumps()`` returns bytes (which the websockets lib would send as
+        BINARY) so we ``.decode()`` to str. Does NOT touch the ``subscribed``
+        flag — callers own that (``_subscribe_all`` marks pending; the reconcile
+        loop leaves it as-is so a concurrently-arriving ack isn't clobbered).
+        """
+        frame = orjson.dumps({"channel": channel, "msg_type": "join"}).decode()
+        await ws.send(frame)
+
+    async def _reconcile_once(self, ws) -> list[str]:
+        """Re-send joins for THIS shard's channels still unacked. One pass.
+
+        Returns the channels re-joined (empty when all are subscribed) so the
+        loop / tests can observe what was healed. Only re-joins channels in
+        ``self.channels`` — never another shard's — and never resets the
+        ``subscribed`` flag, so an ack arriving mid-pass still wins. The router
+        flips ``subscribed=True`` when each re-join's ack returns.
+        """
+        stuck = [ch for ch in self.channels if not state.channel(ch).subscribed]
+        if not stuck:
+            return []
+        log.warning(
+            "re-sending joins for stuck channels",
+            extra={
+                "shard": self.name,
+                "stuck_count": len(stuck),
+                "sample": stuck[:10],
+            },
+        )
+        for i, ch in enumerate(stuck):
+            if i > 0:
+                await asyncio.sleep(_JOIN_PACING_S)
+            await self._send_join(ws, ch)
+        return stuck
+
+    async def _reconcile_subscriptions(self, ws) -> None:
+        """Periodically self-heal stuck subscriptions while connected.
+
+        Runs as a sibling task to the receive loop on the same socket. After an
+        initial delay (so the connect-time join burst's acks can land), it
+        re-joins any of this shard's still-unacked channels every
+        ``_RESUBSCRIBE_INTERVAL_S``. A ``ConnectionClosed`` mid-pass means the
+        socket dropped — return so the stale cycle ends; ``run`` reconnects and
+        re-subscribes from scratch. Cancelled by ``_connect_once`` on drop.
+        """
+        await asyncio.sleep(_RESUBSCRIBE_INITIAL_DELAY_S)
+        while True:
+            try:
+                await self._reconcile_once(ws)
+            except websockets.ConnectionClosed:
+                return
+            await asyncio.sleep(_RESUBSCRIBE_INTERVAL_S)
 
     def _maybe_alert_storm(self) -> None:
         """Raise a Sentry warning if reconnects pile up in the last hour.
