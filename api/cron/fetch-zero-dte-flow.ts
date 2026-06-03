@@ -63,9 +63,15 @@ async function fetchZeroDteFlow(apiKey: string): Promise<FlowTick[]> {
 
 // ── Sample to 5-min + store ─────────────────────────────────
 
+/** Coerce a UW numeric string to a number, treating null/blank/NaN as 0. */
+function toNumber(v: string): number {
+  const n = Number.parseFloat(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 async function storeLatest(
   ticks: FlowTick[],
-): Promise<{ stored: number; skipped: number }> {
+): Promise<{ stored: number; skipped: number; rejected?: boolean }> {
   if (ticks.length === 0) return { stored: 0, skipped: 0 };
 
   // Sample to 5-min intervals, keep last tick per window
@@ -73,6 +79,24 @@ async function storeLatest(
   for (const tick of ticks) {
     const rounded = roundTo5Min(new Date(tick.timestamp));
     sampled.set(rounded.toISOString(), tick);
+  }
+
+  // Reject a degenerate snapshot: the UW net-flow/expiry endpoint
+  // occasionally returns a full intraday series with null/zero premium on
+  // every tick (the QC "ALL values are zero/null" fingerprint — fired on
+  // zero_dte_index for 2026-06-03). Persisting it writes a flat-null 0DTE
+  // flow series for the day. Drop the whole batch if no sampled tick
+  // carries any net premium signal (null/blank coerced to 0).
+  const hasSignal = [...sampled.values()].some(
+    (t) =>
+      toNumber(t.net_call_premium) !== 0 || toNumber(t.net_put_premium) !== 0,
+  );
+  if (!hasSignal) {
+    logger.warn(
+      { ticks: sampled.size, date: ticks[0]?.date },
+      'fetch-zero-dte-flow: rejecting all-zero/null premium snapshot',
+    );
+    return { stored: 0, skipped: sampled.size, rejected: true };
   }
 
   const sql = getDb();

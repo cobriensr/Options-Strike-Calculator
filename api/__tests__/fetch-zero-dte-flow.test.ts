@@ -300,6 +300,91 @@ describe('fetch-zero-dte-flow handler', () => {
     });
   });
 
+  // ── All-zero/null snapshot rejection ──────────────────────
+
+  it('rejects a snapshot where every tick has zero premium', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      makeFlowTick({
+        timestamp: '2026-03-24T14:31:00Z',
+        net_call_premium: '0',
+        net_put_premium: '0',
+      }),
+      makeFlowTick({
+        timestamp: '2026-03-24T14:36:00Z',
+        net_call_premium: '0',
+        net_put_premium: '0',
+      }),
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: 0, rejected: true });
+    // Nothing persisted — the degenerate snapshot is dropped before insert.
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('treats null/blank premium as zero when rejecting', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      makeFlowTick({
+        timestamp: '2026-03-24T14:31:00Z',
+        net_call_premium: '',
+        net_put_premium: '',
+      }),
+      makeFlowTick({
+        timestamp: '2026-03-24T14:36:00Z',
+        net_call_premium: '',
+        net_put_premium: '',
+      }),
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: 0, rejected: true });
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('stores when at least one tick carries net premium', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      makeFlowTick({
+        timestamp: '2026-03-24T14:31:00Z',
+        net_call_premium: '0',
+        net_put_premium: '0',
+      }),
+      makeFlowTick({
+        timestamp: '2026-03-24T14:36:00Z',
+        net_call_premium: '5000000',
+        net_put_premium: '0',
+      }),
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ stored: 2 });
+    expect(res._json).not.toMatchObject({ rejected: true });
+    expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
   // ── Error handling ────────────────────────────────────────
 
   it('returns 500 when UW API fails (non-ok response)', async () => {
