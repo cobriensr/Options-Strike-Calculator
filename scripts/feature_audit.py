@@ -14,6 +14,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -25,6 +26,43 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
+WEIGHTS_JSON = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
+
+# Tier cutoffs applied to the (re-backfilled) score column. Kept in sync with
+# the hardcoded thresholds in main() — surfaced in the report header so a
+# reader knows what "Tier 2+" meant for this snapshot.
+TIER1_CUTOFF = 18
+TIER2_CUTOFF = 12
+
+
+def scoring_regime_lines() -> list[str]:
+    """Header block stamping the active scoring regime.
+
+    The feature audit stratifies on the score-derived Tier 2+ subset. Because
+    `make update` re-backfills the score column under freshly-refit weights
+    every night, that subset silently re-bases on each retrain — so feature
+    numbers are ONLY comparable across snapshots sharing the same
+    model_version. Stamp it so cross-snapshot diffs segment by regime instead
+    of comparing different scoring universes. See memory
+    project_feature_audit_regime_segmentation.
+    """
+    out = ['## Scoring regime (segment cross-snapshot comparisons by this)\n']
+    try:
+        w = json.loads(WEIGHTS_JSON.read_text())
+        ts = w.get('training_sample', {})
+        rng = ts.get('date_range') or ['?', '?']
+        out.append(f'    model_version : {w.get("model_version", "?")}')
+        out.append(f'    trained_at    : {w.get("trained_at", "?")}')
+        out.append(
+            f'    train sample  : n={ts.get("n", "?"):,} '
+            f'({rng[0]} → {rng[1]})'
+            if isinstance(ts.get('n'), int)
+            else f'    train sample  : n={ts.get("n", "?")} ({rng[0]} → {rng[1]})'
+        )
+    except (OSError, ValueError) as e:
+        out.append(f'    (could not read {WEIGHTS_JSON.name}: {e})')
+    out.append(f'    tier cutoffs  : T1 score>={TIER1_CUTOFF}, T2 score>={TIER2_CUTOFF}\n')
+    return out
 
 
 def load_env():
@@ -102,8 +140,8 @@ def main():
     print(f'[audit] {len(df):,} fires with flow_inversion populated')
 
     df['tier'] = df['score'].apply(
-        lambda s: 'T1' if pd.notna(s) and s >= 18
-        else ('T2' if pd.notna(s) and s >= 12 else 'T3')
+        lambda s: 'T1' if pd.notna(s) and s >= TIER1_CUTOFF
+        else ('T2' if pd.notna(s) and s >= TIER2_CUTOFF else 'T3')
     )
 
     # Build alert_seq buckets — first fire vs reload-cluster vs hot-chain.
@@ -123,6 +161,7 @@ def main():
 
     lines = ['# Fire-row feature audit — flow-inversion Sharpe by feature\n']
     lines.append(f'Dataset: {len(df):,} fires with flow_inv populated.\n')
+    lines.extend(scoring_regime_lines())
     lines.append('## Baselines\n')
     lines.append('    ' + baseline('all fires', df))
     lines.append('    ' + baseline('Tier 2+', df[df['tier'].isin(['T1','T2'])]))
