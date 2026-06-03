@@ -28,20 +28,28 @@ ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 WEIGHTS_JSON = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
 
-# Tier cutoffs applied to the (re-backfilled) score column. Kept in sync with
-# the hardcoded thresholds in main() — surfaced in the report header so a
-# reader knows what "Tier 2+" meant for this snapshot.
-TIER1_CUTOFF = 18
-TIER2_CUTOFF = 12
+# Feed tier cutoffs — mirror the user-facing feed EXACTLY so the audit's
+# "Tier 2+" subset is the population actually traded. The feed tiers on
+# qas = combined_score + inversionBonus(quintile) with these cutoffs
+# (api/_lib/lottery-tier.ts TIER_CUTOFFS_V2) and demotes direction-gated rows
+# to tier3. Recalibrated 2026-06-03 from 24/22 — before that the audit used the
+# stale V1 18/12 on the bare score, so its "Tier 1" was always empty and its
+# "Tier 2+" was a tiny score-12-17 sliver, NOT what the feed shows. Keep in
+# sync with the TS constants. Spec: lottery-feed-tier-recalibration-2026-06-03.
+TIER1_CUTOFF = 13
+TIER2_CUTOFF = 10
+# Per-ticker inversion-quality bonus (api/_lib/lottery-inversion-bonus.ts);
+# NULL quintile -> 0 (cold-start, never penalized).
+INVERSION_BONUS_BY_QUINTILE = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
 
 
 def scoring_regime_lines() -> list[str]:
     """Header block stamping the active scoring regime.
 
-    The feature audit stratifies on the score-derived Tier 2+ subset. Because
-    `make update` re-backfills the score column under freshly-refit weights
-    every night, that subset silently re-bases on each retrain — so feature
-    numbers are ONLY comparable across snapshots sharing the same
+    The feature audit stratifies on the feed's Tier 2+ subset (qas-derived).
+    Because `make update` re-backfills the score column under freshly-refit
+    weights every night, that subset silently re-bases on each retrain — so
+    feature numbers are ONLY comparable across snapshots sharing the same
     model_version. Stamp it so cross-snapshot diffs segment by regime instead
     of comparing different scoring universes. See memory
     project_feature_audit_regime_segmentation.
@@ -61,7 +69,10 @@ def scoring_regime_lines() -> list[str]:
         )
     except (OSError, ValueError) as e:
         out.append(f'    (could not read {WEIGHTS_JSON.name}: {e})')
-    out.append(f'    tier cutoffs  : T1 score>={TIER1_CUTOFF}, T2 score>={TIER2_CUTOFF}\n')
+    out.append(
+        f'    tier cutoffs  : T1 qas>={TIER1_CUTOFF}, T2 qas>={TIER2_CUTOFF}  '
+        '(qas = combined_score + inversion bonus; mirrors the feed)\n'
+    )
     return out
 
 
@@ -131,18 +142,36 @@ def main():
           spx_spot_charm_oi, spx_spot_vanna_oi,
           gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
           gex_strike_put_ask_minus_bid,
+          combined_score, direction_gated,
+          s.inversion_quintile,
           realized_flow_inversion_pct AS flow_inv
-        FROM lottery_finder_fires
+        FROM lottery_finder_fires f
+        LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE realized_flow_inversion_pct IS NOT NULL
         """,
         conn,
     )
     print(f'[audit] {len(df):,} fires with flow_inversion populated')
 
-    df['tier'] = df['score'].apply(
-        lambda s: 'T1' if pd.notna(s) and s >= TIER1_CUTOFF
-        else ('T2' if pd.notna(s) and s >= TIER2_CUTOFF else 'T3')
-    )
+    # Mirror the feed's tier exactly (api/lottery-finder.ts): tier on
+    # qas = combined_score + inversionBonus(quintile), 13/10 cutoffs, with
+    # null score and direction_gated rows demoted to tier3. combined_score
+    # (generated) == the feed's displayed score = GREATEST(0, score +
+    # round_trip_deduct + fire_count_adj + gamma_bonus).
+    def feed_tier(row) -> str:
+        if pd.isna(row['score']) or bool(row['direction_gated']):
+            return 'T3'
+        cs = row['combined_score'] if pd.notna(row['combined_score']) else 0
+        q = row['inversion_quintile']
+        bonus = INVERSION_BONUS_BY_QUINTILE.get(int(q), 0) if pd.notna(q) else 0
+        qas = cs + bonus
+        if qas >= TIER1_CUTOFF:
+            return 'T1'
+        if qas >= TIER2_CUTOFF:
+            return 'T2'
+        return 'T3'
+
+    df['tier'] = df.apply(feed_tier, axis=1)
 
     # Build alert_seq buckets — first fire vs reload-cluster vs hot-chain.
     def aseq_bucket(s):
