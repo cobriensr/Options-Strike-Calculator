@@ -10,6 +10,7 @@
 import { memo, useCallback, useMemo } from 'react';
 import type { SilentBoomAlert, SilentBoomExitPolicy } from './types.js';
 import { SilentBoomRow } from './SilentBoomRow.js';
+import { disclosureA11yProps } from '../ui/disclosure.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 import {
   BURST_STORM_BADGE_LABEL,
@@ -160,6 +161,10 @@ function SilentBoomTickerGroupBase({
   liveFlowSnapshot,
 }: SilentBoomTickerGroupProps) {
   const handleToggle = useCallback(() => onToggle(ticker), [onToggle, ticker]);
+  const { triggerProps, panelProps } = disclosureA11yProps(
+    expanded,
+    `silent-boom-ticker-group-${ticker}`,
+  );
 
   // Best peak across all alerts for this ticker. Null when every
   // alert is still un-enriched (no peak_ceiling_pct yet).
@@ -216,10 +221,8 @@ function SilentBoomTickerGroupBase({
   return (
     <div className="overflow-hidden rounded border border-neutral-800 bg-neutral-950/40">
       <button
-        type="button"
+        {...triggerProps}
         onClick={handleToggle}
-        aria-expanded={expanded}
-        aria-controls={`silent-boom-ticker-group-${ticker}`}
         className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2 text-left transition hover:bg-neutral-900"
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -384,8 +387,7 @@ function SilentBoomTickerGroupBase({
         flag, not on group visibility.
       */}
       <div
-        id={`silent-boom-ticker-group-${ticker}`}
-        hidden={!expanded}
+        {...panelProps}
         className="space-y-2 border-t border-neutral-800 bg-neutral-950 p-2"
       >
         {alerts.map((a) => (

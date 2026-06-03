@@ -14,10 +14,15 @@
  * user catches the BOOM moment before scrolling.
  */
 
-import { memo, useState } from 'react';
+import { memo, useId, useState } from 'react';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { LotteryRow } from './LotteryRow.js';
+import { disclosureA11yProps } from '../ui/disclosure.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
+
+/** Persist the user's collapse choice so it survives a poll-driven remount
+ *  (the section unmounts when the daily top-N briefly empties) and reloads. */
+const HOT_NOW_COLLAPSED_KEY = 'lf.hotRightNow.collapsed';
 
 interface ReignitionSectionProps {
   /** Fires that have `reignited === true`, sorted most-recent first. */
@@ -47,15 +52,34 @@ function ReignitionSectionInner({
   marketOpen,
   getFlowSnapshot,
 }: ReignitionSectionProps) {
-  // Collapsible (default expanded). Local state — the panel is pinned at
-  // the top of the feed, so a per-session collapse is enough; no need to
-  // persist across reloads.
-  const [collapsed, setCollapsed] = useState(false);
+  // Collapsible (default expanded), persisted to localStorage so the choice
+  // survives the empty→repopulate remount (and reloads). useId gives a unique
+  // aria-controls target — no hardcoded id that could collide.
+  const panelId = useId();
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(HOT_NOW_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggle = () =>
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem(HOT_NOW_COLLAPSED_KEY, next ? '1' : '0');
+      } catch {
+        // localStorage unavailable (private mode / quota) — in-memory only.
+      }
+      return next;
+    });
 
   // Empty state — section hides entirely. Per spec: "don't show empty
   // box". Returning null keeps the DOM clean and avoids a layout shift
   // when the daily top-N becomes populated mid-session.
   if (fires.length === 0) return null;
+
+  const { triggerProps, panelProps } = disclosureA11yProps(!collapsed, panelId);
 
   return (
     <section
@@ -73,10 +97,8 @@ function ReignitionSectionInner({
               floor-blind pill sits OUTSIDE the button so its tooltip
               doesn't toggle the section. */}
           <button
-            type="button"
-            onClick={() => setCollapsed((c) => !c)}
-            aria-expanded={!collapsed}
-            aria-controls="reignition-list"
+            {...triggerProps}
+            onClick={toggle}
             className="-mx-1 flex items-center gap-2 rounded px-1 text-orange-200 transition-colors hover:text-orange-100 focus-visible:ring-2 focus-visible:ring-orange-400/60 focus-visible:outline-none"
           >
             <span
@@ -116,11 +138,7 @@ function ReignitionSectionInner({
           state + in-flight chart fetches survive a collapse/expand cycle
           (no refetch storm on re-expand) — matches the disclosure pattern
           in LotteryFinderTickerGroup. */}
-      <ul
-        id="reignition-list"
-        hidden={collapsed}
-        className="divide-y divide-orange-900/40"
-      >
+      <ul {...panelProps} className="divide-y divide-orange-900/40">
         {fires.map((fire) => (
           <li key={fire.id} className="px-1 py-1">
             <LotteryRow

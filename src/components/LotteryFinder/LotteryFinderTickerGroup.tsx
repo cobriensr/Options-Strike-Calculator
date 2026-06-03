@@ -9,6 +9,7 @@
 import { memo, useCallback, useMemo } from 'react';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { LotteryRow } from './LotteryRow.js';
+import { disclosureA11yProps } from '../ui/disclosure.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 import {
   BURST_STORM_BADGE_LABEL,
@@ -191,6 +192,10 @@ function LotteryFinderTickerGroupBase({
   liveFlowSnapshot,
 }: LotteryFinderTickerGroupProps) {
   const handleToggle = useCallback(() => onToggle(ticker), [onToggle, ticker]);
+  const { triggerProps, panelProps } = disclosureA11yProps(
+    expanded,
+    `lottery-ticker-group-${ticker}`,
+  );
 
   // Best peak across all fires for this ticker. Null when every fire
   // is still un-enriched.
@@ -250,10 +255,8 @@ function LotteryFinderTickerGroupBase({
   return (
     <div className="overflow-hidden rounded border border-neutral-800 bg-neutral-950/40">
       <button
-        type="button"
+        {...triggerProps}
         onClick={handleToggle}
-        aria-expanded={expanded}
-        aria-controls={`lottery-ticker-group-${ticker}`}
         className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 py-2 text-left transition hover:bg-neutral-900"
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -416,8 +419,7 @@ function LotteryFinderTickerGroupBase({
         each row's OWN expand flag, not on group visibility.
       */}
       <div
-        id={`lottery-ticker-group-${ticker}`}
-        hidden={!expanded}
+        {...panelProps}
         className="space-y-2 border-t border-neutral-800 bg-neutral-950 p-2"
       >
         {fires.map((f) => {

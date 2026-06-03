@@ -38,6 +38,7 @@ import type {
   Time,
   UTCTimestamp,
 } from 'lightweight-charts';
+import * as Sentry from '@sentry/react';
 import type { NetFlowTick, TickerCandle } from '../LotteryFinder/types.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 
@@ -552,25 +553,30 @@ function TickerNetFlowChartInner({
     // on a uniform full-session minute grid (sessionMinuteGrid); the price
     // series is not gridded and may not reach the bounds. So when there's no
     // flow data (a ticker with <2 net-flow ticks — e.g. a net-flow data gap),
-    // calling setVisibleRange throws "Value is null" and the ErrorBoundary
-    // nukes the entire alert panel. Pin only when the flow grid exists; else
-    // fitContent to whatever data is present. try/catch is a defensive net so
-    // a charting edge can never blank the panel during market hours.
+    // pinning would throw "Value is null" and the ErrorBoundary would nuke the
+    // entire alert panel. Pin only when the flow grid exists; else fitContent
+    // (null-safe) to whatever data is present.
+    if (date == null || !flowData) {
+      ts.fitContent();
+      return;
+    }
+    // Only the explicit pin can throw (ctSessionBounds → RangeError on a
+    // malformed date; setVisibleRange → "Value is null" if no series spans the
+    // bounds). Scope the catch to just that, and breadcrumb it rather than
+    // swallow silently — never rethrow (would blank the panel).
     try {
-      if (date == null || !flowData) {
-        ts.fitContent();
-        return;
-      }
       const bounds = ctSessionBounds(date);
       const from = Math.floor(Date.parse(bounds.min) / 1000) as UTCTimestamp;
       const to = Math.floor(Date.parse(bounds.max) / 1000) as UTCTimestamp;
-      if (!Number.isFinite(from as number) || !Number.isFinite(to as number)) {
-        return;
-      }
       ts.setVisibleRange({ from, to });
-    } catch {
-      // Empty/partial series — leave the axis at its default zoom. Cosmetic
-      // only; the chart still renders. Never rethrow (would crash the panel).
+    } catch (err) {
+      Sentry.captureMessage('TickerNetFlowChart.setVisibleRange skipped', {
+        level: 'warning',
+        extra: {
+          date,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
     }
   }, [flowData, priceData, date]);
 

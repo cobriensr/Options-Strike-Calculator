@@ -7,7 +7,7 @@
  * pulling in the row's full chart stack.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type {
   LotteryFire,
@@ -166,6 +166,16 @@ describe('ReignitionSection: empty state', () => {
 });
 
 describe('ReignitionSection: populated', () => {
+  // The collapse state is persisted to localStorage; clear it so each test
+  // starts from the default-expanded state regardless of order.
+  beforeEach(() => {
+    try {
+      localStorage.clear();
+    } catch {
+      /* jsdom always provides localStorage; guard is belt-and-suspenders */
+    }
+  });
+
   it('renders one row per fire with the section heading + count badge', () => {
     const fires = [
       makeFire({ id: 1, underlyingSymbol: 'QQQ' }),
@@ -202,23 +212,50 @@ describe('ReignitionSection: populated', () => {
         getFlowSnapshot={() => null}
       />,
     );
-    // Default expanded — rows visible.
+    // Default expanded — rows visible, panel not hidden.
     const toggle = screen.getByRole('button', { name: /Hot Right Now/i });
+    const panelId = toggle.getAttribute('aria-controls')!;
+    const panel = document.getElementById(panelId);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(panel).not.toHaveAttribute('hidden');
     expect(screen.getByTestId('row-1')).toBeInTheDocument();
 
-    // Collapse — rows hidden (kept mounted so aria-controls resolves),
-    // header + count still scannable.
+    // Collapse — assert the mechanism directly: aria-expanded flips and the
+    // panel carries the `hidden` attribute (kept mounted so aria-controls
+    // resolves). Header + count stay scannable.
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(panel).toHaveAttribute('hidden');
     expect(screen.getByTestId('row-1')).not.toBeVisible();
-    expect(screen.getByTestId('row-2')).not.toBeVisible();
     expect(screen.getByText('2')).toBeInTheDocument();
 
-    // Re-expand — rows visible again.
+    // Re-expand — hidden removed, rows visible again.
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(panel).not.toHaveAttribute('hidden');
     expect(screen.getByTestId('row-1')).toBeVisible();
+  });
+
+  it('persists the collapsed choice across remount (localStorage)', () => {
+    const props = {
+      fires: [makeFire({ id: 1, underlyingSymbol: 'QQQ' })],
+      exitPolicy: 'realizedTrail30_10Pct' as const,
+      marketOpen: true,
+      getFlowSnapshot: () => null,
+    };
+    const { unmount } = render(<ReignitionSection {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: /Hot Right Now/i }));
+    expect(
+      screen.getByRole('button', { name: /Hot Right Now/i }),
+    ).toHaveAttribute('aria-expanded', 'false');
+
+    // Simulate the empty→repopulate remount (section returns null when
+    // fires=0, then re-mounts). The collapse choice must survive.
+    unmount();
+    render(<ReignitionSection {...props} />);
+    expect(
+      screen.getByRole('button', { name: /Hot Right Now/i }),
+    ).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('labels the section floor-blind so the cadence-ranked / floor-ignoring behavior is explicit', () => {
