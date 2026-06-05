@@ -1456,88 +1456,106 @@ export default function StrikeCalculator() {
     />
   );
 
+  const notificationPrompt = market.hasData ? (
+    <NotificationPermission
+      permission={alertState.notificationPermission}
+      onRequest={async () => {
+        // Phase 3 path: bump Notification.permission so the
+        // in-tab notifications fire from the polling hooks.
+        await alertState.requestPermission();
+        // v2 path: also register a Web Push subscription so
+        // alerts can fire with the tab closed / minimized /
+        // mobile PWA backgrounded. Silent no-op when
+        // VITE_VAPID_PUBLIC_KEY is unset (v2 dormant).
+        await pushSub.subscribe();
+      }}
+    />
+  ) : null;
+
+  const isAlerts = view === 'alerts';
+
   return (
     <CollapseAllContext.Provider value={collapseSignal}>
-      {view === 'alerts' ? (
-        <div
-          id="app-shell"
-          className="text-primary flex h-dvh flex-col overflow-hidden font-serif transition-[background-color,color] duration-[250ms]"
-        >
-          {topBars}
-          {appHeader}
-          {prefsModal}
-          <OptionsAlertsView
-            marketOpen={market.data.quotes?.marketOpen ?? false}
-            hasMarketContext={hasMarketContext}
-          />
-        </div>
-      ) : (
-        <>
-          {topBars}
-          <div
-            id="app-shell"
-            className="text-primary min-h-dvh font-serif transition-[background-color,color] duration-[250ms]"
+      <div
+        id="app-shell"
+        className={
+          isAlerts
+            ? 'text-primary flex h-dvh flex-col overflow-hidden font-serif transition-[background-color,color] duration-[250ms]'
+            : 'text-primary min-h-dvh font-serif transition-[background-color,color] duration-[250ms]'
+        }
+      >
+        {isAlerts ? (
+          <a
+            href="#options-alerts-main"
+            className="bg-accent absolute top-0 -left-[9999px] z-[100] p-[8px_16px] font-sans text-sm text-white"
+            onFocus={(e) => {
+              (e.target as HTMLElement).style.left = '0';
+            }}
+            onBlur={(e) => {
+              (e.target as HTMLElement).style.left = '-9999px';
+            }}
           >
-            <a
-              href="#results"
-              className="bg-accent absolute top-0 -left-[9999px] z-[100] p-[8px_16px] font-sans text-sm text-white"
-              onFocus={(e) => {
-                (e.target as HTMLElement).style.left = '0';
-              }}
-              onBlur={(e) => {
-                (e.target as HTMLElement).style.left = '-9999px';
-              }}
-            >
-              Skip to results
-            </a>
+            Skip to options alerts
+          </a>
+        ) : (
+          <a
+            href="#results"
+            className="bg-accent absolute top-0 -left-[9999px] z-[100] p-[8px_16px] font-sans text-sm text-white"
+            onFocus={(e) => {
+              (e.target as HTMLElement).style.left = '0';
+            }}
+            onBlur={(e) => {
+              (e.target as HTMLElement).style.left = '-9999px';
+            }}
+          >
+            Skip to results
+          </a>
+        )}
 
-            {appHeader}
+        {topBars}
 
-            {prefsModal}
+        {appHeader}
 
-            <div className="lg:flex lg:items-start">
-              <SectionNav
-                sections={navSections}
-                orientation="vertical"
-                bottomSlot={<AccessKeyButton />}
-              />
+        {prefsModal}
 
-              <div className="lg:min-w-0 lg:flex-1">
-                <SectionNav sections={navSections} orientation="horizontal" />
+        {isAlerts ? (
+          <>
+            {notificationPrompt}
+            <OptionsAlertsView
+              marketOpen={market.data.quotes?.marketOpen ?? false}
+              hasMarketContext={hasMarketContext}
+            />
+          </>
+        ) : (
+          <div className="lg:flex lg:items-start">
+            <SectionNav
+              sections={navSections}
+              orientation="vertical"
+              bottomSlot={<AccessKeyButton />}
+            />
 
-                {market.hasData && (
-                  <NotificationPermission
-                    permission={alertState.notificationPermission}
-                    onRequest={async () => {
-                      // Phase 3 path: bump Notification.permission so the
-                      // in-tab notifications fire from the polling hooks.
-                      await alertState.requestPermission();
-                      // v2 path: also register a Web Push subscription so
-                      // alerts can fire with the tab closed / minimized /
-                      // mobile PWA backgrounded. Silent no-op when
-                      // VITE_VAPID_PUBLIC_KEY is unset (v2 dormant).
-                      await pushSub.subscribe();
-                    }}
+            <div className="lg:min-w-0 lg:flex-1">
+              <SectionNav sections={navSections} orientation="horizontal" />
+
+              {notificationPrompt}
+
+              <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
+                {/* Subtitle — below sticky header */}
+                <p className="text-secondary mb-1 text-[15px] leading-normal">
+                  Black-Scholes approximation for delta-based strike placement
+                </p>
+                <p className="text-tertiary mb-8 text-xs italic">
+                  Per Unusual Whales data policy, no market data, raw or
+                  derived, is publicly available on this site.
+                </p>
+
+                <main>
+                  <EventDayWarning
+                    selectedDate={vix.selectedDate}
+                    liveEvents={market.data.events?.events}
                   />
-                )}
 
-                <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
-                  {/* Subtitle — below sticky header */}
-                  <p className="text-secondary mb-1 text-[15px] leading-normal">
-                    Black-Scholes approximation for delta-based strike placement
-                  </p>
-                  <p className="text-tertiary mb-8 text-xs italic">
-                    Per Unusual Whales data policy, no market data, raw or
-                    derived, is publicly available on this site.
-                  </p>
-
-                  <main>
-                    <EventDayWarning
-                      selectedDate={vix.selectedDate}
-                      liveEvents={market.data.events?.events}
-                    />
-
-                    {/*
+                  {/*
                   Two-level panel render — outer iterates resolved
                   groups (registry order, possibly user-reordered);
                   inner iterates panels within each group (registry
@@ -1554,30 +1572,29 @@ export default function StrikeCalculator() {
 
                   Spec: docs/superpowers/specs/panel-reordering-2026-05-17.md
                 */}
-                    <PanelRouter
-                      panelMap={panelMap}
-                      resolvedGroups={resolvedGroups}
-                      resolvedPanelsByGroup={resolvedPanelsByGroup}
-                      isHidden={panelPrefs.isHidden}
-                    />
-                  </main>
-                </div>
+                  <PanelRouter
+                    panelMap={panelMap}
+                    resolvedGroups={resolvedGroups}
+                    resolvedPanelsByGroup={resolvedPanelsByGroup}
+                    isHidden={panelPrefs.isHidden}
+                  />
+                </main>
               </div>
             </div>
           </div>
-          <BackToTop />
-          <UpdateAvailableBanner pushedUp={historySnapshot != null} />
-          {historySnapshot != null && (
-            <BacktestDiag
-              snapshot={historySnapshot}
-              history={historyData}
-              timeHour={timeHour}
-              timeMinute={timeMinute}
-              timeAmPm={timeAmPm}
-              timezone={timezone}
-            />
-          )}
-        </>
+        )}
+      </div>
+      {!isAlerts && <BackToTop />}
+      <UpdateAvailableBanner pushedUp={historySnapshot != null} />
+      {historySnapshot != null && (
+        <BacktestDiag
+          snapshot={historySnapshot}
+          history={historyData}
+          timeHour={timeHour}
+          timeMinute={timeMinute}
+          timeAmPm={timeAmPm}
+          timezone={timezone}
+        />
       )}
       <Analytics />
       <SpeedInsights />
