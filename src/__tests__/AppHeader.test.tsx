@@ -101,7 +101,7 @@ describe('AppHeader', () => {
   it('renders the view toggle and switches view on click', () => {
     const onViewChange = vi.fn();
     renderHeader({ onViewChange });
-    const alertsTab = screen.getByRole('tab', { name: /options alerts/i });
+    const alertsTab = screen.getByRole('button', { name: /options alerts/i });
     expect(alertsTab).toBeInTheDocument();
     fireEvent.click(alertsTab);
     expect(onViewChange).toHaveBeenCalledWith('alerts');
