@@ -31,7 +31,7 @@ Usage:
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -295,7 +295,7 @@ def f4_macro_window(lf: pd.DataFrame, events: pd.DataFrame) -> dict:
 
 
 def main():
-    print(f"Cross-section EDA re-run — {datetime.now(timezone.utc).isoformat()}")
+    print(f"Cross-section EDA re-run — {datetime.now(UTC).isoformat()}")
     print(f"  output dir: {FINDINGS_DIR}")
     print("\n--- Loading ---")
     lf = load_lottery()

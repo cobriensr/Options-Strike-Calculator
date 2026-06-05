@@ -16,13 +16,13 @@ import warnings
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import psycopg2
-from scipy import stats
 
 warnings.filterwarnings("ignore")
 
@@ -218,7 +218,9 @@ def h2_strike_distance(sb: pd.DataFrame, lf: pd.DataFrame) -> dict:
     # Load gex daily gamma-flip approximation
     # Find the strike with max |net gamma| near the spot, where call_gamma_oi - put_gamma_oi changes sign
     print("  Loading gex_strike_0dte for gamma-flip computation...")
-    gex_q = """
+    # NOTE: query prepared but not yet wired up; underscore-prefixed to
+    # satisfy ruff F841 (unused) without discarding the SQL.
+    _gex_q = """
     WITH ranked AS (
         SELECT date, timestamp, strike, price,
                call_gamma_oi, put_gamma_oi,
@@ -500,7 +502,10 @@ def h6_macro_proximity(sb: pd.DataFrame, lf: pd.DataFrame) -> dict:
 
     def compute_macro_dist(df, time_col, label):
         fires = df.copy()
-        fires_sorted = fires.sort_values(time_col)
+        # NOTE: sorted frame computed but unused below — underscore-prefixed
+        # to satisfy ruff F841. Possible latent bug (intended to drive the
+        # per-fire loop?); left in place rather than removed.
+        _fires_sorted = fires.sort_values(time_col)
 
         # For each fire, find hours to next macro event
         macro_times = macro.sort_values("date")["date"].values
@@ -640,7 +645,7 @@ def plot_hypothesis_bars(stats_df: pd.DataFrame, title: str, filename: str) -> N
 
     bars50 = ax.bar(x - w/2, stats_df["win50_rate"] * 100, w,
                      label="Win ≥50%", color="#22cc88", alpha=0.85)
-    bars100 = ax.bar(x + w/2, stats_df["win100_rate"] * 100, w,
+    ax.bar(x + w/2, stats_df["win100_rate"] * 100, w,
                       label="Win ≥100%", color="#44aaff", alpha=0.85)
 
     # Add N labels

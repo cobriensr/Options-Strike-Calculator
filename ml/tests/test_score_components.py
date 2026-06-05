@@ -16,7 +16,6 @@ import pytest
 
 from score_components import assign_quintile, compute_components
 
-
 # ---------------------------------------------------------------------------
 # Synthetic weights — mirror the JSON shape from ml/output/
 # ---------------------------------------------------------------------------

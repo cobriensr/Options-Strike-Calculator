@@ -57,7 +57,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -69,7 +69,6 @@ from scipy import stats
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils import get_connection
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -443,7 +442,7 @@ def main() -> None:
     # ---- Build weights dict ----
     weights = {
         "model_version": "rescore-v1-2026-05-22",
-        "trained_at": datetime.now(timezone.utc).isoformat(),
+        "trained_at": datetime.now(UTC).isoformat(),
         "training_sample": {
             "n": int(len(df)),
             "date_range": [
@@ -549,32 +548,32 @@ def main() -> None:
     print("RESCORE-V1 MODEL SUMMARY")
     print("=" * 70)
     print(f"\nTraining sample: {len(df):,} rows  |  global mean outcome_pct: {global_mean:.1f}%")
-    print(f"\nTOD weights (target: AM_open > PM):")
+    print("\nTOD weights (target: AM_open > PM):")
     for k, v in tod_weights.items():
         bar = "#" * (v + 5)
         print(f"  {k:10s}: {v:+4d}  {bar}")
 
-    print(f"\nDTE weights (target: '1' > '0'):")
+    print("\nDTE weights (target: '1' > '0'):")
     for k in ["0", "1", "2", "3"]:
         v = dte_weights[k]
         bar = "#" * (v + 5)
         print(f"  DTE {k}: {v:+4d}  {bar}")
 
-    print(f"\nVol/OI quintile weights (target: Q3 highest):")
+    print("\nVol/OI quintile weights (target: Q3 highest):")
     for i, w in enumerate(vol_oi_weights):
         lo = vol_oi_boundaries[i - 1] if i > 0 else 0
         hi = vol_oi_boundaries[i] if i < 4 else float("inf")
         bar = "#" * (w + 5)
         print(f"  Q{i+1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
 
-    print(f"\nGamma quintile weights (target: Q4 highest or near-top):")
+    print("\nGamma quintile weights (target: Q4 highest or near-top):")
     for i, w in enumerate(gamma_weights):
         lo = gamma_boundaries[i - 1] if i > 0 else 0
         hi = gamma_boundaries[i] if i < 4 else float("inf")
         bar = "#" * (w + 5)
         print(f"  Q{i+1} [{lo:.4f},{hi:.4f}): {w:+4d}  {bar}")
 
-    print(f"\nAsk_pct quintile weights (target: Q1 highest, monotonic-decreasing):")
+    print("\nAsk_pct quintile weights (target: Q1 highest, monotonic-decreasing):")
     for i, w in enumerate(ask_pct_weights):
         lo = ask_pct_boundaries[i - 1] if i > 0 else 0.0
         hi = ask_pct_boundaries[i] if i < 4 else 1.0
@@ -582,14 +581,14 @@ def main() -> None:
         print(f"  Q{i+1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
 
     print(f"\nOption type weights: C={opt_type_weights.get('C', 0):+d}, P={opt_type_weights.get('P', 0):+d}")
-    print(f"\nTicker weights (non-zero only):")
+    print("\nTicker weights (non-zero only):")
     nonzero = {k: v for k, v in sorted(ticker_weights.items(), key=lambda x: -x[1]) if v != 0}
     for ticker, w in nonzero.items():
         bar = "#" * (w + 6)
         print(f"  {ticker:8s}: {w:+4d}  {bar}")
 
     print(f"\nCutoffs: t1={t1}, t2={t2}")
-    print(f"\nTier distribution (training set):")
+    print("\nTier distribution (training set):")
     print(f"  Tier 1 (score >= {t1}): {len(tier1):6,}  | mean outcome: {weights['validation']['tier1_mean_outcome_pct']:.1f}%")
     print(f"  Tier 2 (score >= {t2}): {len(tier2):6,}  | mean outcome: {weights['validation']['tier2_mean_outcome_pct']:.1f}%")
     print(f"  Tier 3 (score <  {t2}): {len(tier3):6,}  | mean outcome: {weights['validation']['tier3_mean_outcome_pct']:.1f}%")

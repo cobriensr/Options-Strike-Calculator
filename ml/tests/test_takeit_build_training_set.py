@@ -9,6 +9,7 @@ from datetime import date as date_type
 
 import pandas as pd
 import pytest
+
 from takeit.build_training_set import (
     SESSION_PHASES,
     _is_quarter_end_last_hour_ct,

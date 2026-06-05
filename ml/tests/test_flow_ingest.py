@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,13 @@ import polars as pl
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# ingest-flow.py does a bare `from _pipeline_retry import ...`, which resolves
+# only when scripts/ is on sys.path. When loaded as a script that's automatic
+# (the script's own dir is on the path); loaded here via importlib it is not,
+# so add it explicitly before exec_module or collection fails with
+# ModuleNotFoundError: No module named '_pipeline_retry'.
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 # Load the script as a module (script filename has hyphens, not a valid identifier)
 _spec = importlib.util.spec_from_file_location(
@@ -257,7 +265,12 @@ def test_multipart_propagates_part_failure(tmp_path: Path) -> None:
     create_resp = MagicMock(
         ok=True, json=MagicMock(return_value={"key": "K", "uploadId": "U"})
     )
-    bad_part = MagicMock(ok=False, status_code=500, text="server boom")
+    # 400 is NON-retryable (RETRYABLE_HTTP_STATUS = {403,429,500,502,503,504}),
+    # so the part upload fails permanently on the first attempt and raises
+    # RuntimeError immediately — no retry loop, no backoff sleeps. (A 500 here
+    # would be retried 6x with real backoff before raising _TransientHTTP,
+    # which is exercised in scripts/test_pipeline_retry.py instead.)
+    bad_part = MagicMock(ok=False, status_code=400, text="server boom")
     with (
         patch.object(ingest_flow.requests, "post", side_effect=[create_resp, bad_part]),
         pytest.raises(RuntimeError, match="mpu part 1 failed"),

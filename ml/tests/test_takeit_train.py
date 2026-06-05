@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+
 from takeit.shap_explainer import _json_safe, explain_batch, explain_row
 from takeit.train import (
     prepare_features,
