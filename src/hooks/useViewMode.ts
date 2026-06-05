@@ -6,9 +6,7 @@ const ALERTS_HASH = '#alerts';
 
 /** Parse the current location hash, tolerating a leading '#' and a '?...' query suffix. */
 function readViewFromHash(): ViewMode {
-  const raw = (globalThis.location?.hash ?? '')
-    .replace(/^#/, '')
-    .split('?')[0];
+  const raw = (globalThis.location?.hash ?? '').replace(/^#/, '').split('?')[0];
   return raw === 'alerts' ? 'alerts' : 'calculator';
 }
 
