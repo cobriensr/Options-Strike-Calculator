@@ -17,10 +17,16 @@ describe('OptionsAlertsView', () => {
     expect(
       screen.queryByRole('region', { name: /lottery finder alerts/i }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('main', { name: /options alerts/i }),
+    ).toBeInTheDocument();
   });
 
   it('renders both feed panes when market context is present', async () => {
     render(<OptionsAlertsView marketOpen hasMarketContext />);
+    expect(
+      screen.getByRole('main', { name: /options alerts/i }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole('region', { name: /lottery finder alerts/i }),
     ).toBeInTheDocument();

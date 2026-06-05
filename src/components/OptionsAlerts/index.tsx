@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react';
 import SkeletonSection from '../SkeletonSection';
+import ErrorBoundary from '../ErrorBoundary';
 import { handleStaleChunk } from '../../utils/handle-stale-chunk';
 
 // Feed code stays code-split; only this lightweight wrapper is eager.
@@ -37,33 +38,45 @@ export function OptionsAlertsView({
 }: OptionsAlertsViewProps) {
   if (!hasMarketContext) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-center">
+      <main
+        id="options-alerts-main"
+        aria-label="Options alerts"
+        className="flex min-h-0 flex-1 items-center justify-center p-8 text-center"
+      >
         <p className="text-secondary max-w-md text-sm">
           Options alerts need live market context. Sign in or load a snapshot to
           see Lottery Finder and Silent Boom fires.
         </p>
-      </div>
+      </main>
     );
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <main
+      id="options-alerts-main"
+      aria-label="Options alerts"
+      className="flex min-h-0 flex-1 flex-col"
+    >
       <section
         aria-label="Lottery Finder alerts"
         className="border-edge min-h-0 flex-1 overflow-y-auto border-b"
       >
-        <Suspense fallback={<SkeletonSection lines={6} />}>
-          <LotteryFinderSection marketOpen={marketOpen} />
-        </Suspense>
+        <ErrorBoundary label="Lottery Finder">
+          <Suspense fallback={<SkeletonSection lines={6} />}>
+            <LotteryFinderSection marketOpen={marketOpen} />
+          </Suspense>
+        </ErrorBoundary>
       </section>
       <section
         aria-label="Silent Boom alerts"
         className="min-h-0 flex-1 overflow-y-auto"
       >
-        <Suspense fallback={<SkeletonSection lines={6} />}>
-          <SilentBoomSection marketOpen={marketOpen} />
-        </Suspense>
+        <ErrorBoundary label="Silent Boom">
+          <Suspense fallback={<SkeletonSection lines={6} />}>
+            <SilentBoomSection marketOpen={marketOpen} />
+          </Suspense>
+        </ErrorBoundary>
       </section>
-    </div>
+    </main>
   );
 }
