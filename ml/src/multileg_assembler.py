@@ -170,6 +170,22 @@ _BUCKET_BATCH_MIN_ROWS: Final = 500
 _PER_BATCH_PRUNE_THRESHOLD: Final = 50_000
 
 
+# Cross-type cross-join pair cap. The cross-type step joins calls × puts
+# within one expiry; a dense 0DTE open-burst bucket (e.g. 2,600 calls ×
+# 4,400 puts ≈ 11.5M pairs, run twice for both orientations) materializes
+# a multi-GB intermediate BEFORE _PER_BATCH_PRUNE_THRESHOLD (which prunes
+# the join OUTPUT) can help — that transient spike × concurrency-4 OOM's
+# the 24GB Classifier box at the open. When |A| × |B| exceeds this cap we
+# iterate side A in row-chunks of ~(cap // |B|) and concat the per-chunk
+# results, bounding the per-join intermediate to ~cap rows. A cross /
+# size-band join is row-independent in A, so chunking is output-identical:
+# (A1 ∪ A2) ⋈ B == (A1 ⋈ B) ∪ (A2 ⋈ B). 1M pairs → sub-GB per request, 4
+# concurrent comfortably under 24GB; tunable. At/under the cap the path is
+# byte-for-byte the prior single-shot join (no chunking overhead). See
+# docs/superpowers/specs/classifier-cross-type-subbatch-2026-06-04.md.
+_CROSS_JOIN_PAIR_CAP: Final = 1_000_000
+
+
 # Butterfly skip threshold. A 3-leg butterfly body × low_wing × high_wing
 # join is structurally O(N²) in the per-cell row count (size-constraints
 # selectivity is high but the intermediate cross-product is not). For
@@ -802,43 +818,120 @@ def _two_leg_cross_type_from_batch(
 ) -> pl.DataFrame:
     """Pattern-driven cross-type join (calls × puts) for one batch.
 
-    Runs ONE pair of cross-joins per batch (calls-as-A and puts-as-A so
-    ridx_b > ridx_a covers both orientations) and then loops over
+    Runs the cross-join in BOTH orientations (calls-as-A and puts-as-A so
+    ridx_b > ridx_a covers both directions) and then loops over
     ``patterns`` to apply each pattern's direction filter and emit scored
     candidates. New cross-type 2-leg patterns added to ``PATTERNS`` flow
     through here automatically.
 
-    Peak memory is bounded by max(|calls|, |puts|) × ~bucket_size.
+    Peak memory is bounded by ~``_CROSS_JOIN_PAIR_CAP`` rows per
+    cross-join: when an orientation's ``|A| × |B|`` exceeds the cap, side
+    A is iterated in row-chunks so the largest single intermediate stays
+    ~cap-sized instead of materializing the full cartesian product (which
+    OOM's the box on a dense 0DTE open burst). Each orientation is scored
+    independently and the per-orientation results are concatenated; below
+    the cap the path is byte-for-byte the prior single-shot join.
     """
     if calls.height == 0 or puts.height == 0 or not patterns:
         return _empty_candidates_2leg()
 
-    pairs1 = _cross_join_two_leg(
-        a=calls, b=puts, size_tolerance=size_tolerance
-    )
-    pairs2 = _cross_join_two_leg(
-        a=puts, b=calls, size_tolerance=size_tolerance
-    )
-    frames = [f for f in (pairs1, pairs2) if f.height > 0]
+    scored = [
+        _cross_type_scored_one_orientation(
+            a=a,
+            b=b,
+            patterns=patterns,
+            window_seconds=window_seconds,
+            size_tolerance=size_tolerance,
+        )
+        for a, b in ((calls, puts), (puts, calls))
+    ]
+    frames = [f for f in scored if f.height > 0]
     if not frames:
         return _empty_candidates_2leg()
-    pairs = pl.concat(frames, how="vertical_relaxed")
+    if len(frames) == 1:
+        return frames[0]
+    return pl.concat(frames, how="vertical_relaxed")
 
-    # Restrict anchor side to non-overlap (the larger side has the wider
-    # bucket range; A's _is_anchor_a tells us if A is in the anchor set).
-    pairs = pairs.filter(pl.col("_is_anchor"))
 
-    pairs = _apply_two_leg_window_and_size(
-        pairs,
-        window_seconds=window_seconds,
-        size_tolerance=size_tolerance,
-    )
-    if pairs.height == 0:
+def _cross_type_scored_one_orientation(
+    *,
+    a: pl.DataFrame,
+    b: pl.DataFrame,
+    patterns: tuple[PatternSpec, ...],
+    window_seconds: int,
+    size_tolerance: float,
+) -> pl.DataFrame:
+    """Cross-join one orientation (a × b), then anchor-filter, window/size
+    filter, and score — sub-batching side A when ``|a| × |b|`` exceeds
+    ``_CROSS_JOIN_PAIR_CAP``.
+
+    Output-identical to a single-shot ``_cross_join_two_leg(a, b)`` + the
+    shared scoring tail: the cross / size-band join is row-independent in
+    A, and the ``_is_anchor`` filter, ``_apply_two_leg_window_and_size``,
+    and ``_score_per_pattern`` steps are all per-row, so
+    ``(A1 ∪ A2) ⋈ B`` scored == ``(A1 ⋈ B) ∪ (A2 ⋈ B)`` scored. When
+    chunking is not triggered, this is one ``_cross_join_two_leg`` call
+    and one scoring pass, exactly as the prior code.
+    """
+    if a.height == 0 or b.height == 0:
         return _empty_candidates_2leg()
 
-    return _score_per_pattern(
-        pairs, patterns=patterns, size_tolerance=size_tolerance
+    def _score(pairs: pl.DataFrame) -> pl.DataFrame:
+        # Restrict anchor side to non-overlap (A's _is_anchor tells us if
+        # A is in the anchor set), then window/size filter and score.
+        pairs = pairs.filter(pl.col("_is_anchor"))
+        pairs = _apply_two_leg_window_and_size(
+            pairs,
+            window_seconds=window_seconds,
+            size_tolerance=size_tolerance,
+        )
+        if pairs.height == 0:
+            return _empty_candidates_2leg()
+        return _score_per_pattern(
+            pairs, patterns=patterns, size_tolerance=size_tolerance
+        )
+
+    # Common case: cartesian product fits under the cap → single-shot,
+    # byte-for-byte the prior path (no chunking overhead, no extra prune).
+    if a.height * b.height <= _CROSS_JOIN_PAIR_CAP:
+        return _score(
+            _cross_join_two_leg(a=a, b=b, size_tolerance=size_tolerance)
+        )
+
+    # Dense bucket: chunk side A so each cross-join intermediate stays
+    # ~cap-sized. n_chunks = ceil(|a| / chunk_rows).
+    chunk_rows = max(1, _CROSS_JOIN_PAIR_CAP // max(1, b.height))
+    n_chunks = (a.height + chunk_rows - 1) // chunk_rows
+    warnings.warn(
+        f"multileg matcher: sub-batching dense cross-type join "
+        f"(n_calls/n_puts side-A={a.height:,}, side-B={b.height:,}, "
+        f"{a.height * b.height:,} pairs > {_CROSS_JOIN_PAIR_CAP:,} cap) "
+        f"into {n_chunks} sub-chunks of {chunk_rows:,} rows.",
+        RuntimeWarning,
+        stacklevel=2,
     )
+    chunk_out: list[pl.DataFrame] = []
+    for start in range(0, a.height, chunk_rows):
+        a_chunk = a.slice(start, chunk_rows)
+        scored = _score(
+            _cross_join_two_leg(
+                a=a_chunk, b=b, size_tolerance=size_tolerance
+            )
+        )
+        if scored.height == 0:
+            continue
+        # Mirror the surrounding loop's per-batch prune so the chunked
+        # accumulator stays bounded on a hot cell.
+        if scored.height > _PER_BATCH_PRUNE_THRESHOLD:
+            scored, _ = _prune_top_k_per_trade(
+                scored, _empty_candidates_3leg()
+            )
+        chunk_out.append(scored)
+    if not chunk_out:
+        return _empty_candidates_2leg()
+    if len(chunk_out) == 1:
+        return chunk_out[0]
+    return pl.concat(chunk_out, how="vertical_relaxed")
 
 
 def _score_per_pattern(
