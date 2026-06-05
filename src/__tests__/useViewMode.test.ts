@@ -44,10 +44,49 @@ describe('useViewMode', () => {
     expect(result.current.view).toBe('alerts');
   });
 
-  it('removes its hashchange listener on unmount', () => {
+  it('parses #alerts with a query suffix as alerts (deep-link variant)', () => {
+    history.replaceState(null, '', '/#alerts?ref=email');
+    const { result } = renderHook(() => useViewMode());
+    expect(result.current.view).toBe('alerts');
+  });
+
+  it('setView creates symmetric history entries so Back round-trips between views', () => {
+    const { result } = renderHook(() => useViewMode());
+    act(() => result.current.setView('alerts'));
+    // pushState (not hash assignment) wrote the alerts URL.
+    expect(window.location.hash).toBe('#alerts');
+    act(() => result.current.setView('calculator'));
+    // pushState for the calculator direction too — symmetric, hash cleared.
+    expect(window.location.hash).toBe('');
+    // Back returns to the alerts URL. jsdom's history.back() does not restore
+    // the URL from its stack (and does not fire popstate synchronously), so we
+    // simulate Back by restoring the prior URL and dispatching popstate. The
+    // assertion under test is the listener-driven transition: the popstate
+    // handler must re-read the (now #alerts) hash and flip view to 'alerts'.
+    act(() => {
+      history.replaceState(null, '', '/#alerts');
+      window.dispatchEvent(new Event('popstate'));
+    });
+    expect(window.location.hash).toBe('#alerts');
+    expect(result.current.view).toBe('alerts');
+  });
+
+  it('responds to popstate (browser back/forward)', () => {
+    history.replaceState(null, '', '/#alerts');
+    const { result } = renderHook(() => useViewMode());
+    expect(result.current.view).toBe('alerts');
+    act(() => {
+      history.replaceState(null, '', '/');
+      window.dispatchEvent(new Event('popstate'));
+    });
+    expect(result.current.view).toBe('calculator');
+  });
+
+  it('removes both hashchange and popstate listeners on unmount', () => {
     const removeSpy = vi.spyOn(window, 'removeEventListener');
     const { unmount } = renderHook(() => useViewMode());
     unmount();
     expect(removeSpy).toHaveBeenCalledWith('hashchange', expect.any(Function));
+    expect(removeSpy).toHaveBeenCalledWith('popstate', expect.any(Function));
   });
 });

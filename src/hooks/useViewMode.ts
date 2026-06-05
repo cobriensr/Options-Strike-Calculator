@@ -4,21 +4,24 @@ export type ViewMode = 'calculator' | 'alerts';
 
 const ALERTS_HASH = '#alerts';
 
+/** Parse the current location hash, tolerating a leading '#' and a '?...' query suffix. */
 function readViewFromHash(): ViewMode {
-  return globalThis.location?.hash === ALERTS_HASH ? 'alerts' : 'calculator';
+  const raw = (globalThis.location?.hash ?? '')
+    .replace(/^#/, '')
+    .split('?')[0];
+  return raw === 'alerts' ? 'alerts' : 'calculator';
 }
 
 /**
  * Top-level view switch backed by `window.location.hash`.
  *
- *   - `#alerts`            → 'alerts'
- *   - empty / anything else → 'calculator' (default)
+ *   - `#alerts` (optionally with a `?...` suffix) → 'alerts'
+ *   - empty / anything else                       → 'calculator' (default)
  *
- * Subscribes to `hashchange` so browser back/forward and bookmarked
- * `#alerts` deep-links stay in sync. `setView` is the imperative path
- * (header toggle); it writes the hash AND sets state so the update is
- * deterministic even though clearing the hash via replaceState does not
- * emit a `hashchange`.
+ * Navigation uses `history.pushState` for BOTH directions so browser
+ * Back/Forward round-trips symmetrically between the two views. A
+ * `popstate` listener syncs state on Back/Forward; a `hashchange`
+ * listener syncs state on manual address-bar hash edits.
  */
 export function useViewMode(): {
   view: ViewMode;
@@ -27,24 +30,23 @@ export function useViewMode(): {
   const [view, setViewState] = useState<ViewMode>(readViewFromHash);
 
   useEffect(() => {
-    const onHashChange = () => setViewState(readViewFromHash());
-    globalThis.addEventListener('hashchange', onHashChange);
-    return () => globalThis.removeEventListener('hashchange', onHashChange);
+    const sync = () => setViewState(readViewFromHash());
+    globalThis.addEventListener('hashchange', sync);
+    globalThis.addEventListener('popstate', sync);
+    return () => {
+      globalThis.removeEventListener('hashchange', sync);
+      globalThis.removeEventListener('popstate', sync);
+    };
   }, []);
 
   const setView = useCallback((next: ViewMode) => {
-    if (next === 'alerts') {
-      // Setting a new hash emits `hashchange`; the effect would also catch
-      // it, but we set state directly for an immediate, deterministic update.
-      globalThis.location.hash = 'alerts';
-    } else {
-      // Clear the hash without leaving a bare "#" or scroll-jumping.
-      globalThis.history.replaceState(
-        null,
-        '',
-        globalThis.location.pathname + globalThis.location.search,
-      );
-    }
+    const url =
+      next === 'alerts'
+        ? ALERTS_HASH
+        : globalThis.location.pathname + globalThis.location.search;
+    // pushState (not hash assignment) keeps both directions symmetric and
+    // does not emit hashchange, so this manual setState is the sole update.
+    globalThis.history.pushState(null, '', url);
     setViewState(next);
   }, []);
 
