@@ -13,11 +13,13 @@ the motivating analysis (76% of $1M+ "whales" are spread legs).
 
 from __future__ import annotations
 
+import warnings
 from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 import pytest
 
+import multileg_assembler
 from multileg_assembler import classify_trades
 
 # ── Fixture helpers ─────────────────────────────────────────────────────────
@@ -979,3 +981,153 @@ def test_classify_trades_handles_mixed_null_delta() -> None:
                 f"paired trade missing pattern_group_id: struct={struct!r} "
                 f"gid={gid!r}"
             )
+
+
+# ── Cross-type join sub-batching (OOM fix, 2026-06-04) ───────────────────────
+#
+# See docs/superpowers/specs/classifier-cross-type-subbatch-2026-06-04.md.
+# A dense 0DTE bucket (thousands of calls × thousands of puts) makes the
+# cross-type join materialize |calls| × |puts| pairs in one shot. The fix
+# chunks side A so peak intermediate stays under ``_CROSS_JOIN_PAIR_CAP``.
+# The chunking MUST be output-identical: a cross/size-band join is
+# row-independent in A, so (A1 ∪ A2) ⋈ B == (A1 ⋈ B) ∪ (A2 ⋈ B).
+
+
+def _dense_cross_type_bucket(
+    *, n_calls: int = 120, n_puts: int = 120
+) -> list[dict[str, object]]:
+    """Build a dense single-bucket calls × puts mix.
+
+    Calls and puts are packed into one ~90s window at varied OTM strikes
+    and varied sizes so genuine strangle (call buy + put buy) and
+    risk_reversal (put buy + call sell) cross-type structures form across
+    many candidate pairs — exactly the open-burst shape that OOMs.
+    """
+    rows: list[dict[str, object]] = []
+    # Calls: alternate buy/sell so both strangle (buy-call) and
+    # risk_reversal (sell-call) legs are present. OTM call strikes 205-255.
+    for i in range(n_calls):
+        is_buy = i % 2 == 0
+        strike = 205.0 + (i % 50)
+        size = 10 + (i % 7)  # 10..16, varied so size-band pairing varies
+        rows.append(
+            _trade(
+                trade_id=f"c{i}",
+                offset_s=float(i % 80),  # all within a 90s window
+                strike=strike,
+                option_type="call",
+                size=size,
+                # buy: price >= ask; sell: price <= bid.
+                price=0.80 if is_buy else 0.70,
+                nbbo_bid=0.70,
+                nbbo_ask=0.80,
+            )
+        )
+    # Puts: all buys at OTM put strikes 145-195. Strangle = call buy + put
+    # buy; risk_reversal = put buy + call sell.
+    for j in range(n_puts):
+        strike = 195.0 - (j % 50)
+        size = 10 + (j % 7)
+        rows.append(
+            _trade(
+                trade_id=f"p{j}",
+                offset_s=float(j % 80),
+                strike=strike,
+                option_type="put",
+                size=size,
+                price=0.75,
+                nbbo_bid=0.65,
+                nbbo_ask=0.75,  # buy
+            )
+        )
+    return rows
+
+
+def _grouping_signature(out: pl.DataFrame) -> dict[str, tuple[str | None, ...]]:
+    """Per-trade (structure, is_isolated, group_id) keyed by trade id.
+
+    pattern_group_id is a SHA1 of the sorted member trade ids
+    (``_group_id_for``), so identical groupings yield identical id strings
+    — we can assert the id strings directly, not just the partition.
+    """
+    ids = out["id"].to_list()
+    structs = out["inferred_structure"].to_list()
+    iso = out["is_isolated_leg"].to_list()
+    gids = out["pattern_group_id"].to_list()
+    return {
+        tid: (s, i, g)
+        for tid, s, i, g in zip(ids, structs, iso, gids)
+    }
+
+
+def test_cross_type_subbatch_output_identical_to_single_shot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chunked cross-type join is output-identical to the single-shot path.
+
+    Run the SAME dense bucket twice: once with the pair cap so high it is
+    never chunked (single-shot), once with it so low every cross-type join
+    is forced into sub-chunks. The resulting inferred_structure,
+    is_isolated_leg, and pattern_group_id assignment must match exactly.
+    """
+    rows = _dense_cross_type_bucket(n_calls=120, n_puts=120)
+    df = _df(rows)
+
+    # Single-shot: cap far above |calls| × |puts| (14_400) → no chunking.
+    monkeypatch.setattr(
+        multileg_assembler, "_CROSS_JOIN_PAIR_CAP", 10_000_000
+    )
+    single_shot = classify_trades(df, window_seconds=90)
+    single_sig = _grouping_signature(single_shot)
+
+    # Chunked: cap below |calls| × |puts| → every cross-type join chunks.
+    monkeypatch.setattr(multileg_assembler, "_CROSS_JOIN_PAIR_CAP", 2_000)
+    chunked = classify_trades(df, window_seconds=90)
+    chunked_sig = _grouping_signature(chunked)
+
+    assert chunked_sig == single_sig, (
+        "chunked cross-type join produced a different structure / group "
+        "assignment than the single-shot path — not output-identical"
+    )
+    # Sanity: the bucket actually produced cross-type matches (else the
+    # equivalence assertion is vacuous).
+    matched = {
+        s
+        for s, _i, _g in single_sig.values()
+        if s in ("strangle", "risk_reversal")
+    }
+    assert matched, (
+        "test bucket produced no cross-type matches — fixture is not "
+        "exercising the path it claims to test"
+    )
+
+
+def test_cross_type_subbatch_emits_runtime_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A low cap on a dense bucket emits a sub-batching RuntimeWarning."""
+    rows = _dense_cross_type_bucket(n_calls=120, n_puts=120)
+    df = _df(rows)
+
+    monkeypatch.setattr(multileg_assembler, "_CROSS_JOIN_PAIR_CAP", 2_000)
+    with pytest.warns(RuntimeWarning, match="sub-batch"):
+        classify_trades(df, window_seconds=90)
+
+
+def test_cross_type_small_bucket_no_subbatch_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A small bucket under the cap is untouched: no chunking warning, and
+    output matches the default-cap baseline."""
+    rows = _dense_cross_type_bucket(n_calls=8, n_puts=8)
+    df = _df(rows)
+
+    baseline = classify_trades(df, window_seconds=90)
+    baseline_sig = _grouping_signature(baseline)
+
+    # Cap is 64 pairs over an 8×8 bucket; default 1M cap is far above 64.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        small = classify_trades(df, window_seconds=90)
+
+    assert _grouping_signature(small) == baseline_sig
