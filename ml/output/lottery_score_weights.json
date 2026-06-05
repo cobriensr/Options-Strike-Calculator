@@ -1,11 +1,11 @@
 {
   "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-06-03T21:05:34.894210+00:00",
+  "trained_at": "2026-06-05T03:59:14.698682+00:00",
   "training_sample": {
-    "n": 155319,
+    "n": 149917,
     "date_range": [
-      "2026-03-05 00:00:00",
-      "2026-06-02 00:00:00"
+      "2026-03-10 00:00:00",
+      "2026-06-04 00:00:00"
     ],
     "filters_applied": [
       "last 90 days",
@@ -20,7 +20,7 @@
       "AM_open": 4,
       "MID": 0,
       "LUNCH": -4,
-      "PM": -3
+      "PM": -4
     },
     "tod_weights_dow_overrides": {
       "Monday": {
@@ -33,21 +33,21 @@
     "dte_weights": {
       "0": -2,
       "1": 4,
-      "2": 0,
-      "3": 1
+      "2": -1,
+      "3": 0
     },
     "vol_oi_quintile_weights": [
-      1,
+      2,
       0,
       2,
       0,
       -3
     ],
     "vol_oi_quintile_boundaries": [
-      0.0599250936329588,
-      0.09657095943407898,
-      0.15532392870334785,
-      0.38021821080576573
+      0.059949909804775624,
+      0.09660766961651918,
+      0.15451692581794618,
+      0.3767090994813767
     ],
     "gamma_quintile_weights": [
       3,
@@ -57,15 +57,15 @@
       -1
     ],
     "gamma_quintile_boundaries": [
-      0.012303390755470614,
-      0.02552594,
-      0.04255174583333333,
-      0.06927459431798129
+      0.012236543932584271,
+      0.02544302740073095,
+      0.04242031680254777,
+      0.06927197914979756
     ],
     "ask_pct_quintile_weights": [
       -1,
       1,
-      1,
+      2,
       2,
       -4
     ],
@@ -89,9 +89,9 @@
       "ARM": 0,
       "ASTS": 0,
       "AVGO": 0,
-      "BA": 2,
+      "BA": 1,
       "BABA": 0,
-      "BE": -1,
+      "BE": 0,
       "CAR": 0,
       "COIN": 0,
       "CRCL": 0,
@@ -118,7 +118,7 @@
       "MSFT": 0,
       "MSTR": 0,
       "MU": 0,
-      "NBIS": 1,
+      "NBIS": 0,
       "NFLX": 0,
       "NOW": 0,
       "NVDA": 0,
@@ -138,22 +138,22 @@
       "RUTW": 0,
       "SHOP": 0,
       "SLV": -1,
-      "SMCI": 1,
+      "SMCI": 0,
       "SMH": 0,
       "SNDK": 1,
       "SNOW": 0,
       "SOFI": -1,
       "SOUN": 5,
-      "SOXL": 0,
+      "SOXL": -1,
       "SOXS": -1,
       "SPXW": 0,
       "SPY": 0,
       "SQQQ": 0,
-      "STX": 1,
+      "STX": 0,
       "TEAM": 0,
       "TLT": 0,
-      "TNA": -1,
-      "TQQQ": 0,
+      "TNA": 0,
+      "TQQQ": 1,
       "TSLA": 0,
       "TSLL": 1,
       "TSM": 1,
@@ -249,13 +249,13 @@
     "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift."
   },
   "validation": {
-    "tier1_count": 11254,
-    "tier2_count": 12634,
-    "tier3_count": 131431,
-    "tier1_mean_outcome_pct": 35.12126340044126,
-    "tier2_mean_outcome_pct": 27.006823215412243,
-    "tier3_mean_outcome_pct": 4.381550149105433,
-    "spearman_score_outcome": 0.1854180940127616,
+    "tier1_count": 11778,
+    "tier2_count": 11419,
+    "tier3_count": 126720,
+    "tier1_mean_outcome_pct": 36.75877081407351,
+    "tier2_mean_outcome_pct": 25.926935092594707,
+    "tier3_mean_outcome_pct": 5.405389813435411,
+    "spearman_score_outcome": 0.17246649142699158,
     "spearman_p_value": 0.0
   }
 }
