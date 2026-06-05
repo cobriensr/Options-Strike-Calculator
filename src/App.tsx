@@ -144,11 +144,6 @@ const DealerRegimeTile = lazy(() =>
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
-const LotteryFinderSection = lazy(() =>
-  import('./components/LotteryFinder')
-    .then((m) => ({ default: m.LotteryFinderSection }))
-    .catch(handleStaleChunk),
-);
 const GreekHeatmapSection = lazy(() =>
   import('./components/GreekHeatmap')
     .then((m) => ({ default: m.GreekHeatmapSection }))
@@ -157,11 +152,6 @@ const GreekHeatmapSection = lazy(() =>
 const GexbotSection = lazy(() =>
   import('./components/Gexbot')
     .then((m) => ({ default: m.GexbotSection }))
-    .catch(handleStaleChunk),
-);
-const SilentBoomSection = lazy(() =>
-  import('./components/SilentBoom')
-    .then((m) => ({ default: m.SilentBoomSection }))
     .catch(handleStaleChunk),
 );
 const PeriscopeLotteryPanel = lazy(() =>
@@ -1103,21 +1093,6 @@ export default function StrikeCalculator() {
           ),
         ],
         [
-          'sec-lottery-finder',
-          () => (
-            <GatedSection
-              gate={hasMarketContext}
-              id="sec-lottery-finder"
-              label="Lottery Finder"
-              fallback={<SkeletonSection lines={5} />}
-            >
-              <LotteryFinderSection
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
-            </GatedSection>
-          ),
-        ],
-        [
           'sec-greek-heatmap',
           () => (
             <GatedSection
@@ -1127,21 +1102,6 @@ export default function StrikeCalculator() {
               fallback={<SkeletonSection lines={5} />}
             >
               <GreekHeatmapSection
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
-            </GatedSection>
-          ),
-        ],
-        [
-          'sec-silent-boom',
-          () => (
-            <GatedSection
-              gate={hasMarketContext}
-              id="sec-silent-boom"
-              label="Silent Boom"
-              fallback={<SkeletonSection lines={5} />}
-            >
-              <SilentBoomSection
                 marketOpen={market.data.quotes?.marketOpen ?? false}
               />
             </GatedSection>
