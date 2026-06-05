@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-06-03T21:05:34.894210+00:00
+ * Trained at    : 2026-06-05T03:59:14.698682+00:00
  *
  * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
  * Until then the old lottery-score-weights.ts continues to drive production.
@@ -27,9 +27,9 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   ARM: 0,
   ASTS: 0,
   AVGO: 0,
-  BA: 2,
+  BA: 1,
   BABA: 0,
-  BE: -1,
+  BE: 0,
   CAR: 0,
   COIN: 0,
   CRCL: 0,
@@ -56,7 +56,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   MSFT: 0,
   MSTR: 0,
   MU: 0,
-  NBIS: 1,
+  NBIS: 0,
   NFLX: 0,
   NOW: 0,
   NVDA: 0,
@@ -76,22 +76,22 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   RUTW: 0,
   SHOP: 0,
   SLV: -1,
-  SMCI: 1,
+  SMCI: 0,
   SMH: 0,
   SNDK: 1,
   SNOW: 0,
   SOFI: -1,
   SOUN: 5,
-  SOXL: 0,
+  SOXL: -1,
   SOXS: -1,
   SPXW: 0,
   SPY: 0,
   SQQQ: 0,
-  STX: 1,
+  STX: 0,
   TEAM: 0,
   TLT: 0,
-  TNA: -1,
-  TQQQ: 0,
+  TNA: 0,
+  TQQQ: 1,
   TSLA: 0,
   TSLL: 1,
   TSM: 1,
@@ -115,7 +115,7 @@ export const TOD_WEIGHTS_V2: Readonly<
   AM_open: 4,
   MID: 0,
   LUNCH: -4,
-  PM: -3,
+  PM: -4,
 };
 
 // ---------------------------------------------------------------------------
@@ -150,8 +150,8 @@ export const TOD_WEIGHTS_DOW_OVERRIDES_V2: Readonly<
 export const DTE_WEIGHTS_V2: Readonly<Record<string, number>> = {
   '0': -2,
   '1': 4,
-  '2': 0,
-  '3': 1,
+  '2': -1,
+  '3': 0,
 };
 
 // ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ export const DTE_WEIGHTS_V2: Readonly<Record<string, number>> = {
 // ---------------------------------------------------------------------------
 
 /** Per-quintile score uplift for vol_to_oi_window (length 5, index = quintile 0-4). */
-export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
+export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [2, 0, 2, 0, -3];
 
 /**
  * Boundaries that define the vol/OI quintiles (length 4).
@@ -168,8 +168,8 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
  * Quintile 4 : value >= boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.0599250936329588, 0.09657095943407898, 0.15532392870334785,
-  0.38021821080576573,
+  0.059949909804775624, 0.09660766961651918, 0.15451692581794618,
+  0.3767090994813767,
 ];
 
 // ---------------------------------------------------------------------------
@@ -180,7 +180,8 @@ export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
   3, -2, -2, -2, -1,
 ];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.012303390755470614, 0.02552594, 0.04255174583333333, 0.06927459431798129,
+  0.012236543932584271, 0.02544302740073095, 0.04242031680254777,
+  0.06927197914979756,
 ];
 
 // ---------------------------------------------------------------------------
@@ -188,7 +189,7 @@ export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
 // ---------------------------------------------------------------------------
 
 export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -1, 1, 1, 2, -4,
+  -1, 1, 2, 2, -4,
 ];
 export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
   0.5333333333333333, 0.5714285714285714, 0.625, 0.75,
