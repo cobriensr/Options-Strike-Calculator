@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
+import { handleStaleChunk } from './utils/handle-stale-chunk';
 import { useIvInputs } from './hooks/useIvInputs';
 import { useSpotInputs } from './hooks/useSpotInputs';
 import { useStrategyInputs } from './hooks/useStrategyInputs';
@@ -84,21 +85,6 @@ import SkeletonSection from './components/SkeletonSection';
 import UpdateAvailableBanner from './components/UpdateAvailable/UpdateAvailableBanner';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
-
-// Wrap lazy dynamic imports so that a stale SW-cached chunk after a deploy
-// prompts the user to reload instead of silently failing inside Suspense.
-// Matches the pattern in BWBSection/IronCondorSection export buttons.
-function handleStaleChunk(err: unknown): never {
-  const isChunkError =
-    err instanceof TypeError &&
-    /dynamically imported module|fetch/i.test(err.message);
-  if (isChunkError) {
-    if (confirm('A new version is available. Reload now?')) {
-      globalThis.location.reload();
-    }
-  }
-  throw err;
-}
 
 const ChartAnalysis = lazy(() =>
   import('./components/ChartAnalysis').catch(handleStaleChunk),
