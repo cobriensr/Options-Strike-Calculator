@@ -5,6 +5,7 @@ import AppHeader, { type AppHeaderProps } from '../components/AppHeader';
 import type { CollapseSignal } from '../components/collapse-context';
 import type { useMarketData } from '../hooks/useMarketData';
 import type { useHistoryData } from '../hooks/useHistoryData';
+import type { ViewMode } from '../hooks/useViewMode';
 
 // AccessKeyButton calls useAccessSession() which reads cookies + dispatches
 // events. Stub it to a deterministic, side-effect-free element so the
@@ -66,6 +67,8 @@ function makeCollapseSignal(
 function renderHeader(overrides: Partial<AppHeaderProps> = {}) {
   const props: AppHeaderProps = {
     accessMode: 'owner',
+    view: 'calculator' as ViewMode,
+    onViewChange: vi.fn(),
     isOwner: true,
     isBacktestMode: false,
     market: makeMarket(),
@@ -93,6 +96,17 @@ function renderHeader(overrides: Partial<AppHeaderProps> = {}) {
 // ============================================================
 
 describe('AppHeader', () => {
+  // ── View toggle ──────────────────────────────────────────
+
+  it('renders the view toggle and switches view on click', () => {
+    const onViewChange = vi.fn();
+    renderHeader({ onViewChange });
+    const alertsTab = screen.getByRole('tab', { name: /options alerts/i });
+    expect(alertsTab).toBeInTheDocument();
+    fireEvent.click(alertsTab);
+    expect(onViewChange).toHaveBeenCalledWith('alerts');
+  });
+
   // ── Branding ─────────────────────────────────────────────
 
   it('renders the Strike Calculator branding', () => {

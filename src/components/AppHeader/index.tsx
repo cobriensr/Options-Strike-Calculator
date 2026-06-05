@@ -32,6 +32,8 @@ import type { useHistoryData } from '../../hooks/useHistoryData';
 import type { useVixData } from '../../hooks/useVixData';
 import type { CollapseSignal } from '../collapse-context';
 import SchwabAuthLink from './SchwabAuthLink';
+import { ViewToggle } from '../ViewToggle';
+import type { ViewMode } from '../../hooks/useViewMode';
 
 // ── Header props ─────────────────────────────────────────────────────
 
@@ -75,6 +77,10 @@ export interface AppHeaderProps {
   onDarkModeToggle: () => void;
   /** Opens the show/hide-panels modal. */
   onOpenPanelPrefs: () => void;
+  /** Active top-level view (calculator vs alerts). */
+  view: ViewMode;
+  /** Switches the top-level view. */
+  onViewChange: (view: ViewMode) => void;
 }
 
 export default function AppHeader({
@@ -96,6 +102,8 @@ export default function AppHeader({
   darkMode,
   onDarkModeToggle,
   onOpenPanelPrefs,
+  view,
+  onViewChange,
 }: AppHeaderProps) {
   return (
     <header
@@ -115,6 +123,7 @@ export default function AppHeader({
           </h1>
         </div>
         <div className="flex items-center gap-1.5 sm:gap-2">
+          <ViewToggle view={view} onViewChange={onViewChange} />
           {isBacktestMode && (
             <StatusBadge label="BACKTEST" color={theme.backtest} dot />
           )}

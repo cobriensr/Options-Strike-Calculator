@@ -11,6 +11,7 @@ import {
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
 import { handleStaleChunk } from './utils/handle-stale-chunk';
+import { useViewMode } from './hooks/useViewMode';
 import { useIvInputs } from './hooks/useIvInputs';
 import { useSpotInputs } from './hooks/useSpotInputs';
 import { useStrategyInputs } from './hooks/useStrategyInputs';
@@ -668,6 +669,7 @@ export default function StrikeCalculator() {
   // boolean and `<GatedSection gate={...}>` can read it directly.
   const hasMarketOrSnapshot = market.hasData || !!historySnapshot;
   const hasMarketContext = isAuthenticated && hasMarketOrSnapshot;
+  const { view, setView } = useViewMode();
 
   // Single source of truth: getPanelRegistry. The same registry feeds
   // the section-nav menu, the panel-prefs modal, AND the home-page
@@ -1491,6 +1493,8 @@ export default function StrikeCalculator() {
           darkMode={darkMode}
           onDarkModeToggle={handleDarkModeToggle}
           onOpenPanelPrefs={() => setPanelPrefsOpen(true)}
+          view={view}
+          onViewChange={setView}
         />
 
         <PanelPrefsModal
