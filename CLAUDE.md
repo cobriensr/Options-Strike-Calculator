@@ -71,6 +71,19 @@ npm run format       # prettier --write
 
 Every code change follows this implement-verify-review loop. No exceptions. This applies to the main session and all subagents that write code.
 
+### Execution Mode — Always Subagent-Driven
+
+**Always execute implementation plans via `superpowers:subagent-driven-development` — never inline, and never ask which mode to use.** When the writing-plans handoff (or any skill) offers a "subagent-driven vs inline" choice, silently pick subagent-driven. The main session orchestrates and quality-gates; it does not write the code itself.
+
+The required loop for any multi-task plan:
+
+1. **Decompose** the plan and **dispatch independent sub-agents** — in parallel where tasks are independent (a single message with multiple `Agent` calls), sequential only where a task genuinely depends on a prior task's output.
+2. **Load each sub-agent with the skills its task needs** — name them in the prompt (e.g. `react-expert`, `backend-development`, `test-master`, `postgres-pro`, `playwright-expert`) per the task domain.
+3. Sub-agents do the work.
+4. **The main session reviews** every sub-agent's output (spec compliance, then code quality via the `code-reviewer` agent) **before presenting results.** The user sees reviewed output, not raw sub-agent dumps.
+
+This is a standing, non-negotiable preference. Don't second-guess it or offer alternatives.
+
 ### Plan First (Large Changes)
 
 For any change that spans **3+ files, introduces a new feature end-to-end, or was scoped across multiple conversation turns**, write a plan doc to `docs/superpowers/specs/` BEFORE starting the Get It Right loop. Context compaction can silently drop the scoping conversation — the plan doc is the durable handoff to the next session (or this session post-compaction).
