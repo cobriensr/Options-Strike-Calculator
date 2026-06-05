@@ -31,6 +31,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+
 from .build_training_set import (
     INFERRED_STRUCTURE_LABELS,
     SESSION_PHASES,

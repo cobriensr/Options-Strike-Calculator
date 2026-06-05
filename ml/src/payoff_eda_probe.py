@@ -17,6 +17,7 @@ import warnings
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -511,7 +512,6 @@ def make_plots(lot_full: pd.DataFrame, sb_full: pd.DataFrame,
     if not lot_feat.empty:
         # We'll redo a quick XGB to get importances for the plot
         try:
-            from xgboost import XGBRegressor
             combined = lot_feat.copy()
             combined["peak_ceiling_pct"] = pd.to_numeric(
                 lot_feat.get("peak_ceiling_pct", pd.Series()), errors="coerce"

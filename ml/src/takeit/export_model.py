@@ -44,6 +44,8 @@ from typing import Any
 
 import numpy as np
 import xgboost as xgb
+from sklearn.isotonic import IsotonicRegression
+
 from .config import (
     AGGRESSIVE_ASK_PCT_THRESHOLD,
     BURST_STORM_MIN_COFIRES,
@@ -52,7 +54,6 @@ from .config import (
     TOP_N_TICKERS,
     WIN_LABEL_THRESHOLD_PCT,
 )
-from sklearn.isotonic import IsotonicRegression
 
 # Supported XGBoost JSON schema versions. The TS scorer will assert it's one of
 # these on load. Update both sides if XGBoost releases a breaking format change.
