@@ -1,8 +1,10 @@
 """Smoke tests for setups_backtest.data_loaders against the real archive.
 
-These hit the local Parquet files so they're slower than unit tests; they're
-fine to run on CI since the archive is committed via the seed flow. Marked as
-``slow`` for opt-out via ``-m 'not slow'``.
+These hit the local Parquet archive under ``ml/data/archive/`` (which is
+gitignored — see ``.gitignore``), so they only run where that archive
+exists. The whole module is skipped when the tbbo archive is absent (e.g.
+on CI runners, which have no seed step), and additionally marked ``slow``
+for local opt-out via ``-m 'not slow'``.
 
 Neon DB loaders are NOT tested here — they require a live ``DATABASE_URL``
 and are smoke-tested in Phase 0b's CLI dry-run instead.
@@ -10,11 +12,26 @@ and are smoke-tested in Phase 0b's CLI dry-run instead.
 
 from __future__ import annotations
 
+import glob
 from datetime import date
 
 import pytest
 
 from setups_backtest import data_loaders
+
+# The Parquet archive is gitignored and not seeded on CI, so these smoke
+# tests can only run where it exists locally. Skip the whole module when the
+# tbbo partitions are missing rather than fail with a DuckDB "no files found"
+# IOException — that turned the ML CI gate red once the lint failure that had
+# been masking it was fixed (2026-06-05).
+_ARCHIVE_PRESENT = bool(glob.glob(data_loaders.tbbo_glob()))
+pytestmark = pytest.mark.skipif(
+    not _ARCHIVE_PRESENT,
+    reason=(
+        "local Parquet archive absent (ml/data/archive/tbbo is gitignored / "
+        "not seeded on CI); run where the archive exists"
+    ),
+)
 
 
 @pytest.fixture(scope="module")
