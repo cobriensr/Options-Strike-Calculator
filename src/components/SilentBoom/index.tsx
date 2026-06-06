@@ -414,6 +414,12 @@ const SORT_OPTIONS: Array<{
 
 interface SilentBoomSectionProps {
   marketOpen: boolean;
+  /**
+   * Render inside a bounded scroll pane (Options Alerts split view): drives
+   * `fill` on the SectionBox so the card is content-height and the pane's
+   * own overflow scroll works instead of the card bleeding past the divider.
+   */
+  compact?: boolean;
 }
 
 const todayCt = (): string => {
@@ -434,7 +440,10 @@ const formatTimeCT = (input: number | string): string =>
     timeZone: 'America/Chicago',
   });
 
-export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
+export function SilentBoomSection({
+  marketOpen,
+  compact = false,
+}: SilentBoomSectionProps) {
   const [date, setDate] = useState<string>(todayCt());
   const [tickerFilter, setTickerFilter] = useState<string | null>(null);
   const [optionTypeFilter, setOptionTypeFilter] = useState<OptionType | null>(
@@ -858,7 +867,7 @@ export function SilentBoomSection({ marketOpen }: SilentBoomSectionProps) {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <SectionBox label="Silent Boom" collapsible>
+    <SectionBox label="Silent Boom" collapsible fill={compact}>
       <div className="space-y-3">
         <p className="text-[11px] text-neutral-500">
           Detector for chains that trade quietly for 15-20 min then print a

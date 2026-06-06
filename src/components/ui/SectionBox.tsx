@@ -71,6 +71,7 @@ export const SectionBox = memo(function SectionBox({
   collapsible,
   defaultCollapsed,
   onCollapsedChange,
+  fill = false,
   children,
 }: {
   label: string;
@@ -80,6 +81,12 @@ export const SectionBox = memo(function SectionBox({
   headerRight?: ReactNode;
   collapsible?: boolean;
   defaultCollapsed?: boolean;
+  /**
+   * When true (e.g. inside a bounded scroll pane), drop the page-flow
+   * `mt-6`/`h-full` so the card is content-height and the parent's overflow
+   * scroll works instead of the card bleeding past its container.
+   */
+  fill?: boolean;
   /**
    * Notified whenever the collapse state changes (user click OR the
    * collapse-all broadcast). Optional — most sections don't care, but
@@ -116,8 +123,9 @@ export const SectionBox = memo(function SectionBox({
     <section
       aria-label={label}
       className={
-        'animate-fade-in-up bg-surface border-edge border-t-accent mt-6 flex flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)] first:mt-0' +
-        (isOpen ? ' h-full' : ' self-start')
+        'animate-fade-in-up bg-surface border-edge border-t-accent flex flex-col rounded-[14px] border-[1.5px] border-t-[3px] p-[18px] pb-4 shadow-[0_1px_4px_rgba(0,0,0,0.03)]' +
+        (fill ? '' : ' mt-6 first:mt-0') +
+        (isOpen ? (fill ? '' : ' h-full') : ' self-start')
       }
     >
       <div

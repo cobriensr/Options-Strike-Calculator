@@ -307,6 +307,12 @@ const TOD_FILTERS: Array<{ value: TimeOfDay | null; label: string }> = [
 
 interface LotteryFinderSectionProps {
   marketOpen: boolean;
+  /**
+   * Render inside a bounded scroll pane (Options Alerts split view): drives
+   * `fill` on the SectionBox so the card is content-height and the pane's
+   * own overflow scroll works instead of the card bleeding past the divider.
+   */
+  compact?: boolean;
 }
 
 const EXIT_POLICIES: ExitPolicy[] = [
@@ -372,6 +378,7 @@ const buildExportUrl = (params: ExportUrlParams): string => {
 
 export function LotteryFinderSection({
   marketOpen,
+  compact = false,
 }: LotteryFinderSectionProps) {
   const [date, setDate] = useState<string>(todayCt());
   /** 1-minute bucket the slider is on; null = whole day. */
@@ -856,7 +863,7 @@ export function LotteryFinderSection({
   }, []);
 
   return (
-    <SectionBox label="Lottery Finder" collapsible>
+    <SectionBox label="Lottery Finder" collapsible fill={compact}>
       <div className="space-y-3">
         <p className="text-[11px] text-neutral-500">
           Signal detector — not a backtested profitable strategy. Most days

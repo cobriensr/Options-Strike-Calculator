@@ -63,7 +63,7 @@ export function OptionsAlertsView({
       >
         <ErrorBoundary label="Lottery Finder">
           <Suspense fallback={<SkeletonSection lines={6} />}>
-            <LotteryFinderSection marketOpen={marketOpen} />
+            <LotteryFinderSection marketOpen={marketOpen} compact />
           </Suspense>
         </ErrorBoundary>
       </section>
@@ -73,7 +73,7 @@ export function OptionsAlertsView({
       >
         <ErrorBoundary label="Silent Boom">
           <Suspense fallback={<SkeletonSection lines={6} />}>
-            <SilentBoomSection marketOpen={marketOpen} />
+            <SilentBoomSection marketOpen={marketOpen} compact />
           </Suspense>
         </ErrorBoundary>
       </section>
