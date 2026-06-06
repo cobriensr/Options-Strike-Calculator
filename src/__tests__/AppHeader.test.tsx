@@ -107,6 +107,20 @@ describe('AppHeader', () => {
     expect(onViewChange).toHaveBeenCalledWith('alerts');
   });
 
+  // ── Access Key button mount (sidebar vs header) ──────────
+
+  it('keeps the Access Key button mobile-only (lg:hidden) in calculator view', () => {
+    renderHeader({ view: 'calculator' });
+    const btn = screen.getByTestId('access-key-button');
+    expect(btn.parentElement).toHaveClass('lg:hidden');
+  });
+
+  it('shows the Access Key button on desktop in alerts view (no sidebar there)', () => {
+    renderHeader({ view: 'alerts' });
+    const btn = screen.getByTestId('access-key-button');
+    expect(btn.parentElement).not.toHaveClass('lg:hidden');
+  });
+
   // ── Branding ─────────────────────────────────────────────
 
   it('renders the Strike Calculator branding', () => {

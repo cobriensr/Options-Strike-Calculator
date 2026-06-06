@@ -177,11 +177,13 @@ export default function AppHeader({
               text="Sign in"
             />
           )}
-          {/* Access-key entry point for non-desktop viewports. The
-              sidebar bottomSlot is the canonical mount on lg+, so
-              this header instance is hidden there to avoid duplicate
-              controls. */}
-          <span className="lg:hidden">
+          {/* Access-key entry point. In the calculator view the sidebar
+              bottomSlot is the canonical mount on lg+, so this header
+              instance is hidden there (lg:hidden) to avoid duplicate
+              controls. In the alerts view there is no sidebar, so the
+              header is the canonical Access Key mount on desktop too and
+              must stay visible at every breakpoint. */}
+          <span className={view === 'alerts' ? undefined : 'lg:hidden'}>
             <AccessKeyButton compact />
           </span>
           {market.needsAuth && isOwner && (
