@@ -13,6 +13,7 @@ import {
   type UsePersistedStateOptions,
 } from '../../hooks/usePersistedState.js';
 import { SectionBox } from '../ui/SectionBox.js';
+import { CompactDisclosure } from '../ui/CompactDisclosure.js';
 import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { useSilentBoomTickerCounts } from '../../hooks/useSilentBoomTickerCounts.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
@@ -866,6 +867,404 @@ export function SilentBoomSection({
   // by 10×+ the way TAKE-IT 0.70 used to.
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
+  // Filter-chip rows (sort/conviction/burst/TAKE-IT, min-dte/min-prem/ask%/
+  // vol-OI, type/moneyness/tod, hide-toggles, ticker, realized-exit).
+  // Extracted so the toolbar can render inline in the normal layout or
+  // collapsed behind a sticky CompactDisclosure in the dense Options
+  // Alerts pane. The date/scrub/export row stays outside this block
+  // (always visible). Declared after all hooks/handlers it references.
+  const silentBoomToolbar = (
+    <div className="space-y-2.5">
+      {/* Row 2: Sort + Conviction + Burst — score-driven controls
+          that gate the alert set. Mirrors LotteryFinder Row 2
+          layout so muscle memory carries between panels. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>sort</span>
+        {SORT_OPTIONS.map((s) => (
+          <FilterChip
+            key={s.value}
+            active={sortMode === s.value}
+            activeColor="sky"
+            onClick={() => setSortMode(s.value)}
+            title={s.tooltip}
+            ariaPressed={sortMode === s.value}
+          >
+            {s.label}
+          </FilterChip>
+        ))}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>conviction</span>
+        {CONVICTION_OPTIONS.map((c) => {
+          const active = convictionFloor === c.value;
+          const activeColor: FilterChipColor =
+            c.value === 'tier1'
+              ? 'rose'
+              : c.value === 'tier2'
+                ? 'amber'
+                : 'emerald';
+          return (
+            <FilterChip
+              key={c.value}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setConvictionFloor(c.value)}
+              title={c.tooltip}
+              ariaPressed={active}
+            >
+              {c.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>burst</span>
+        {BURST_FILTERS.map((b) => {
+          const active = burstFilter === b.value;
+          const activeColor: FilterChipColor = b.cls ?? 'emerald';
+          return (
+            <FilterChip
+              key={b.label}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setBurstFilter(b.value)}
+              title={b.tooltip}
+              ariaPressed={active}
+            >
+              {b.label}
+            </FilterChip>
+          );
+        })}
+      </div>
+      <div className="flex w-full basis-full flex-wrap items-center gap-x-2 gap-y-1">
+        <span className={SECTION_LABEL}>TAKE-IT</span>
+        {TAKEIT_FLOOR_OPTIONS.map((o) => {
+          const active = takeitFloor === o.value;
+          return (
+            <FilterChip
+              key={o.value}
+              active={active}
+              activeColor="sky"
+              onClick={() => setTakeitFloor(o.value)}
+              title={o.tooltip}
+              ariaPressed={active}
+              testId={`takeit-floor-${o.value}`}
+            >
+              {o.label}
+            </FilterChip>
+          );
+        })}
+      </div>
+
+      {/* Row 3: panel-specific numeric + flow filters — min DTE,
+          min premium $K, ask %, vol/OI. DTE input replaced the
+          0DTE / 1-3D / 4D+ chip buckets so the user can scope to
+          any custom floor (e.g. "1+" to span 1-3D and 4D+
+          together — the bucket form couldn't express that). Min
+          premium is a server-side filter that gates
+          entry_price * spike_volume * 100 ≥ N dollars. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <label
+          className="flex items-center gap-1.5"
+          title="Minimum days-to-expiry floor. 0 shows all DTEs; N restricts to alerts with dte >= N. Server-side filter — pagination + ticker counts reflect the post-filter result."
+        >
+          <span className={SECTION_LABEL}>min dte</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={365}
+            step={1}
+            value={minDte === 0 ? '' : minDte}
+            placeholder="0"
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') {
+                setMinDte(0);
+                return;
+              }
+              const n = Number.parseInt(raw, 10);
+              if (Number.isFinite(n) && n >= 0) setMinDte(n);
+            }}
+            aria-label="Minimum DTE"
+            className="w-14 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
+          />
+        </label>
+        <label
+          className="flex items-center gap-1.5"
+          title="Minimum premium floor (entry_price × spike_volume × 100), in $K. 0 = no floor. Server-side filter."
+        >
+          <span className={SECTION_LABEL}>min prem $K</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={100_000}
+            step={10}
+            value={minPremiumK === 0 ? '' : minPremiumK}
+            placeholder="0"
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') {
+                setMinPremiumK(0);
+                return;
+              }
+              const n = Number.parseInt(raw, 10);
+              if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
+            }}
+            aria-label="Minimum premium in thousands of dollars"
+            className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
+          />
+        </label>
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>ask %</span>
+        {ASK_PCT_BAND_FILTERS.map((b) => {
+          const active = askPctBand === b.value;
+          const activeColor: FilterChipColor =
+            b.value === '100' ? 'rose' : 'purple';
+          return (
+            <FilterChip
+              key={b.label}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setAskPctBand(b.value)}
+              title={b.tooltip}
+              ariaPressed={active}
+            >
+              {b.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>vol/OI</span>
+        {VOL_OI_FLOORS.map((f) => (
+          <FilterChip
+            key={f.label}
+            active={minVolOi === f.value}
+            activeColor="amber"
+            onClick={() => setMinVolOi(f.value)}
+            title={f.tooltip}
+            ariaPressed={minVolOi === f.value}
+          >
+            {f.label}
+          </FilterChip>
+        ))}
+      </div>
+
+      {/* Row 4: Type (calls/puts) + Moneyness + Time-of-day. Three
+          orthogonal slicers — mirrors LotteryFinder Row 4. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>type</span>
+        {[
+          { value: null, label: 'all' },
+          { value: 'C' as OptionType, label: 'calls' },
+          { value: 'P' as OptionType, label: 'puts' },
+        ].map((o) => {
+          const active = optionTypeFilter === o.value;
+          const activeColor: FilterChipColor =
+            o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
+          return (
+            <FilterChip
+              key={o.label}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setOptionTypeFilter(o.value)}
+              ariaPressed={active}
+            >
+              {o.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>moneyness</span>
+        {MONEYNESS_FILTERS.map((m) => {
+          const active = moneynessMode === m.value;
+          const activeColor: FilterChipColor =
+            m.value === 'otm'
+              ? 'emerald'
+              : m.value === 'itm'
+                ? 'amber'
+                : 'neutral';
+          const showHiddenCount =
+            active && m.value !== 'all' && hiddenNoSpotCount > 0;
+          return (
+            <FilterChip
+              key={m.value}
+              active={active}
+              activeColor={activeColor}
+              testId={`silent-boom-moneyness-${m.value}-chip`}
+              onClick={() => setMoneynessMode(m.value)}
+              title={
+                m.value === 'otm'
+                  ? 'Show only out-of-the-money alerts (calls: strike > spot, puts: strike < spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
+                  : m.value === 'itm'
+                    ? 'Show only in-the-money alerts (calls: strike ≤ spot, puts: strike ≥ spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
+                    : 'Show alerts regardless of moneyness.'
+              }
+              ariaPressed={active}
+            >
+              {m.label}
+              {showHiddenCount && (
+                <span className="text-[10px] opacity-70">
+                  −{hiddenNoSpotCount}
+                </span>
+              )}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>tod</span>
+        {TOD_FILTERS.map((t) => (
+          <FilterChip
+            key={t.label}
+            active={todFilter === t.value}
+            activeColor="orange"
+            onClick={() => setTodFilter(t.value)}
+            title={
+              t.value === 'AM_open'
+                ? 'Filter to AM_open (08:30–10:00 CT). Audit lift: 1.65× — strongest TOD bucket.'
+                : t.value === 'MID'
+                  ? 'Filter to MID (10:00–12:00 CT). Audit lift: 1.09×.'
+                  : t.value === 'LUNCH'
+                    ? 'Filter to LUNCH (12:00–13:00 CT). Audit lift: 0.99× — neutral.'
+                    : t.value === 'PM'
+                      ? 'Filter to PM (13:00–15:00 CT). Audit lift: 0.50× — weakest TOD bucket.'
+                      : 'Show all time-of-day buckets.'
+            }
+            ariaPressed={todFilter === t.value}
+          >
+            {t.label}
+          </FilterChip>
+        ))}
+      </div>
+
+      {/* Row 5: Hide-toggles + aggressive premium. Independent
+          boolean filters — collected in one row to mirror
+          LotteryFinder's Row 5. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <FilterChip
+          active={hideLatePm}
+          activeColor="purple"
+          onClick={() => setHideLatePm(!hideLatePm)}
+          title="Hide alerts whose 5-min bucket is at or after 14:30 CT. Audit shows the PM stratum lift is 0.50× and post-14:30 fires are the worst slice — discretionary exit windows close fast enough that the move can't develop. Server-side filter — pagination + ticker counts reflect the post-filter count."
+          ariaPressed={hideLatePm}
+        >
+          hide post-14:30
+        </FilterChip>
+        <FilterChip
+          active={hideGhosts}
+          activeColor="red"
+          onClick={() => setHideGhosts(!hideGhosts)}
+          title={`Hide "ghost prints" — alerts where baseline_volume ≤ ${GHOST_PRINT_BASELINE_MAX} AND spike_ratio ≥ ${GHOST_PRINT_SPIKE_RATIO_MIN}×. Pattern: a single block hits an effectively-dormant chain, producing a visually extreme ratio (red badge) but no follow-through volume. Audit lift on this cohort is ~0.6× — historically the worst combo. Client-side filter.`}
+          ariaPressed={hideGhosts}
+        >
+          hide ghosts
+          {hideGhosts && hiddenGhostsCount > 0 && (
+            <span className="text-[10px] opacity-70">−{hiddenGhostsCount}</span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={hideGated}
+          activeColor="amber"
+          testId="silent-boom-hide-gated-chip"
+          onClick={() => setHideGated(!hideGated)}
+          title="Hide counter-trend alerts demoted to tier3 by the Phase 4 direction gate (T=±100M on mkt_tide_diff). Puts when mkt_tide_diff > +100M, calls when mkt_tide_diff < -100M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
+          ariaPressed={hideGated}
+        >
+          hide counter-trend
+          {hideGated && hiddenGatedCount > 0 && (
+            <span className="text-[10px] opacity-70">−{hiddenGatedCount}</span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={hideCounterFlow}
+          activeColor="amber"
+          testId="silent-boom-hide-counter-flow-chip"
+          onClick={() => setHideCounterFlow(!hideCounterFlow)}
+          title="Hide counter-flow alerts — rows where the per-ticker net flow (cumNcpAtFire − cumNppAtFire) at fire time contradicts the option type. Calls hidden when NCP < NPP; puts hidden when NCP > NPP. Rows with no fire-time snapshot are never hidden. Client-side filter — does not affect score or tier."
+          ariaPressed={hideCounterFlow}
+        >
+          hide counter-flow
+          {hideCounterFlow && hiddenCounterFlowCount > 0 && (
+            <span className="text-[10px] opacity-70">
+              −{hiddenCounterFlowCount}
+            </span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={aggressivePremium}
+          activeColor="sky"
+          testId="silent-boom-aggressive-premium-chip"
+          onClick={() => setAggressivePremium(!aggressivePremium)}
+          title="Aggressive Premium: surface only alerts with premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg (multi_leg_share < 10%), and OTM (calls strike > spot, puts strike < spot). Mirrors the trader's UW filter. Server-side enforced via #152 underlying_price_at_spike — alerts with no spot snapshot are excluded from the OTM check."
+          ariaPressed={aggressivePremium}
+        >
+          💎 aggressive premium
+        </FilterChip>
+      </div>
+
+      {/* Row 6 (conditional): ticker chips */}
+      {(topTickers.length > 0 || tickerFilter) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className={SECTION_LABEL}>ticker</span>
+          <FilterChip
+            active={tickerFilter == null}
+            activeColor="emerald"
+            onClick={() => setTickerFilter(null)}
+            ariaPressed={tickerFilter == null}
+          >
+            all
+          </FilterChip>
+          {topTickers.map(([t, n]) => (
+            <FilterChip
+              key={t}
+              active={tickerFilter === t}
+              activeColor="emerald"
+              onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
+              title={`Filter to ${t} only (${n} alert${n === 1 ? '' : 's'} today)`}
+              ariaPressed={tickerFilter === t}
+            >
+              {t} <span className="text-[10px] opacity-70">{n}</span>
+            </FilterChip>
+          ))}
+          {tickerFilter && !topTickers.some(([t]) => t === tickerFilter) && (
+            <FilterChip
+              active
+              activeColor="emerald"
+              onClick={() => setTickerFilter(null)}
+              title="Filter active but no alerts for this ticker in the current view — click to clear"
+            >
+              {tickerFilter} <span className="text-[10px] opacity-70">0</span>
+            </FilterChip>
+          )}
+        </div>
+      )}
+
+      {/* Row 7: realized-exit policy. Whichever chip is active
+          becomes the primary % shown on every row. Mirrors the
+          LotteryFinder pattern: exit selector lives at the bottom
+          of the toolbar so muscle memory carries between panels. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span
+          className={SECTION_LABEL}
+          title="Choose which realized exit % is shown as the primary number on every alert. Peak is a look-ahead reference; the 30m / 60m / 120m / EOD options are tradeable horizons from the spike bucket start."
+        >
+          exit
+        </span>
+        {EXIT_POLICIES.map((p) => (
+          <FilterChip
+            key={p}
+            active={exitPolicy === p}
+            activeColor="purple"
+            onClick={() => setExitPolicy(p)}
+            title={SILENT_BOOM_EXIT_POLICY_TOOLTIPS[p]}
+            ariaPressed={exitPolicy === p}
+          >
+            {SILENT_BOOM_EXIT_POLICY_LABELS[p]}
+          </FilterChip>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <SectionBox label="Silent Boom" collapsible fill={compact}>
       <div className="space-y-3">
@@ -1047,399 +1446,17 @@ export function SilentBoomSection({
             </div>
           </div>
 
-          {/* Row 2: Sort + Conviction + Burst — score-driven controls
-              that gate the alert set. Mirrors LotteryFinder Row 2
-              layout so muscle memory carries between panels. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>sort</span>
-            {SORT_OPTIONS.map((s) => (
-              <FilterChip
-                key={s.value}
-                active={sortMode === s.value}
-                activeColor="sky"
-                onClick={() => setSortMode(s.value)}
-                title={s.tooltip}
-                ariaPressed={sortMode === s.value}
-              >
-                {s.label}
-              </FilterChip>
-            ))}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>conviction</span>
-            {CONVICTION_OPTIONS.map((c) => {
-              const active = convictionFloor === c.value;
-              const activeColor: FilterChipColor =
-                c.value === 'tier1'
-                  ? 'rose'
-                  : c.value === 'tier2'
-                    ? 'amber'
-                    : 'emerald';
-              return (
-                <FilterChip
-                  key={c.value}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setConvictionFloor(c.value)}
-                  title={c.tooltip}
-                  ariaPressed={active}
-                >
-                  {c.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>burst</span>
-            {BURST_FILTERS.map((b) => {
-              const active = burstFilter === b.value;
-              const activeColor: FilterChipColor = b.cls ?? 'emerald';
-              return (
-                <FilterChip
-                  key={b.label}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setBurstFilter(b.value)}
-                  title={b.tooltip}
-                  ariaPressed={active}
-                >
-                  {b.label}
-                </FilterChip>
-              );
-            })}
-          </div>
-          <div className="flex w-full basis-full flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={SECTION_LABEL}>TAKE-IT</span>
-            {TAKEIT_FLOOR_OPTIONS.map((o) => {
-              const active = takeitFloor === o.value;
-              return (
-                <FilterChip
-                  key={o.value}
-                  active={active}
-                  activeColor="sky"
-                  onClick={() => setTakeitFloor(o.value)}
-                  title={o.tooltip}
-                  ariaPressed={active}
-                  testId={`takeit-floor-${o.value}`}
-                >
-                  {o.label}
-                </FilterChip>
-              );
-            })}
-          </div>
-
-          {/* Row 3: panel-specific numeric + flow filters — min DTE,
-              min premium $K, ask %, vol/OI. DTE input replaced the
-              0DTE / 1-3D / 4D+ chip buckets so the user can scope to
-              any custom floor (e.g. "1+" to span 1-3D and 4D+
-              together — the bucket form couldn't express that). Min
-              premium is a server-side filter that gates
-              entry_price * spike_volume * 100 ≥ N dollars. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <label
-              className="flex items-center gap-1.5"
-              title="Minimum days-to-expiry floor. 0 shows all DTEs; N restricts to alerts with dte >= N. Server-side filter — pagination + ticker counts reflect the post-filter result."
-            >
-              <span className={SECTION_LABEL}>min dte</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={365}
-                step={1}
-                value={minDte === 0 ? '' : minDte}
-                placeholder="0"
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === '') {
-                    setMinDte(0);
-                    return;
-                  }
-                  const n = Number.parseInt(raw, 10);
-                  if (Number.isFinite(n) && n >= 0) setMinDte(n);
-                }}
-                aria-label="Minimum DTE"
-                className="w-14 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-            <label
-              className="flex items-center gap-1.5"
-              title="Minimum premium floor (entry_price × spike_volume × 100), in $K. 0 = no floor. Server-side filter."
-            >
-              <span className={SECTION_LABEL}>min prem $K</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={100_000}
-                step={10}
-                value={minPremiumK === 0 ? '' : minPremiumK}
-                placeholder="0"
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === '') {
-                    setMinPremiumK(0);
-                    return;
-                  }
-                  const n = Number.parseInt(raw, 10);
-                  if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
-                }}
-                aria-label="Minimum premium in thousands of dollars"
-                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>ask %</span>
-            {ASK_PCT_BAND_FILTERS.map((b) => {
-              const active = askPctBand === b.value;
-              const activeColor: FilterChipColor =
-                b.value === '100' ? 'rose' : 'purple';
-              return (
-                <FilterChip
-                  key={b.label}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setAskPctBand(b.value)}
-                  title={b.tooltip}
-                  ariaPressed={active}
-                >
-                  {b.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>vol/OI</span>
-            {VOL_OI_FLOORS.map((f) => (
-              <FilterChip
-                key={f.label}
-                active={minVolOi === f.value}
-                activeColor="amber"
-                onClick={() => setMinVolOi(f.value)}
-                title={f.tooltip}
-                ariaPressed={minVolOi === f.value}
-              >
-                {f.label}
-              </FilterChip>
-            ))}
-          </div>
-
-          {/* Row 4: Type (calls/puts) + Moneyness + Time-of-day. Three
-              orthogonal slicers — mirrors LotteryFinder Row 4. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>type</span>
-            {[
-              { value: null, label: 'all' },
-              { value: 'C' as OptionType, label: 'calls' },
-              { value: 'P' as OptionType, label: 'puts' },
-            ].map((o) => {
-              const active = optionTypeFilter === o.value;
-              const activeColor: FilterChipColor =
-                o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
-              return (
-                <FilterChip
-                  key={o.label}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setOptionTypeFilter(o.value)}
-                  ariaPressed={active}
-                >
-                  {o.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>moneyness</span>
-            {MONEYNESS_FILTERS.map((m) => {
-              const active = moneynessMode === m.value;
-              const activeColor: FilterChipColor =
-                m.value === 'otm'
-                  ? 'emerald'
-                  : m.value === 'itm'
-                    ? 'amber'
-                    : 'neutral';
-              const showHiddenCount =
-                active && m.value !== 'all' && hiddenNoSpotCount > 0;
-              return (
-                <FilterChip
-                  key={m.value}
-                  active={active}
-                  activeColor={activeColor}
-                  testId={`silent-boom-moneyness-${m.value}-chip`}
-                  onClick={() => setMoneynessMode(m.value)}
-                  title={
-                    m.value === 'otm'
-                      ? 'Show only out-of-the-money alerts (calls: strike > spot, puts: strike < spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
-                      : m.value === 'itm'
-                        ? 'Show only in-the-money alerts (calls: strike ≤ spot, puts: strike ≥ spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
-                        : 'Show alerts regardless of moneyness.'
-                  }
-                  ariaPressed={active}
-                >
-                  {m.label}
-                  {showHiddenCount && (
-                    <span className="text-[10px] opacity-70">
-                      −{hiddenNoSpotCount}
-                    </span>
-                  )}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>tod</span>
-            {TOD_FILTERS.map((t) => (
-              <FilterChip
-                key={t.label}
-                active={todFilter === t.value}
-                activeColor="orange"
-                onClick={() => setTodFilter(t.value)}
-                title={
-                  t.value === 'AM_open'
-                    ? 'Filter to AM_open (08:30–10:00 CT). Audit lift: 1.65× — strongest TOD bucket.'
-                    : t.value === 'MID'
-                      ? 'Filter to MID (10:00–12:00 CT). Audit lift: 1.09×.'
-                      : t.value === 'LUNCH'
-                        ? 'Filter to LUNCH (12:00–13:00 CT). Audit lift: 0.99× — neutral.'
-                        : t.value === 'PM'
-                          ? 'Filter to PM (13:00–15:00 CT). Audit lift: 0.50× — weakest TOD bucket.'
-                          : 'Show all time-of-day buckets.'
-                }
-                ariaPressed={todFilter === t.value}
-              >
-                {t.label}
-              </FilterChip>
-            ))}
-          </div>
-
-          {/* Row 5: Hide-toggles + aggressive premium. Independent
-              boolean filters — collected in one row to mirror
-              LotteryFinder's Row 5. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <FilterChip
-              active={hideLatePm}
-              activeColor="purple"
-              onClick={() => setHideLatePm(!hideLatePm)}
-              title="Hide alerts whose 5-min bucket is at or after 14:30 CT. Audit shows the PM stratum lift is 0.50× and post-14:30 fires are the worst slice — discretionary exit windows close fast enough that the move can't develop. Server-side filter — pagination + ticker counts reflect the post-filter count."
-              ariaPressed={hideLatePm}
-            >
-              hide post-14:30
-            </FilterChip>
-            <FilterChip
-              active={hideGhosts}
-              activeColor="red"
-              onClick={() => setHideGhosts(!hideGhosts)}
-              title={`Hide "ghost prints" — alerts where baseline_volume ≤ ${GHOST_PRINT_BASELINE_MAX} AND spike_ratio ≥ ${GHOST_PRINT_SPIKE_RATIO_MIN}×. Pattern: a single block hits an effectively-dormant chain, producing a visually extreme ratio (red badge) but no follow-through volume. Audit lift on this cohort is ~0.6× — historically the worst combo. Client-side filter.`}
-              ariaPressed={hideGhosts}
-            >
-              hide ghosts
-              {hideGhosts && hiddenGhostsCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenGhostsCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={hideGated}
-              activeColor="amber"
-              testId="silent-boom-hide-gated-chip"
-              onClick={() => setHideGated(!hideGated)}
-              title="Hide counter-trend alerts demoted to tier3 by the Phase 4 direction gate (T=±100M on mkt_tide_diff). Puts when mkt_tide_diff > +100M, calls when mkt_tide_diff < -100M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
-              ariaPressed={hideGated}
-            >
-              hide counter-trend
-              {hideGated && hiddenGatedCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenGatedCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={hideCounterFlow}
-              activeColor="amber"
-              testId="silent-boom-hide-counter-flow-chip"
-              onClick={() => setHideCounterFlow(!hideCounterFlow)}
-              title="Hide counter-flow alerts — rows where the per-ticker net flow (cumNcpAtFire − cumNppAtFire) at fire time contradicts the option type. Calls hidden when NCP < NPP; puts hidden when NCP > NPP. Rows with no fire-time snapshot are never hidden. Client-side filter — does not affect score or tier."
-              ariaPressed={hideCounterFlow}
-            >
-              hide counter-flow
-              {hideCounterFlow && hiddenCounterFlowCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenCounterFlowCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={aggressivePremium}
-              activeColor="sky"
-              testId="silent-boom-aggressive-premium-chip"
-              onClick={() => setAggressivePremium(!aggressivePremium)}
-              title="Aggressive Premium: surface only alerts with premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg (multi_leg_share < 10%), and OTM (calls strike > spot, puts strike < spot). Mirrors the trader's UW filter. Server-side enforced via #152 underlying_price_at_spike — alerts with no spot snapshot are excluded from the OTM check."
-              ariaPressed={aggressivePremium}
-            >
-              💎 aggressive premium
-            </FilterChip>
-          </div>
-
-          {/* Row 6 (conditional): ticker chips */}
-          {(topTickers.length > 0 || tickerFilter) && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className={SECTION_LABEL}>ticker</span>
-              <FilterChip
-                active={tickerFilter == null}
-                activeColor="emerald"
-                onClick={() => setTickerFilter(null)}
-                ariaPressed={tickerFilter == null}
-              >
-                all
-              </FilterChip>
-              {topTickers.map(([t, n]) => (
-                <FilterChip
-                  key={t}
-                  active={tickerFilter === t}
-                  activeColor="emerald"
-                  onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
-                  title={`Filter to ${t} only (${n} alert${n === 1 ? '' : 's'} today)`}
-                  ariaPressed={tickerFilter === t}
-                >
-                  {t} <span className="text-[10px] opacity-70">{n}</span>
-                </FilterChip>
-              ))}
-              {tickerFilter &&
-                !topTickers.some(([t]) => t === tickerFilter) && (
-                  <FilterChip
-                    active
-                    activeColor="emerald"
-                    onClick={() => setTickerFilter(null)}
-                    title="Filter active but no alerts for this ticker in the current view — click to clear"
-                  >
-                    {tickerFilter}{' '}
-                    <span className="text-[10px] opacity-70">0</span>
-                  </FilterChip>
-                )}
-            </div>
+          {/* Filter chips — inline in the normal layout, collapsed
+              behind a sticky CompactDisclosure in the dense Options
+              Alerts pane. The date/scrub/export row above stays
+              visible in both modes. */}
+          {compact ? (
+            <CompactDisclosure label="Filters">
+              {silentBoomToolbar}
+            </CompactDisclosure>
+          ) : (
+            silentBoomToolbar
           )}
-
-          {/* Row 7: realized-exit policy. Whichever chip is active
-              becomes the primary % shown on every row. Mirrors the
-              LotteryFinder pattern: exit selector lives at the bottom
-              of the toolbar so muscle memory carries between panels. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span
-              className={SECTION_LABEL}
-              title="Choose which realized exit % is shown as the primary number on every alert. Peak is a look-ahead reference; the 30m / 60m / 120m / EOD options are tradeable horizons from the spike bucket start."
-            >
-              exit
-            </span>
-            {EXIT_POLICIES.map((p) => (
-              <FilterChip
-                key={p}
-                active={exitPolicy === p}
-                activeColor="purple"
-                onClick={() => setExitPolicy(p)}
-                title={SILENT_BOOM_EXIT_POLICY_TOOLTIPS[p]}
-                ariaPressed={exitPolicy === p}
-              >
-                {SILENT_BOOM_EXIT_POLICY_LABELS[p]}
-              </FilterChip>
-            ))}
-          </div>
         </div>
 
         {/* Body */}
