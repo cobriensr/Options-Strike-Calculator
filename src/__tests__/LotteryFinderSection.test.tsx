@@ -1080,6 +1080,52 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
 });
 
 // ============================================================
+// COMPACT MODE — filter toolbar collapses behind CompactDisclosure
+// ============================================================
+
+describe('LotteryFinderSection: compact mode', () => {
+  it('does NOT render the Filters disclosure trigger in the default (non-compact) layout', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(
+      screen.queryByRole('button', { name: /^Filters$/ }),
+    ).not.toBeInTheDocument();
+    // The filter chips render inline (e.g. the conviction Tier 1 chip).
+    expect(screen.getByRole('button', { name: /Tier 1/ })).toBeInTheDocument();
+  });
+
+  it('collapses the filter chips behind the Filters trigger when compact, revealing them on click', () => {
+    render(<LotteryFinderSection marketOpen={false} compact />);
+
+    // The sticky Filters trigger is present and collapsed by default.
+    const trigger = screen.getByRole('button', { name: /^Filters$/ });
+    expect(trigger).toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    // A representative toolbar chip (conviction Tier 1) is hidden until
+    // the disclosure is opened.
+    expect(
+      screen.queryByRole('button', { name: /Tier 1/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /Tier 1/ })).toBeInTheDocument();
+  });
+
+  it('keeps the DATE / Live / EXPORT row visible in compact mode (not collapsed)', () => {
+    render(<LotteryFinderSection marketOpen={false} compact />);
+    // Export anchors live in the always-visible date/export row.
+    expect(screen.getByText(/⤓ filtered/)).toBeInTheDocument();
+    expect(screen.getByText(/⤓ all/)).toBeInTheDocument();
+    // The day banner is untouched (not wrapped in the disclosure).
+    expect(
+      screen.getByRole('heading', { name: /lottery finder/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // PAGINATION — POST-FILTER EMPTY + PAST-LAST-PAGE RECOVERY
 // ============================================================
 
