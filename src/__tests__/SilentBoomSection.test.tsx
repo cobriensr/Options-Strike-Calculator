@@ -893,6 +893,29 @@ describe('SilentBoomSection: compact mode', () => {
       screen.getByRole('heading', { name: /silent boom/i }),
     ).toBeInTheDocument();
   });
+
+  it('hides the methodology blurb, regime banner, and day-status placeholder in compact mode', () => {
+    render(<SilentBoomSection marketOpen={false} compact />);
+    // 1. Methodology/description blurb.
+    expect(screen.queryByText(/trade quietly/i)).not.toBeInTheDocument();
+    // 2. Regime-context banner (SilentBoomRegimeBanner empty state).
+    expect(
+      screen.queryByText(/regime context will appear/i),
+    ).not.toBeInTheDocument();
+    // 3. Day-status placeholder banner (SilentBoomDayBanner empty state).
+    expect(
+      screen.queryByText(/no silent-boom alerts yet today/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still renders the methodology blurb + day-status placeholder in non-compact mode', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    // Confirms the three blocks were gated by compact, not deleted.
+    expect(screen.getByText(/trade quietly/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no silent-boom alerts yet today/i),
+    ).toBeInTheDocument();
+  });
 });
 
 // ============================================================

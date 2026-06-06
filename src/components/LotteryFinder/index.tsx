@@ -1247,26 +1247,33 @@ export function LotteryFinderSection({
   return (
     <SectionBox label="Lottery Finder" collapsible fill={compact}>
       <div className="space-y-3">
-        <p className="text-[11px] text-neutral-500">
-          Signal detector — not a backtested profitable strategy. Most days
-          lose; wins come from rare explosive moves. Edge concentrated in 1-2
-          outlier days per 15 in the cheap-call-PM RE-LOAD subset.{' '}
-          <a
-            className="text-neutral-400 underline hover:text-white"
-            href="/docs/superpowers/specs/lottery-finder-2026-05-02.md"
-            target="_blank"
-            rel="noreferrer"
-          >
-            methodology
-          </a>
-        </p>
+        {/* Methodology blurb — hidden in compact (half-height alerts pane)
+            to reclaim vertical space; kept in the full calculator view. */}
+        {!compact && (
+          <p className="text-[11px] text-neutral-500">
+            Signal detector — not a backtested profitable strategy. Most days
+            lose; wins come from rare explosive moves. Edge concentrated in 1-2
+            outlier days per 15 in the cheap-call-PM RE-LOAD subset.{' '}
+            <a
+              className="text-neutral-400 underline hover:text-white"
+              href="/docs/superpowers/specs/lottery-finder-2026-05-02.md"
+              target="_blank"
+              rel="noreferrer"
+            >
+              methodology
+            </a>
+          </p>
+        )}
 
-        {/* Day-level macro banner — at-a-glance regime context */}
-        <LotteryDayBanner fires={fires} />
+        {/* Day-level macro banner — at-a-glance regime context. Hidden in
+            compact mode to maximize row density. */}
+        {!compact && <LotteryDayBanner fires={fires} />}
 
         {/* Day-level tier breakdown — counts + dominant ticker + top
-            score on the current page. Mirrors SilentBoomDayBanner. */}
-        <LotteryTierBanner fires={fires} total={total} />
+            score on the current page. Mirrors SilentBoomDayBanner. Hidden
+            in compact mode (carries the "No lottery fires yet today"
+            placeholder + populated day stats). */}
+        {!compact && <LotteryTierBanner fires={fires} total={total} />}
 
         {/* Filter toolbar — single contained panel for date/scrub,
             sort/conviction, type/TOD, mode tags, ticker, and exit

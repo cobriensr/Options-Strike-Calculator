@@ -1118,10 +1118,35 @@ describe('LotteryFinderSection: compact mode', () => {
     // Export anchors live in the always-visible date/export row.
     expect(screen.getByText(/⤓ filtered/)).toBeInTheDocument();
     expect(screen.getByText(/⤓ all/)).toBeInTheDocument();
-    // The day banner is untouched (not wrapped in the disclosure).
+    // The section heading is untouched (not wrapped in the disclosure).
     expect(
       screen.getByRole('heading', { name: /lottery finder/i }),
     ).toBeInTheDocument();
+  });
+
+  it('hides the methodology blurb, regime banner, and day-status placeholder in compact mode', () => {
+    render(<LotteryFinderSection marketOpen={false} compact />);
+    // 1. Methodology/description blurb.
+    expect(
+      screen.queryByText(/not a backtested profitable strategy/i),
+    ).not.toBeInTheDocument();
+    // 2. Regime-context banner (LotteryDayBanner empty state).
+    expect(
+      screen.queryByText(/regime context will appear/i),
+    ).not.toBeInTheDocument();
+    // 3. Day-status placeholder banner (LotteryTierBanner empty state).
+    expect(
+      screen.queryByText(/no lottery fires yet today/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still renders the methodology blurb + day-status placeholder in non-compact mode', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    // Confirms the three blocks were gated by compact, not deleted.
+    expect(
+      screen.getByText(/not a backtested profitable strategy/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/no lottery fires yet today/i)).toBeInTheDocument();
   });
 });
 

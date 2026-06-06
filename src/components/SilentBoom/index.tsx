@@ -1268,29 +1268,36 @@ export function SilentBoomSection({
   return (
     <SectionBox label="Silent Boom" collapsible fill={compact}>
       <div className="space-y-3">
-        <p className="text-[11px] text-neutral-500">
-          Detector for chains that trade quietly for 15-20 min then print a
-          single ask-side burst ≥5× the prior 4-bucket median, with vol/OI ≥
-          25%, ask% ≥ 70%, and OI ≥ 100. Discretionary signal — peak-ceiling is
-          a look-ahead reference, not a tradeable exit. Empirical sample (19
-          days, 13.9k fires): peak +26.15% mean, 71.7% high-peak rate. Realized
-          horizons average ~0%, so timing matters.{' '}
-          <a
-            className="text-neutral-400 underline hover:text-white"
-            href="https://github.com/cobriensr/Options-Strike-Calculator/blob/main/docs/superpowers/specs/silent-boom-detector-2026-05-08.md"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            methodology
-          </a>
-        </p>
+        {/* Methodology blurb — hidden in compact (half-height alerts pane)
+            to reclaim vertical space; kept in the full calculator view. */}
+        {!compact && (
+          <p className="text-[11px] text-neutral-500">
+            Detector for chains that trade quietly for 15-20 min then print a
+            single ask-side burst ≥5× the prior 4-bucket median, with vol/OI ≥
+            25%, ask% ≥ 70%, and OI ≥ 100. Discretionary signal — peak-ceiling
+            is a look-ahead reference, not a tradeable exit. Empirical sample
+            (19 days, 13.9k fires): peak +26.15% mean, 71.7% high-peak rate.
+            Realized horizons average ~0%, so timing matters.{' '}
+            <a
+              className="text-neutral-400 underline hover:text-white"
+              href="https://github.com/cobriensr/Options-Strike-Calculator/blob/main/docs/superpowers/specs/silent-boom-detector-2026-05-08.md"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              methodology
+            </a>
+          </p>
+        )}
 
         {/* Regime banner — Market Tide / 0DTE Flow / SPX Gamma at the
-            latest alert's bucket time. Display-only macro context. */}
-        <SilentBoomRegimeBanner alerts={alerts} />
+            latest alert's bucket time. Display-only macro context. Hidden
+            in compact mode to maximize row density. */}
+        {!compact && <SilentBoomRegimeBanner alerts={alerts} />}
 
-        {/* Day banner — tier counts + dominant ticker + loudest spike */}
-        <SilentBoomDayBanner alerts={alerts} total={total} />
+        {/* Day banner — tier counts + dominant ticker + loudest spike.
+            Hidden in compact mode (carries the "No silent-boom alerts yet
+            today" placeholder + populated day stats). */}
+        {!compact && <SilentBoomDayBanner alerts={alerts} total={total} />}
 
         <div className="space-y-2.5 rounded-lg border border-neutral-800/80 bg-neutral-950/40 p-2.5">
           {/* Row 1: date + scrub controls. Prev/next step the 5-min
