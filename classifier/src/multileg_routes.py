@@ -70,17 +70,20 @@ logger = logging.getLogger(__name__)
 # prevent the polars build phase from holding the GIL long enough to push
 # ``/health`` past Railway's 5s healthcheck timeout under burst load.
 #
-# Lowered 8 → 4 (2026-06-03): peak service memory ≈ concurrency × the
-# per-request 0DTE calls×puts cross-join, which spiked to ~21 GB at the
-# market open under 8-way parallelism. Halving the cap halves the peak
-# without dropping work — excess requests block on the semaphore, 503 on
-# the 30s queue timeout, and the TS client retries with jitter. The open
-# burst is brief, so the added queue latency stays inside the timeout.
+# Lowered 8 → 4 (2026-06-03), then 4 → 2 (2026-06-06): peak service memory
+# ≈ concurrency × the per-request 0DTE calls×puts cross-join. 8-way spiked
+# to ~21 GB; 4-way — even with the cross-join sub-batch cap added 06-04 —
+# still OOM-restarted the 24 GB box ~11x at the 2026-06-05 open (sub-minute
+# spikes past 24 GB; per-minute memory sampled 16.74 GB). 2-way halves the
+# concurrent peak again. This does not drop work — excess requests block on
+# the semaphore, 503 on the 30s queue timeout, and the TS client retries
+# with jitter. The open burst is brief, so the queue latency stays inside
+# the timeout.
 #
 # A ``BoundedSemaphore`` (not regular ``Semaphore``) is used so an
 # accidental over-release raises ``ValueError`` — defence-in-depth against
 # a future refactor that double-frees on exit.
-_CLASSIFY_CONCURRENCY = 4
+_CLASSIFY_CONCURRENCY = 2
 _classify_semaphore = threading.BoundedSemaphore(_CLASSIFY_CONCURRENCY)
 # 30s is the hard ceiling on how long a request will sit in the matcher
 # queue before we 503 the caller. The TS client retries on 503 with
