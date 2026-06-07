@@ -5172,4 +5172,29 @@ export const MIGRATIONS: Migration[] = [
               AND takeit_top_features IS NULL`,
     ],
   },
+  {
+    id: 185,
+    description:
+      'Create flow_regime_snapshots table for the Flow Regime Recognition badge (Phase 2 of docs/superpowers/specs/flow-regime-badge-2026-06-06.md). One row per (date, slot) 30-min RTH bucket. The capture-flow-regime cron runs every 5 min during market hours, recomputes the CURRENT bucket from ws_option_trades, and UPSERTs via ON CONFLICT (date, slot) DO UPDATE so the in-progress slot is refined each tick until the bucket closes. nd_tilt / idx0dte_put_share are the two detrend-robust ratio metrics (Σ(side_sign·delta·size)/Σ(|delta|·size) and Σ(premium|0DTE index put)/Σ(premium)); nd_percentile / idxput_percentile score them against the SAME slot historically (from api/_lib/flow-regime-baseline.json) and are NULL when that slot lacks ≥15 baseline days. regime/color are the classified recognition label. RECOGNITION ONLY — not a predictor. UNIQUE(date, slot) gives the upsert its conflict target; the (date DESC) index serves the endpoint reading today’s slot series.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS flow_regime_snapshots (
+          id                 BIGSERIAL PRIMARY KEY,
+          date               DATE NOT NULL,
+          slot               INT NOT NULL,
+          computed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          nd_tilt            NUMERIC,
+          idx0dte_put_share  NUMERIC,
+          nd_percentile      NUMERIC,
+          idxput_percentile  NUMERIC,
+          regime             TEXT,
+          color              TEXT,
+          n_trades           INT,
+          UNIQUE (date, slot)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS flow_regime_snapshots_date_idx
+            ON flow_regime_snapshots (date DESC)`,
+    ],
+  },
 ];

@@ -381,6 +381,12 @@ export const POLL_INTERVALS = {
    *  keeping the Flow Match / Inverted badges within one bucket of
    *  live truth. */
   TICKER_NET_FLOW: 60_000,
+  /** Flow Regime recognition badge (useFlowRegime) — the
+   *  capture-flow-regime cron refines the in-progress 30-min slot every
+   *  5 min, and the read endpoint adds a 15s edge cache. 60s polling
+   *  keeps the badge within ~1 minute of the latest refinement without
+   *  hammering the origin. Gated on marketOpen. */
+  FLOW_REGIME: 60_000,
 } as const;
 
 /** Progress messages shown during chart analysis */

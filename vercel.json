@@ -324,6 +324,10 @@
     {
       "path": "/api/cron/capture-opening-flow-signal",
       "schedule": "50 14 * * 1-5"
+    },
+    {
+      "path": "/api/cron/capture-flow-regime",
+      "schedule": "*/5 13-21 * * 1-5"
     }
   ],
   "functions": {

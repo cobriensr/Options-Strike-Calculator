@@ -179,11 +179,17 @@ _PER_BATCH_PRUNE_THRESHOLD: Final = 50_000
 # iterate side A in row-chunks of ~(cap // |B|) and concat the per-chunk
 # results, bounding the per-join intermediate to ~cap rows. A cross /
 # size-band join is row-independent in A, so chunking is output-identical:
-# (A1 ∪ A2) ⋈ B == (A1 ⋈ B) ∪ (A2 ⋈ B). 1M pairs → sub-GB per request, 4
-# concurrent comfortably under 24GB; tunable. At/under the cap the path is
+# (A1 ∪ A2) ⋈ B == (A1 ⋈ B) ∪ (A2 ⋈ B). At/under the cap the path is
 # byte-for-byte the prior single-shot join (no chunking overhead). See
 # docs/superpowers/specs/classifier-cross-type-subbatch-2026-06-04.md.
-_CROSS_JOIN_PAIR_CAP: Final = 1_000_000
+#
+# Lowered 1M → 500K (2026-06-06): at 1M the fix stopped the *instant*
+# crash but the box still OOM-restarted ~11x at the 2026-06-05 open
+# (per-minute memory sampled 16.74 GB, sub-minute spikes still SIGKILL'd
+# past 24 GB). Halving the cap halves the per-request intermediate; paired
+# with the concurrency 4 → 2 drop in multileg_routes.py this targets a
+# ~4x reduction in peak. Tunable — verify against the next open.
+_CROSS_JOIN_PAIR_CAP: Final = 500_000
 
 
 # Butterfly skip threshold. A 3-leg butterfly body × low_wing × high_wing

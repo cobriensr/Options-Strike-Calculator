@@ -179,6 +179,7 @@ if (import.meta.env.PROD)
       { path: '/api/lottery-export', method: 'GET' },
       { path: '/api/lottery-contract-tape', method: 'GET' },
       { path: '/api/opening-flow-signal', method: 'GET' },
+      { path: '/api/flow-regime', method: 'GET' },
       { path: '/api/silent-boom-feed', method: 'GET' },
       { path: '/api/periscope-lottery-feed', method: 'GET' },
       { path: '/api/silent-boom-ticker-counts', method: 'GET' },
