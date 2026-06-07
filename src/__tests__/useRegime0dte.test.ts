@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 
-const { getCTTimeMock } = vi.hoisted(() => ({
+const { getCTTimeMock, getCTDateStrMock } = vi.hoisted(() => ({
   getCTTimeMock: vi.fn(() => ({ hour: 10, minute: 0 })),
+  getCTDateStrMock: vi.fn(() => '2026-06-05'),
 }));
 
 vi.mock('../utils/timezone', async () => {
@@ -13,6 +14,7 @@ vi.mock('../utils/timezone', async () => {
   return {
     ...actual,
     getCTTime: getCTTimeMock,
+    getCTDateStr: getCTDateStrMock,
   };
 });
 
@@ -45,12 +47,28 @@ function makeResponse(
   };
 }
 
+/** Seed a last-good cache entry under STORAGE_KEY with the given payload date. */
+function seedCache(date: string, overrides: Partial<Regime0dteResponse> = {}) {
+  const cached = makeResponse({ date, ...overrides });
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      data: cached,
+      savedAt: `${date}T20:00:00Z`,
+      date,
+    }),
+  );
+  return cached;
+}
+
 describe('useRegime0dte', () => {
   beforeEach(() => {
     fetchMock.mockReset();
     getCTTimeMock.mockReset();
-    // Default: inside the 08:30–15:00 CT session.
+    getCTDateStrMock.mockReset();
+    // Default: inside the 08:30–15:00 CT session, "today" is 2026-06-05.
     getCTTimeMock.mockReturnValue({ hour: 10, minute: 0 });
+    getCTDateStrMock.mockReturnValue('2026-06-05');
     localStorage.clear();
   });
 
@@ -88,23 +106,51 @@ describe('useRegime0dte', () => {
     expect(result.current.displayData).toBeNull();
   });
 
-  it('restores the last-good payload from localStorage on mount', async () => {
-    // Outside the window so no fetch overwrites the cache.
+  it('does not schedule the polling interval outside the CT window (no fetch churn)', () => {
+    // 16:00 CT — closed. With fake timers we can prove no interval ticks
+    // fire a fetch even after several poll periods elapse.
+    vi.useFakeTimers();
+    try {
+      getCTTimeMock.mockReturnValue({ hour: 16, minute: 0 });
+
+      renderHook(() => useRegime0dte());
+
+      // Advance well past the 45s poll cadence (and the 60s window watcher).
+      act(() => {
+        vi.advanceTimersByTime(45_000 * 5);
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the today-dated last-good payload from localStorage on mount', () => {
+    // Outside the window so no fetch overwrites the cache. Cache date matches
+    // "today" (2026-06-05) so it is surfaced as displayData.
     getCTTimeMock.mockReturnValue({ hour: 16, minute: 0 });
-    const cached = makeResponse({ gate: 'big_move', date: '2026-06-04' });
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        data: cached,
-        savedAt: '2026-06-04T20:00:00Z',
-        date: '2026-06-04',
-      }),
-    );
+    seedCache('2026-06-05', { gate: 'big_move' });
 
     const { result } = renderHook(() => useRegime0dte());
 
     expect(result.current.displayData?.gate).toBe('big_move');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT surface a prior-session-day cache as displayData (staleness guard)', () => {
+    // Closed window, but a cache from YESTERDAY (2026-06-04) is present while
+    // "today" is 2026-06-05. The stale-date cache must be ignored for display
+    // — it must NOT paint yesterday's payload as live.
+    getCTTimeMock.mockReturnValue({ hour: 16, minute: 0 });
+    seedCache('2026-06-04', { gate: 'big_move' });
+
+    const { result } = renderHook(() => useRegime0dte());
+
+    expect(result.current.displayData).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    // The stale entry is evicted from storage on read.
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
   it('mirrors a fresh payload into the last-good cache', async () => {
@@ -120,20 +166,14 @@ describe('useRegime0dte', () => {
     });
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as {
       data: Regime0dteResponse;
+      date: string;
     };
     expect(parsed.data.gate).toBe('lean_down');
+    expect(parsed.date).toBe('2026-06-05');
   });
 
-  it('keeps the last-good payload on a fetch error', async () => {
-    const cached = makeResponse({ gate: 'calm' });
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        data: cached,
-        savedAt: '2026-06-04T20:00:00Z',
-        date: '2026-06-04',
-      }),
-    );
+  it('keeps a today-dated last-good payload on a fetch error', async () => {
+    seedCache('2026-06-05', { gate: 'calm' });
     fetchMock.mockResolvedValue({ ok: false, status: 500 });
 
     const { result } = renderHook(() => useRegime0dte());
@@ -141,7 +181,7 @@ describe('useRegime0dte', () => {
     await waitFor(() => {
       expect(result.current.error).not.toBeNull();
     });
-    // Last-good survives the transient error.
+    // Last-good (today-dated) survives the transient error.
     expect(result.current.displayData?.gate).toBe('calm');
   });
 });
