@@ -3,9 +3,85 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
+// A Phase-3 suppression fragment marker. The real keptSuppressionSql returns
+// a composable neon fragment; here we model it as a tagged object so the
+// outer query's tagged-template can FLATTEN it into raw predicate text +
+// (showAll, keptTickers) params — exactly mirroring how @neondatabase splices
+// a nested `db`…`` fragment. This keeps every existing SQL-text and param
+// assertion in this file valid against the helper-wired query without coupling
+// the endpoint test to the helper's internals (those are pinned in
+// api/__tests__/lottery-suppression.test.ts).
+interface SuppressionFragment {
+  __suppressionFragment: true;
+  showAll: boolean;
+  kept: string[];
+}
+const isSuppressionFragment = (v: unknown): v is SuppressionFragment =>
+  typeof v === 'object' && v !== null && '__suppressionFragment' in v;
+
+const { mockKeptSuppressionSql } = vi.hoisted(() => ({
+  mockKeptSuppressionSql: vi.fn(
+    (
+      _db: unknown,
+      alias: string,
+      showAll: boolean | undefined,
+      kept: string[],
+    ) =>
+      ({
+        __suppressionFragment: true as const,
+        // Carry the alias only for debugging; the canonical predicate text is
+        // emitted by the flattener below so SQL-text assertions match.
+        alias,
+        showAll: showAll ?? false,
+        kept,
+      }) as unknown as SuppressionFragment,
+  ),
+}));
+
+vi.mock('../_lib/lottery-suppression.js', () => ({
+  keptSuppressionSql: mockKeptSuppressionSql,
+  SYMBOL_ALIAS_WHITELIST: ['f', 'ranked', 'cd'] as const,
+}));
+
+// Raw mock query fn — receives the FLATTENED (strings, ...values) so that
+// `mock.calls[N][0]` is the full template-strings array (with the suppression
+// predicate text inlined) and the values include showAll + keptTickers.
 const mockSql = vi.fn();
+
+// The `db` handle the handler uses. A tagged-template wrapper that flattens
+// any SuppressionFragment in the interpolated values into raw predicate text
+// + its two params before delegating to mockSql. Non-fragment template calls
+// pass straight through unchanged (so existing tests are unaffected).
+function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
+  if (!values.some(isSuppressionFragment)) {
+    return mockSql(strings, ...values);
+  }
+  const outStrings: string[] = [strings[0]!];
+  const outValues: unknown[] = [];
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (isSuppressionFragment(v)) {
+      // Splice the canonical predicate: text + (showAll, kept) params.
+      // `<prefix>(${showAll}::boolean OR s.inversion_quintile IS NULL OR
+      //  s.inversion_quintile > 2 OR <alias>.underlying_symbol =
+      //  ANY(${kept}::text[]))<suffix>`
+      outStrings[outStrings.length - 1] += '(';
+      outValues.push(v.showAll);
+      outStrings.push(
+        '::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR underlying_symbol = ANY(',
+      );
+      outValues.push(v.kept);
+      outStrings.push('::text[]))' + strings[i + 1]!);
+    } else {
+      outValues.push(v);
+      outStrings.push(strings[i + 1]!);
+    }
+  }
+  return mockSql(outStrings as unknown as TemplateStringsArray, ...outValues);
+}
+
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
+  getDb: vi.fn(() => dbTag),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   // Real classifier — matches `timeout`, `fetch failed`, etc. The
   // degradeOnTimeout tests below depend on this returning true for
@@ -1932,10 +2008,14 @@ describe('lottery-finder endpoint', () => {
       expect(body.suppressedCount).toBe(1);
     });
 
-    it('accumulates currently-shown (quintile > 2) tickers into the kept-set; excludes Q1/Q2-kept and NULL', async () => {
-      // CCC quintile 3 (>2) → remember. AAA quintile 1 (kept only via the
-      // set) → already remembered, not re-added BECAUSE it's kept. NEWT
-      // NULL quintile → never suppressed, nothing to protect, not added.
+    it('accumulates the PAGE-INDEPENDENT ever-qualifying set (from the COUNT query) into the kept-set', async () => {
+      // The accumulation source is the COUNT query's `ever_qualifying` column
+      // — array_agg(DISTINCT underlying_symbol) FILTER (WHERE quintile > 2)
+      // over the FULL ranked set (no LIMIT). So even tickers NOT on the page
+      // slice are accumulated. CCC quintile 3 (>2) → remembered. AAA quintile
+      // 1 (kept only via the set) and NEWT NULL quintile are excluded by the
+      // SQL FILTER (quintile > 2 is false for both), so they're not in
+      // ever_qualifying. The handler passes ever_qualifying straight through.
       mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
       mockSql
         .mockResolvedValueOnce([
@@ -1943,7 +2023,9 @@ describe('lottery-finder endpoint', () => {
           rowWithQuintile(3, 'CCC', 3),
           rowWithQuintile(9, 'NEWT', null),
         ])
-        .mockResolvedValueOnce([{ total: 3, suppressed: 0 }]);
+        .mockResolvedValueOnce([
+          { total: 3, suppressed: 0, ever_qualifying: ['CCC'] },
+        ]);
 
       const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
       const res = mockResponse();
@@ -1952,8 +2034,34 @@ describe('lottery-finder endpoint', () => {
       expect(mockAddKeptTickers).toHaveBeenCalledTimes(1);
       const [addDate, addTickers] = mockAddKeptTickers.mock.calls[0]!;
       expect(addDate).toBe('2026-05-01');
-      // Only CCC qualifies BY the live quintile gate this request.
+      // ever_qualifying came straight from the page-independent COUNT query.
       expect(addTickers).toEqual(['CCC']);
+    });
+
+    it('never-vanish: a ticker qualifying (quintile>2) but NOT on the returned page is still accumulated (page-independence)', async () => {
+      // THE HEADLINE FIX (#1). The page (rows) shows only AAA — a Q1 ticker
+      // re-admitted via the kept-set. ZZZ qualifies live (quintile > 2) but
+      // sits past the LIMIT/OFFSET slice, so it is ABSENT from `rows`. The
+      // OLD code derived the accumulation set from `rows`, so ZZZ would never
+      // be recorded and would vanish on its next quintile flip. The NEW code
+      // sources from the COUNT query's page-independent `ever_qualifying`, so
+      // ZZZ IS passed to addKeptTickers despite never appearing on the page.
+      mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 1)]) // page slice
+        .mockResolvedValueOnce([
+          // page-independent COUNT over the FULL ranked set
+          { total: 2, suppressed: 0, ever_qualifying: ['ZZZ'] },
+        ]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(mockAddKeptTickers).toHaveBeenCalledTimes(1);
+      const [, addTickers] = mockAddKeptTickers.mock.calls[0]!;
+      // ZZZ is accumulated even though it is NOT in the rendered `rows`.
+      expect(addTickers).toEqual(['ZZZ']);
     });
 
     it('?showAll=true → suppression bypassed, kept-set never read or written', async () => {
@@ -2191,7 +2299,7 @@ describe('degradeOnTimeout', () => {
       },
       [] as { foo: number }[],
       'chainExtras',
-      0, // retries=0 so the test doesn't wait on real-time setTimeout
+      { retries: 0 }, // retries=0 so the test doesn't wait on real-time setTimeout
     );
     expect(result).toEqual([]);
     expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
@@ -2215,7 +2323,7 @@ describe('degradeOnTimeout', () => {
         },
         [] as { foo: number }[],
         'chainExtras',
-        0,
+        { retries: 0 },
       ),
     ).rejects.toThrow(/syntax error/);
     expect(mockCaptureMessage).not.toHaveBeenCalled();
@@ -2229,9 +2337,7 @@ describe('degradeOnTimeout', () => {
       async () => fresh,
       [] as { id: number }[],
       'chainExtras',
-      0,
-      20_000,
-      'lf:lg:chainExtras:2026-05-01',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:chainExtras:2026-05-01' },
     );
     expect(result).toBe(fresh);
     expect(mockWriteLastGood).toHaveBeenCalledWith(
@@ -2252,9 +2358,11 @@ describe('degradeOnTimeout', () => {
       async () => [] as { id: number }[],
       [{ id: 1 }] as { id: number }[], // distinct fallback to prove [] wins
       'reignitedRows',
-      0,
-      20_000,
-      'lf:lg:reignited:2026-05-01::::::',
+      {
+        retries: 0,
+        timeout: 20_000,
+        cacheKey: 'lf:lg:reignited:2026-05-01::::::',
+      },
     );
     expect(result).toEqual([]);
     expect(mockWriteLastGood).toHaveBeenCalledWith(
@@ -2274,9 +2382,7 @@ describe('degradeOnTimeout', () => {
       },
       [] as { id: number }[],
       'chainExtras',
-      0,
-      20_000,
-      'lf:lg:chainExtras:2026-05-01',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:chainExtras:2026-05-01' },
     );
     // last-good served, NOT the empty fallback.
     expect(result).toBe(cached);
@@ -2307,9 +2413,7 @@ describe('degradeOnTimeout', () => {
       },
       [] as { id: number }[],
       'sbChains',
-      0,
-      20_000,
-      'lf:lg:sbChains:2026-05-01',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:sbChains:2026-05-01' },
     );
     expect(result).toEqual([]);
     expect(mockReadLastGood).toHaveBeenCalledWith('lf:lg:sbChains:2026-05-01');
@@ -2323,9 +2427,11 @@ describe('degradeOnTimeout', () => {
         },
         [] as { id: number }[],
         'chainExtras',
-        0,
-        20_000,
-        'lf:lg:chainExtras:2026-05-01',
+        {
+          retries: 0,
+          timeout: 20_000,
+          cacheKey: 'lf:lg:chainExtras:2026-05-01',
+        },
       ),
     ).rejects.toThrow(/syntax error/);
     expect(mockReadLastGood).not.toHaveBeenCalled();
@@ -2341,9 +2447,7 @@ describe('degradeOnTimeout', () => {
       async () => fresh,
       [] as { id: number }[],
       'chainExtras',
-      0,
-      20_000,
-      'lf:lg:chainExtras:2026-05-01',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:chainExtras:2026-05-01' },
     );
     expect(result).toBe(fresh);
   });
@@ -2358,9 +2462,7 @@ describe('degradeOnTimeout', () => {
       },
       [] as { id: number }[],
       'clusterByMinute',
-      0,
-      20_000,
-      'lf:lg:cluster:2026-05-01',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:cluster:2026-05-01' },
     );
     expect(result).toEqual([]);
   });
