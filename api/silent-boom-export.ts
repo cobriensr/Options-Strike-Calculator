@@ -15,7 +15,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import { guardOwnerEndpoint } from './_lib/auth-helpers.js';
@@ -136,7 +136,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // No LIMIT — export the full firehose. Order chronologically
     // forward so the spreadsheet reads top-to-bottom by bucket time.
-    const rows = (await db`
+    const rows = (await withDbRetry(
+      () => db`
       SELECT *
       FROM silent_boom_alerts
       WHERE date = ${targetDate}::date
@@ -157,7 +158,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
       ORDER BY bucket_ct ASC, id ASC
-    `) as Record<string, unknown>[];
+    `,
+      2,
+      20_000,
+    )) as Record<string, unknown>[];
 
     const normalized = rows.map(normalizeRow);
 
