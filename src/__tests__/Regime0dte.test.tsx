@@ -218,6 +218,31 @@ describe('Regime0dte panel shell', () => {
     expect(screen.getByLabelText(/30-minute SPX candles/i)).toBeInTheDocument();
   });
 
+  it('does not mask a trigger that fires within the same as-of minute (content-keyed memo)', () => {
+    const unfired: Regime0dteTriggers = {
+      mostlyRed: { fired: false, atCtMin: null, green: 2, red: 3 },
+      ivBreak: { fired: false, atCtMin: null, magPct: null, refHi: 0.21 },
+      middayDeepNeg: { fired: false, atCtMin: null, gexMid: null },
+    };
+    // Same as-of minute (667) across both polls — a memo keyed on date:asOfCtMin
+    // alone would freeze the first (unfired) triggers and hide the fired one.
+    const base = { ...LEAN_DOWN_DATA, asOfCtMin: 667, triggers: unfired };
+    mockHook({ isWindowOpen: true, displayData: base });
+    const { rerender } = render(<Regime0dte />);
+    expect(screen.queryByText('10:53')).not.toBeInTheDocument();
+
+    const fired: Regime0dteResponse = {
+      ...base,
+      triggers: {
+        ...unfired,
+        ivBreak: { fired: true, atCtMin: 653, magPct: 4, refHi: 0.21 },
+      },
+    };
+    mockHook({ isWindowOpen: true, displayData: fired });
+    rerender(<Regime0dte />);
+    expect(screen.getByText('10:53')).toBeInTheDocument();
+  });
+
   it('renders the unknown gate as a distinct "no read" state, not a calm verdict', () => {
     const UNKNOWN_DATA: Regime0dteResponse = {
       ...LEAN_DOWN_DATA,
@@ -239,7 +264,9 @@ describe('Regime0dte panel shell', () => {
 
     // It must NOT present as any of the three real verdicts.
     expect(chip).not.toHaveTextContent(/Calm/i);
-    expect(screen.queryByLabelText(/Gamma gate: calm/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/Gamma gate: calm/i),
+    ).not.toBeInTheDocument();
     expect(
       screen.queryByLabelText(/Gamma gate: lean down/i),
     ).not.toBeInTheDocument();

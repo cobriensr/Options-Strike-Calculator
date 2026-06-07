@@ -87,13 +87,19 @@ function RegimePanel({
 }): React.ReactElement {
   const meta = gateMeta(data.gate);
 
-  // Memoize the series props on the value-identity of the payload
-  // (`date` + `asOfCtMin` — same as-of minute means value-identical data).
-  // The hook hands back a new `data` object every 45s poll, so without this
-  // every tick would pass fresh array references and re-run the memo'd
-  // sub-viz' sort + geometry even when the numbers are unchanged. Absent
-  // series fall back to the frozen module-level empties for a stable ref.
-  const valueKey = `${data.date}:${data.asOfCtMin}`;
+  // Memoize the series props on a CONTENT fingerprint of the payload, not the
+  // wall-clock minute: two 45s polls can land in the same CT minute yet carry
+  // different data (a freshly-grown series or a just-latched trigger), so
+  // keying on `asOfCtMin` alone would hide a fired down-trigger for up to a
+  // minute. The fingerprint changes when any series grows, a new IV point
+  // lands, or a trigger flips — so TriggerLights + the sub-viz update promptly,
+  // while a truly identical poll still short-circuits the memo'd re-render.
+  // Absent series fall back to the frozen module-level empties for a stable ref.
+  const t = data.triggers;
+  const valueKey =
+    `${data.date}:${data.asOfCtMin}` +
+    `:${data.gexStrikes?.length ?? 0}:${data.putIv?.at(-1)?.ctMin ?? 0}:${data.candles30?.length ?? 0}` +
+    `:${Number(t.mostlyRed.fired)}${Number(t.ivBreak.fired)}${Number(t.middayDeepNeg.fired)}`;
 
   /* eslint-disable react-hooks/exhaustive-deps -- value identity is `valueKey`; the array refs are intentionally read-through */
   const gexStrikes = useMemo<GammaStrike[]>(
@@ -149,6 +155,12 @@ function RegimePanel({
             spot={data.spot ?? null}
             bandPct={data.bandPct ?? 0.01}
           />
+          {/* The bars are the live (current-minute) profile; the flip line is the
+              OPEN-anchored level the gate is graded on, so on a trending day it
+              need not sit at a sign-change of the on-screen bars. */}
+          <div className="text-tertiary mt-1 font-sans text-[9px] leading-tight">
+            bars: live profile · flip line: open-anchored level
+          </div>
         </div>
         <div className="flex flex-col gap-3">
           <div>
