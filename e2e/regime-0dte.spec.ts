@@ -47,9 +47,7 @@ test.describe('0DTE Gamma Regime panel', () => {
     // Market is closed during test runs → the panel renders the placeholder
     // copy, not the live sub-viz. Match the leading sentence case-insensitively
     // so a copy tweak to the trailing detail doesn't break the assertion.
-    await expect(
-      section.getByText(/waiting for the open/i),
-    ).toBeVisible();
+    await expect(section.getByText(/waiting for the open/i)).toBeVisible();
   });
 
   test.describe('a11y scan', () => {

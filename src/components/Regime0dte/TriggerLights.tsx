@@ -35,7 +35,7 @@ function Light({ label, fired, atCtMin }: Omit<LightSpec, 'key'>) {
       <span className={`text-xs ${textClass}`}>
         {label}
         {fired && (
-          <span className="ml-1 font-mono tabular-nums text-amber-300">
+          <span className="ml-1 font-mono text-amber-300 tabular-nums">
             {formatCtMin(atCtMin)}
           </span>
         )}
