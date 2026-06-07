@@ -8,10 +8,16 @@ vi.mock('../_lib/auth-helpers.js', () => ({
 }));
 
 const mockSql = vi.fn();
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async () => {
+  // Keep the REAL withDbRetry so the retry path is genuinely exercised;
+  // only the db handle is stubbed.
+  const actual =
+    await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+  return {
+    getDb: vi.fn(() => mockSql),
+    withDbRetry: actual.withDbRetry,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
@@ -173,5 +179,33 @@ describe('silent-boom-export handler', () => {
     expect(res._headers['Content-Disposition']).toContain(
       'silent-boom-2026-05-07-SNDK.csv',
     );
+  });
+
+  it('retries a transient DB blip on the first attempt and then succeeds', async () => {
+    // First attempt: a retryable Neon blip (matches DB_RETRYABLE_RX).
+    // Without withDbRetry wrapping the SELECT, this single rejection
+    // would propagate and 500 the export. With the wrap, attempt 2
+    // resolves and the CSV is served.
+    mockSql
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValueOnce([makeRow()]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(res._status).toBe(200);
+    expect(res._headers['Content-Type']).toBe('text/csv');
+    expect(res._body).toContain('SNDK');
+  });
+
+  it('does NOT retry a non-retryable DB error (single 500)', async () => {
+    mockSql.mockRejectedValueOnce(new Error('syntax error at or near'));
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(res._status).toBe(500);
   });
 });
