@@ -55,6 +55,16 @@ export interface Regime0dteResponse {
   flipMinusOpenPct: number | null;
   triggers: Regime0dteTriggers;
   note: string;
+  /**
+   * Raw series for the rich panel visuals. Optional so a stale last-good
+   * cache written before Phase 3B (graded scalars only) still type-checks.
+   */
+  gexStrikes?: { strike: number; netGex: number }[];
+  spot?: number | null;
+  putIv?: { ctMin: number; iv: number }[];
+  candles30?: { ctMin: number; open: number; close: number }[];
+  bandPct?: number;
+  persistEndCtMin?: number;
 }
 
 interface State {

@@ -75,10 +75,23 @@ describe('GET /api/regime-0dte', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const body = res._json as { gate: string; triggers: unknown };
+    const body = res._json as {
+      gate: string;
+      triggers: unknown;
+      gexStrikes: unknown;
+      putIv: unknown;
+      candles30: unknown;
+      spot: unknown;
+    };
     expect(body).toHaveProperty('gate');
     expect(body).toHaveProperty('triggers');
     expect(body.gate).toBe('lean_down');
+
+    // The rich panel needs the raw series too, not just the graded scalars.
+    expect(Array.isArray(body.gexStrikes)).toBe(true);
+    expect(Array.isArray(body.putIv)).toBe(true);
+    expect(Array.isArray(body.candles30)).toBe(true);
+    expect(body.spot).toBe(7460);
 
     // The live endpoint reads the DEFAULT ('latest' EOD) profile — it does NOT
     // pass a time anchor. The anchored open/midday reads are cron-only.

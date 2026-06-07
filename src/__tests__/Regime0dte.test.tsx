@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
+import Regime0dte from '../components/Regime0dte';
+import type { Regime0dteResponse } from '../hooks/useRegime0dte';
 import {
   GammaProfileMini,
   type GammaStrike,
@@ -16,6 +18,15 @@ import {
 import { TriggerLights } from '../components/Regime0dte/TriggerLights';
 import { formatCtMin } from '../components/Regime0dte/format';
 import type { Regime0dteTriggers } from '../hooks/useRegime0dte';
+
+// Mock the data hook so the shell tests drive it directly — the shell only
+// reads `displayData`, `isWindowOpen`, and `error` from it.
+const { mockUseRegime0dte } = vi.hoisted(() => ({
+  mockUseRegime0dte: vi.fn(),
+}));
+vi.mock('../hooks/useRegime0dte.js', () => ({
+  useRegime0dte: mockUseRegime0dte,
+}));
 
 const STRIKES: GammaStrike[] = [
   { strike: 5880, netGex: -3.2e10 },
@@ -135,5 +146,96 @@ describe('TriggerLights', () => {
       render(<TriggerLights triggers={EMPTY_TRIGGERS} />),
     ).not.toThrow();
     expect(screen.getByText('IV-break')).toBeInTheDocument();
+  });
+});
+
+const LEAN_DOWN_DATA: Regime0dteResponse = {
+  date: '2026-06-06',
+  asOfCtMin: 660,
+  gate: 'lean_down',
+  gexNearSpot: -3.2e10,
+  gexAtOpen: -2.8e10,
+  flipStrike: 5895,
+  flipMinusOpenPct: -0.3,
+  triggers: FIRED_TRIGGERS,
+  note: 'downside confirmed by intraday trigger(s)',
+  gexStrikes: STRIKES,
+  spot: 5897,
+  putIv: IV_SERIES,
+  candles30: CANDLES,
+  bandPct: 0.01,
+  persistEndCtMin: 660,
+};
+
+function mockHook(
+  overrides: Partial<ReturnType<typeof mockUseRegime0dte>>,
+): void {
+  mockUseRegime0dte.mockReturnValue({
+    data: null,
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    refresh: vi.fn(),
+    isWindowOpen: true,
+    displayData: null,
+    ...overrides,
+  });
+}
+
+describe('Regime0dte panel shell', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders the gate label and all four sub-viz from displayData', () => {
+    mockHook({ isWindowOpen: true, displayData: LEAN_DOWN_DATA });
+    render(<Regime0dte />);
+
+    // Gate chip — text + aria-label convey "lean down" (not colour alone).
+    // "Lean down" appears twice (the SectionBox badge + the chip), so the
+    // chip is pinned by its descriptive aria-label.
+    const chip = screen.getByLabelText(/Gamma gate: lean down/i);
+    expect(chip).toHaveTextContent('Lean down');
+
+    // The honest note line.
+    expect(
+      screen.getByText(/downside confirmed by intraday trigger/i),
+    ).toBeInTheDocument();
+
+    // TriggerLights.
+    expect(
+      screen.getByLabelText(/Down-side confirmation triggers/i),
+    ).toBeInTheDocument();
+
+    // GammaProfileMini + IvSparkline + CandleStrip each render an
+    // accessible img with their distinctive aria-labels.
+    expect(
+      screen.getByLabelText(/Net gamma exposure by strike/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/put-implied-volatility series/i),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/30-minute SPX candles/i)).toBeInTheDocument();
+  });
+
+  it('shows the waiting-for-open placeholder and no visuals when closed', () => {
+    mockHook({ isWindowOpen: false, displayData: LEAN_DOWN_DATA });
+    render(<Regime0dte />);
+
+    expect(screen.getByText(/Waiting for the open/i)).toBeInTheDocument();
+
+    // None of the sub-viz should render in the closed state.
+    expect(
+      screen.queryByLabelText(/Net gamma exposure by strike/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/put-implied-volatility series/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/30-minute SPX candles/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/Down-side confirmation triggers/i),
+    ).not.toBeInTheDocument();
   });
 });

@@ -29,7 +29,7 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { getCTDateStr, getCTTime } from '../src/utils/timezone.js';
-import { evaluateRegime0dte } from './_lib/regime-0dte.js';
+import { evaluateRegime0dte, REGIME_0DTE } from './_lib/regime-0dte.js';
 import {
   getGexStrikes,
   getPutIvSeries,
@@ -96,7 +96,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 30s edge cache — the GEX/IV feeds refresh per-minute and the panel polls
     // every 45s, so brief reuse keeps the endpoint cheap without going stale.
     setCacheHeaders(res, 30, 30);
-    res.status(200).json({ date: dateIso, ...state });
+    // Spread the graded scalars plus the raw series the rich panel renders:
+    // the per-strike gamma profile, the put-IV sparkline, and the 30-min
+    // candle strip. `bandPct` / `persistEndCtMin` are the gate-band and
+    // persistence-cutoff constants the visuals draw their markers from.
+    res.status(200).json({
+      date: dateIso,
+      ...state,
+      gexStrikes: gex.strikes,
+      spot: gex.spot,
+      putIv,
+      candles30,
+      bandPct: REGIME_0DTE.GATE_BAND_PCT,
+      persistEndCtMin: REGIME_0DTE.PERSIST_END_MIN,
+    });
   } catch (err) {
     // Never leak raw exception text (can carry DB connection strings / query
     // internals); Sentry + pino retain full detail server-side.
