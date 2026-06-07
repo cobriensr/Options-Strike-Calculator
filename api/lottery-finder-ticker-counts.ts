@@ -25,6 +25,7 @@ import {
 } from './_lib/api-helpers.js';
 import { lotteryFinderTickerCountsQuerySchema } from './_lib/validation.js';
 import { readKeptTickers } from './_lib/kept-tickers.js';
+import { keptSuppressionSql } from './_lib/lottery-suppression.js';
 import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -192,12 +193,7 @@ export default async function handler(
         MAX(cd.chain_latest_trigger) AS latest_trigger_time_ct
       FROM chain_day cd
       LEFT JOIN lottery_ticker_stats s ON s.ticker = cd.underlying_symbol
-      WHERE (
-        ${showAll}::boolean
-        OR s.inversion_quintile IS NULL
-        OR s.inversion_quintile > 2
-        OR cd.underlying_symbol = ANY(${keptTickers}::text[])
-      )
+      WHERE ${keptSuppressionSql(db, 'cd', showAll, keptTickers)}
       GROUP BY cd.underlying_symbol
       ORDER BY count DESC, latest_trigger_time_ct DESC, underlying_symbol ASC
     `,
