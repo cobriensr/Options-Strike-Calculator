@@ -58,6 +58,17 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
+  'capture-flow-regime': {
+    // Every 5 min during the RTH cron window (13-21 UTC weekdays).
+    // Recomputes the current 30-min flow-regime bucket from
+    // ws_option_trades and upserts the (date, slot) snapshot. High-freq
+    // → relaxed failure threshold so a single transient miss doesn't
+    // page (same policy as the other 5-min market-hours crons).
+    schedule: '*/5 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
   'capture-opening-flow-signal': {
     // 14:50 UTC weekdays. Fires year-round AFTER the V4 09:30–09:40 ET
     // slice 2 window has closed:
