@@ -328,6 +328,10 @@
     {
       "path": "/api/cron/capture-flow-regime",
       "schedule": "*/5 13-21 * * 1-5"
+    },
+    {
+      "path": "/api/cron/capture-regime-0dte",
+      "schedule": "30 21 * * 1-5"
     }
   ],
   "functions": {
