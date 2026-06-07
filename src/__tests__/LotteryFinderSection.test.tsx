@@ -671,6 +671,64 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
     ).toBeInTheDocument();
   });
 
+  it('#1 ticker: selecting a ticker chip (server filter) drops a previously-pinned other-ticker row', () => {
+    // Pin two tickers in the union under the default (no ticker) filter.
+    const aapl = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    const tsla = makeFire({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [aapl, tsla], total: 2 }),
+    );
+    // Both ticker chips must render so AAPL is clickable.
+    mockUseLotteryFinderTickerCounts.mockReturnValue({
+      data: {
+        tickers: [
+          { ticker: 'AAPL', count: 1 },
+          { ticker: 'TSLA', count: 1 },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+
+    // Select the AAPL ticker chip — a SERVER-SIDE filter (forwarded to
+    // useLotteryFinder as `ticker`). The narrowed feed returns only AAPL.
+    // With the ticker in the filter-signature storageKey the union RESCOPES
+    // (new slot) so the stale TSLA pin does NOT carry over. Without the
+    // ticker in the sig the TSLA row would stay pinned in the same union.
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [aapl], total: 1 }),
+    );
+    fireEvent.click(screen.getByTitle(/Filter to AAPL only/i));
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
+  });
+
   it('#2: a reignited-union chain with reignited:false on its main row renders in EXACTLY one place', () => {
     // Poll 1: the chain is in the reignitedFires payload (reignited:true).
     const chain = makeFire({
