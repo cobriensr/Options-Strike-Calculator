@@ -196,6 +196,18 @@ export function slotForEtMinute(
   );
 }
 
+/**
+ * Inverse of `slotForEtMinute`: the ET minute-of-day at which `slot` begins.
+ * slotStart = rth_start + slot * bucket. Deduped here so callers don't re-derive
+ * the slot↔minute inverse inline (the two must stay consistent).
+ */
+export function slotStartEtMinute(
+  slot: number,
+  baseline: FlowRegimeBaseline = FLOW_REGIME_BASELINE,
+): number {
+  return baseline.rth_start_minute + slot * baseline.bucket_minutes;
+}
+
 // ── Metric computation from raw rows ─────────────────────────────────────────
 
 /**

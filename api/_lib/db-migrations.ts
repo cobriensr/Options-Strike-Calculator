@@ -5209,6 +5209,29 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 187,
     description:
+      'Create flow_regime_slot_daily table for the self-maintaining flow-regime baseline (resolves code-review finding #6 — the frozen, manually-refreshed baseline). One row per (date, slot) accumulates that trading day’s per-slot component sums (nd_num/nd_den for net_delta_tilt, idx_put_premium/total_premium for idx0dte_put_share) plus the bucket trade count. The capture-flow-regime-daily cron runs once post-close and UPSERTs all 13 RTH slots for the day via ON CONFLICT (date, slot) DO UPDATE. The live capture-flow-regime cron then computes percentile breakpoints ON READ from this accumulating table (api/_lib/flow-regime-baseline-live.ts), falling back per-slot to the committed flow-regime-baseline.json until a slot has ≥15 days of history. UNIQUE(date, slot) gives the daily upsert its conflict target. The (slot) index is NOT used by the loader’s aggregation — that query is a `GROUP BY slot` with no WHERE, so the planner full-scans this tiny table regardless; the index is retained only for potential future per-slot point reads (the table is small enough that dropping it isn’t worth a prod migration). No parquet / Desktop dependency — the baseline now self-maintains from Neon. See docs/superpowers/specs/flow-regime-baseline-refresh-2026-06-07.md.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS flow_regime_slot_daily (
+          id               BIGSERIAL PRIMARY KEY,
+          date             DATE NOT NULL,
+          slot             INT NOT NULL,
+          nd_num           NUMERIC,
+          nd_den           NUMERIC,
+          idx_put_premium  NUMERIC,
+          total_premium    NUMERIC,
+          n_trades         INT,
+          computed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (date, slot)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS flow_regime_slot_daily_slot_idx
+            ON flow_regime_slot_daily (slot)`,
+    ],
+  },
+  {
+    id: 188,
+    description:
       'Create lottery_kept_tickers table for the DB-backed never-vanish kept-set (Phase 1 of docs/superpowers/specs/2026-06-07-never-vanish-review-fixes-round2.md). Replaces the per-day Redis set (lf:kept:<date>) with a durable Postgres table so kept-ticker records survive Redis eviction and can be read page-independently by both the feed and ticker-counts endpoints. One row per (trade_date, underlying_symbol); the composite PRIMARY KEY enforces the natural dedup constraint and provides the lookup index — no separate index needed. The writer (lottery-finder.ts, Phase 3) derives the ever-shown set from the full ranked CTE (no LIMIT), so a ticker that flips Q1/Q2 while sitting past row 50 is still kept for the rest of the session. Both readKeptTickers and addKeptTickers swallow all errors and degrade to [] on DB failure, mirroring the prior Redis semantics.',
     statements: (sql) => [
       sql`CREATE TABLE IF NOT EXISTS lottery_kept_tickers (

@@ -51,11 +51,29 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/capture-flow-regime.js';
+import { FLOW_REGIME_BASELINE } from '../_lib/flow-regime.js';
+import { __resetFlowRegimeBaselineCache } from '../_lib/flow-regime-baseline-live.js';
 import { mockRequest, mockResponse } from './helpers';
 
 const DATE = '2026-06-05';
 
+/** A loader aggregation row marking `slot` live (≥ min_days, full breakpoints). */
+function liveLoaderRow(slot: number) {
+  const n = FLOW_REGIME_BASELINE.percentiles.length;
+  const breaks = Array.from({ length: n }, (_, i) => -0.2 + i * 0.02);
+  return {
+    slot,
+    n_days_nd: FLOW_REGIME_BASELINE.min_days_per_slot,
+    n_days_idx: FLOW_REGIME_BASELINE.min_days_per_slot,
+    nd_breakpoints: breaks,
+    idx_breakpoints: breaks.map((b) => b + 0.5),
+  };
+}
+
 beforeEach(() => {
+  // The on-read baseline loader caches per ET date at module scope; reset so
+  // each test's loader SELECT result is recomputed, not served from cache.
+  __resetFlowRegimeBaselineCache();
   mockSql.mockReset();
   mockSql.mockResolvedValue([]);
   mockCronGuard.mockReset();
@@ -126,8 +144,9 @@ describe('capture-flow-regime cron', () => {
   });
 
   it('UPSERTs exactly one snapshot with a sensible regime on the happy path', async () => {
-    // 14:00 UTC = 10:00 ET → slot 1 ((600-570)/30). Two SQL calls
-    // expected: the SELECT then the UPSERT.
+    // 14:00 UTC = 10:00 ET → slot 1 ((600-570)/30). Three SQL calls
+    // expected: the trades SELECT, the baseline-loader SELECT (empty table →
+    // all-fallback), then the UPSERT.
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-05T14:00:00.000Z'));
 
@@ -156,6 +175,8 @@ describe('capture-flow-regime cron', () => {
           }),
     );
     mockSql.mockResolvedValueOnce(bearishTape);
+    // The baseline-loader SELECT over flow_regime_slot_daily (empty table).
+    mockSql.mockResolvedValueOnce([]);
     // The UPSERT.
     mockSql.mockResolvedValueOnce([]);
 
@@ -163,15 +184,15 @@ describe('capture-flow-regime cron', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // SELECT + UPSERT = 2 calls.
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // trades SELECT + loader SELECT + UPSERT = 3 calls.
+    expect(mockSql).toHaveBeenCalledTimes(3);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
 
     // UPSERT param order matches the INSERT VALUES clause:
     //   [date, slot, nd_tilt, idx0dte_put_share,
     //    nd_percentile, idxput_percentile, regime, color, n_trades,
     //    baseline_version]
-    const upsertArgs = mockSql.mock.calls[1] ?? [];
+    const upsertArgs = mockSql.mock.calls[2] ?? [];
     const params = upsertArgs.slice(1);
     expect(params[0]).toBe(DATE); // date
     expect(params[1]).toBe(1); // slot
@@ -188,8 +209,9 @@ describe('capture-flow-regime cron', () => {
     expect(['green', 'amber', 'red', 'gray']).toContain(params[7]);
     // n_trades = the number of rows read (above the low-confidence floor).
     expect(params[8]).toBe(60);
-    // baseline_version stamps the committed artifact's schema_version.
-    expect(typeof params[9]).toBe('number');
+    // baseline_version: the loader table is empty → this slot fell back to the
+    // committed JSON → version 1.
+    expect(params[9]).toBe(1);
   });
 
   it('suppresses a thin bucket to normal/gray despite an extreme tilt', async () => {
@@ -219,14 +241,16 @@ describe('capture-flow-regime cron', () => {
         size: 800,
       }),
     ]);
+    // loader SELECT (empty) + UPSERT.
+    mockSql.mockResolvedValueOnce([]);
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
-    expect(mockSql).toHaveBeenCalledTimes(2);
-    const params = (mockSql.mock.calls[1] ?? []).slice(1);
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    const params = (mockSql.mock.calls[2] ?? []).slice(1);
     // Raw nd_tilt is still persisted (strongly negative) for transparency...
     expect(params[2] as number).toBeLessThan(-0.5);
     // ...but the evaluator suppresses the read: percentiles are NULL and the
@@ -250,6 +274,8 @@ describe('capture-flow-regime cron', () => {
     mockSql.mockResolvedValueOnce([
       tradeRow({ delta: null, underlying_price: null }),
     ]);
+    // loader SELECT (empty) + UPSERT.
+    mockSql.mockResolvedValueOnce([]);
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({ method: 'GET' });
@@ -257,9 +283,57 @@ describe('capture-flow-regime cron', () => {
     await handler(req, res);
 
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const params = (mockSql.mock.calls[1] ?? []).slice(1);
+    const params = (mockSql.mock.calls[2] ?? []).slice(1);
     // nd_tilt should be a finite number (0 when the only delta is null).
     expect(Number.isFinite(params[2] as number)).toBe(true);
     expect(params[8]).toBe(1); // n_trades
+  });
+
+  it('stamps baseline_version 2 when the loader supplies live breakpoints for the slot', async () => {
+    // 14:00 UTC = 10:00 ET → active slot 1. The loader returns slot 1 as live
+    // (≥15 days), so the active slot was scored against DB-computed breakpoints
+    // → version 2.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-05T14:00:00.000Z'));
+
+    mockSql.mockReset();
+    const tape = Array.from({ length: 60 }, () =>
+      tradeRow({ ticker: 'AAPL', option_type: 'C', side: 'ask' }),
+    );
+    mockSql.mockResolvedValueOnce(tape); // trades SELECT
+    mockSql.mockResolvedValueOnce([liveLoaderRow(1)]); // loader SELECT (slot 1 live)
+    mockSql.mockResolvedValueOnce([]); // UPSERT
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    const params = (mockSql.mock.calls[2] ?? []).slice(1);
+    expect(params[1]).toBe(1); // slot
+    expect(params[9]).toBe(2); // baseline_version → live (DB-computed)
+  });
+
+  it('stamps baseline_version 1 when the loader marks a DIFFERENT slot live', async () => {
+    // Active slot is 1, but only slot 5 is live in the loader result → the
+    // active slot fell back to the committed JSON → version 1.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-05T14:00:00.000Z'));
+
+    mockSql.mockReset();
+    const tape = Array.from({ length: 60 }, () =>
+      tradeRow({ ticker: 'AAPL', option_type: 'C', side: 'ask' }),
+    );
+    mockSql.mockResolvedValueOnce(tape); // trades SELECT
+    mockSql.mockResolvedValueOnce([liveLoaderRow(5)]); // loader SELECT (slot 5 live, not 1)
+    mockSql.mockResolvedValueOnce([]); // UPSERT
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const params = (mockSql.mock.calls[2] ?? []).slice(1);
+    expect(params[1]).toBe(1); // slot
+    expect(params[9]).toBe(1); // baseline_version → fallback (committed JSON)
   });
 });

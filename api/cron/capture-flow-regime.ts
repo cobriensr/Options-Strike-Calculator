@@ -38,34 +38,19 @@ import {
   computeFlowMetrics,
   evaluateFlowRegime,
   slotForEtMinute,
-  FLOW_REGIME_BASELINE,
-  type FlowTradeRow,
+  slotStartEtMinute,
 } from '../_lib/flow-regime.js';
-import { parsedOrFallback } from '../_lib/numeric-coercion.js';
-import { neonDateStr } from '../_lib/db-date.js';
+import { loadFlowRegimeBaseline } from '../_lib/flow-regime-baseline-live.js';
+import {
+  toFlowTradeRow,
+  type WsOptionTradeRow,
+} from '../_lib/flow-regime-rows.js';
+import type { FlowTradeRow } from '../_lib/flow-regime.js';
 import {
   getETDateStr,
   getETTotalMinutes,
   etWallClockToUtcIso,
 } from '../../src/utils/timezone.js';
-
-/**
- * Raw shape of one ws_option_trades row from Neon. NUMERIC columns
- * come back as STRINGS (price/delta); delta is NULLABLE in the schema.
- * We coerce explicitly before building FlowTradeRow so a raw null/string
- * never reaches the numeric metric math. (strike + underlying_price are
- * NOT selected — computeFlowMetrics doesn't use them.)
- */
-interface WsOptionTradeRow {
-  ticker: string;
-  option_type: string;
-  expiry: string | Date;
-  executed_at: string | Date;
-  price: string;
-  size: number;
-  side: string;
-  delta: string | null;
-}
 
 export default withCronInstrumentation(
   'capture-flow-regime',
@@ -91,15 +76,14 @@ export default withCronInstrumentation(
     }
 
     // Lower bound = the slot's start minute as a UTC instant; upper
-    // bound = now. This window is the in-progress bucket so far.
-    const slotStartEtMinute =
-      FLOW_REGIME_BASELINE.rth_start_minute +
-      slot * FLOW_REGIME_BASELINE.bucket_minutes;
-    const slotStartIso = etWallClockToUtcIso(date, slotStartEtMinute);
+    // bound = now. This window is the in-progress bucket so far. The
+    // slot↔minute inverse is deduped into slotStartEtMinute (#10c).
+    const startMinute = slotStartEtMinute(slot);
+    const slotStartIso = etWallClockToUtcIso(date, startMinute);
     if (slotStartIso === null) {
       // getETDateStr should never produce a malformed date; defensive.
       ctx.logger.warn(
-        { date, slotStartEtMinute },
+        { date, slotStartEtMinute: startMinute },
         'capture-flow-regime: could not resolve slot start, skipping',
       );
       return {
@@ -135,23 +119,23 @@ export default withCronInstrumentation(
     )) as WsOptionTradeRow[];
 
     // Coerce NUMERIC-as-string + nullable columns to plain finite numbers
-    // BEFORE the metric math. parsedOrFallback guards NaN/Infinity/empty
-    // string → fallback. delta null → 0 (a null delta contributes 0 to both
-    // the net-delta numerator and the |delta| denominator). price null/invalid
-    // → 0; computeFlowMetrics then excludes that row from the put-share ratio.
-    // Both expiry and tradeDateEt are ET-consistent calendar-date strings (the
-    // expiry DATE via neonDateStr, the trade date via getETDateStr) so the
-    // 0DTE `expiry === tradeDateEt` test compares like-for-like.
-    const tradeRows: FlowTradeRow[] = rows.map((r) => ({
-      ticker: r.ticker,
-      optionType: r.option_type,
-      expiry: neonDateStr(r.expiry),
-      tradeDateEt: date,
-      side: r.side,
-      delta: parsedOrFallback(r.delta, 0),
-      size: r.size,
-      price: parsedOrFallback(r.price, 0),
-    }));
+    // BEFORE the metric math via the shared mapper (same coercion the daily
+    // accumulator cron uses, so both score the same population). delta null →
+    // 0; price null/invalid → 0 (excluded from the put-share ratio). expiry +
+    // tradeDateEt are ET-consistent calendar-date strings so the 0DTE
+    // `expiry === tradeDateEt` test compares like-for-like.
+    const tradeRows: FlowTradeRow[] = rows.map((r) => toFlowTradeRow(r, date));
+
+    // Self-maintaining baseline: compute percentile breakpoints ON READ from
+    // the accumulating flow_regime_slot_daily table (per-slot, ≥15 days), with
+    // a per-slot fallback to the committed JSON. One query per run. Empty table
+    // → everything falls back to the committed JSON (identical to pre-self-
+    // maintaining behavior).
+    const { baseline, liveSlots } = await withDbRetry(
+      () => loadFlowRegimeBaseline(sql),
+      2,
+      10_000,
+    );
 
     // The evaluator OWNS the low-confidence floor: pass nTrades so a thin
     // bucket is suppressed to normal/gray with null percentiles INSIDE the
@@ -164,12 +148,17 @@ export default withCronInstrumentation(
       sums,
       slot,
       nTrades: tradeRows.length,
+      baseline,
     });
 
     // UPSERT — ON CONFLICT (date, slot) refines the in-progress bucket on each
-    // 5-min tick. baseline_version stamps the artifact's schema_version so a
-    // stale baseline is detectable after a regeneration.
-    const baselineVersion = FLOW_REGIME_BASELINE.schema_version;
+    // 5-min tick. baseline_version records WHICH distribution scored this slot:
+    //   2 → DB-computed (live) breakpoints from flow_regime_slot_daily,
+    //   1 → fell back to the committed flow-regime-baseline.json (slot < 15d).
+    // So a snapshot is self-describing about its scoring distribution. When the
+    // accumulator table is empty every slot falls back → version 1 (same as the
+    // pre-self-maintaining cron, which always stamped schema_version 1).
+    const baselineVersion = liveSlots.has(slot) ? 2 : 1;
     await withDbRetry(
       () => sql`
         INSERT INTO flow_regime_snapshots (
