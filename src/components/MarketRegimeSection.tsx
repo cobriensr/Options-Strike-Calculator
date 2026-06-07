@@ -8,6 +8,7 @@ import VolatilityCluster from './VolatilityCluster';
 import DeltaRegimeGuide from './DeltaRegimeGuide';
 import OpeningRangeCheck from './OpeningRangeCheck';
 import PreTradeSignals from './PreTradeSignals';
+import FlowRegimeBadge from './FlowRegimeBadge';
 import SettlementCheck from './SettlementCheck';
 import RvIvCard from './RvIvCard';
 import PinRiskAnalysis from './PinRiskAnalysis';
@@ -91,6 +92,11 @@ export default function MarketRegimeSection({
       {showRegime && (
         <div className="mt-4">
           <VIXRangeAnalysis vix={vixNum} spot={results?.spot ?? null} />
+          {!historySnapshot && (
+            <div className="mt-4">
+              <FlowRegimeBadge marketOpen={market.marketOpen} />
+            </div>
+          )}
           {results &&
             dVix &&
             !errors['vix'] &&
