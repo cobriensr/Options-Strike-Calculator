@@ -117,8 +117,13 @@ Calibrated via `scripts/calibrate-regime-gate.mjs` (read-only prod query, 74 day
 
 **Result:** open-spot `gexNearSpot` (sum of `call+put` within ±1%) 12th-percentile over 74 days = **−1.52e10** → `GATE_DEEP_NEG = -1.5e10` (live units, ~1e10 scale; NOT the study's −0.15). Cross-validated against realized open→close from `index_candles_1m`: days ≤ cutoff had **55.6% down-rate (≤−0.5%) vs 9.8%** for the rest and **11% up-rate vs 28%** — the same downside-asymmetry as the 106-day study, on independent live data. The gate *sign* (calm vs negative), `mostly_red` (candle counts), and `iv_break` (relative %) were always scale-invariant and unaffected. Threshold is an absolute magnitude — recalibrate if the 0DTE OI scale drifts.
 
+## Live data caveats (verified Phase 2B against prod, 2026-06-05)
+- **Gate + IV reproduce live exactly.** `getGexStrikes` (call+put) → 06-05 `gexNear = −7.49e10` → `lean_down` ✓; live put-IV ramps 0.27→0.47 (absolute level differs from the parquet's 0.20, but `ivBreak` is *relative* so it's unaffected).
+- **`mostly_red` candle source = `index_candles_1m` (correct choice).** All three live SPX-spot sources agree (`index_candles_1m`, `gex_strike_0dte.price`, `strike_iv_snapshots.spot`), and the GEX/IV spot series have **pre-11 gaps on some early-March days** (03-13, 03-20 → no rows) while `index_candles_1m` is complete — so it's the right source.
+- **`mostly_red` is ~1 candle less sensitive live than in the parquet backtest.** 06-05 pre-11 was 2 green/3 red live (→ false) vs ≤1 green/≥4 red in the study (→ true): different spot series (SPX index vs SPXW-embedded) + OHLC definition flip a borderline count. The gate (primary) is unaffected; this is a secondary down-confirmer. **The nightly self-scoring (Phase 2C) is the mechanism to measure the live trigger's real hit-rate** — monitor `mostly_red` vs realized `big_down` once rows accrue; re-tune the ≤1/≥4 thresholds against live candles if needed.
+
 ## Open questions (defaults noted)
-- **Migration number** — next free id, determined at implementation.
+- **Migration number** — ~~next free id~~ → **#186** (rebased onto origin/main after a #185 collision with the parallel `flow_regime_snapshots`).
 - **Gamma-profile viz** — build SVG from scratch vs reuse an existing per-strike bar component (check periscope/GEX components first). Default: self-contained SVG.
 - **Historical backfill** — optional Phase 4 seed of `flow_regime_0dte_daily` from `master_scorecard.csv`. Default: include (cheap, gives the scorecard instant history).
 - **Scope** — SPX/SPXW only; NDXP/NDX out of scope for v1.
