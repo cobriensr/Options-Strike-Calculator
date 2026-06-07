@@ -82,11 +82,11 @@ function readUnion<T>(storageKey: string): Map<string, T> {
   }
 }
 
-/** Best-effort persist of the union as a JSON array of [key, value] pairs. */
-function writeUnion<T>(storageKey: string, union: Map<string, T>): void {
+/** Best-effort persist of an already-serialized union string. */
+function persistUnion(storageKey: string, serialized: string): void {
   if (!isStorageAvailable()) return;
   try {
-    window.localStorage.setItem(storageKey, JSON.stringify([...union]));
+    window.localStorage.setItem(storageKey, serialized);
   } catch {
     // Quota / private mode / disabled storage — degrade to in-memory only.
   }
@@ -103,6 +103,10 @@ export function useStickyUnion<T>(
   // Slot the unionRef currently reflects — guards against a stale ref
   // when storageKey changes between the reset effect and an ingest.
   const loadedKeyRef = useRef<string | null>(null);
+  // Serialized form of the union the current `snapshot` reflects. Used to
+  // skip no-op snapshot/persist work when an ingest leaves the union
+  // structurally unchanged — see the loop guard in the ingest effect.
+  const serializedRef = useRef<string>('[]');
   // Latest key fn without re-triggering the ingest effect on identity change.
   const keyFnRef = useRef(key);
   keyFnRef.current = key;
@@ -118,17 +122,31 @@ export function useStickyUnion<T>(
     const union = readUnion<T>(storageKey);
     unionRef.current = union;
     loadedKeyRef.current = storageKey;
+    serializedRef.current = JSON.stringify([...union]);
     setSnapshot([...union.values()]);
   }, [storageKey]);
 
-  // Ingest `items`: upsert each, pin the rest, persist + re-snapshot if
-  // anything moved.
+  // Ingest `items`: upsert each, pin the rest, persist + re-snapshot ONLY
+  // when the union's serialized content actually changed.
+  //
+  // CRITICAL loop guard: callers routinely pass a fresh `items` array on
+  // every render (e.g. `unionEngaged ? memoizedFires : []` — the `[]`
+  // branch is a new reference each render, and a non-memoized data source
+  // rebuilds the array identity every render). The effect deps therefore
+  // fire on every render. If we unconditionally `setSnapshot` here, that
+  // re-render produces a new `items` reference → effect fires again →
+  // infinite render loop. Comparing the post-upsert serialization against
+  // the last-snapshotted one makes a no-op ingest a true no-op: identical
+  // content (even from a brand-new array reference) skips the state
+  // update, breaking the loop while still refreshing live fields the
+  // moment any value actually changes.
   useEffect(() => {
     // If the slot changed but the reset effect hasn't run yet this commit,
     // rehydrate now so we never upsert into the previous day's union.
     if (loadedKeyRef.current !== storageKey) {
       unionRef.current = readUnion<T>(storageKey);
       loadedKeyRef.current = storageKey;
+      serializedRef.current = JSON.stringify([...unionRef.current]);
     }
 
     const union = unionRef.current;
@@ -142,7 +160,10 @@ export function useStickyUnion<T>(
       union.set(keyFn(item), item);
     }
 
-    writeUnion(storageKey, union);
+    const serialized = JSON.stringify([...union]);
+    if (serialized === serializedRef.current) return; // no-op: skip re-render
+    serializedRef.current = serialized;
+    persistUnion(storageKey, serialized);
     setSnapshot([...union.values()]);
   }, [items, storageKey]);
 

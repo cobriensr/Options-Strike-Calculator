@@ -16,6 +16,7 @@ import { SectionBox } from '../ui/SectionBox.js';
 import { CompactDisclosure } from '../ui/CompactDisclosure.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
+import { useStickyUnion } from '../../hooks/useStickyUnion.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from './ct-window.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
@@ -529,15 +530,101 @@ export function LotteryFinderSection({
   // array reference and the `useMemo` deps below pin on
   // `lotteryFinder.data` (which is itself referentially stable across
   // ticks where the response is unchanged).
-  const fires = useMemo(
+  const fetchedFires = useMemo(
     () => lotteryFinder.data?.fires ?? [],
     [lotteryFinder.data],
   );
-  const rawReignitedFires = useMemo(
+  const fetchedReignitedFires = useMemo(
     () => lotteryFinder.data?.reignitedFires ?? [],
     [lotteryFinder.data],
   );
-  const total = lotteryFinder.data?.total ?? 0;
+
+  // ── Never-vanish accumulator (spec lottery-no-vanish-2026-05-29) ──
+  //
+  // Once a lottery chain appears in the live feed it must never visually
+  // disappear for the rest of the trading day, even when a later poll
+  // omits it — a server-degrade `[]` (degradeOnTimeout), a Q1/Q2
+  // inversion-quality suppression flip, or a chain_max_takeit gate
+  // wobble. `useStickyUnion` upserts each incoming chain (so live fields
+  // like score / peak TAKE-IT / fireCount stay fresh) and pins the rest,
+  // persisting to localStorage so a refresh rehydrates the day's union.
+  //
+  // The stable key is `optionChainId` — the OCC OSI symbol the server
+  // emits for every fire. It encodes (underlying, expiry, type, strike),
+  // which is exactly the chain-day dedup partition the API groups on
+  // (one row per chain per day), so it's unique across the response and
+  // stable across polls as the chain reignites (the row's `id` is the
+  // LATEST fire's id and changes on every reignite — not usable as a
+  // key). OCC symbols repeat across days (expiry, not trigger date, is
+  // encoded), so the union is day-scoped via `storageKey` to keep days
+  // isolated; a new date resets the union.
+  //
+  // The union is only engaged in the live polling view (all-day, page 0):
+  // that's the only view that re-polls and can therefore drop a row out
+  // from under the trader. Minute-scrub buckets and paged slices are
+  // distinct point-in-time / offset views, so pinning across them would
+  // wrongly pile unrelated rows together — those views pass through the
+  // raw server response. The union persists in localStorage across the
+  // detour and resumes when the trader returns to the live view.
+  const unionEngaged = minute == null && page === 0;
+  const firesStorageKey = `feed-union:lottery:${date}`;
+  const reignitedStorageKey = `feed-union:lottery-reignited:${date}`;
+  const fireKey = useCallback((f: LotteryFire) => f.optionChainId, []);
+  // The union INGESTS only on page 0 (the single polling view — see
+  // `historical: page !== 0` in useLotteryFinder; pages > 0 are static
+  // single-fetches that can't drop a row out from under the trader). The
+  // full union is therefore rendered on page 0, where it pins chains the
+  // server later dropped (degrade `[]` / Q1-Q2 flip / takeit-gate wobble).
+  // On pages > 0 we pass `[]` so the union does NOT grow with the next
+  // page's chains (that would pile page-2+ rows onto page 0); the hook
+  // still rehydrates from localStorage on mount, so `unionedFires`
+  // reflects the persisted page-0 union and can be used to de-duplicate.
+  const unionedFires = useStickyUnion(unionEngaged ? fetchedFires : [], {
+    key: fireKey,
+    storageKey: firesStorageKey,
+  });
+  const unionedReignitedFires = useStickyUnion(
+    unionEngaged ? fetchedReignitedFires : [],
+    { key: fireKey, storageKey: reignitedStorageKey },
+  );
+  // Pagination-hole guard. Page 0 renders the WHOLE union, so a chain that
+  // was once top-50 (pinned on page 0) but has since demoted past the
+  // PAGE_SIZE cut still lives in the page-0 union AND is returned by the
+  // server on a later page. Without a guard it would render on BOTH pages.
+  // On the live view's pages > 0 we drop any fetched row already pinned on
+  // page 0, so every chain renders in exactly one place while the long
+  // tail (rows the server serves but page 0 never held) stays reachable.
+  const pinnedFireKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const f of unionedFires) keys.add(fireKey(f));
+    return keys;
+  }, [unionedFires, fireKey]);
+  const dedupedPagedFires = useMemo(
+    () => fetchedFires.filter((f) => !pinnedFireKeys.has(fireKey(f))),
+    [fetchedFires, pinnedFireKeys, fireKey],
+  );
+  // Downstream surfaces (banners, filters, grouping, counts) consume the
+  // unioned array on page 0, the de-duplicated server slice on later live
+  // pages, and the raw response on the minute-scrub view.
+  const livePagedView = minute == null && page > 0;
+  const fires = unionEngaged
+    ? unionedFires
+    : livePagedView
+      ? dedupedPagedFires
+      : fetchedFires;
+  const rawReignitedFires = unionEngaged
+    ? unionedReignitedFires
+    : fetchedReignitedFires;
+
+  // `total` is the server's reachable chain count for the day. Once the
+  // union has pinned chains the server later dropped, the union can hold
+  // MORE rows than the server reports — so the header / pagination must
+  // never claim fewer chains than are actually rendered. Floor the
+  // displayed total at the unioned fire count in the live view.
+  const serverTotal = lotteryFinder.data?.total ?? 0;
+  const total = unionEngaged
+    ? Math.max(serverTotal, fires.length)
+    : serverTotal;
   // Chains hidden by the server-side Q1/Q2 inversion-quality suppression.
   // `total` now excludes these (server counts the reachable set), so we
   // surface this separately as a "(N hidden by quality filter)" hint.
@@ -713,13 +800,44 @@ export function LotteryFinderSection({
   // low-count tickers like XOM/MSFT/WDC/UNH on busy days); now uncapped
   // because the API already sorts count desc and `flex flex-wrap`
   // handles the row growing vertically. Mirrors the Silent Boom fix.
-  const topTickers = useMemo(
-    () =>
-      (tickerCounts.data?.tickers ?? []).map(
-        (t) => [t.ticker, t.count] as const,
-      ),
-    [tickerCounts.data],
-  );
+  //
+  // Counts are reconciled against the never-vanish union so a chain the
+  // server later dropped (degrade `[]` / Q1-Q2 flip) still keeps its
+  // ticker on the strip and never under-counts what's rendered. The
+  // all-day counts endpoint is page-independent and normally broader
+  // than the union (which only holds chains the trader has actually
+  // paged through), so we take the per-ticker MAX of the two sources:
+  // the server count wins on tickers it still reports, and the union
+  // backfills any ticker the server dropped. Only engaged in the live
+  // view (where the union is active); paged / scrubbed views show the
+  // raw server counts.
+  const unionTickerCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!unionEngaged) return counts;
+    for (const f of fires) {
+      counts.set(f.underlyingSymbol, (counts.get(f.underlyingSymbol) ?? 0) + 1);
+    }
+    return counts;
+  }, [unionEngaged, fires]);
+  const topTickers = useMemo(() => {
+    const merged = new Map<string, number>();
+    for (const t of tickerCounts.data?.tickers ?? []) {
+      merged.set(t.ticker, t.count);
+    }
+    for (const [ticker, unionCount] of unionTickerCounts) {
+      merged.set(ticker, Math.max(merged.get(ticker) ?? 0, unionCount));
+    }
+    // Preserve the server's count-desc ordering, then append any
+    // union-only tickers (sorted desc) the server dropped.
+    const serverOrder = (tickerCounts.data?.tickers ?? []).map((t) => t.ticker);
+    const seen = new Set(serverOrder);
+    const extras = [...unionTickerCounts.keys()]
+      .filter((t) => !seen.has(t))
+      .sort((a, b) => (merged.get(b) ?? 0) - (merged.get(a) ?? 0));
+    return [...serverOrder, ...extras].map(
+      (ticker) => [ticker, merged.get(ticker) ?? 0] as const,
+    );
+  }, [tickerCounts.data, unionTickerCounts]);
 
   // Task A of lottery-reignition-ui-2026-05-17 — promote REIGNITED
   // chains into a pinned "Hot Right Now" section above the ticker
@@ -1463,7 +1581,7 @@ export function LotteryFinderSection({
         {/* /toolbar panel */}
 
         {/* Body */}
-        {loading && fires.length === 0 ? (
+        {loading && fires.length === 0 && reignitedFires.length === 0 ? (
           <div className="text-sm text-neutral-500">Loading lottery feed…</div>
         ) : error ? (
           <div
@@ -1472,7 +1590,7 @@ export function LotteryFinderSection({
           >
             Error: {error}
           </div>
-        ) : fires.length === 0 ? (
+        ) : fires.length === 0 && reignitedFires.length === 0 ? (
           <div
             className="space-y-2 rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400"
             data-testid={
