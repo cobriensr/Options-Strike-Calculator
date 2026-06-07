@@ -11,12 +11,11 @@ const { mockEval, mockZrem, mockIncrement, mockDistribution } = vi.hoisted(
   }),
 );
 
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: {
     eval: mockEval,
     zrem: mockZrem,
   },
-  getAccessToken: vi.fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({

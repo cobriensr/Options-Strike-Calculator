@@ -2,10 +2,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Use vi.hoisted so the redis mock is available when the vi.mock factory
-// runs (hoisted above imports). last-good-cache imports the shared `redis`
-// singleton from schwab.ts; we stub schwab.ts here rather than the upstash
-// client so the test is decoupled from schwab's own init path.
+// last-good-cache now imports `redis` + `safeRedis` from the neutral
+// `redis.ts` (NOT schwab.ts). We stub only the `redis` singleton and keep the
+// REAL `safeRedis` (via importActual) so the swallow + `redis.error` metric
+// path is exercised end-to-end rather than re-implemented in the mock.
 const { mockRedisGet, mockRedisSet } = vi.hoisted(() => ({
   mockRedisGet: vi.fn(),
   mockRedisSet: vi.fn(),
@@ -13,9 +13,16 @@ const { mockRedisGet, mockRedisSet } = vi.hoisted(() => ({
 
 const { mockIncrement } = vi.hoisted(() => ({ mockIncrement: vi.fn() }));
 
-vi.mock('../_lib/schwab.js', () => ({
-  redis: { get: mockRedisGet, set: mockRedisSet },
-}));
+vi.mock('../_lib/redis.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../_lib/redis.js')>(
+      '../_lib/redis.js',
+    );
+  return {
+    ...actual,
+    redis: { get: mockRedisGet, set: mockRedisSet },
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   metrics: { increment: mockIncrement },

@@ -12,8 +12,11 @@ vi.mock('../_lib/db.js', () => ({
 
 const mockPing = vi.fn();
 const mockGetAccessToken = vi.fn();
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: { ping: (...args: unknown[]) => mockPing(...args) },
+}));
+
+vi.mock('../_lib/schwab.js', () => ({
   getAccessToken: (...args: unknown[]) => mockGetAccessToken(...args),
 }));
 
