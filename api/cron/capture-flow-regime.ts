@@ -17,9 +17,10 @@
  *
  * Outside RTH the cron no-ops (status 'skipped') — there is no current
  * slot to capture. ws_option_trades is ALREADY restricted to the
- * ~50-ticker WS Lottery universe, so no extra ticker filter is needed;
- * computeFlowMetrics applies the index-set restriction for the
- * idx0dte_put_share numerator internally.
+ * ~50-ticker WS Lottery universe, so no extra ticker filter is needed in
+ * SQL; computeFlowMetrics additionally restricts ALL sums to the baseline
+ * universe (defence-in-depth if the WS subscription ever widens) and
+ * applies the index-set restriction for the idx0dte_put_share numerator.
  *
  * RECOGNITION ONLY — the snapshot scores "is today's flow abnormal for
  * this time of day, as it forms"; it does NOT forecast direction.
@@ -40,6 +41,8 @@ import {
   FLOW_REGIME_BASELINE,
   type FlowTradeRow,
 } from '../_lib/flow-regime.js';
+import { parsedOrFallback } from '../_lib/numeric-coercion.js';
+import { neonDateStr } from '../_lib/db-date.js';
 import {
   getETDateStr,
   getETTotalMinutes,
@@ -47,41 +50,21 @@ import {
 } from '../../src/utils/timezone.js';
 
 /**
- * Minimum trades in the (in-progress) bucket before we attach a
- * directional regime/color. Below this the net-delta tilt is dominated
- * by one or two prints — early in a slot a single large bid-side put can
- * push ndTilt ≈ −1 and flash a false "bearish/red". The baseline slots
- * aggregate thousands of trades, so a live bucket with < 50 trades is a
- * thin/degraded window: we still persist the raw metrics + n_trades for
- * transparency, but force regime 'normal'/color 'gray' so the badge reads
- * low-confidence rather than a spurious signal. During RTH the ~50-ticker
- * universe (incl. very active SPXW/QQQ) clears this within seconds of a
- * slot opening, so this only suppresses genuinely sparse windows.
- */
-const MIN_BUCKET_TRADES = 50;
-
-/**
  * Raw shape of one ws_option_trades row from Neon. NUMERIC columns
- * come back as STRINGS (price/strike/delta/underlying_price); delta and
- * underlying_price are NULLABLE in the schema. We coerce explicitly
- * before building FlowTradeRow so a raw null/string never reaches the
- * numeric metric math.
+ * come back as STRINGS (price/delta); delta is NULLABLE in the schema.
+ * We coerce explicitly before building FlowTradeRow so a raw null/string
+ * never reaches the numeric metric math. (strike + underlying_price are
+ * NOT selected — computeFlowMetrics doesn't use them.)
  */
 interface WsOptionTradeRow {
   ticker: string;
   option_type: string;
-  strike: string;
   expiry: string | Date;
   executed_at: string | Date;
   price: string;
   size: number;
-  underlying_price: string | null;
   side: string;
   delta: string | null;
-}
-
-function toDateStr(v: string | Date): string {
-  return typeof v === 'string' ? v.slice(0, 10) : v.toISOString().slice(0, 10);
 }
 
 export default withCronInstrumentation(
@@ -136,12 +119,10 @@ export default withCronInstrumentation(
         SELECT
           ticker,
           option_type,
-          strike,
           expiry,
           executed_at,
           price,
           size,
-          underlying_price,
           side,
           delta
         FROM ws_option_trades
@@ -153,48 +134,55 @@ export default withCronInstrumentation(
       10_000,
     )) as WsOptionTradeRow[];
 
-    // Coerce NUMERIC-as-string + nullable columns to plain numbers
-    // BEFORE the metric math. delta/underlying_price null → 0 (a null
-    // delta contributes 0 to both the net-delta numerator and the
-    // |delta| denominator, which is the documented evaluator behavior).
+    // Coerce NUMERIC-as-string + nullable columns to plain finite numbers
+    // BEFORE the metric math. parsedOrFallback guards NaN/Infinity/empty
+    // string → fallback. delta null → 0 (a null delta contributes 0 to both
+    // the net-delta numerator and the |delta| denominator). price null/invalid
+    // → 0; computeFlowMetrics then excludes that row from the put-share ratio.
+    // Both expiry and tradeDateEt are ET-consistent calendar-date strings (the
+    // expiry DATE via neonDateStr, the trade date via getETDateStr) so the
+    // 0DTE `expiry === tradeDateEt` test compares like-for-like.
     const tradeRows: FlowTradeRow[] = rows.map((r) => ({
       ticker: r.ticker,
       optionType: r.option_type,
-      expiry: toDateStr(r.expiry),
+      expiry: neonDateStr(r.expiry),
       tradeDateEt: date,
       side: r.side,
-      delta: r.delta != null ? Number(r.delta) : 0,
+      delta: parsedOrFallback(r.delta, 0),
       size: r.size,
-      price: r.price != null ? Number(r.price) : 0,
+      price: parsedOrFallback(r.price, 0),
     }));
 
+    // The evaluator OWNS the low-confidence floor: pass nTrades so a thin
+    // bucket is suppressed to normal/gray with null percentiles INSIDE the
+    // evaluator. The raw nd_tilt / idx0dte_put_share are still returned (and
+    // persisted) for transparency; the percentiles are NULL whenever
+    // confidence is 'low' (thin bucket OR thin baseline), keeping the pill
+    // color and the frontend detail copy from ever disagreeing.
     const sums = computeFlowMetrics(tradeRows);
-    const evaluated = evaluateFlowRegime({ sums, slot });
+    const result = evaluateFlowRegime({
+      sums,
+      slot,
+      nTrades: tradeRows.length,
+    });
 
-    // Low-confidence gate: a thin bucket can produce an extreme tilt off a
-    // couple of prints. Keep the raw metrics/percentiles, but suppress the
-    // directional regime/color to normal/gray below the floor so the badge
-    // never flashes a false signal on near-zero data.
-    const lowConfidence = tradeRows.length < MIN_BUCKET_TRADES;
-    const result = lowConfidence
-      ? { ...evaluated, regime: 'normal' as const, color: 'gray' as const }
-      : evaluated;
-
-    // UPSERT — ON CONFLICT (date, slot) refines the in-progress bucket
-    // on each 5-min tick. Percentiles are NULL when the slot lacks
-    // baseline depth (hasBaseline === false).
+    // UPSERT — ON CONFLICT (date, slot) refines the in-progress bucket on each
+    // 5-min tick. baseline_version stamps the artifact's schema_version so a
+    // stale baseline is detectable after a regeneration.
+    const baselineVersion = FLOW_REGIME_BASELINE.schema_version;
     await withDbRetry(
       () => sql`
         INSERT INTO flow_regime_snapshots (
           date, slot, computed_at,
           nd_tilt, idx0dte_put_share,
           nd_percentile, idxput_percentile,
-          regime, color, n_trades
+          regime, color, n_trades, baseline_version
         ) VALUES (
           ${date}::date, ${slot}, NOW(),
           ${result.ndTilt}, ${result.idx0dtePutShare},
           ${result.ndPercentile}, ${result.idxputPercentile},
-          ${result.regime}, ${result.color}, ${tradeRows.length}
+          ${result.regime}, ${result.color}, ${tradeRows.length},
+          ${baselineVersion}
         )
         ON CONFLICT (date, slot) DO UPDATE SET
           computed_at = NOW(),
@@ -204,7 +192,8 @@ export default withCronInstrumentation(
           idxput_percentile = EXCLUDED.idxput_percentile,
           regime = EXCLUDED.regime,
           color = EXCLUDED.color,
-          n_trades = EXCLUDED.n_trades
+          n_trades = EXCLUDED.n_trades,
+          baseline_version = EXCLUDED.baseline_version
       `,
       2,
       10_000,
@@ -218,7 +207,8 @@ export default withCronInstrumentation(
         regime: result.regime,
         color: result.color,
         hasBaseline: result.hasBaseline,
-        lowConfidence,
+        confidence: result.confidence,
+        confidenceReason: result.confidenceReason,
       },
       'capture-flow-regime completed',
     );
@@ -232,7 +222,7 @@ export default withCronInstrumentation(
         nTrades: tradeRows.length,
         regime: result.regime,
         hasBaseline: result.hasBaseline,
-        lowConfidence,
+        confidence: result.confidence,
       },
     };
   },

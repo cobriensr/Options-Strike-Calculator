@@ -169,7 +169,8 @@ describe('capture-flow-regime cron', () => {
 
     // UPSERT param order matches the INSERT VALUES clause:
     //   [date, slot, nd_tilt, idx0dte_put_share,
-    //    nd_percentile, idxput_percentile, regime, color, n_trades]
+    //    nd_percentile, idxput_percentile, regime, color, n_trades,
+    //    baseline_version]
     const upsertArgs = mockSql.mock.calls[1] ?? [];
     const params = upsertArgs.slice(1);
     expect(params[0]).toBe(DATE); // date
@@ -187,6 +188,8 @@ describe('capture-flow-regime cron', () => {
     expect(['green', 'amber', 'red', 'gray']).toContain(params[7]);
     // n_trades = the number of rows read (above the low-confidence floor).
     expect(params[8]).toBe(60);
+    // baseline_version stamps the committed artifact's schema_version.
+    expect(typeof params[9]).toBe('number');
   });
 
   it('suppresses a thin bucket to normal/gray despite an extreme tilt', async () => {
@@ -226,7 +229,11 @@ describe('capture-flow-regime cron', () => {
     const params = (mockSql.mock.calls[1] ?? []).slice(1);
     // Raw nd_tilt is still persisted (strongly negative) for transparency...
     expect(params[2] as number).toBeLessThan(-0.5);
-    // ...but the regime/color are suppressed to low-confidence.
+    // ...but the evaluator suppresses the read: percentiles are NULL and the
+    // regime/color are forced to low-confidence normal/gray. Null percentiles
+    // are what keep the frontend detail copy consistent with the gray pill.
+    expect(params[4]).toBeNull(); // nd_percentile
+    expect(params[5]).toBeNull(); // idxput_percentile
     expect(params[6]).toBe('normal'); // regime
     expect(params[7]).toBe('gray'); // color
     expect(params[8]).toBe(2); // n_trades < floor

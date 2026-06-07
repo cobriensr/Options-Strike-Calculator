@@ -42,22 +42,22 @@ function sampleResponse(): FlowRegimeResponse {
     regime: 'bearish' as const,
     color: 'red' as const,
     nTrades: 1200,
+    baselineVersion: 1,
   };
-  return { date: '2026-06-06', slots: [latest], latest };
+  return { date: '2026-06-06', latest };
 }
 
 describe('parseFlowRegime', () => {
   it('coerces a well-formed envelope', () => {
     const parsed = parseFlowRegime(sampleResponse());
     expect(parsed.date).toBe('2026-06-06');
-    expect(parsed.slots).toHaveLength(1);
     expect(parsed.latest?.regime).toBe('bearish');
     expect(parsed.latest?.idxputPercentile).toBe(94);
+    expect(parsed.latest?.baselineVersion).toBe(1);
   });
 
-  it('returns empty/null on a malformed payload', () => {
+  it('returns null latest on a malformed payload', () => {
     const parsed = parseFlowRegime({});
-    expect(parsed.slots).toEqual([]);
     expect(parsed.latest).toBeNull();
     expect(parsed.date).toBe('');
   });
@@ -65,7 +65,6 @@ describe('parseFlowRegime', () => {
   it('defaults unknown regime/color to normal/gray and null metrics', () => {
     const parsed = parseFlowRegime({
       date: '2026-06-06',
-      slots: [],
       latest: {
         slot: 0,
         regime: 'wat',
@@ -78,6 +77,7 @@ describe('parseFlowRegime', () => {
     expect(parsed.latest?.color).toBe('gray');
     expect(parsed.latest?.ndPercentile).toBeNull();
     expect(parsed.latest?.idxputPercentile).toBeNull();
+    expect(parsed.latest?.baselineVersion).toBeNull();
   });
 });
 
@@ -89,7 +89,6 @@ describe('useFlowRegime', () => {
     const url = fetchMock.mock.calls[0]![0] as string;
     expect(url).toBe('/api/flow-regime');
     expect(result.current.latest?.regime).toBe('bearish');
-    expect(result.current.slots).toHaveLength(1);
     expect(result.current.date).toBe('2026-06-06');
     expect(result.current.error).toBeNull();
   });
@@ -100,7 +99,6 @@ describe('useFlowRegime', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toContain('500');
     expect(result.current.latest).toBeNull();
-    expect(result.current.slots).toEqual([]);
   });
 
   it('polls every 60s while marketOpen is true', async () => {

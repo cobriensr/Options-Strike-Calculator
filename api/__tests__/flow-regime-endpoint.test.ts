@@ -7,9 +7,9 @@
  * Covers:
  *   - Auth guard: when guardOwnerOrGuestEndpoint rejects, the handler
  *     returns immediately and never queries the DB.
- *   - Response shape: { date, slots, latest } with NUMERIC-as-string
- *     coercion and slot-ascending ordering; latest = the highest slot.
- *   - Empty day: no captured rows → empty series + null latest.
+ *   - Response shape: { date, latest } with NUMERIC-as-string coercion;
+ *     latest = the highest captured slot (the store LIMITs to 1).
+ *   - Empty day: no captured rows → null latest.
  *   - 400 on an invalid date query.
  *
  * Phase 2 of docs/superpowers/specs/flow-regime-badge-2026-06-06.md
@@ -58,6 +58,7 @@ function snapRow(slot: number, regime: string, color: string) {
     regime,
     color,
     n_trades: 1234,
+    baseline_version: 1,
   };
 }
 
@@ -80,12 +81,10 @@ describe('flow-regime endpoint', () => {
     expect(mockSetCache).not.toHaveBeenCalled();
   });
 
-  it('returns the slot series + latest snapshot with coerced numbers', async () => {
-    mockSql.mockResolvedValueOnce([
-      snapRow(0, 'normal', 'gray'),
-      snapRow(1, 'caution', 'amber'),
-      snapRow(2, 'bearish', 'red'),
-    ]);
+  it('returns the latest snapshot with coerced numbers', async () => {
+    // The store now ORDER BY slot DESC LIMIT 1, so Neon returns just the
+    // highest captured slot (slot 2 → bearish).
+    mockSql.mockResolvedValueOnce([snapRow(2, 'bearish', 'red')]);
 
     const req = mockRequest({ method: 'GET', query: { date: DATE } });
     const res = mockResponse();
@@ -94,28 +93,29 @@ describe('flow-regime endpoint', () => {
     expect(res._status).toBe(200);
     const body = res._json as {
       date: string;
-      slots: Array<{
+      latest: {
         slot: number;
         ndTilt: number | null;
         idxputPercentile: number | null;
         regime: string;
-      }>;
-      latest: { slot: number; regime: string } | null;
+        baselineVersion: number | null;
+      } | null;
     };
     expect(body.date).toBe(DATE);
-    expect(body.slots).toHaveLength(3);
-    // NUMERIC string '-0.1234' coerced to number.
-    expect(body.slots[0]?.ndTilt).toBe(-0.1234);
-    expect(typeof body.slots[0]?.ndTilt).toBe('number');
-    expect(body.slots[2]?.idxputPercentile).toBe(92.1);
-    // latest = highest slot (2 → bearish).
+    // No `slots` array on the envelope anymore — the badge consumes `latest`.
+    expect((body as Record<string, unknown>).slots).toBeUndefined();
+    // latest = highest slot (2 → bearish), NUMERIC strings coerced.
     expect(body.latest?.slot).toBe(2);
     expect(body.latest?.regime).toBe('bearish');
+    expect(body.latest?.ndTilt).toBe(-0.1234);
+    expect(typeof body.latest?.ndTilt).toBe('number');
+    expect(body.latest?.idxputPercentile).toBe(92.1);
+    expect(body.latest?.baselineVersion).toBe(1);
     // 15s edge + 15s SWR cache header set.
     expect(mockSetCache).toHaveBeenCalledWith(res, 15, 15);
   });
 
-  it('returns an empty series + null latest when no rows are captured', async () => {
+  it('returns a null latest when no rows are captured', async () => {
     mockSql.mockResolvedValueOnce([]);
 
     const req = mockRequest({ method: 'GET', query: { date: DATE } });
@@ -123,11 +123,7 @@ describe('flow-regime endpoint', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    const body = res._json as {
-      slots: unknown[];
-      latest: unknown;
-    };
-    expect(body.slots).toEqual([]);
+    const body = res._json as { latest: unknown };
     expect(body.latest).toBeNull();
   });
 

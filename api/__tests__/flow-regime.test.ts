@@ -4,6 +4,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   FLOW_REGIME_BASELINE,
+  MIN_BUCKET_TRADES,
   classifyRegime,
   computeFlowMetrics,
   evaluateFlowRegime,
@@ -274,6 +275,89 @@ describe('computeFlowMetrics', () => {
     const res = evaluateFlowRegime({ sums, slot: 0, baseline: FIXTURE });
     expect(res.ndTilt).toBeCloseTo(1 / 9, 6);
   });
+
+  it('restricts ALL sums to the baseline universe (#2)', () => {
+    // ZZZZ is outside FIXTURE.universe — it must contribute to NEITHER the
+    // net-delta sums NOR the put-share denominator, so the metrics stay scored
+    // on the same population the baseline was built on if the WS subscription
+    // ever widens beyond the universe.
+    const rows = [
+      // In-universe index 0DTE put: counts toward both num + den.
+      row({
+        ticker: 'SPY',
+        optionType: 'P',
+        expiry: '2026-06-04',
+        side: 'ask',
+        delta: -0.5,
+        size: 10,
+        premium: 1000,
+      }),
+      // Out-of-universe row: large delta + large premium — must be ignored.
+      row({
+        ticker: 'ZZZZ',
+        optionType: 'P',
+        expiry: '2026-06-04',
+        side: 'bid',
+        delta: -0.9,
+        size: 100,
+        premium: 999_999,
+      }),
+    ];
+    const sums = computeFlowMetrics(
+      rows,
+      FIXTURE.index_set,
+      FIXTURE.side_sign_map,
+      FIXTURE.universe,
+    );
+    // Only the SPY row contributed.
+    expect(sums.ndNum).toBeCloseTo(-0.5 * 10, 6);
+    expect(sums.ndDen).toBeCloseTo(0.5 * 10, 6);
+    expect(sums.totalPremium).toBe(1000);
+    expect(sums.idxPutPremium).toBe(1000);
+  });
+
+  it('excludes null / non-finite-price rows from the put-share ratio (#4)', () => {
+    // A row whose premium can't be resolved (no premium, null price) must NOT
+    // count as a 0-premium row in the denominator — that would phantom-dilute
+    // idx0dte_put_share. It may still contribute to net_delta_tilt.
+    const rows = [
+      // Valid index 0DTE put → counts toward num + den.
+      row({
+        ticker: 'QQQ',
+        optionType: 'P',
+        expiry: '2026-06-04',
+        side: 'ask',
+        delta: -0.4,
+        size: 5,
+        premium: 800,
+      }),
+      // Null price, no premium → excluded from premium math entirely, but its
+      // valid delta/size still feed net_delta_tilt.
+      {
+        ...row({
+          ticker: 'TSLA',
+          optionType: 'C',
+          side: 'ask',
+          delta: 0.6,
+          size: 20,
+        }),
+        price: undefined,
+        premium: undefined,
+      },
+    ];
+    const sums = computeFlowMetrics(
+      rows,
+      FIXTURE.index_set,
+      FIXTURE.side_sign_map,
+      FIXTURE.universe,
+    );
+    // Denominator is ONLY the valid row's premium (no phantom 0 added).
+    expect(sums.totalPremium).toBe(800);
+    expect(sums.idxPutPremium).toBe(800);
+    // Both rows' deltas feed net_delta_tilt: ndNum = -0.4*5 + 0.6*20 = 10.
+    expect(sums.ndNum).toBeCloseTo(-0.4 * 5 + 0.6 * 20, 6);
+    expect(sums.ndDen).toBeCloseTo(0.4 * 5 + 0.6 * 20, 6);
+  });
 });
 
 // ── evaluateFlowRegime ───────────────────────────────────────────────────────
@@ -339,9 +423,50 @@ describe('evaluateFlowRegime', () => {
     expect(res.idxputPercentile).toBeNull();
     expect(res.regime).toBe('normal');
     expect(res.color).toBe('gray');
+    expect(res.confidence).toBe('low');
+    expect(res.confidenceReason).toBe('thin-baseline');
     // Raw metrics still surfaced.
     expect(res.ndTilt).toBe(-0.45);
     expect(res.idx0dtePutShare).toBe(0.18);
+  });
+
+  it('suppresses an extreme but thin LIVE bucket to low-confidence (#1)', () => {
+    // Healthy baseline (slot 0) + an extreme tilt that WOULD classify bearish,
+    // but nTrades below MIN_BUCKET_TRADES → the evaluator owns the floor and
+    // suppresses: null percentiles + normal/gray + reason 'thin-bucket'.
+    const res = evaluateFlowRegime({
+      ndTilt: -0.45, // would be bearish on its own
+      idx0dtePutShare: 0.18, // would be bearish on its own
+      slot: 0, // n_days = 100 → baseline IS healthy
+      nTrades: MIN_BUCKET_TRADES - 1,
+      baseline: FIXTURE,
+    });
+    expect(res.confidence).toBe('low');
+    expect(res.confidenceReason).toBe('thin-bucket');
+    // hasBaseline reflects the slot's depth, which is fine here...
+    expect(res.hasBaseline).toBe(true);
+    // ...but the read is still suppressed.
+    expect(res.ndPercentile).toBeNull();
+    expect(res.idxputPercentile).toBeNull();
+    expect(res.regime).toBe('normal');
+    expect(res.color).toBe('gray');
+    // Raw metrics preserved for persistence/transparency.
+    expect(res.ndTilt).toBe(-0.45);
+    expect(res.idx0dtePutShare).toBe(0.18);
+  });
+
+  it('scores a healthy bucket at/above MIN_BUCKET_TRADES (#1)', () => {
+    const res = evaluateFlowRegime({
+      ndTilt: -0.45,
+      idx0dtePutShare: 0.08,
+      slot: 0,
+      nTrades: MIN_BUCKET_TRADES,
+      baseline: FIXTURE,
+    });
+    expect(res.confidence).toBe('ok');
+    expect(res.confidenceReason).toBeNull();
+    expect(res.ndPercentile).not.toBeNull();
+    expect(res.regime).toBe('bearish');
   });
 
   it('returns insufficient-baseline for an unknown slot', () => {

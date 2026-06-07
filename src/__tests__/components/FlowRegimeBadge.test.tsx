@@ -32,6 +32,7 @@ function makeSnapshot(
     regime: 'bearish',
     color: 'red',
     nTrades: 1200,
+    baselineVersion: 1,
     ...overrides,
   };
 }
@@ -42,7 +43,6 @@ function mockHook(
 ) {
   mockUseFlowRegime.mockReturnValue({
     latest,
-    slots: latest ? [latest] : [],
     date: latest?.date ?? null,
     loading: overrides.loading ?? false,
     error: overrides.error ?? null,
@@ -70,7 +70,11 @@ describe('describeRegime', () => {
     );
   });
 
-  it('states the raw metric without a percentile claim when baseline is thin', () => {
+  it('states the raw metric without a percentile claim when suppressed (low confidence)', () => {
+    // After the evaluator-owns-the-floor fix, BOTH percentiles are null
+    // whenever the read is suppressed (thin live bucket OR thin baseline), so
+    // describeRegime keys off the null-percentile state and uses neutral copy
+    // accurate for both reasons.
     const txt = describeRegime(
       makeSnapshot({
         ndPercentile: null,
@@ -78,7 +82,7 @@ describe('describeRegime', () => {
         idx0dtePutShare: 0.4,
       }),
     );
-    expect(txt).toMatch(/still building a baseline/i);
+    expect(txt).toMatch(/not enough data yet to read this slot/i);
     expect(txt).not.toMatch(/pct/);
   });
 });
@@ -162,7 +166,7 @@ describe('FlowRegimeBadge', () => {
     );
     render(<FlowRegimeBadge marketOpen={true} />);
     const detail = screen.getByTestId('flow-regime-detail');
-    expect(detail).toHaveTextContent(/still building a baseline/i);
+    expect(detail).toHaveTextContent(/not enough data yet to read this slot/i);
     expect(detail).not.toHaveTextContent(/pct\b/);
   });
 

@@ -5197,4 +5197,13 @@ export const MIGRATIONS: Migration[] = [
             ON flow_regime_snapshots (date DESC)`,
     ],
   },
+  {
+    id: 186,
+    description:
+      'Add baseline_version INT column to flow_regime_snapshots so each captured snapshot records the schema_version of the flow-regime-baseline.json artifact it was scored against. The capture-flow-regime cron stamps FLOW_REGIME_BASELINE.schema_version on every upsert; the read store surfaces it. Makes a stale-vs-current baseline detectable after a regeneration (the baseline is rebuilt offline via scripts/build-flow-regime-baseline.py as the WS archive accumulates — see the spec). Nullable: legacy rows written before this migration stay NULL.',
+    statements: (sql) => [
+      sql`ALTER TABLE flow_regime_snapshots
+            ADD COLUMN IF NOT EXISTS baseline_version INT`,
+    ],
+  },
 ];

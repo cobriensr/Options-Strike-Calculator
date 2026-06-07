@@ -37,6 +37,9 @@ DuckDB gotchas (confirmed against the archive, see spec):
 
 Run:
   ml/.venv/bin/python scripts/build-flow-regime-baseline.py
+  # or point at a different parquet archive (CLI arg or env var):
+  ml/.venv/bin/python scripts/build-flow-regime-baseline.py --tape-glob '/path/to/*.parquet'
+  FLOW_REGIME_TAPE_GLOB='/path/to/*.parquet' ml/.venv/bin/python scripts/build-flow-regime-baseline.py
 """
 
 from __future__ import annotations
@@ -60,9 +63,32 @@ except ImportError:  # pragma: no cover - validation deps are optional at import
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-TAPE_GLOB = str(
+
+# Source parquet glob. Configurable so the baseline can be regenerated from a
+# different archive location (e.g. a synced Blob WS-archive dump) without
+# editing the script. Precedence: CLI arg `--tape-glob <glob>` (or positional)
+# > env var FLOW_REGIME_TAPE_GLOB > the default Desktop full-tape path.
+_DEFAULT_TAPE_GLOB = str(
     Path.home() / "Desktop" / "Eod-Full-Tape-parquet" / "*.parquet"
 )
+
+
+def _resolve_tape_glob() -> str:
+    """Resolve the source parquet glob from CLI arg / env / default."""
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--tape-glob" and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith("--tape-glob="):
+            return a.split("=", 1)[1]
+    # First non-flag positional, if any.
+    for a in args:
+        if not a.startswith("-"):
+            return a
+    return os.environ.get("FLOW_REGIME_TAPE_GLOB", _DEFAULT_TAPE_GLOB)
+
+
+TAPE_GLOB = _resolve_tape_glob()
 OUT_JSON = REPO_ROOT / "api" / "_lib" / "flow-regime-baseline.json"
 VALIDATION_TXT = REPO_ROOT / "docs" / "tmp" / "flow-regime-baseline-validation.txt"
 ENV_LOCAL = REPO_ROOT / ".env.local"
