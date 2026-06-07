@@ -2,7 +2,7 @@
  * Calibrate GATE_DEEP_NEG to live gex_strike_0dte units (regime-0dte plan Task 12).
  *
  * The study's -0.15 deep-neg cutoff is in EOD-parquet units. The live gate (api/_lib/regime-0dte.ts
- * gexNear) sums raw (call_gamma_oi - put_gamma_oi) within +/-1% of spot, a DIFFERENT scale. This
+ * gexNear) sums (call_gamma_oi + put_gamma_oi; put is signed-negative) within +/-1% of spot, a DIFFERENT scale. This
  * script computes the live-units open-spot gexNear distribution and the ~12th percentile (matching
  * the study's 13/106 deep-neg share), then cross-checks that deep-neg days are downside-skewed using
  * realized open->close from index_candles_1m.
@@ -34,7 +34,7 @@ const span = await sql`
 `;
 console.log('gex_strike_0dte span:', span[0]);
 
-// per-day open-spot gexNear in LIVE units (sum call_gamma_oi - put_gamma_oi within +/-1% of the
+// per-day open-spot gexNear in LIVE units (sum call_gamma_oi + put_gamma_oi within +/-1% of the
 // first-minute price). One row per trading day.
 const gex = await sql`
   WITH fm AS (SELECT date, min(timestamp) AS ts FROM gex_strike_0dte GROUP BY date),
