@@ -24,6 +24,7 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { lotteryFinderTickerCountsQuerySchema } from './_lib/validation.js';
+import { readKeptTickers } from './_lib/kept-tickers.js';
 import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -99,6 +100,14 @@ export default async function handler(
 
   try {
     const db = getDb();
+
+    // MONOTONIC Q1/Q2 SUPPRESSION (mirror of /api/lottery-finder). Read the
+    // per-day kept-set so chips for tickers that were ever shown (quintile
+    // > 2 at some point today) stay counted even after a quintile flip into
+    // Q1/Q2 — keeps the chip strip aligned with the feed. Read-only here:
+    // the feed endpoint owns accumulation. `showAll` skips suppression, so
+    // the set is irrelevant in that path. KV-down → [] → no behavior change.
+    const keptTickers = showAll ? [] : await readKeptTickers(date);
 
     // Two-step dedup + aggregate: the CTE collapses raw fires to one
     // row per (underlying, strike, option_type, expiry) — matching the
@@ -187,6 +196,7 @@ export default async function handler(
         ${showAll}::boolean
         OR s.inversion_quintile IS NULL
         OR s.inversion_quintile > 2
+        OR cd.underlying_symbol = ANY(${keptTickers}::text[])
       )
       GROUP BY cd.underlying_symbol
       ORDER BY count DESC, latest_trigger_time_ct DESC, underlying_symbol ASC

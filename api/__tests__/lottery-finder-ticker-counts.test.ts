@@ -22,11 +22,21 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+const { mockReadKeptTickers } = vi.hoisted(() => ({
+  mockReadKeptTickers: vi.fn(),
+}));
+
+vi.mock('../_lib/kept-tickers.js', () => ({
+  readKeptTickers: mockReadKeptTickers,
+}));
+
 import handler from '../lottery-finder-ticker-counts.js';
 
 describe('lottery-finder-ticker-counts handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // Default empty kept-set → pure live suppression (pre-change behavior).
+    mockReadKeptTickers.mockResolvedValue([]);
   });
 
   it('returns chain-deduped counts sorted by count desc', async () => {
@@ -339,5 +349,71 @@ describe('lottery-finder-ticker-counts handler', () => {
       tickers: { peakBestPct: number | null }[];
     };
     expect(body.tickers[0]?.peakBestPct).toBeNull();
+  });
+
+  // ============================================================
+  // MONOTONIC Q1/Q2 SUPPRESSION (fix/feed-never-vanish)
+  // ============================================================
+  //
+  // The chip strip must mirror the feed: a ticker ever shown today
+  // (quintile > 2 at some point) stays counted after a quintile flip into
+  // Q1/Q2. The endpoint reads the per-day kept-set and adds an ANY() keep
+  // term to the suppression predicate. It is READ-ONLY here — the feed
+  // endpoint owns accumulation.
+  it('reads the kept-set and binds the monotonic keep term into the suppression SQL', async () => {
+    mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'AAA',
+        count: 1,
+        peak_best_pct: '40.0',
+        latest_trigger_time_ct: '2026-05-14T15:00:00Z',
+      },
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // kept-set read for the request date.
+    expect(mockReadKeptTickers).toHaveBeenCalledWith('2026-05-14');
+
+    const sql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(' ');
+    // NON-VACUOUS: the monotonic keep is exactly this ANY(...) term.
+    expect(sql).toContain('= ANY(');
+    expect(sql).toContain('::text[]');
+    // The kept-set array reached the SQL params.
+    const params = (mockSql.mock.calls[0] as unknown[]).slice(1);
+    expect(
+      params.some((p) => Array.isArray(p) && p.length === 1 && p[0] === 'AAA'),
+    ).toBe(true);
+  });
+
+  it('showAll=true short-circuits the kept-set (never read)', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', showAll: 'true' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockReadKeptTickers).not.toHaveBeenCalled();
+  });
+
+  it('KV-down (readKeptTickers returns []) → empty keep array, no crash', async () => {
+    mockReadKeptTickers.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = (mockSql.mock.calls[0] as unknown[]).slice(1);
+    expect(params.some((p) => Array.isArray(p) && p.length === 0)).toBe(true);
   });
 });

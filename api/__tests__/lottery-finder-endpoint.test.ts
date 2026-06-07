@@ -50,6 +50,16 @@ vi.mock('../_lib/last-good-cache.js', () => ({
   writeLastGood: mockWriteLastGood,
 }));
 
+const { mockReadKeptTickers, mockAddKeptTickers } = vi.hoisted(() => ({
+  mockReadKeptTickers: vi.fn(),
+  mockAddKeptTickers: vi.fn(),
+}));
+
+vi.mock('../_lib/kept-tickers.js', () => ({
+  readKeptTickers: mockReadKeptTickers,
+  addKeptTickers: mockAddKeptTickers,
+}));
+
 import handler, { degradeOnTimeout } from '../lottery-finder.js';
 
 const ROW = {
@@ -165,6 +175,10 @@ describe('lottery-finder endpoint', () => {
     vi.resetAllMocks();
     mockGuard.mockResolvedValue(false); // proceed past auth gate
     mockSql.mockResolvedValue([]);
+    // Default: empty kept-set (KV up but nothing shown yet) → pure live
+    // suppression, exactly as before the monotonic-keep change.
+    mockReadKeptTickers.mockResolvedValue([]);
+    mockAddKeptTickers.mockResolvedValue(undefined);
   });
 
   it('returns transformed fires with default date (ET-today) and asOf=null', async () => {
@@ -1835,6 +1849,147 @@ describe('lottery-finder endpoint', () => {
         underlyingSymbol: 'NEWT',
         inversionQuintile: null,
       });
+    });
+
+    // ============================================================
+    // MONOTONIC Q1/Q2 SUPPRESSION (fix/feed-never-vanish)
+    // ============================================================
+    //
+    // `inversion_quintile` can FLIP mid-day when the detect cron re-runs,
+    // so a ticker shown earlier (quintile > 2) could suddenly be suppressed
+    // — its chains vanish from the FEED. The fix: a per-day Redis kept-set
+    // accumulates every ever-shown ticker, and the suppression predicate
+    // (rows + COUNT) also keeps any ticker in that set.
+
+    it('keeps a ticker in the kept-set even after its quintile flips to Q1/Q2 (monotonic) — and the keep term is in BOTH row + count SQL', async () => {
+      // FLIP scenario: AAA is now quintile 1 (would be suppressed by the
+      // live gate) but it was shown earlier, so it's in the kept-set. The
+      // monotonic keep must re-admit it. We assert the kept-tickers ANY()
+      // term reached BOTH the row query AND the count query so rows and
+      // suppressedCount stay coherent.
+      mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 1)]) // rows
+        .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]); // count
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      // kept-set was read for the request's target date.
+      expect(mockReadKeptTickers).toHaveBeenCalledWith('2026-05-01');
+
+      const rowsSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+        '?',
+      );
+      const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+        '?',
+      );
+      // NON-VACUOUS: the monotonic keep is exactly this ANY(...) term.
+      // Remove it from the predicate and this assertion fails.
+      expect(rowsSql).toContain('= ANY(');
+      expect(rowsSql).toContain('::text[]');
+      expect(countSql).toContain('= ANY(');
+      expect(countSql).toContain('::text[]');
+
+      // The kept-set array reached the SQL params of both queries.
+      const rowsParams = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      const countParams = (mockSql.mock.calls[1] as unknown[]).slice(1);
+      const containsKept = (params: unknown[]): boolean =>
+        params.some(
+          (p) => Array.isArray(p) && p.length === 1 && p[0] === 'AAA',
+        );
+      expect(containsKept(rowsParams)).toBe(true);
+      expect(containsKept(countParams)).toBe(true);
+
+      // A kept ticker is NOT counted as suppressed (it's re-admitted).
+      const body = res._json as { suppressedCount: number };
+      expect(body.suppressedCount).toBe(0);
+    });
+
+    it('a Q1/Q2 ticker NOT in the kept-set still passes only an empty keep array (live suppression preserved)', async () => {
+      // Empty kept-set → the ANY('{}'::text[]) term matches nothing, so the
+      // predicate reduces to today's exact live behavior. We can't enforce
+      // a WHERE in the mock, but we assert the empty array is what reached
+      // the SQL (so nothing is spuriously re-admitted).
+      mockReadKeptTickers.mockResolvedValueOnce([]);
+      mockSql
+        .mockResolvedValueOnce([]) // rows (BBB suppressed by live gate)
+        .mockResolvedValueOnce([{ total: 0, suppressed: 1 }]); // count
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const rowsParams = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      const passedEmptyKept = rowsParams.some(
+        (p) => Array.isArray(p) && p.length === 0,
+      );
+      expect(passedEmptyKept).toBe(true);
+
+      const body = res._json as { suppressedCount: number; total: number };
+      expect(body.total).toBe(0);
+      expect(body.suppressedCount).toBe(1);
+    });
+
+    it('accumulates currently-shown (quintile > 2) tickers into the kept-set; excludes Q1/Q2-kept and NULL', async () => {
+      // CCC quintile 3 (>2) → remember. AAA quintile 1 (kept only via the
+      // set) → already remembered, not re-added BECAUSE it's kept. NEWT
+      // NULL quintile → never suppressed, nothing to protect, not added.
+      mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
+      mockSql
+        .mockResolvedValueOnce([
+          rowWithQuintile(1, 'AAA', 1),
+          rowWithQuintile(3, 'CCC', 3),
+          rowWithQuintile(9, 'NEWT', null),
+        ])
+        .mockResolvedValueOnce([{ total: 3, suppressed: 0 }]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(mockAddKeptTickers).toHaveBeenCalledTimes(1);
+      const [addDate, addTickers] = mockAddKeptTickers.mock.calls[0]!;
+      expect(addDate).toBe('2026-05-01');
+      // Only CCC qualifies BY the live quintile gate this request.
+      expect(addTickers).toEqual(['CCC']);
+    });
+
+    it('?showAll=true → suppression bypassed, kept-set never read or written', async () => {
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 1)])
+        .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]);
+
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-01', showAll: 'true' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      // showAll short-circuits the kept-set entirely (no read, no write).
+      expect(mockReadKeptTickers).not.toHaveBeenCalled();
+      expect(mockAddKeptTickers).not.toHaveBeenCalled();
+    });
+
+    it('KV-down (readKeptTickers returns []) → graceful: pure live suppression, no crash', async () => {
+      // The helper swallows KV errors and returns [] — the handler treats
+      // that identically to "nothing shown yet". No throw, 200, empty keep.
+      mockReadKeptTickers.mockResolvedValueOnce([]);
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(3, 'CCC', 3)])
+        .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(res._status).toBe(200);
+      const rowsParams = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      expect(rowsParams.some((p) => Array.isArray(p) && p.length === 0)).toBe(
+        true,
+      );
     });
 
     it('qualityAdjustedScore = score + inversionQualityBonus(quintile)', async () => {
