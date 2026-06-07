@@ -95,12 +95,13 @@ describe('evaluateRegime0dte', () => {
       nowCtMin: 700,
       spot: 7450,
       openSpot: 7530,
+      // live-units net GEX (~1e10); band sum well below GATE_DEEP_NEG (-1.5e10)
       gexStrikes: [
-        { strike: 7440, netGex: -0.3 },
-        { strike: 7450, netGex: -0.2 },
-        { strike: 7460, netGex: -0.2 },
-        { strike: 7470, netGex: -0.1 },
-        { strike: 7480, netGex: -0.1 },
+        { strike: 7440, netGex: -6e9 },
+        { strike: 7450, netGex: -6e9 },
+        { strike: 7460, netGex: -6e9 },
+        { strike: 7470, netGex: -6e9 },
+        { strike: 7480, netGex: -6e9 },
       ],
       putIv: [
         { ctMin: 520, iv: 0.2 },
@@ -121,12 +122,13 @@ describe('evaluateRegime0dte', () => {
 });
 
 describe('evaluateRegime0dte — edges + honesty line', () => {
+  // live-units net GEX (~1e10); band sum (-3e10) is below GATE_DEEP_NEG (-1.5e10)
   const deepNegStrikes = [
-    { strike: 7440, netGex: -0.3 },
-    { strike: 7450, netGex: -0.2 },
-    { strike: 7460, netGex: -0.2 },
-    { strike: 7470, netGex: -0.1 },
-    { strike: 7480, netGex: -0.1 },
+    { strike: 7440, netGex: -6e9 },
+    { strike: 7450, netGex: -6e9 },
+    { strike: 7460, netGex: -6e9 },
+    { strike: 7470, netGex: -6e9 },
+    { strike: 7480, netGex: -6e9 },
   ];
 
   it('lean_down with no down-trigger yet -> up-ambush risk note', () => {

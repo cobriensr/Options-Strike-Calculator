@@ -110,11 +110,12 @@ New table `flow_regime_0dte_daily` (migration). New cron `capture-regime-0dte` i
 ## Reconciliation with `flow-regime` (parallel feature)
 Orthogonal, not duplicate. `flow-regime` = intraday trade-tape **aggression** recognizer (`net_delta_tilt` + `idx0dte_put_share` from `ws_option_trades`, ~50-ticker WS universe, percentile-scored). This = day-level dealer **structure + vol surface** (OI-GEX + IV-break, SPX/SPXW only). They can sit side-by-side: flow-regime = "is current flow abnormal for this time of day"; regime-0dte = "is today structurally set up to trend, and is it breaking down." No shared inputs.
 
-## ⚠️ GEX unit calibration (correctness-critical)
-The `GATE_DEEP_NEG = −0.15` threshold is in the **parquet study's units** (derived from `max(oi) × avg(gamma) × spot² × 0.01 / 1e9`). The live `gex_strike_0dte` columns (`call_gamma_oi`, `put_gamma_oi`) are very likely on a **different scale**. What transfers and what does not:
-- **Transfers (scale-invariant):** the *sign* of the gate (positive vs negative net GEX → calm vs trend-prone); `mostly_red` (candle counts); `iv_break` (relative % over morning range). These can ship as-is.
-- **Does NOT transfer:** the deep-neg *magnitude* cutoff (`−0.15`) used for `gate=lean_down` and `midday_deep_neg`.
-- **Required calibration task (Phase 2, before the cron/threshold are trusted):** compute the live-units `gexNearSpot` distribution over available `gex_strike_0dte` history, then set the deep-neg cutoff to the **same percentile** the study used (deep-neg ≈ the most-negative ~12% of days, i.e. 13/106). Re-validate that the re-fit cutoff still separates big-down days on the overlapping dates. Until calibrated, `lean_down` falls back to a sign+percentile heuristic, not the raw `−0.15`.
+## ✅ GEX unit calibration (DONE 2026-06-07)
+Calibrated via `scripts/calibrate-regime-gate.mjs` (read-only prod query, 74 days 2026-02-20..06-05).
+
+**Sign bug caught (correctness-critical):** in `gex_strike_0dte`, `put_gamma_oi` is stored **signed-negative**, so net dealer GEX = `call_gamma_oi + put_gamma_oi`, NOT `call − put` (the original Task-5 mapping and the data-audit's report were wrong). Verified against raw rows: `call_gamma_oi ∈ [0, +1.3e11]`, `put_gamma_oi ∈ [−7.7e10, 0]`. The `call − put` form is positive every day and erases the signal.
+
+**Result:** open-spot `gexNearSpot` (sum of `call+put` within ±1%) 12th-percentile over 74 days = **−1.52e10** → `GATE_DEEP_NEG = -1.5e10` (live units, ~1e10 scale; NOT the study's −0.15). Cross-validated against realized open→close from `index_candles_1m`: days ≤ cutoff had **55.6% down-rate (≤−0.5%) vs 9.8%** for the rest and **11% up-rate vs 28%** — the same downside-asymmetry as the 106-day study, on independent live data. The gate *sign* (calm vs negative), `mostly_red` (candle counts), and `iv_break` (relative %) were always scale-invariant and unaffected. Threshold is an absolute magnitude — recalibrate if the 0DTE OI scale drifts.
 
 ## Open questions (defaults noted)
 - **Migration number** — next free id, determined at implementation.

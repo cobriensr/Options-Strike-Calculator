@@ -1,9 +1,12 @@
-// All GEX values are "net GEX within +/-1% of spot" in the LIVE gex_strike_0dte units
-// (sum of call_gamma_oi - put_gamma_oi over the band). DEEP_NEG is calibrated in Phase 2;
-// until then lean_down uses sign + a placeholder magnitude that Task 12 overwrites.
+// All GEX values are "net GEX within +/-1% of spot" in LIVE gex_strike_0dte units:
+// sum of (call_gamma_oi + put_gamma_oi) over the band. NOTE put_gamma_oi is stored
+// SIGNED-NEGATIVE, so net GEX = call + put (NOT call - put). Magnitudes are ~1e10.
 export const REGIME_0DTE = {
   GATE_BAND_PCT: 0.01,
-  GATE_DEEP_NEG: -0.15, // PLACEHOLDER (study units) — recalibrated to live units in Task 12
+  // Calibrated 2026-06-07 against 74 days of gex_strike_0dte (2026-02-20..06-05): 12th-percentile
+  // open-spot gexNear = -1.52e10. Cross-check: days <= this had 55.6% down-rate vs 9.8% (rest),
+  // 11% up-rate vs 28% — downside-asymmetric, matching the study. Recalibrate if OI scale drifts.
+  GATE_DEEP_NEG: -1.5e10,
   IVBREAK_REL: 1.02,
   IVBREAK_REF_START: 510,
   IVBREAK_REF_END: 600, // 08:30–10:00 CT, minutes from midnight
@@ -77,10 +80,7 @@ export function gradeGate(gex: number | null): Gate {
   return 'lean_down';
 }
 
-export function flipStrike(
-  strikes: GexStrike[],
-  spot: number,
-): number | null {
+export function flipStrike(strikes: GexStrike[], spot: number): number | null {
   const sorted = [...strikes].sort((a, b) => a.strike - b.strike);
   let best: number | null = null;
   let bestD = Infinity;
@@ -118,7 +118,8 @@ export function ivBreak(series: IvPoint[], nowCtMin: number) {
       p.ctMin <= REGIME_0DTE.IVBREAK_REF_END,
   );
   const refHi = ref.length ? Math.max(...ref.map((p) => p.iv)) : null;
-  if (refHi == null) return { fired: false, atCtMin: null, magPct: null, refHi: null };
+  if (refHi == null)
+    return { fired: false, atCtMin: null, magPct: null, refHi: null };
   for (const p of series) {
     if (
       p.ctMin >= REGIME_0DTE.IVBREAK_WIN_START &&
@@ -159,8 +160,7 @@ export function evaluateRegime0dte(input: Regime0dteInput): Regime0dteState {
   const downConfirmed = mostlyRedFired || iv.fired || middayFired;
   let note: string;
   if (gate === 'lean_down' && !downConfirmed) {
-    note =
-      'deep negative gamma, no downside confirmation yet — up-ambush risk';
+    note = 'deep negative gamma, no downside confirmation yet — up-ambush risk';
   } else if (gate === 'calm') {
     note = 'positive gamma — mean-revert / tight range likely';
   } else if (downConfirmed) {

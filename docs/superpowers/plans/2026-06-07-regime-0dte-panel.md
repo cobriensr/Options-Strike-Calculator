@@ -44,11 +44,10 @@
 
 ```ts
 // All GEX values are "net GEX within +/-1% of spot" in the LIVE gex_strike_0dte units
-// (sum of call_gamma_oi - put_gamma_oi over the band). DEEP_NEG is calibrated in Phase 2;
-// until then lean_down uses sign + a placeholder magnitude that Task 12 overwrites.
+// (sum of call_gamma_oi + put_gamma_oi over the band; put_gamma_oi is SIGNED-NEGATIVE).
 export const REGIME_0DTE = {
   GATE_BAND_PCT: 0.01,
-  GATE_DEEP_NEG: -0.15, // PLACEHOLDER (study units) — recalibrated to live units in Task 12
+  GATE_DEEP_NEG: -1.5e10, // CALIBRATED 2026-06-07 (74d, 12th pctile, live units) — see calibrate-regime-gate.mjs
   IVBREAK_REL: 1.02,
   IVBREAK_REF_START: 510, IVBREAK_REF_END: 600,   // 08:30–10:00 CT, minutes from midnight
   IVBREAK_WIN_START: 600, IVBREAK_WIN_END: 750,    // 10:00–12:30 CT
@@ -61,7 +60,7 @@ export const REGIME_0DTE = {
 
 export type Gate = 'calm' | 'big_move' | 'lean_down' | 'unknown';
 
-export interface GexStrike { strike: number; netGex: number; } // call_gamma_oi - put_gamma_oi
+export interface GexStrike { strike: number; netGex: number; } // call_gamma_oi + put_gamma_oi (put is signed-neg)
 export interface IvPoint { ctMin: number; iv: number; }         // nearest-ATM put iv per minute
 export interface Candle30 { ctMin: number; open: number; close: number; } // 30-min bucket
 
@@ -358,7 +357,8 @@ export async function getGexStrikes(dateIso: string): Promise<{ strikes: GexStri
     FROM gex_strike_0dte, latest
     WHERE date = ${dateIso} AND timestamp = latest.ts
   `);
-  const strikes = rows.map((r: any) => ({ strike: Number(r.strike), netGex: Number(r.call_gamma_oi) - Number(r.put_gamma_oi) }));
+  // put_gamma_oi is stored SIGNED-NEGATIVE in gex_strike_0dte, so net GEX = call + put
+  const strikes = rows.map((r: any) => ({ strike: Number(r.strike), netGex: Number(r.call_gamma_oi) + Number(r.put_gamma_oi) }));
   const spot = rows.length ? Number(rows[0].price) : null;
   return { strikes, spot };
 }
@@ -450,25 +450,15 @@ describe('GET /api/regime-0dte', () => {
 
 - [ ] **Step 5: Run test PASS, `npm run lint`, commit** — `git commit -m 'feat(regime-0dte): nightly self-scoring cron'`
 
-### Task 12 (do in Phase 2, gates the threshold): Calibrate `GATE_DEEP_NEG` to live units
+### Task 12 ✅ DONE (2026-06-07): Calibrate `GATE_DEEP_NEG` to live units
 
-**Files:** Modify `api/_lib/regime-0dte.ts` (the one constant), `docs/superpowers/specs/2026-06-07-regime-0dte-panel-design.md` (record the fitted value).
+Done via `scripts/calibrate-regime-gate.mjs` (read-only, run with `node --env-file=<repo>/.env.local`).
 
-- [ ] **Step 1:** Against prod Neon (read-only), compute, per day with `gex_strike_0dte` history: `gexNear` at that day's ~13:00 spot, in live units. Query sketch:
+**Key finding — sign bug caught:** `put_gamma_oi` is stored **signed-negative** in `gex_strike_0dte`, so net GEX = `call_gamma_oi + put_gamma_oi` (NOT `call − put` as originally written in Task 5). The `call − put` version is positive every day and destroys the signal. Task 5's helper above is corrected to `+`.
 
-```sql
--- per (date), latest-minute net GEX within +/-1% of that minute's price
-WITH m AS (SELECT date, max(timestamp) ts FROM gex_strike_0dte GROUP BY date)
-SELECT g.date,
-  sum(CASE WHEN abs(g.strike - g.price) <= 0.01*g.price THEN g.call_gamma_oi - g.put_gamma_oi END) AS gex_near
-FROM gex_strike_0dte g JOIN m USING(date, timestamp)... -- group by date
-```
+**Result (74 days, 2026-02-20..06-05):** open-spot `gexNear` 12th-percentile = **−1.52e10** → `GATE_DEEP_NEG = -1.5e10` (live units, ~1e10 scale). Cross-check vs realized open→close: days ≤ cutoff had **55.6% down-rate (≤−0.5%) vs 9.8%** for the rest, and **11% up-rate vs 28%** — downside-asymmetric, matching the study. Evaluator test fixtures updated to live-units magnitudes (deep-neg ~−6e9/strike). 15/15 tests pass, lint clean.
 
-- [ ] **Step 2:** Set `GATE_DEEP_NEG` to the value at the **~12th percentile** (most-negative ~12% of days, matching 13/106 from the study). If `gex_strike_0dte` history is too short (<~30 days), set `GATE_DEEP_NEG` to the median of the negative-GEX days as an interim and add a `// TODO recalibrate at 30+ days` note with a concrete date.
-
-- [ ] **Step 3:** Re-run the Task 3 evaluator test (adjust the fixture if the unit scale flips sign expectations — it should not; signs are scale-invariant). `npm run test:run -- regime-0dte.test.ts`.
-
-- [ ] **Step 4: Commit** — `git commit -m 'fit(regime-0dte): calibrate GATE_DEEP_NEG to live gex_strike_0dte units'`
+Recalibrate when the 0DTE OI scale drifts (the threshold is an absolute magnitude).
 
 ---
 
