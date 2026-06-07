@@ -19,7 +19,15 @@
 
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
-const mockSql = vi.fn();
+// The daily cron uses the tagged-template `sql\`...\`` for the per-date SELECTs
+// and `bulkUpsert({ sql, ... })` which calls `sql.query(stmt, params)` for the
+// single batched UPSERT. The mock therefore needs BOTH surfaces.
+const mockQuery: ReturnType<
+  typeof vi.fn<
+    (stmt: string, params: unknown[]) => Promise<{ rows: unknown[] }>
+  >
+> = vi.fn(() => Promise.resolve({ rows: [] }));
+const mockSql = Object.assign(vi.fn(), { query: mockQuery });
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
@@ -49,6 +57,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/capture-flow-regime-daily.js';
 import { computeFlowMetrics } from '../_lib/flow-regime.js';
+import { MIN_DAY_SLOT_TRADES } from '../_lib/flow-regime-baseline-live.js';
 import { mockRequest, mockResponse } from './helpers';
 
 const DATE = '2026-06-05';
@@ -56,6 +65,8 @@ const DATE = '2026-06-05';
 beforeEach(() => {
   mockSql.mockReset();
   mockSql.mockResolvedValue([]);
+  mockQuery.mockReset();
+  mockQuery.mockResolvedValue({ rows: [] });
   mockCronGuard.mockReset();
   mockCronGuard.mockReturnValue({ apiKey: '', today: DATE });
   vi.useRealTimers();
@@ -64,6 +75,13 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
 });
+
+/** Repeat a base trade row `n` times (to clear the per-day volume quorum). */
+function repeat(base: ReturnType<typeof tradeRow>, n: number) {
+  return Array.from({ length: n }, () => ({ ...base }));
+}
+
+const QUORUM = MIN_DAY_SLOT_TRADES; // 500
 
 /** One ws_option_trades row as Neon returns it (NUMERIC → string). */
 function tradeRow(
@@ -102,50 +120,44 @@ describe('capture-flow-regime-daily cron', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('aggregates a multi-slot day and upserts one row per populated slot', async () => {
+  it('aggregates a multi-slot day and batches one INSERT for all populated slots', async () => {
     // Post-close on the trade day so getETDateStr(now) === DATE (the cron
     // stamps the ET trade date from real `now`). 21:55 UTC = 17:55 ET (EDT).
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
 
-    // Two slots: slot 1 (10:00 ET = 14:00 UTC) and slot 3 (11:00 ET = 15:00
-    // UTC). 14:00/15:00 UTC are EDT wall-clock 10:00/11:00 ET.
-    const slot1Rows = [
-      tradeRow({ executed_at: '2026-06-05T14:00:00.000Z', side: 'ask' }),
-      tradeRow({
-        executed_at: '2026-06-05T14:10:00.000Z',
-        ticker: 'QQQ',
-        option_type: 'P',
-        side: 'bid',
-        delta: '-0.400000',
-        price: '2.0000',
-        size: 50,
-      }),
-    ];
-    const slot3Rows = [
-      tradeRow({
-        executed_at: '2026-06-05T15:00:00.000Z',
-        ticker: 'AAPL',
-        option_type: 'C',
-        side: 'ask',
-        delta: '0.600000',
-        price: '3.0000',
-        size: 200,
-      }),
-    ];
-    const allRows = [...slot1Rows, ...slot3Rows];
+    // Two slots, each ABOVE the per-day quorum: slot 1 (10:00 ET = 14:00 UTC)
+    // and slot 3 (11:00 ET = 15:00 UTC). Each slot gets QUORUM rows so neither
+    // is dropped by the volume floor.
+    const slot1Base = tradeRow({
+      executed_at: '2026-06-05T14:00:00.000Z',
+      side: 'ask',
+    });
+    const slot3Base = tradeRow({
+      executed_at: '2026-06-05T15:00:00.000Z',
+      ticker: 'AAPL',
+      option_type: 'C',
+      side: 'ask',
+      delta: '0.600000',
+      price: '3.0000',
+      size: 200,
+    });
+    const slot1Rows = repeat(slot1Base, QUORUM);
+    const slot3Rows = repeat(slot3Base, QUORUM);
+    const todayRows = [...slot1Rows, ...slot3Rows];
 
-    // SELECT returns the day; each UPSERT returns [].
+    // SELECT for today returns the day; SELECT for the prior date is empty.
     mockSql.mockReset();
-    mockSql.mockResolvedValueOnce(allRows); // SELECT
-    mockSql.mockResolvedValue([]); // UPSERTs
+    mockSql.mockResolvedValueOnce(todayRows); // today SELECT
+    mockSql.mockResolvedValueOnce([]); // prior-date SELECT (lookback)
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
-    // 1 SELECT + 2 UPSERTs (slot 1 + slot 3).
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    // 2 SELECTs (today + 1 prior date), then ONE batched INSERT via sql.query.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
     expect(res._json).toMatchObject({ status: 'success', rows: 2 });
 
     // Build the expected per-slot sums via the real lib (same coercion the cron
@@ -163,34 +175,89 @@ describe('capture-flow-regime-daily cron', () => {
     const expSlot1 = computeFlowMetrics(slot1Rows.map(toFlow));
     const expSlot3 = computeFlowMetrics(slot3Rows.map(toFlow));
 
-    // UPSERT param order: [date, slot, nd_num, nd_den, idx_put_premium,
-    //                      total_premium, n_trades]
-    const upsert1 = (mockSql.mock.calls[1] ?? []).slice(1);
-    expect(upsert1[0]).toBe(DATE);
-    expect(upsert1[1]).toBe(1); // slot 1
-    expect(upsert1[2]).toBeCloseTo(expSlot1.ndNum, 6);
-    expect(upsert1[3]).toBeCloseTo(expSlot1.ndDen, 6);
-    expect(upsert1[4]).toBeCloseTo(expSlot1.idxPutPremium, 6);
-    expect(upsert1[5]).toBeCloseTo(expSlot1.totalPremium, 6);
-    expect(upsert1[6]).toBe(2); // n_trades in slot 1
-
-    const upsert3 = (mockSql.mock.calls[2] ?? []).slice(1);
-    expect(upsert3[1]).toBe(3); // slot 3
-    expect(upsert3[2]).toBeCloseTo(expSlot3.ndNum, 6);
-    expect(upsert3[5]).toBeCloseTo(expSlot3.totalPremium, 6);
-    expect(upsert3[6]).toBe(1); // n_trades in slot 3
+    // bulkUpsert flattens rows into a single params array, 8 cols per row:
+    // [date, slot, nd_num, nd_den, idx_put_premium, total_premium, n_trades,
+    //  computed_at]. Two rows → 16 params.
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params).toHaveLength(16);
+    // Row 0 = slot 1.
+    expect(params[0]).toBe(DATE);
+    expect(params[1]).toBe(1);
+    expect(params[2]).toBeCloseTo(expSlot1.ndNum, 3);
+    expect(params[3]).toBeCloseTo(expSlot1.ndDen, 3);
+    expect(params[5]).toBeCloseTo(expSlot1.totalPremium, 3);
+    expect(params[6]).toBe(QUORUM); // n_trades in slot 1
+    // Row 1 = slot 3.
+    expect(params[9]).toBe(3);
+    expect(params[10]).toBeCloseTo(expSlot3.ndNum, 3);
+    expect(params[13]).toBeCloseTo(expSlot3.totalPremium, 3);
+    expect(params[14]).toBe(QUORUM); // n_trades in slot 3
   });
 
-  it('skips with no write when there are no RTH trades', async () => {
+  it('skips persisting a slot below the per-day volume quorum', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
+
+    // One slot well below the quorum (a holiday/partial straggler) → dropped.
+    const thinSlot = repeat(
+      tradeRow({ executed_at: '2026-06-05T14:00:00.000Z' }),
+      10,
+    );
     mockSql.mockReset();
-    mockSql.mockResolvedValueOnce([]); // SELECT → empty day
+    mockSql.mockResolvedValueOnce(thinSlot); // today SELECT
+    mockSql.mockResolvedValueOnce([]); // prior-date SELECT
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
-    // Only the SELECT ran; no UPSERT.
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // No slot cleared the quorum → no INSERT, status skipped.
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'skipped' });
+  });
+
+  it('re-accumulates the prior trading date too (catch-up lookback)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
+
+    // Today empty, but the prior date (2026-06-04) has a quorum-clearing slot 1.
+    // The prior-date rows are stamped executed_at on 2026-06-04 so they land in
+    // that date's RTH window.
+    const priorRows = repeat(
+      tradeRow({
+        executed_at: '2026-06-04T14:00:00.000Z',
+        expiry: '2026-06-04',
+      }),
+      QUORUM,
+    );
+    mockSql.mockReset();
+    mockSql.mockResolvedValueOnce([]); // today SELECT (empty)
+    mockSql.mockResolvedValueOnce(priorRows); // prior-date SELECT
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    // The single upserted row is stamped the PRIOR ET date, not today.
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[0]).toBe('2026-06-04');
+    expect(params[1]).toBe(1); // slot 1
+  });
+
+  it('skips with no write when there are no RTH trades', async () => {
+    mockSql.mockReset();
+    mockSql.mockResolvedValueOnce([]); // today SELECT
+    mockSql.mockResolvedValueOnce([]); // prior-date SELECT
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Only the SELECTs ran; no INSERT.
+    expect(mockQuery).not.toHaveBeenCalled();
     expect(res._json).toMatchObject({ status: 'skipped' });
   });
 
@@ -198,22 +265,25 @@ describe('capture-flow-regime-daily cron', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
     mockSql.mockReset();
-    mockSql.mockResolvedValueOnce([
+    // QUORUM rows (clears the floor) with null delta + non-numeric price.
+    const badRows = repeat(
       tradeRow({ delta: null, price: 'not-a-number', side: 'ask' }),
-    ]);
-    mockSql.mockResolvedValue([]);
+      QUORUM,
+    );
+    mockSql.mockResolvedValueOnce(badRows); // today SELECT
+    mockSql.mockResolvedValueOnce([]); // prior-date SELECT
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const upsert = (mockSql.mock.calls[1] ?? []).slice(1);
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
     // delta null → 0 → nd_num/nd_den both finite (0). price NaN → 0 → excluded
     // from premium → total_premium finite (0).
-    expect(Number.isFinite(upsert[2] as number)).toBe(true); // nd_num
-    expect(Number.isFinite(upsert[3] as number)).toBe(true); // nd_den
-    expect(Number.isFinite(upsert[5] as number)).toBe(true); // total_premium
-    expect(upsert[6]).toBe(1); // n_trades
+    expect(Number.isFinite(params[2] as number)).toBe(true); // nd_num
+    expect(Number.isFinite(params[3] as number)).toBe(true); // nd_den
+    expect(Number.isFinite(params[5] as number)).toBe(true); // total_premium
+    expect(params[6]).toBe(QUORUM); // n_trades
   });
 });

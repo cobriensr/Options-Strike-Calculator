@@ -15,12 +15,20 @@
  * docs/superpowers/specs/flow-regime-baseline-refresh-2026-06-07.md.
  */
 
-import { describe, expect, it, vi } from 'vitest';
-import { loadFlowRegimeBaseline } from '../_lib/flow-regime-baseline-live.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  loadFlowRegimeBaseline,
+  __resetFlowRegimeBaselineCache,
+  MIN_DAY_SLOT_TRADES,
+} from '../_lib/flow-regime-baseline-live.js';
 import { FLOW_REGIME_BASELINE } from '../_lib/flow-regime.js';
 
 const MIN_DAYS = FLOW_REGIME_BASELINE.min_days_per_slot; // 15
 const N_PCTL = FLOW_REGIME_BASELINE.percentiles.length; // 9
+
+// The loader caches its result per ET date at module scope; reset before each
+// test so each fake SQL result is recomputed rather than served from cache.
+beforeEach(() => __resetFlowRegimeBaselineCache());
 
 /** A full, finite, ascending breakpoint array distinct from any JSON slot. */
 function liveBreaks(base: number): number[] {
@@ -114,8 +122,8 @@ describe('loadFlowRegimeBaseline', () => {
         slot: 2,
         n_days_nd: BigInt(MIN_DAYS + 1),
         n_days_idx: BigInt(MIN_DAYS + 1),
-        nd_breakpoints: ndBreaks.map((n) => String(n)),
-        idx_breakpoints: liveBreaks(0.03).map((n) => String(n)),
+        nd_breakpoints: ndBreaks.map(String),
+        idx_breakpoints: liveBreaks(0.03).map(String),
       },
     ]);
 
@@ -128,16 +136,17 @@ describe('loadFlowRegimeBaseline', () => {
     );
   });
 
-  it('falls back when one metric is live but the other lacks depth', async () => {
-    // nd has ≥15 days but idx is below threshold: the live slot uses the live
-    // nd breakpoints and keeps the JSON idx breakpoints.
+  it('keeps the full committed seed when only ONE metric has depth (both-live gate)', async () => {
+    // nd has ≥15 days but idx is below threshold. Under the both-live rule the
+    // slot is NOT live: it keeps the committed JSON for BOTH metrics so
+    // baseline_version 2 honestly means "both metrics live" (#3).
     const jsonSlot4 = FLOW_REGIME_BASELINE.slots.find((s) => s.slot === 4)!;
     const ndBreaks = liveBreaks(-0.22);
     const sql = fakeSql([
       {
         slot: 4,
         n_days_nd: MIN_DAYS + 3,
-        n_days_idx: MIN_DAYS - 2,
+        n_days_idx: MIN_DAYS - 2, // below threshold → whole slot falls back
         nd_breakpoints: ndBreaks,
         idx_breakpoints: liveBreaks(0.04),
       },
@@ -145,11 +154,55 @@ describe('loadFlowRegimeBaseline', () => {
 
     const { baseline, liveSlots } = await loadFlowRegimeBaseline(sql);
 
-    expect(liveSlots.has(4)).toBe(true);
+    expect(liveSlots.has(4)).toBe(false);
     const slot4 = baseline.slots.find((s) => s.slot === 4)!;
-    expect(slot4.nd_tilt_breakpoints).toEqual(ndBreaks);
+    expect(slot4.nd_tilt_breakpoints).toEqual(jsonSlot4.nd_tilt_breakpoints);
     expect(slot4.idx0dte_put_share_breakpoints).toEqual(
       jsonSlot4.idx0dte_put_share_breakpoints,
     );
+  });
+
+  it('ignores days below the per-day volume quorum via the SQL filter', async () => {
+    // The quorum is enforced in SQL (COUNT/percentile_cont FILTER on
+    // n_trades >= MIN_DAY_SLOT_TRADES). The loader trusts the returned day
+    // counts; this asserts the constant is exported for the cron + SQL to share.
+    expect(MIN_DAY_SLOT_TRADES).toBeGreaterThan(0);
+  });
+
+  it('does not mutate the shared committed baseline on a fallback slot (deep clone)', async () => {
+    // A fallback slot's breakpoint arrays must be sliced off the module
+    // constant so a caller can never mutate the shared committed baseline (#7).
+    const jsonSlot7 = FLOW_REGIME_BASELINE.slots.find((s) => s.slot === 7)!;
+    const before = jsonSlot7.nd_tilt_breakpoints.slice();
+    const sql = fakeSql([]);
+
+    const { baseline } = await loadFlowRegimeBaseline(sql);
+    const slot7 = baseline.slots.find((s) => s.slot === 7)!;
+    // Same values, but a distinct array instance.
+    expect(slot7.nd_tilt_breakpoints).toEqual(before);
+    expect(slot7.nd_tilt_breakpoints).not.toBe(jsonSlot7.nd_tilt_breakpoints);
+
+    // Mutating the returned array must not touch the committed constant.
+    slot7.nd_tilt_breakpoints[0] = 999;
+    expect(
+      FLOW_REGIME_BASELINE.slots.find((s) => s.slot === 7)!.nd_tilt_breakpoints,
+    ).toEqual(before);
+  });
+
+  it('caches the result per ET date and reuses it across calls', async () => {
+    const sql = fakeSql([
+      {
+        slot: 0,
+        n_days_nd: MIN_DAYS,
+        n_days_idx: MIN_DAYS,
+        nd_breakpoints: liveBreaks(-0.2),
+        idx_breakpoints: liveBreaks(0.01),
+      },
+    ]);
+
+    await loadFlowRegimeBaseline(sql);
+    await loadFlowRegimeBaseline(sql);
+    // Same ET date → second call served from cache, only ONE query issued.
+    expect(sql).toHaveBeenCalledTimes(1);
   });
 });

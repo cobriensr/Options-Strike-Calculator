@@ -96,9 +96,71 @@ auto-appended tracking INSERT) = 3 statements in 1 transaction.
 - New table `flow_regime_slot_daily` (migration #187).
 - No new env vars. No external APIs.
 
+## Hardening (code-review follow-up)
+
+A second code review of this feature surfaced ten fixes; the data-quality,
+robustness, and provenance ones changed behavior:
+
+- **Per-day volume quorum (`MIN_DAY_SLOT_TRADES = 500`).** The daily cron runs
+  every weekday including market holidays / half-days. A holiday 30-min slot
+  sees only tens of trades vs. thousands in a normal RTH slot, yet it passed the
+  bare `nd_den > 0` / `total_premium > 0` filter and injected a degenerate daily
+  ratio into the thin (~15-day) percentile population. The accumulator now
+  refuses to PERSIST a slot with `n_trades < MIN_DAY_SLOT_TRADES`, and the loader
+  additionally filters its `COUNT(*)` day-depth and the `percentile_cont`
+  population on the same floor, so any thin rows written before the floor existed
+  can never count. 500 is an order of magnitude above a holiday slot and well
+  below a normal RTH slot.
+
+- **Catch-up lookback (`LOOKBACK_DAYS = RETENTION_DAYS − 1 = 1`).** The daily
+  cron previously processed only today. `ws_option_trades` has 2-day retention
+  (`cleanup-ws-option-trades` `RETENTION_DAYS = 2`), so a single missed run lost
+  that day forever. The cron now re-accumulates today **and** the prior ET
+  trading date each run, idempotent via `ON CONFLICT (date, slot)`. **Retention
+  coupling (enforced):** `LOOKBACK_DAYS` MUST stay `< RETENTION_DAYS` of
+  `cleanup-ws-option-trades` so the accumulator can never read a purged date.
+  The constant is `Math.min(1, RETENTION_DAYS − 1)` with a comment referencing
+  the cleanup cron; the coupling is duplicated-with-note rather than imported to
+  avoid a cron→cron import.
+
+- **Both-metrics-live provenance.** A slot now replaces breakpoints + is reported
+  in `liveSlots` ONLY when BOTH the nd and idx metrics have ≥ `min_days_per_slot`
+  usable days. Previously it went live on EITHER, so `baseline_version = 2` could
+  be stamped on a snapshot scored with a live nd-distribution but the committed
+  (seed) idx-distribution. Now `baseline_version = 2` honestly means "both
+  metrics live."
+
+- **Single batched upsert.** The per-slot UPSERT loop (≤ 13 round-trips) is now
+  one multi-row `INSERT … ON CONFLICT (date, slot) DO UPDATE` via `bulkUpsert`
+  (≤ 26 rows with the 2-date lookback, far under the 500 chunk cap).
+
+- **On-read loader cache.** `loadFlowRegimeBaseline` is cached at module scope
+  keyed by ET date. The daily cron is the sole writer (once/day), so the result
+  is invariant within an ET day; warm serverless instances reuse it across the
+  5-min ticks and a new ET day busts it.
+
+### Universe-epoch limitation (flagged, accepted for now)
+
+The percentile breakpoints pool every contributing day for a slot into one
+distribution with **no segmentation by ws-universe epoch**. If the uw-stream WS
+subscription universe is ever rebalanced (tickers added/removed), days before
+and after the rebalance describe two different populations but are pooled into a
+single percentile grid. The 15-day window is short and self-healing (post-epoch
+days displace pre-epoch days within ~3 weeks), and the committed JSON seed scores
+correctly throughout, so this is acceptable for now. If a universe rebalance is
+planned, segment `flow_regime_slot_daily` by a `universe_epoch` tag and filter
+the loader to the current epoch. The per-load provenance log (live slot count +
+each live slot's `n_days` and min/max contributing date) makes the backing
+day-set diagnosable without a schema column in the meantime.
+
 ## Thresholds / constants
 
-- `min_days_per_slot = 15` (from the committed baseline; the live/fallback gate).
+- `MIN_DAY_SLOT_TRADES = 500` (per-day per-slot volume quorum; rejects
+  holiday/partial-session slots from the percentile population).
+- `LOOKBACK_DAYS = 1` (= `RETENTION_DAYS − 1`; today + 1 prior ET date, bounded
+  below `cleanup-ws-option-trades` retention).
+- `min_days_per_slot = 15` (from the committed baseline; the live/fallback gate;
+  now required for BOTH metrics before a slot goes live).
 - RTH window from the committed baseline: `rth_start_minute = 570` (09:30 ET),
   `rth_end_minute = 960` (16:00 ET), `bucket_minutes = 30`, `slot_count = 13`.
 - `percentiles = [1,5,10,25,50,75,90,95,99]` (committed) →

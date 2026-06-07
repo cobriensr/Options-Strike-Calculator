@@ -33,6 +33,25 @@ import {
   type FlowRegimeSlotBaseline,
 } from './flow-regime.js';
 import { numOrNull } from './numeric-coercion.js';
+import logger from './logger.js';
+import { getETToday } from '../../src/utils/timezone.js';
+
+/**
+ * Per-day volume quorum for a slot to count toward the percentile distribution.
+ *
+ * The daily cron runs every weekday — including market holidays and half-days.
+ * A normal RTH 30-min slot sees thousands of trades across the ~50-ticker WS
+ * universe; a holiday / partial-session slot sees only tens. Those low-n days
+ * still pass the bare `nd_den > 0` / `total_premium > 0` filter and would inject
+ * degenerate daily ratios into the thin (~15-day) percentile population, skewing
+ * the breakpoints. 500 sits an order of magnitude above a holiday slot and well
+ * below a normal RTH slot, so it admits real sessions and rejects the garbage.
+ *
+ * Enforced in BOTH directions: the daily cron refuses to PERSIST a slot below
+ * this floor, and the loader's COUNT / percentile_cont population filters on it
+ * too, so any thin rows written before this floor existed can never count.
+ */
+export const MIN_DAY_SLOT_TRADES = 500;
 
 /**
  * Postgres `percentile_cont` fraction array, in the SAME order as the
@@ -57,10 +76,17 @@ const PERCENTILE_FRACTIONS = FLOW_REGIME_BASELINE.percentiles.map(
 /** One element of a Postgres NUMERIC[] as the Neon driver returns it. */
 type RawNumeric = string | number | null;
 
+/** A Postgres DATE as the Neon driver returns it (Date or string), or null. */
+type RawDate = string | Date | null;
+
 interface SlotPercentileRow {
   slot: number;
   n_days_nd: number | string | bigint | null;
   n_days_idx: number | string | bigint | null;
+  /** Earliest contributing trading date for this slot (YYYY-MM-DD), or null. */
+  min_date: RawDate;
+  /** Latest contributing trading date for this slot (YYYY-MM-DD), or null. */
+  max_date: RawDate;
   nd_breakpoints: RawNumeric[] | null;
   idx_breakpoints: RawNumeric[] | null;
 }
@@ -83,12 +109,32 @@ export interface LoadedFlowRegimeBaseline {
    */
   baseline: FlowRegimeBaseline;
   /**
-   * Set of slot indices whose breakpoints were replaced with DB-computed
-   * values (≥ min_days_per_slot days). The cron stamps baseline_version 2 for
-   * these and 1 for fallback slots, so a snapshot records which distribution
-   * scored it.
+   * Set of slot indices that went fully live — BOTH the nd and idx metrics had
+   * ≥ min_days_per_slot usable days, so the committed JSON breakpoints were
+   * replaced by DB-computed ones for both. The cron stamps baseline_version 2
+   * for these and 1 for fallback slots, so a snapshot honestly records that it
+   * was scored entirely against the live distribution.
    */
   liveSlots: ReadonlySet<number>;
+}
+
+/**
+ * Per-slot provenance for a live slot — the day-set that backed its
+ * DB-computed breakpoints. Logged (not persisted) so "which days scored this
+ * baseline" is diagnosable without a schema column (finding #8).
+ */
+interface LiveSlotProvenance {
+  slot: number;
+  nDays: number;
+  minDate: string | null;
+  maxDate: string | null;
+}
+
+/** Coerce a Postgres DATE (driver may return a Date) to a YYYY-MM-DD string, or null. */
+function dateStrOrNull(v: RawDate): string | null {
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return v;
 }
 
 /** Coerce a Postgres NUMERIC[] (driver may return string elements) to numbers, dropping non-finite. */
@@ -104,15 +150,55 @@ function coerceBreakpoints(raw: RawNumeric[] | null): number[] | null {
 }
 
 /**
+ * A defensively-cloned committed slot — its breakpoint arrays are sliced off
+ * the module-level FLOW_REGIME_BASELINE so a warm-instance caller can never
+ * mutate the shared committed constant through the returned baseline (#7).
+ */
+function clonedSeedSlot(
+  jsonSlot: FlowRegimeSlotBaseline,
+): FlowRegimeSlotBaseline {
+  return {
+    ...jsonSlot,
+    nd_tilt_breakpoints: jsonSlot.nd_tilt_breakpoints.slice(),
+    idx0dte_put_share_breakpoints:
+      jsonSlot.idx0dte_put_share_breakpoints.slice(),
+  };
+}
+
+/**
+ * Module-scope, single-entry cache keyed by ET date. The daily cron is the SOLE
+ * writer of flow_regime_slot_daily and runs once per day, so the loader's
+ * aggregation result is invariant within an ET day. Warm serverless instances
+ * reuse it across the 5-min ticks; a new ET day (or a different key) busts it
+ * and recomputes. Holds the resolved promise so concurrent ticks share one
+ * in-flight query rather than racing.
+ */
+let baselineCache: {
+  etDate: string;
+  promise: Promise<LoadedFlowRegimeBaseline>;
+} | null = null;
+
+/** Test-only: reset the module-scope ET-date cache so each test computes fresh. */
+export function __resetFlowRegimeBaselineCache(): void {
+  baselineCache = null;
+}
+
+/**
  * Build the self-maintaining baseline by computing per-slot percentile
  * breakpoints from flow_regime_slot_daily, falling back per-slot to the
- * committed JSON until a slot has ≥ min_days_per_slot days.
+ * committed JSON until a slot has ≥ min_days_per_slot days for BOTH metrics.
+ *
+ * Cached per ET date (the daily cron writes at most once/day); the first tick
+ * of a given ET day runs the query + build, later ticks reuse it (#4).
  *
  * ONE aggregation query. Per slot it computes, in a single pass:
- *   - the count of days usable for each metric (nd_den > 0 / total_premium > 0),
+ *   - the count of days usable for each metric (nd_den > 0 / total_premium > 0,
+ *     each additionally gated on n_trades ≥ MIN_DAY_SLOT_TRADES so low-n
+ *     holiday/partial days never count — #1),
+ *   - the min/max contributing date (for provenance logging — #8),
  *   - percentile_cont(ARRAY[...]) WITHIN GROUP (ORDER BY ratio) for each metric,
- *     guarding a zero denominator with NULLIF so a degenerate day is excluded
- *     rather than poisoning the ordering.
+ *     over the SAME quorum-filtered population, guarding a zero denominator with
+ *     NULLIF so a degenerate day is excluded rather than poisoning the ordering.
  *
  * Robust to an empty table: every slot falls back to the committed JSON and
  * `liveSlots` is empty (so the cron stamps baseline_version 1 everywhere —
@@ -121,23 +207,48 @@ function coerceBreakpoints(raw: RawNumeric[] | null): number[] | null {
 export async function loadFlowRegimeBaseline(
   sql: SqlTag,
 ): Promise<LoadedFlowRegimeBaseline> {
+  const etDate = getETToday();
+  if (baselineCache?.etDate === etDate) {
+    return baselineCache.promise;
+  }
+  const promise = computeFlowRegimeBaseline(sql);
+  baselineCache = { etDate, promise };
+  // If the query rejects, drop the cache so the next tick retries instead of
+  // serving a permanently-rejected promise for the rest of the ET day.
+  promise.catch(() => {
+    if (baselineCache?.promise === promise) baselineCache = null;
+  });
+  return promise;
+}
+
+async function computeFlowRegimeBaseline(
+  sql: SqlTag,
+): Promise<LoadedFlowRegimeBaseline> {
   const minDays = FLOW_REGIME_BASELINE.min_days_per_slot;
 
-  // percentile_cont over the per-day ratio, computed per slot. NULLIF guards a
-  // zero denominator (that day contributes NULL → dropped by percentile_cont
-  // and by the COUNT filter). The fractions array is positionally aligned with
-  // the committed `percentiles` grid.
+  // percentile_cont over the per-day ratio, computed per slot. The COUNT filters
+  // and the percentile_cont ORDER BY all gate on n_trades ≥ MIN_DAY_SLOT_TRADES
+  // so a low-n holiday/partial day neither counts toward the live-depth gate nor
+  // enters the ordered population (#1b). NULLIF guards a zero denominator (that
+  // day contributes NULL → dropped by percentile_cont). The fractions array is
+  // positionally aligned with the committed `percentiles` grid.
   const rows = (await sql`
     SELECT
       slot,
-      COUNT(*) FILTER (WHERE nd_den > 0)        AS n_days_nd,
-      COUNT(*) FILTER (WHERE total_premium > 0) AS n_days_idx,
+      COUNT(*) FILTER (
+        WHERE nd_den > 0 AND n_trades >= ${MIN_DAY_SLOT_TRADES}
+      ) AS n_days_nd,
+      COUNT(*) FILTER (
+        WHERE total_premium > 0 AND n_trades >= ${MIN_DAY_SLOT_TRADES}
+      ) AS n_days_idx,
+      MIN(date) FILTER (WHERE n_trades >= ${MIN_DAY_SLOT_TRADES}) AS min_date,
+      MAX(date) FILTER (WHERE n_trades >= ${MIN_DAY_SLOT_TRADES}) AS max_date,
       percentile_cont(${PERCENTILE_FRACTIONS}::float8[]) WITHIN GROUP (
         ORDER BY nd_num / NULLIF(nd_den, 0)
-      ) AS nd_breakpoints,
+      ) FILTER (WHERE n_trades >= ${MIN_DAY_SLOT_TRADES}) AS nd_breakpoints,
       percentile_cont(${PERCENTILE_FRACTIONS}::float8[]) WITHIN GROUP (
         ORDER BY idx_put_premium / NULLIF(total_premium, 0)
-      ) AS idx_breakpoints
+      ) FILTER (WHERE n_trades >= ${MIN_DAY_SLOT_TRADES}) AS idx_breakpoints
     FROM flow_regime_slot_daily
     GROUP BY slot
   `) as SlotPercentileRow[];
@@ -146,52 +257,69 @@ export async function loadFlowRegimeBaseline(
   for (const r of rows) bySlot.set(r.slot, r);
 
   const liveSlots = new Set<number>();
+  const provenance: LiveSlotProvenance[] = [];
 
-  // Clone the committed baseline; replace per-slot breakpoints when live.
+  // Clone the committed baseline; replace a slot's breakpoints with DB-computed
+  // ones ONLY when BOTH metrics are live (≥ minDays usable days AND a full,
+  // finite breakpoint array). Otherwise keep the fully-cloned committed seed so
+  // baseline_version 2 honestly means "both metrics live" (#3).
   const slots: FlowRegimeSlotBaseline[] = FLOW_REGIME_BASELINE.slots.map(
     (jsonSlot) => {
       const row = bySlot.get(jsonSlot.slot);
-      if (!row) return { ...jsonSlot };
+      if (!row) return clonedSeedSlot(jsonSlot);
 
       const nDaysNd = numOrNull(row.n_days_nd) ?? 0;
       const nDaysIdx = numOrNull(row.n_days_idx) ?? 0;
       const ndBreaks = coerceBreakpoints(row.nd_breakpoints);
       const idxBreaks = coerceBreakpoints(row.idx_breakpoints);
 
-      // A slot goes live only when BOTH metrics have ≥ minDays usable days AND
-      // produced a full, finite breakpoint array. Otherwise keep the JSON seed.
-      const ndLive =
+      const bothLive =
         nDaysNd >= minDays &&
-        ndBreaks?.length === jsonSlot.nd_tilt_breakpoints.length;
-      const idxLive =
         nDaysIdx >= minDays &&
+        ndBreaks?.length === jsonSlot.nd_tilt_breakpoints.length &&
         idxBreaks?.length === jsonSlot.idx0dte_put_share_breakpoints.length;
 
-      if (!ndLive && !idxLive) return { ...jsonSlot };
+      if (!bothLive || !ndBreaks || !idxBreaks) return clonedSeedSlot(jsonSlot);
 
-      // n_days drives the evaluator's own thin-baseline gate; use the metric
-      // depth that actually went live (max of the two live counts).
-      const liveNDays = Math.max(ndLive ? nDaysNd : 0, idxLive ? nDaysIdx : 0);
+      // Both live → n_days reflects the shallower of the two live depths (both
+      // distributions back the slot, so the gate should see the limiting one).
+      const liveNDays = Math.min(nDaysNd, nDaysIdx);
 
       liveSlots.add(jsonSlot.slot);
+      provenance.push({
+        slot: jsonSlot.slot,
+        nDays: liveNDays,
+        minDate: dateStrOrNull(row.min_date),
+        maxDate: dateStrOrNull(row.max_date),
+      });
       return {
         slot: jsonSlot.slot,
         n_days: Math.max(jsonSlot.n_days, liveNDays),
-        nd_tilt_breakpoints:
-          ndLive && ndBreaks ? ndBreaks : jsonSlot.nd_tilt_breakpoints,
-        idx0dte_put_share_breakpoints:
-          idxLive && idxBreaks
-            ? idxBreaks
-            : jsonSlot.idx0dte_put_share_breakpoints,
+        nd_tilt_breakpoints: ndBreaks,
+        idx0dte_put_share_breakpoints: idxBreaks,
       };
     },
   );
+
+  // Provenance observability (#8): which day-set backed this baseline, without a
+  // schema column. Logged only when at least one slot went live.
+  if (liveSlots.size > 0) {
+    logger.info(
+      {
+        liveSlotCount: liveSlots.size,
+        totalSlots: FLOW_REGIME_BASELINE.slots.length,
+        minDays,
+        liveSlots: provenance,
+      },
+      'flow-regime baseline: live slots from flow_regime_slot_daily',
+    );
+  }
 
   const baseline: FlowRegimeBaseline = {
     ...FLOW_REGIME_BASELINE,
     generated_from:
       liveSlots.size > 0
-        ? `Live from Neon flow_regime_slot_daily (${liveSlots.size}/${FLOW_REGIME_BASELINE.slots.length} slots ≥${minDays}d); remaining slots seeded from committed flow-regime-baseline.json.`
+        ? `Live from Neon flow_regime_slot_daily (${liveSlots.size}/${FLOW_REGIME_BASELINE.slots.length} slots ≥${minDays}d both metrics); remaining slots seeded from committed flow-regime-baseline.json.`
         : FLOW_REGIME_BASELINE.generated_from,
     slots,
   };

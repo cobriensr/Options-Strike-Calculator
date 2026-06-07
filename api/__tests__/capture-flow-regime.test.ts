@@ -52,6 +52,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/capture-flow-regime.js';
 import { FLOW_REGIME_BASELINE } from '../_lib/flow-regime.js';
+import { __resetFlowRegimeBaselineCache } from '../_lib/flow-regime-baseline-live.js';
 import { mockRequest, mockResponse } from './helpers';
 
 const DATE = '2026-06-05';
@@ -70,6 +71,9 @@ function liveLoaderRow(slot: number) {
 }
 
 beforeEach(() => {
+  // The on-read baseline loader caches per ET date at module scope; reset so
+  // each test's loader SELECT result is recomputed, not served from cache.
+  __resetFlowRegimeBaselineCache();
   mockSql.mockReset();
   mockSql.mockResolvedValue([]);
   mockCronGuard.mockReset();

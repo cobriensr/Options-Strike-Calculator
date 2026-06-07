@@ -67,7 +67,7 @@ export function toFlowTradeRow(
  * `executed_at` is a TIMESTAMPTZ; we localize it to ET via getETTime so the
  * slot derivation matches the live cron's `getETTotalMinutes(now)` path.
  */
-export function bucketRowsBySlot(
+function bucketRowsBySlot(
   rows: readonly WsOptionTradeRow[],
   tradeDateEt: string,
 ): Map<number, FlowTradeRow[]> {
@@ -98,6 +98,7 @@ export interface SlotAccumulation {
  * Reduce a full day's raw rows into per-slot accumulations (sums + n_trades)
  * via the shared bucketing + the Phase 1 computeFlowMetrics. Only slots that
  * actually had ≥1 RTH trade are returned (the daily cron upserts exactly these).
+ * Order is not significant — the caller only iterates to upsert.
  */
 export function accumulateDailySlots(
   rows: readonly WsOptionTradeRow[],
@@ -112,6 +113,5 @@ export function accumulateDailySlots(
       nTrades: bucket.length,
     });
   }
-  out.sort((a, b) => a.slot - b.slot);
   return out;
 }

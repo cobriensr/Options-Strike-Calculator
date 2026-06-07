@@ -38,7 +38,7 @@ import {
   computeFlowMetrics,
   evaluateFlowRegime,
   slotForEtMinute,
-  FLOW_REGIME_BASELINE,
+  slotStartEtMinute,
 } from '../_lib/flow-regime.js';
 import { loadFlowRegimeBaseline } from '../_lib/flow-regime-baseline-live.js';
 import {
@@ -76,15 +76,14 @@ export default withCronInstrumentation(
     }
 
     // Lower bound = the slot's start minute as a UTC instant; upper
-    // bound = now. This window is the in-progress bucket so far.
-    const slotStartEtMinute =
-      FLOW_REGIME_BASELINE.rth_start_minute +
-      slot * FLOW_REGIME_BASELINE.bucket_minutes;
-    const slotStartIso = etWallClockToUtcIso(date, slotStartEtMinute);
+    // bound = now. This window is the in-progress bucket so far. The
+    // slot↔minute inverse is deduped into slotStartEtMinute (#10c).
+    const startMinute = slotStartEtMinute(slot);
+    const slotStartIso = etWallClockToUtcIso(date, startMinute);
     if (slotStartIso === null) {
       // getETDateStr should never produce a malformed date; defensive.
       ctx.logger.warn(
-        { date, slotStartEtMinute },
+        { date, slotStartEtMinute: startMinute },
         'capture-flow-regime: could not resolve slot start, skipping',
       );
       return {
