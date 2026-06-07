@@ -16,6 +16,7 @@ import { SectionBox } from '../ui/SectionBox.js';
 import { CompactDisclosure } from '../ui/CompactDisclosure.js';
 import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { useSilentBoomTickerCounts } from '../../hooks/useSilentBoomTickerCounts.js';
+import { useStickyUnion } from '../../hooks/useStickyUnion.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
@@ -615,13 +616,96 @@ export function SilentBoomSection({
   // Destructure response fields into referentially-stable locals — child
   // components (banners, ticker-group) consume the array reference and
   // `useMemo` deps below pin on `silentBoomFeed.data`.
-  const alerts = useMemo(
+  const fetchedAlerts = useMemo(
     () => silentBoomFeed.data?.alerts ?? [],
     [silentBoomFeed.data],
   );
-  const total = silentBoomFeed.data?.total ?? 0;
+  const serverTotal = silentBoomFeed.data?.total ?? 0;
   const offset = silentBoomFeed.data?.offset ?? 0;
   const hasMore = silentBoomFeed.data?.hasMore ?? false;
+
+  // ── Never-vanish accumulator (mirror of lottery-no-vanish-2026-05-29) ──
+  //
+  // Once a Silent Boom alert appears in the live feed it must never
+  // visually disappear for the rest of the trading day, even when a later
+  // poll omits it — a server-degrade `[]`, an ask-100 / takeit-gate
+  // suppression flip, or a transient empty response. `useStickyUnion`
+  // upserts each incoming alert (so live fields like score / outcomes /
+  // takeitProb stay fresh) and pins the rest, persisting to localStorage
+  // so a refresh rehydrates the day's union.
+  //
+  // The stable key is `optionChainId|bucketCt` — the immutable spike-
+  // bucket identity. The detector inserts each (option_chain_id,
+  // bucket_ct) exactly once (ON CONFLICT DO NOTHING on the
+  // silent_boom_alerts_chain_bucket_uq unique index), so the row — and
+  // its BIGSERIAL id — never change once seen, and the key is invariant
+  // across polls. It MUST include bucket_ct: Silent Boom is one row per
+  // (chain, bucket), so two spike buckets of the same chain are distinct
+  // alerts that must pin independently (unlike Lottery's one-row-per-
+  // chain-per-day, which keyed on optionChainId alone). OCC symbols + the
+  // bucket ISO repeat across days only within a day, and the union is
+  // day-scoped via `storageKey`, so a new date resets the union.
+  //
+  // The union is only engaged in the live polling view (today, all-day,
+  // page 0): that's the only view that re-polls and can therefore drop a
+  // row out from under the trader. Bucket-scrub slices and paged offsets
+  // are distinct point-in-time / offset views, so pinning across them
+  // would wrongly pile unrelated rows together — those views pass through
+  // the raw server response. Historical replay never polls. The union
+  // persists in localStorage across the detour and resumes on return.
+  const unionEngaged = !isHistorical && bucketIso == null && page === 0;
+  const alertsStorageKey = `feed-union:silent-boom:${date}`;
+  const alertKey = useCallback(
+    (a: SilentBoomAlert) => `${a.optionChainId}|${a.bucketCt}`,
+    [],
+  );
+  // The union INGESTS only on page 0 (the single polling view — pages > 0
+  // are static single-fetches that can't drop a row out from under the
+  // trader; see `historical: historical || page !== 0` in
+  // useSilentBoomFeed). On pages > 0 we pass `[]` so the union does NOT
+  // grow with the next page's alerts (that would pile page-2+ rows onto
+  // page 0); the hook still rehydrates from localStorage on mount, so
+  // `unionedAlerts` reflects the persisted page-0 union and can be used to
+  // de-duplicate.
+  const unionedAlerts = useStickyUnion(unionEngaged ? fetchedAlerts : [], {
+    key: alertKey,
+    storageKey: alertsStorageKey,
+  });
+  // Pagination-hole guard. Page 0 renders the WHOLE union, so an alert
+  // that was once top-50 (pinned on page 0) but has since demoted past
+  // PAGE_SIZE still lives in the page-0 union AND is returned by the
+  // server on a later page. Without a guard it would render on BOTH pages.
+  // On the live view's pages > 0 we drop any fetched row already pinned on
+  // page 0, so every alert renders in exactly one place while the long
+  // tail (rows the server serves but page 0 never held) stays reachable.
+  const pinnedAlertKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const a of unionedAlerts) keys.add(alertKey(a));
+    return keys;
+  }, [unionedAlerts, alertKey]);
+  const dedupedPagedAlerts = useMemo(
+    () => fetchedAlerts.filter((a) => !pinnedAlertKeys.has(alertKey(a))),
+    [fetchedAlerts, pinnedAlertKeys, alertKey],
+  );
+  // Downstream surfaces (banners, filters, grouping, counts) consume the
+  // unioned array on the live page 0, the de-duplicated server slice on
+  // later live pages, and the raw response on the bucket-scrub / historical
+  // views.
+  const livePagedView = !isHistorical && bucketIso == null && page > 0;
+  const alerts = unionEngaged
+    ? unionedAlerts
+    : livePagedView
+      ? dedupedPagedAlerts
+      : fetchedAlerts;
+
+  // `total` is the server's reachable alert count for the day. Once the
+  // union has pinned alerts the server later dropped, the union can hold
+  // MORE rows than the server reports — so the header / pagination must
+  // never claim fewer alerts than are actually rendered. Floor the
+  // displayed total at the unioned alert count in the live view.
+  const total = unionEngaged
+    ? Math.max(serverTotal, alerts.length)
+    : serverTotal;
 
   // All-day ticker counts for the chip strip — independent of the
   // 50-item page slice so tickers that fired on later pages still
@@ -756,13 +840,44 @@ export function SilentBoomSection({
   // sorts count desc, and `flex flex-wrap` lets the chip strip grow
   // vertically on heavy days. Lets the user filter to TLT/CRWV/AMD-style
   // singleton-alert tickers without typing.
-  const topTickers = useMemo(
-    () =>
-      (tickerCounts.data?.tickers ?? []).map(
-        (t) => [t.ticker, t.count] as const,
-      ),
-    [tickerCounts.data],
-  );
+  //
+  // Counts are reconciled against the never-vanish union so an alert the
+  // server later dropped (degrade `[]` / ask-100 flip) still keeps its
+  // ticker on the strip and never under-counts what's rendered. The
+  // all-day counts endpoint is page-independent and normally broader than
+  // the union (which only holds alerts the trader has actually paged
+  // through), so we take the per-ticker MAX of the two sources: the
+  // server count wins on tickers it still reports, and the union backfills
+  // any ticker the server dropped. Only engaged in the live view (where
+  // the union is active); paged / scrubbed / historical views show the raw
+  // server counts.
+  const unionTickerCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!unionEngaged) return counts;
+    for (const a of alerts) {
+      counts.set(a.underlyingSymbol, (counts.get(a.underlyingSymbol) ?? 0) + 1);
+    }
+    return counts;
+  }, [unionEngaged, alerts]);
+  const topTickers = useMemo(() => {
+    const merged = new Map<string, number>();
+    for (const t of tickerCounts.data?.tickers ?? []) {
+      merged.set(t.ticker, t.count);
+    }
+    for (const [ticker, unionCount] of unionTickerCounts) {
+      merged.set(ticker, Math.max(merged.get(ticker) ?? 0, unionCount));
+    }
+    // Preserve the server's count-desc ordering, then append any
+    // union-only tickers (sorted desc) the server dropped.
+    const serverOrder = (tickerCounts.data?.tickers ?? []).map((t) => t.ticker);
+    const seen = new Set(serverOrder);
+    const extras = [...unionTickerCounts.keys()]
+      .filter((t) => !seen.has(t))
+      .sort((a, b) => (merged.get(b) ?? 0) - (merged.get(a) ?? 0));
+    return [...serverOrder, ...extras].map(
+      (ticker) => [ticker, merged.get(ticker) ?? 0] as const,
+    );
+  }, [tickerCounts.data, unionTickerCounts]);
 
   // Group the displayed alerts by ticker so each underlying renders
   // as one collapsible row instead of N scattered cards. Grouping +
