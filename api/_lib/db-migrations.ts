@@ -5197,4 +5197,32 @@ export const MIGRATIONS: Migration[] = [
             ON flow_regime_snapshots (date DESC)`,
     ],
   },
+  {
+    id: 186,
+    description:
+      'Create flow_regime_0dte_daily table for the live 0DTE gamma-regime panel self-scoring scorecard. The nightly cron upserts one row per trading day with gate classification, GEX open/mid/flip context, intraday signal timestamps (mostly_red, iv_break, midday_deep_neg), and realized outcome columns (oc_ret_pct, range_pct, dir_eff, big_down, big_up). DATE PRIMARY KEY enforces one row per session; idempotent upsert on the cron path. See docs/superpowers/plans/2026-06-07-regime-0dte-panel.md Task 4.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS flow_regime_0dte_daily (
+          date                  DATE PRIMARY KEY,
+          gate                  TEXT NOT NULL,
+          gex_open              NUMERIC,
+          gex_mid               NUMERIC,
+          flip_minus_open_pct   NUMERIC,
+          mostly_red            BOOLEAN NOT NULL DEFAULT false,
+          mostly_red_at         TEXT,
+          iv_break              BOOLEAN NOT NULL DEFAULT false,
+          iv_break_at           TEXT,
+          iv_break_mag_pct      NUMERIC,
+          midday_deep_neg       BOOLEAN NOT NULL DEFAULT false,
+          oc_ret_pct            NUMERIC,
+          range_pct             NUMERIC,
+          dir_eff               NUMERIC,
+          big_down              BOOLEAN,
+          big_up                BOOLEAN,
+          created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `,
+    ],
+  },
 ];
