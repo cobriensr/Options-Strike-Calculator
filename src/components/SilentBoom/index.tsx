@@ -16,6 +16,7 @@ import { SectionBox } from '../ui/SectionBox.js';
 import { CompactDisclosure } from '../ui/CompactDisclosure.js';
 import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { useSilentBoomTickerCounts } from '../../hooks/useSilentBoomTickerCounts.js';
+import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
@@ -433,6 +434,73 @@ const todayCt = (): string => {
   return fmt.format(new Date());
 };
 
+/**
+ * djb2 string hash → unsigned base36. Produces a single opaque token with
+ * NO `:`/`|` delimiters, so it can be appended to a `:`-delimited union
+ * storageKey without confusing useStickyUnion's segment-aware stale-key
+ * sweep (which parses `feed-union:<feed>:<date>[:<sig>]`). Mirrors the
+ * LotteryFinder helper of the same name.
+ */
+function hashToken(input: string): string {
+  let h = 5381;
+  for (let i = 0; i < input.length; i++) {
+    h = (h * 33) ^ input.charCodeAt(i);
+  }
+  // >>> 0 coerces to an unsigned 32-bit int before base36.
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * Active SERVER-SIDE filter params that scope the Silent Boom feed —
+ * exactly the params `useSilentBoomFeed` forwards to /api/silent-boom-feed
+ * that change the server's reachable result set. Changing any of these
+ * rescopes the never-vanish union (finding #1): a previously-pinned row the
+ * tightened filter now excludes must DROP rather than stay pinned.
+ *
+ * `sort` is intentionally EXCLUDED: it only re-orders the same reachable set,
+ * so re-sorting must not blow away the union. Client-only filters (bucket
+ * scrub, hideGhosts, hideGated, hideCounterFlow, moneyness) are EXCLUDED for
+ * the same reason as Lottery — they prune the rendered view without changing
+ * the server's reachable set, so they must not rescope the union.
+ */
+interface SilentBoomFilterSigParams {
+  minVolOi: number;
+  askPctBand: SilentBoomAskPctBand | null;
+  minScore: number | null;
+  minDte: number;
+  minPremium: number;
+  hideLatePm: boolean;
+  burst: SilentBoomBurstColor | null;
+  aggressivePremium: boolean;
+  minTakeitProb: number;
+  optionType: OptionType | null;
+  tod: SilentBoomTod | null;
+  ticker: string | null;
+}
+
+/**
+ * Stable, compact signature of the active server-side filters. Joined in a
+ * fixed field order so the same filter setting always yields the same token,
+ * then hashed to a delimiter-free base36 string for the storageKey suffix.
+ */
+function buildSilentBoomFilterSig(p: SilentBoomFilterSigParams): string {
+  const raw = [
+    `v${p.minVolOi}`,
+    `b${p.askPctBand ?? 'x'}`,
+    `s${p.minScore ?? 'x'}`,
+    `d${p.minDte}`,
+    `p${p.minPremium}`,
+    `l${p.hideLatePm ? 1 : 0}`,
+    `u${p.burst ?? 'x'}`,
+    `a${p.aggressivePremium ? 1 : 0}`,
+    `t${p.minTakeitProb}`,
+    `o${p.optionType ?? 'x'}`,
+    `w${p.tod ?? 'x'}`,
+    `k${p.ticker ?? 'x'}`,
+  ].join('|');
+  return hashToken(raw);
+}
+
 const formatTimeCT = (input: number | string): string =>
   new Date(input).toLocaleTimeString('en-US', {
     hour: '2-digit',
@@ -446,6 +514,14 @@ export function SilentBoomSection({
   compact = false,
 }: SilentBoomSectionProps) {
   const [date, setDate] = useState<string>(todayCt());
+  // True once the user has manually picked a historical date from the date
+  // input. Gates the Central-midnight auto-roll (finding #4): a tab left
+  // open past midnight should advance to the new trading day so the
+  // never-vanish union rescopes (storageKey flips) instead of upserting the
+  // new day's alerts into the prior day's union — but ONLY when the user is
+  // sitting on the live day, never when they've scrubbed back to a
+  // historical date.
+  const [manualDatePick, setManualDatePick] = useState<boolean>(false);
   const [tickerFilter, setTickerFilter] = useState<string | null>(null);
   const [optionTypeFilter, setOptionTypeFilter] = useState<OptionType | null>(
     null,
@@ -615,18 +691,20 @@ export function SilentBoomSection({
   // Destructure response fields into referentially-stable locals — child
   // components (banners, ticker-group) consume the array reference and
   // `useMemo` deps below pin on `silentBoomFeed.data`.
-  const alerts = useMemo(
+  const fetchedAlerts = useMemo(
     () => silentBoomFeed.data?.alerts ?? [],
     [silentBoomFeed.data],
   );
-  const total = silentBoomFeed.data?.total ?? 0;
+  const serverTotal = silentBoomFeed.data?.total ?? 0;
   const offset = silentBoomFeed.data?.offset ?? 0;
   const hasMore = silentBoomFeed.data?.hasMore ?? false;
 
   // All-day ticker counts for the chip strip — independent of the
   // 50-item page slice so tickers that fired on later pages still
   // appear. Mirrors the feed's server-side filters minus `ticker`
-  // (the chip strip IS the ticker selector).
+  // (the chip strip IS the ticker selector). Declared before the
+  // never-vanish block so its rows feed the per-ticker MAX-merge inside
+  // `useNeverVanishFeed`.
   const tickerCounts = useSilentBoomTickerCounts({
     date,
     marketOpen,
@@ -643,6 +721,107 @@ export function SilentBoomSection({
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minTakeitProb: takeitFloor,
   });
+  const tickerCountsData = useMemo(
+    () => tickerCounts.data?.tickers ?? [],
+    [tickerCounts.data],
+  );
+
+  // ── Never-vanish accumulator (spec never-vanish-feed-hook-2026-06-07) ──
+  //
+  // Once a Silent Boom alert appears in the live feed it must never
+  // visually disappear for the rest of the trading day, even when a later
+  // poll omits it — a server-degrade `[]`, an ask-100 / takeit-gate
+  // suppression flip, or a transient empty response. `useNeverVanishFeed`
+  // wraps `useStickyUnion` and consolidates the engaged-gate + page>0 dedup
+  // + total floor + server-anchored pagination + per-ticker MAX-merge that
+  // this panel (and Lottery) previously hand-rolled.
+  //
+  // The stable key is `optionChainId|bucketCt` — the immutable spike-bucket
+  // identity. The detector inserts each (option_chain_id, bucket_ct) exactly
+  // once (ON CONFLICT DO NOTHING on the silent_boom_alerts_chain_bucket_uq
+  // unique index), so the row — and its BIGSERIAL id — never change once
+  // seen, and the key is invariant across polls. It MUST include bucket_ct:
+  // Silent Boom is one row per (chain, bucket), so two spike buckets of the
+  // same chain are distinct alerts that must pin independently (unlike
+  // Lottery's one-row-per-chain-per-day, which keyed on optionChainId alone).
+  //
+  // storageKey = `feed-union:silent-boom:${date}:${filterSig}` (finding #1):
+  // OCC symbols + the bucket ISO repeat across days, so the union is
+  // day-scoped to keep days isolated; AND it carries a signature of the
+  // active SERVER-SIDE filters so changing a server filter rescopes the
+  // union — a previously-pinned row that the tightened filter now excludes
+  // drops instead of staying pinned. useStickyUnion's hardened stale-key
+  // sweep preserves same-day different-sig siblings, so toggling a filter
+  // back and forth re-shows the original union.
+  //
+  // The union is only engaged in the live polling view (today, all-day,
+  // page 0): the only view that re-polls and can drop a row out from under
+  // the trader. Bucket-scrub slices and paged offsets pass through the raw
+  // server response; historical replay never polls; the union persists in
+  // localStorage across the detour and resumes on return.
+  const unionEngaged = !isHistorical && bucketIso == null && page === 0;
+  const filterSig = buildSilentBoomFilterSig({
+    minVolOi,
+    askPctBand,
+    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minDte,
+    minPremium: minPremiumK * 1000,
+    hideLatePm,
+    burst: burstFilter,
+    aggressivePremium,
+    minTakeitProb: takeitFloor,
+    optionType: optionTypeFilter,
+    tod: todFilter,
+    ticker: tickerFilter,
+  });
+  const alertsStorageKey = `feed-union:silent-boom:${date}:${filterSig}`;
+  const alertKey = useCallback(
+    (a: SilentBoomAlert) => `${a.optionChainId}|${a.bucketCt}`,
+    [],
+  );
+  const alertSymbol = useCallback(
+    (a: SilentBoomAlert) => a.underlyingSymbol,
+    [],
+  );
+
+  const alertsFeed = useNeverVanishFeed<SilentBoomAlert>({
+    fetched: fetchedAlerts,
+    engaged: unionEngaged,
+    storageKey: alertsStorageKey,
+    key: alertKey,
+    getSymbol: alertSymbol,
+    serverTotal,
+    hasMore,
+    pageSize: PAGE_SIZE,
+    serverTickerCounts: tickerCountsData,
+  });
+
+  // Pagination-hole guard. The live page renders the WHOLE union, so an
+  // alert pinned on page 0 that later demotes past the PAGE_SIZE cut is
+  // also returned by the server on a later page — without a guard it
+  // renders on BOTH. On the live view's pages > 0 we drop any fetched row
+  // already pinned on page 0; the long tail the server only serves on
+  // later pages stays reachable.
+  const livePagedView = !isHistorical && bucketIso == null && page > 0;
+  const dedupedPagedAlerts = useMemo(
+    () => fetchedAlerts.filter((a) => !alertsFeed.unionKeys.has(alertKey(a))),
+    [fetchedAlerts, alertsFeed.unionKeys, alertKey],
+  );
+  // Downstream surfaces (banners, filters, grouping, counts) consume the
+  // unioned array on the live page 0, the de-duplicated server slice on
+  // later live pages, and the raw response on the bucket-scrub / historical
+  // views.
+  const alerts = unionEngaged
+    ? alertsFeed.rows
+    : livePagedView
+      ? dedupedPagedAlerts
+      : fetchedAlerts;
+
+  // Engaged → union length floor (the "N alerts" count); disengaged →
+  // server total. Pagination is server-anchored via alertsFeed.totalPages
+  // (finding #3) so a union rendering > PAGE_SIZE pinned rows on the live
+  // page never advertises an unreachable page.
+  const total = alertsFeed.total;
 
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
   // browser-TZ-independent. Reused from the LotteryFinder helper so the
@@ -661,6 +840,27 @@ export function SilentBoomSection({
     }, 30_000);
     return () => clearInterval(id);
   }, []);
+
+  // Central-midnight auto-roll (finding #4). A tab left open across the
+  // trading-day boundary must advance `date` to the new live day so the
+  // never-vanish union's storageKey rescopes — otherwise the new day's
+  // alerts would upsert into the prior day's union and the count / pin
+  // state would bleed across days. We only auto-advance when the user is
+  // sitting on the live day (`!manualDatePick`); a user who scrubbed back
+  // to a historical replay is left untouched. Uses the SAME Central-day
+  // basis (`todayCt()`) the component already uses for `isLive` /
+  // `isHistorical`, so the roll and those flags stay internally consistent.
+  // Low-frequency (60s) check off its own interval — `setDate` is a true
+  // no-op on the dominant case where the day is unchanged (React bails out
+  // on an equal primitive), so this cannot drive a render loop.
+  useEffect(() => {
+    if (manualDatePick) return;
+    const id = setInterval(() => {
+      const live = todayCt();
+      setDate((prev) => (prev === live ? prev : live));
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [manualDatePick]);
 
   // Apply the client-side filters (bucket scrub + late-PM hide) to the
   // server-paginated list. Server `total` and pagination remain tied to
@@ -748,20 +948,24 @@ export function SilentBoomSection({
     bucketIso == null && moneynessMode !== 'all'
       ? alerts.filter((a) => a.underlyingPriceAtSpike == null).length
       : 0;
-  // All tickers with at least one alert today, from the dedicated
-  // counts endpoint — independent of pagination. The list was
-  // previously built from the 50-item page slice (hid tickers that
-  // fired on later pages) and then capped to 12 (hid the long tail
-  // of low-count tickers entirely). Now uncapped: the API already
-  // sorts count desc, and `flex flex-wrap` lets the chip strip grow
-  // vertically on heavy days. Lets the user filter to TLT/CRWV/AMD-style
-  // singleton-alert tickers without typing.
+  // All tickers with at least one alert today, from the dedicated counts
+  // endpoint — independent of pagination so tickers that fired on later
+  // pages still appear. Uncapped: the API sorts count desc and
+  // `flex flex-wrap` lets the chip strip grow vertically on heavy days.
+  //
+  // The per-ticker MAX-merge (server count vs. never-vanish union count) now
+  // lives in `useNeverVanishFeed`: the server count wins on tickers it still
+  // reports, the union backfills any ticker the server dropped (degrade `[]`
+  // / ask-100 flip), server count-desc order preserved with union-only
+  // tickers appended. Engaged in the live view only; paged / scrubbed /
+  // historical views pass through raw server counts. Re-shaped to the
+  // `[ticker, n]` tuple the chip strip consumes.
   const topTickers = useMemo(
     () =>
-      (tickerCounts.data?.tickers ?? []).map(
-        (t) => [t.ticker, t.count] as const,
+      alertsFeed.tickerCounts.map(
+        (t) => [t.ticker, t.count] as readonly [string, number],
       ),
-    [tickerCounts.data],
+    [alertsFeed.tickerCounts],
   );
 
   // Group the displayed alerts by ticker so each underlying renders
@@ -860,12 +1064,13 @@ export function SilentBoomSection({
   }, []);
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
-  // totalPages is accurate now that the load-bearing TAKE-IT filter
-  // is server-side. Smaller client-only chips (hideGhosts, hideGated,
-  // hideCounterFlow, moneynessMode, bucket scrub) can still leave a
-  // page lighter than PAGE_SIZE but cannot inflate the denominator
-  // by 10×+ the way TAKE-IT 0.70 used to.
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // SERVER-anchored totalPages (finding #3): derived from the server's
+  // reachable set (serverTotal), NOT the union-floored `total`. The
+  // never-vanish union may render MORE than PAGE_SIZE pinned rows on the
+  // live page — that's fine — but it must NOT advertise pages the server's
+  // `hasMore` can't reach. `useNeverVanishFeed` computes this as
+  // ceil(serverTotal / PAGE_SIZE).
+  const totalPages = alertsFeed.totalPages;
 
   // Filter-chip rows (sort/conviction/burst/TAKE-IT, min-dte/min-prem/ask%/
   // vol-OI, type/moneyness/tod, hide-toggles, ticker, realized-exit).
@@ -1315,6 +1520,10 @@ export function SilentBoomSection({
                 onChange={(e) => {
                   setDate(e.target.value);
                   setBucketIso(null);
+                  // Mark the date as user-chosen so the Central-midnight
+                  // auto-roll won't yank them off a historical replay.
+                  // Picking today again re-arms the auto-roll.
+                  setManualDatePick(e.target.value !== todayCt());
                 }}
                 className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none"
                 aria-label="Select trading day"

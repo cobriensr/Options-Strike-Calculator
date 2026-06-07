@@ -47,6 +47,21 @@ vi.mock('../components/LotteryFinder/LotteryFinderTickerGroup', () => ({
   ),
 }));
 
+// Stub the heavy LotteryRow (pulls a hook trio for the contract tape /
+// net-flow charts) so the pinned "Hot Right Now" ReignitionSection — which
+// renders LotteryRow directly, NOT via the TickerGroup stub above — emits
+// the same `lottery-row-${optionChainId}` testid the row assertions use.
+vi.mock('../components/LotteryFinder/LotteryRow', () => ({
+  LotteryRow: ({ fire }: { fire: LotteryFire }) => (
+    <div
+      data-testid={`lottery-row-${fire.optionChainId}`}
+      data-ticker={fire.underlyingSymbol}
+    >
+      {fire.underlyingSymbol} {fire.strike}
+    </div>
+  ),
+}));
+
 import { LotteryFinderSection } from '../components/LotteryFinder';
 
 // ── Fixtures ──────────────────────────────────────────────────────────
@@ -313,6 +328,487 @@ describe('LotteryFinderSection: populated rendering', () => {
     expect(
       screen.getByTestId('lottery-row-TSLA260508C00250000'),
     ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// NEVER-VANISH — useStickyUnion accumulator (live view)
+// ============================================================
+//
+// Once a lottery chain appears in the live polling view it must stay
+// rendered for the rest of the day even if a later poll omits it
+// (server degrade `[]`, Q1/Q2 suppression flip, chain_max_takeit
+// wobble). The section pins fires + reignited rows via useStickyUnion
+// keyed by optionChainId, day-scoped by storageKey. These tests drive
+// the guarantee by rerendering with the mocked feed dropping a row.
+
+describe('LotteryFinderSection: never-vanish accumulator', () => {
+  // Morning trigger (09:30 CT) keeps fires clear of any PM cutoff chips.
+  const AM = '2026-05-08T14:30:00Z';
+
+  it('keeps a fire pinned after a later poll omits it (server degrade [])', () => {
+    const fireX = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    const fireY = makeFire({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+    });
+
+    // Poll 1: both X and Y present.
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [fireX, fireY], total: 2 }),
+    );
+    const { rerender } = render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+
+    // Poll 2: server degrades and returns ONLY Y (X dropped). Without the
+    // union X would vanish; with it, X must remain rendered.
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [fireY], total: 1 }),
+    );
+    rerender(<LotteryFinderSection marketOpen={true} />);
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps a fire pinned when the entire feed blanks to [] on a poll', () => {
+    const fireX = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [fireX], total: 1 }),
+    );
+    const { rerender } = render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Full degrade: empty fires + total 0.
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+    rerender(<LotteryFinderSection marketOpen={true} />);
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+
+  it('updates a pinned fire in place when it reappears with changed fields', () => {
+    const fireX = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [fireX], total: 1 }),
+    );
+    const { rerender } = render(<LotteryFinderSection marketOpen={true} />);
+    expect(screen.getByText('AAPL 200')).toBeInTheDocument();
+
+    // Poll 2: same chain id, updated strike-derived label (fireCount up,
+    // strike changed for visibility of the upsert). The stub renders
+    // "{ticker} {strike}", so a strike bump proves the in-place update.
+    const fireXUpdated = makeFire({
+      id: 3,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 205,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [fireXUpdated], total: 1 }),
+    );
+    rerender(<LotteryFinderSection marketOpen={true} />);
+
+    // Still exactly one row for the chain, now showing the updated value.
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('AAPL 205')).toBeInTheDocument();
+    expect(screen.queryByText('AAPL 200')).not.toBeInTheDocument();
+  });
+
+  it('pins reignited (Hot Right Now) rows so the section never blanks on a degrade', () => {
+    const reignitedX = makeFire({
+      id: 1,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+      reignited: true,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [], reignitedFires: [reignitedX], total: 0 }),
+    );
+    const { rerender } = render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+
+    // Poll 2: reignitedFires degrades to [] — the pinned row must stay.
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [], reignitedFires: [], total: 0 }),
+    );
+    rerender(<LotteryFinderSection marketOpen={true} />);
+
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
+
+  it('resets the union on date change so a prior day’s pinned fire is not shown', () => {
+    const fireX = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [fireX], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Change the date input → storageKey flips → union resets to the new
+    // day. The new day's feed returns nothing, so the prior day's pinned
+    // fire must NOT carry over.
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+    const dateInput = screen.getByLabelText(/select trading day/i);
+    fireEvent.change(dateInput, { target: { value: '2026-05-07' } });
+
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('counts the union: per-ticker chip count never under-counts a pinned-but-dropped chain', () => {
+    const fireX = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    // Server ticker-counts endpoint reports AAPL=1 on poll 1.
+    mockUseLotteryFinderTickerCounts.mockReturnValue({
+      data: { tickers: [{ ticker: 'AAPL', count: 1 }] },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [fireX], total: 1 }),
+    );
+    const { rerender } = render(<LotteryFinderSection marketOpen={true} />);
+    // AAPL chip shows count 1.
+    expect(screen.getByTitle(/Filter to AAPL only/i)).toHaveTextContent('1');
+
+    // Poll 2: BOTH the feed and the counts endpoint degrade to empty. The
+    // union still holds AAPL, so the chip must keep AAPL with count ≥ 1.
+    mockUseLotteryFinderTickerCounts.mockReturnValue({
+      data: { tickers: [] },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+    rerender(<LotteryFinderSection marketOpen={true} />);
+
+    expect(screen.getByTitle(/Filter to AAPL only/i)).toHaveTextContent('1');
+  });
+
+  it('does not duplicate a page-0-pinned chain on page > 0 when it demotes past PAGE_SIZE', () => {
+    // Pagination hole: page 0 renders the WHOLE union, so a chain pinned
+    // on page 0 that later demotes past the 50-row cut is also returned by
+    // the server on page 1. Without the dedup guard it shows on BOTH pages.
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    const tail = makeFire({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+    });
+    // total > PAGE_SIZE so the Next button renders. Page 0 returns the
+    // pinned chain (→ union); page 1 returns the SAME pinned chain
+    // (demoted) plus a genuine tail chain the server only serves on p1.
+    mockUseLotteryFinder.mockImplementation(({ page }: { page: number }) =>
+      page > 0
+        ? feedResult({
+            fires: [pinned, tail],
+            total: 100,
+            offset: 50,
+            hasMore: false,
+          })
+        : feedResult({ fires: [pinned], total: 100, hasMore: true }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+    // Page 0: pinned chain visible.
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Navigate to page 1.
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+
+    // The demoted pinned chain must NOT re-render on page 1 (already shown
+    // via the page-0 union), but the genuine tail chain must be reachable.
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// NEVER-VANISH — code-review findings #1 / #2 / #3
+// ============================================================
+//
+// These drive the useNeverVanishFeed rewire:
+//   #1 filter-signature storageKey — tightening a SERVER filter rescopes
+//      the union so a previously-pinned now-excluded row drops.
+//   #2 reignited dedup — a chain pinned in the reignited union with
+//      reignited:false in the main union renders in EXACTLY one place.
+//   #3 server-anchored pagination — union > serverTotal on the live page
+//      does not advertise an unreachable page.
+
+describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
+  const AM = '2026-05-08T14:30:00Z';
+
+  it('#1: tightening the TAKE-IT floor (server filter) drops a previously-pinned now-excluded row', () => {
+    // Pin a row under the default 0.70 floor.
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Raise the TAKE-IT floor to 0.80 — a SERVER-SIDE filter. The new feed
+    // (post-tighten) no longer returns the row (it's below the stricter
+    // floor server-side). With the filter-signature storageKey the union
+    // RESCOPES (new slot) so the stale pin does NOT carry over. Without the
+    // sig (date-only key) the row would stay pinned in the same union.
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+    fireEvent.click(screen.getByTestId('takeit-floor-0.8'));
+
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#1 control: a CLIENT-only filter change does NOT rescope the union (pin survives)', () => {
+    // Moneyness is a CLIENT-side filter — it must NOT be in the filterSig,
+    // so toggling it leaves the union intact. The pinned row survives a
+    // subsequent empty poll because the storageKey is unchanged.
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 205, // OTM (spot 198.5) so the OTM chip keeps it
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Toggle OTM (client filter) AND degrade the feed to []. The union slot
+    // is unchanged, so the pin persists.
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+    fireEvent.click(screen.getByTestId('lottery-moneyness-otm-chip'));
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+
+  it('#1 ticker: selecting a ticker chip (server filter) drops a previously-pinned other-ticker row', () => {
+    // Pin two tickers in the union under the default (no ticker) filter.
+    const aapl = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    const tsla = makeFire({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [aapl, tsla], total: 2 }),
+    );
+    // Both ticker chips must render so AAPL is clickable.
+    mockUseLotteryFinderTickerCounts.mockReturnValue({
+      data: {
+        tickers: [
+          { ticker: 'AAPL', count: 1 },
+          { ticker: 'TSLA', count: 1 },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+
+    // Select the AAPL ticker chip — a SERVER-SIDE filter (forwarded to
+    // useLotteryFinder as `ticker`). The narrowed feed returns only AAPL.
+    // With the ticker in the filter-signature storageKey the union RESCOPES
+    // (new slot) so the stale TSLA pin does NOT carry over. Without the
+    // ticker in the sig the TSLA row would stay pinned in the same union.
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [aapl], total: 1 }),
+    );
+    fireEvent.click(screen.getByTitle(/Filter to AAPL only/i));
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#2: a reignited-union chain with reignited:false on its main row renders in EXACTLY one place', () => {
+    // Poll 1: the chain is in the reignitedFires payload (reignited:true).
+    const chain = makeFire({
+      id: 1,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+      reignited: true,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [chain],
+        reignitedFires: [chain],
+        total: 1,
+      }),
+    );
+    const { rerender } = render(<LotteryFinderSection marketOpen={true} />);
+    // Exactly one rendering even on poll 1 (reignited section only; the
+    // ticker-group partition excludes reignited-union members).
+    expect(
+      screen.getAllByTestId('lottery-row-TSLA260508C00250000'),
+    ).toHaveLength(1);
+
+    // Poll 2: the chain LEFT the per-poll top-N. Its main-union row now
+    // carries reignited:false, but it's STILL pinned in the reignited union
+    // (never-vanish). It must keep rendering ONLY in "Hot Right Now" — not
+    // also as a ticker group. Relying on the stale per-row flag (false) would
+    // route it into a ticker group → double render.
+    const demoted = makeFire({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+      reignited: false,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [demoted],
+        reignitedFires: [],
+        total: 1,
+      }),
+    );
+    rerender(<LotteryFinderSection marketOpen={true} />);
+
+    // Still exactly ONE row for the chain (the pinned reignited copy), never
+    // two.
+    expect(
+      screen.getAllByTestId('lottery-row-TSLA260508C00250000'),
+    ).toHaveLength(1);
+  });
+
+  it('#3: union > serverTotal on the live page does not advertise an unreachable page', () => {
+    // 60 distinct chains pinned in the union but the server reports total=10
+    // and hasMore=false. PAGE_SIZE is 50 → server reachable set is 1 page.
+    // The union renders all 60 on the live page (never-vanish) but the pager
+    // must read "page 1 / 1", NOT "/ 2" — totalPages is server-anchored.
+    const fires = Array.from({ length: 60 }, (_, i) =>
+      makeFire({
+        id: i + 1,
+        optionChainId: `AAPL260508C${String(200000 + i).padStart(8, '0')}`,
+        underlyingSymbol: 'AAPL',
+        strike: 200 + i,
+        triggerTimeCt: AM,
+      }),
+    );
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires, total: 10, hasMore: false }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    // total floors at the union length (60) for the "N fires" display, but
+    // the pager is server-anchored. With total(60) > PAGE_SIZE(50) the pager
+    // renders; it must read page 1 / 1 (ceil(10/50)=1), never 1 / 2.
+    expect(screen.getByText(/page 1 \/ 1/)).toBeInTheDocument();
+    expect(screen.queryByText(/page 1 \/ 2/)).not.toBeInTheDocument();
+    // The Next button is disabled because the server reports no more pages.
+    expect(screen.getByRole('button', { name: /next page/i })).toBeDisabled();
   });
 });
 

@@ -15,6 +15,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, isRetryableDbError, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
+import { readLastGood, writeLastGood } from './_lib/last-good-cache.js';
 import logger from './_lib/logger.js';
 import {
   guardOwnerOrGuestEndpoint,
@@ -271,6 +272,11 @@ const toIso = (v: DbTimestamp): string =>
 const num = (v: DbNullableNumeric): number | null =>
   v == null ? null : Number(v);
 
+// Last-good cache TTL. 6h covers a full trading day; the target date is
+// baked into every cache key so there is no cross-day leak (a stale prior
+// day's value can never be served for today — the key won't match).
+const DEFAULT_LAST_GOOD_TTL_SEC = 6 * 3600;
+
 /**
  * Run a "nice-to-have" SQL query under `withDbRetry`, but on a
  * retryable failure (timeout, fetch failed, etc. — see
@@ -290,6 +296,23 @@ const num = (v: DbNullableNumeric): number | null =>
  *
  * Spec: docs/superpowers/specs/ (no dedicated spec — hotfix to
  * SENTRY-EMERALD-DESERT-7J 2026-05-19).
+ *
+ * ── Last-good cache (2026-06-07, fix/feed-never-vanish) ────────────────
+ * When `cacheKey` is supplied, the helper participates in the server-side
+ * "last-good" cache (api/_lib/last-good-cache.ts):
+ *   - On SUCCESS  → OVERWRITE the cache with the fresh result, even when
+ *                   it is `[]`. A legit-empty result resolves successfully,
+ *                   so this path always wins and `readLastGood` is never
+ *                   consulted for it.
+ *   - On RETRYABLE ERROR → after the existing Sentry warning, READ
+ *                   last-good and, if present, serve it (distinct Sentry
+ *                   fingerprint so the served-last-good rate is observable)
+ *                   instead of `fallback`. If absent → existing `fallback`.
+ *
+ * SAFETY INVARIANT: last-good is read ONLY on the error branch. A
+ * genuinely-empty result RESOLVES (does not reject), so it can never reach
+ * the read path — this is what prevents resurrecting a row that legitimately
+ * left the result set. See the doc comment in last-good-cache.ts.
  */
 export async function degradeOnTimeout<T>(
   fn: () => Promise<T>,
@@ -305,9 +328,23 @@ export async function degradeOnTimeout<T>(
   // 5k+ fires) room to complete while still capping the user-facing
   // request budget. Don't push past 20s on the user path.
   perAttemptTimeoutMs = 20_000,
+  // Last-good cache key. When omitted (existing callers), the helper
+  // behaves exactly as before — no cache read or write.
+  cacheKey?: string,
+  cacheTtlSec?: number,
 ): Promise<T> {
   try {
-    return await withDbRetry(fn, retries, perAttemptTimeoutMs);
+    const fresh = await withDbRetry(fn, retries, perAttemptTimeoutMs);
+    // SUCCESS: overwrite last-good with the fresh result — even when `[]`.
+    // Fire-and-forget; never blocks or throws into the request path.
+    if (cacheKey) {
+      void writeLastGood(
+        cacheKey,
+        fresh,
+        cacheTtlSec ?? DEFAULT_LAST_GOOD_TTL_SEC,
+      );
+    }
+    return fresh;
   } catch (err) {
     // Only swallow retryable-class failures. SQL syntax or type
     // errors mean the query is broken — those must surface as 500.
@@ -319,6 +356,25 @@ export async function degradeOnTimeout<T>(
         errMessage: err instanceof Error ? err.message : String(err),
       },
     });
+    // RETRYABLE ERROR only: try to serve the last successful result so the
+    // "Hot Right Now" section / badges don't blank for this poll. This
+    // branch is unreachable for a legit-empty result (that RESOLVES above),
+    // so a genuinely-removed row can never be resurrected here.
+    if (cacheKey) {
+      const lastGood = await readLastGood<T>(cacheKey);
+      if (lastGood != null) {
+        Sentry.captureMessage(`lottery-finder: ${context} served last-good`, {
+          level: 'warning',
+          // DISTINCT fingerprint from the 'degraded to fallback' message
+          // above so the served-last-good rate is independently
+          // observable in Sentry.
+          fingerprint: ['lottery-finder', 'served-last-good', context],
+          tags: { degrade_mode: 'served-last-good', context },
+          extra: { context },
+        });
+        return lastGood;
+      }
+    }
     return fallback;
   }
 }
@@ -911,6 +967,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as ChainExtrasRow[],
         'chainExtras',
+        2,
+        20_000,
+        `lf:lg:chainExtras:${targetDate}`,
       ),
       // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
       // badge. Truncates trigger_time_ct to the 1-min bucket and
@@ -933,6 +992,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as ClusterByMinuteRow[],
         'clusterByMinute',
+        2,
+        20_000,
+        `lf:lg:cluster:${targetDate}`,
       ),
       // Silent Boom chain-IDs for the date — drives the DUAL FLAG
       // badge. When the same chain-day appears in BOTH
@@ -953,6 +1015,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as { option_chain_id: string }[],
         'sbChains',
+        2,
+        20_000,
+        `lf:lg:sbChains:${targetDate}`,
       ),
       // Pinned "Hot Right Now" rows — full row payload (same SELECT
       // shape as the main fires query) for the day's top-N reignited
@@ -1118,6 +1183,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as FireRow[],
         'reignitedRows',
+        2,
+        20_000,
+        // Filter-scoped key: the reignitedRows payload applies the user's
+        // structural filters, so last-good must be partitioned by them to
+        // avoid serving one filter view's rows under another. windowEnd /
+        // at / minute are DELIBERATELY omitted — they're a cumulative,
+        // moving cutoff; keying on them would near-guarantee cache misses
+        // and is wrong for "last good".
+        `lf:lg:reignited:${targetDate}:${ticker ?? ''}:${reload ?? ''}:${cheapCallPm ?? ''}:${mode ?? ''}:${optionType ?? ''}:${tod ?? ''}`,
       ),
       // Day-scoped cluster-candidate query — ALL 0DTE fires for the date,
       // minimal columns. Fed to computeSuspiciousClusters to detect
