@@ -374,6 +374,7 @@ interface LotteryFilterSigParams {
   cheapCallPm: boolean;
   minPremium: number;
   showAll: boolean;
+  ticker: string | null;
 }
 
 /**
@@ -393,6 +394,7 @@ function buildLotteryFilterSig(p: LotteryFilterSigParams): string {
     `c${p.cheapCallPm ? 1 : 0}`,
     `p${p.minPremium}`,
     `a${p.showAll ? 1 : 0}`,
+    `k${p.ticker ?? 'x'}`,
   ].join('|');
   return hashToken(raw);
 }
@@ -672,6 +674,7 @@ export function LotteryFinderSection({
     cheapCallPm: cheapCallPmOnly,
     minPremium: minPremiumK * 1000,
     showAll: showFilteredTickers,
+    ticker: tickerFilter,
   });
   const firesStorageKey = `feed-union:lottery:${date}:${filterSig}`;
   const reignitedStorageKey = `feed-union:lottery-reignited:${date}:${filterSig}`;
