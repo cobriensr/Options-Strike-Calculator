@@ -5206,4 +5206,27 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS baseline_version INT`,
     ],
   },
+  {
+    id: 187,
+    description:
+      'Create flow_regime_slot_daily table for the self-maintaining flow-regime baseline (resolves code-review finding #6 — the frozen, manually-refreshed baseline). One row per (date, slot) accumulates that trading day’s per-slot component sums (nd_num/nd_den for net_delta_tilt, idx_put_premium/total_premium for idx0dte_put_share) plus the bucket trade count. The capture-flow-regime-daily cron runs once post-close and UPSERTs all 13 RTH slots for the day via ON CONFLICT (date, slot) DO UPDATE. The live capture-flow-regime cron then computes percentile breakpoints ON READ from this accumulating table (api/_lib/flow-regime-baseline-live.ts), falling back per-slot to the committed flow-regime-baseline.json until a slot has ≥15 days of history. UNIQUE(date, slot) gives the daily upsert its conflict target; the (slot) index serves the per-slot percentile_cont aggregation that scans all days for one slot. No parquet / Desktop dependency — the baseline now self-maintains from Neon. See docs/superpowers/specs/flow-regime-baseline-refresh-2026-06-07.md.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS flow_regime_slot_daily (
+          id               BIGSERIAL PRIMARY KEY,
+          date             DATE NOT NULL,
+          slot             INT NOT NULL,
+          nd_num           NUMERIC,
+          nd_den           NUMERIC,
+          idx_put_premium  NUMERIC,
+          total_premium    NUMERIC,
+          n_trades         INT,
+          computed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (date, slot)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS flow_regime_slot_daily_slot_idx
+            ON flow_regime_slot_daily (slot)`,
+    ],
+  },
 ];
