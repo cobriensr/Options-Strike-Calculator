@@ -5206,4 +5206,16 @@ export const MIGRATIONS: Migration[] = [
             ADD COLUMN IF NOT EXISTS baseline_version INT`,
     ],
   },
+  {
+    id: 187,
+    description:
+      'Create lottery_kept_tickers table for the DB-backed never-vanish kept-set (Phase 1 of docs/superpowers/specs/2026-06-07-never-vanish-review-fixes-round2.md). Replaces the per-day Redis set (lf:kept:<date>) with a durable Postgres table so kept-ticker records survive Redis eviction and can be read page-independently by both the feed and ticker-counts endpoints. One row per (trade_date, underlying_symbol); the composite PRIMARY KEY enforces the natural dedup constraint and provides the lookup index — no separate index needed. The writer (lottery-finder.ts, Phase 3) derives the ever-shown set from the full ranked CTE (no LIMIT), so a ticker that flips Q1/Q2 while sitting past row 50 is still kept for the rest of the session. Both readKeptTickers and addKeptTickers swallow all errors and degrade to [] on DB failure, mirroring the prior Redis semantics.',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS lottery_kept_tickers (
+        trade_date        date NOT NULL,
+        underlying_symbol text NOT NULL,
+        PRIMARY KEY (trade_date, underlying_symbol)
+      )`,
+    ],
+  },
 ];
