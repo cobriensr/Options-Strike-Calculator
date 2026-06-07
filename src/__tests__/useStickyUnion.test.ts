@@ -213,6 +213,81 @@ describe('useStickyUnion', () => {
       ).not.toBeNull();
       expect(localStorage.getItem('unrelated')).toBe('keep-me');
     });
+
+    // FIX 2: date-aware, suffix-proof sweep — same-day filter siblings coexist.
+    it('removes a stale prior-day slot even when it carries a filter-signature suffix', () => {
+      localStorage.setItem(
+        'feed-union:lottery:2026-06-06',
+        JSON.stringify([['stale', { id: 'stale', pct: 1 }]]),
+      );
+      localStorage.setItem(
+        'feed-union:lottery:2026-06-06:sigX',
+        JSON.stringify([['staleSig', { id: 'staleSig', pct: 1 }]]),
+      );
+
+      renderHook(() =>
+        useStickyUnion<Alert>([], {
+          key: keyFn,
+          storageKey: 'feed-union:lottery:2026-06-07',
+        }),
+      );
+
+      expect(localStorage.getItem('feed-union:lottery:2026-06-06')).toBeNull();
+      expect(
+        localStorage.getItem('feed-union:lottery:2026-06-06:sigX'),
+      ).toBeNull();
+    });
+
+    it('PRESERVES a same-day different-filter sibling slot (never-vanish across filter switch)', () => {
+      // Two filter settings active on the SAME day, each with its own union.
+      localStorage.setItem(
+        'feed-union:lottery:2026-06-07:sigB',
+        JSON.stringify([['fromB', { id: 'fromB', pct: 9 }]]),
+      );
+
+      // Mount the union for filter sigA on the same day.
+      renderHook(() =>
+        useStickyUnion<Alert>([], {
+          key: keyFn,
+          storageKey: 'feed-union:lottery:2026-06-07:sigA',
+        }),
+      );
+
+      // sigB's same-day slot MUST survive — switching A→B→A restores B's pins.
+      expect(
+        localStorage.getItem('feed-union:lottery:2026-06-07:sigB'),
+      ).not.toBeNull();
+    });
+
+    it('keeps the reignited slot (distinct feed token) when sweeping the lottery feed', () => {
+      localStorage.setItem(
+        'feed-union:lottery-reignited:2026-06-06',
+        JSON.stringify([['re', { id: 're', pct: 1 }]]),
+      );
+      renderHook(() =>
+        useStickyUnion<Alert>([], {
+          key: keyFn,
+          storageKey: 'feed-union:lottery:2026-06-07',
+        }),
+      );
+      // `lottery-reignited` is a different feed token from `lottery`.
+      expect(
+        localStorage.getItem('feed-union:lottery-reignited:2026-06-06'),
+      ).not.toBeNull();
+    });
+
+    it('skips malformed feed-union keys with fewer than three segments', () => {
+      localStorage.setItem('feed-union:lottery', 'truncated');
+      localStorage.setItem('feed-union', 'truncated2');
+      renderHook(() =>
+        useStickyUnion<Alert>([], {
+          key: keyFn,
+          storageKey: 'feed-union:lottery:2026-06-07',
+        }),
+      );
+      expect(localStorage.getItem('feed-union:lottery')).toBe('truncated');
+      expect(localStorage.getItem('feed-union')).toBe('truncated2');
+    });
   });
 
   describe('#7 size cap', () => {
@@ -312,6 +387,97 @@ describe('useStickyUnion', () => {
         expect.stringContaining('a'),
       );
       setSpy.mockRestore();
+    });
+  });
+
+  // ── FIX 1: page-lifecycle flush (durable across hard refresh / bfcache) ──
+  describe('page-lifecycle flush', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('flushes the pending debounced write synchronously on `pagehide`', () => {
+      vi.useFakeTimers();
+      // Ingest stages a debounced write but does NOT touch LS yet.
+      renderHook(() =>
+        useStickyUnion<Alert>([{ id: 'a', pct: 1 }], {
+          key: keyFn,
+          storageKey: 'lifecycle-pagehide',
+        }),
+      );
+      // Pending only — debounce window has not elapsed.
+      expect(localStorage.getItem('lifecycle-pagehide')).toBeNull();
+
+      // Hard refresh / tab close fires pagehide BEFORE the timer would run.
+      act(() => {
+        window.dispatchEvent(new Event('pagehide'));
+      });
+
+      // The staged write must have landed synchronously.
+      const raw = localStorage.getItem('lifecycle-pagehide');
+      expect(raw).not.toBeNull();
+      expect(raw).toContain('"a"');
+    });
+
+    it('flushes the pending debounced write when visibility becomes hidden', () => {
+      vi.useFakeTimers();
+      renderHook(() =>
+        useStickyUnion<Alert>([{ id: 'a', pct: 1 }], {
+          key: keyFn,
+          storageKey: 'lifecycle-visibility',
+        }),
+      );
+      expect(localStorage.getItem('lifecycle-visibility')).toBeNull();
+
+      const visSpy = vi
+        .spyOn(document, 'visibilityState', 'get')
+        .mockReturnValue('hidden');
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+
+      const raw = localStorage.getItem('lifecycle-visibility');
+      expect(raw).not.toBeNull();
+      expect(raw).toContain('"a"');
+      visSpy.mockRestore();
+    });
+
+    it('does NOT flush on `visibilitychange` when the page is still visible', () => {
+      vi.useFakeTimers();
+      renderHook(() =>
+        useStickyUnion<Alert>([{ id: 'a', pct: 1 }], {
+          key: keyFn,
+          storageKey: 'lifecycle-visible',
+        }),
+      );
+      const visSpy = vi
+        .spyOn(document, 'visibilityState', 'get')
+        .mockReturnValue('visible');
+      act(() => {
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      // Still pending — a visible→visible transition must not write early.
+      expect(localStorage.getItem('lifecycle-visible')).toBeNull();
+      visSpy.mockRestore();
+    });
+
+    it('removes its lifecycle listeners on unmount', () => {
+      const removeSpy = vi.spyOn(window, 'removeEventListener');
+      const docRemoveSpy = vi.spyOn(document, 'removeEventListener');
+      const { unmount } = renderHook(() =>
+        useStickyUnion<Alert>([{ id: 'a', pct: 1 }], {
+          key: keyFn,
+          storageKey: 'lifecycle-cleanup',
+        }),
+      );
+      unmount();
+      expect(removeSpy).toHaveBeenCalledWith('pagehide', expect.any(Function));
+      expect(docRemoveSpy).toHaveBeenCalledWith(
+        'visibilitychange',
+        expect.any(Function),
+      );
+      removeSpy.mockRestore();
+      docRemoveSpy.mockRestore();
     });
   });
 
