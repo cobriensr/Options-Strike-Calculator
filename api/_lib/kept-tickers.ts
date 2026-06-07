@@ -48,7 +48,7 @@ export async function readKeptTickers(date: string): Promise<string[]> {
     const rows = (await sql`
       SELECT underlying_symbol
       FROM lottery_kept_tickers
-      WHERE trade_date = ${date}
+      WHERE trade_date = ${date}::date
     `) as { underlying_symbol: string }[];
     return rows.map((r) => r.underlying_symbol);
   } catch {
