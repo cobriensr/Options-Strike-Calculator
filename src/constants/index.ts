@@ -337,6 +337,11 @@ export const POLL_INTERVALS = {
   /** Opening Flow Signal polling cadence (useOpeningFlowSignal) — gated to
    *  the 09:25–09:50 CT window when the V4 rule can fire. */
   OPENING_FLOW: 30_000,
+  /** 0DTE Gamma Regime polling cadence (useRegime0dte) — gated to the
+   *  08:30–15:00 CT regular session. The endpoint reads per-minute GEX/IV
+   *  feeds; 45s keeps the panel within ~1 minute of the latest gate read
+   *  without hammering the origin. */
+  REGIME_0DTE: 45_000,
   /** Dark pool levels refresh (useDarkPoolLevels) */
   DARK_POOL: 60_000,
   /** Zero-gamma per-ticker refresh (useZeroGamma) — matches the 5-min compute cron */
