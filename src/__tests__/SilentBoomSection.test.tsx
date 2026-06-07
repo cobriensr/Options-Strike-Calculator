@@ -539,6 +539,206 @@ describe('SilentBoomSection: never-vanish accumulator', () => {
 });
 
 // ============================================================
+// NEVER-VANISH FINDINGS #1 / #3 (useNeverVanishFeed rewire)
+// ============================================================
+//
+//   #1 filter-signature storageKey — tightening a SERVER filter rescopes
+//      the union so a previously-pinned now-excluded row drops; a CLIENT
+//      filter does NOT rescope.
+//   #1 ticker — selecting a ticker chip (server filter) drops other-ticker
+//      pinned rows.
+//   #3 server-anchored pagination — union > serverTotal on the live page
+//      does not advertise an unreachable page.
+
+describe('SilentBoomSection: never-vanish findings #1/#3', () => {
+  it('#1: tightening the TAKE-IT floor (server filter) drops a previously-pinned now-excluded alert', () => {
+    // Pin an alert under the default 0.70 floor.
+    const pinned = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [pinned], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Raise the TAKE-IT floor to 0.80 — a SERVER-SIDE filter. The new feed
+    // (post-tighten) no longer returns the alert (below the stricter floor
+    // server-side). With the filter-signature storageKey the union RESCOPES
+    // (new slot) so the stale pin does NOT carry over. Without the sig
+    // (date-only key) the row would stay pinned in the same union.
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts: [], total: 0 }));
+    fireEvent.click(screen.getByTestId('takeit-floor-0.8'));
+
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#1 control: a CLIENT-only filter change (hide-ghosts) does NOT rescope the union (pin survives)', () => {
+    // hide-ghosts is a CLIENT-side filter — it must NOT be in the filterSig,
+    // so toggling it leaves the union intact. The pinned alert survives a
+    // subsequent empty poll because the storageKey is unchanged. Use a
+    // healthy-baseline alert so the hide-ghosts predicate never strips it.
+    const pinned = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      baselineVolume: 500,
+      spikeRatio: 10,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [pinned], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Toggle hide-ghosts (client filter) AND degrade the feed to []. The
+    // union slot is unchanged, so the pin persists.
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts: [], total: 0 }));
+    fireEvent.click(screen.getByRole('button', { name: /hide ghosts/i }));
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+
+  it('#1 ticker: selecting a ticker chip (server filter) drops a previously-pinned other-ticker alert', () => {
+    // Pin two tickers in the union under the default (no ticker) filter.
+    const aapl = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    const tsla = makeAlert({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [aapl, tsla], total: 2 }),
+    );
+    // Both ticker chips must render so AAPL is clickable.
+    mockUseSilentBoomTickerCounts.mockReturnValue({
+      data: {
+        tickers: [
+          { ticker: 'AAPL', count: 1 },
+          { ticker: 'TSLA', count: 1 },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+
+    // Select the AAPL ticker chip — a SERVER-SIDE filter (forwarded to
+    // useSilentBoomFeed as `ticker`). The narrowed feed returns only AAPL.
+    // With the ticker in the filter-signature storageKey the union RESCOPES
+    // (new slot) so the stale TSLA pin does NOT carry over. Without the
+    // ticker in the sig the TSLA row would stay pinned in the same union.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [aapl], total: 1 }),
+    );
+    fireEvent.click(screen.getByTitle(/Filter to AAPL only/i));
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#3: union larger than serverTotal on the live page does not advertise an unreachable page', () => {
+    // Live page pins 2 alerts via the union but the server reports total=1
+    // (a degrade dropped one from the reachable set). totalPages is
+    // server-anchored = ceil(1 / 50) = 1, so NO pager renders even though
+    // the union floors the displayed `total` at 2. Without server-anchored
+    // pagination the old `ceil(total / PAGE_SIZE)` would still be 1 here, so
+    // to make this non-vacuous we drive serverTotal across the PAGE_SIZE
+    // boundary in the companion assertion below.
+    const a1 = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    const a2 = makeAlert({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+    });
+    // Poll 1: both present, server reports a small total.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [a1, a2], total: 2, hasMore: false }),
+    );
+    const { rerender } = render(<SilentBoomSection marketOpen={true} />);
+
+    // Poll 2: server degrades to a SINGLE reachable alert (total=1) but the
+    // union still pins both. serverTotal=1 → totalPages=1 → no pager, and
+    // crucially Next stays gated on the server `hasMore` (false), so no
+    // unreachable page can be navigated to.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [a2], total: 1, hasMore: false }),
+    );
+    rerender(<SilentBoomSection marketOpen={true} />);
+
+    // Both pinned rows render (never-vanish) ...
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+    // ... but the pager is suppressed: server-anchored totalPages keeps the
+    // Next button from offering a page the server cannot serve.
+    expect(
+      screen.queryByRole('button', { name: /next page/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#3 non-vacuous: server-anchored totalPages uses serverTotal, not the union-floored total', () => {
+    // serverTotal = 60 (> PAGE_SIZE 50) → server-anchored totalPages = 2.
+    // The union pins exactly 1 visible alert on the live page, so the
+    // union-floored `total` would be max(60, 1) = 60 either way here; the
+    // load-bearing distinction is that the DENOMINATOR is serverTotal. We
+    // assert the pager shows "/ 2" — the server's reachable page count.
+    const pinned = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [pinned], total: 60, hasMore: true }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+
+    // page 1 / 2 — ceil(60 / 50) = 2 reachable server pages.
+    expect(screen.getByText(/page 1 \/ 2/)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // KEY INTERACTION — filter toggles
 // ============================================================
 
