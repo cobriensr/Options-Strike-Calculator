@@ -40,6 +40,16 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
+const { mockReadLastGood, mockWriteLastGood } = vi.hoisted(() => ({
+  mockReadLastGood: vi.fn(),
+  mockWriteLastGood: vi.fn(),
+}));
+
+vi.mock('../_lib/last-good-cache.js', () => ({
+  readLastGood: mockReadLastGood,
+  writeLastGood: mockWriteLastGood,
+}));
+
 import handler, { degradeOnTimeout } from '../lottery-finder.js';
 
 const ROW = {
@@ -2007,6 +2017,9 @@ describe('lottery-finder endpoint', () => {
 describe('degradeOnTimeout', () => {
   beforeEach(() => {
     mockCaptureMessage.mockReset();
+    mockReadLastGood.mockReset();
+    mockWriteLastGood.mockReset();
+    mockWriteLastGood.mockResolvedValue(undefined);
   });
 
   it('returns fallback + emits Sentry warning when the inner query throws a retryable error', async () => {
@@ -2051,5 +2064,149 @@ describe('degradeOnTimeout', () => {
       ),
     ).rejects.toThrow(/syntax error/);
     expect(mockCaptureMessage).not.toHaveBeenCalled();
+  });
+
+  // ── Last-good cache (fix/feed-never-vanish) ──────────────────────────
+
+  it('overwrites the cache with the fresh result on success and returns it', async () => {
+    const fresh = [{ id: 7 }];
+    const result = await degradeOnTimeout(
+      async () => fresh,
+      [] as { id: number }[],
+      'chainExtras',
+      0,
+      20_000,
+      'lf:lg:chainExtras:2026-05-01',
+    );
+    expect(result).toBe(fresh);
+    expect(mockWriteLastGood).toHaveBeenCalledWith(
+      'lf:lg:chainExtras:2026-05-01',
+      fresh,
+      6 * 3600,
+    );
+    // SAFETY INVARIANT: last-good is NEVER read on the success path.
+    expect(mockReadLastGood).not.toHaveBeenCalled();
+  });
+
+  it('ANTI-RESURRECTION: a legit-empty success overwrites cache with [] and never reads last-good', async () => {
+    // The core invariant. A query that legitimately returns `[]` (rows
+    // genuinely left) RESOLVES successfully — so it must overwrite the
+    // cache with `[]` and the read path must be unreachable. If
+    // readLastGood were consulted here, a removed row could be resurrected.
+    const result = await degradeOnTimeout(
+      async () => [] as { id: number }[],
+      [{ id: 1 }] as { id: number }[], // distinct fallback to prove [] wins
+      'reignitedRows',
+      0,
+      20_000,
+      'lf:lg:reignited:2026-05-01::::::',
+    );
+    expect(result).toEqual([]);
+    expect(mockWriteLastGood).toHaveBeenCalledWith(
+      'lf:lg:reignited:2026-05-01::::::',
+      [],
+      6 * 3600,
+    );
+    expect(mockReadLastGood).not.toHaveBeenCalled();
+  });
+
+  it('serves the cached last-good value (not fallback) on a retryable timeout when present', async () => {
+    const cached = [{ id: 99 }];
+    mockReadLastGood.mockResolvedValueOnce(cached);
+    const result = await degradeOnTimeout(
+      async () => {
+        throw new Error('db attempt timeout');
+      },
+      [] as { id: number }[],
+      'chainExtras',
+      0,
+      20_000,
+      'lf:lg:chainExtras:2026-05-01',
+    );
+    // last-good served, NOT the empty fallback.
+    expect(result).toBe(cached);
+    expect(mockReadLastGood).toHaveBeenCalledWith(
+      'lf:lg:chainExtras:2026-05-01',
+    );
+    // Both the original 'degraded to fallback' warning AND the distinct
+    // 'served last-good' message are emitted.
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('degraded to fallback'),
+      expect.anything(),
+    );
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('served last-good'),
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['lottery-finder', 'served-last-good', 'chainExtras'],
+        tags: expect.objectContaining({ degrade_mode: 'served-last-good' }),
+      }),
+    );
+  });
+
+  it('falls back to the typed empty result on a retryable timeout when NO last-good is cached', async () => {
+    mockReadLastGood.mockResolvedValueOnce(null);
+    const result = await degradeOnTimeout(
+      async () => {
+        throw new Error('db attempt timeout');
+      },
+      [] as { id: number }[],
+      'sbChains',
+      0,
+      20_000,
+      'lf:lg:sbChains:2026-05-01',
+    );
+    expect(result).toEqual([]);
+    expect(mockReadLastGood).toHaveBeenCalledWith('lf:lg:sbChains:2026-05-01');
+  });
+
+  it('does not touch the cache on a non-retryable error (rethrows)', async () => {
+    await expect(
+      degradeOnTimeout(
+        async () => {
+          throw new Error('syntax error at or near "FORM"');
+        },
+        [] as { id: number }[],
+        'chainExtras',
+        0,
+        20_000,
+        'lf:lg:chainExtras:2026-05-01',
+      ),
+    ).rejects.toThrow(/syntax error/);
+    expect(mockReadLastGood).not.toHaveBeenCalled();
+    expect(mockWriteLastGood).not.toHaveBeenCalled();
+  });
+
+  it('does not crash when the KV write throws on success (fire-and-forget)', async () => {
+    mockWriteLastGood.mockRejectedValueOnce(new Error('KV unavailable'));
+    const fresh = [{ id: 3 }];
+    // writeLastGood is called via `void` (fire-and-forget); a rejection
+    // must not propagate into the request path.
+    const result = await degradeOnTimeout(
+      async () => fresh,
+      [] as { id: number }[],
+      'chainExtras',
+      0,
+      20_000,
+      'lf:lg:chainExtras:2026-05-01',
+    );
+    expect(result).toBe(fresh);
+  });
+
+  it('falls back when the KV read throws on a retryable timeout (no crash)', async () => {
+    // last-good-cache.readLastGood swallows its own errors and returns
+    // null, but assert degradeOnTimeout stays resilient even if it threw.
+    mockReadLastGood.mockResolvedValueOnce(null);
+    const result = await degradeOnTimeout(
+      async () => {
+        throw new Error('connection terminated');
+      },
+      [] as { id: number }[],
+      'clusterByMinute',
+      0,
+      20_000,
+      'lf:lg:cluster:2026-05-01',
+    );
+    expect(result).toEqual([]);
   });
 });
