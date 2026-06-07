@@ -119,3 +119,83 @@ describe('evaluateRegime0dte', () => {
     expect(s.triggers.ivBreak.fired).toBe(true);
   });
 });
+
+describe('evaluateRegime0dte — edges + honesty line', () => {
+  const deepNegStrikes = [
+    { strike: 7440, netGex: -0.3 },
+    { strike: 7450, netGex: -0.2 },
+    { strike: 7460, netGex: -0.2 },
+    { strike: 7470, netGex: -0.1 },
+    { strike: 7480, netGex: -0.1 },
+  ];
+
+  it('lean_down with no down-trigger yet -> up-ambush risk note', () => {
+    const s = evaluateRegime0dte({
+      nowCtMin: 620, // 10:20 CT: before 11:00 (mostlyRed) and 12:30 (midday)
+      spot: 7450,
+      openSpot: 7530,
+      gexStrikes: deepNegStrikes,
+      putIv: [
+        { ctMin: 520, iv: 0.2 },
+        { ctMin: 560, iv: 0.2 }, // no points in the 10:00-12:30 break window
+      ],
+      candles30: [{ ctMin: 510, open: 7530, close: 7525 }],
+    });
+    expect(s.gate).toBe('lean_down');
+    expect(s.triggers.mostlyRed.fired).toBe(false);
+    expect(s.triggers.ivBreak.fired).toBe(false);
+    expect(s.triggers.middayDeepNeg.fired).toBe(false);
+    expect(s.note).toContain('up-ambush risk');
+  });
+
+  it('middayDeepNeg fires only after 12:30 CT (mfo 750)', () => {
+    const base = {
+      spot: 7450,
+      openSpot: 7530,
+      gexStrikes: deepNegStrikes,
+      putIv: [{ ctMin: 520, iv: 0.2 }],
+      candles30: [],
+    };
+    expect(
+      evaluateRegime0dte({ ...base, nowCtMin: 740 }).triggers.middayDeepNeg
+        .fired,
+    ).toBe(false);
+    expect(
+      evaluateRegime0dte({ ...base, nowCtMin: 760 }).triggers.middayDeepNeg
+        .fired,
+    ).toBe(true);
+  });
+
+  it('mostlyRed does not fire before 11:00 even if every candle is red', () => {
+    const allRed = [
+      { ctMin: 510, open: 7530, close: 7520 },
+      { ctMin: 540, open: 7520, close: 7510 },
+      { ctMin: 570, open: 7510, close: 7500 },
+      { ctMin: 600, open: 7500, close: 7490 },
+      { ctMin: 630, open: 7490, close: 7480 },
+    ];
+    const s = evaluateRegime0dte({
+      nowCtMin: 645, // 10:45 CT, before 11:00
+      spot: 7450,
+      openSpot: 7530,
+      gexStrikes: deepNegStrikes,
+      putIv: [],
+      candles30: allRed,
+    });
+    expect(s.triggers.mostlyRed.fired).toBe(false);
+  });
+
+  it('empty chain / null spot -> unknown gate, no throw', () => {
+    const s = evaluateRegime0dte({
+      nowCtMin: 515,
+      spot: 0,
+      openSpot: null,
+      gexStrikes: [],
+      putIv: [],
+      candles30: [],
+    });
+    expect(s.gate).toBe('unknown');
+    expect(s.gexNearSpot).toBeNull();
+    expect(s.triggers.ivBreak.fired).toBe(false);
+  });
+});
