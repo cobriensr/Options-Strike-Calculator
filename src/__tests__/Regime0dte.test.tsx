@@ -218,6 +218,55 @@ describe('Regime0dte panel shell', () => {
     expect(screen.getByLabelText(/30-minute SPX candles/i)).toBeInTheDocument();
   });
 
+  it('renders the unknown gate as a distinct "no read" state, not a calm verdict', () => {
+    const UNKNOWN_DATA: Regime0dteResponse = {
+      ...LEAN_DOWN_DATA,
+      gate: 'unknown',
+      gexNearSpot: null,
+      note: 'insufficient strikes near spot',
+    };
+    mockHook({ isWindowOpen: true, displayData: UNKNOWN_DATA });
+    render(<Regime0dte />);
+
+    // The chip is pinned by its "no read" aria-label and shows the no-read copy.
+    const chip = screen.getByLabelText(/Gamma gate: no read/i);
+    expect(chip).toHaveTextContent(/No read/i);
+
+    // Honest "this is not a calm/neutral verdict" note is surfaced.
+    expect(
+      screen.getByText(/not a calm\/neutral verdict/i),
+    ).toBeInTheDocument();
+
+    // It must NOT present as any of the three real verdicts.
+    expect(chip).not.toHaveTextContent(/Calm/i);
+    expect(screen.queryByLabelText(/Gamma gate: calm/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/Gamma gate: lean down/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders without throwing when all series are absent (empty-constant path)', () => {
+    const NO_SERIES_DATA: Regime0dteResponse = {
+      date: '2026-06-06',
+      asOfCtMin: 540,
+      gate: 'unknown',
+      gexNearSpot: null,
+      gexAtOpen: null,
+      flipStrike: null,
+      flipMinusOpenPct: null,
+      triggers: EMPTY_TRIGGERS,
+      note: 'pre-open',
+      // gexStrikes / putIv / candles30 intentionally omitted → frozen empties.
+    };
+    mockHook({ isWindowOpen: true, displayData: NO_SERIES_DATA });
+
+    expect(() => render(<Regime0dte />)).not.toThrow();
+    // The graceful sub-viz placeholders render off the stable empty constants.
+    expect(screen.getByText(/no gamma profile/i)).toBeInTheDocument();
+    expect(screen.getByText(/no IV series/i)).toBeInTheDocument();
+    expect(screen.getByText(/no candles/i)).toBeInTheDocument();
+  });
+
   it('shows the waiting-for-open placeholder and no visuals when closed', () => {
     mockHook({ isWindowOpen: false, displayData: LEAN_DOWN_DATA });
     render(<Regime0dte />);

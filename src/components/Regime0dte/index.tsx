@@ -3,7 +3,8 @@
  * that calls `useRegime0dte()` and composes the four pure sub-viz from the
  * live (last-good-aware) hook payload:
  *
- *   - a graded gate chip (calm / big_move / lean_down / unknown) + honest note
+ *   - a graded gate chip (calm / big_move / lean_down, plus a visually
+ *     distinct dashed "no read" chip for the `unknown` state) + honest note
  *   - TriggerLights      — the three down-only confirmation triggers
  *   - GammaProfileMini   — net-GEX-by-strike profile with flip + spot markers
  *   - IvSparkline        — morning put-IV series with the break dot
@@ -20,15 +21,29 @@
  * Plan: docs/superpowers/plans/2026-06-07-regime-0dte-panel.md (Task 10)
  */
 
+import { useMemo } from 'react';
+
 import { useRegime0dte } from '../../hooks/useRegime0dte.js';
 import { SectionBox } from '../ui';
-import { GammaProfileMini } from './GammaProfileMini';
-import { IvSparkline } from './IvSparkline';
-import { CandleStrip } from './CandleStrip';
+import { GammaProfileMini, type GammaStrike } from './GammaProfileMini';
+import { IvSparkline, type IvSparkPoint } from './IvSparkline';
+import { CandleStrip, type StripCandle } from './CandleStrip';
 import { TriggerLights } from './TriggerLights';
 import { gateMeta } from './gate';
 
 const REGIME_0DTE_HEADING_ID = 'regime-0dte-heading';
+
+// Stable module-level empty fallbacks. The hook returns a fresh `data` object
+// every 45s poll; passing `data.gexStrikes ?? []` would allocate a NEW array
+// literal each render and defeat the sub-viz React.memo even when the absent
+// series is unchanged. Frozen so a referential identity is shared across every
+// render that lacks the series.
+// Typed as the (read-only-in-practice) mutable element type the pure sub-viz
+// expect — they copy-then-sort and never mutate the input, so a frozen array
+// is safe to hand through.
+const EMPTY_STRIKES = Object.freeze([] as GammaStrike[]) as GammaStrike[];
+const EMPTY_IV = Object.freeze([] as IvSparkPoint[]) as IvSparkPoint[];
+const EMPTY_CANDLES = Object.freeze([] as StripCandle[]) as StripCandle[];
 
 export default function Regime0dte(): React.ReactElement {
   const { displayData, isWindowOpen, error } = useRegime0dte();
@@ -72,22 +87,56 @@ function RegimePanel({
 }): React.ReactElement {
   const meta = gateMeta(data.gate);
 
+  // Memoize the series props on the value-identity of the payload
+  // (`date` + `asOfCtMin` — same as-of minute means value-identical data).
+  // The hook hands back a new `data` object every 45s poll, so without this
+  // every tick would pass fresh array references and re-run the memo'd
+  // sub-viz' sort + geometry even when the numbers are unchanged. Absent
+  // series fall back to the frozen module-level empties for a stable ref.
+  const valueKey = `${data.date}:${data.asOfCtMin}`;
+
+  /* eslint-disable react-hooks/exhaustive-deps -- value identity is `valueKey`; the array refs are intentionally read-through */
+  const gexStrikes = useMemo<GammaStrike[]>(
+    () => data.gexStrikes ?? EMPTY_STRIKES,
+    [valueKey],
+  );
+  const putIv = useMemo<IvSparkPoint[]>(
+    () => data.putIv ?? EMPTY_IV,
+    [valueKey],
+  );
+  const candles30 = useMemo<StripCandle[]>(
+    () => data.candles30 ?? EMPTY_CANDLES,
+    [valueKey],
+  );
+  // The triggers object is also re-allocated every poll; pin it to value
+  // identity so the memo'd TriggerLights skips unchanged ticks too.
+  const triggers = useMemo(() => data.triggers, [valueKey]);
+  /* eslint-enable react-hooks/exhaustive-deps */
+
   return (
     <div className="flex flex-col gap-4">
-      {/* Gate chip + honest note */}
+      {/* Gate chip + honest note. The `unknown` gate renders a distinct
+          dashed "no read" chip (glyph + copy), never a calm look-alike. */}
       <div className="flex flex-wrap items-center gap-3">
         <span
-          className={`rounded-full border px-2.5 py-0.5 font-sans text-[11px] font-semibold ${meta.chipClass}`}
+          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 font-sans text-[11px] font-semibold ${meta.chipClass}`}
           aria-label={meta.ariaLabel}
         >
+          {!meta.isReal && (
+            <span aria-hidden="true" className="opacity-70">
+              ⃠
+            </span>
+          )}
           {meta.label}
         </span>
         <p className="text-secondary m-0 font-sans text-[12px] leading-snug">
-          {data.note}
+          {meta.isReal
+            ? data.note
+            : 'No regime read right now — insufficient data (pre-open, too few strikes, or a data outage). This is not a calm/neutral verdict.'}
         </p>
       </div>
 
-      <TriggerLights triggers={data.triggers} />
+      <TriggerLights triggers={triggers} />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
@@ -95,7 +144,7 @@ function RegimePanel({
             Net gamma by strike
           </div>
           <GammaProfileMini
-            strikes={data.gexStrikes ?? []}
+            strikes={gexStrikes}
             flipStrike={data.flipStrike}
             spot={data.spot ?? null}
             bandPct={data.bandPct ?? 0.01}
@@ -107,7 +156,7 @@ function RegimePanel({
               Morning put IV
             </div>
             <IvSparkline
-              series={data.putIv ?? []}
+              series={putIv}
               refHi={data.triggers.ivBreak.refHi}
               breakAtCtMin={data.triggers.ivBreak.atCtMin}
             />
@@ -117,7 +166,7 @@ function RegimePanel({
               30-min candles
             </div>
             <CandleStrip
-              candles={data.candles30 ?? []}
+              candles={candles30}
               persistEndCtMin={data.persistEndCtMin ?? 660}
             />
           </div>
