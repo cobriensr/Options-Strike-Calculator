@@ -61,3 +61,18 @@ export interface Regime0dteState {
   };
   note: string;
 }
+
+export function gexNear(strikes: GexStrike[], spot: number): number | null {
+  if (!spot || strikes.length < REGIME_0DTE.MIN_STRIKES) return null;
+  const band = REGIME_0DTE.GATE_BAND_PCT * spot;
+  return strikes
+    .filter((s) => Math.abs(s.strike - spot) <= band)
+    .reduce((a, s) => a + s.netGex, 0);
+}
+
+export function gradeGate(gex: number | null): Gate {
+  if (gex == null) return 'unknown';
+  if (gex > 0) return 'calm';
+  if (gex > REGIME_0DTE.GATE_DEEP_NEG) return 'big_move';
+  return 'lean_down';
+}
