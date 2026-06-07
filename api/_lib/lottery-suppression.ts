@@ -72,7 +72,11 @@ function isSymbolAlias(alias: string): alias is SymbolAlias {
  *
  * @param db          the Neon query function (same handle used by the caller)
  * @param symbolAlias alias of the table owning `underlying_symbol` at this
- *                    site — must be one of {@link SYMBOL_ALIAS_WHITELIST}.
+ *                    site — the {@link SymbolAlias} literal union makes a bad
+ *                    alias a compile error at call sites. The runtime
+ *                    whitelist throw below is kept as defense-in-depth so an
+ *                    un-vetted alias (e.g. from an `as` cast or untyped
+ *                    caller) still throws rather than reaching `db.unsafe`.
  * @param showAll     when true, suppression is disabled (bound param).
  * @param keptTickers durable ever-shown kept-set (bound `text[]` param).
  * @throws if `symbolAlias` is not whitelisted (guards against any future
@@ -80,7 +84,7 @@ function isSymbolAlias(alias: string): alias is SymbolAlias {
  */
 export function keptSuppressionSql(
   db: Db,
-  symbolAlias: string,
+  symbolAlias: SymbolAlias,
   showAll: boolean | undefined,
   keptTickers: string[],
 ) {

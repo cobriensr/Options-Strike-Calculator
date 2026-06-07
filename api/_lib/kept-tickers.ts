@@ -33,8 +33,7 @@
  * `db.error` metric only, mirroring last-good-cache.ts / schwab.ts.
  */
 
-import { getDb } from './db.js';
-import { metrics } from './sentry.js';
+import { getDb, safeDb, safeDbVoid } from './db.js';
 
 /**
  * Read the set of tickers shown at least once today (`date`).
@@ -43,7 +42,7 @@ import { metrics } from './sentry.js';
  *          result OR on any error (DB unavailable, timeout). Never throws.
  */
 export async function readKeptTickers(date: string): Promise<string[]> {
-  try {
+  return safeDb(async () => {
     const sql = getDb();
     const rows = (await sql`
       SELECT underlying_symbol
@@ -51,10 +50,7 @@ export async function readKeptTickers(date: string): Promise<string[]> {
       WHERE trade_date = ${date}::date
     `) as { underlying_symbol: string }[];
     return rows.map((r) => r.underlying_symbol);
-  } catch {
-    metrics.increment('db.error');
-    return [];
-  }
+  }, []);
 }
 
 /**
@@ -75,7 +71,7 @@ export async function addKeptTickers(
   tickers: string[],
 ): Promise<void> {
   if (tickers.length === 0) return;
-  try {
+  await safeDbVoid(async () => {
     const sql = getDb();
     // Single round-trip via `unnest`: binds ONE text[] param for the whole
     // batch (no per-row $N tuples, no 65535-param ceiling). Neon sends the
@@ -85,7 +81,5 @@ export async function addKeptTickers(
       SELECT ${date}::date, t FROM unnest(${tickers}::text[]) AS t
       ON CONFLICT DO NOTHING
     `;
-  } catch {
-    metrics.increment('db.error');
-  }
+  });
 }

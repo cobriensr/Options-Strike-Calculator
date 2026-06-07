@@ -17,6 +17,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { withDbRetry, isRetryableDbError } from '../_lib/db.js';
+import { DB_RETRY_ATTEMPTS } from '../_lib/constants.js';
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -121,6 +122,25 @@ describe('withDbRetry', () => {
     expect((caught as Error).message).toMatch(/fetch failed/);
     // Initial + 2 retries.
     expect(fn).toHaveBeenCalledTimes(3);
+  });
+
+  it('defaults its retry budget to DB_RETRY_ATTEMPTS (single source of truth)', async () => {
+    // No explicit `retries` arg → the default must come from the shared
+    // constant, so total attempts == 1 initial + DB_RETRY_ATTEMPTS retries.
+    const fn = vi.fn(async () => {
+      throw transientError();
+    });
+
+    let caught: unknown = null;
+    const promise = withDbRetry(fn).catch((err: unknown) => {
+      caught = err;
+    });
+    // Drain the full linear backoff schedule (1s, 2s, … up to the budget).
+    await vi.advanceTimersByTimeAsync(60_000);
+    await promise;
+
+    expect(caught).toBeInstanceOf(Error);
+    expect(fn).toHaveBeenCalledTimes(DB_RETRY_ATTEMPTS + 1);
   });
 
   it('does not retry deterministic errors (re-throws on first attempt)', async () => {

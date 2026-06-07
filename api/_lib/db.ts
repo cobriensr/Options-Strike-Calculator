@@ -27,6 +27,8 @@
 
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
 import { MIGRATIONS } from './db-migrations.js';
+import { DB_RETRY_ATTEMPTS } from './constants.js';
+import { metrics } from './sentry.js';
 
 export type { Migration } from './db-migrations.js';
 
@@ -44,6 +46,37 @@ export function getDb() {
 /** Reset the cached client. Exported for tests only. */
 export function _resetDb() {
   _db = null;
+}
+
+/**
+ * Run a DB operation, swallowing ANY throw: on error it increments the
+ * `db.error` metric and returns `fallback`. The DB-side mirror of
+ * `safeRedis` in `redis.ts` — centralizes the "best-effort DB, never crash
+ * the request" pattern that callers (e.g. `kept-tickers.ts`) previously
+ * duplicated with their own try/catch + `metrics.increment('db.error')`.
+ *
+ * This swallows DB errors entirely (degrade-to-fallback). It is the
+ * complement of `withDbRetry`, which RETHROWS after exhausting retries — use
+ * `withDbRetry` when the caller still wants to handle the failure, and
+ * `safeDb` when a dead DB must silently degrade to a no-op/empty result.
+ *
+ * @param op       the DB operation to run.
+ * @param fallback the value to return if `op` throws.
+ */
+export async function safeDb<T>(op: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await op();
+  } catch {
+    metrics.increment('db.error');
+    return fallback;
+  }
+}
+
+/** Void-returning convenience wrapper over {@link safeDb} for best-effort
+ *  write paths that have no meaningful return value (no explicit `undefined`
+ *  fallback to thread). */
+export async function safeDbVoid(op: () => Promise<void>): Promise<void> {
+  await safeDb(op, undefined);
 }
 
 // ============================================================
@@ -93,7 +126,7 @@ export function isRetryableDbError(err: unknown): boolean {
 
 export async function withDbRetry<T>(
   fn: () => Promise<T>,
-  retries: number = 2,
+  retries: number = DB_RETRY_ATTEMPTS,
   perAttemptTimeoutMs?: number,
 ): Promise<T> {
   for (let attempt = 0; attempt <= retries; attempt++) {

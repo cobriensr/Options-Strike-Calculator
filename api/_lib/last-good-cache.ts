@@ -33,7 +33,7 @@
  * stringify/parse.
  */
 
-import { redis, safeRedis } from './redis.js';
+import { redis, safeRedis, safeRedisVoid } from './redis.js';
 
 /**
  * Read the last successfully-cached value for `key`.
@@ -58,7 +58,7 @@ export async function writeLastGood<T>(
   value: T,
   ttlSec: number,
 ): Promise<void> {
-  await safeRedis(async () => {
+  await safeRedisVoid(async () => {
     await redis.set(key, value, { ex: ttlSec });
-  }, undefined);
+  });
 }

@@ -62,3 +62,12 @@ export async function safeRedis<T>(
     return fallback;
   }
 }
+
+/**
+ * Void-returning convenience wrapper over {@link safeRedis} for best-effort
+ * write paths (e.g. `writeLastGood`) that have no meaningful return value, so
+ * callers don't thread an explicit `undefined` fallback sentinel.
+ */
+export async function safeRedisVoid(op: () => Promise<void>): Promise<void> {
+  await safeRedis(op, undefined);
+}

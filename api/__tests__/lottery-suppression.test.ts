@@ -7,6 +7,7 @@ import {
 import {
   keptSuppressionSql,
   SYMBOL_ALIAS_WHITELIST,
+  type SymbolAlias,
 } from '../_lib/lottery-suppression.js';
 
 // A real neon query function. No connection is ever opened — every test only
@@ -23,7 +24,7 @@ const db: NeonQueryFunction<false, false> = neon(
  * production does), and return the flattened { query, params }.
  */
 function buildEmbedded(
-  symbolAlias: string,
+  symbolAlias: SymbolAlias,
   showAll: boolean | undefined,
   keptTickers: string[],
 ): { query: string; params: unknown[] } {
@@ -108,9 +109,12 @@ describe('keptSuppressionSql', () => {
       'F', // case-sensitive: uppercase is not whitelisted
     ]) {
       it(`rejects invalid alias ${JSON.stringify(bad)}`, () => {
-        expect(() => keptSuppressionSql(db, bad, false, ['AAPL'])).toThrow(
-          /invalid symbol alias/,
-        );
+        // Cast through the typed param: these aliases are deliberately
+        // off-whitelist to exercise the runtime defense-in-depth throw that
+        // the literal-union type otherwise prevents at compile time.
+        expect(() =>
+          keptSuppressionSql(db, bad as SymbolAlias, false, ['AAPL']),
+        ).toThrow(/invalid symbol alias/);
       });
     }
   });

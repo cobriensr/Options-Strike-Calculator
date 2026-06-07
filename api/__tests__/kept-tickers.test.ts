@@ -6,9 +6,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Both helpers use the tagged-template `sql\`…\`` form (no `sql.query()`).
 const mockSql = vi.fn();
 
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-}));
+// Override `getDb` only; keep the REAL `safeDb`/`safeDbVoid` (kept-tickers now
+// routes its swallow-and-`db.error` behavior through them) so the error-swallow
+// path under test exercises the production wrapper, not a stub.
+vi.mock('../_lib/db.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+  return {
+    ...actual,
+    getDb: vi.fn(() => mockSql),
+  };
+});
 
 const { mockIncrement } = vi.hoisted(() => ({ mockIncrement: vi.fn() }));
 
