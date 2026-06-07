@@ -7,7 +7,8 @@
  * and the nightly cron both orchestrate through these helpers + the pure
  * evaluator — no SQL lives anywhere else in the read path.
  *
- *   - `getGexStrikes`   → latest-minute net GEX by strike + spot.
+ *   - `getGexStrikes`   → net GEX by strike + spot at a chosen anchor minute
+ *                         (`'latest'` EOD by default; `'open'` / `'midday'`).
  *   - `getPutIvSeries`  → nearest-ATM SPXW 0DTE put IV per CT minute.
  *   - `getCandles30`    → 30-min SPX regular-session candles (CT minute-of-day).
  *
@@ -23,6 +24,7 @@
 
 import { getDb } from './db.js';
 import { withRetry } from './api-helpers.js';
+import { REGIME_0DTE } from './regime-0dte.js';
 import type { GexStrike, IvPoint, Candle30 } from './regime-0dte.js';
 
 // Neon returns NUMERIC columns as strings (full precision), INTEGER/FLOAT8 as
@@ -36,23 +38,75 @@ const ctMinExpr = (col: string) =>
     + extract(minute from ${col} AT TIME ZONE 'America/Chicago'))::int`;
 
 /**
- * Latest-minute net GEX by strike for `dateIso`, plus the spot at that minute.
- * Net GEX = call_gamma_oi + put_gamma_oi (put is signed-negative; see header).
+ * Which minute's strike profile to read for a trading day.
+ *   - `'latest'` → the MAX timestamp (EOD profile). Default — the live read
+ *     path wants the most recent minute.
+ *   - `'open'`   → the MIN timestamp (the day's first GEX minute).
+ *   - `'midday'` → the first timestamp whose CT minute-of-day ≥ 750 (12:30 CT);
+ *     falls back to the latest minute when no such minute exists (short day).
+ *
+ * The 0DTE gamma profile migrates with spot through the day, so the gate / GEX
+ * fields must each be reconstructed from a TIME-CORRECT profile rather than the
+ * single EOD snapshot — otherwise a band centered on the OPEN spot finds no
+ * strikes in the EOD profile and reads ~0.
+ */
+export type GexAnchor = 'latest' | 'open' | 'midday';
+
+/**
+ * Net GEX by strike for `dateIso` at the chosen `anchor` minute, plus the spot
+ * at that minute. Net GEX = call_gamma_oi + put_gamma_oi (put is signed-negative;
+ * see header). DEFAULT `anchor` is `'latest'` — the live endpoint relies on it.
  */
 export async function getGexStrikes(
   dateIso: string,
+  anchor: GexAnchor = 'latest',
 ): Promise<{ strikes: GexStrike[]; spot: number | null }> {
   const sql = getDb();
+
+  // The anchor CTE selects the single timestamp whose profile we read. Each
+  // arm resolves to one `ts`; the outer query then pulls that minute's strikes.
+  const anchorCte =
+    anchor === 'open'
+      ? sql`
+          SELECT min(timestamp) AS ts
+          FROM gex_strike_0dte
+          WHERE date = ${dateIso}::date
+        `
+      : anchor === 'midday'
+        ? sql`
+            SELECT min(timestamp) AS ts
+            FROM gex_strike_0dte
+            WHERE date = ${dateIso}::date
+              AND ${sql.unsafe(ctMinExpr('timestamp'))} >= ${REGIME_0DTE.MIDDAY_AFTER_MIN}
+          `
+        : sql`
+            SELECT max(timestamp) AS ts
+            FROM gex_strike_0dte
+            WHERE date = ${dateIso}::date
+          `;
+
+  // For `'midday'`, fall back to the latest minute when no minute reached
+  // 12:30 CT (a short/early-close session). COALESCE keeps it a single query.
+  const fallbackTs =
+    anchor === 'midday'
+      ? sql`
+          , latest_fallback AS (
+            SELECT max(timestamp) AS ts
+            FROM gex_strike_0dte
+            WHERE date = ${dateIso}::date
+          )`
+      : sql``;
+  const tsExpr =
+    anchor === 'midday'
+      ? sql`COALESCE((SELECT ts FROM anchor), (SELECT ts FROM latest_fallback))`
+      : sql`(SELECT ts FROM anchor)`;
+
   const rows = (await withRetry(
     () => sql`
-      WITH latest AS (
-        SELECT max(timestamp) AS ts
-        FROM gex_strike_0dte
-        WHERE date = ${dateIso}::date
-      )
+      WITH anchor AS (${anchorCte})${fallbackTs}
       SELECT g.strike, g.call_gamma_oi, g.put_gamma_oi, g.price
-      FROM gex_strike_0dte g, latest
-      WHERE g.date = ${dateIso}::date AND g.timestamp = latest.ts
+      FROM gex_strike_0dte g
+      WHERE g.date = ${dateIso}::date AND g.timestamp = ${tsExpr}
       ORDER BY g.strike
     `,
   )) as {

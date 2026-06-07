@@ -3,21 +3,27 @@
 /**
  * Tests for the nightly 0DTE gamma-regime self-scoring cron.
  *
- * The cron reads the day's three source tables via the Task-5 helpers
- * (getGexStrikes / getPutIvSeries / getCandles30 — mocked here), evaluates
- * the regime at the 15:00 CT close, runs a small day-OHLC query on
- * index_candles_1m, and UPSERTs one row per trading day into
+ * The cron reads the day's source tables via the Task-5 helpers
+ * (getGexStrikes / getPutIvSeries / getCandles30 — mocked here). Crucially it
+ * reads getGexStrikes TWICE with a time anchor — the OPEN-minute profile (for
+ * the forward gate + gex_open + flip) and the MIDDAY-minute profile (for
+ * gex_mid + midday_deep_neg) — because the 0DTE gamma profile migrates with
+ * spot through the day. It then runs a small day-OHLC query on
+ * index_candles_1m and UPSERTs one row per trading day into
  * flow_regime_0dte_daily.
  *
- * The pure evaluator (regime-0dte.ts) is NOT mocked — we want the real
+ * The pure helpers (regime-0dte.ts) are NOT mocked — we want the real
  * gate/trigger math to exercise the integration. The query helpers ARE
- * mocked so each case can pin the source shapes without DB fixtures.
+ * mocked so each case can pin the source shapes without DB fixtures; the
+ * getGexStrikes mock routes on its `anchor` arg so the open and midday
+ * profiles are independently controllable.
  * Assertions focus on:
  *   - CRON_SECRET auth guard (cronGuard returns null → no DB write).
- *   - Happy path: a deep-neg fixture → exactly one UPSERT into
- *     flow_regime_0dte_daily with gate='lean_down', the derived columns,
- *     and the realized-outcome coercions, using ON CONFLICT (date) DO UPDATE.
- *   - Empty-data day (no candles/strikes): no UPSERT, clean exit.
+ *   - Happy path: deep-neg OPEN + MIDDAY profiles → exactly one UPSERT into
+ *     flow_regime_0dte_daily with gate='lean_down', midday_deep_neg=true, the
+ *     derived columns, and the realized-outcome coercions, using
+ *     ON CONFLICT (date) DO UPDATE.
+ *   - Empty-data day (no candles / thin open profile): no UPSERT, clean exit.
  *
  * Task 7 of docs/superpowers/plans/2026-06-07-regime-0dte-panel.md
  */
@@ -71,20 +77,43 @@ import { mockRequest, mockResponse } from './helpers';
 const DATE = '2026-06-05';
 
 // A crash-shaped deep-negative-gamma day. Strikes are live-units magnitude
-// (~1e10 scale) so gexNear at open/close crosses GATE_DEEP_NEG (-1.5e10).
+// (~1e10 scale) so gexNear at the anchor spot crosses GATE_DEEP_NEG (-1.5e10).
 // Candles march steadily down (5 red, 0 green by 11:00 CT) so mostly_red
 // fires; IV jumps mid-session so iv_break fires.
-function deepNegStrikes() {
+//
+// The OPEN profile is anchored at the open spot (~7530); the MIDDAY profile is
+// anchored lower (~7475) as the day sold off and the 0DTE gamma profile
+// migrated with spot. Both sum to ~-3e10 in-band → gate 'lean_down' +
+// midday_deep_neg true — exercising the time-anchored reconstruction.
+function deepNegOpenProfile() {
   return {
     strikes: [
-      { strike: 7440, netGex: -6e9 },
-      { strike: 7450, netGex: -6e9 },
-      { strike: 7460, netGex: -6e9 },
-      { strike: 7470, netGex: -6e9 },
-      { strike: 7480, netGex: -6e9 },
+      { strike: 7510, netGex: -6e9 },
+      { strike: 7520, netGex: -6e9 },
+      { strike: 7530, netGex: -6e9 },
+      { strike: 7540, netGex: -6e9 },
+      { strike: 7550, netGex: -6e9 },
     ],
-    spot: 7460,
+    spot: 7530,
   };
+}
+
+function deepNegMiddayProfile() {
+  return {
+    strikes: [
+      { strike: 7455, netGex: -6e9 },
+      { strike: 7465, netGex: -6e9 },
+      { strike: 7475, netGex: -6e9 },
+      { strike: 7485, netGex: -6e9 },
+      { strike: 7495, netGex: -6e9 },
+    ],
+    spot: 7475,
+  };
+}
+
+/** Route the getGexStrikes mock by its time anchor (open vs midday). */
+function deepNegByAnchor(_date: string, anchor: 'latest' | 'open' | 'midday') {
+  return anchor === 'midday' ? deepNegMiddayProfile() : deepNegOpenProfile();
 }
 
 function deepNegIv() {
@@ -148,7 +177,10 @@ describe('capture-regime-0dte cron', () => {
   });
 
   it('UPSERTs one lean_down row on a deep-neg crash-shaped day', async () => {
-    mockGetGexStrikes.mockResolvedValue(deepNegStrikes());
+    mockGetGexStrikes.mockImplementation(
+      (d: string, a: 'latest' | 'open' | 'midday') =>
+        Promise.resolve(deepNegByAnchor(d, a)),
+    );
     mockGetPutIvSeries.mockResolvedValue(deepNegIv());
     mockGetCandles30.mockResolvedValue(deepNegCandles());
     // The day-OHLC query returns one aggregate row.
@@ -163,6 +195,13 @@ describe('capture-regime-0dte cron', () => {
     // One OHLC SELECT + one UPSERT = 2 SQL calls.
     expect(mockSql).toHaveBeenCalledTimes(2);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+
+    // The cron reads BOTH time-anchored profiles (open + midday), never the
+    // default 'latest' EOD snapshot for the gate.
+    const anchors = mockGetGexStrikes.mock.calls.map((c) => c[1]);
+    expect(anchors).toContain('open');
+    expect(anchors).toContain('midday');
+    expect(anchors).not.toContain('latest');
 
     // UPSERT param order matches the INSERT VALUES clause:
     //   [date, gate, gex_open, gex_mid, flip_minus_open_pct,
@@ -183,6 +222,8 @@ describe('capture-regime-0dte cron', () => {
     expect(params[7]).toBe(true); // iv_break
     expect(params[8]).toBe('10:50'); // iv_break_at (650 CT → HH:MM)
     expect(typeof params[9]).toBe('number'); // iv_break_mag_pct
+    // midday_deep_neg: midday profile sums to ~-3e10 ≤ GATE_DEEP_NEG (-1.5e10).
+    expect(params[10]).toBe(true); // midday_deep_neg
 
     // Realized outcome: open 7530 → close 7445 = −1.13% (big_down),
     // range (7535−7440)/7530 = 1.26%, dir_eff = 85/95 ≈ 0.895.
@@ -198,7 +239,8 @@ describe('capture-regime-0dte cron', () => {
     expect(sqlText).toContain('ON CONFLICT (date) DO UPDATE');
   });
 
-  it('skips the upsert on an empty-data day (no candles, no strikes)', async () => {
+  it('skips the upsert on an empty-data day (no candles, thin open profile)', async () => {
+    // Both anchors resolve empty → open profile under MIN_STRIKES → guard fires.
     mockGetGexStrikes.mockResolvedValue({ strikes: [], spot: null });
     mockGetPutIvSeries.mockResolvedValue([]);
     mockGetCandles30.mockResolvedValue([]);

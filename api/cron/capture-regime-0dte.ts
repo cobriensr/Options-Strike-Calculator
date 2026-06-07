@@ -34,8 +34,11 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import {
-  evaluateRegime0dte,
   gexNear,
+  gradeGate,
+  flipStrike,
+  countCandles,
+  ivBreak,
   REGIME_0DTE,
 } from '../_lib/regime-0dte.js';
 import {
@@ -54,29 +57,6 @@ function ctMinToHhmm(ctMin: number | null): string | null {
   const h = Math.floor(ctMin / 60);
   const m = ctMin % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
-
-/**
- * Pick the midday anchor spot from the 30-min candles: the close of the
- * first bucket at/after ctMin 780 (≈13:00 CT). When no bucket starts that
- * late (a short/early-close session), fall back to the bucket whose start
- * is nearest to 780; if there are no candles at all, return null.
- */
-function middaySpotFromCandles(
-  candles30: { ctMin: number; close: number }[],
-): number | null {
-  if (candles30.length === 0) return null;
-  const atOrAfter = candles30
-    .filter((c) => c.ctMin >= REGIME_0DTE.MIDDAY_AFTER_MIN)
-    .sort((a, b) => a.ctMin - b.ctMin);
-  if (atOrAfter[0]) return atOrAfter[0].close;
-  // Fallback: nearest bucket to the midday minute.
-  const nearest = [...candles30].sort(
-    (a, b) =>
-      Math.abs(a.ctMin - REGIME_0DTE.MIDDAY_AFTER_MIN) -
-      Math.abs(b.ctMin - REGIME_0DTE.MIDDAY_AFTER_MIN),
-  )[0];
-  return nearest ? nearest.close : null;
 }
 
 // Neon returns NUMERIC columns as strings (full precision); nulls flow
@@ -129,18 +109,28 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const today = ctx.today;
 
-    // Read the three live source tables via the shared helpers.
-    const [{ strikes, spot }, putIv, candles30] = await Promise.all([
-      getGexStrikes(today),
+    // The 0DTE gamma profile MIGRATES with spot through the session, so each
+    // recorded field must be reconstructed from its TIME-CORRECT profile —
+    // not the single EOD snapshot. The OPEN-minute profile (at the open spot)
+    // gives the forward gate the GATE_DEEP_NEG calibration validated; the
+    // MIDDAY-minute profile gives the midday deep-neg check. Reading the EOD
+    // profile and evaluating it at the open spot finds no strikes in band and
+    // reads ~0 — a coincident close-gate, not the forward open-gate signal.
+    const [openP, midP, putIv, candles30] = await Promise.all([
+      getGexStrikes(today, 'open'),
+      getGexStrikes(today, 'midday'),
       getPutIvSeries(today),
       getCandles30(today),
     ]);
 
-    // Holiday / data-outage guard: with no candles or no GEX strikes there
-    // is nothing meaningful to score. Exit cleanly without a junk row.
-    if (candles30.length === 0 || strikes.length === 0) {
+    // Holiday / data-outage guard: with no candles or an under-populated OPEN
+    // profile there is nothing meaningful to score. Exit cleanly, no junk row.
+    if (
+      candles30.length === 0 ||
+      openP.strikes.length < REGIME_0DTE.MIN_STRIKES
+    ) {
       ctx.logger.info(
-        { today, candles: candles30.length, strikes: strikes.length },
+        { today, candles: candles30.length, openStrikes: openP.strikes.length },
         'capture-regime-0dte: no data for today, skipping',
       );
       return {
@@ -150,39 +140,36 @@ export default withCronInstrumentation(
       };
     }
 
-    // Day anchors from the 30-min candles (sorted by bucket start).
     const sorted = [...candles30].sort((a, b) => a.ctMin - b.ctMin);
-    const openSpot = sorted[0]?.open ?? null;
-    const closeSpot = sorted.at(-1)?.close ?? spot ?? null;
-    const middaySpot = middaySpotFromCandles(sorted);
 
-    if (closeSpot == null) {
-      ctx.logger.warn(
-        { today },
-        'capture-regime-0dte: no close spot resolvable, skipping',
-      );
-      return {
-        status: 'skipped',
-        message: 'no close spot',
-        metadata: { today },
-      };
-    }
+    // gate + gex_open ← OPEN-minute profile at that minute's spot. This is the
+    // forward open-gate the scorecard validates (NOT the coincident close).
+    const gexOpen =
+      openP.spot != null ? gexNear(openP.strikes, openP.spot) : null;
+    const gate = gradeGate(gexOpen);
 
-    // Evaluate at 15:00 CT so every intraday trigger has seen the full day.
-    const state = evaluateRegime0dte({
-      nowCtMin: REGIME_0DTE.CLOSE_MIN,
-      spot: closeSpot,
-      openSpot,
-      gexStrikes: strikes,
-      putIv,
-      candles30: sorted,
-    });
+    // gex_mid + midday_deep_neg ← MIDDAY-minute profile at that minute's spot.
+    const gexMid = midP.spot != null ? gexNear(midP.strikes, midP.spot) : null;
+    const middayDeepNeg = gexMid != null && gexMid <= REGIME_0DTE.GATE_DEEP_NEG;
 
-    // GEX context at the open and midday anchors (net-GEX sum within the
-    // ±band around each spot). gexNear returns null when the band is empty
-    // or the spot is unknown.
-    const gexOpen = openSpot != null ? gexNear(strikes, openSpot) : null;
-    const gexMid = middaySpot != null ? gexNear(strikes, middaySpot) : null;
+    // flip_minus_open_pct ← flip strike on the OPEN profile vs the open spot.
+    const flip =
+      openP.spot != null ? flipStrike(openP.strikes, openP.spot) : null;
+    const flipMinusOpenPct =
+      flip != null && openP.spot
+        ? ((flip - openP.spot) / openP.spot) * 100
+        : null;
+
+    // mostly_red + iv_break stay full-day-series based. countCandles over the
+    // 11:00-CT persistence window; ivBreak is EOD-capped internally via
+    // CLOSE_MIN (min(nowCtMin, IVBREAK_WIN_END) inside the helper).
+    const { green, red } = countCandles(sorted, REGIME_0DTE.PERSIST_END_MIN);
+    const mostlyRedFired =
+      green <= REGIME_0DTE.MOSTLY_RED_MAX_GREEN &&
+      red >= REGIME_0DTE.MOSTLY_RED_MIN_RED;
+    const mostlyRedAt = mostlyRedFired ? REGIME_0DTE.PERSIST_END_MIN : null;
+
+    const iv = ivBreak(putIv, REGIME_0DTE.CLOSE_MIN);
 
     // Realized outcome: day open/close/hi/lo from the regular-session
     // SPX 1-min bars. One aggregate row per day.
@@ -217,14 +204,14 @@ export default withCronInstrumentation(
           midday_deep_neg,
           oc_ret_pct, range_pct, dir_eff, big_down, big_up
         ) VALUES (
-          ${today}::date, ${state.gate},
-          ${gexOpen}, ${gexMid}, ${state.flipMinusOpenPct},
-          ${state.triggers.mostlyRed.fired},
-          ${ctMinToHhmm(state.triggers.mostlyRed.atCtMin)},
-          ${state.triggers.ivBreak.fired},
-          ${ctMinToHhmm(state.triggers.ivBreak.atCtMin)},
-          ${state.triggers.ivBreak.magPct},
-          ${state.triggers.middayDeepNeg.fired},
+          ${today}::date, ${gate},
+          ${gexOpen}, ${gexMid}, ${flipMinusOpenPct},
+          ${mostlyRedFired},
+          ${ctMinToHhmm(mostlyRedAt)},
+          ${iv.fired},
+          ${ctMinToHhmm(iv.atCtMin)},
+          ${iv.magPct},
+          ${middayDeepNeg},
           ${outcome?.ocRetPct ?? null},
           ${outcome?.rangePct ?? null},
           ${outcome?.dirEff ?? null},
@@ -255,12 +242,12 @@ export default withCronInstrumentation(
     ctx.logger.info(
       {
         today,
-        gate: state.gate,
+        gate,
         gexOpen,
         gexMid,
-        mostlyRed: state.triggers.mostlyRed.fired,
-        ivBreak: state.triggers.ivBreak.fired,
-        middayDeepNeg: state.triggers.middayDeepNeg.fired,
+        mostlyRed: mostlyRedFired,
+        ivBreak: iv.fired,
+        middayDeepNeg,
         ocRetPct: outcome?.ocRetPct ?? null,
         bigDown: outcome?.bigDown ?? null,
       },
@@ -272,7 +259,7 @@ export default withCronInstrumentation(
       rows: 1,
       metadata: {
         today,
-        gate: state.gate,
+        gate,
         bigDown: outcome?.bigDown ?? null,
         ocRetPct: outcome?.ocRetPct ?? null,
       },

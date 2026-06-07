@@ -79,6 +79,11 @@ describe('GET /api/regime-0dte', () => {
     expect(body).toHaveProperty('gate');
     expect(body).toHaveProperty('triggers');
     expect(body.gate).toBe('lean_down');
+
+    // The live endpoint reads the DEFAULT ('latest' EOD) profile — it does NOT
+    // pass a time anchor. The anchored open/midday reads are cron-only.
+    expect(getGexStrikes).toHaveBeenCalledTimes(1);
+    expect(getGexStrikes.mock.calls[0]?.[1]).toBeUndefined();
   });
 
   it('returns 401 when the owner/guest guard rejects', async () => {
