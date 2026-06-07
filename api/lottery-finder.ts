@@ -16,6 +16,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, isRetryableDbError, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import { readLastGood, writeLastGood } from './_lib/last-good-cache.js';
+import { readKeptTickers, addKeptTickers } from './_lib/kept-tickers.js';
 import logger from './_lib/logger.js';
 import {
   guardOwnerOrGuestEndpoint,
@@ -477,6 +478,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const db = getDb();
 
+    // MONOTONIC Q1/Q2 SUPPRESSION (defense-in-depth for the server feed).
+    // `inversion_quintile` on lottery_ticker_stats is recomputed by the
+    // detect-lottery-fires cron and can FLIP mid-session, so a ticker shown
+    // earlier (quintile > 2) can suddenly be suppressed — its chains vanish
+    // from the feed. We keep a per-day Redis set of every ever-shown ticker
+    // and also un-suppress those. `showAll` short-circuits suppression
+    // entirely, so there's no need to read the set in that path. KV-down →
+    // `[]` → predicate's `= ANY('{}'::text[])` term matches nothing → exact
+    // pre-existing live behavior (zero regression). See
+    // api/_lib/kept-tickers.ts.
+    const keptTickers = showAll ? [] : await readKeptTickers(targetDate);
+
     // Two queries in parallel: (1) the row payload bounded by LIMIT,
     // and (2) the total matching count BEFORE limit so the UI can
     // surface "showing N of M" when the limit truncates the day.
@@ -616,7 +629,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
+          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR f.underlying_symbol = ANY(${keptTickers}::text[]))
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -715,7 +728,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
+          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR f.underlying_symbol = ANY(${keptTickers}::text[]))
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -813,7 +826,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
+          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR f.underlying_symbol = ANY(${keptTickers}::text[]))
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -867,12 +880,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             WHERE ${showAll ?? false}::boolean
               OR s.inversion_quintile IS NULL
               OR s.inversion_quintile > 2
+              OR ranked.underlying_symbol = ANY(${keptTickers}::text[])
           )::int AS total,
           COUNT(*) FILTER (
             WHERE NOT (
               ${showAll ?? false}::boolean
               OR s.inversion_quintile IS NULL
               OR s.inversion_quintile > 2
+              OR ranked.underlying_symbol = ANY(${keptTickers}::text[])
             )
           )::int AS suppressed
         FROM ranked
@@ -1227,6 +1242,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const total = totalRows[0]?.total ?? 0;
     const suppressedCount = totalRows[0]?.suppressed ?? 0;
+
+    // MONOTONIC ACCUMULATION: remember every ticker on this page that is
+    // CURRENTLY shown BY the live quintile gate (quintile > 2) so a future
+    // quintile flip into Q1/Q2 can't hide it. We deliberately exclude:
+    //   - tickers kept ONLY because they're already in the set (their
+    //     quintile is now ≤ 2) — they're already remembered, and we must
+    //     not let "kept" be the reason we re-remember (that's circular but
+    //     harmless; skipping it keeps the intent — "shown by quintile" —
+    //     crisp).
+    //   - NULL-quintile cold-start tickers — never suppressed anyway, so
+    //     there's nothing to protect by remembering them.
+    // Page-scoped by construction (rows is the LIMIT/OFFSET slice), but the
+    // set is monotonic and rebuilt on every request all day, so continuous
+    // polling + pagination converges to "every ever-qualifying ticker".
+    // `total`/`suppressedCount` come from the page-independent COUNT query,
+    // so counts stay correct regardless of which page drove the accumulate.
+    // Fire-and-forget; never blocks or throws into the response path.
+    if (!showAll) {
+      const currentlyKeptTickers = [
+        ...new Set(
+          rows
+            .filter(
+              (r) =>
+                r.ticker_inversion_quintile != null &&
+                Number(r.ticker_inversion_quintile) > 2,
+            )
+            .map((r) => r.underlying_symbol),
+        ),
+      ];
+      void addKeptTickers(targetDate, currentlyKeptTickers);
+    }
 
     // Build the suspicious-cluster lookup from the day-scoped 0DTE scan.
     // clusterLookup is keyed by clusterKey(symbol, side) with value =
