@@ -76,3 +76,126 @@ export function gradeGate(gex: number | null): Gate {
   if (gex > REGIME_0DTE.GATE_DEEP_NEG) return 'big_move';
   return 'lean_down';
 }
+
+export function flipStrike(
+  strikes: GexStrike[],
+  spot: number,
+): number | null {
+  const sorted = [...strikes].sort((a, b) => a.strike - b.strike);
+  let best: number | null = null;
+  let bestD = Infinity;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i];
+    const b = sorted[i + 1];
+    if (!a || !b) continue;
+    if (
+      a.netGex < 0 !== b.netGex < 0 &&
+      Math.abs(a.strike - spot) <= 0.05 * spot
+    ) {
+      const mid = (a.strike + b.strike) / 2;
+      const d = Math.abs(mid - spot);
+      if (d < bestD) {
+        bestD = d;
+        best = mid;
+      }
+    }
+  }
+  return best;
+}
+
+export function countCandles(c: Candle30[], untilCtMin: number) {
+  const upto = c.filter((x) => x.ctMin < untilCtMin);
+  return {
+    green: upto.filter((x) => x.close > x.open).length,
+    red: upto.filter((x) => x.close < x.open).length,
+  };
+}
+
+export function ivBreak(series: IvPoint[], nowCtMin: number) {
+  const ref = series.filter(
+    (p) =>
+      p.ctMin >= REGIME_0DTE.IVBREAK_REF_START &&
+      p.ctMin <= REGIME_0DTE.IVBREAK_REF_END,
+  );
+  const refHi = ref.length ? Math.max(...ref.map((p) => p.iv)) : null;
+  if (refHi == null) return { fired: false, atCtMin: null, magPct: null, refHi: null };
+  for (const p of series) {
+    if (
+      p.ctMin >= REGIME_0DTE.IVBREAK_WIN_START &&
+      p.ctMin <= Math.min(nowCtMin, REGIME_0DTE.IVBREAK_WIN_END) &&
+      p.iv > refHi * REGIME_0DTE.IVBREAK_REL
+    ) {
+      return {
+        fired: true,
+        atCtMin: p.ctMin,
+        magPct: ((p.iv - refHi) / refHi) * 100,
+        refHi,
+      };
+    }
+  }
+  return { fired: false, atCtMin: null, magPct: null, refHi };
+}
+
+export function evaluateRegime0dte(input: Regime0dteInput): Regime0dteState {
+  const { nowCtMin, spot, openSpot, gexStrikes, putIv, candles30 } = input;
+  const gexNearSpot = gexNear(gexStrikes, spot);
+  const gexAtOpen = openSpot ? gexNear(gexStrikes, openSpot) : null;
+  const gate = gradeGate(gexNearSpot);
+  const flip = flipStrike(gexStrikes, spot);
+
+  const { green, red } = countCandles(candles30, REGIME_0DTE.PERSIST_END_MIN);
+  const mostlyRedFired =
+    nowCtMin >= REGIME_0DTE.PERSIST_END_MIN &&
+    green <= REGIME_0DTE.MOSTLY_RED_MAX_GREEN &&
+    red >= REGIME_0DTE.MOSTLY_RED_MIN_RED;
+
+  const iv = ivBreak(putIv, nowCtMin);
+
+  const middayFired =
+    nowCtMin >= REGIME_0DTE.MIDDAY_AFTER_MIN &&
+    gexNearSpot != null &&
+    gexNearSpot <= REGIME_0DTE.GATE_DEEP_NEG;
+
+  const downConfirmed = mostlyRedFired || iv.fired || middayFired;
+  let note: string;
+  if (gate === 'lean_down' && !downConfirmed) {
+    note =
+      'deep negative gamma, no downside confirmation yet — up-ambush risk';
+  } else if (gate === 'calm') {
+    note = 'positive gamma — mean-revert / tight range likely';
+  } else if (downConfirmed) {
+    note = 'downside confirmed by intraday trigger(s)';
+  } else {
+    note = 'big move likely, direction unconfirmed';
+  }
+
+  return {
+    asOfCtMin: nowCtMin,
+    gate,
+    gexNearSpot,
+    gexAtOpen,
+    flipStrike: flip,
+    flipMinusOpenPct:
+      flip && openSpot ? ((flip - openSpot) / openSpot) * 100 : null,
+    triggers: {
+      mostlyRed: {
+        fired: mostlyRedFired,
+        atCtMin: mostlyRedFired ? REGIME_0DTE.PERSIST_END_MIN : null,
+        green,
+        red,
+      },
+      ivBreak: {
+        fired: iv.fired,
+        atCtMin: iv.atCtMin,
+        magPct: iv.magPct,
+        refHi: iv.refHi,
+      },
+      middayDeepNeg: {
+        fired: middayFired,
+        atCtMin: middayFired ? nowCtMin : null,
+        gexMid: middayFired ? gexNearSpot : null,
+      },
+    },
+    note,
+  };
+}
