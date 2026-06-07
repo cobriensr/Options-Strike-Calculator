@@ -26,7 +26,7 @@ export type Gate = 'calm' | 'big_move' | 'lean_down' | 'unknown';
 export interface GexStrike {
   strike: number;
   netGex: number;
-} // call_gamma_oi - put_gamma_oi
+} // call_gamma_oi + put_gamma_oi (put_gamma_oi is signed-negative)
 export interface IvPoint {
   ctMin: number;
   iv: number;
