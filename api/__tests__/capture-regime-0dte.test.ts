@@ -4,19 +4,21 @@
  * Tests for the nightly 0DTE gamma-regime self-scoring cron.
  *
  * The cron reads the day's source tables via the Task-5 helpers
- * (getGexStrikes / getPutIvSeries / getCandles30 — mocked here). Crucially it
- * reads getGexStrikes TWICE with a time anchor — the OPEN-minute profile (for
- * the forward gate + gex_open + flip) and the MIDDAY-minute profile (for
- * gex_mid + midday_deep_neg) — because the 0DTE gamma profile migrates with
- * spot through the day. It then runs a small day-OHLC query on
- * index_candles_1m and UPSERTs one row per trading day into
+ * (getGexStrikes / getPutIvSeries / getCandles30 — mocked here). It reads
+ * getGexStrikes TWICE with a time anchor — the OPEN-minute profile (gate +
+ * gex_open + flip) and the MIDDAY-minute profile (gex_mid + midday_deep_neg) —
+ * because the 0DTE gamma profile migrates with spot through the day. It then
+ * grades the day through the SAME pure evaluator the live endpoint uses
+ * (evaluateRegime0dte, as-of the cash close — NOT mocked, so the real
+ * gate/trigger math runs), reads the realized OHLC via the shared
+ * `fetchDayOhlcFromPostgres` helper (mocked here), self-monitors the
+ * GATE_DEEP_NEG cutoff for drift, and UPSERTs one row per trading day into
  * flow_regime_0dte_daily.
  *
- * The pure helpers (regime-0dte.ts) are NOT mocked — we want the real
- * gate/trigger math to exercise the integration. The query helpers ARE
- * mocked so each case can pin the source shapes without DB fixtures; the
- * getGexStrikes mock routes on its `anchor` arg so the open and midday
- * profiles are independently controllable.
+ * The query helpers ARE mocked so each case can pin the source shapes without
+ * DB fixtures; the getGexStrikes mock routes on its `anchor` arg so the open
+ * and midday profiles are independently controllable. The only raw SQL the
+ * cron now issues is the drift-guard trailing query and the UPSERT.
  * Assertions focus on:
  *   - CRON_SECRET auth guard (cronGuard returns null → no DB write).
  *   - Happy path: deep-neg OPEN + MIDDAY profiles → exactly one UPSERT into
@@ -24,6 +26,8 @@
  *     derived columns, and the realized-outcome coercions, using
  *     ON CONFLICT (date) DO UPDATE.
  *   - Empty-data day (no candles / thin open profile): no UPSERT, clean exit.
+ *   - Drift guard: warns (logger + Sentry) when GATE_DEEP_NEG diverges from the
+ *     trailing 12th percentile of gex_open; silent when in line.
  *
  * Task 7 of docs/superpowers/plans/2026-06-07-regime-0dte-panel.md
  */
@@ -71,8 +75,20 @@ vi.mock('../_lib/regime-0dte-queries.js', () => ({
   getCandles30: mockGetCandles30,
 }));
 
+// The realized-outcome OHLC now comes from the shared day-OHLC helper, not an
+// inline SQL scan. Mock it so the cron's SQL surface is just the drift-guard
+// trailing query + the upsert.
+const mockFetchDayOhlc = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/postgres-day-summary.js', () => ({
+  fetchDayOhlcFromPostgres: mockFetchDayOhlc,
+}));
+
 import handler from '../cron/capture-regime-0dte.js';
 import { mockRequest, mockResponse } from './helpers';
+import { Sentry } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
+import { REGIME_0DTE } from '../_lib/regime-0dte.js';
+import type { GexAnchor } from '../_lib/regime-0dte-queries.js';
 
 const DATE = '2026-06-05';
 
@@ -112,7 +128,7 @@ function deepNegMiddayProfile() {
 }
 
 /** Route the getGexStrikes mock by its time anchor (open vs midday). */
-function deepNegByAnchor(_date: string, anchor: 'latest' | 'open' | 'midday') {
+function deepNegByAnchor(_date: string, anchor: GexAnchor) {
   return anchor === 'midday' ? deepNegMiddayProfile() : deepNegOpenProfile();
 }
 
@@ -134,21 +150,30 @@ function deepNegCandles() {
   ];
 }
 
-/** One day-OHLC aggregate row as Neon returns it (NUMERIC → string). */
-function ohlcRow(
+/**
+ * A day-OHLC result as `fetchDayOhlcFromPostgres` returns it (numbers, not
+ * Neon NUMERIC strings — the helper already coerces). open 7530 → close 7445.
+ */
+function ohlcResult(
   overrides: Partial<{
-    day_open: string;
-    day_close: string;
-    day_hi: string;
-    day_lo: string;
+    open: number;
+    close: number;
+    high: number;
+    low: number;
   }> = {},
 ) {
+  const open = overrides.open ?? 7530;
+  const high = overrides.high ?? 7535;
+  const low = overrides.low ?? 7440;
+  const close = overrides.close ?? 7445;
   return {
-    day_open: '7530.00',
-    day_close: '7445.00',
-    day_hi: '7535.00',
-    day_lo: '7440.00',
-    ...overrides,
+    open,
+    high,
+    low,
+    close,
+    range: high - low,
+    up_excursion: high - open,
+    down_excursion: open - low,
   };
 }
 
@@ -160,6 +185,10 @@ beforeEach(() => {
   mockGetGexStrikes.mockReset();
   mockGetPutIvSeries.mockReset();
   mockGetCandles30.mockReset();
+  mockFetchDayOhlc.mockReset();
+  vi.mocked(Sentry.captureMessage).mockClear();
+  vi.mocked(logger.warn).mockClear();
+  vi.mocked(logger.info).mockClear();
 });
 
 describe('capture-regime-0dte cron', () => {
@@ -177,24 +206,26 @@ describe('capture-regime-0dte cron', () => {
   });
 
   it('UPSERTs one lean_down row on a deep-neg crash-shaped day', async () => {
-    mockGetGexStrikes.mockImplementation(
-      (d: string, a: 'latest' | 'open' | 'midday') =>
-        Promise.resolve(deepNegByAnchor(d, a)),
+    mockGetGexStrikes.mockImplementation((d: string, a: GexAnchor) =>
+      Promise.resolve(deepNegByAnchor(d, a)),
     );
     mockGetPutIvSeries.mockResolvedValue(deepNegIv());
     mockGetCandles30.mockResolvedValue(deepNegCandles());
-    // The day-OHLC query returns one aggregate row.
-    mockSql.mockResolvedValueOnce([ohlcRow()]);
-    // The UPSERT.
-    mockSql.mockResolvedValueOnce([]);
+    mockFetchDayOhlc.mockResolvedValue(ohlcResult());
+    // SQL calls (in order): drift-guard trailing query, then the UPSERT.
+    // The drift query returns no trailing rows → only today's value in the
+    // sample → < 20 rows → drift check skips (no warn).
+    mockSql.mockResolvedValueOnce([]); // drift-guard trailing gex_open
+    mockSql.mockResolvedValueOnce([]); // the UPSERT
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
-    // One OHLC SELECT + one UPSERT = 2 SQL calls.
+    // One drift-guard SELECT + one UPSERT = 2 SQL calls (OHLC is the helper).
     expect(mockSql).toHaveBeenCalledTimes(2);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    expect(mockFetchDayOhlc).toHaveBeenCalledWith(DATE);
 
     // The cron reads BOTH time-anchored profiles (open + midday), never the
     // default 'latest' EOD snapshot for the gate.
@@ -252,5 +283,61 @@ describe('capture-regime-0dte cron', () => {
     // No SQL at all — the guard returns before the OHLC query / upsert.
     expect(mockSql).not.toHaveBeenCalled();
     expect(res._json).toMatchObject({ status: 'skipped' });
+  });
+
+  it('warns (logger + Sentry) when GATE_DEEP_NEG drifts vs the trailing 12th pct', async () => {
+    mockGetGexStrikes.mockImplementation((d: string, a: GexAnchor) =>
+      Promise.resolve(deepNegByAnchor(d, a)),
+    );
+    mockGetPutIvSeries.mockResolvedValue(deepNegIv());
+    mockGetCandles30.mockResolvedValue(deepNegCandles());
+    mockFetchDayOhlc.mockResolvedValue(ohlcResult());
+
+    // Trailing window of 24 rows at a MUCH smaller magnitude (~-3e9) than the
+    // -1.5e10 GATE_DEEP_NEG cutoff. With today's ~-3e10 added, the 12th pct
+    // lands near -3e9 → GATE_DEEP_NEG is ~400% off it → drift warn fires.
+    const trailing = Array.from({ length: 24 }, () => ({ gex_open: -3e9 }));
+    mockSql.mockResolvedValueOnce(trailing); // drift-guard trailing query
+    mockSql.mockResolvedValueOnce([]); // the UPSERT
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ status: 'success' });
+    // logger.warn fired with the drift fingerprint and both values.
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gateDeepNeg: REGIME_0DTE.GATE_DEEP_NEG,
+        empiricalP12: expect.any(Number),
+      }),
+      'regime-0dte.gate_deep_neg_drift',
+    );
+    // Sentry message carries the fingerprint string.
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('regime-0dte.gate_deep_neg_drift'),
+    );
+  });
+
+  it('does NOT warn when the trailing 12th pct is in line with GATE_DEEP_NEG', async () => {
+    mockGetGexStrikes.mockImplementation((d: string, a: GexAnchor) =>
+      Promise.resolve(deepNegByAnchor(d, a)),
+    );
+    mockGetPutIvSeries.mockResolvedValue(deepNegIv());
+    mockGetCandles30.mockResolvedValue(deepNegCandles());
+    mockFetchDayOhlc.mockResolvedValue(ohlcResult());
+
+    // 24 trailing rows clustered around GATE_DEEP_NEG (-1.5e10) → 12th pct ≈
+    // -1.5e10 → within ±50% → no warn.
+    const trailing = Array.from({ length: 24 }, () => ({ gex_open: -1.5e10 }));
+    mockSql.mockResolvedValueOnce(trailing); // drift-guard trailing query
+    mockSql.mockResolvedValueOnce([]); // the UPSERT
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ status: 'success' });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 });

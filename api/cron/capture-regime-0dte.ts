@@ -10,9 +10,13 @@
  * day actually did (open→close return, range, directional efficiency).
  *
  * Runs once daily at 30 21 * * 1-5 (16:30 ET / 15:30 CT) — after the
- * 15:00 CT cash close and settle. Reads the same three source tables as
- * the live endpoint via the Task-5 helpers, then runs a small day-OHLC
- * aggregate on index_candles_1m for the realized columns.
+ * 15:00 CT cash close and settle. Reads the same source tables as the
+ * live endpoint via the Task-5 helpers and grades the day through the
+ * SAME pure evaluator (`evaluateRegime0dte`, evaluated as-of the cash
+ * close) — no inline gate/trigger derivation. Realized columns come from
+ * the shared `fetchDayOhlcFromPostgres` SPX day-OHLC helper. After
+ * computing today's open gate it also self-monitors the hand-calibrated
+ * `GATE_DEEP_NEG` cutoff for OI-scale drift.
  *
  * Idempotent — ON CONFLICT (date) DO UPDATE means a re-run for the same
  * trading day overwrites the row rather than erroring, so backfills and
@@ -29,23 +33,21 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import {
-  gexNear,
-  gradeGate,
-  flipStrike,
-  countCandles,
-  ivBreak,
-  REGIME_0DTE,
-} from '../_lib/regime-0dte.js';
+import { evaluateRegime0dte, REGIME_0DTE } from '../_lib/regime-0dte.js';
 import {
   getGexStrikes,
   getPutIvSeries,
   getCandles30,
 } from '../_lib/regime-0dte-queries.js';
+import {
+  fetchDayOhlcFromPostgres,
+  type DayOhlc,
+} from '../_lib/postgres-day-summary.js';
 
 /**
  * Format a CT minute-of-day (e.g. 660 = 11:00 CT) as a zero-padded
@@ -59,35 +61,24 @@ function ctMinToHhmm(ctMin: number | null): string | null {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-// Neon returns NUMERIC columns as strings (full precision); nulls flow
-// through. Accept all three at the read boundary.
-type Numeric = string | number | null;
-
-/** One day-OHLC aggregate row from index_candles_1m (NUMERIC → string). */
-interface DayOhlcRow {
-  day_open: Numeric;
-  day_close: Numeric;
-  day_hi: Numeric;
-  day_lo: Numeric;
-}
-
 /**
  * Realized open→close return, intraday range, and directional efficiency
  * for the day, plus the big-up / big-down flags. Returns null when the
  * day's true open is missing or non-positive (can't normalize).
+ *
+ * Consumes the shared `DayOhlc` from `fetchDayOhlcFromPostgres` (same
+ * `symbol='SPX' AND market_time='r'` SPX 1-min source as the live panel) so
+ * the day's OHLC is read through one canonical helper, not a duplicated query.
  */
-function realizedOutcome(row: DayOhlcRow | undefined): {
+function realizedOutcome(ohlc: DayOhlc | null): {
   ocRetPct: number;
   rangePct: number;
   dirEff: number;
   bigDown: boolean;
   bigUp: boolean;
 } | null {
-  if (!row) return null;
-  const open = Number(row.day_open ?? 0);
-  const close = Number(row.day_close ?? 0);
-  const hi = Number(row.day_hi ?? 0);
-  const lo = Number(row.day_lo ?? 0);
+  if (!ohlc) return null;
+  const { open, high: hi, low: lo, close } = ohlc;
   if (!Number.isFinite(open) || open <= 0) return null;
   const ocRetPct = ((close - open) / open) * 100;
   const rangePct = ((hi - lo) / open) * 100;
@@ -102,6 +93,85 @@ function realizedOutcome(row: DayOhlcRow | undefined): {
     bigDown: ocRetPct <= -1,
     bigUp: ocRetPct >= 1,
   };
+}
+
+/**
+ * Linear-interpolation percentile (type-7, the numpy/Excel default) of a
+ * numeric sample. `p` in [0,1]. Assumes a non-empty, finite input; callers
+ * gate on length first.
+ */
+function percentile(sortedAsc: number[], p: number): number {
+  if (sortedAsc.length === 1) return sortedAsc[0] as number;
+  const idx = p * (sortedAsc.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  const loVal = sortedAsc[lo] as number;
+  const hiVal = sortedAsc[hi] as number;
+  if (lo === hi) return loVal;
+  return loVal + (hiVal - loVal) * (idx - lo);
+}
+
+const DRIFT_TRAILING_ROWS = 30;
+const DRIFT_MIN_ROWS = 20;
+const DRIFT_PCTILE = 0.12; // GATE_DEEP_NEG was the 12th pct of open-spot gexNear
+const DRIFT_TOLERANCE = 0.5; // warn when GATE_DEEP_NEG is > ±50% off the pct
+
+/**
+ * Self-monitor the hand-calibrated `GATE_DEEP_NEG` cutoff. Reads the trailing
+ * ~30 recorded `gex_open` values (today's value passed in since its row isn't
+ * upserted yet), computes their 12th percentile, and warns (logger + Sentry,
+ * fingerprint `regime-0dte.gate_deep_neg_drift`) when `GATE_DEEP_NEG` is more
+ * than ±50% off that percentile — the signal that the OI scale has drifted and
+ * the constant needs recalibration. No-op until ≥20 rows exist.
+ */
+async function checkGateDeepNegDrift(
+  sql: ReturnType<typeof getDb>,
+  today: string,
+  todayGexOpen: number,
+  log: { warn: (obj: unknown, msg: string) => void },
+): Promise<void> {
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT gex_open
+      FROM flow_regime_0dte_daily
+      WHERE gex_open IS NOT NULL
+        AND date < ${today}::date
+      ORDER BY date DESC
+      LIMIT ${DRIFT_TRAILING_ROWS}
+    `,
+    2,
+    10_000,
+  )) as { gex_open: string | number | null }[];
+
+  const sample = rows
+    .map((r) => Number(r.gex_open))
+    .filter((v) => Number.isFinite(v));
+  // Include today's value so the window reflects the current measurement too.
+  sample.push(todayGexOpen);
+
+  if (sample.length < DRIFT_MIN_ROWS) return;
+
+  sample.sort((a, b) => a - b);
+  const pct = percentile(sample, DRIFT_PCTILE);
+  // Relative gap vs the empirical percentile magnitude (both are negative).
+  const rel =
+    pct === 0
+      ? Infinity
+      : Math.abs(REGIME_0DTE.GATE_DEEP_NEG - pct) / Math.abs(pct);
+
+  if (rel > DRIFT_TOLERANCE) {
+    const payload = {
+      gateDeepNeg: REGIME_0DTE.GATE_DEEP_NEG,
+      empiricalP12: pct,
+      relDrift: rel,
+      sampleSize: sample.length,
+    };
+    log.warn(payload, 'regime-0dte.gate_deep_neg_drift');
+    Sentry.captureMessage(
+      `regime-0dte.gate_deep_neg_drift: GATE_DEEP_NEG ${REGIME_0DTE.GATE_DEEP_NEG} ` +
+        `vs trailing 12th-pct ${pct.toFixed(3)} (rel ${(rel * 100).toFixed(0)}%)`,
+    );
+  }
 }
 
 export default withCronInstrumentation(
@@ -142,55 +212,48 @@ export default withCronInstrumentation(
 
     const sorted = [...candles30].sort((a, b) => a.ctMin - b.ctMin);
 
-    // gate + gex_open ← OPEN-minute profile at that minute's spot. This is the
-    // forward open-gate the scorecard validates (NOT the coincident close).
-    const gexOpen =
-      openP.spot != null ? gexNear(openP.strikes, openP.spot) : null;
-    const gate = gradeGate(gexOpen);
+    // SINGLE SOURCE OF TRUTH: the cron grades the day through the SAME pure
+    // evaluator the live endpoint uses — no inline gate/trigger derivation. It
+    // evaluates as-of the cash close (CLOSE_MIN = 15:00 CT) so every intraday
+    // trigger has seen the full session. The gate is OPEN-anchored (openProfile),
+    // the midday deep-neg from the MIDDAY profile; currentProfile is null because
+    // the scorecard records only the open/midday fields, never live gexNearSpot.
+    const state = evaluateRegime0dte({
+      nowCtMin: REGIME_0DTE.CLOSE_MIN,
+      openProfile: openP,
+      middayProfile: midP,
+      currentProfile: null,
+      putIv,
+      candles30: sorted,
+    });
 
-    // gex_mid + midday_deep_neg ← MIDDAY-minute profile at that minute's spot.
-    const gexMid = midP.spot != null ? gexNear(midP.strikes, midP.spot) : null;
-    const middayDeepNeg = gexMid != null && gexMid <= REGIME_0DTE.GATE_DEEP_NEG;
+    const gate = state.gate;
+    const gexOpen = state.gexAtOpen; // OPEN-profile net GEX (the forward gate)
+    const gexMid = state.triggers.middayDeepNeg.gexMid; // MIDDAY-profile net GEX
+    const middayDeepNeg = state.triggers.middayDeepNeg.fired;
+    const flipMinusOpenPct = state.flipMinusOpenPct;
+    const mostlyRedFired = state.triggers.mostlyRed.fired;
+    const mostlyRedAt = state.triggers.mostlyRed.atCtMin;
+    const iv = state.triggers.ivBreak;
 
-    // flip_minus_open_pct ← flip strike on the OPEN profile vs the open spot.
-    const flip =
-      openP.spot != null ? flipStrike(openP.strikes, openP.spot) : null;
-    const flipMinusOpenPct =
-      flip != null && openP.spot
-        ? ((flip - openP.spot) / openP.spot) * 100
-        : null;
-
-    // mostly_red + iv_break stay full-day-series based. countCandles over the
-    // 11:00-CT persistence window; ivBreak is EOD-capped internally via
-    // CLOSE_MIN (min(nowCtMin, IVBREAK_WIN_END) inside the helper).
-    const { green, red } = countCandles(sorted, REGIME_0DTE.PERSIST_END_MIN);
-    const mostlyRedFired =
-      green <= REGIME_0DTE.MOSTLY_RED_MAX_GREEN &&
-      red >= REGIME_0DTE.MOSTLY_RED_MIN_RED;
-    const mostlyRedAt = mostlyRedFired ? REGIME_0DTE.PERSIST_END_MIN : null;
-
-    const iv = ivBreak(putIv, REGIME_0DTE.CLOSE_MIN);
-
-    // Realized outcome: day open/close/hi/lo from the regular-session
-    // SPX 1-min bars. One aggregate row per day.
     const sql = getDb();
-    const ohlcRows = (await withDbRetry(
-      () => sql`
-        SELECT
-          (array_agg(open  ORDER BY timestamp ASC))[1]  AS day_open,
-          (array_agg(close ORDER BY timestamp DESC))[1] AS day_close,
-          max(high) AS day_hi,
-          min(low)  AS day_lo
-        FROM index_candles_1m
-        WHERE symbol = 'SPX'
-          AND market_time = 'r'
-          AND date = ${today}::date
-      `,
-      2,
-      10_000,
-    )) as DayOhlcRow[];
 
-    const outcome = realizedOutcome(ohlcRows[0]);
+    // DRIFT GUARD: GATE_DEEP_NEG is a hand-calibrated constant (12th-percentile
+    // of open-spot gexNear over the calibration window). If the live OI scale
+    // drifts, that cutoff silently mis-classifies. Self-monitor it: pull the
+    // trailing ~30 recorded gex_open values, compute their ~12th percentile,
+    // and warn if GATE_DEEP_NEG is more than ±50% off it. Needs ≥20 rows to be
+    // meaningful; skipped otherwise (early in the table's life).
+    if (gexOpen != null) {
+      await checkGateDeepNegDrift(sql, today, gexOpen, ctx.logger);
+    }
+
+    // Realized outcome via the shared SPX day-OHLC helper (same SPX / market_time
+    // = 'r' source). One canonical query — no duplicate inline OHLC scan. The
+    // helper has its own try/catch (returns null on failure) and uses getDb()
+    // internally, so it isn't re-wrapped in withDbRetry here.
+    const ohlc: DayOhlc | null = await fetchDayOhlcFromPostgres(today);
+    const outcome = realizedOutcome(ohlc);
 
     // UPSERT one row per trading day. ON CONFLICT (date) DO UPDATE makes
     // re-runs idempotent — a later fire overwrites the day's scorecard row.

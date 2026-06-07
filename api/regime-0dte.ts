@@ -2,17 +2,21 @@
  * GET /api/regime-0dte
  *
  * Live intraday SPX 0DTE "gamma regime" read. Reads three existing Neon
- * tables for the target CT trading day — `gex_strike_0dte` (latest-minute net
- * GEX by strike + spot), `strike_iv_snapshots` (SPXW 0DTE nearest-ATM put IV
- * series), and `index_candles_1m` (30-min SPX candles) — and feeds them to the
- * pure evaluator `evaluateRegime0dte()`. Returns the graded gamma gate plus the
- * three down-only triggers (mostly-red, IV-surface-break, midday deep-neg).
+ * tables for the target CT trading day — `gex_strike_0dte` (net GEX by strike
+ * + spot, read at THREE anchor minutes: open / midday / latest),
+ * `strike_iv_snapshots` (SPXW 0DTE nearest-ATM put IV series), and
+ * `index_candles_1m` (30-min SPX candles) — and feeds them to the pure
+ * evaluator `evaluateRegime0dte()`. Returns the graded gamma gate (anchored on
+ * the OPEN profile — the stable morning regime) plus the three down-only
+ * triggers (mostly-red, IV-surface-break, midday deep-neg). The per-strike viz
+ * series is the CURRENT (latest-minute) profile.
  *
  * The handler is a thin orchestrator: guard → Zod-parse `?date?` (default CT
- * today) → read tables via `regime-0dte-queries` → derive `nowCtMin` from the
- * current CT wall clock and `openSpot` from the first candle/gex minute →
- * evaluate → JSON. All I/O lives in `regime-0dte-queries`; all logic in the
- * pure evaluator. Mirrors `api/opening-flow-signal.ts`.
+ * today) → read the three anchored profiles + IV/candle series via
+ * `regime-0dte-queries` → derive `nowCtMin` (live CT clock for today; cash
+ * close for a replayed past date) → evaluate → JSON. All I/O lives in
+ * `regime-0dte-queries`; all logic in the pure evaluator. Mirrors
+ * `api/opening-flow-signal.ts`.
  *
  * Auth: owner-or-guest (no Anthropic spend), same gating as opening-flow-signal.
  *
@@ -64,31 +68,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const today = getCTDateStr(now);
     const dateIso = parsed.data.date ?? today;
 
-    // Minutes from CT midnight for the live "as of" clock. For a replayed
-    // historical date we still grade against the current wall clock so the
+    // "As of" clock. For TODAY, grade against the live CT wall clock so the
     // triggers' time-window gates (persistence at 11:00, IV-break window,
-    // midday) behave as they would have intraday on that day.
-    const { hour, minute } = getCTTime(now);
-    const nowCtMin = hour * 60 + minute;
+    // midday) reflect where we are in the session. For a REPLAYED past date the
+    // live clock is meaningless — evaluate as-of the cash close (15:00 CT) so
+    // every trigger has seen the full session, matching the nightly scorecard.
+    let nowCtMin: number;
+    if (dateIso < today) {
+      nowCtMin = REGIME_0DTE.CLOSE_MIN;
+    } else {
+      const { hour, minute } = getCTTime(now);
+      nowCtMin = hour * 60 + minute;
+    }
 
-    const [gex, putIv, candles30] = await Promise.all([
-      getGexStrikes(dateIso),
-      getPutIvSeries(dateIso),
-      getCandles30(dateIso),
-    ]);
-
-    // openSpot anchors the at-open GEX read and the flip-vs-open distance.
-    // Prefer the first regular-session candle's open; fall back to the latest
-    // gex-minute spot when candles haven't landed yet (early in the session).
-    const firstCandle = candles30[0];
-    const openSpot = firstCandle ? firstCandle.open : gex.spot;
-    const spot = gex.spot ?? openSpot ?? 0;
+    // Three TIME-CORRECT profiles: the OPEN profile (gate anchor), the MIDDAY
+    // profile (midday re-measure), and the CURRENT/latest profile (the live
+    // gexNearSpot read + the per-strike viz). The 0DTE gamma profile migrates
+    // with spot, so a single snapshot can't serve all three roles.
+    const [openProfile, middayProfile, currentProfile, putIv, candles30] =
+      await Promise.all([
+        getGexStrikes(dateIso, 'open'),
+        getGexStrikes(dateIso, 'midday'),
+        getGexStrikes(dateIso, 'latest'),
+        getPutIvSeries(dateIso),
+        getCandles30(dateIso),
+      ]);
 
     const state = evaluateRegime0dte({
       nowCtMin,
-      spot,
-      openSpot,
-      gexStrikes: gex.strikes,
+      openProfile,
+      middayProfile,
+      currentProfile,
       putIv,
       candles30,
     });
@@ -103,8 +113,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).json({
       date: dateIso,
       ...state,
-      gexStrikes: gex.strikes,
-      spot: gex.spot,
+      // Viz series come from the CURRENT profile — the per-strike gamma map the
+      // panel renders is the live one, even though the GATE is open-anchored.
+      gexStrikes: currentProfile.strikes,
+      spot: currentProfile.spot,
       putIv,
       candles30,
       bandPct: REGIME_0DTE.GATE_BAND_PCT,

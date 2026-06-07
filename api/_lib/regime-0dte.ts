@@ -37,11 +37,22 @@ export interface Candle30 {
   close: number;
 } // 30-min bucket
 
+/**
+ * A per-strike net-GEX profile read at one anchor minute, plus that minute's
+ * spot. The 0DTE gamma profile MIGRATES with spot through the session, so the
+ * gate, the midday re-measure, and the live viz must each read a TIME-CORRECT
+ * profile rather than a single snapshot evaluated at the wrong spot.
+ */
+export interface ProfileSnapshot {
+  strikes: GexStrike[];
+  spot: number | null;
+}
+
 export interface Regime0dteInput {
   nowCtMin: number; // minutes from CT midnight (e.g. 11:07 -> 667)
-  spot: number; // current SPX spot
-  openSpot: number | null; // first stable spot (~08:35), null pre-open
-  gexStrikes: GexStrike[]; // latest-minute net GEX by strike
+  openProfile: ProfileSnapshot; // first-minute profile — THE GATE ANCHOR
+  middayProfile: ProfileSnapshot | null; // ~12:30 profile; null/ignored pre-12:30
+  currentProfile: ProfileSnapshot | null; // latest minute (gexNearSpot info + viz); null pre-open
   putIv: IvPoint[]; // SPXW 0DTE nearest-ATM put IV series, today
   candles30: Candle30[]; // 30-min SPX candles, today, regular session
 }
@@ -138,11 +149,47 @@ export function ivBreak(series: IvPoint[], nowCtMin: number) {
 }
 
 export function evaluateRegime0dte(input: Regime0dteInput): Regime0dteState {
-  const { nowCtMin, spot, openSpot, gexStrikes, putIv, candles30 } = input;
-  const gexNearSpot = gexNear(gexStrikes, spot);
-  const gexAtOpen = openSpot ? gexNear(gexStrikes, openSpot) : null;
-  const gate = gradeGate(gexNearSpot);
-  const flip = flipStrike(gexStrikes, spot);
+  const {
+    nowCtMin,
+    openProfile,
+    middayProfile,
+    currentProfile,
+    putIv,
+    candles30,
+  } = input;
+
+  // THE GATE is the OPEN gate: net GEX in-band around the OPEN spot, on the
+  // OPEN-minute profile. This is the morning regime — stable all day and the
+  // anchoring the GATE_DEEP_NEG calibration was validated against. Evaluating a
+  // later profile at the open spot finds no strikes in band and reads ~0; that
+  // coincident-close read is the bug this contract removes.
+  const gexOpen =
+    openProfile.spot != null
+      ? gexNear(openProfile.strikes, openProfile.spot)
+      : null;
+  const gexAtOpen = gexOpen; // recorded field — now the real open-profile value
+  const gate = gradeGate(gexOpen);
+
+  // Flip strike is an open-anchored level (nearest dealer +/- sign change to
+  // the open spot) and its distance from the open spot.
+  const flip =
+    openProfile.spot != null
+      ? flipStrike(openProfile.strikes, openProfile.spot)
+      : null;
+
+  // Midday re-measure: net GEX in-band around the MIDDAY spot on the MIDDAY
+  // profile. Drives the middayDeepNeg trigger after 12:30 CT.
+  const gexMid =
+    middayProfile && middayProfile.spot != null
+      ? gexNear(middayProfile.strikes, middayProfile.spot)
+      : null;
+
+  // Current GEX near the live spot — informational (and the number the viz
+  // annotates). Falls back to the open read before the first live minute lands.
+  const gexNearSpot =
+    currentProfile && currentProfile.spot != null
+      ? gexNear(currentProfile.strikes, currentProfile.spot)
+      : gexOpen;
 
   const { green, red } = countCandles(candles30, REGIME_0DTE.PERSIST_END_MIN);
   const mostlyRedFired =
@@ -154,8 +201,8 @@ export function evaluateRegime0dte(input: Regime0dteInput): Regime0dteState {
 
   const middayFired =
     nowCtMin >= REGIME_0DTE.MIDDAY_AFTER_MIN &&
-    gexNearSpot != null &&
-    gexNearSpot <= REGIME_0DTE.GATE_DEEP_NEG;
+    gexMid != null &&
+    gexMid <= REGIME_0DTE.GATE_DEEP_NEG;
 
   const downConfirmed = mostlyRedFired || iv.fired || middayFired;
   let note: string;
@@ -176,7 +223,9 @@ export function evaluateRegime0dte(input: Regime0dteInput): Regime0dteState {
     gexAtOpen,
     flipStrike: flip,
     flipMinusOpenPct:
-      flip && openSpot ? ((flip - openSpot) / openSpot) * 100 : null,
+      flip != null && openProfile.spot
+        ? ((flip - openProfile.spot) / openProfile.spot) * 100
+        : null,
     triggers: {
       mostlyRed: {
         fired: mostlyRedFired,
@@ -193,7 +242,7 @@ export function evaluateRegime0dte(input: Regime0dteInput): Regime0dteState {
       middayDeepNeg: {
         fired: middayFired,
         atCtMin: middayFired ? nowCtMin : null,
-        gexMid: middayFired ? gexNearSpot : null,
+        gexMid,
       },
     },
     note,

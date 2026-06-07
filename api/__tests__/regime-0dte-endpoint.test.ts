@@ -91,12 +91,43 @@ describe('GET /api/regime-0dte', () => {
     expect(Array.isArray(body.gexStrikes)).toBe(true);
     expect(Array.isArray(body.putIv)).toBe(true);
     expect(Array.isArray(body.candles30)).toBe(true);
+    // Viz spot comes from the CURRENT ('latest') profile.
     expect(body.spot).toBe(7460);
 
-    // The live endpoint reads the DEFAULT ('latest' EOD) profile — it does NOT
-    // pass a time anchor. The anchored open/midday reads are cron-only.
-    expect(getGexStrikes).toHaveBeenCalledTimes(1);
-    expect(getGexStrikes.mock.calls[0]?.[1]).toBeUndefined();
+    // The live endpoint now reads THREE time-anchored profiles: the OPEN
+    // (gate anchor), the MIDDAY (re-measure), and the LATEST (viz + current).
+    const anchors = getGexStrikes.mock.calls.map((c) => c[1]);
+    expect(getGexStrikes).toHaveBeenCalledTimes(3);
+    expect(anchors).toEqual(
+      expect.arrayContaining(['open', 'midday', 'latest']),
+    );
+  });
+
+  it('evaluates a replayed PAST date as-of the cash close (15:00 CT)', async () => {
+    vi.useFakeTimers();
+    // 11:00 CT TODAY (2026-06-06) — but we request a PAST date (2026-06-05).
+    vi.setSystemTime(new Date('2026-06-06T16:00:00Z'));
+
+    // mostly_red needs the 11:00 persistence window to have elapsed; the day's
+    // candles are all red. If the handler graded against the live 11:00 clock
+    // mostly_red would still fire, so to prove the close-anchoring we lean on
+    // iv_break instead: a break that lands at 13:30 CT (810) is only visible
+    // when nowCtMin is the close (900), not the live 11:00 (660) clock.
+    getPutIvSeries.mockResolvedValue([
+      { ctMin: 520, iv: 0.2 },
+      { ctMin: 580, iv: 0.2 }, // ref hi 0.2
+      { ctMin: 740, iv: 0.25 }, // 12:20 CT — inside the 10:00–12:30 window
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-06-05' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { date: string; asOfCtMin: number };
+    expect(body.date).toBe('2026-06-05');
+    // Graded as-of the cash close, NOT the live 11:00 CT clock.
+    expect(body.asOfCtMin).toBe(900);
   });
 
   it('returns 401 when the owner/guest guard rejects', async () => {

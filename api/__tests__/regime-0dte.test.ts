@@ -90,19 +90,36 @@ describe('ivBreak', () => {
 });
 
 describe('evaluateRegime0dte', () => {
-  it('lean_down + mostly_red on a crash-shaped day', () => {
+  // live-units net GEX (~1e10); band sum well below GATE_DEEP_NEG (-1.5e10).
+  // The OPEN profile is anchored at the open spot (7530); the gate reads it.
+  const openDeepNeg = {
+    strikes: [
+      { strike: 7510, netGex: -6e9 },
+      { strike: 7520, netGex: -6e9 },
+      { strike: 7530, netGex: -6e9 },
+      { strike: 7540, netGex: -6e9 },
+      { strike: 7550, netGex: -6e9 },
+    ],
+    spot: 7530,
+  };
+
+  it('lean_down (OPEN-anchored gate) + mostly_red on a crash-shaped day', () => {
     const s = evaluateRegime0dte({
       nowCtMin: 700,
-      spot: 7450,
-      openSpot: 7530,
-      // live-units net GEX (~1e10); band sum well below GATE_DEEP_NEG (-1.5e10)
-      gexStrikes: [
-        { strike: 7440, netGex: -6e9 },
-        { strike: 7450, netGex: -6e9 },
-        { strike: 7460, netGex: -6e9 },
-        { strike: 7470, netGex: -6e9 },
-        { strike: 7480, netGex: -6e9 },
-      ],
+      openProfile: openDeepNeg,
+      middayProfile: null,
+      // The CURRENT profile is anchored at the live (lower) spot 7450 — the
+      // viz read. The gate must come from the OPEN profile, not this one.
+      currentProfile: {
+        strikes: [
+          { strike: 7440, netGex: -6e9 },
+          { strike: 7450, netGex: -6e9 },
+          { strike: 7460, netGex: -6e9 },
+          { strike: 7470, netGex: -6e9 },
+          { strike: 7480, netGex: -6e9 },
+        ],
+        spot: 7450,
+      },
       putIv: [
         { ctMin: 520, iv: 0.2 },
         { ctMin: 650, iv: 0.26 },
@@ -116,27 +133,72 @@ describe('evaluateRegime0dte', () => {
       ],
     });
     expect(s.gate).toBe('lean_down');
+    // gexAtOpen is the OPEN-profile sum (~-3e10), NOT ~0 (the old close-gate bug).
+    expect(s.gexAtOpen).toBeCloseTo(-3e10, 0);
+    expect(s.gexAtOpen).toBeLessThan(REGIME_0DTE.GATE_DEEP_NEG);
+    // gexNearSpot is the CURRENT profile read (informational).
+    expect(s.gexNearSpot).toBeCloseTo(-3e10, 0);
     expect(s.triggers.mostlyRed.fired).toBe(true);
     expect(s.triggers.ivBreak.fired).toBe(true);
+  });
+
+  it('gate is OPEN-anchored even when the CURRENT profile reads positive', () => {
+    const s = evaluateRegime0dte({
+      nowCtMin: 700,
+      openProfile: openDeepNeg, // deep-neg at the open
+      middayProfile: null,
+      // Later in the day the profile flipped positive at the live spot — but the
+      // morning regime (the gate) is still lean_down.
+      currentProfile: {
+        strikes: [
+          { strike: 7440, netGex: 6e9 },
+          { strike: 7450, netGex: 6e9 },
+          { strike: 7460, netGex: 6e9 },
+          { strike: 7470, netGex: 6e9 },
+          { strike: 7480, netGex: 6e9 },
+        ],
+        spot: 7450,
+      },
+      putIv: [],
+      candles30: [],
+    });
+    expect(s.gate).toBe('lean_down');
+    expect(s.gexNearSpot).toBeCloseTo(3e10, 0); // current read is positive
+  });
+
+  it('gexNearSpot falls back to the open read when currentProfile is null', () => {
+    const s = evaluateRegime0dte({
+      nowCtMin: 515,
+      openProfile: openDeepNeg,
+      middayProfile: null,
+      currentProfile: null,
+      putIv: [],
+      candles30: [],
+    });
+    expect(s.gexNearSpot).toBe(s.gexAtOpen);
   });
 });
 
 describe('evaluateRegime0dte — edges + honesty line', () => {
-  // live-units net GEX (~1e10); band sum (-3e10) is below GATE_DEEP_NEG (-1.5e10)
-  const deepNegStrikes = [
-    { strike: 7440, netGex: -6e9 },
-    { strike: 7450, netGex: -6e9 },
-    { strike: 7460, netGex: -6e9 },
-    { strike: 7470, netGex: -6e9 },
-    { strike: 7480, netGex: -6e9 },
-  ];
+  // live-units net GEX (~1e10); band sum (-3e10) is below GATE_DEEP_NEG (-1.5e10).
+  // Anchored at spot 7460 so all five strikes fall inside the ±1% open band.
+  const deepNegProfile = {
+    strikes: [
+      { strike: 7440, netGex: -6e9 },
+      { strike: 7450, netGex: -6e9 },
+      { strike: 7460, netGex: -6e9 },
+      { strike: 7470, netGex: -6e9 },
+      { strike: 7480, netGex: -6e9 },
+    ],
+    spot: 7460,
+  };
 
   it('lean_down with no down-trigger yet -> up-ambush risk note', () => {
     const s = evaluateRegime0dte({
       nowCtMin: 620, // 10:20 CT: before 11:00 (mostlyRed) and 12:30 (midday)
-      spot: 7450,
-      openSpot: 7530,
-      gexStrikes: deepNegStrikes,
+      openProfile: deepNegProfile,
+      middayProfile: null,
+      currentProfile: deepNegProfile,
       putIv: [
         { ctMin: 520, iv: 0.2 },
         { ctMin: 560, iv: 0.2 }, // no points in the 10:00-12:30 break window
@@ -150,11 +212,12 @@ describe('evaluateRegime0dte — edges + honesty line', () => {
     expect(s.note).toContain('up-ambush risk');
   });
 
-  it('middayDeepNeg fires only after 12:30 CT (mfo 750)', () => {
+  it('middayDeepNeg fires only after 12:30 CT (mfo 750) from the MIDDAY profile', () => {
     const base = {
-      spot: 7450,
-      openSpot: 7530,
-      gexStrikes: deepNegStrikes,
+      openProfile: deepNegProfile,
+      // midday re-measure is also deep-neg → trigger arms after 12:30.
+      middayProfile: deepNegProfile,
+      currentProfile: deepNegProfile,
       putIv: [{ ctMin: 520, iv: 0.2 }],
       candles30: [],
     };
@@ -168,6 +231,30 @@ describe('evaluateRegime0dte — edges + honesty line', () => {
     ).toBe(true);
   });
 
+  it('middayDeepNeg does NOT fire when the midday profile recovered to positive', () => {
+    const recoveredMidday = {
+      strikes: [
+        { strike: 7440, netGex: 6e9 },
+        { strike: 7450, netGex: 6e9 },
+        { strike: 7460, netGex: 6e9 },
+        { strike: 7470, netGex: 6e9 },
+        { strike: 7480, netGex: 6e9 },
+      ],
+      spot: 7460,
+    };
+    const s = evaluateRegime0dte({
+      nowCtMin: 760, // after 12:30
+      openProfile: deepNegProfile, // gate still lean_down from the open
+      middayProfile: recoveredMidday,
+      currentProfile: recoveredMidday,
+      putIv: [],
+      candles30: [],
+    });
+    expect(s.gate).toBe('lean_down'); // open-anchored
+    expect(s.triggers.middayDeepNeg.fired).toBe(false); // midday recovered
+    expect(s.triggers.middayDeepNeg.gexMid).toBeCloseTo(3e10, 0);
+  });
+
   it('mostlyRed does not fire before 11:00 even if every candle is red', () => {
     const allRed = [
       { ctMin: 510, open: 7530, close: 7520 },
@@ -178,9 +265,9 @@ describe('evaluateRegime0dte — edges + honesty line', () => {
     ];
     const s = evaluateRegime0dte({
       nowCtMin: 645, // 10:45 CT, before 11:00
-      spot: 7450,
-      openSpot: 7530,
-      gexStrikes: deepNegStrikes,
+      openProfile: deepNegProfile,
+      middayProfile: null,
+      currentProfile: deepNegProfile,
       putIv: [],
       candles30: allRed,
     });
@@ -190,14 +277,15 @@ describe('evaluateRegime0dte — edges + honesty line', () => {
   it('empty chain / null spot -> unknown gate, no throw', () => {
     const s = evaluateRegime0dte({
       nowCtMin: 515,
-      spot: 0,
-      openSpot: null,
-      gexStrikes: [],
+      openProfile: { strikes: [], spot: null },
+      middayProfile: null,
+      currentProfile: null,
       putIv: [],
       candles30: [],
     });
     expect(s.gate).toBe('unknown');
     expect(s.gexNearSpot).toBeNull();
+    expect(s.gexAtOpen).toBeNull();
     expect(s.triggers.ivBreak.fired).toBe(false);
   });
 });
