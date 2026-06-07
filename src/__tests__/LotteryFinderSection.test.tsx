@@ -598,6 +598,163 @@ describe('LotteryFinderSection: never-vanish accumulator', () => {
 });
 
 // ============================================================
+// NEVER-VANISH — code-review findings #1 / #2 / #3
+// ============================================================
+//
+// These drive the useNeverVanishFeed rewire:
+//   #1 filter-signature storageKey — tightening a SERVER filter rescopes
+//      the union so a previously-pinned now-excluded row drops.
+//   #2 reignited dedup — a chain pinned in the reignited union with
+//      reignited:false in the main union renders in EXACTLY one place.
+//   #3 server-anchored pagination — union > serverTotal on the live page
+//      does not advertise an unreachable page.
+
+describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
+  const AM = '2026-05-08T14:30:00Z';
+
+  it('#1: tightening the TAKE-IT floor (server filter) drops a previously-pinned now-excluded row', () => {
+    // Pin a row under the default 0.70 floor.
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Raise the TAKE-IT floor to 0.80 — a SERVER-SIDE filter. The new feed
+    // (post-tighten) no longer returns the row (it's below the stricter
+    // floor server-side). With the filter-signature storageKey the union
+    // RESCOPES (new slot) so the stale pin does NOT carry over. Without the
+    // sig (date-only key) the row would stay pinned in the same union.
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+    fireEvent.click(screen.getByTestId('takeit-floor-0.8'));
+
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#1 control: a CLIENT-only filter change does NOT rescope the union (pin survives)', () => {
+    // Moneyness is a CLIENT-side filter — it must NOT be in the filterSig,
+    // so toggling it leaves the union intact. The pinned row survives a
+    // subsequent empty poll because the storageKey is unchanged.
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 205, // OTM (spot 198.5) so the OTM chip keeps it
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Toggle OTM (client filter) AND degrade the feed to []. The union slot
+    // is unchanged, so the pin persists.
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+    fireEvent.click(screen.getByTestId('lottery-moneyness-otm-chip'));
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+
+  it('#2: a reignited-union chain with reignited:false on its main row renders in EXACTLY one place', () => {
+    // Poll 1: the chain is in the reignitedFires payload (reignited:true).
+    const chain = makeFire({
+      id: 1,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+      reignited: true,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [chain],
+        reignitedFires: [chain],
+        total: 1,
+      }),
+    );
+    const { rerender } = render(<LotteryFinderSection marketOpen={true} />);
+    // Exactly one rendering even on poll 1 (reignited section only; the
+    // ticker-group partition excludes reignited-union members).
+    expect(
+      screen.getAllByTestId('lottery-row-TSLA260508C00250000'),
+    ).toHaveLength(1);
+
+    // Poll 2: the chain LEFT the per-poll top-N. Its main-union row now
+    // carries reignited:false, but it's STILL pinned in the reignited union
+    // (never-vanish). It must keep rendering ONLY in "Hot Right Now" — not
+    // also as a ticker group. Relying on the stale per-row flag (false) would
+    // route it into a ticker group → double render.
+    const demoted = makeFire({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+      reignited: false,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [demoted],
+        reignitedFires: [],
+        total: 1,
+      }),
+    );
+    rerender(<LotteryFinderSection marketOpen={true} />);
+
+    // Still exactly ONE row for the chain (the pinned reignited copy), never
+    // two.
+    expect(
+      screen.getAllByTestId('lottery-row-TSLA260508C00250000'),
+    ).toHaveLength(1);
+  });
+
+  it('#3: union > serverTotal on the live page does not advertise an unreachable page', () => {
+    // 60 distinct chains pinned in the union but the server reports total=10
+    // and hasMore=false. PAGE_SIZE is 50 → server reachable set is 1 page.
+    // The union renders all 60 on the live page (never-vanish) but the pager
+    // must read "page 1 / 1", NOT "/ 2" — totalPages is server-anchored.
+    const fires = Array.from({ length: 60 }, (_, i) =>
+      makeFire({
+        id: i + 1,
+        optionChainId: `AAPL260508C${String(200000 + i).padStart(8, '0')}`,
+        underlyingSymbol: 'AAPL',
+        strike: 200 + i,
+        triggerTimeCt: AM,
+      }),
+    );
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires, total: 10, hasMore: false }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    // total floors at the union length (60) for the "N fires" display, but
+    // the pager is server-anchored. With total(60) > PAGE_SIZE(50) the pager
+    // renders; it must read page 1 / 1 (ceil(10/50)=1), never 1 / 2.
+    expect(screen.getByText(/page 1 \/ 1/)).toBeInTheDocument();
+    expect(screen.queryByText(/page 1 \/ 2/)).not.toBeInTheDocument();
+    // The Next button is disabled because the server reports no more pages.
+    expect(screen.getByRole('button', { name: /next page/i })).toBeDisabled();
+  });
+});
+
+// ============================================================
 // KEY INTERACTION — filter toggles
 // ============================================================
 
