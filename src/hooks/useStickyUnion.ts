@@ -34,8 +34,12 @@
  * (a JSON array of [key, value] pairs; absent/malformed → empty). The
  * durable write is DEBOUNCED (`PERSIST_DEBOUNCE_MS`): the in-memory union
  * and returned snapshot update synchronously, only the localStorage write
- * lags and coalesces. A new `storageKey` (e.g. a new trading day) starts a
- * fresh union; a one-time mount sweep removes stale same-feed slots.
+ * lags and coalesces. The pending write is force-flushed on slot change,
+ * React unmount, AND page lifecycle (`pagehide` / `hidden` visibility) so a
+ * fire ingested moments before a hard refresh or tab close is never lost.
+ * A new `storageKey` (e.g. a new trading day) starts a fresh union; a
+ * one-time mount sweep removes only stale PRIOR-DAY slots for the same feed
+ * token (date-aware, so same-day filter-signature siblings all coexist).
  *
  * Resilience
  * ----------
@@ -131,37 +135,69 @@ function persistUnion(storageKey: string, serialized: string): void {
   }
 }
 
-/**
- * Derive the shared prefix for a feed's day-scoped slots from a storageKey
- * of the form `feed-union:<feed>:<date>`. Returns everything up to and
- * including the `<feed>:` segment (e.g. `feed-union:lottery:`). Returns
- * `null` when `storageKey` does not match the scheme (sweep is then a no-op).
- */
-function deriveKeyPrefix(storageKey: string): string | null {
-  if (!storageKey.startsWith(FEED_UNION_PREFIX)) return null;
-  const lastColon = storageKey.lastIndexOf(':');
-  // Need a colon strictly after the prefix so a `<feed>` segment exists.
-  if (lastColon < FEED_UNION_PREFIX.length) return null;
-  return storageKey.slice(0, lastColon + 1);
+/** The literal token that opens every feed-union storageKey, sans trailing `:`. */
+const FEED_UNION_TOKEN = 'feed-union';
+
+interface FeedScope {
+  /** The `<feed>` token, e.g. `lottery` or `lottery-reignited`. */
+  feed: string;
+  /** The `<date>` segment, e.g. `2026-06-07`. */
+  date: string;
 }
 
 /**
- * One-time mount sweep: delete every localStorage slot that shares the
- * current feed prefix but is NOT the current storageKey (stale prior days).
- * Bounded, guarded, best-effort. Same-prefix-different-date keys are the
- * only ones touched; other feeds and unrelated keys survive.
+ * Parse a storageKey of the form `feed-union:<feed>:<date>[:<sig>...]` into
+ * its feed + date segments. Returns `null` when the key does not match the
+ * scheme or is malformed (fewer than three segments) — callers then no-op.
+ *
+ * Date-aware (NOT lastIndexOf-based) so a later filter-signature suffix on
+ * the storageKey cannot mislead the stale-key sweep into deleting a live
+ * same-day sibling union belonging to a different filter setting.
+ */
+function parseFeedScope(storageKey: string): FeedScope | null {
+  if (!storageKey.startsWith(FEED_UNION_PREFIX)) return null;
+  const segments = storageKey.split(':');
+  // ['feed-union', <feed>, <date>, ...maybe <sig>] — need at least 3, with
+  // non-empty feed + date tokens.
+  if (segments.length < 3) return null;
+  const [token, feed, date] = segments;
+  if (token !== FEED_UNION_TOKEN || !feed || !date) return null;
+  return { feed, date };
+}
+
+/**
+ * One-time mount sweep: delete every localStorage slot for the SAME feed
+ * token on a DIFFERENT date (stale prior days). Bounded, guarded,
+ * best-effort.
+ *
+ * Suffix-proof: keys are matched by parsed segments, not string prefix, so
+ * ALL of the current day's slots survive — including filter-signature
+ * siblings (`feed-union:<feed>:<date>:<sigA>`, `...:<sigB>`), each of which
+ * holds its own never-vanish union. Only prior-day slots for THIS feed are
+ * removed. Distinct feed tokens (e.g. `lottery-reignited` vs `lottery`),
+ * other feeds, malformed keys, and unrelated keys are all left untouched.
  */
 function sweepStaleKeys(storageKey: string): void {
   if (!isStorageAvailable()) return;
-  const prefix = deriveKeyPrefix(storageKey);
-  if (prefix == null) return;
+  const scope = parseFeedScope(storageKey);
+  if (scope == null) return;
   try {
     const ls = window.localStorage;
     const toDelete: string[] = [];
     for (let i = 0; i < ls.length; i++) {
       const k = ls.key(i);
       if (k == null) continue;
-      if (k.startsWith(prefix) && k !== storageKey) toDelete.push(k);
+      const segments = k.split(':');
+      if (segments.length < 3) continue; // malformed — skip
+      const [token, feed, date] = segments;
+      // Same feed token, DIFFERENT date → stale prior-day slot for this feed.
+      if (
+        token === FEED_UNION_TOKEN &&
+        feed === scope.feed &&
+        date !== scope.date
+      ) {
+        toDelete.push(k);
+      }
     }
     for (const k of toDelete) ls.removeItem(k);
   } catch {
@@ -311,6 +347,29 @@ export function useStickyUnion<T>(
     return () => {
       flushPersist();
     };
+  }, []);
+
+  // Durably flush on PAGE lifecycle, not just React unmount. React cleanup
+  // does NOT run on a hard refresh (F5/Cmd-R), tab close, or bfcache
+  // navigation — so a fire ingested < PERSIST_DEBOUNCE_MS before a reload
+  // would be lost from localStorage and the row would vanish across refresh.
+  // `pagehide` (preferred over `beforeunload` for bfcache) and a `hidden`
+  // `visibilitychange` are the last reliable moments to land the staged write.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const flushOnPageHide = (): void => {
+      flushPersist();
+    };
+    const flushOnHidden = (): void => {
+      if (document.visibilityState === 'hidden') flushPersist();
+    };
+    window.addEventListener('pagehide', flushOnPageHide);
+    document.addEventListener('visibilitychange', flushOnHidden);
+    return () => {
+      window.removeEventListener('pagehide', flushOnPageHide);
+      document.removeEventListener('visibilitychange', flushOnHidden);
+    };
+    // flushPersist closes over refs only (stable across renders); mount-only.
   }, []);
 
   return snapshot;
