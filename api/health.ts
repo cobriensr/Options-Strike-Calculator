@@ -15,7 +15,8 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { redis, getAccessToken } from './_lib/schwab.js';
+import { getAccessToken } from './_lib/schwab.js';
+import { redis } from './_lib/redis.js';
 import { Sentry } from './_lib/sentry.js';
 
 interface ServiceStatus {

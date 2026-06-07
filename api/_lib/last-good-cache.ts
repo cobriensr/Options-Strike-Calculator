@@ -33,23 +33,18 @@
  * stringify/parse.
  */
 
-import { redis } from './schwab.js';
-import { metrics } from './sentry.js';
+import { redis, safeRedis } from './redis.js';
 
 /**
  * Read the last successfully-cached value for `key`.
  *
  * @returns the cached value on a hit, or `null` on a miss OR on any error
- *          (KV unavailable, quota, parse failure). Never throws.
+ *          (KV unavailable, quota, parse failure). Never throws. `safeRedis`
+ *          centralizes the swallow + `redis.error` metric.
  */
 export async function readLastGood<T>(key: string): Promise<T | null> {
-  try {
-    const value = await redis.get<T>(key);
-    return value ?? null;
-  } catch {
-    metrics.increment('redis.error');
-    return null;
-  }
+  const value = await safeRedis<T | null>(() => redis.get<T>(key), null);
+  return value ?? null;
 }
 
 /**
@@ -63,9 +58,7 @@ export async function writeLastGood<T>(
   value: T,
   ttlSec: number,
 ): Promise<void> {
-  try {
+  await safeRedis(async () => {
     await redis.set(key, value, { ex: ttlSec });
-  } catch {
-    metrics.increment('redis.error');
-  }
+  }, undefined);
 }

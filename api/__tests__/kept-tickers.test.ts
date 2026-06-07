@@ -2,20 +2,17 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// last-good-cache pattern: stub schwab.ts's shared `redis` singleton so the
-// test is decoupled from the upstash init path. kept-tickers uses set
-// operations (smembers / sadd / expire) rather than get/set.
-const { mockSmembers, mockSadd, mockExpire } = vi.hoisted(() => ({
-  mockSmembers: vi.fn(),
-  mockSadd: vi.fn(),
-  mockExpire: vi.fn(),
+// DB mock — same pattern as other api/__tests__ DB-backed module tests.
+const mockSql = vi.fn() as ReturnType<typeof vi.fn> & {
+  query: ReturnType<typeof vi.fn>;
+};
+mockSql.query = vi.fn();
+
+vi.mock('../_lib/db.js', () => ({
+  getDb: vi.fn(() => mockSql),
 }));
 
 const { mockIncrement } = vi.hoisted(() => ({ mockIncrement: vi.fn() }));
-
-vi.mock('../_lib/schwab.js', () => ({
-  redis: { smembers: mockSmembers, sadd: mockSadd, expire: mockExpire },
-}));
 
 vi.mock('../_lib/sentry.js', () => ({
   metrics: { increment: mockIncrement },
@@ -27,76 +24,81 @@ vi.mock('../_lib/logger.js', () => ({
 
 import { readKeptTickers, addKeptTickers } from '../_lib/kept-tickers.js';
 
-describe('kept-tickers', () => {
+describe('kept-tickers (DB-backed)', () => {
   beforeEach(() => {
-    mockSmembers.mockReset();
-    mockSadd.mockReset();
-    mockExpire.mockReset();
+    mockSql.mockReset();
+    mockSql.query.mockReset();
     mockIncrement.mockReset();
   });
 
+  // ── readKeptTickers ──────────────────────────────────────────────────
+
   describe('readKeptTickers', () => {
-    it('returns the day-scoped set members on a hit', async () => {
-      mockSmembers.mockResolvedValueOnce(['SNDK', 'TSLA']);
-      const result = await readKeptTickers('2026-05-01');
+    it('returns underlying_symbol array from the DB on success', async () => {
+      mockSql.mockResolvedValueOnce([
+        { underlying_symbol: 'SNDK' },
+        { underlying_symbol: 'TSLA' },
+      ]);
+      const result = await readKeptTickers('2026-06-07');
       expect(result).toEqual(['SNDK', 'TSLA']);
-      expect(mockSmembers).toHaveBeenCalledWith('lf:kept:2026-05-01');
       expect(mockIncrement).not.toHaveBeenCalled();
     });
 
-    it('returns [] when the set is empty (no tickers shown yet)', async () => {
-      mockSmembers.mockResolvedValueOnce([]);
-      const result = await readKeptTickers('2026-05-01');
+    it('returns [] when no rows exist for the date', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      const result = await readKeptTickers('2026-06-07');
       expect(result).toEqual([]);
       expect(mockIncrement).not.toHaveBeenCalled();
     });
 
-    it('returns [] and increments redis.error when smembers throws (KV down)', async () => {
-      mockSmembers.mockRejectedValueOnce(new Error('KV unavailable'));
-      const result = await readKeptTickers('2026-05-01');
+    it('returns [] and increments db.error when the DB throws (never re-throws)', async () => {
+      mockSql.mockRejectedValueOnce(new Error('connection timeout'));
+      const result = await readKeptTickers('2026-06-07');
       expect(result).toEqual([]);
-      expect(mockIncrement).toHaveBeenCalledWith('redis.error');
+      expect(mockIncrement).toHaveBeenCalledWith('db.error');
     });
   });
 
+  // ── addKeptTickers ───────────────────────────────────────────────────
+
   describe('addKeptTickers', () => {
-    it('sadds the tickers and sets a 6h TTL on the day key', async () => {
-      mockSadd.mockResolvedValueOnce(2);
-      mockExpire.mockResolvedValueOnce(1);
-      await addKeptTickers('2026-05-01', ['SNDK', 'TSLA']);
-      expect(mockSadd).toHaveBeenCalledWith(
-        'lf:kept:2026-05-01',
-        'SNDK',
-        'TSLA',
-      );
-      expect(mockExpire).toHaveBeenCalledWith('lf:kept:2026-05-01', 6 * 3600);
+    it('is a no-op on empty input — no DB call', async () => {
+      await addKeptTickers('2026-06-07', []);
+      expect(mockSql.query).not.toHaveBeenCalled();
       expect(mockIncrement).not.toHaveBeenCalled();
     });
 
-    it('is a no-op on empty input (no redis calls)', async () => {
-      await addKeptTickers('2026-05-01', []);
-      expect(mockSadd).not.toHaveBeenCalled();
-      expect(mockExpire).not.toHaveBeenCalled();
+    it('issues ONE batched INSERT with the deduped symbols', async () => {
+      mockSql.query.mockResolvedValueOnce([]);
+      await addKeptTickers('2026-06-07', ['SNDK', 'TSLA']);
+
+      expect(mockSql.query).toHaveBeenCalledTimes(1);
+      const [stmt, params] = mockSql.query.mock.calls[0] as [string, string[]];
+      // Statement must reference the table and use ON CONFLICT DO NOTHING
+      expect(stmt).toMatch(/INSERT INTO lottery_kept_tickers/i);
+      expect(stmt).toMatch(/ON CONFLICT DO NOTHING/i);
+      // Params: date + symbol per ticker
+      expect(params).toEqual(['2026-06-07', 'SNDK', '2026-06-07', 'TSLA']);
       expect(mockIncrement).not.toHaveBeenCalled();
     });
 
-    it('never throws and increments redis.error when sadd throws', async () => {
-      mockSadd.mockRejectedValueOnce(new Error('quota exceeded'));
+    it('deduplicates input before inserting', async () => {
+      mockSql.query.mockResolvedValueOnce([]);
+      await addKeptTickers('2026-06-07', ['SNDK', 'SNDK', 'TSLA', 'TSLA']);
+
+      expect(mockSql.query).toHaveBeenCalledTimes(1);
+      const [, params] = mockSql.query.mock.calls[0] as [string, string[]];
+      // Only 2 unique tickers → 4 params total
+      expect(params).toHaveLength(4);
+      expect(params).toEqual(['2026-06-07', 'SNDK', '2026-06-07', 'TSLA']);
+    });
+
+    it('swallows DB errors without throwing, increments db.error', async () => {
+      mockSql.query.mockRejectedValueOnce(new Error('db unavailable'));
       await expect(
-        addKeptTickers('2026-05-01', ['SNDK']),
+        addKeptTickers('2026-06-07', ['SNDK']),
       ).resolves.toBeUndefined();
-      expect(mockIncrement).toHaveBeenCalledWith('redis.error');
-    });
-
-    it('deduplicates input before sadd', async () => {
-      mockSadd.mockResolvedValueOnce(1);
-      mockExpire.mockResolvedValueOnce(1);
-      await addKeptTickers('2026-05-01', ['SNDK', 'SNDK', 'TSLA', 'TSLA']);
-      expect(mockSadd).toHaveBeenCalledWith(
-        'lf:kept:2026-05-01',
-        'SNDK',
-        'TSLA',
-      );
+      expect(mockIncrement).toHaveBeenCalledWith('db.error');
     });
   });
 });

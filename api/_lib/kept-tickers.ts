@@ -1,5 +1,5 @@
 /**
- * Per-day "kept-tickers" Redis set for the Lottery feed's MONOTONIC Q1/Q2
+ * Per-day "kept-tickers" DB table for the Lottery feed's MONOTONIC Q1/Q2
  * inversion-quintile suppression.
  *
  * ── WHY ────────────────────────────────────────────────────────────────
@@ -11,52 +11,59 @@
  *
  * The invariant we want: once a ticker has been SHOWN (quintile > 2) at any
  * point today, it stays shown for the rest of the day even if its quintile
- * later flips into Q1/Q2. We accumulate every ever-shown ticker into a
- * per-day Redis set; the suppression predicate then also keeps any ticker
- * in that set.
+ * later flips into Q1/Q2. We accumulate every ever-shown ticker into the
+ * `lottery_kept_tickers` table (trade_date, underlying_symbol); the
+ * suppression predicate then also keeps any ticker found there.
+ *
+ * ── DESIGN ─────────────────────────────────────────────────────────────
+ * Backed by `lottery_kept_tickers(trade_date, underlying_symbol)` created
+ * in migration #187. The composite PRIMARY KEY is both the uniqueness
+ * constraint (dedups concurrent writers) and the lookup index. Date-scoped
+ * rows replace the prior Redis set (lf:kept:<date>) so records survive
+ * Redis eviction and can be read page-independently by both the feed and
+ * ticker-counts endpoints. The writer (lottery-finder.ts, Phase 3) derives
+ * the ever-shown set from the full ranked CTE (no LIMIT), closing the
+ * page-0-only gap.
  *
  * ── SAFETY ─────────────────────────────────────────────────────────────
- * Both helpers swallow ALL errors (KV-unavailable / quota): a dead KV must
- * degrade to today's pure-live suppression, never crash the request. When
- * the read returns `[]`, the predicate's `= ANY('{}'::text[])` term matches
- * nothing → exact pre-existing behavior. Errors surface as a `redis.error`
- * metric only, mirroring last-good-cache.ts / schwab.ts.
- *
- * The key is date-scoped (`lf:kept:<date>`) so the set can never leak across
- * trading days, and carries a 6h TTL as belt-and-suspenders cleanup.
+ * Both helpers swallow ALL errors (DB unavailable / timeout): a dead DB
+ * must degrade to today's pure-live suppression, never crash the request.
+ * When the read returns `[]`, the predicate's `= ANY('{}'::text[])` term
+ * matches nothing → exact pre-existing behavior. Errors surface as a
+ * `db.error` metric only, mirroring last-good-cache.ts / schwab.ts.
  */
 
-import { redis } from './schwab.js';
+import { getDb } from './db.js';
 import { metrics } from './sentry.js';
-
-/** 6 hours — comfortably covers one RTH session; date in the key is the
- * real cross-day guard, TTL is just hygiene. */
-const KEPT_TTL_SEC = 6 * 3600;
-
-function keptKey(date: string): string {
-  return `lf:kept:${date}`;
-}
 
 /**
  * Read the set of tickers shown at least once today (`date`).
  *
- * @returns the set members on a hit, or `[]` on an empty set OR on any
- *          error (KV unavailable, quota). Never throws.
+ * @returns the underlying_symbol array on success, or `[]` on an empty
+ *          result OR on any error (DB unavailable, timeout). Never throws.
  */
 export async function readKeptTickers(date: string): Promise<string[]> {
   try {
-    return await redis.smembers(keptKey(date));
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT underlying_symbol
+      FROM lottery_kept_tickers
+      WHERE trade_date = ${date}::date
+    `) as { underlying_symbol: string }[];
+    return rows.map((r) => r.underlying_symbol);
   } catch {
-    metrics.increment('redis.error');
+    metrics.increment('db.error');
     return [];
   }
 }
 
 /**
- * Fire-and-forget: add `tickers` to today's kept-set and refresh its TTL.
+ * Persist `tickers` into the kept-set for `date`.
  *
- * No-op on empty input (avoids a needless round-trip + an `sadd` with no
- * members, which Upstash rejects). Swallows all errors — accumulation is
+ * No-op on empty input (avoids a needless round-trip). Deduplicates input
+ * via Set before building the INSERT. Issues a SINGLE batched multi-row
+ * INSERT ... ON CONFLICT DO NOTHING so concurrent cron calls and page
+ * re-renders are idempotent. Swallows all errors — accumulation is
  * best-effort and must never throw into the request path.
  */
 export async function addKeptTickers(
@@ -66,10 +73,25 @@ export async function addKeptTickers(
   const unique = [...new Set(tickers)];
   if (unique.length === 0) return;
   try {
-    const key = keptKey(date);
-    await redis.sadd(key, ...(unique as [string, ...string[]]));
-    await redis.expire(key, KEPT_TTL_SEC);
+    const sql = getDb();
+    // Build a single multi-row INSERT using sql.query() — one round-trip
+    // regardless of how many tickers we're adding (batched-insert convention,
+    // see feedback_batched_inserts.md). Each ticker contributes two params:
+    // the date and the symbol.
+    const params: string[] = [];
+    const tuples: string[] = [];
+    for (const ticker of unique) {
+      const base = params.length;
+      params.push(date, ticker);
+      tuples.push(`($${base + 1}, $${base + 2})`);
+    }
+    const stmt = `
+      INSERT INTO lottery_kept_tickers (trade_date, underlying_symbol)
+      VALUES ${tuples.join(', ')}
+      ON CONFLICT DO NOTHING
+    `;
+    await sql.query(stmt, params);
   } catch {
-    metrics.increment('redis.error');
+    metrics.increment('db.error');
   }
 }

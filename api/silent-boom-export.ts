@@ -16,6 +16,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import { guardOwnerEndpoint } from './_lib/auth-helpers.js';
@@ -159,8 +160,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
       ORDER BY bucket_ct ASC, id ASC
     `,
-      2,
-      20_000,
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
     )) as Record<string, unknown>[];
 
     const normalized = rows.map(normalizeRow);

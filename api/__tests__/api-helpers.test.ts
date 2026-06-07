@@ -15,12 +15,15 @@ const mockPipeline = {
   expire: vi.fn().mockReturnThis(),
   exec: vi.fn().mockResolvedValue([0]),
 };
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: {
     incr: vi.fn(),
     expire: vi.fn(),
     pipeline: vi.fn(() => mockPipeline),
   },
+}));
+
+vi.mock('../_lib/schwab.js', () => ({
   getAccessToken: vi.fn(),
 }));
 

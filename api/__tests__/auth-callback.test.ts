@@ -10,6 +10,9 @@ const mockRedis = vi.hoisted(() => ({
 
 vi.mock('../_lib/schwab.js', () => ({
   storeInitialTokens: vi.fn(),
+}));
+
+vi.mock('../_lib/redis.js', () => ({
   redis: mockRedis,
 }));
 

@@ -11,11 +11,10 @@ const { mockPipeline, mockIncrement } = vi.hoisted(() => ({
   mockIncrement: vi.fn(),
 }));
 
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: {
     pipeline: vi.fn(() => mockPipeline),
   },
-  getAccessToken: vi.fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({

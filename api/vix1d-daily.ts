@@ -12,7 +12,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from './_lib/sentry.js';
-import { redis } from './_lib/schwab.js';
+import { redis } from './_lib/redis.js';
 import { setCacheHeaders } from './_lib/api-helpers.js';
 import type { Vix1dDailyMap } from './cron/refresh-vix1d.js';
 

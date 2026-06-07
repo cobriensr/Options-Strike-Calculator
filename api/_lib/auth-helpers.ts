@@ -16,7 +16,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { ZodSafeParseResult, ZodSafeParseError } from 'zod';
 import { checkBotId } from 'botid/server';
 
-import { redis } from './schwab.js';
+import { redis } from './redis.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 

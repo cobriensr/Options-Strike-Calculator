@@ -21,7 +21,7 @@ import {
   setCacheHeaders,
   guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
-import { redis } from './_lib/schwab.js';
+import { redis } from './_lib/redis.js';
 import { getETTotalMinutes, getETDateStr } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
 

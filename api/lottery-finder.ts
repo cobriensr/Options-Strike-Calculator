@@ -31,6 +31,8 @@ import { qualityAdjustedScore } from './_lib/lottery-inversion-bonus.js';
 import { tierFromQualityScore } from './_lib/lottery-tier.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import {
+  DB_RETRY_ATTEMPTS,
+  DB_RETRY_TIMEOUT_MS,
   MACRO_WINDOW_MS,
   MEGA_CLUSTER_MIN_DISTINCT_TICKERS,
   MIN_ALERT_ENTRY_PRICE,
@@ -39,6 +41,7 @@ import {
   REIGNITION_MIN_POST_GAP_FIRES,
   REIGNITION_TOP_N_PER_DAY,
 } from './_lib/constants.js';
+import { keptSuppressionSql } from './_lib/lottery-suppression.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 import {
   computeSuspiciousClusters,
@@ -315,27 +318,41 @@ const DEFAULT_LAST_GOOD_TTL_SEC = 6 * 3600;
  * the read path — this is what prevents resurrecting a row that legitimately
  * left the result set. See the doc comment in last-good-cache.ts.
  */
+/**
+ * Options for {@link degradeOnTimeout}.
+ *
+ * - `retries` / `timeout` default to the shared {@link DB_RETRY_ATTEMPTS} /
+ *   {@link DB_RETRY_TIMEOUT_MS} budget (the per-attempt 20s cap was tuned for
+ *   the slowest reignition CTEs — window funcs over 5k+ daily fires —
+ *   SENTRY-EMERALD-DESERT-9J/9H; don't push the user-path timeout past 20s).
+ * - `cacheKey` opts the call into the server-side last-good cache; when
+ *   omitted the helper behaves exactly as before (no cache read or write).
+ */
+export interface DegradeOnTimeoutOptions {
+  /** Last-good cache key. Omit to disable cache participation. */
+  cacheKey?: string;
+  /** Last-good TTL (seconds). Defaults to {@link DEFAULT_LAST_GOOD_TTL_SEC}. */
+  cacheTtlSec?: number;
+  /** Retries in addition to the first attempt. Defaults to {@link DB_RETRY_ATTEMPTS}. */
+  retries?: number;
+  /** Per-attempt timeout (ms). Defaults to {@link DB_RETRY_TIMEOUT_MS}. */
+  timeout?: number;
+}
+
 export async function degradeOnTimeout<T>(
   fn: () => Promise<T>,
   fallback: T,
   context: string,
-  retries = 2,
-  // Bumped 10s→20s 2026-05-21. chainExtras + reignitedRows CTEs over a
-  // full trading day's lottery_finder_fires were hitting the 10s cap
-  // ~258 times/day (SENTRY-EMERALD-DESERT-9J, 9H — 517+ events in 2 days)
-  // and degrading the response to its empty-fallback. The 5-minute cron
-  // refresh on the frontend masks the user impact, but the alert noise
-  // was real. 20s gives the slowest reignition CTEs (window funcs over
-  // 5k+ fires) room to complete while still capping the user-facing
-  // request budget. Don't push past 20s on the user path.
-  perAttemptTimeoutMs = 20_000,
-  // Last-good cache key. When omitted (existing callers), the helper
-  // behaves exactly as before — no cache read or write.
-  cacheKey?: string,
-  cacheTtlSec?: number,
+  options: DegradeOnTimeoutOptions = {},
 ): Promise<T> {
+  const {
+    cacheKey,
+    cacheTtlSec,
+    retries = DB_RETRY_ATTEMPTS,
+    timeout = DB_RETRY_TIMEOUT_MS,
+  } = options;
   try {
-    const fresh = await withDbRetry(fn, retries, perAttemptTimeoutMs);
+    const fresh = await withDbRetry(fn, retries, timeout);
     // SUCCESS: overwrite last-good with the fresh result — even when `[]`.
     // Fire-and-forget; never blocks or throws into the request path.
     if (cacheKey) {
@@ -482,12 +499,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // `inversion_quintile` on lottery_ticker_stats is recomputed by the
     // detect-lottery-fires cron and can FLIP mid-session, so a ticker shown
     // earlier (quintile > 2) can suddenly be suppressed — its chains vanish
-    // from the feed. We keep a per-day Redis set of every ever-shown ticker
-    // and also un-suppress those. `showAll` short-circuits suppression
-    // entirely, so there's no need to read the set in that path. KV-down →
-    // `[]` → predicate's `= ANY('{}'::text[])` term matches nothing → exact
-    // pre-existing live behavior (zero regression). See
-    // api/_lib/kept-tickers.ts.
+    // from the feed. We keep a per-day DB record (lottery_kept_tickers) of
+    // every ever-shown ticker and also un-suppress those. `showAll`
+    // short-circuits suppression entirely, so there's no need to read the set
+    // in that path. DB-down → `[]` → predicate's `= ANY('{}'::text[])` term
+    // matches nothing → exact pre-existing live behavior (zero regression).
+    // See api/_lib/kept-tickers.ts.
+    //
+    // (#6) This is now a DB read, not Redis. The kept-set is bound into the
+    // `rows` + `total` query predicates, so it MUST be resolved before those
+    // templates are built — and the feed's query DISPATCH order is itself a
+    // tested invariant (rows=call[0], total=call[1], chainExtras=call[2], …),
+    // which rules out resolving it concurrently inside the query thunks (that
+    // would reorder dispatch). We therefore start the round-trip here and
+    // await it just before the Promise.all. It is a single PK point-lookup on
+    // (trade_date) — not a serial heavy round-trip — and `showAll`
+    // short-circuits it away entirely.
     const keptTickers = showAll ? [] : await readKeptTickers(targetDate);
 
     // Two queries in parallel: (1) the row payload bounded by LIMIT,
@@ -629,7 +656,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR f.underlying_symbol = ANY(${keptTickers}::text[]))
+          AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -728,7 +755,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR f.underlying_symbol = ANY(${keptTickers}::text[]))
+          AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -826,7 +853,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR f.underlying_symbol = ANY(${keptTickers}::text[]))
+          AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -877,19 +904,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         -- the UI hidden-by-quality-filter hint.
         SELECT
           COUNT(*) FILTER (
-            WHERE ${showAll ?? false}::boolean
-              OR s.inversion_quintile IS NULL
-              OR s.inversion_quintile > 2
-              OR ranked.underlying_symbol = ANY(${keptTickers}::text[])
+            WHERE ${keptSuppressionSql(db, 'ranked', showAll, keptTickers)}
           )::int AS total,
           COUNT(*) FILTER (
-            WHERE NOT (
-              ${showAll ?? false}::boolean
-              OR s.inversion_quintile IS NULL
-              OR s.inversion_quintile > 2
-              OR ranked.underlying_symbol = ANY(${keptTickers}::text[])
-            )
-          )::int AS suppressed
+            WHERE NOT (${keptSuppressionSql(db, 'ranked', showAll, keptTickers)})
+          )::int AS suppressed,
+          -- PAGE-INDEPENDENT ever-shown accumulation source (#1). The ranked
+          -- CTE scans EVERY chain for the day (no LIMIT/OFFSET), so this
+          -- captures every currently-qualifying ticker -- not just the page-0
+          -- slice -- closing the gap where a ticker flipping Q1/Q2 past row 50
+          -- was never recorded and still vanished. The predicate matches the
+          -- prior page-scoped derivation EXACTLY: inversion_quintile > 2 (NULL
+          -- excluded by > 2, mirroring the old quintile != null AND > 2).
+          -- This rides the existing COUNT round-trip (no extra query, #6).
+          COALESCE(
+            array_agg(DISTINCT ranked.underlying_symbol)
+              FILTER (WHERE s.inversion_quintile > 2),
+            '{}'::text[]
+          ) AS ever_qualifying
         FROM ranked
         LEFT JOIN lottery_ticker_stats s ON s.ticker = ranked.underlying_symbol
         WHERE rn = 1
@@ -982,9 +1014,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as ChainExtrasRow[],
         'chainExtras',
-        2,
-        20_000,
-        `lf:lg:chainExtras:${targetDate}`,
+        { cacheKey: `lf:lg:chainExtras:${targetDate}` },
       ),
       // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
       // badge. Truncates trigger_time_ct to the 1-min bucket and
@@ -1007,9 +1037,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as ClusterByMinuteRow[],
         'clusterByMinute',
-        2,
-        20_000,
-        `lf:lg:cluster:${targetDate}`,
+        { cacheKey: `lf:lg:cluster:${targetDate}` },
       ),
       // Silent Boom chain-IDs for the date — drives the DUAL FLAG
       // badge. When the same chain-day appears in BOTH
@@ -1030,9 +1058,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as { option_chain_id: string }[],
         'sbChains',
-        2,
-        20_000,
-        `lf:lg:sbChains:${targetDate}`,
+        { cacheKey: `lf:lg:sbChains:${targetDate}` },
       ),
       // Pinned "Hot Right Now" rows — full row payload (same SELECT
       // shape as the main fires query) for the day's top-N reignited
@@ -1198,15 +1224,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as FireRow[],
         'reignitedRows',
-        2,
-        20_000,
-        // Filter-scoped key: the reignitedRows payload applies the user's
-        // structural filters, so last-good must be partitioned by them to
-        // avoid serving one filter view's rows under another. windowEnd /
-        // at / minute are DELIBERATELY omitted — they're a cumulative,
-        // moving cutoff; keying on them would near-guarantee cache misses
-        // and is wrong for "last good".
-        `lf:lg:reignited:${targetDate}:${ticker ?? ''}:${reload ?? ''}:${cheapCallPm ?? ''}:${mode ?? ''}:${optionType ?? ''}:${tod ?? ''}`,
+        {
+          // Filter-scoped key: the reignitedRows payload applies the user's
+          // structural filters, so last-good must be partitioned by them to
+          // avoid serving one filter view's rows under another. windowEnd /
+          // at / minute are DELIBERATELY omitted — they're a cumulative,
+          // moving cutoff; keying on them would near-guarantee cache misses
+          // and is wrong for "last good".
+          cacheKey: `lf:lg:reignited:${targetDate}:${ticker ?? ''}:${reload ?? ''}:${cheapCallPm ?? ''}:${mode ?? ''}:${optionType ?? ''}:${tod ?? ''}`,
+        },
       ),
       // Day-scoped cluster-candidate query — ALL 0DTE fires for the date,
       // minimal columns. Fed to computeSuspiciousClusters to detect
@@ -1232,7 +1258,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ),
     ])) as [
       FireRow[],
-      { total: number; suppressed: number }[],
+      { total: number; suppressed: number; ever_qualifying: string[] }[],
       ChainExtrasRow[],
       ClusterByMinuteRow[],
       { option_chain_id: string }[],
@@ -1243,35 +1269,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const total = totalRows[0]?.total ?? 0;
     const suppressedCount = totalRows[0]?.suppressed ?? 0;
 
-    // MONOTONIC ACCUMULATION: remember every ticker on this page that is
-    // CURRENTLY shown BY the live quintile gate (quintile > 2) so a future
-    // quintile flip into Q1/Q2 can't hide it. We deliberately exclude:
-    //   - tickers kept ONLY because they're already in the set (their
-    //     quintile is now ≤ 2) — they're already remembered, and we must
-    //     not let "kept" be the reason we re-remember (that's circular but
-    //     harmless; skipping it keeps the intent — "shown by quintile" —
-    //     crisp).
-    //   - NULL-quintile cold-start tickers — never suppressed anyway, so
-    //     there's nothing to protect by remembering them.
-    // Page-scoped by construction (rows is the LIMIT/OFFSET slice), but the
-    // set is monotonic and rebuilt on every request all day, so continuous
-    // polling + pagination converges to "every ever-qualifying ticker".
-    // `total`/`suppressedCount` come from the page-independent COUNT query,
-    // so counts stay correct regardless of which page drove the accumulate.
+    // MONOTONIC ACCUMULATION (#1, page-independent): remember every ticker
+    // that is CURRENTLY shown BY the live quintile gate (quintile > 2) so a
+    // future quintile flip into Q1/Q2 can't hide it.
+    //
+    // The source is the COUNT query's `ever_qualifying` column —
+    // `array_agg(DISTINCT ranked.underlying_symbol) FILTER (WHERE
+    // s.inversion_quintile > 2)` over the FULL `ranked` set (no LIMIT/OFFSET).
+    // This fixes the prior bug where the set was derived from `rows` (the
+    // page-0 LIMIT/OFFSET slice): a ticker that flipped Q1/Q2 while sitting
+    // past row 50 was never recorded and still vanished. Now a single request
+    // captures EVERY currently-qualifying ticker for the day.
+    //
+    // The predicate matches the old page-scoped derivation EXACTLY:
+    //   - quintile > 2 → recorded (the live qualification gate).
+    //   - NULL-quintile cold-start tickers → excluded (`> 2` is false for
+    //     NULL); never suppressed anyway, so nothing to protect.
+    //   - tickers kept ONLY because they're already in the set → NOT recorded
+    //     off the kept-set (the predicate reads the LIVE quintile, never the
+    //     kept-set itself), so accumulation is non-circular.
     // Fire-and-forget; never blocks or throws into the response path.
     if (!showAll) {
-      const currentlyKeptTickers = [
-        ...new Set(
-          rows
-            .filter(
-              (r) =>
-                r.ticker_inversion_quintile != null &&
-                Number(r.ticker_inversion_quintile) > 2,
-            )
-            .map((r) => r.underlying_symbol),
-        ),
-      ];
-      void addKeptTickers(targetDate, currentlyKeptTickers);
+      const everQualifying = totalRows[0]?.ever_qualifying ?? [];
+      void addKeptTickers(targetDate, everQualifying);
     }
 
     // Build the suspicious-cluster lookup from the day-scoped 0DTE scan.

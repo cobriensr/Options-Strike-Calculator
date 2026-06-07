@@ -13,7 +13,7 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: { get: vi.fn() },
 }));
 
@@ -22,7 +22,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../vix1d-daily.js';
-import { redis } from '../_lib/schwab.js';
+import { redis } from '../_lib/redis.js';
 import { setCacheHeaders } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 

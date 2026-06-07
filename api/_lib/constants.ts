@@ -15,6 +15,26 @@ export const TIMEOUTS = {
 } as const;
 
 // ============================================================
+// DB RETRY BUDGET — shared by the resilient read paths
+// ============================================================
+//
+// The "nice-to-have" / degrade-on-timeout DB reads (lottery-finder feed,
+// lottery/silent-boom export endpoints) share a single retry budget so the
+// per-attempt timeout and attempt count live in exactly one place. Used as
+// the defaults for `degradeOnTimeout(...)`'s options object and passed to
+// `withDbRetry` at the export call sites.
+//
+// 20s per attempt was tuned for the slowest reignition CTEs (window funcs
+// over 5k+ daily fires) — see the note in degradeOnTimeout. Don't push the
+// user-path timeout past 20s.
+
+/** Number of retries (in addition to the first attempt) for resilient DB reads. */
+export const DB_RETRY_ATTEMPTS = 2;
+
+/** Per-attempt timeout (ms) for resilient DB reads. */
+export const DB_RETRY_TIMEOUT_MS = 20_000;
+
+// ============================================================
 // SESSION HOURS — single source of truth
 // ============================================================
 //

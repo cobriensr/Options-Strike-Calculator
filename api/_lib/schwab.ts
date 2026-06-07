@@ -17,35 +17,15 @@
 
 import { randomBytes } from 'node:crypto';
 
-import { Redis } from '@upstash/redis';
 import logger from './logger.js';
 import { Sentry, metrics } from './sentry.js';
 import { requireEnvGroup } from './env.js';
+// The Redis singleton lives in the neutral lower-layer `redis.ts` so this
+// auth module isn't the source of the shared KV client (avoids inverting the
+// layering). Re-exported below for back-compat with existing importers.
+import { redis } from './redis.js';
 
-// ============================================================
-// REDIS CLIENT
-// ============================================================
-
-/**
- * Upstash Redis client.
- * When created via Vercel Marketplace, these env vars are auto-set:
- *   UPSTASH_REDIS_REST_URL
- *   UPSTASH_REDIS_REST_TOKEN
- *
- * Uses the REST-based client (no persistent connections needed).
- * Exported so api-helpers.ts can use it for rate limiting.
- */
-function createRedis(): Redis {
-  try {
-    const { url, token } = requireEnvGroup('redis');
-    return new Redis({ url, token });
-  } catch {
-    logger.warn('Redis not configured — operations will fail at runtime');
-    return new Redis({ url: '', token: '' });
-  }
-}
-
-export const redis = createRedis();
+export { redis };
 
 // ============================================================
 // TYPES

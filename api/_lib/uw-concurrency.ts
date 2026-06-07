@@ -31,7 +31,7 @@
  * behavior, add another ARGV slot.
  */
 
-import { redis } from './schwab.js';
+import { redis } from './redis.js';
 import { metrics, Sentry } from './sentry.js';
 import logger from './logger.js';
 
