@@ -16,7 +16,7 @@ import { SectionBox } from '../ui/SectionBox.js';
 import { CompactDisclosure } from '../ui/CompactDisclosure.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
-import { useStickyUnion } from '../../hooks/useStickyUnion.js';
+import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from './ct-window.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
@@ -340,6 +340,63 @@ const todayCt = (): string => {
   return fmt.format(new Date());
 };
 
+/**
+ * djb2 string hash → unsigned base36. Produces a single opaque token with
+ * NO `:`/`|` delimiters, so it can be appended to a `:`-delimited union
+ * storageKey without confusing useStickyUnion's segment-aware stale-key
+ * sweep (which parses `feed-union:<feed>:<date>[:<sig>]`).
+ */
+function hashToken(input: string): string {
+  let h = 5381;
+  for (let i = 0; i < input.length; i++) {
+    h = (h * 33) ^ input.charCodeAt(i);
+  }
+  // >>> 0 coerces to an unsigned 32-bit int before base36.
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * Active SERVER-SIDE filter params that scope the lottery feed. Changing any
+ * of these rescopes the never-vanish union (finding #1) — previously-excluded
+ * rows must drop rather than stay pinned. Client-only filters (hide-toggles,
+ * moneyness, minute scrub) are intentionally EXCLUDED: they prune the rendered
+ * view without changing the server's reachable set, so they must not rescope
+ * the union.
+ */
+interface LotteryFilterSigParams {
+  minTakeitProb: number;
+  minScore: number | null;
+  minFireCount: number;
+  mode: LotteryMode | null;
+  optionType: OptionType | null;
+  tod: TimeOfDay | null;
+  reload: boolean;
+  cheapCallPm: boolean;
+  minPremium: number;
+  showAll: boolean;
+}
+
+/**
+ * Stable, compact signature of the active server-side filters. Joined in a
+ * fixed field order so the same filter setting always yields the same token,
+ * then hashed to a delimiter-free base36 string for the storageKey suffix.
+ */
+function buildLotteryFilterSig(p: LotteryFilterSigParams): string {
+  const raw = [
+    `t${p.minTakeitProb}`,
+    `s${p.minScore ?? 'x'}`,
+    `f${p.minFireCount}`,
+    `m${p.mode ?? 'x'}`,
+    `o${p.optionType ?? 'x'}`,
+    `d${p.tod ?? 'x'}`,
+    `r${p.reload ? 1 : 0}`,
+    `c${p.cheapCallPm ? 1 : 0}`,
+    `p${p.minPremium}`,
+    `a${p.showAll ? 1 : 0}`,
+  ].join('|');
+  return hashToken(raw);
+}
+
 const formatTimeCT = (input: string | number | Date): string => {
   const d = input instanceof Date ? input : new Date(input);
   return d.toLocaleTimeString('en-US', {
@@ -383,6 +440,13 @@ export function LotteryFinderSection({
   compact = false,
 }: LotteryFinderSectionProps) {
   const [date, setDate] = useState<string>(todayCt());
+  // True once the user has manually picked a date from the date input.
+  // Gates the ET-midnight auto-roll (finding #4): a tab left open past
+  // midnight should advance to the new trading day so the never-vanish
+  // union rescopes (storageKey flips) instead of upserting the new day's
+  // fires into the prior day's union — but ONLY when the user is sitting on
+  // the live day, never when they've scrubbed back to a historical date.
+  const [manualDatePick, setManualDatePick] = useState<boolean>(false);
   /** 1-minute bucket the slider is on; null = whole day. */
   const [minute, setMinute] = useState<string | null>(null);
   const [exitPolicy, setExitPolicy] = useState<ExitPolicy>(
@@ -539,103 +603,11 @@ export function LotteryFinderSection({
     [lotteryFinder.data],
   );
 
-  // ── Never-vanish accumulator (spec lottery-no-vanish-2026-05-29) ──
-  //
-  // Once a lottery chain appears in the live feed it must never visually
-  // disappear for the rest of the trading day, even when a later poll
-  // omits it — a server-degrade `[]` (degradeOnTimeout), a Q1/Q2
-  // inversion-quality suppression flip, or a chain_max_takeit gate
-  // wobble. `useStickyUnion` upserts each incoming chain (so live fields
-  // like score / peak TAKE-IT / fireCount stay fresh) and pins the rest,
-  // persisting to localStorage so a refresh rehydrates the day's union.
-  //
-  // The stable key is `optionChainId` — the OCC OSI symbol the server
-  // emits for every fire. It encodes (underlying, expiry, type, strike),
-  // which is exactly the chain-day dedup partition the API groups on
-  // (one row per chain per day), so it's unique across the response and
-  // stable across polls as the chain reignites (the row's `id` is the
-  // LATEST fire's id and changes on every reignite — not usable as a
-  // key). OCC symbols repeat across days (expiry, not trigger date, is
-  // encoded), so the union is day-scoped via `storageKey` to keep days
-  // isolated; a new date resets the union.
-  //
-  // The union is only engaged in the live polling view (all-day, page 0):
-  // that's the only view that re-polls and can therefore drop a row out
-  // from under the trader. Minute-scrub buckets and paged slices are
-  // distinct point-in-time / offset views, so pinning across them would
-  // wrongly pile unrelated rows together — those views pass through the
-  // raw server response. The union persists in localStorage across the
-  // detour and resumes when the trader returns to the live view.
-  const unionEngaged = minute == null && page === 0;
-  const firesStorageKey = `feed-union:lottery:${date}`;
-  const reignitedStorageKey = `feed-union:lottery-reignited:${date}`;
-  const fireKey = useCallback((f: LotteryFire) => f.optionChainId, []);
-  // The union INGESTS only on page 0 (the single polling view — see
-  // `historical: page !== 0` in useLotteryFinder; pages > 0 are static
-  // single-fetches that can't drop a row out from under the trader). The
-  // full union is therefore rendered on page 0, where it pins chains the
-  // server later dropped (degrade `[]` / Q1-Q2 flip / takeit-gate wobble).
-  // On pages > 0 we pass `[]` so the union does NOT grow with the next
-  // page's chains (that would pile page-2+ rows onto page 0); the hook
-  // still rehydrates from localStorage on mount, so `unionedFires`
-  // reflects the persisted page-0 union and can be used to de-duplicate.
-  const unionedFires = useStickyUnion(unionEngaged ? fetchedFires : [], {
-    key: fireKey,
-    storageKey: firesStorageKey,
-  });
-  const unionedReignitedFires = useStickyUnion(
-    unionEngaged ? fetchedReignitedFires : [],
-    { key: fireKey, storageKey: reignitedStorageKey },
-  );
-  // Pagination-hole guard. Page 0 renders the WHOLE union, so a chain that
-  // was once top-50 (pinned on page 0) but has since demoted past the
-  // PAGE_SIZE cut still lives in the page-0 union AND is returned by the
-  // server on a later page. Without a guard it would render on BOTH pages.
-  // On the live view's pages > 0 we drop any fetched row already pinned on
-  // page 0, so every chain renders in exactly one place while the long
-  // tail (rows the server serves but page 0 never held) stays reachable.
-  const pinnedFireKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const f of unionedFires) keys.add(fireKey(f));
-    return keys;
-  }, [unionedFires, fireKey]);
-  const dedupedPagedFires = useMemo(
-    () => fetchedFires.filter((f) => !pinnedFireKeys.has(fireKey(f))),
-    [fetchedFires, pinnedFireKeys, fireKey],
-  );
-  // Downstream surfaces (banners, filters, grouping, counts) consume the
-  // unioned array on page 0, the de-duplicated server slice on later live
-  // pages, and the raw response on the minute-scrub view.
-  const livePagedView = minute == null && page > 0;
-  const fires = unionEngaged
-    ? unionedFires
-    : livePagedView
-      ? dedupedPagedFires
-      : fetchedFires;
-  const rawReignitedFires = unionEngaged
-    ? unionedReignitedFires
-    : fetchedReignitedFires;
-
-  // `total` is the server's reachable chain count for the day. Once the
-  // union has pinned chains the server later dropped, the union can hold
-  // MORE rows than the server reports — so the header / pagination must
-  // never claim fewer chains than are actually rendered. Floor the
-  // displayed total at the unioned fire count in the live view.
-  const serverTotal = lotteryFinder.data?.total ?? 0;
-  const total = unionEngaged
-    ? Math.max(serverTotal, fires.length)
-    : serverTotal;
-  // Chains hidden by the server-side Q1/Q2 inversion-quality suppression.
-  // `total` now excludes these (server counts the reachable set), so we
-  // surface this separately as a "(N hidden by quality filter)" hint.
-  const suppressedCount = lotteryFinder.data?.suppressedCount ?? 0;
-  const offset = lotteryFinder.data?.offset ?? 0;
-  const hasMore = lotteryFinder.data?.hasMore ?? false;
-
-  // All-day ticker counts for the chip strip — chain-day deduped on
-  // the server so counts match what the user sees in the list.
-  // Independent of pagination + the minute scrubber so the strip
-  // always shows every ticker that fired today.
+  // All-day ticker counts for the chip strip — chain-day deduped on the
+  // server so counts match what the user sees in the list. Independent of
+  // pagination + the minute scrubber so the strip always shows every ticker
+  // that fired today. Declared before the never-vanish block so its rows feed
+  // the per-ticker MAX-merge inside `useNeverVanishFeed`.
   const tickerCounts = useLotteryFinderTickerCounts({
     date,
     marketOpen,
@@ -651,6 +623,128 @@ export function LotteryFinderSection({
     minTakeitProb: takeitFloor,
     showAll: showFilteredTickers,
   });
+  const tickerCountsData = useMemo(
+    () => tickerCounts.data?.tickers ?? [],
+    [tickerCounts.data],
+  );
+
+  // ── Never-vanish accumulator (spec never-vanish-feed-hook-2026-06-07) ──
+  //
+  // Once a lottery chain appears in the live feed it must never visually
+  // disappear for the rest of the trading day, even when a later poll
+  // omits it — a server-degrade `[]` (degradeOnTimeout), a Q1/Q2
+  // inversion-quality suppression flip, or a chain_max_takeit gate wobble.
+  // `useNeverVanishFeed` wraps `useStickyUnion` and consolidates the
+  // engaged-gate + page>0 dedup + total floor + server-anchored pagination +
+  // per-ticker MAX-merge that this panel (and Silent Boom) previously
+  // hand-rolled.
+  //
+  // The stable key is `optionChainId` — the OCC OSI symbol the server emits
+  // for every fire. It encodes (underlying, expiry, type, strike), which is
+  // exactly the chain-day dedup partition the API groups on (one row per
+  // chain per day), so it's unique across the response and stable across
+  // polls as the chain reignites (the row's `id` is the LATEST fire's id and
+  // changes on every reignite — not usable as a key).
+  //
+  // storageKey = `feed-union:lottery:${date}:${filterSig}` (finding #1):
+  // OCC symbols repeat across days (expiry, not trigger date, is encoded), so
+  // the union is day-scoped to keep days isolated; AND it carries a signature
+  // of the active SERVER-SIDE filters so changing a server filter rescopes
+  // the union — a previously-pinned row that the tightened filter now excludes
+  // drops instead of staying pinned. useStickyUnion's hardened stale-key sweep
+  // preserves same-day different-sig siblings, so toggling a filter back and
+  // forth re-shows the original union.
+  //
+  // The union is only engaged in the live polling view (today, all-day,
+  // page 0): the only view that re-polls and can drop a row out from under
+  // the trader. Minute-scrub buckets and paged slices pass through the raw
+  // server response; the union persists in localStorage across the detour and
+  // resumes on return.
+  const unionEngaged = minute == null && page === 0;
+  const filterSig = buildLotteryFilterSig({
+    minTakeitProb: takeitFloor,
+    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minFireCount: minFireCountFloor,
+    mode: modeFilter,
+    optionType: optionTypeFilter,
+    tod: todFilter,
+    reload: reloadOnly,
+    cheapCallPm: cheapCallPmOnly,
+    minPremium: minPremiumK * 1000,
+    showAll: showFilteredTickers,
+  });
+  const firesStorageKey = `feed-union:lottery:${date}:${filterSig}`;
+  const reignitedStorageKey = `feed-union:lottery-reignited:${date}:${filterSig}`;
+  const fireKey = useCallback((f: LotteryFire) => f.optionChainId, []);
+  const fireSymbol = useCallback((f: LotteryFire) => f.underlyingSymbol, []);
+
+  const serverTotal = lotteryFinder.data?.total ?? 0;
+  const serverHasMore = lotteryFinder.data?.hasMore ?? false;
+
+  const firesFeed = useNeverVanishFeed<LotteryFire>({
+    fetched: fetchedFires,
+    engaged: unionEngaged,
+    storageKey: firesStorageKey,
+    key: fireKey,
+    getSymbol: fireSymbol,
+    serverTotal,
+    hasMore: serverHasMore,
+    pageSize: PAGE_SIZE,
+    serverTickerCounts: tickerCountsData,
+  });
+  const reignitedFeed = useNeverVanishFeed<LotteryFire>({
+    fetched: fetchedReignitedFires,
+    engaged: unionEngaged,
+    storageKey: reignitedStorageKey,
+    key: fireKey,
+    getSymbol: fireSymbol,
+    // Reignited rows are served independent of pagination, so they have no
+    // own server total / hasMore — pass the fires feed's so the (unused)
+    // pagination outputs stay coherent.
+    serverTotal,
+    hasMore: serverHasMore,
+    pageSize: PAGE_SIZE,
+  });
+
+  // Pagination-hole guard. The live page renders the WHOLE union, so a chain
+  // pinned on page 0 that later demotes past the PAGE_SIZE cut is also
+  // returned by the server on a later page — without a guard it renders on
+  // BOTH. On the live view's pages > 0 we drop any fetched row already pinned
+  // on page 0; the long tail the server only serves on later pages stays
+  // reachable.
+  const livePagedView = minute == null && page > 0;
+  const dedupedPagedFires = useMemo(
+    () => fetchedFires.filter((f) => !firesFeed.unionKeys.has(fireKey(f))),
+    [fetchedFires, firesFeed.unionKeys, fireKey],
+  );
+  // Downstream surfaces (banners, filters, grouping, counts) consume the
+  // unioned array on page 0, the de-duplicated server slice on later live
+  // pages, and the raw response on the minute-scrub view.
+  const fires = unionEngaged
+    ? firesFeed.rows
+    : livePagedView
+      ? dedupedPagedFires
+      : fetchedFires;
+  const rawReignitedFires = unionEngaged
+    ? reignitedFeed.rows
+    : fetchedReignitedFires;
+  // Reignited-union key set drives the ticker-group partition (finding #2):
+  // a chain that left the per-poll top-N is `reignited:false` on the main
+  // row but still pinned in the reignited union — it must render ONLY in
+  // "Hot Right Now", never also in a ticker group.
+  const reignitedKeys = reignitedFeed.unionKeys;
+
+  // Engaged → union length floor (the "N pinned" count); disengaged →
+  // server total. Pagination is server-anchored via firesFeed.totalPages
+  // (finding #3) so a union rendering > PAGE_SIZE pinned rows on the live
+  // page never advertises an unreachable page.
+  const total = firesFeed.total;
+  // Chains hidden by the server-side Q1/Q2 inversion-quality suppression.
+  // `total` now excludes these (server counts the reachable set), so we
+  // surface this separately as a "(N hidden by quality filter)" hint.
+  const suppressedCount = lotteryFinder.data?.suppressedCount ?? 0;
+  const offset = lotteryFinder.data?.offset ?? 0;
+  const hasMore = serverHasMore;
 
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
   // browser-TZ-independent. See ct-window.ts.
@@ -672,6 +766,25 @@ export function LotteryFinderSection({
     return () => clearInterval(id);
   }, []);
 
+  // Midnight auto-roll (finding #4). A tab left open across the trading-day
+  // boundary must advance `date` to the new live day so the never-vanish
+  // union's storageKey rescopes — otherwise the new day's fires would upsert
+  // into the prior day's union and the count / pin state would bleed across
+  // days. We only auto-advance when the user is sitting on the live day
+  // (`!manualDatePick`); a user who scrubbed back to a historical replay is
+  // left untouched. Low-frequency (60s) check off its own interval — the
+  // `setDate` is a true no-op on the dominant case where the day is
+  // unchanged (React bails out on an equal primitive), so this cannot drive
+  // a render loop.
+  useEffect(() => {
+    if (manualDatePick) return;
+    const id = setInterval(() => {
+      const live = todayCt();
+      setDate((prev) => (prev === live ? prev : live));
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [manualDatePick]);
+
   const isLive = minute == null && date === todayCt();
   const isHistorical = date !== todayCt();
   // Counts on the chips reflect the current page only — after filter
@@ -688,13 +801,13 @@ export function LotteryFinderSection({
   );
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
-  // totalPages is now accurate because every load-bearing filter
-  // (Burst + TAKE-IT) is pushed server-side, so `total` reflects what
-  // pagination will actually traverse. The smaller client-side chips
-  // (hideLatePm, hideGated, etc.) can still leave a page lighter than
-  // PAGE_SIZE but cannot inflate the total page count by 10×+ the way
-  // TAKE-IT 0.70 used to.
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // SERVER-anchored totalPages (finding #3): derived from the server's
+  // reachable set (serverTotal), NOT the union-floored `total`. The
+  // never-vanish union may render MORE than PAGE_SIZE pinned rows on the
+  // live page — that's fine — but it must NOT advertise pages the server's
+  // `hasMore` can't reach. `useNeverVanishFeed` computes this as
+  // ceil(serverTotal / PAGE_SIZE).
+  const totalPages = firesFeed.totalPages;
 
   // Late-PM cutoff is applied client-side: keep `total` and pagination
   // tied to the server's view (so filter chips and counts remain
@@ -793,51 +906,26 @@ export function LotteryFinderSection({
         return f.optionType === 'C' ? delta < 0 : delta > 0;
       }).length
     : 0;
-  // All tickers with at least one fire today, from the dedicated
-  // all-day counts endpoint — independent of pagination + the minute
-  // scrubber so tickers that fired off the current page slice still
-  // appear in the strip. Previously capped to 12 (hid the long tail of
-  // low-count tickers like XOM/MSFT/WDC/UNH on busy days); now uncapped
-  // because the API already sorts count desc and `flex flex-wrap`
-  // handles the row growing vertically. Mirrors the Silent Boom fix.
+  // All tickers with at least one fire today, from the dedicated all-day
+  // counts endpoint — independent of pagination + the minute scrubber so
+  // tickers that fired off the current page slice still appear in the strip.
+  // Uncapped: the API sorts count desc and `flex flex-wrap` handles the row
+  // growing vertically.
   //
-  // Counts are reconciled against the never-vanish union so a chain the
-  // server later dropped (degrade `[]` / Q1-Q2 flip) still keeps its
-  // ticker on the strip and never under-counts what's rendered. The
-  // all-day counts endpoint is page-independent and normally broader
-  // than the union (which only holds chains the trader has actually
-  // paged through), so we take the per-ticker MAX of the two sources:
-  // the server count wins on tickers it still reports, and the union
-  // backfills any ticker the server dropped. Only engaged in the live
-  // view (where the union is active); paged / scrubbed views show the
-  // raw server counts.
-  const unionTickerCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    if (!unionEngaged) return counts;
-    for (const f of fires) {
-      counts.set(f.underlyingSymbol, (counts.get(f.underlyingSymbol) ?? 0) + 1);
-    }
-    return counts;
-  }, [unionEngaged, fires]);
-  const topTickers = useMemo(() => {
-    const merged = new Map<string, number>();
-    for (const t of tickerCounts.data?.tickers ?? []) {
-      merged.set(t.ticker, t.count);
-    }
-    for (const [ticker, unionCount] of unionTickerCounts) {
-      merged.set(ticker, Math.max(merged.get(ticker) ?? 0, unionCount));
-    }
-    // Preserve the server's count-desc ordering, then append any
-    // union-only tickers (sorted desc) the server dropped.
-    const serverOrder = (tickerCounts.data?.tickers ?? []).map((t) => t.ticker);
-    const seen = new Set(serverOrder);
-    const extras = [...unionTickerCounts.keys()]
-      .filter((t) => !seen.has(t))
-      .sort((a, b) => (merged.get(b) ?? 0) - (merged.get(a) ?? 0));
-    return [...serverOrder, ...extras].map(
-      (ticker) => [ticker, merged.get(ticker) ?? 0] as const,
-    );
-  }, [tickerCounts.data, unionTickerCounts]);
+  // The per-ticker MAX-merge (server count vs. never-vanish union count) now
+  // lives in `useNeverVanishFeed`: the server count wins on tickers it still
+  // reports, the union backfills any ticker the server dropped (degrade `[]`
+  // / Q1-Q2 flip), server count-desc order preserved with union-only tickers
+  // appended. Engaged in the live view only; paged / scrubbed views pass
+  // through raw server counts. Re-shaped to the `[ticker, n]` tuple the chip
+  // strip consumes.
+  const topTickers = useMemo(
+    () =>
+      firesFeed.tickerCounts.map(
+        (t) => [t.ticker, t.count] as readonly [string, number],
+      ),
+    [firesFeed.tickerCounts],
+  );
 
   // Task A of lottery-reignition-ui-2026-05-17 — promote REIGNITED
   // chains into a pinned "Hot Right Now" section above the ticker
@@ -851,12 +939,17 @@ export function LotteryFinderSection({
   //
   // Both outputs come from one consolidated memo so the chain
   // `fires → applyClientFilters → displayedFires → tickerGroupFires`
-  // collapses to a single invalidation pass on every fires/filter
-  // change — important on the 30s poll tick, which previously
-  // rebuilt three chained memos in sequence per tick. Each fire still
-  // renders in EXACTLY ONE place (reignited list OR ticker group);
-  // `tickerGroupFires` drops any reignited rows that happen to live
-  // in the page slice.
+  // collapses to a single invalidation pass on every fires/filter change.
+  // Each fire still renders in EXACTLY ONE place (reignited list OR ticker
+  // group).
+  //
+  // Finding #2 — partition by the REIGNITED-UNION key set, not the stale
+  // per-row `reignited` flag. A chain that left the per-poll top-N is
+  // `reignited:false` on its main-union row but is still pinned in the
+  // reignited never-vanish union (it must never vanish from "Hot Right
+  // Now"). Filtering ticker groups on `reignitedKeys` (the pinned set) — not
+  // `f.reignited !== true` — guarantees such a chain renders ONLY in the
+  // reignited section, never also in a ticker group.
   const { filteredFires, tickerGroupFires, reignitedFires } = useMemo(() => {
     const filtered = applyClientFilters(fires);
     const filteredReignited = [...applyClientFilters(rawReignitedFires)].sort(
@@ -871,10 +964,12 @@ export function LotteryFinderSection({
     );
     return {
       filteredFires: filtered,
-      tickerGroupFires: filtered.filter((f) => f.reignited !== true),
+      tickerGroupFires: filtered.filter(
+        (f) => !reignitedKeys.has(fireKey(f)) && f.reignited !== true,
+      ),
       reignitedFires: filteredReignited,
     };
-  }, [fires, rawReignitedFires, applyClientFilters]);
+  }, [fires, rawReignitedFires, applyClientFilters, reignitedKeys, fireKey]);
 
   // Group displayed fires by ticker so each underlying renders as one
   // collapsible row. Grouping + ordering + conviction/storm rollups
@@ -1416,6 +1511,10 @@ export function LotteryFinderSection({
                 onChange={(e) => {
                   setDate(e.target.value);
                   setMinute(null);
+                  // Mark the date as user-chosen so the ET-midnight
+                  // auto-roll won't yank them off a historical replay.
+                  // Picking today again re-arms the auto-roll.
+                  setManualDatePick(e.target.value !== todayCt());
                 }}
                 className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none"
                 aria-label="Select trading day"
