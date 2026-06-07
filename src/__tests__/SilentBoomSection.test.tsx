@@ -850,6 +850,75 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
 });
 
 // ============================================================
+// COMPACT MODE — filter toolbar collapses behind CompactDisclosure
+// ============================================================
+
+describe('SilentBoomSection: compact mode', () => {
+  it('does NOT render the Filters disclosure trigger in the default (non-compact) layout', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(
+      screen.queryByRole('button', { name: /^Filters$/ }),
+    ).not.toBeInTheDocument();
+    // The filter chips render inline (e.g. the conviction Tier 1 chip).
+    expect(screen.getByRole('button', { name: /Tier 1/ })).toBeInTheDocument();
+  });
+
+  it('collapses the filter chips behind the Filters trigger when compact, revealing them on click', () => {
+    render(<SilentBoomSection marketOpen={false} compact />);
+
+    // The sticky Filters trigger is present and collapsed by default.
+    const trigger = screen.getByRole('button', { name: /^Filters$/ });
+    expect(trigger).toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    // A representative toolbar chip (conviction Tier 1) is hidden until
+    // the disclosure is opened.
+    expect(
+      screen.queryByRole('button', { name: /Tier 1/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /Tier 1/ })).toBeInTheDocument();
+  });
+
+  it('keeps the DATE / Live / EXPORT row + heading visible in compact mode (not collapsed)', () => {
+    render(<SilentBoomSection marketOpen={false} compact />);
+    // Export anchors live in the always-visible date/export row.
+    expect(screen.getByText(/⤓ filtered/)).toBeInTheDocument();
+    expect(screen.getByText(/⤓ all/)).toBeInTheDocument();
+    // The section heading is untouched (not wrapped in the disclosure).
+    expect(
+      screen.getByRole('heading', { name: /silent boom/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('hides the methodology blurb, regime banner, and day-status placeholder in compact mode', () => {
+    render(<SilentBoomSection marketOpen={false} compact />);
+    // 1. Methodology/description blurb.
+    expect(screen.queryByText(/trade quietly/i)).not.toBeInTheDocument();
+    // 2. Regime-context banner (SilentBoomRegimeBanner empty state).
+    expect(
+      screen.queryByText(/regime context will appear/i),
+    ).not.toBeInTheDocument();
+    // 3. Day-status placeholder banner (SilentBoomDayBanner empty state).
+    expect(
+      screen.queryByText(/no silent-boom alerts yet today/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still renders the methodology blurb + day-status placeholder in non-compact mode', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    // Confirms the three blocks were gated by compact, not deleted.
+    expect(screen.getByText(/trade quietly/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no silent-boom alerts yet today/i),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // PAGINATION — POST-FILTER EMPTY + PAST-LAST-PAGE RECOVERY
 // ============================================================
 

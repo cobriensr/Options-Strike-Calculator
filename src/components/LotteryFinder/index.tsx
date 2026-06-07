@@ -13,6 +13,7 @@ import {
   type UsePersistedStateOptions,
 } from '../../hooks/usePersistedState.js';
 import { SectionBox } from '../ui/SectionBox.js';
+import { CompactDisclosure } from '../ui/CompactDisclosure.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
@@ -307,6 +308,12 @@ const TOD_FILTERS: Array<{ value: TimeOfDay | null; label: string }> = [
 
 interface LotteryFinderSectionProps {
   marketOpen: boolean;
+  /**
+   * Render inside a bounded scroll pane (Options Alerts split view): drives
+   * `fill` on the SectionBox so the card is content-height and the pane's
+   * own overflow scroll works instead of the card bleeding past the divider.
+   */
+  compact?: boolean;
 }
 
 const EXIT_POLICIES: ExitPolicy[] = [
@@ -372,6 +379,7 @@ const buildExportUrl = (params: ExportUrlParams): string => {
 
 export function LotteryFinderSection({
   marketOpen,
+  compact = false,
 }: LotteryFinderSectionProps) {
   const [date, setDate] = useState<string>(todayCt());
   /** 1-minute bucket the slider is on; null = whole day. */
@@ -855,29 +863,417 @@ export function LotteryFinderSection({
     setTickerExpandedMap((prev) => ({ ...prev, [ticker]: !prev[ticker] }));
   }, []);
 
-  return (
-    <SectionBox label="Lottery Finder" collapsible>
-      <div className="space-y-3">
-        <p className="text-[11px] text-neutral-500">
-          Signal detector — not a backtested profitable strategy. Most days
-          lose; wins come from rare explosive moves. Edge concentrated in 1-2
-          outlier days per 15 in the cheap-call-PM RE-LOAD subset.{' '}
-          <a
-            className="text-neutral-400 underline hover:text-white"
-            href="/docs/superpowers/specs/lottery-finder-2026-05-02.md"
-            target="_blank"
-            rel="noreferrer"
+  // Filter-chip rows (sort/conviction/burst/TAKE-IT/min-prem/mode/type/
+  // moneyness/tod/hide-toggles/ticker/realized-exit). Extracted so the
+  // toolbar can render inline in the normal layout or collapsed behind a
+  // sticky CompactDisclosure in the dense Options Alerts pane. The
+  // date/scrub/export row stays outside this block (always visible).
+  const lotteryToolbar = (
+    <div className="space-y-2.5">
+      {/* Row 2: Sort + Conviction — score-driven controls that gate
+            the API ORDER BY and WHERE clauses. Persist to localStorage
+            so the user's preferred ranking sticks across reloads. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>sort</span>
+        {SORT_OPTIONS.map((s) => (
+          <FilterChip
+            key={s.value}
+            active={sortMode === s.value}
+            activeColor="sky"
+            onClick={() => setSortMode(s.value)}
+            title={s.tooltip}
+            ariaPressed={sortMode === s.value}
           >
-            methodology
-          </a>
-        </p>
+            {s.label}
+          </FilterChip>
+        ))}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>conviction</span>
+        {CONVICTION_OPTIONS.map((c) => {
+          const active = convictionFloor === c.value;
+          // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
+          // emerald. The active style tracks the floor so the user
+          // can read the filter at a glance.
+          const activeColor: FilterChipColor =
+            c.value === 'tier1'
+              ? 'rose'
+              : c.value === 'tier2'
+                ? 'amber'
+                : 'emerald';
+          return (
+            <FilterChip
+              key={c.value}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setConvictionFloor(c.value)}
+              title={c.tooltip}
+              ariaPressed={active}
+            >
+              {c.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>burst</span>
+        {MIN_FIRE_COUNT_OPTIONS.map((c) => {
+          const active = minFireCount === c.value;
+          // Tighter floor → deeper orange. Matches the row's ×N
+          // badge + the REIGNITION pinned section palette so the
+          // visual hierarchy stays consistent.
+          const activeColor: FilterChipColor =
+            c.value === 'gte16'
+              ? 'rose'
+              : c.value === 'gte8'
+                ? 'orange'
+                : c.value === 'gte3'
+                  ? 'amber'
+                  : 'emerald';
+          return (
+            <FilterChip
+              key={c.value}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setMinFireCount(c.value)}
+              title={c.tooltip}
+              ariaPressed={active}
+              testId={`burst-filter-${c.value}`}
+            >
+              {c.label}
+            </FilterChip>
+          );
+        })}
+      </div>
+      <div className="flex w-full basis-full flex-wrap items-center gap-x-2 gap-y-1">
+        <span className={SECTION_LABEL}>TAKE-IT</span>
+        {TAKEIT_FLOOR_OPTIONS.map((o) => {
+          const active = takeitFloor === o.value;
+          return (
+            <FilterChip
+              key={o.value}
+              active={active}
+              activeColor="sky"
+              onClick={() => setTakeitFloor(o.value)}
+              title={o.tooltip}
+              ariaPressed={active}
+              testId={`takeit-floor-${o.value}`}
+            >
+              {o.label}
+            </FilterChip>
+          );
+        })}
+      </div>
 
-        {/* Day-level macro banner — at-a-glance regime context */}
-        <LotteryDayBanner fires={fires} />
+      {/* Row 2b: numeric server-side filter — min premium $K. Mirrors
+            SilentBoom's "min prem $K" input. Server-side filter so
+            pagination + ticker counts reflect the post-filter result.
+            Floor is entry_price * trigger_window_size * 100 ≥ N
+            dollars; the LF detector's trigger_window_size is the
+            rolling window volume (analog of SB's spike_volume). */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <label
+          className="flex items-center gap-1.5"
+          title="Minimum premium floor (entry_price × trigger_window_size × 100), in $K. 0 = no floor. Server-side filter so pagination + ticker counts reflect the post-filter result."
+        >
+          <span className={SECTION_LABEL}>min prem $K</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={100_000}
+            step={10}
+            value={minPremiumK === 0 ? '' : minPremiumK}
+            placeholder="0"
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') {
+                setMinPremiumK(0);
+                return;
+              }
+              const n = Number.parseInt(raw, 10);
+              if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
+            }}
+            aria-label="Minimum premium in thousands of dollars"
+            data-testid="lottery-min-premium-input"
+            className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
+          />
+        </label>
+      </div>
+
+      {/* Row 3: Tag toggles + Mode (A/B/all). RE-LOAD and
+            cheap-call-PM are independent boolean toggles with their
+            own counts; the MODE_FILTERS group is a single-select
+            radio set. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>mode</span>
+        <FilterChip
+          active={reloadOnly}
+          activeColor="amber"
+          onClick={() => setReloadOnly(!reloadOnly)}
+          title="Show only fires tagged RE-LOAD (burst ≥2× prior AND entry dropped ≥30%)."
+          ariaPressed={reloadOnly}
+        >
+          RE-LOAD only{' '}
+          <span className="text-[10px] opacity-70">{reloadCount}</span>
+        </FilterChip>
+        <FilterChip
+          active={cheapCallPmOnly}
+          activeColor="fuchsia"
+          onClick={() => setCheapCallPmOnly(!cheapCallPmOnly)}
+          title="Show only fires tagged cheap-call-PM (call + PM session + entry < $1). The Phase 1 selection rule."
+          ariaPressed={cheapCallPmOnly}
+        >
+          Cheap-call-PM only{' '}
+          <span className="text-[10px] opacity-70">{cheapPmCount}</span>
+        </FilterChip>
+        {/* Phase 4 inversion-quality escape hatch (spec
+              lottery-inversion-quality-filter-2026-05-19.md). When ON,
+              flips ?showAll=true on the lottery feed URL and the server
+              stops suppressing Q1/Q2 tickers. Off by default — the
+              narrowed feed is the intentional default; the toggle is a
+              debug / spot-check surface, not a daily-use chip. Reverts
+              to OFF on reload (local useState, not persisted). */}
+        <FilterChip
+          active={showFilteredTickers}
+          activeColor="amber"
+          testId="lottery-show-filtered-toggle"
+          onClick={() => setShowFilteredTickers(!showFilteredTickers)}
+          title="Show filtered tickers — bypass the server-side Q1/Q2 inversion-quality suppression and include the bottom-quintile tickers. Off by default."
+          ariaPressed={showFilteredTickers}
+        >
+          Show filtered tickers
+        </FilterChip>
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        {MODE_FILTERS.map((m) => (
+          <FilterChip
+            key={m.label}
+            active={modeFilter === m.value}
+            activeColor="blue"
+            onClick={() => setModeFilter(m.value)}
+            ariaPressed={modeFilter === m.value}
+          >
+            {m.label}
+          </FilterChip>
+        ))}
+      </div>
+
+      {/* Row 4: Type (calls/puts) + Moneyness + Time-of-day. Three
+            single-select option-type groups merged into one row with
+            dividers — narrow-cardinality filters that read cleanly
+            side-by-side. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>type</span>
+        {[
+          { value: null, label: 'all' },
+          { value: 'C' as OptionType, label: 'calls' },
+          { value: 'P' as OptionType, label: 'puts' },
+        ].map((o) => {
+          const active = optionTypeFilter === o.value;
+          const activeColor: FilterChipColor =
+            o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
+          return (
+            <FilterChip
+              key={o.label}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setOptionTypeFilter(o.value)}
+              ariaPressed={active}
+            >
+              {o.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>moneyness</span>
+        {MONEYNESS_FILTERS.map((m) => {
+          const active = moneynessMode === m.value;
+          const activeColor: FilterChipColor =
+            m.value === 'otm'
+              ? 'emerald'
+              : m.value === 'itm'
+                ? 'amber'
+                : 'neutral';
+          return (
+            <FilterChip
+              key={m.value}
+              active={active}
+              activeColor={activeColor}
+              testId={`lottery-moneyness-${m.value}-chip`}
+              onClick={() => setMoneynessMode(m.value)}
+              title={
+                m.value === 'otm'
+                  ? 'Show only out-of-the-money fires (calls: strike > spotAtFirst, puts: strike < spotAtFirst). Client-side filter.'
+                  : m.value === 'itm'
+                    ? 'Show only in-the-money fires (calls: strike ≤ spotAtFirst, puts: strike ≥ spotAtFirst). Client-side filter.'
+                    : 'Show fires regardless of moneyness.'
+              }
+              ariaPressed={active}
+            >
+              {m.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>tod</span>
+        {TOD_FILTERS.map((t) => (
+          <FilterChip
+            key={t.label}
+            active={todFilter === t.value}
+            activeColor="orange"
+            onClick={() => setTodFilter(t.value)}
+            ariaPressed={todFilter === t.value}
+          >
+            {t.label}
+          </FilterChip>
+        ))}
+      </div>
+
+      {/* Row 5: Hide-toggles + aggressive premium. Independent
+            boolean filters that prune the displayed result set without
+            affecting the underlying DB query. Grouped here so the
+            muscle-memory position matches SilentBoom. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <FilterChip
+          active={hideLatePm}
+          activeColor="purple"
+          onClick={() => setHideLatePm(!hideLatePm)}
+          title="Hide fires triggered after 14:30 CT. Late-PM fires often lack enough remaining session for the flow_inversion signal to develop, so they devolve into theta-decay coin flips. Client-side filter — toolbar counts and pagination still reflect the full DB result."
+          ariaPressed={hideLatePm}
+        >
+          hide post-14:30
+          {hideLatePm && hiddenLatePmCount > 0 && (
+            <span className="text-[10px] opacity-70">−{hiddenLatePmCount}</span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={hideGated}
+          activeColor="amber"
+          testId="lottery-hide-gated-chip"
+          onClick={() => setHideGated(!hideGated)}
+          title="Hide counter-trend fires demoted to tier3 by the Phase 4 direction gate (T=±150M on mkt_tide_otm_diff). Puts when otm_diff > +150M, calls when otm_diff < -150M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
+          ariaPressed={hideGated}
+        >
+          hide counter-trend
+          {hideGated && hiddenGatedCount > 0 && (
+            <span className="text-[10px] opacity-70">−{hiddenGatedCount}</span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={hideCounterFlow}
+          activeColor="amber"
+          testId="lottery-hide-counter-flow-chip"
+          onClick={() => setHideCounterFlow(!hideCounterFlow)}
+          title="Hide counter-flow alerts — rows where the per-ticker net flow (cumNcpAtFire − cumNppAtFire) at fire time contradicts the option type. Calls hidden when NCP < NPP; puts hidden when NCP > NPP. Rows with no fire-time snapshot are never hidden. Client-side filter — does not affect score or tier."
+          ariaPressed={hideCounterFlow}
+        >
+          hide counter-flow
+          {hideCounterFlow && hiddenCounterFlowCount > 0 && (
+            <span className="text-[10px] opacity-70">
+              −{hiddenCounterFlowCount}
+            </span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={aggressivePremium}
+          activeColor="sky"
+          testId="lottery-aggressive-premium-chip"
+          onClick={() => setAggressivePremium(!aggressivePremium)}
+          title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs spotAtFirst). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
+          ariaPressed={aggressivePremium}
+        >
+          💎 aggressive premium
+        </FilterChip>
+      </div>
+
+      {/* Row 6 (conditional): Ticker chips — top tickers in the
+            current result set, click to scope to one ticker. Universe
+            is ~50 tickers; we show only those actually present so the
+            user can spot the dominant tickers of the day at a glance. */}
+      {(topTickers.length > 0 || tickerFilter) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className={SECTION_LABEL}>ticker</span>
+          <FilterChip
+            active={tickerFilter == null}
+            activeColor="emerald"
+            onClick={() => setTickerFilter(null)}
+            ariaPressed={tickerFilter == null}
+          >
+            all
+          </FilterChip>
+          {topTickers.map(([t, n]) => (
+            <FilterChip
+              key={t}
+              active={tickerFilter === t}
+              activeColor="emerald"
+              onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
+              title={`Filter to ${t} only (${n} fire${n === 1 ? '' : 's'} today)`}
+              ariaPressed={tickerFilter === t}
+            >
+              {t} <span className="text-[10px] opacity-70">{n}</span>
+            </FilterChip>
+          ))}
+          {tickerFilter && !topTickers.some(([t]) => t === tickerFilter) && (
+            <FilterChip
+              active
+              activeColor="emerald"
+              onClick={() => setTickerFilter(null)}
+              title="Filter active but no fires for this ticker in the current view — click to clear"
+            >
+              {tickerFilter} <span className="text-[10px] opacity-70">0</span>
+            </FilterChip>
+          )}
+        </div>
+      )}
+
+      {/* Row 7: Exit policy selector — single-select set governing
+            which realized-exit metric drives the row badges below. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>realized exit</span>
+        {EXIT_POLICIES.map((p) => (
+          <FilterChip
+            key={p}
+            active={exitPolicy === p}
+            activeColor="purple"
+            onClick={() => setExitPolicy(p)}
+            title={EXIT_POLICY_TOOLTIPS[p]}
+            ariaPressed={exitPolicy === p}
+          >
+            {EXIT_POLICY_LABELS[p]}
+          </FilterChip>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <SectionBox label="Lottery Finder" collapsible fill={compact}>
+      <div className="space-y-3">
+        {/* Methodology blurb — hidden in compact (half-height alerts pane)
+            to reclaim vertical space; kept in the full calculator view. */}
+        {!compact && (
+          <p className="text-[11px] text-neutral-500">
+            Signal detector — not a backtested profitable strategy. Most days
+            lose; wins come from rare explosive moves. Edge concentrated in 1-2
+            outlier days per 15 in the cheap-call-PM RE-LOAD subset.{' '}
+            <a
+              className="text-neutral-400 underline hover:text-white"
+              href="/docs/superpowers/specs/lottery-finder-2026-05-02.md"
+              target="_blank"
+              rel="noreferrer"
+            >
+              methodology
+            </a>
+          </p>
+        )}
+
+        {/* Day-level macro banner — at-a-glance regime context. Hidden in
+            compact mode to maximize row density. */}
+        {!compact && <LotteryDayBanner fires={fires} />}
 
         {/* Day-level tier breakdown — counts + dominant ticker + top
-            score on the current page. Mirrors SilentBoomDayBanner. */}
-        <LotteryTierBanner fires={fires} total={total} />
+            score on the current page. Mirrors SilentBoomDayBanner. Hidden
+            in compact mode (carries the "No lottery fires yet today"
+            placeholder + populated day stats). */}
+        {!compact && <LotteryTierBanner fires={fires} total={total} />}
 
         {/* Filter toolbar — single contained panel for date/scrub,
             sort/conviction, type/TOD, mode tags, ticker, and exit
@@ -1052,383 +1448,17 @@ export function LotteryFinderSection({
             </div>
           </div>
 
-          {/* Row 2: Sort + Conviction — score-driven controls that gate
-            the API ORDER BY and WHERE clauses. Persist to localStorage
-            so the user's preferred ranking sticks across reloads. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>sort</span>
-            {SORT_OPTIONS.map((s) => (
-              <FilterChip
-                key={s.value}
-                active={sortMode === s.value}
-                activeColor="sky"
-                onClick={() => setSortMode(s.value)}
-                title={s.tooltip}
-                ariaPressed={sortMode === s.value}
-              >
-                {s.label}
-              </FilterChip>
-            ))}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>conviction</span>
-            {CONVICTION_OPTIONS.map((c) => {
-              const active = convictionFloor === c.value;
-              // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
-              // emerald. The active style tracks the floor so the user
-              // can read the filter at a glance.
-              const activeColor: FilterChipColor =
-                c.value === 'tier1'
-                  ? 'rose'
-                  : c.value === 'tier2'
-                    ? 'amber'
-                    : 'emerald';
-              return (
-                <FilterChip
-                  key={c.value}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setConvictionFloor(c.value)}
-                  title={c.tooltip}
-                  ariaPressed={active}
-                >
-                  {c.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>burst</span>
-            {MIN_FIRE_COUNT_OPTIONS.map((c) => {
-              const active = minFireCount === c.value;
-              // Tighter floor → deeper orange. Matches the row's ×N
-              // badge + the REIGNITION pinned section palette so the
-              // visual hierarchy stays consistent.
-              const activeColor: FilterChipColor =
-                c.value === 'gte16'
-                  ? 'rose'
-                  : c.value === 'gte8'
-                    ? 'orange'
-                    : c.value === 'gte3'
-                      ? 'amber'
-                      : 'emerald';
-              return (
-                <FilterChip
-                  key={c.value}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setMinFireCount(c.value)}
-                  title={c.tooltip}
-                  ariaPressed={active}
-                  testId={`burst-filter-${c.value}`}
-                >
-                  {c.label}
-                </FilterChip>
-              );
-            })}
-          </div>
-          <div className="flex w-full basis-full flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={SECTION_LABEL}>TAKE-IT</span>
-            {TAKEIT_FLOOR_OPTIONS.map((o) => {
-              const active = takeitFloor === o.value;
-              return (
-                <FilterChip
-                  key={o.value}
-                  active={active}
-                  activeColor="sky"
-                  onClick={() => setTakeitFloor(o.value)}
-                  title={o.tooltip}
-                  ariaPressed={active}
-                  testId={`takeit-floor-${o.value}`}
-                >
-                  {o.label}
-                </FilterChip>
-              );
-            })}
-          </div>
-
-          {/* Row 2b: numeric server-side filter — min premium $K. Mirrors
-            SilentBoom's "min prem $K" input. Server-side filter so
-            pagination + ticker counts reflect the post-filter result.
-            Floor is entry_price * trigger_window_size * 100 ≥ N
-            dollars; the LF detector's trigger_window_size is the
-            rolling window volume (analog of SB's spike_volume). */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <label
-              className="flex items-center gap-1.5"
-              title="Minimum premium floor (entry_price × trigger_window_size × 100), in $K. 0 = no floor. Server-side filter so pagination + ticker counts reflect the post-filter result."
-            >
-              <span className={SECTION_LABEL}>min prem $K</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={100_000}
-                step={10}
-                value={minPremiumK === 0 ? '' : minPremiumK}
-                placeholder="0"
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === '') {
-                    setMinPremiumK(0);
-                    return;
-                  }
-                  const n = Number.parseInt(raw, 10);
-                  if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
-                }}
-                aria-label="Minimum premium in thousands of dollars"
-                data-testid="lottery-min-premium-input"
-                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-          </div>
-
-          {/* Row 3: Tag toggles + Mode (A/B/all). RE-LOAD and
-            cheap-call-PM are independent boolean toggles with their
-            own counts; the MODE_FILTERS group is a single-select
-            radio set. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>mode</span>
-            <FilterChip
-              active={reloadOnly}
-              activeColor="amber"
-              onClick={() => setReloadOnly(!reloadOnly)}
-              title="Show only fires tagged RE-LOAD (burst ≥2× prior AND entry dropped ≥30%)."
-              ariaPressed={reloadOnly}
-            >
-              RE-LOAD only{' '}
-              <span className="text-[10px] opacity-70">{reloadCount}</span>
-            </FilterChip>
-            <FilterChip
-              active={cheapCallPmOnly}
-              activeColor="fuchsia"
-              onClick={() => setCheapCallPmOnly(!cheapCallPmOnly)}
-              title="Show only fires tagged cheap-call-PM (call + PM session + entry < $1). The Phase 1 selection rule."
-              ariaPressed={cheapCallPmOnly}
-            >
-              Cheap-call-PM only{' '}
-              <span className="text-[10px] opacity-70">{cheapPmCount}</span>
-            </FilterChip>
-            {/* Phase 4 inversion-quality escape hatch (spec
-              lottery-inversion-quality-filter-2026-05-19.md). When ON,
-              flips ?showAll=true on the lottery feed URL and the server
-              stops suppressing Q1/Q2 tickers. Off by default — the
-              narrowed feed is the intentional default; the toggle is a
-              debug / spot-check surface, not a daily-use chip. Reverts
-              to OFF on reload (local useState, not persisted). */}
-            <FilterChip
-              active={showFilteredTickers}
-              activeColor="amber"
-              testId="lottery-show-filtered-toggle"
-              onClick={() => setShowFilteredTickers(!showFilteredTickers)}
-              title="Show filtered tickers — bypass the server-side Q1/Q2 inversion-quality suppression and include the bottom-quintile tickers. Off by default."
-              ariaPressed={showFilteredTickers}
-            >
-              Show filtered tickers
-            </FilterChip>
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            {MODE_FILTERS.map((m) => (
-              <FilterChip
-                key={m.label}
-                active={modeFilter === m.value}
-                activeColor="blue"
-                onClick={() => setModeFilter(m.value)}
-                ariaPressed={modeFilter === m.value}
-              >
-                {m.label}
-              </FilterChip>
-            ))}
-          </div>
-
-          {/* Row 4: Type (calls/puts) + Moneyness + Time-of-day. Three
-            single-select option-type groups merged into one row with
-            dividers — narrow-cardinality filters that read cleanly
-            side-by-side. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>type</span>
-            {[
-              { value: null, label: 'all' },
-              { value: 'C' as OptionType, label: 'calls' },
-              { value: 'P' as OptionType, label: 'puts' },
-            ].map((o) => {
-              const active = optionTypeFilter === o.value;
-              const activeColor: FilterChipColor =
-                o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
-              return (
-                <FilterChip
-                  key={o.label}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setOptionTypeFilter(o.value)}
-                  ariaPressed={active}
-                >
-                  {o.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>moneyness</span>
-            {MONEYNESS_FILTERS.map((m) => {
-              const active = moneynessMode === m.value;
-              const activeColor: FilterChipColor =
-                m.value === 'otm'
-                  ? 'emerald'
-                  : m.value === 'itm'
-                    ? 'amber'
-                    : 'neutral';
-              return (
-                <FilterChip
-                  key={m.value}
-                  active={active}
-                  activeColor={activeColor}
-                  testId={`lottery-moneyness-${m.value}-chip`}
-                  onClick={() => setMoneynessMode(m.value)}
-                  title={
-                    m.value === 'otm'
-                      ? 'Show only out-of-the-money fires (calls: strike > spotAtFirst, puts: strike < spotAtFirst). Client-side filter.'
-                      : m.value === 'itm'
-                        ? 'Show only in-the-money fires (calls: strike ≤ spotAtFirst, puts: strike ≥ spotAtFirst). Client-side filter.'
-                        : 'Show fires regardless of moneyness.'
-                  }
-                  ariaPressed={active}
-                >
-                  {m.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>tod</span>
-            {TOD_FILTERS.map((t) => (
-              <FilterChip
-                key={t.label}
-                active={todFilter === t.value}
-                activeColor="orange"
-                onClick={() => setTodFilter(t.value)}
-                ariaPressed={todFilter === t.value}
-              >
-                {t.label}
-              </FilterChip>
-            ))}
-          </div>
-
-          {/* Row 5: Hide-toggles + aggressive premium. Independent
-            boolean filters that prune the displayed result set without
-            affecting the underlying DB query. Grouped here so the
-            muscle-memory position matches SilentBoom. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <FilterChip
-              active={hideLatePm}
-              activeColor="purple"
-              onClick={() => setHideLatePm(!hideLatePm)}
-              title="Hide fires triggered after 14:30 CT. Late-PM fires often lack enough remaining session for the flow_inversion signal to develop, so they devolve into theta-decay coin flips. Client-side filter — toolbar counts and pagination still reflect the full DB result."
-              ariaPressed={hideLatePm}
-            >
-              hide post-14:30
-              {hideLatePm && hiddenLatePmCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenLatePmCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={hideGated}
-              activeColor="amber"
-              testId="lottery-hide-gated-chip"
-              onClick={() => setHideGated(!hideGated)}
-              title="Hide counter-trend fires demoted to tier3 by the Phase 4 direction gate (T=±150M on mkt_tide_otm_diff). Puts when otm_diff > +150M, calls when otm_diff < -150M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
-              ariaPressed={hideGated}
-            >
-              hide counter-trend
-              {hideGated && hiddenGatedCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenGatedCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={hideCounterFlow}
-              activeColor="amber"
-              testId="lottery-hide-counter-flow-chip"
-              onClick={() => setHideCounterFlow(!hideCounterFlow)}
-              title="Hide counter-flow alerts — rows where the per-ticker net flow (cumNcpAtFire − cumNppAtFire) at fire time contradicts the option type. Calls hidden when NCP < NPP; puts hidden when NCP > NPP. Rows with no fire-time snapshot are never hidden. Client-side filter — does not affect score or tier."
-              ariaPressed={hideCounterFlow}
-            >
-              hide counter-flow
-              {hideCounterFlow && hiddenCounterFlowCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenCounterFlowCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={aggressivePremium}
-              activeColor="sky"
-              testId="lottery-aggressive-premium-chip"
-              onClick={() => setAggressivePremium(!aggressivePremium)}
-              title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs spotAtFirst). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
-              ariaPressed={aggressivePremium}
-            >
-              💎 aggressive premium
-            </FilterChip>
-          </div>
-
-          {/* Row 6 (conditional): Ticker chips — top tickers in the
-            current result set, click to scope to one ticker. Universe
-            is ~50 tickers; we show only those actually present so the
-            user can spot the dominant tickers of the day at a glance. */}
-          {(topTickers.length > 0 || tickerFilter) && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className={SECTION_LABEL}>ticker</span>
-              <FilterChip
-                active={tickerFilter == null}
-                activeColor="emerald"
-                onClick={() => setTickerFilter(null)}
-                ariaPressed={tickerFilter == null}
-              >
-                all
-              </FilterChip>
-              {topTickers.map(([t, n]) => (
-                <FilterChip
-                  key={t}
-                  active={tickerFilter === t}
-                  activeColor="emerald"
-                  onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
-                  title={`Filter to ${t} only (${n} fire${n === 1 ? '' : 's'} today)`}
-                  ariaPressed={tickerFilter === t}
-                >
-                  {t} <span className="text-[10px] opacity-70">{n}</span>
-                </FilterChip>
-              ))}
-              {tickerFilter &&
-                !topTickers.some(([t]) => t === tickerFilter) && (
-                  <FilterChip
-                    active
-                    activeColor="emerald"
-                    onClick={() => setTickerFilter(null)}
-                    title="Filter active but no fires for this ticker in the current view — click to clear"
-                  >
-                    {tickerFilter}{' '}
-                    <span className="text-[10px] opacity-70">0</span>
-                  </FilterChip>
-                )}
-            </div>
+          {/* Filter chips — inline in the normal layout, collapsed
+            behind a sticky CompactDisclosure in the dense Options
+            Alerts pane. The date/scrub/export row above stays visible
+            in both modes. */}
+          {compact ? (
+            <CompactDisclosure label="Filters">
+              {lotteryToolbar}
+            </CompactDisclosure>
+          ) : (
+            lotteryToolbar
           )}
-
-          {/* Row 7: Exit policy selector — single-select set governing
-            which realized-exit metric drives the row badges below. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>realized exit</span>
-            {EXIT_POLICIES.map((p) => (
-              <FilterChip
-                key={p}
-                active={exitPolicy === p}
-                activeColor="purple"
-                onClick={() => setExitPolicy(p)}
-                title={EXIT_POLICY_TOOLTIPS[p]}
-                ariaPressed={exitPolicy === p}
-              >
-                {EXIT_POLICY_LABELS[p]}
-              </FilterChip>
-            ))}
-          </div>
         </div>
         {/* /toolbar panel */}
 
