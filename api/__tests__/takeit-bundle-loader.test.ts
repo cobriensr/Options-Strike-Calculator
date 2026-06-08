@@ -315,6 +315,251 @@ describe('getBundle', () => {
     vi.useRealTimers();
   });
 
+  it('serves the fresh cached bundle without re-listing or re-fetching', async () => {
+    // First call warms the cache.
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    mockListResponse([
+      {
+        pathname: 'takeit/lottery_classifier_v2026-05-16.json',
+        url: BUNDLE_URL,
+      },
+    ]);
+    const fetchSpy = vi
+      .spyOn(global, 'fetch')
+      .mockImplementation(async (url) => {
+        if (url === MANIFEST_URL) {
+          return new Response(
+            JSON.stringify({
+              lottery: 'takeit/lottery_classifier_v2026-05-16.json',
+              silentboom: 'takeit/silentboom_classifier_v2026-05-16.json',
+            }),
+          );
+        }
+        return new Response(JSON.stringify(mockBundle('v2026-05-16')));
+      });
+
+    const first = await getBundle('lottery');
+    expect(first?.version).toBe('v2026-05-16');
+    expect(vi.mocked(list)).toHaveBeenCalledTimes(2);
+
+    // Second call within the TTL must short-circuit on the fresh cache:
+    // no additional list() (manifest discovery) and no additional fetch().
+    const second = await getBundle('lottery');
+    expect(second).toBe(first); // identical cached object reference
+    expect(vi.mocked(list)).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    fetchSpy.mockRestore();
+  });
+
+  it('refreshes TTL without a bundle fetch when manifest points to the cached version', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-16T12:00:00Z'));
+
+    // Cold load.
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    mockListResponse([
+      {
+        pathname: 'takeit/lottery_classifier_v2026-05-16.json',
+        url: BUNDLE_URL,
+      },
+    ]);
+    const fetchSpy = vi
+      .spyOn(global, 'fetch')
+      .mockImplementation(async (url) => {
+        if (url === MANIFEST_URL) {
+          return new Response(
+            JSON.stringify({
+              lottery: 'takeit/lottery_classifier_v2026-05-16.json',
+              silentboom: 'takeit/silentboom_classifier_v2026-05-16.json',
+            }),
+          );
+        }
+        return new Response(JSON.stringify(mockBundle('v2026-05-16')));
+      });
+
+    const warm = await getBundle('lottery');
+    expect(warm?.version).toBe('v2026-05-16');
+    expect(fetchSpy).toHaveBeenCalledTimes(2); // manifest + bundle
+
+    // Advance past the TTL so the cache is stale and the refresh path runs.
+    vi.setSystemTime(new Date('2026-05-16T12:20:00Z'));
+    // Only the manifest list is needed now — the version is unchanged so the
+    // bundle fetch is skipped entirely.
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+
+    const refreshed = await getBundle('lottery');
+    // Same bundle object reference, TTL refreshed, no second bundle fetch.
+    expect(refreshed).toBe(warm);
+    // 3 fetches total: manifest + bundle (cold) + manifest only (refresh).
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    fetchSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('returns fallback + Sentry warn when manifest lacks the requested alert type', async () => {
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      // Manifest is missing the `lottery` key entirely.
+      new Response(
+        JSON.stringify({
+          silentboom: 'takeit/silentboom_classifier_v2026-05-16.json',
+        }),
+      ),
+    );
+
+    const bundle = await getBundle('lottery');
+    expect(bundle).toBeNull(); // no cached fallback exists
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'takeit.bundle.manifest_missing_alert_type',
+      expect.objectContaining({ level: 'warning' }),
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it('throws when BLOB_READ_WRITE_TOKEN is not set', async () => {
+    delete process.env.BLOB_READ_WRITE_TOKEN;
+    // The manifest list succeeds, but blobAuthHeaders() throws before fetch.
+    // The throw is non-schema, so withRetry retries it 3x then rethrows; the
+    // outer catch treats it as a transient failure and returns the fallback
+    // (null here, no cache warmed).
+    vi.useFakeTimers();
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+
+    const bundlePromise = getBundle('lottery');
+    await vi.runAllTimersAsync();
+    const bundle = await bundlePromise;
+    expect(bundle).toBeNull();
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'takeit.bundle.manifest_fetch_failed',
+      expect.objectContaining({ level: 'warning' }),
+    );
+    vi.useRealTimers();
+  });
+
+  it('returns fallback when the manifest list entry is missing', async () => {
+    vi.useFakeTimers();
+    // list() resolves with no matching pathname → fetchManifest throws,
+    // withRetry exhausts, outer catch returns fallback (null).
+    vi.mocked(list).mockResolvedValue({
+      blobs: [],
+      cursor: undefined,
+      hasMore: false,
+    } as Awaited<ReturnType<typeof list>>);
+
+    const bundlePromise = getBundle('lottery');
+    await vi.runAllTimersAsync();
+    const bundle = await bundlePromise;
+    expect(bundle).toBeNull();
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'takeit.bundle.manifest_fetch_failed',
+      expect.objectContaining({ level: 'warning' }),
+    );
+    vi.useRealTimers();
+  });
+
+  it('returns fallback when the manifest fetch responds non-OK', async () => {
+    vi.useFakeTimers();
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    const fetchSpy = vi
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(
+        new Response('nope', { status: 500, statusText: 'Server Error' }),
+      );
+
+    const bundlePromise = getBundle('lottery');
+    await vi.runAllTimersAsync();
+    const bundle = await bundlePromise;
+    expect(bundle).toBeNull();
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'takeit.bundle.manifest_fetch_failed',
+      expect.objectContaining({ level: 'warning' }),
+    );
+    fetchSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('returns fallback when the bundle list entry is missing', async () => {
+    vi.useFakeTimers();
+    // Manifest list resolves once; bundle list resolves with no match (x3 retries).
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    vi.mocked(list).mockResolvedValue({
+      blobs: [],
+      cursor: undefined,
+      hasMore: false,
+    } as Awaited<ReturnType<typeof list>>);
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          lottery: 'takeit/lottery_classifier_v2026-05-16.json',
+          silentboom: 'takeit/silentboom_classifier_v2026-05-16.json',
+        }),
+      ),
+    );
+
+    const bundlePromise = getBundle('lottery');
+    await vi.runAllTimersAsync();
+    const bundle = await bundlePromise;
+    // Non-schema error in bundle fetch → fail-open fallback (null, no cache).
+    expect(bundle).toBeNull();
+    expect(Sentry.captureException).toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('returns fallback when the bundle fetch responds non-OK', async () => {
+    vi.useFakeTimers();
+    // Manifest list + 3 bundle list responses (one per bundle retry attempt).
+    mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
+    mockListResponse([
+      {
+        pathname: 'takeit/lottery_classifier_v2026-05-16.json',
+        url: BUNDLE_URL,
+      },
+    ]);
+    mockListResponse([
+      {
+        pathname: 'takeit/lottery_classifier_v2026-05-16.json',
+        url: BUNDLE_URL,
+      },
+    ]);
+    mockListResponse([
+      {
+        pathname: 'takeit/lottery_classifier_v2026-05-16.json',
+        url: BUNDLE_URL,
+      },
+    ]);
+    const fetchSpy = vi
+      .spyOn(global, 'fetch')
+      .mockImplementation(async (url) => {
+        if (url === MANIFEST_URL) {
+          return new Response(
+            JSON.stringify({
+              lottery: 'takeit/lottery_classifier_v2026-05-16.json',
+              silentboom: 'takeit/silentboom_classifier_v2026-05-16.json',
+            }),
+          );
+        }
+        // Bundle fetch always 503s — non-schema error → fail-open fallback.
+        return new Response('nope', {
+          status: 503,
+          statusText: 'Service Unavailable',
+        });
+      });
+
+    const bundlePromise = getBundle('lottery');
+    await vi.runAllTimersAsync();
+    const bundle = await bundlePromise;
+    expect(bundle).toBeNull();
+    expect(Sentry.captureException).toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
   it('throws fail-closed when bundle has an unsupported xgb_json_schema', async () => {
     mockListResponse([{ pathname: 'takeit/latest.json', url: MANIFEST_URL }]);
     mockListResponse([

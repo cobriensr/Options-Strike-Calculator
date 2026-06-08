@@ -150,4 +150,87 @@ describe('simulateFlowInversion', () => {
       'eod_no_inversion_found',
     ]).toContain(result.status);
   });
+
+  it('returns flat_flow_no_peak when cumulative flow has zero range', () => {
+    // All-zero flow → cumsum is flat at 0 → max == min → rng <= 0.
+    const minutes = buildMinutes(postStart, 30, () => 1.1);
+    const flow = buildFlow(postStart, 10, () => 0);
+    const result = simulateFlowInversion(minutes, flow, entryPrice, trigger);
+    expect(result.status).toBe('flat_flow_no_peak');
+    expect(result.exitPct).toBeNull();
+    expect(result.exitTs).toBeNull();
+  });
+
+  it('selects the more-prominent of two peaks for the inversion search', () => {
+    // Cumsum forms two peaks that BOTH clear the prominence floor: peak A at
+    // idx 5 (prominence ~500) and peak B at idx 23 (prominence ~840). Because
+    // peaks are returned in index order, the most-prominent-peak loop must
+    // advance peakIdx from A to the more-prominent B. After dominant peak B,
+    // flow turns strongly negative and persists → deterministic 'inversion'.
+    const flow = buildFlow(postStart, 90, (i) => {
+      if (i < 6) return 100; // peak A rise (cum -> 600)
+      if (i < 12) return -90; // deep valley after A (cum -> 60)
+      if (i < 24) return 70; // peak B rise, higher crest (cum -> 900)
+      return -110; // sustained negative after dominant peak B
+    });
+    const minutes = buildMinutes(postStart, 90, (i) =>
+      i <= 24 ? 1.0 + 0.01 * i : 1.24 - 0.005 * (i - 24),
+    );
+    const result = simulateFlowInversion(minutes, flow, entryPrice, trigger);
+    expect(result.status).toBe('inversion');
+    expect(result.exitTs).not.toBeNull();
+  });
+
+  it('falls back to EOD (window) when the peak leaves too few post-peak minutes', () => {
+    // 9 flow rows: ramp up to a peak at index 6, then 2 trailing rows —
+    // post-peak length (3) < INVERSION_SLOPE_WINDOW_MIN + NEG_PERSIST (8),
+    // so the slope search is skipped and we take the EOD-window fallback.
+    // Post minutes all precede EOD, so exitAtOrAfter appends `_eod_fallback`.
+    const minutes = buildMinutes(postStart, 9, (i) => 1.0 + 0.01 * i);
+    const flow = buildFlow(
+      postStart,
+      9,
+      (i) => (i <= 6 ? 10 + i : -100), // strictly rising cum to idx 6, then drops
+    );
+    const result = simulateFlowInversion(minutes, flow, entryPrice, trigger);
+    expect(result.status).toBe('eod_no_inversion_window_eod_fallback');
+    expect(result.exitPct).not.toBeNull();
+    // Fallback exit is the last available post-trigger minute.
+    expect(result.exitTs).toEqual(minutes.at(-1)!.ts);
+  });
+
+  it('returns eod_no_inversion_found when post-peak slope never persists negative', () => {
+    // Prominent peak at idx 9 (a sharp 2-bar drop gives it prominence), then
+    // a strong recovery. The 5-min windowed slope dips negative only briefly
+    // and never persists for 3 consecutive minutes, so no inversion index is
+    // found and the search falls back to EOD.
+    const flow = buildFlow(postStart, 60, (i) => {
+      if (i < 10) return 100; // climb to the peak at idx 9
+      if (i < 12) return -300; // sharp 2-bar drop → prominent peak
+      return 120; // strong sustained recovery
+    });
+    const minutes = buildMinutes(postStart, 60, (i) => 1.0 + 0.001 * i);
+    const result = simulateFlowInversion(minutes, flow, entryPrice, trigger);
+    expect(result.status).toBe('eod_no_inversion_found_eod_fallback');
+    expect(result.exitPct).not.toBeNull();
+  });
+
+  it('resets the negative-slope streak when slope turns non-negative mid-run', () => {
+    // Post-peak: a 2-minute negative dip (streak=2) interrupted by a
+    // positive bar (streak reset to 0), then a sustained negative run that
+    // finally trips the 3-consecutive-minute inversion. Exercises the
+    // `else { negStreak = 0 }` reset branch before a real inversion.
+    const flow = buildFlow(postStart, 90, (i) => {
+      if (i < 20) return 100; // climb to peak
+      if (i < 22) return -200; // 2 negative slope mins (streak builds)
+      if (i < 23) return 600; // positive bar resets streak
+      return -300; // sustained negative → eventual inversion
+    });
+    const minutes = buildMinutes(postStart, 90, (i) =>
+      i <= 20 ? 1.0 + 0.01 * i : 1.2 - 0.004 * (i - 20),
+    );
+    const result = simulateFlowInversion(minutes, flow, entryPrice, trigger);
+    expect(result.status).toBe('inversion');
+    expect(result.exitTs).not.toBeNull();
+  });
 });

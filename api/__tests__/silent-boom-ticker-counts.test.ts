@@ -23,6 +23,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../silent-boom-ticker-counts.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 
 describe('silent-boom-ticker-counts handler', () => {
   beforeEach(() => {
@@ -141,5 +142,152 @@ describe('silent-boom-ticker-counts handler', () => {
       tickers: { peakBestPct: number | null }[];
     };
     expect(body.tickers[0]?.peakBestPct).toBeNull();
+  });
+
+  it('short-circuits when the owner-or-guest guard rejects', async () => {
+    // guard returns truthy -> handler returns early without querying the DB
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValueOnce(true);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // handler returns before status(200) is set; the guard owns the response
+    expect(res._json).toBeNull();
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('serializes a Date latest_bucket_ct to ISO via toIso', async () => {
+    const when = new Date('2026-05-14T14:48:00Z');
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'NOW',
+        count: 3,
+        peak_best_pct: 50,
+        latest_bucket_ct: when,
+      },
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      tickers: { latestBucketCt: string; peakBestPct: number | null }[];
+    };
+    expect(body.tickers[0]?.latestBucketCt).toBe('2026-05-14T14:48:00.000Z');
+    // numeric peak passes through toNumOrNull's number branch unchanged
+    expect(body.tickers[0]?.peakBestPct).toBe(50);
+  });
+
+  it('echoes each tod bucket back in filters', async () => {
+    const buckets: Array<'AM_open' | 'MID' | 'LUNCH' | 'PM' | 'LATE'> = [
+      'AM_open',
+      'MID',
+      'LUNCH',
+      'PM',
+      'LATE',
+    ];
+    for (const tod of buckets) {
+      mockSql.mockResolvedValueOnce([]);
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-14', tod },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      expect(res._status).toBe(200);
+      const body = res._json as { filters: { tod: string | null } };
+      expect(body.filters.tod).toBe(tod);
+    }
+  });
+
+  it('applies numeric minDte over the legacy dte enum', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'GET',
+      // minDte > 0 wins; dte enum is ignored for the range but still echoed
+      query: { date: '2026-05-14', minDte: '7', dte: '1-3' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { dte: string | null } };
+    expect(body.filters.dte).toBe('1-3');
+    expect(mockSql).toHaveBeenCalledTimes(1);
+
+    // The enum is only echoed back — the actual DB range must come from
+    // minDte (lo=7, hi=100000), NOT the '1-3' enum (lo=1, hi=3). Inspect the
+    // interpolated tagged-template values so this fails if precedence regresses.
+    const interpolated = mockSql.mock.calls[0]!.slice(1);
+    expect(interpolated).toContain(7); // minDte lo wins
+    expect(interpolated).not.toContain(3); // '1-3' enum hi would be 3 if it won
+  });
+
+  it('echoes each dte enum bucket back in filters', async () => {
+    const buckets: Array<'0' | '1-3' | '4+'> = ['0', '1-3', '4+'];
+    for (const dte of buckets) {
+      mockSql.mockResolvedValueOnce([]);
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-14', dte },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      expect(res._status).toBe(200);
+      const body = res._json as { filters: { dte: string | null } };
+      expect(body.filters.dte).toBe(dte);
+    }
+  });
+
+  it('echoes each burst bucket back in filters', async () => {
+    const buckets: Array<'red' | 'yellow' | 'grey'> = ['red', 'yellow', 'grey'];
+    for (const burst of buckets) {
+      mockSql.mockResolvedValueOnce([]);
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-14', burst },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      expect(res._status).toBe(200);
+      const body = res._json as { filters: { burst: string | null } };
+      expect(body.filters.burst).toBe(burst);
+    }
+  });
+
+  it('echoes each askPctBand band back in filters', async () => {
+    const bands: Array<'70-80' | '80-90' | '90-95' | '95-99' | '100'> = [
+      '70-80',
+      '80-90',
+      '90-95',
+      '95-99',
+      '100',
+    ];
+    for (const askPctBand of bands) {
+      mockSql.mockResolvedValueOnce([]);
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-14', askPctBand },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      expect(res._status).toBe(200);
+      const body = res._json as { filters: { askPctBand: string | null } };
+      expect(body.filters.askPctBand).toBe(askPctBand);
+    }
+  });
+
+  it('returns 500 and reports to Sentry when the DB query throws', async () => {
+    mockSql.mockRejectedValueOnce(new Error('neon timeout'));
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal error' });
   });
 });
