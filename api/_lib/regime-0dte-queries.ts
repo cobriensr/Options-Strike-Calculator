@@ -63,6 +63,14 @@ export async function getGexStrikes(
 ): Promise<{ strikes: GexStrike[]; spot: number | null }> {
   const sql = getDb();
 
+  // Guard against rows mis-stamped into the wrong `date`: gex_strike_0dte carries
+  // a stray prior-evening snapshot under the NEXT trading day's `date` column, so
+  // a bare min/max(timestamp) WHERE date=... picks that stray row (e.g. a 06-04
+  // 15:14 CT row labeled 06-05) instead of the day's real open/midday/close
+  // profile. Restricting every anchor to rows whose ACTUAL CT date == the trading
+  // day excludes it. (`timestamp` is unqualified inside these CTEs.)
+  const ctDate = sql.unsafe(`date(timestamp AT TIME ZONE 'America/Chicago')`);
+
   // The anchor CTE selects the single timestamp whose profile we read. Each
   // arm resolves to one `ts`; the outer query then pulls that minute's strikes.
   const anchorCte =
@@ -70,19 +78,19 @@ export async function getGexStrikes(
       ? sql`
           SELECT min(timestamp) AS ts
           FROM gex_strike_0dte
-          WHERE date = ${dateIso}::date
+          WHERE date = ${dateIso}::date AND ${ctDate} = ${dateIso}::date
         `
       : anchor === 'midday'
         ? sql`
             SELECT min(timestamp) AS ts
             FROM gex_strike_0dte
-            WHERE date = ${dateIso}::date
+            WHERE date = ${dateIso}::date AND ${ctDate} = ${dateIso}::date
               AND ${sql.unsafe(ctMinExpr('timestamp'))} >= ${REGIME_0DTE.MIDDAY_AFTER_MIN}
           `
         : sql`
             SELECT max(timestamp) AS ts
             FROM gex_strike_0dte
-            WHERE date = ${dateIso}::date
+            WHERE date = ${dateIso}::date AND ${ctDate} = ${dateIso}::date
           `;
 
   // For `'midday'`, fall back to the latest minute when no minute reached
@@ -93,7 +101,7 @@ export async function getGexStrikes(
           , latest_fallback AS (
             SELECT max(timestamp) AS ts
             FROM gex_strike_0dte
-            WHERE date = ${dateIso}::date
+            WHERE date = ${dateIso}::date AND ${ctDate} = ${dateIso}::date
           )`
       : sql``;
   const tsExpr =
