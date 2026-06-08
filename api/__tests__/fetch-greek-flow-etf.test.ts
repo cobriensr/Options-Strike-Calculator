@@ -459,66 +459,96 @@ describe('fetch-greek-flow-etf handler', () => {
     });
   });
 
-  // ── UW API errors ─────────────────────────────────────────
+  // ── Partial failure isolation (BE-CRON-H4) ───────────────
+  //
+  // Per-leg failures are now isolated: a single rejected UW leg no longer
+  // aborts its siblings or 500s the whole run. The handler reports
+  // status: 'partial' and the healthy legs' data still lands. All issued
+  // legs failing reports status: 'error'. These tests prove the healthy
+  // leg survives a sibling's rejection.
 
-  it('returns 500 when UW API returns non-ok response', async () => {
-    mockWithRetry.mockRejectedValueOnce(new Error('UW API 500: Server error'));
-    const req = AUTHORIZED_REQ();
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
-  });
-
-  it('returns 500 when UW fetch throws a network error', async () => {
-    mockWithRetry.mockRejectedValueOnce(new Error('Network error'));
-    const req = AUTHORIZED_REQ();
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
-  });
-
-  it('returns 500 when expiry-breakdown call fails', async () => {
-    // First two withRetry calls (all-DTE SPY/QQQ) succeed; third (SPY
-    // expiry-breakdown) rejects. The rejection must propagate up.
+  it('partial: one Phase A leg fails → status partial, healthy legs still stored', async () => {
+    // First withRetry (SPY all-DTE) rejects; the rest pass through.
     mockWithRetry
-      .mockImplementationOnce((fn: () => unknown) => fn())
-      .mockImplementationOnce((fn: () => unknown) => fn())
-      .mockRejectedValueOnce(new Error('UW expiry-breakdown 500'));
-    mockUwFetch.mockResolvedValue([]);
-
-    const req = AUTHORIZED_REQ();
-    const res = mockResponse();
-    await handler(req, res);
-
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
-  });
-
-  it('returns 500 when per-expiry call fails on an expiry day', async () => {
-    // The first 4 withRetry calls (all-DTE x2 + expiry-breakdown x2) succeed.
-    // The 5th (SPY per-expiry) rejects. Phase B failure must propagate too.
-    mockWithRetry
-      .mockImplementationOnce((fn: () => unknown) => fn())
-      .mockImplementationOnce((fn: () => unknown) => fn())
-      .mockImplementationOnce((fn: () => unknown) => fn())
-      .mockImplementationOnce((fn: () => unknown) => fn())
-      .mockRejectedValueOnce(new Error('UW per-expiry 503'));
+      .mockRejectedValueOnce(new Error('UW API 500: SPY all-DTE'))
+      .mockImplementation((fn: () => unknown) => fn());
+    // Remaining Phase A legs: QQQ all-DTE has a tick; both breakdowns empty.
     mockUwFetch
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce(EXPIRY_TODAY_BREAKDOWN)
-      .mockResolvedValueOnce(EXPIRY_TODAY_BREAKDOWN);
+      .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'QQQ' })]) // QQQ all-DTE
+      .mockResolvedValueOnce(NON_EXPIRY_BREAKDOWN) // SPY breakdown
+      .mockResolvedValueOnce(NON_EXPIRY_BREAKDOWN); // QQQ breakdown
 
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      tickers: {
+        // SPY all-DTE fetch failed → zero ticks, no upsert.
+        SPY: { all: { ticks: 0 } },
+        // QQQ's healthy leg survived and was upserted.
+        QQQ: { all: { ticks: 1, inserted: 1 } },
+      },
+    });
+    // Healthy QQQ leg still wrote to the DB.
+    expect(mockSql).toHaveBeenCalledTimes(1);
+  });
+
+  it('partial: per-expiry leg failure on an expiry day → status partial, all-DTE legs still stored', async () => {
+    // The 4 always-fired Phase A legs succeed; the 5th (SPY per-expiry)
+    // rejects. QQQ is not an expiry day, so only SPY per-expiry is issued.
+    mockWithRetry
+      .mockImplementationOnce((fn: () => unknown) => fn()) // SPY all-DTE
+      .mockImplementationOnce((fn: () => unknown) => fn()) // QQQ all-DTE
+      .mockImplementationOnce((fn: () => unknown) => fn()) // SPY breakdown
+      .mockImplementationOnce((fn: () => unknown) => fn()) // QQQ breakdown
+      .mockRejectedValueOnce(new Error('UW per-expiry 503')); // SPY per-expiry
+    mockUwFetch
+      .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'SPY' })]) // SPY all-DTE
+      .mockResolvedValueOnce([makeGreekFlowTick({ ticker: 'QQQ' })]) // QQQ all-DTE
+      .mockResolvedValueOnce(EXPIRY_TODAY_BREAKDOWN) // SPY breakdown (expiry day)
+      .mockResolvedValueOnce(NON_EXPIRY_BREAKDOWN); // QQQ breakdown (non-expiry)
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      tickers: {
+        SPY: {
+          // all-DTE landed despite the per-expiry leg dying.
+          all: { ticks: 1, inserted: 1 },
+        },
+        QQQ: { all: { ticks: 1, inserted: 1 } },
+      },
+    });
+  });
+
+  it('error: every issued Phase A leg fails → status error', async () => {
+    // All 4 always-fired Phase A legs reject; no per-expiry legs issued
+    // (breakdowns never resolve), so legCount === failureCount === 4.
+    mockWithRetry.mockRejectedValue(new Error('UW total outage'));
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Handler still returns 200 (the wrapper only 500s on a thrown
+    // exception); the degradation is carried by status: 'error'.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      tickers: {
+        SPY: { all: { ticks: 0 } },
+        QQQ: { all: { ticks: 0 } },
+      },
+    });
+    // No leg produced ticks → no UPSERT writes.
+    expect(mockSql).not.toHaveBeenCalled();
   });
 
   // ── 8-field INSERT column regression test ────────────────

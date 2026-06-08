@@ -266,7 +266,7 @@ describe('fetch-etf-tide handler', () => {
 
   // ── Error handling ────────────────────────────────────────
 
-  it('handles individual ticker failure gracefully', async () => {
+  it('partial: one ticker fails → status partial, healthy ticker still stored (BE-CRON-H4)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();
     // QQQ succeeds so the INSERT RETURNING should return a row
@@ -294,15 +294,22 @@ describe('fetch-etf-tide handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       job: 'fetch-etf-tide',
+      // Demoted to partial because SPY failed...
+      status: 'partial',
+      failureCount: 1,
       results: {
+        // ...but QQQ's healthy data still landed.
         spy_etf_tide: { stored: 0 },
         qqq_etf_tide: { stored: 1 },
       },
     });
+    // The healthy QQQ leg still wrote one row.
+    expect(mockSql).toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 
-  it('returns 500 when fetch throws for all tickers', async () => {
+  it('error: all tickers fail → status error (not success), no green monitor', async () => {
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -316,13 +323,44 @@ describe('fetch-etf-tide handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // Individual failures are caught, so it still returns 200 with stored: false
+    // Per-ticker failures are caught (HTTP stays 200), but the cron status
+    // is now 'error' instead of an unconditional 'success' so the monitor
+    // no longer stays green on a full UW outage.
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      status: 'error',
+      failureCount: 2,
       results: {
         spy_etf_tide: { stored: 0 },
         qqq_etf_tide: { stored: 0 },
       },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it('success: all tickers succeed → status success', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const row = makeEtfTideRow();
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [row] }),
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      failureCount: 0,
     });
     vi.unstubAllGlobals();
   });

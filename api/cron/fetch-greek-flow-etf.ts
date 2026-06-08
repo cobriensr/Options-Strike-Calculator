@@ -42,6 +42,7 @@ import {
   uwFetch,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -67,6 +68,15 @@ export default withCronInstrumentation(
     const { apiKey, today } = ctx;
     await cronJitter();
 
+    // Track per-leg failures across all three phases so the handler can
+    // demote its status to 'partial' / 'error'. Previously a single
+    // rejected leg in Phase A's mapWithConcurrency or Phase B/C's
+    // Promise.all aborted every sibling and 500'd the whole run, dropping
+    // healthy legs' data while the cron looked like a hard failure rather
+    // than a partial one (BE-CRON-H4).
+    let failureCount = 0;
+    let legCount = 0;
+
     // Phase A: all-DTE flow + expiry breakdowns capped at the UW
     // 3-concurrent in-flight cap. A naked Promise.all over 4 calls
     // races against UW's per-account concurrency limit — the 4th
@@ -79,46 +89,73 @@ export default withCronInstrumentation(
     // contending for slots. `mapWithConcurrency` dispatches at most
     // 3 in flight upfront, eliminating both effects.
     //
+    // Each worker catches its own rejection and returns a tagged result
+    // so one ticker's 429 doesn't abort the batch via mapWithConcurrency's
+    // internal Promise.all (which propagates the first rejection).
+    //
     // Index order (SPY all-DTE, QQQ all-DTE, SPY expiry-breakdown,
     // QQQ expiry-breakdown) is load-bearing for tests that drive
     // mockUwFetch with mockResolvedValueOnce. Keep the order stable.
     type PhaseATask = { kind: 'all-dte' | 'expiry'; ticker: 'SPY' | 'QQQ' };
+    type PhaseAOutcome =
+      | { ok: true; data: unknown[] }
+      | { ok: false; reason: unknown };
     const phaseATasks: PhaseATask[] = [
       { kind: 'all-dte', ticker: 'SPY' },
       { kind: 'all-dte', ticker: 'QQQ' },
       { kind: 'expiry', ticker: 'SPY' },
       { kind: 'expiry', ticker: 'QQQ' },
     ];
-    const phaseAResults = await mapWithConcurrency(
+    const phaseAResults = await mapWithConcurrency<PhaseATask, PhaseAOutcome>(
       phaseATasks,
       3,
       async (task) => {
-        if (task.kind === 'all-dte') {
-          return withRetry(() =>
-            uwFetch<GreekFlowTick>(
+        try {
+          if (task.kind === 'all-dte') {
+            const data = await withRetry(() =>
+              uwFetch<GreekFlowTick>(
+                apiKey,
+                `/stock/${task.ticker}/greek-flow?date=${today}`,
+              ),
+            );
+            return { ok: true, data };
+          }
+          const data = await withRetry(() =>
+            uwFetch<ExpiryBreakdownEntry>(
               apiKey,
-              `/stock/${task.ticker}/greek-flow?date=${today}`,
+              `/stock/${task.ticker}/expiry-breakdown?date=${today}`,
             ),
           );
+          return { ok: true, data };
+        } catch (err) {
+          ctx.logger.warn(
+            { err, ...task },
+            'fetch-greek-flow-etf: Phase A leg failed',
+          );
+          Sentry.captureException(err);
+          return { ok: false, reason: err };
         }
-        return withRetry(() =>
-          uwFetch<ExpiryBreakdownEntry>(
-            apiKey,
-            `/stock/${task.ticker}/expiry-breakdown?date=${today}`,
-          ),
-        );
       },
     );
-    const spyAllTicks = phaseAResults[0] as GreekFlowTick[];
-    const qqqAllTicks = phaseAResults[1] as GreekFlowTick[];
-    const spyExpiries = phaseAResults[2] as ExpiryBreakdownEntry[];
-    const qqqExpiries = phaseAResults[3] as ExpiryBreakdownEntry[];
 
-    // Phase B: only fetch per-expiry data if today is an expiry day for the ticker.
+    const unwrapPhaseA = <T>(outcome: PhaseAOutcome): T[] => {
+      legCount += 1;
+      if (outcome.ok) return outcome.data as T[];
+      failureCount += 1;
+      return [];
+    };
+
+    const spyAllTicks = unwrapPhaseA<GreekFlowTick>(phaseAResults[0]!);
+    const qqqAllTicks = unwrapPhaseA<GreekFlowTick>(phaseAResults[1]!);
+    const spyExpiries = unwrapPhaseA<ExpiryBreakdownEntry>(phaseAResults[2]!);
+    const qqqExpiries = unwrapPhaseA<ExpiryBreakdownEntry>(phaseAResults[3]!);
+
+    // Phase B: only fetch per-expiry data if today is an expiry day for the
+    // ticker. allSettled so a per-expiry 503 for SPY doesn't drop QQQ's.
     const spyIsExpiry = spyExpiries.some((e) => e.expires === today);
     const qqqIsExpiry = qqqExpiries.some((e) => e.expires === today);
 
-    const [spy0dteTicks, qqq0dteTicks] = await Promise.all([
+    const [spy0dteSettled, qqq0dteSettled] = await Promise.allSettled([
       spyIsExpiry
         ? withRetry(() =>
             uwFetch<GreekFlowTick>(
@@ -137,14 +174,93 @@ export default withCronInstrumentation(
         : Promise.resolve<GreekFlowTick[]>([]),
     ]);
 
-    // Phase C: upsert all four scopes in parallel.
-    const [spyAllResult, qqqAllResult, spy0dteResult, qqq0dteResult] =
-      await Promise.all([
+    // Only count the per-expiry legs that were actually issued (expiry
+    // days). A skipped (non-expiry) leg resolves to [] and is not a failure.
+    if (spyIsExpiry) {
+      legCount += 1;
+      if (spy0dteSettled.status === 'rejected') {
+        failureCount += 1;
+        ctx.logger.warn(
+          { err: spy0dteSettled.reason },
+          'fetch-greek-flow-etf: SPY per-expiry fetch failed',
+        );
+        Sentry.captureException(spy0dteSettled.reason);
+      }
+    }
+    if (qqqIsExpiry) {
+      legCount += 1;
+      if (qqq0dteSettled.status === 'rejected') {
+        failureCount += 1;
+        ctx.logger.warn(
+          { err: qqq0dteSettled.reason },
+          'fetch-greek-flow-etf: QQQ per-expiry fetch failed',
+        );
+        Sentry.captureException(qqq0dteSettled.reason);
+      }
+    }
+
+    const spy0dteTicks =
+      spy0dteSettled.status === 'fulfilled' ? spy0dteSettled.value : [];
+    const qqq0dteTicks =
+      qqq0dteSettled.status === 'fulfilled' ? qqq0dteSettled.value : [];
+
+    // Phase C: upsert all four scopes independently. upsertGreekFlowTicks
+    // catches its own DB errors and returns { failed } rather than throwing,
+    // but allSettled guards against a connection-level rejection escaping
+    // and aborting the other three scopes' writes.
+    const [spyAllSettled, qqqAllSettled, spy0dteSettledC, qqq0dteSettledC] =
+      await Promise.allSettled([
         upsertGreekFlowTicks('SPY', spyAllTicks, today, null),
         upsertGreekFlowTicks('QQQ', qqqAllTicks, today, null),
         upsertGreekFlowTicks('SPY', spy0dteTicks, today, today),
         upsertGreekFlowTicks('QQQ', qqq0dteTicks, today, today),
       ]);
+
+    const ZERO_UPSERT = { inserted: 0, updated: 0, failed: 0 };
+    const unwrapUpsert = (
+      settled: PromiseSettledResult<{
+        inserted: number;
+        updated: number;
+        failed: number;
+      }>,
+      inputTicks: number,
+      scope: string,
+    ): { inserted: number; updated: number; failed: number } => {
+      // Only count scopes that actually had ticks to write as legs — an
+      // empty-input upsert is a guaranteed no-op (upsertGreekFlowTicks
+      // returns zeroes without touching the DB) and must not dilute the
+      // all-failed ratio that drives the 'error' status.
+      if (inputTicks > 0) legCount += 1;
+      if (settled.status === 'fulfilled') return settled.value;
+      if (inputTicks > 0) failureCount += 1;
+      ctx.logger.warn(
+        { err: settled.reason, scope },
+        'fetch-greek-flow-etf: Phase C upsert rejected',
+      );
+      Sentry.captureException(settled.reason);
+      return ZERO_UPSERT;
+    };
+
+    const spyAllResult = unwrapUpsert(
+      spyAllSettled,
+      spyAllTicks.length,
+      'SPY/all',
+    );
+    const qqqAllResult = unwrapUpsert(
+      qqqAllSettled,
+      qqqAllTicks.length,
+      'QQQ/all',
+    );
+    const spy0dteResult = unwrapUpsert(
+      spy0dteSettledC,
+      spy0dteTicks.length,
+      'SPY/0dte',
+    );
+    const qqq0dteResult = unwrapUpsert(
+      qqq0dteSettledC,
+      qqq0dteTicks.length,
+      'QQQ/0dte',
+    );
 
     const spyMeta = {
       all: { ticks: spyAllTicks.length, ...spyAllResult },
@@ -159,14 +275,27 @@ export default withCronInstrumentation(
         : null,
     };
 
+    // Status demotion (matches fetch-gex-strike-expiry-etfs convention):
+    //   every issued leg failed → 'error', some failed → 'partial', none →
+    //   'success'. legCount counts only legs actually issued (skipped
+    //   non-expiry per-expiry legs don't count), so a non-expiry day with
+    //   all 6 issued legs healthy still reports 'success'.
+    const allFailed = legCount > 0 && failureCount === legCount;
+    const status = allFailed
+      ? 'error'
+      : failureCount > 0
+        ? 'partial'
+        : 'success';
+
     ctx.logger.info(
-      { spy: spyMeta, qqq: qqqMeta },
+      { spy: spyMeta, qqq: qqqMeta, failureCount, legCount, status },
       'fetch-greek-flow-etf completed',
     );
 
     return {
-      status: 'success',
+      status,
       metadata: {
+        failureCount,
         tickers: {
           SPY: spyMeta,
           QQQ: qqqMeta,

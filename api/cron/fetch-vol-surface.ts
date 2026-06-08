@@ -182,24 +182,67 @@ export default withCronCheckin('fetch-vol-surface', async (req, res) => {
       });
     }
 
-    // Fetch all three endpoints in parallel
-    const [tsRows, rvRows, ivRankRows] = await Promise.all([
+    // Fetch all three endpoints independently. Previously a single
+    // Promise.all rejection discarded ALL three legs (e.g. an iv-rank 429
+    // dropped a healthy term-structure + realized-vol fetch) and the whole
+    // run 500'd. allSettled isolates each leg; the rejected ones are
+    // captured to Sentry and the successful ones still store (BE-CRON-H4).
+    const [tsSettled, rvSettled, ivRankSettled] = await Promise.allSettled([
       withRetry(() => fetchTermStructure(apiKey)),
       withRetry(() => fetchRealizedVol(apiKey)),
       withRetry(() => fetchIvRank(apiKey)),
     ]);
 
-    // Store term structure
-    const tsResult = await storeTermStructure(tsRows, today);
+    let failureCount = 0;
+    if (tsSettled.status === 'rejected') {
+      failureCount += 1;
+      logger.warn(
+        { err: tsSettled.reason },
+        'fetch-vol-surface: term-structure fetch failed',
+      );
+      Sentry.captureException(tsSettled.reason);
+    }
+    if (rvSettled.status === 'rejected') {
+      failureCount += 1;
+      logger.warn(
+        { err: rvSettled.reason },
+        'fetch-vol-surface: realized-vol fetch failed',
+      );
+      Sentry.captureException(rvSettled.reason);
+    }
+    if (ivRankSettled.status === 'rejected') {
+      failureCount += 1;
+      logger.warn(
+        { err: ivRankSettled.reason },
+        'fetch-vol-surface: iv-rank fetch failed',
+      );
+      Sentry.captureException(ivRankSettled.reason);
+    }
 
-    // Store realized vol + IV rank
+    const tsRows = tsSettled.status === 'fulfilled' ? tsSettled.value : [];
+    const rvRows = rvSettled.status === 'fulfilled' ? rvSettled.value : [];
+    const ivRankRows =
+      ivRankSettled.status === 'fulfilled' ? ivRankSettled.value : [];
+
+    // Store whichever legs succeeded. realized-vol and iv-rank both feed
+    // storeRealizedVol; if iv-rank failed but realized-vol succeeded we
+    // still write the realized-vol row (iv_rank column lands null).
+    const tsResult = await storeTermStructure(tsRows, today);
     const rvStored = await storeRealizedVol(rvRows, ivRankRows, today);
+
+    // Status demotion: all three endpoints failed → 'error', some → 'partial',
+    // none → 'success'. Surfaced to Axiom so a UW outage no longer reports
+    // a clean 'ok' run with zero rows written.
+    const allFailed = failureCount === 3;
+    const status = allFailed ? 'error' : failureCount > 0 ? 'partial' : 'ok';
 
     logger.info(
       {
         date: today,
         termStructure: tsResult,
         realizedVol: rvStored,
+        failureCount,
+        status,
         rawCounts: {
           tsRows: tsRows.length,
           rvRows: rvRows.length,
@@ -212,8 +255,9 @@ export default withCronCheckin('fetch-vol-surface', async (req, res) => {
     const durationMs = Date.now() - startTime;
 
     await reportCronRun('fetch-vol-surface', {
-      status: 'ok',
+      status,
       date: today,
+      failureCount,
       termStructureStored: tsResult.stored,
       termStructureSkipped: tsResult.skipped,
       realizedVol: rvStored,
@@ -225,9 +269,16 @@ export default withCronCheckin('fetch-vol-surface', async (req, res) => {
       durationMs,
     });
 
-    return res.status(200).json({
+    // Return 500 on a total fetch failure so withCronCheckin (which keys
+    // the Sentry check-in off res.statusCode >= 400) fires an `error`
+    // check-in instead of a green `ok`. Partial failures stay 200 — at
+    // least one leg's data landed, and the `status: 'partial'` field +
+    // Axiom event carry the degradation signal.
+    return res.status(allFailed ? 500 : 200).json({
       job: 'fetch-vol-surface',
+      status,
       date: today,
+      failureCount,
       termStructure: tsResult,
       realizedVol: rvStored,
       rawCounts: {

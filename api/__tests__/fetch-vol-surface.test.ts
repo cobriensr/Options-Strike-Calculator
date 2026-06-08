@@ -373,7 +373,7 @@ describe('fetch-vol-surface cron handler', () => {
 
   // ── Error handling ────────────────────────────────────
 
-  it('returns 500 and captures exception on API fetch error', async () => {
+  it('error: all three endpoints fail → status error, 500, each leg captured (BE-CRON-H4)', async () => {
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
     const err = new Error('UW API timeout');
     vi.mocked(uwFetch).mockRejectedValue(err);
@@ -381,11 +381,69 @@ describe('fetch-vol-surface cron handler', () => {
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
+    // All three fetches rejected → total failure. Returns 500 (so
+    // withCronCheckin fires an error check-in) with status: 'error' in
+    // the body. The legs are captured individually, not via the outer
+    // catch, so the run no longer reports a clean 'ok'.
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(res._json).toMatchObject({
+      job: 'fetch-vol-surface',
+      status: 'error',
+      failureCount: 3,
+    });
+    // Each rejected leg is captured (3 calls), not just one outer capture.
     expect(Sentry.captureException).toHaveBeenCalledWith(err);
-    expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'fetch-vol-surface');
-    expect(logger.error).toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalledTimes(3);
+  });
+
+  it('partial: iv-rank fails but term-structure + realized-vol still store', async () => {
+    mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
+
+    // term-structure + realized-vol succeed; iv-rank rejects.
+    vi.mocked(uwFetch)
+      .mockResolvedValueOnce([makeTermStructureRow()]) // term-structure
+      .mockResolvedValueOnce([makeRealizedVolRow()]) // realized-vol
+      .mockRejectedValueOnce(new Error('UW iv-rank 503')); // iv-rank
+
+    // Term-structure INSERT, then realized-vol INSERT.
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    // Partial failures stay 200 — the healthy legs' data landed.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 1,
+      // Healthy legs survived the iv-rank rejection.
+      termStructure: { stored: 1, skipped: 0 },
+      realizedVol: true,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('success: all three endpoints succeed → status success', async () => {
+    mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
+
+    vi.mocked(uwFetch)
+      .mockResolvedValueOnce([makeTermStructureRow()])
+      .mockResolvedValueOnce([makeRealizedVolRow()])
+      .mockResolvedValueOnce([makeIvRankRow()]);
+
+    mockSql.mockResolvedValueOnce([{ id: 1 }]); // term-structure INSERT
+    mockSql.mockResolvedValueOnce([]); // realized-vol INSERT
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'ok',
+      failureCount: 0,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('returns 500 on DB write error during term structure insert', async () => {

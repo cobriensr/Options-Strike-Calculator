@@ -29,7 +29,7 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { metrics } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { cronJitter, uwFetch, withRetry } from '../_lib/api-helpers.js';
 import {
@@ -84,6 +84,10 @@ async function storeCandles(
         'ETF candle insert failed',
       );
       metrics.increment('fetch_etf_candles_1m.store_error');
+      // Surface to Sentry to match the rest of the codebase — the prior
+      // version only logged + incremented a metric, so a per-row DB write
+      // failure was invisible in the issue stream (BE-CRON-H4).
+      Sentry.captureException(err);
       skipped++;
     }
   }
@@ -99,7 +103,15 @@ export default withCronInstrumentation(
     const { apiKey, today, logger } = ctx;
     await cronJitter();
 
-    const [spyCandles, qqqCandles] = await Promise.all([
+    // Fetch SPY + QQQ candles independently. Previously a single
+    // Promise.all rejection (e.g. one ticker 429s) aborted the sibling
+    // and lost its data while the cron still reported success (BE-CRON-H4).
+    // allSettled isolates each leg; a rejected fetch is captured and the
+    // healthy leg still stores. A ticker is "failed" if either its fetch
+    // OR its store leg rejects.
+    const failedTickers = new Set<string>();
+
+    const [spyFetch, qqqFetch] = await Promise.allSettled([
       withRetry(() =>
         uwFetch<UWCandleRow>(apiKey, `/stock/SPY/ohlc/1m?date=${today}`),
       ),
@@ -108,22 +120,84 @@ export default withCronInstrumentation(
       ),
     ]);
 
-    const [spyResult, qqqResult] = await Promise.all([
+    if (spyFetch.status === 'rejected') {
+      failedTickers.add('SPY');
+      logger.warn(
+        { err: spyFetch.reason },
+        'fetch-etf-candles-1m: SPY fetch failed',
+      );
+      Sentry.captureException(spyFetch.reason);
+    }
+    if (qqqFetch.status === 'rejected') {
+      failedTickers.add('QQQ');
+      logger.warn(
+        { err: qqqFetch.reason },
+        'fetch-etf-candles-1m: QQQ fetch failed',
+      );
+      Sentry.captureException(qqqFetch.reason);
+    }
+
+    const spyCandles = spyFetch.status === 'fulfilled' ? spyFetch.value : [];
+    const qqqCandles = qqqFetch.status === 'fulfilled' ? qqqFetch.value : [];
+
+    // Store each leg independently too — a rejected store must not abort
+    // the sibling's write. (storeCandles catches per-row errors internally,
+    // but a getDb()/connection-level rejection would still bubble.)
+    const [spyStore, qqqStore] = await Promise.allSettled([
       storeCandles('SPY', spyCandles),
       storeCandles('QQQ', qqqCandles),
     ]);
+
+    if (spyStore.status === 'rejected') {
+      failedTickers.add('SPY');
+      logger.warn(
+        { err: spyStore.reason },
+        'fetch-etf-candles-1m: SPY store failed',
+      );
+      Sentry.captureException(spyStore.reason);
+    }
+    if (qqqStore.status === 'rejected') {
+      failedTickers.add('QQQ');
+      logger.warn(
+        { err: qqqStore.reason },
+        'fetch-etf-candles-1m: QQQ store failed',
+      );
+      Sentry.captureException(qqqStore.reason);
+    }
+
+    const spyResult =
+      spyStore.status === 'fulfilled'
+        ? spyStore.value
+        : { stored: 0, skipped: 0 };
+    const qqqResult =
+      qqqStore.status === 'fulfilled'
+        ? qqqStore.value
+        : { stored: 0, skipped: 0 };
+
+    // Status demotion (matches fetch-gex-strike-expiry-etfs convention):
+    //   both tickers failed → 'error', one failed → 'partial', none → 'success'.
+    const failureCount = failedTickers.size;
+    const allFailed = failureCount === 2;
+    const status = allFailed
+      ? 'error'
+      : failureCount > 0
+        ? 'partial'
+        : 'success';
 
     logger.info(
       {
         spy: { candles: spyCandles.length, ...spyResult },
         qqq: { candles: qqqCandles.length, ...qqqResult },
+        failureCount,
+        status,
       },
       'fetch-etf-candles-1m completed',
     );
 
     return {
-      status: 'success',
+      status,
       metadata: {
+        failureCount,
         tickers: {
           SPY: { stored: spyResult.stored, skipped: spyResult.skipped },
           QQQ: { stored: qqqResult.stored, skipped: qqqResult.skipped },

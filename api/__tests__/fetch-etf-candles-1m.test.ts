@@ -282,26 +282,74 @@ describe('fetch-etf-candles-1m handler', () => {
     });
   });
 
-  // ── UW API errors ─────────────────────────────────────────
+  // ── UW API errors → per-leg isolation (BE-CRON-H4) ────────
+  //
+  // A single fetch rejection used to abort the sibling via Promise.all and
+  // 500 the whole run. Now each leg is isolated with allSettled: the
+  // healthy ticker still stores and the status is demoted to 'partial'.
 
-  it('returns 500 when UW API returns non-ok response', async () => {
-    mockWithRetry.mockRejectedValueOnce(new Error('UW API 500: Server error'));
+  it('partial: SPY fetch fails → status partial, QQQ candle still stored', async () => {
+    // First withRetry (SPY fetch) rejects; the rest pass through so the
+    // QQQ fetch + both store legs run normally.
+    mockWithRetry
+      .mockRejectedValueOnce(new Error('UW API 500: SPY'))
+      .mockImplementation((fn: () => unknown) => fn());
+    // QQQ fetch returns one candle.
+    mockUwFetch.mockResolvedValue([makeCandle()]);
+    mockSql.mockResolvedValue([{ id: 1 }]);
+
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 1,
+      tickers: {
+        SPY: { stored: 0, skipped: 0 },
+        QQQ: { stored: 1, skipped: 0 },
+      },
+    });
+    // The healthy QQQ leg still wrote its candle.
+    expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
-  it('returns 500 when UW fetch throws a network error', async () => {
-    mockWithRetry.mockRejectedValueOnce(new Error('Network error'));
+  it('error: both ticker fetches fail → status error', async () => {
+    mockWithRetry.mockRejectedValue(new Error('UW total outage'));
+
     const req = AUTHORIZED_REQ();
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    // HTTP stays 200 (wrapper only 500s on a thrown exception) but the
+    // cron status is 'error' so the monitor doesn't stay green.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      failureCount: 2,
+      tickers: {
+        SPY: { stored: 0, skipped: 0 },
+        QQQ: { stored: 0, skipped: 0 },
+      },
+    });
+    // No fetch succeeded → no rows written.
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('success: both tickers succeed → status success', async () => {
+    mockUwFetch.mockResolvedValue([makeCandle()]);
+    mockSql.mockResolvedValue([{ id: 1 }]);
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      failureCount: 0,
+    });
   });
 
   // ── INSERT column coverage ────────────────────────────────

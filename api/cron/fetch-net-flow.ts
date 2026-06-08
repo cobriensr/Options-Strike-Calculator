@@ -173,6 +173,12 @@ export default withCronInstrumentation(
       { stored: number; skipped: number; candles: number }
     > = {};
 
+    // Count per-source failures so the handler can demote its status when
+    // some (partial) or all (error) sources fail. Without this the cron
+    // returned `success` unconditionally — a full UW outage looked like a
+    // healthy zero-row run and the Sentry monitor stayed green (BE-CRON-H4).
+    let failureCount = 0;
+
     // Fetch all tickers sequentially to respect UW concurrency limit
     for (const { ticker, source } of TICKERS) {
       try {
@@ -180,6 +186,7 @@ export default withCronInstrumentation(
         const result = await storeAllCandles(candles, source);
         results[source] = { ...result, candles: candles.length };
       } catch (err) {
+        failureCount += 1;
         logger.warn({ err, ticker, source }, 'Failed to fetch net flow');
         // Surface to Sentry — the prior version only logger.warned and
         // returned a zero-candle tuple, so a 3-ticker UW outage looked
@@ -211,12 +218,27 @@ export default withCronInstrumentation(
       });
     }
 
-    ctx.logger.info({ results }, 'fetch-net-flow completed');
+    // Status demotion (matches fetch-gex-strike-expiry-etfs convention):
+    //   all sources failed → 'error', some failed → 'partial', none → 'success'.
+    const allFailed = failureCount === TICKERS.length;
+    const status = allFailed
+      ? 'error'
+      : failureCount > 0
+        ? 'partial'
+        : 'success';
+
+    ctx.logger.info(
+      { results, failureCount, status },
+      'fetch-net-flow completed',
+    );
 
     return {
-      status: 'success',
+      status,
       metadata: {
-        stored: true,
+        // `stored` reflects whether any source landed at all, not an
+        // unconditional true (the old value masked total failures).
+        stored: !allFailed,
+        failureCount,
         results,
       },
     };
