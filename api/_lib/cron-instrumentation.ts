@@ -370,6 +370,33 @@ export interface CronContext {
  */
 export type CronStatus = 'success' | 'partial' | 'error' | 'skipped';
 
+/**
+ * Three-way status demotion shared by crons that fan out into N
+ * independent legs and need to collapse "how many failed" into a single
+ * `CronStatus`. Single source of truth for the rule that was previously
+ * hand-copied across handlers (fetch-greek-flow-etf,
+ * fetch-gex-strike-expiry-etfs, …):
+ *
+ *   - `total === 0`     → 'success' — there was no real work to do, so an
+ *      empty run is not a failure (a quiet window, all-skipped legs, etc.).
+ *   - `failed >= total` → 'error'   — every leg that was attempted failed.
+ *      `>=` rather than `===` guards against a caller mis-counting and
+ *      passing `failed > total`; we still treat "everything (or more)
+ *      failed" as a hard error rather than silently downgrading.
+ *   - `failed > 0`      → 'partial' — some legs landed, some failed.
+ *   - otherwise         → 'success' — every attempted leg succeeded.
+ *
+ * `total` must be the count of legs that actually had work (no-op /
+ * empty-input legs should be excluded from BOTH `failed` and `total` by
+ * the caller) so a run with nothing to do reports 'success', not 'error'.
+ */
+export function deriveCronStatus(failed: number, total: number): CronStatus {
+  if (total === 0) return 'success';
+  if (failed >= total) return 'error';
+  if (failed > 0) return 'partial';
+  return 'success';
+}
+
 export interface CronResult {
   /** Outcome bucket sent to Axiom and the response body. */
   status: CronStatus;

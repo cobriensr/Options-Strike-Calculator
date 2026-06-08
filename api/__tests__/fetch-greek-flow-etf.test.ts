@@ -61,6 +61,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/fetch-greek-flow-etf.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
 
@@ -549,6 +550,93 @@ describe('fetch-greek-flow-etf handler', () => {
     });
     // No leg produced ticks → no UPSERT writes.
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  // ── Persistence-based status (#2 / #6) ───────────────────
+  //
+  // The store (upsertGreekFlowTicks) CATCHES its own batched-INSERT error
+  // and RESOLVES with { inserted: 0, failed: N } instead of throwing. The
+  // cron must treat that swallowed total-write loss as a FAILED leg and
+  // escalate to Sentry — a green 'success' on zero rows written is total
+  // data loss masquerading as healthy.
+
+  it("error: all upserts persist ZERO rows (store swallows) → status 'error', not 'success'", async () => {
+    // Both all-DTE scopes have ticks, but every batched UPSERT throws.
+    // The store catches each rejection and returns { inserted: 0, failed: N },
+    // so the upsert promise FULFILLS — the old rejection-only check missed it.
+    mockSql.mockRejectedValue(new Error('DB batch insert failed'));
+    setupMocks({
+      spyAll: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqAll: [makeGreekFlowTick({ ticker: 'QQQ' })],
+      // non-expiry day → only the 2 all-DTE scopes have input
+    });
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Both persistable legs failed to write a single row → hard error.
+    expect(res._json).toMatchObject({
+      status: 'error',
+      tickers: {
+        SPY: { all: { ticks: 1, inserted: 0, failed: 1 } },
+        QQQ: { all: { ticks: 1, inserted: 0, failed: 1 } },
+      },
+    });
+    // The swallowed total-write loss must be surfaced to Sentry once per
+    // failed scope (the store only logs + bumps a metric on its own).
+    expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    const messages = vi
+      .mocked(Sentry.captureException)
+      .mock.calls.map((c) => String((c[0] as Error)?.message));
+    expect(messages.some((m) => m.includes('SPY/all'))).toBe(true);
+    expect(messages.some((m) => m.includes('QQQ/all'))).toBe(true);
+  });
+
+  it("partial: one scope persists rows, the other writes zero → status 'partial'", async () => {
+    // SPY all-DTE upsert succeeds (1 inserted), QQQ all-DTE upsert swallows
+    // a total failure. Call order: SPY/all upsert, then QQQ/all upsert.
+    mockSql
+      .mockResolvedValueOnce([{ was_insert: true }]) // SPY/all → 1 inserted
+      .mockRejectedValueOnce(new Error('QQQ DB insert failed')); // QQQ/all → swallowed
+    setupMocks({
+      spyAll: [makeGreekFlowTick({ ticker: 'SPY' })],
+      qqqAll: [makeGreekFlowTick({ ticker: 'QQQ' })],
+    });
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      tickers: {
+        SPY: { all: { ticks: 1, inserted: 1, failed: 0 } },
+        QQQ: { all: { ticks: 1, inserted: 0, failed: 1 } },
+      },
+    });
+    // Only the QQQ total-write loss escalates to Sentry.
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it("all-empty input: every fetch returns empty 200 → status 'success' + all_empty metric", async () => {
+    // Both all-DTE fetches succeed but return [] (no ticks). Non-expiry day,
+    // so no per-expiry scopes. No fetch failed, no scope had input → no real
+    // work. Status stays 'success' but a distinct metric + warn flag the gap.
+    setupMocks({ spyAll: [], qqqAll: [] });
+
+    const req = AUTHORIZED_REQ();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success' });
+    expect(metrics.increment).toHaveBeenCalledWith('greek_flow_etf.all_empty');
+    // No data → no upsert, and the empty window is not escalated to Sentry.
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   // ── 8-field INSERT column regression test ────────────────
