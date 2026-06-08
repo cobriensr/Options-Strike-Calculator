@@ -197,43 +197,52 @@ export async function getGreekExposure(
 ): Promise<GreekExposureRow[]> {
   const db = getDb();
 
-  // Step 1: find the latest snapshot timestamp for this date (optionally
-  // capped by asOf for point-in-time reads).
-  const tsRows = asOf
+  // Single round-trip: a `latest` CTE picks the newest snapshot timestamp for
+  // this (date, ticker) — optionally capped by asOf for point-in-time reads —
+  // and the join reads exactly that snapshot's rows (one per expiry/dte). This
+  // mirrors the idiom in build-features-gex.ts so the two greek_exposure
+  // readers share one query shape and the analyze hot path makes ONE Neon
+  // round-trip instead of two. When the CTE yields a NULL ts (no rows, or
+  // nothing at-or-before asOf), `g.timestamp = l.ts` is never true, so the
+  // join returns zero rows → []. The append model writes one timestamped
+  // snapshot per cron run; without this filter an unfiltered read would return
+  // ~N× duplicated (expiry, dte) rows.
+  const rows = asOf
     ? await withDbRetry(
         () => db`
-          SELECT MAX(timestamp) AS latest_ts
-          FROM greek_exposure
-          WHERE date = ${date} AND ticker = ${ticker}
-            AND timestamp <= ${asOf}
+          WITH latest AS (
+            SELECT MAX(timestamp) AS ts
+            FROM greek_exposure
+            WHERE date = ${date} AND ticker = ${ticker}
+              AND timestamp <= ${asOf}
+          )
+          SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm,
+                 call_delta, put_delta, call_vanna, put_vanna
+          FROM greek_exposure g, latest l
+          WHERE g.date = ${date} AND g.ticker = ${ticker}
+            AND g.timestamp = l.ts
+          ORDER BY g.dte ASC
         `,
         2,
         10_000,
       )
     : await withDbRetry(
         () => db`
-          SELECT MAX(timestamp) AS latest_ts
-          FROM greek_exposure
-          WHERE date = ${date} AND ticker = ${ticker}
+          WITH latest AS (
+            SELECT MAX(timestamp) AS ts
+            FROM greek_exposure
+            WHERE date = ${date} AND ticker = ${ticker}
+          )
+          SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm,
+                 call_delta, put_delta, call_vanna, put_vanna
+          FROM greek_exposure g, latest l
+          WHERE g.date = ${date} AND g.ticker = ${ticker}
+            AND g.timestamp = l.ts
+          ORDER BY g.dte ASC
         `,
         2,
         10_000,
       );
-  const latestTs = tsRows[0]?.latest_ts;
-  if (!latestTs) return [];
-
-  // Step 2: read exactly the rows from that one snapshot (one per expiry/dte).
-  const rows = await withDbRetry(
-    () => db`
-      SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm,
-             call_delta, put_delta, call_vanna, put_vanna
-      FROM greek_exposure
-      WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs}
-      ORDER BY dte ASC
-    `,
-    2,
-    10_000,
-  );
 
   return rows.map((r) => {
     const cg = r.call_gamma != null ? Number(r.call_gamma) : null;

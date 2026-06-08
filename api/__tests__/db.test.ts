@@ -826,7 +826,7 @@ describe('db.ts', () => {
         '#187: Create flow_regime_slot_daily table for the self-maintaining flow-regime baseline (resolves code-review finding #6 — the frozen, manually-refreshed baseline). One row per (date, slot) accumulates that trading day’s per-slot component sums (nd_num/nd_den for net_delta_tilt, idx_put_premium/total_premium for idx0dte_put_share) plus the bucket trade count. The capture-flow-regime-daily cron runs once post-close and UPSERTs all 13 RTH slots for the day via ON CONFLICT (date, slot) DO UPDATE. The live capture-flow-regime cron then computes percentile breakpoints ON READ from this accumulating table (api/_lib/flow-regime-baseline-live.ts), falling back per-slot to the committed flow-regime-baseline.json until a slot has ≥15 days of history. UNIQUE(date, slot) gives the daily upsert its conflict target. The (slot) index is NOT used by the loader’s aggregation — that query is a `GROUP BY slot` with no WHERE, so the planner full-scans this tiny table regardless; the index is retained only for potential future per-slot point reads (the table is small enough that dropping it isn’t worth a prod migration). No parquet / Desktop dependency — the baseline now self-maintains from Neon. See docs/superpowers/specs/flow-regime-baseline-refresh-2026-06-07.md.',
         '#188: Create lottery_kept_tickers table for the DB-backed never-vanish kept-set (Phase 1 of docs/superpowers/specs/2026-06-07-never-vanish-review-fixes-round2.md). Replaces the per-day Redis set (lf:kept:<date>) with a durable Postgres table so kept-ticker records survive Redis eviction and can be read page-independently by both the feed and ticker-counts endpoints. One row per (trade_date, underlying_symbol); the composite PRIMARY KEY enforces the natural dedup constraint and provides the lookup index — no separate index needed. The writer (lottery-finder.ts, Phase 3) derives the ever-shown set from the full ranked CTE (no LIMIT), so a ticker that flips Q1/Q2 while sitting past row 50 is still kept for the rest of the session. Both readKeptTickers and addKeptTickers swallow all errors and degrade to [] on DB failure, mirroring the prior Redis semantics.',
         '#189: Create flow_regime_0dte_daily table for the live 0DTE gamma-regime panel self-scoring scorecard. The nightly cron upserts one row per trading day with gate classification, GEX open/mid/flip context, intraday signal timestamps (mostly_red, iv_break, midday_deep_neg), and realized outcome columns (oc_ret_pct, range_pct, dir_eff, big_down, big_up). DATE PRIMARY KEY enforces one row per session; idempotent upsert on the cron path. Renumbered 186->189 after rebase/merge collisions with parallel migrations. See docs/superpowers/plans/2026-06-07-regime-0dte-panel.md Task 4.',
-        '#190: Add timestamp column to greek_exposure and switch from in-place upsert to append-per-cron-run, retaining intraday history (Phase 6a of the analyze-endpoint lookahead-bias fix, H3). The table previously had UNIQUE(date, ticker, expiry, dte) with ON CONFLICT DO UPDATE/DO NOTHING, so it kept only the LATEST snapshot per (date, ticker, expiry, dte) — point-in-time analysis (review/backtest) leaked end-of-session greek state. This migration: (1) adds a nullable timestamp TIMESTAMPTZ, (2) backfills it from created_at for existing rows (pre-migration dates only ever had one snapshot, so created_at is the best available point-in-time), (3) sets DEFAULT NOW() so an old cron instance inserting mid-deploy without an explicit timestamp still gets a value, (4) sets NOT NULL once backfilled, (5) replaces the old greek_exposure_date_ticker_expiry_dte_key unique constraint (added by migration #6) with greek_exposure_date_ticker_expiry_dte_ts_key UNIQUE(date, ticker, expiry, dte, timestamp) so each cron run appends a fresh snapshot instead of overwriting, and (6) adds idx_greek_exposure_date_ticker_ts (date, ticker, timestamp DESC) to serve the asOf-clamped point-in-time read coming in the next phase. The fetch-greek-exposure cron now stamps one run timestamp on every row of a run and uses ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING (conflicts only on same-run retry).',
+        '#190: Add timestamp column to greek_exposure and switch from in-place upsert to append-per-cron-run, retaining intraday history (Phase 6a of the analyze-endpoint lookahead-bias fix, H3). The table previously had UNIQUE(date, ticker, expiry, dte) with ON CONFLICT DO UPDATE/DO NOTHING, so it kept only the LATEST snapshot per (date, ticker, expiry, dte) — point-in-time analysis (review/backtest) leaked end-of-session greek state. This migration: (1) adds a nullable timestamp TIMESTAMPTZ, (2) backfills it to ONE canonical timestamp per (date, ticker) group via per-group MAX(created_at). The OLD cron inserted each expiry row + the aggregate as SEPARATE Neon HTTP calls (separate transactions = distinct NOW()), so a single logical pre-migration snapshot for one (date, ticker) has MANY distinct created_at values. Backfilling timestamp = created_at row-by-row would leave the new MAX(timestamp) readers matching only the single newest row, silently stripping the aggregate (dte=-1) and 0DTE (dte=0) rows from Claude context and corrupting ML rebuilds. Collapsing the whole group to one canonical timestamp restores the single-snapshot semantic the MAX(timestamp) readers expect. (3) sets DEFAULT NOW() so an old cron instance inserting mid-deploy without an explicit timestamp still gets a value, (4) sets NOT NULL once backfilled, (5) replaces the old greek_exposure_date_ticker_expiry_dte_key unique constraint (added by migration #6) with greek_exposure_date_ticker_expiry_dte_ts_key UNIQUE(date, ticker, expiry, dte, timestamp) so each cron run appends a fresh snapshot instead of overwriting, and (6) adds idx_greek_exposure_date_ticker_ts (date, ticker, timestamp DESC) to serve the asOf-clamped point-in-time read coming in the next phase. The fetch-greek-exposure cron now stamps one run timestamp on every row of a run and uses ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING (conflicts only on same-run retry).',
       ]);
       // Pyramid migrations #65/66/67 remain in the chain (migration history is
       // immutable — fresh DBs replay create → alter → alter → drop). TRACE
@@ -1517,11 +1517,7 @@ describe('db.ts', () => {
   // ============================================================
   describe('getGreekExposure', () => {
     it('returns mapped Greek exposure rows', async () => {
-      // Step 1: MAX(timestamp) lookup
-      mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-03-24T20:00:00.000Z' },
-      ]);
-      // Step 2: snapshot rows
+      // Single CTE query: the `latest` join returns the snapshot rows directly.
       mockSql.mockResolvedValueOnce([
         {
           expiry: '2026-03-24',
@@ -1559,9 +1555,6 @@ describe('db.ts', () => {
 
     it('handles null gamma values (basic tier)', async () => {
       mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-03-24T20:00:00.000Z' },
-      ]);
-      mockSql.mockResolvedValueOnce([
         {
           expiry: '2026-03-24',
           dte: 0,
@@ -1591,9 +1584,6 @@ describe('db.ts', () => {
       // comparisons (e.g. e.expiry === analysisDate). Assert the runtime value
       // is the normalized 'YYYY-MM-DD' string.
       mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-06-08T20:00:00.000Z' },
-      ]);
-      mockSql.mockResolvedValueOnce([
         {
           expiry: new Date('2026-06-08T00:00:00Z'),
           dte: 0,
@@ -1618,9 +1608,6 @@ describe('db.ts', () => {
       // Number(null) === 0, which would fabricate a real zero greek. A SQL
       // NULL means the greek is unknown, so the mapped value must be null and
       // the net aggregates must propagate null rather than summing to 0.
-      mockSql.mockResolvedValueOnce([
-        { latest_ts: '2026-06-08T20:00:00.000Z' },
-      ]);
       mockSql.mockResolvedValueOnce([
         {
           expiry: '2026-06-08',
@@ -1648,20 +1635,43 @@ describe('db.ts', () => {
       expect(result[0]!.putVanna).toBeNull();
     });
 
-    it('returns only the latest-timestamp snapshot (collapses append history)', async () => {
-      // The append model writes one snapshot per cron run. The MAX(timestamp)
-      // step picks the later run; the data step must read ONLY that snapshot's
-      // rows (not the union of both runs). We feed the later timestamp from
-      // step 1 and the later run's rows from step 2, and assert that the data
-      // query is bound to the chosen timestamp.
-      const lateTs = '2026-06-08T20:00:00.000Z';
-      mockSql.mockResolvedValueOnce([{ latest_ts: lateTs }]);
+    it('returns ALL rows of the latest snapshot in a single CTE query (no collapse to 1 row)', async () => {
+      // REGRESSION GUARD (audit #1): the latest snapshot for a (date, ticker)
+      // is a SET of rows — the aggregate (dte=-1), 0DTE (dte=0), and each
+      // forward expiry — all sharing one MAX(timestamp). The bug being guarded
+      // against returned only ONE row per date (the newest single created_at),
+      // silently stripping the aggregate + 0DTE rows from Claude context. The
+      // single CTE join must return the WHOLE snapshot set, ordered by dte ASC.
       mockSql.mockResolvedValueOnce([
         {
           expiry: '2026-06-08',
-          dte: 0,
+          dte: -1, // aggregate
+          call_gamma: '5000000',
+          put_gamma: '-3000000',
+          call_charm: '0',
+          put_charm: '0',
+          call_delta: '0',
+          put_delta: '0',
+          call_vanna: '0',
+          put_vanna: '0',
+        },
+        {
+          expiry: '2026-06-08',
+          dte: 0, // 0DTE
           call_gamma: '900',
           put_gamma: '100',
+          call_charm: '0',
+          put_charm: '0',
+          call_delta: '0',
+          put_delta: '0',
+          call_vanna: '0',
+          put_vanna: '0',
+        },
+        {
+          expiry: '2026-06-12',
+          dte: 4, // forward expiry
+          call_gamma: '200',
+          put_gamma: '50',
           call_charm: '0',
           put_charm: '0',
           call_delta: '0',
@@ -1673,23 +1683,20 @@ describe('db.ts', () => {
 
       const result = await getGreekExposure('2026-06-08');
 
-      // Only one (expiry, dte) row — the later snapshot, not 2× duplicated.
-      expect(result).toHaveLength(1);
-      expect(result[0]!.netGamma).toBe(1000); // 900 + 100, single snapshot
+      // ALL three rows return — aggregate AND 0DTE survive, not collapsed to 1.
+      expect(result).toHaveLength(3);
+      expect(result.map((r) => r.dte)).toEqual([-1, 0, 4]);
+      expect(result.find((r) => r.dte === -1)!.netGamma).toBe(2000000);
+      expect(result.find((r) => r.dte === 0)!.netGamma).toBe(1000);
 
-      // Two queries: MAX(timestamp) then the timestamp-bound row read.
-      expect(mockSql).toHaveBeenCalledTimes(2);
-      // The data query interpolates the chosen latest_ts.
-      const dataCallArgs = mockSql.mock.calls[1]!;
-      expect(dataCallArgs).toContain(lateTs);
+      // ONE round-trip: the latest CTE + join is a single query.
+      expect(mockSql).toHaveBeenCalledTimes(1);
     });
 
-    it('with asOf, picks the latest snapshot AT-OR-BEFORE the cutoff', async () => {
-      // Two snapshots straddle asOf=14:00. The MAX(timestamp <= asOf) step
-      // returns the earlier (13:00) snapshot, and the data step reads its rows.
+    it('with asOf, runs a single CTE query carrying the cutoff', async () => {
+      // The asOf cutoff is interpolated into the CTE; the join returns the
+      // chosen snapshot's rows in the same single query.
       const asOf = '2026-06-08T14:00:00.000Z';
-      const earlierTs = '2026-06-08T13:00:00.000Z';
-      mockSql.mockResolvedValueOnce([{ latest_ts: earlierTs }]);
       mockSql.mockResolvedValueOnce([
         {
           expiry: '2026-06-08',
@@ -1709,15 +1716,16 @@ describe('db.ts', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]!.netGamma).toBe(700);
-      // The MAX query carried the asOf cutoff; the data query carried the
-      // chosen earlier timestamp.
+      // Single round-trip whose interpolated args include the asOf cutoff.
+      expect(mockSql).toHaveBeenCalledTimes(1);
       expect(mockSql.mock.calls[0]!).toContain(asOf);
-      expect(mockSql.mock.calls[1]!).toContain(earlierTs);
     });
 
-    it('returns empty when no snapshot exists at-or-before asOf', async () => {
-      // MAX(timestamp <= asOf) yields NULL → short-circuit, no data query.
-      mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    it('returns empty when the CTE yields no rows (nothing at-or-before asOf)', async () => {
+      // When MAX(timestamp <= asOf) is NULL, `g.timestamp = l.ts` is never
+      // true, so the join returns zero rows. The driver returns []; the mapper
+      // yields []. Still a single round-trip.
+      mockSql.mockResolvedValueOnce([]);
 
       const result = await getGreekExposure(
         '2026-06-08',
@@ -1726,7 +1734,6 @@ describe('db.ts', () => {
       );
 
       expect(result).toEqual([]);
-      // Only the MAX query ran; the data query was skipped.
       expect(mockSql).toHaveBeenCalledTimes(1);
     });
   });
