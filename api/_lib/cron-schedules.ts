@@ -69,6 +69,16 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'capture-flow-regime-daily': {
+    // 21:55 UTC weekdays — once post-close (after both EDT 16:00→20:00 UTC and
+    // EST 16:00→21:00 UTC cash closes). Accumulates the day's per-slot
+    // component sums into flow_regime_slot_daily so the live cron can compute
+    // percentile breakpoints on read. Low-freq → default failure threshold (a
+    // single miss is genuinely significant).
+    schedule: '55 21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'capture-opening-flow-signal': {
     // 14:50 UTC weekdays. Fires year-round AFTER the V4 09:30–09:40 ET
     // slice 2 window has closed:

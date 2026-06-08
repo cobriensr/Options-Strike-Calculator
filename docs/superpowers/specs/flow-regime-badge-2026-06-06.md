@@ -88,6 +88,21 @@ idx0dte_put_share percentile = "abnormally bearish for this time of day."
 - `npm run review` green; baseline-validation log shows full-tape-restricted ≈
   WS-archive; one live cron run writes a snapshot; badge renders the current slot.
 
+## Refreshing the baseline
+
+The baseline artifact (`api/_lib/flow-regime-baseline.json`) is regenerated
+offline, not by a cron. Run `ml/.venv/bin/python
+scripts/build-flow-regime-baseline.py`; the source parquet glob defaults to the
+Desktop full-tape and is overridable via `--tape-glob '<glob>'` (CLI) or
+`FLOW_REGIME_TAPE_GLOB` (env) so the same script can build from a synced Blob
+WS-archive dump as it accumulates. The script revalidates the universe-restricted
+tape against Neon `ws_option_trades` on overlapping days and refuses to write a
+diverging baseline. When the baseline's metric definitions change, bump
+`schema_version` in the script — the capture cron stamps that value on every
+snapshot (`flow_regime_snapshots.baseline_version`, migration #186), so a stale
+baseline is detectable by comparing stamped versions to the committed artifact.
+Automating the refresh is a separate follow-up.
+
 ## Thresholds / constants
 - Bucket = 30 min (matches the analysis; signal/noise balance). Slots = (mod−570)//30.
 - Regime colors (recognition, tunable): nd_percentile ≤10 OR idxput ≥90 → bearish

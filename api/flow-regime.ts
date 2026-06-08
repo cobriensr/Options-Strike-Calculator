@@ -4,10 +4,11 @@
  * Flow Regime Recognition badge — read endpoint (Phase 2 of
  * docs/superpowers/specs/flow-regime-badge-2026-06-06.md).
  *
- * Serves the captured 30-min slot series for an ET trading day plus the
- * latest/current slot snapshot. The capture-flow-regime cron writes
- * (and refines) the in-progress slot every 5 min during market hours;
- * this endpoint just reads `flow_regime_snapshots`.
+ * Serves the latest/current 30-min slot snapshot for an ET trading day.
+ * The capture-flow-regime cron writes (and refines) the in-progress slot
+ * every 5 min during market hours; this endpoint just reads the most-recent
+ * row from `flow_regime_snapshots`. The badge consumes only `latest`; the
+ * response keeps the `{ date, latest }` envelope for forward-compat.
  *
  * RECOGNITION ONLY — the badge surfaces "today's flow is abnormal for
  * this time of day, as it forms" (useful for sizing / not fighting the
@@ -50,12 +51,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const date = parsed.data.date ?? getETDateStr(new Date());
-    const { slots, latest } = await readFlowRegimeDay(date);
+    const { latest } = await readFlowRegimeDay(date);
 
     // 15s CDN cache. Live data is fast-moving but the endpoint is hot
     // during the polling window — brief reuse keeps cost down.
     setCacheHeaders(res, 15, 15);
-    res.status(200).json({ date, slots, latest });
+    res.status(200).json({ date, latest });
   } catch (err) {
     // Don't surface raw exception messages to the client — they can leak
     // DB connection strings or driver internals. Sentry + pino retain

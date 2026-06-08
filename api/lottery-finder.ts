@@ -15,6 +15,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, isRetryableDbError, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
+import { readLastGood, writeLastGood } from './_lib/last-good-cache.js';
+import { readKeptTickers, addKeptTickers } from './_lib/kept-tickers.js';
 import logger from './_lib/logger.js';
 import {
   guardOwnerOrGuestEndpoint,
@@ -29,6 +31,8 @@ import { qualityAdjustedScore } from './_lib/lottery-inversion-bonus.js';
 import { tierFromQualityScore } from './_lib/lottery-tier.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import {
+  DB_RETRY_ATTEMPTS,
+  DB_RETRY_TIMEOUT_MS,
   MACRO_WINDOW_MS,
   MEGA_CLUSTER_MIN_DISTINCT_TICKERS,
   MIN_ALERT_ENTRY_PRICE,
@@ -37,6 +41,7 @@ import {
   REIGNITION_MIN_POST_GAP_FIRES,
   REIGNITION_TOP_N_PER_DAY,
 } from './_lib/constants.js';
+import { keptSuppressionSql } from './_lib/lottery-suppression.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 import {
   computeSuspiciousClusters,
@@ -271,6 +276,11 @@ const toIso = (v: DbTimestamp): string =>
 const num = (v: DbNullableNumeric): number | null =>
   v == null ? null : Number(v);
 
+// Last-good cache TTL. 6h covers a full trading day; the target date is
+// baked into every cache key so there is no cross-day leak (a stale prior
+// day's value can never be served for today — the key won't match).
+const DEFAULT_LAST_GOOD_TTL_SEC = 6 * 3600;
+
 /**
  * Run a "nice-to-have" SQL query under `withDbRetry`, but on a
  * retryable failure (timeout, fetch failed, etc. — see
@@ -290,24 +300,69 @@ const num = (v: DbNullableNumeric): number | null =>
  *
  * Spec: docs/superpowers/specs/ (no dedicated spec — hotfix to
  * SENTRY-EMERALD-DESERT-7J 2026-05-19).
+ *
+ * ── Last-good cache (2026-06-07, fix/feed-never-vanish) ────────────────
+ * When `cacheKey` is supplied, the helper participates in the server-side
+ * "last-good" cache (api/_lib/last-good-cache.ts):
+ *   - On SUCCESS  → OVERWRITE the cache with the fresh result, even when
+ *                   it is `[]`. A legit-empty result resolves successfully,
+ *                   so this path always wins and `readLastGood` is never
+ *                   consulted for it.
+ *   - On RETRYABLE ERROR → after the existing Sentry warning, READ
+ *                   last-good and, if present, serve it (distinct Sentry
+ *                   fingerprint so the served-last-good rate is observable)
+ *                   instead of `fallback`. If absent → existing `fallback`.
+ *
+ * SAFETY INVARIANT: last-good is read ONLY on the error branch. A
+ * genuinely-empty result RESOLVES (does not reject), so it can never reach
+ * the read path — this is what prevents resurrecting a row that legitimately
+ * left the result set. See the doc comment in last-good-cache.ts.
  */
+/**
+ * Options for {@link degradeOnTimeout}.
+ *
+ * - `retries` / `timeout` default to the shared {@link DB_RETRY_ATTEMPTS} /
+ *   {@link DB_RETRY_TIMEOUT_MS} budget (the per-attempt 20s cap was tuned for
+ *   the slowest reignition CTEs — window funcs over 5k+ daily fires —
+ *   SENTRY-EMERALD-DESERT-9J/9H; don't push the user-path timeout past 20s).
+ * - `cacheKey` opts the call into the server-side last-good cache; when
+ *   omitted the helper behaves exactly as before (no cache read or write).
+ */
+export interface DegradeOnTimeoutOptions {
+  /** Last-good cache key. Omit to disable cache participation. */
+  cacheKey?: string;
+  /** Last-good TTL (seconds). Defaults to {@link DEFAULT_LAST_GOOD_TTL_SEC}. */
+  cacheTtlSec?: number;
+  /** Retries in addition to the first attempt. Defaults to {@link DB_RETRY_ATTEMPTS}. */
+  retries?: number;
+  /** Per-attempt timeout (ms). Defaults to {@link DB_RETRY_TIMEOUT_MS}. */
+  timeout?: number;
+}
+
 export async function degradeOnTimeout<T>(
   fn: () => Promise<T>,
   fallback: T,
   context: string,
-  retries = 2,
-  // Bumped 10s→20s 2026-05-21. chainExtras + reignitedRows CTEs over a
-  // full trading day's lottery_finder_fires were hitting the 10s cap
-  // ~258 times/day (SENTRY-EMERALD-DESERT-9J, 9H — 517+ events in 2 days)
-  // and degrading the response to its empty-fallback. The 5-minute cron
-  // refresh on the frontend masks the user impact, but the alert noise
-  // was real. 20s gives the slowest reignition CTEs (window funcs over
-  // 5k+ fires) room to complete while still capping the user-facing
-  // request budget. Don't push past 20s on the user path.
-  perAttemptTimeoutMs = 20_000,
+  options: DegradeOnTimeoutOptions = {},
 ): Promise<T> {
+  const {
+    cacheKey,
+    cacheTtlSec,
+    retries = DB_RETRY_ATTEMPTS,
+    timeout = DB_RETRY_TIMEOUT_MS,
+  } = options;
   try {
-    return await withDbRetry(fn, retries, perAttemptTimeoutMs);
+    const fresh = await withDbRetry(fn, retries, timeout);
+    // SUCCESS: overwrite last-good with the fresh result — even when `[]`.
+    // Fire-and-forget; never blocks or throws into the request path.
+    if (cacheKey) {
+      void writeLastGood(
+        cacheKey,
+        fresh,
+        cacheTtlSec ?? DEFAULT_LAST_GOOD_TTL_SEC,
+      );
+    }
+    return fresh;
   } catch (err) {
     // Only swallow retryable-class failures. SQL syntax or type
     // errors mean the query is broken — those must surface as 500.
@@ -319,6 +374,25 @@ export async function degradeOnTimeout<T>(
         errMessage: err instanceof Error ? err.message : String(err),
       },
     });
+    // RETRYABLE ERROR only: try to serve the last successful result so the
+    // "Hot Right Now" section / badges don't blank for this poll. This
+    // branch is unreachable for a legit-empty result (that RESOLVES above),
+    // so a genuinely-removed row can never be resurrected here.
+    if (cacheKey) {
+      const lastGood = await readLastGood<T>(cacheKey);
+      if (lastGood != null) {
+        Sentry.captureMessage(`lottery-finder: ${context} served last-good`, {
+          level: 'warning',
+          // DISTINCT fingerprint from the 'degraded to fallback' message
+          // above so the served-last-good rate is independently
+          // observable in Sentry.
+          fingerprint: ['lottery-finder', 'served-last-good', context],
+          tags: { degrade_mode: 'served-last-good', context },
+          extra: { context },
+        });
+        return lastGood;
+      }
+    }
     return fallback;
   }
 }
@@ -420,6 +494,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const reignitionWindowEnd = windowEnd;
 
     const db = getDb();
+
+    // MONOTONIC Q1/Q2 SUPPRESSION (defense-in-depth for the server feed).
+    // `inversion_quintile` on lottery_ticker_stats is recomputed by the
+    // detect-lottery-fires cron and can FLIP mid-session, so a ticker shown
+    // earlier (quintile > 2) can suddenly be suppressed — its chains vanish
+    // from the feed. We keep a per-day DB record (lottery_kept_tickers) of
+    // every ever-shown ticker and also un-suppress those. `showAll`
+    // short-circuits suppression entirely, so there's no need to read the set
+    // in that path. DB-down → `[]` → predicate's `= ANY('{}'::text[])` term
+    // matches nothing → exact pre-existing live behavior (zero regression).
+    // See api/_lib/kept-tickers.ts.
+    //
+    // (#6) This is now a DB read, not Redis. The kept-set is bound into the
+    // `rows` + `total` query predicates, so it MUST be resolved before those
+    // templates are built — and the feed's query DISPATCH order is itself a
+    // tested invariant (rows=call[0], total=call[1], chainExtras=call[2], …),
+    // which rules out resolving it concurrently inside the query thunks (that
+    // would reorder dispatch). We therefore start the round-trip here and
+    // await it just before the Promise.all. It is a single PK point-lookup on
+    // (trade_date) — not a serial heavy round-trip — and `showAll`
+    // short-circuits it away entirely.
+    const keptTickers = showAll ? [] : await readKeptTickers(targetDate);
 
     // Two queries in parallel: (1) the row payload bounded by LIMIT,
     // and (2) the total matching count BEFORE limit so the UI can
@@ -560,7 +656,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
+          AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -659,7 +755,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
+          AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -757,7 +853,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          AND (${showAll ?? false}::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2)
+          AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
         OFFSET ${offset}
@@ -808,17 +904,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         -- the UI hidden-by-quality-filter hint.
         SELECT
           COUNT(*) FILTER (
-            WHERE ${showAll ?? false}::boolean
-              OR s.inversion_quintile IS NULL
-              OR s.inversion_quintile > 2
+            WHERE ${keptSuppressionSql(db, 'ranked', showAll, keptTickers)}
           )::int AS total,
           COUNT(*) FILTER (
-            WHERE NOT (
-              ${showAll ?? false}::boolean
-              OR s.inversion_quintile IS NULL
-              OR s.inversion_quintile > 2
-            )
-          )::int AS suppressed
+            WHERE NOT (${keptSuppressionSql(db, 'ranked', showAll, keptTickers)})
+          )::int AS suppressed,
+          -- PAGE-INDEPENDENT ever-shown accumulation source (#1). The ranked
+          -- CTE scans EVERY chain for the day (no LIMIT/OFFSET), so this
+          -- captures every currently-qualifying ticker -- not just the page-0
+          -- slice -- closing the gap where a ticker flipping Q1/Q2 past row 50
+          -- was never recorded and still vanished. The predicate matches the
+          -- prior page-scoped derivation EXACTLY: inversion_quintile > 2 (NULL
+          -- excluded by > 2, mirroring the old quintile != null AND > 2).
+          -- This rides the existing COUNT round-trip (no extra query, #6).
+          COALESCE(
+            array_agg(DISTINCT ranked.underlying_symbol)
+              FILTER (WHERE s.inversion_quintile > 2),
+            '{}'::text[]
+          ) AS ever_qualifying
         FROM ranked
         LEFT JOIN lottery_ticker_stats s ON s.ticker = ranked.underlying_symbol
         WHERE rn = 1
@@ -911,6 +1014,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as ChainExtrasRow[],
         'chainExtras',
+        { cacheKey: `lf:lg:chainExtras:${targetDate}` },
       ),
       // Per-minute distinct-ticker count — fuels the MEGA-CLUSTER
       // badge. Truncates trigger_time_ct to the 1-min bucket and
@@ -933,6 +1037,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as ClusterByMinuteRow[],
         'clusterByMinute',
+        { cacheKey: `lf:lg:cluster:${targetDate}` },
       ),
       // Silent Boom chain-IDs for the date — drives the DUAL FLAG
       // badge. When the same chain-day appears in BOTH
@@ -953,6 +1058,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as { option_chain_id: string }[],
         'sbChains',
+        { cacheKey: `lf:lg:sbChains:${targetDate}` },
       ),
       // Pinned "Hot Right Now" rows — full row payload (same SELECT
       // shape as the main fires query) for the day's top-N reignited
@@ -1118,6 +1224,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       `,
         [] as FireRow[],
         'reignitedRows',
+        {
+          // Filter-scoped key: the reignitedRows payload applies the user's
+          // structural filters, so last-good must be partitioned by them to
+          // avoid serving one filter view's rows under another. windowEnd /
+          // at / minute are DELIBERATELY omitted — they're a cumulative,
+          // moving cutoff; keying on them would near-guarantee cache misses
+          // and is wrong for "last good".
+          cacheKey: `lf:lg:reignited:${targetDate}:${ticker ?? ''}:${reload ?? ''}:${cheapCallPm ?? ''}:${mode ?? ''}:${optionType ?? ''}:${tod ?? ''}`,
+        },
       ),
       // Day-scoped cluster-candidate query — ALL 0DTE fires for the date,
       // minimal columns. Fed to computeSuspiciousClusters to detect
@@ -1143,7 +1258,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ),
     ])) as [
       FireRow[],
-      { total: number; suppressed: number }[],
+      { total: number; suppressed: number; ever_qualifying: string[] }[],
       ChainExtrasRow[],
       ClusterByMinuteRow[],
       { option_chain_id: string }[],
@@ -1153,6 +1268,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const total = totalRows[0]?.total ?? 0;
     const suppressedCount = totalRows[0]?.suppressed ?? 0;
+
+    // MONOTONIC ACCUMULATION (#1, page-independent): remember every ticker
+    // that is CURRENTLY shown BY the live quintile gate (quintile > 2) so a
+    // future quintile flip into Q1/Q2 can't hide it.
+    //
+    // The source is the COUNT query's `ever_qualifying` column —
+    // `array_agg(DISTINCT ranked.underlying_symbol) FILTER (WHERE
+    // s.inversion_quintile > 2)` over the FULL `ranked` set (no LIMIT/OFFSET).
+    // This fixes the prior bug where the set was derived from `rows` (the
+    // page-0 LIMIT/OFFSET slice): a ticker that flipped Q1/Q2 while sitting
+    // past row 50 was never recorded and still vanished. Now a single request
+    // captures EVERY currently-qualifying ticker for the day.
+    //
+    // The predicate matches the old page-scoped derivation EXACTLY:
+    //   - quintile > 2 → recorded (the live qualification gate).
+    //   - NULL-quintile cold-start tickers → excluded (`> 2` is false for
+    //     NULL); never suppressed anyway, so nothing to protect.
+    //   - tickers kept ONLY because they're already in the set → NOT recorded
+    //     off the kept-set (the predicate reads the LIVE quintile, never the
+    //     kept-set itself), so accumulation is non-circular.
+    // Fire-and-forget; never blocks or throws into the response path.
+    if (!showAll) {
+      const everQualifying = totalRows[0]?.ever_qualifying ?? [];
+      void addKeptTickers(targetDate, everQualifying);
+    }
 
     // Build the suspicious-cluster lookup from the day-scoped 0DTE scan.
     // clusterLookup is keyed by clusterKey(symbol, side) with value =

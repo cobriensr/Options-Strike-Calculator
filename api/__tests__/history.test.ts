@@ -9,7 +9,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: {
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
@@ -33,7 +33,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 import handler from '../history.js';
 import { guardOwnerOrGuestEndpoint, schwabFetch } from '../_lib/api-helpers.js';
-import { redis } from '../_lib/schwab.js';
+import { redis } from '../_lib/redis.js';
 
 /**
  * Create a candle at a specific ET time on a given date.

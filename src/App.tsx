@@ -10,6 +10,8 @@ import {
 } from 'react';
 import { theme } from './themes';
 import { buildChevronUrl } from './utils/ui-utils';
+import { handleStaleChunk } from './utils/handle-stale-chunk';
+import { useViewMode } from './hooks/useViewMode';
 import { useIvInputs } from './hooks/useIvInputs';
 import { useSpotInputs } from './hooks/useSpotInputs';
 import { useStrategyInputs } from './hooks/useStrategyInputs';
@@ -63,6 +65,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import GatedSection from './components/GatedSection';
 import LazySection from './components/LazySection';
 import AppHeader from './components/AppHeader';
+import { OptionsAlertsView } from './components/OptionsAlerts';
 import AlertBanner from './components/AlertBanner';
 import IntervalBAAlertBanner from './components/IntervalBAAlertBanner';
 import { IntervalBAFeed } from './components/IntervalBAFeed/IntervalBAFeed';
@@ -84,21 +87,6 @@ import SkeletonSection from './components/SkeletonSection';
 import UpdateAvailableBanner from './components/UpdateAvailable/UpdateAvailableBanner';
 import { Analytics } from '@vercel/analytics/react';
 import { SpeedInsights } from '@vercel/speed-insights/react';
-
-// Wrap lazy dynamic imports so that a stale SW-cached chunk after a deploy
-// prompts the user to reload instead of silently failing inside Suspense.
-// Matches the pattern in BWBSection/IronCondorSection export buttons.
-function handleStaleChunk(err: unknown): never {
-  const isChunkError =
-    err instanceof TypeError &&
-    /dynamically imported module|fetch/i.test(err.message);
-  if (isChunkError) {
-    if (confirm('A new version is available. Reload now?')) {
-      globalThis.location.reload();
-    }
-  }
-  throw err;
-}
 
 const ChartAnalysis = lazy(() =>
   import('./components/ChartAnalysis').catch(handleStaleChunk),
@@ -159,11 +147,6 @@ const BWBCalculator = lazy(() =>
 const Regime0dte = lazy(() =>
   import('./components/Regime0dte').catch(handleStaleChunk),
 );
-const LotteryFinderSection = lazy(() =>
-  import('./components/LotteryFinder')
-    .then((m) => ({ default: m.LotteryFinderSection }))
-    .catch(handleStaleChunk),
-);
 const GreekHeatmapSection = lazy(() =>
   import('./components/GreekHeatmap')
     .then((m) => ({ default: m.GreekHeatmapSection }))
@@ -172,11 +155,6 @@ const GreekHeatmapSection = lazy(() =>
 const GexbotSection = lazy(() =>
   import('./components/Gexbot')
     .then((m) => ({ default: m.GexbotSection }))
-    .catch(handleStaleChunk),
-);
-const SilentBoomSection = lazy(() =>
-  import('./components/SilentBoom')
-    .then((m) => ({ default: m.SilentBoomSection }))
     .catch(handleStaleChunk),
 );
 const PeriscopeLotteryPanel = lazy(() =>
@@ -685,6 +663,7 @@ export default function StrikeCalculator() {
   // boolean and `<GatedSection gate={...}>` can read it directly.
   const hasMarketOrSnapshot = market.hasData || !!historySnapshot;
   const hasMarketContext = isAuthenticated && hasMarketOrSnapshot;
+  const { view, setView } = useViewMode();
 
   // Single source of truth: getPanelRegistry. The same registry feeds
   // the section-nav menu, the panel-prefs modal, AND the home-page
@@ -1129,21 +1108,6 @@ export default function StrikeCalculator() {
           ),
         ],
         [
-          'sec-lottery-finder',
-          () => (
-            <GatedSection
-              gate={hasMarketContext}
-              id="sec-lottery-finder"
-              label="Lottery Finder"
-              fallback={<SkeletonSection lines={5} />}
-            >
-              <LotteryFinderSection
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
-            </GatedSection>
-          ),
-        ],
-        [
           'sec-greek-heatmap',
           () => (
             <GatedSection
@@ -1153,21 +1117,6 @@ export default function StrikeCalculator() {
               fallback={<SkeletonSection lines={5} />}
             >
               <GreekHeatmapSection
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
-            </GatedSection>
-          ),
-        ],
-        [
-          'sec-silent-boom',
-          () => (
-            <GatedSection
-              gate={hasMarketContext}
-              id="sec-silent-boom"
-              label="Silent Boom"
-              fallback={<SkeletonSection lines={5} />}
-            >
-              <SilentBoomSection
                 marketOpen={market.data.quotes?.marketOpen ?? false}
               />
             </GatedSection>
@@ -1472,8 +1421,8 @@ export default function StrikeCalculator() {
     ],
   );
 
-  return (
-    <CollapseAllContext.Provider value={collapseSignal}>
+  const topBars = (
+    <>
       <AlertBanner
         alerts={alertState.alerts}
         onAcknowledge={alertState.acknowledge}
@@ -1484,95 +1433,144 @@ export default function StrikeCalculator() {
         muted={intervalBAMute.muted}
         onToggleMute={intervalBAMute.toggle}
       />
+    </>
+  );
+
+  const appHeader = (
+    <AppHeader
+      accessMode={accessMode}
+      isOwner={isOwner}
+      isBacktestMode={isBacktestMode}
+      market={market}
+      historyData={historyData}
+      vix={vix}
+      vixFileInputRef={vixFileInputRef}
+      vixHandleFileUpload={vixHandleFileUpload}
+      onVixCsvClick={handleVixCsvClick}
+      collapseSignal={collapseSignal}
+      onCollapseAll={handleCollapseAll}
+      onRunMigrations={handleRunMigrations}
+      migrateRunning={migrateRunning}
+      onBackfillFeatures={handleBackfillFeatures}
+      backfillRunning={backfillRunning}
+      darkMode={darkMode}
+      onDarkModeToggle={handleDarkModeToggle}
+      onOpenPanelPrefs={() => setPanelPrefsOpen(true)}
+      view={view}
+      onViewChange={setView}
+    />
+  );
+
+  const prefsModal = (
+    <PanelPrefsModal
+      isOpen={panelPrefsOpen}
+      onClose={() => setPanelPrefsOpen(false)}
+      panelPrefs={panelPrefs}
+      isAuthenticated={isAuthenticated}
+      hasMarketOrSnapshot={hasMarketOrSnapshot}
+    />
+  );
+
+  const notificationPrompt = market.hasData ? (
+    <NotificationPermission
+      permission={alertState.notificationPermission}
+      onRequest={async () => {
+        // Phase 3 path: bump Notification.permission so the
+        // in-tab notifications fire from the polling hooks.
+        await alertState.requestPermission();
+        // v2 path: also register a Web Push subscription so
+        // alerts can fire with the tab closed / minimized /
+        // mobile PWA backgrounded. Silent no-op when
+        // VITE_VAPID_PUBLIC_KEY is unset (v2 dormant).
+        await pushSub.subscribe();
+      }}
+    />
+  ) : null;
+
+  const isAlerts = view === 'alerts';
+
+  return (
+    <CollapseAllContext.Provider value={collapseSignal}>
       <div
         id="app-shell"
-        className="text-primary min-h-dvh font-serif transition-[background-color,color] duration-[250ms]"
+        className={
+          isAlerts
+            ? 'text-primary flex h-dvh flex-col overflow-hidden font-serif transition-[background-color,color] duration-[250ms]'
+            : 'text-primary min-h-dvh font-serif transition-[background-color,color] duration-[250ms]'
+        }
       >
-        <a
-          href="#results"
-          className="bg-accent absolute top-0 -left-[9999px] z-[100] p-[8px_16px] font-sans text-sm text-white"
-          onFocus={(e) => {
-            (e.target as HTMLElement).style.left = '0';
-          }}
-          onBlur={(e) => {
-            (e.target as HTMLElement).style.left = '-9999px';
-          }}
-        >
-          Skip to results
-        </a>
+        {isAlerts ? (
+          <a
+            href="#options-alerts-main"
+            className="bg-accent absolute top-0 -left-[9999px] z-[100] p-[8px_16px] font-sans text-sm text-white"
+            onFocus={(e) => {
+              (e.target as HTMLElement).style.left = '0';
+            }}
+            onBlur={(e) => {
+              (e.target as HTMLElement).style.left = '-9999px';
+            }}
+          >
+            Skip to options alerts
+          </a>
+        ) : (
+          <a
+            href="#results"
+            className="bg-accent absolute top-0 -left-[9999px] z-[100] p-[8px_16px] font-sans text-sm text-white"
+            onFocus={(e) => {
+              (e.target as HTMLElement).style.left = '0';
+            }}
+            onBlur={(e) => {
+              (e.target as HTMLElement).style.left = '-9999px';
+            }}
+          >
+            Skip to results
+          </a>
+        )}
 
-        <AppHeader
-          accessMode={accessMode}
-          isOwner={isOwner}
-          isBacktestMode={isBacktestMode}
-          market={market}
-          historyData={historyData}
-          vix={vix}
-          vixFileInputRef={vixFileInputRef}
-          vixHandleFileUpload={vixHandleFileUpload}
-          onVixCsvClick={handleVixCsvClick}
-          collapseSignal={collapseSignal}
-          onCollapseAll={handleCollapseAll}
-          onRunMigrations={handleRunMigrations}
-          migrateRunning={migrateRunning}
-          onBackfillFeatures={handleBackfillFeatures}
-          backfillRunning={backfillRunning}
-          darkMode={darkMode}
-          onDarkModeToggle={handleDarkModeToggle}
-          onOpenPanelPrefs={() => setPanelPrefsOpen(true)}
-        />
+        {topBars}
 
-        <PanelPrefsModal
-          isOpen={panelPrefsOpen}
-          onClose={() => setPanelPrefsOpen(false)}
-          panelPrefs={panelPrefs}
-          isAuthenticated={isAuthenticated}
-          hasMarketOrSnapshot={hasMarketOrSnapshot}
-        />
+        {appHeader}
 
-        <div className="lg:flex lg:items-start">
-          <SectionNav
-            sections={navSections}
-            orientation="vertical"
-            bottomSlot={<AccessKeyButton />}
-          />
+        {prefsModal}
 
-          <div className="lg:min-w-0 lg:flex-1">
-            <SectionNav sections={navSections} orientation="horizontal" />
+        {isAlerts ? (
+          <>
+            {notificationPrompt}
+            <OptionsAlertsView
+              marketOpen={market.data.quotes?.marketOpen ?? false}
+              hasMarketContext={hasMarketContext}
+            />
+          </>
+        ) : (
+          <div className="lg:flex lg:items-start">
+            <SectionNav
+              sections={navSections}
+              orientation="vertical"
+              bottomSlot={<AccessKeyButton />}
+            />
 
-            {market.hasData && (
-              <NotificationPermission
-                permission={alertState.notificationPermission}
-                onRequest={async () => {
-                  // Phase 3 path: bump Notification.permission so the
-                  // in-tab notifications fire from the polling hooks.
-                  await alertState.requestPermission();
-                  // v2 path: also register a Web Push subscription so
-                  // alerts can fire with the tab closed / minimized /
-                  // mobile PWA backgrounded. Silent no-op when
-                  // VITE_VAPID_PUBLIC_KEY is unset (v2 dormant).
-                  await pushSub.subscribe();
-                }}
-              />
-            )}
+            <div className="lg:min-w-0 lg:flex-1">
+              <SectionNav sections={navSections} orientation="horizontal" />
 
-            <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
-              {/* Subtitle — below sticky header */}
-              <p className="text-secondary mb-1 text-[15px] leading-normal">
-                Black-Scholes approximation for delta-based strike placement
-              </p>
-              <p className="text-tertiary mb-8 text-xs italic">
-                Per Unusual Whales data policy, no market data, raw or derived,
-                is publicly available on this site.
-              </p>
+              {notificationPrompt}
 
-              <main>
-                <EventDayWarning
-                  selectedDate={vix.selectedDate}
-                  liveEvents={market.data.events?.events}
-                />
+              <div className="mx-auto max-w-[660px] px-5 pt-6 pb-12 lg:max-w-6xl">
+                {/* Subtitle — below sticky header */}
+                <p className="text-secondary mb-1 text-[15px] leading-normal">
+                  Black-Scholes approximation for delta-based strike placement
+                </p>
+                <p className="text-tertiary mb-8 text-xs italic">
+                  Per Unusual Whales data policy, no market data, raw or
+                  derived, is publicly available on this site.
+                </p>
 
-                {/*
+                <main>
+                  <EventDayWarning
+                    selectedDate={vix.selectedDate}
+                    liveEvents={market.data.events?.events}
+                  />
+
+                  {/*
                   Two-level panel render — outer iterates resolved
                   groups (registry order, possibly user-reordered);
                   inner iterates panels within each group (registry
@@ -1589,18 +1587,19 @@ export default function StrikeCalculator() {
 
                   Spec: docs/superpowers/specs/panel-reordering-2026-05-17.md
                 */}
-                <PanelRouter
-                  panelMap={panelMap}
-                  resolvedGroups={resolvedGroups}
-                  resolvedPanelsByGroup={resolvedPanelsByGroup}
-                  isHidden={panelPrefs.isHidden}
-                />
-              </main>
+                  <PanelRouter
+                    panelMap={panelMap}
+                    resolvedGroups={resolvedGroups}
+                    resolvedPanelsByGroup={resolvedPanelsByGroup}
+                    isHidden={panelPrefs.isHidden}
+                  />
+                </main>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
-      <BackToTop />
+      {!isAlerts && <BackToTop />}
       <UpdateAvailableBanner pushedUp={historySnapshot != null} />
       {historySnapshot != null && (
         <BacktestDiag

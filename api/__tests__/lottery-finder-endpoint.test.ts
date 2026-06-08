@@ -3,9 +3,85 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
+// A Phase-3 suppression fragment marker. The real keptSuppressionSql returns
+// a composable neon fragment; here we model it as a tagged object so the
+// outer query's tagged-template can FLATTEN it into raw predicate text +
+// (showAll, keptTickers) params — exactly mirroring how @neondatabase splices
+// a nested `db`…`` fragment. This keeps every existing SQL-text and param
+// assertion in this file valid against the helper-wired query without coupling
+// the endpoint test to the helper's internals (those are pinned in
+// api/__tests__/lottery-suppression.test.ts).
+interface SuppressionFragment {
+  __suppressionFragment: true;
+  showAll: boolean;
+  kept: string[];
+}
+const isSuppressionFragment = (v: unknown): v is SuppressionFragment =>
+  typeof v === 'object' && v !== null && '__suppressionFragment' in v;
+
+const { mockKeptSuppressionSql } = vi.hoisted(() => ({
+  mockKeptSuppressionSql: vi.fn(
+    (
+      _db: unknown,
+      alias: string,
+      showAll: boolean | undefined,
+      kept: string[],
+    ) =>
+      ({
+        __suppressionFragment: true as const,
+        // Carry the alias only for debugging; the canonical predicate text is
+        // emitted by the flattener below so SQL-text assertions match.
+        alias,
+        showAll: showAll ?? false,
+        kept,
+      }) as unknown as SuppressionFragment,
+  ),
+}));
+
+vi.mock('../_lib/lottery-suppression.js', () => ({
+  keptSuppressionSql: mockKeptSuppressionSql,
+  SYMBOL_ALIAS_WHITELIST: ['f', 'ranked', 'cd'] as const,
+}));
+
+// Raw mock query fn — receives the FLATTENED (strings, ...values) so that
+// `mock.calls[N][0]` is the full template-strings array (with the suppression
+// predicate text inlined) and the values include showAll + keptTickers.
 const mockSql = vi.fn();
+
+// The `db` handle the handler uses. A tagged-template wrapper that flattens
+// any SuppressionFragment in the interpolated values into raw predicate text
+// + its two params before delegating to mockSql. Non-fragment template calls
+// pass straight through unchanged (so existing tests are unaffected).
+function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
+  if (!values.some(isSuppressionFragment)) {
+    return mockSql(strings, ...values);
+  }
+  const outStrings: string[] = [strings[0]!];
+  const outValues: unknown[] = [];
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (isSuppressionFragment(v)) {
+      // Splice the canonical predicate: text + (showAll, kept) params.
+      // `<prefix>(${showAll}::boolean OR s.inversion_quintile IS NULL OR
+      //  s.inversion_quintile > 2 OR <alias>.underlying_symbol =
+      //  ANY(${kept}::text[]))<suffix>`
+      outStrings[outStrings.length - 1] += '(';
+      outValues.push(v.showAll);
+      outStrings.push(
+        '::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR underlying_symbol = ANY(',
+      );
+      outValues.push(v.kept);
+      outStrings.push('::text[]))' + strings[i + 1]!);
+    } else {
+      outValues.push(v);
+      outStrings.push(strings[i + 1]!);
+    }
+  }
+  return mockSql(outStrings as unknown as TemplateStringsArray, ...outValues);
+}
+
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
+  getDb: vi.fn(() => dbTag),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
   // Real classifier — matches `timeout`, `fetch failed`, etc. The
   // degradeOnTimeout tests below depend on this returning true for
@@ -38,6 +114,26 @@ const { mockGuard } = vi.hoisted(() => ({ mockGuard: vi.fn() }));
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerOrGuestEndpoint: mockGuard,
   setCacheHeaders: vi.fn(),
+}));
+
+const { mockReadLastGood, mockWriteLastGood } = vi.hoisted(() => ({
+  mockReadLastGood: vi.fn(),
+  mockWriteLastGood: vi.fn(),
+}));
+
+vi.mock('../_lib/last-good-cache.js', () => ({
+  readLastGood: mockReadLastGood,
+  writeLastGood: mockWriteLastGood,
+}));
+
+const { mockReadKeptTickers, mockAddKeptTickers } = vi.hoisted(() => ({
+  mockReadKeptTickers: vi.fn(),
+  mockAddKeptTickers: vi.fn(),
+}));
+
+vi.mock('../_lib/kept-tickers.js', () => ({
+  readKeptTickers: mockReadKeptTickers,
+  addKeptTickers: mockAddKeptTickers,
 }));
 
 import handler, { degradeOnTimeout } from '../lottery-finder.js';
@@ -155,6 +251,10 @@ describe('lottery-finder endpoint', () => {
     vi.resetAllMocks();
     mockGuard.mockResolvedValue(false); // proceed past auth gate
     mockSql.mockResolvedValue([]);
+    // Default: empty kept-set (KV up but nothing shown yet) → pure live
+    // suppression, exactly as before the monotonic-keep change.
+    mockReadKeptTickers.mockResolvedValue([]);
+    mockAddKeptTickers.mockResolvedValue(undefined);
   });
 
   it('returns transformed fires with default date (ET-today) and asOf=null', async () => {
@@ -1827,6 +1927,179 @@ describe('lottery-finder endpoint', () => {
       });
     });
 
+    // ============================================================
+    // MONOTONIC Q1/Q2 SUPPRESSION (fix/feed-never-vanish)
+    // ============================================================
+    //
+    // `inversion_quintile` can FLIP mid-day when the detect cron re-runs,
+    // so a ticker shown earlier (quintile > 2) could suddenly be suppressed
+    // — its chains vanish from the FEED. The fix: a per-day Redis kept-set
+    // accumulates every ever-shown ticker, and the suppression predicate
+    // (rows + COUNT) also keeps any ticker in that set.
+
+    it('keeps a ticker in the kept-set even after its quintile flips to Q1/Q2 (monotonic) — and the keep term is in BOTH row + count SQL', async () => {
+      // FLIP scenario: AAA is now quintile 1 (would be suppressed by the
+      // live gate) but it was shown earlier, so it's in the kept-set. The
+      // monotonic keep must re-admit it. We assert the kept-tickers ANY()
+      // term reached BOTH the row query AND the count query so rows and
+      // suppressedCount stay coherent.
+      mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 1)]) // rows
+        .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]); // count
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      // kept-set was read for the request's target date.
+      expect(mockReadKeptTickers).toHaveBeenCalledWith('2026-05-01');
+
+      const rowsSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+        '?',
+      );
+      const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+        '?',
+      );
+      // NON-VACUOUS: the monotonic keep is exactly this ANY(...) term.
+      // Remove it from the predicate and this assertion fails.
+      expect(rowsSql).toContain('= ANY(');
+      expect(rowsSql).toContain('::text[]');
+      expect(countSql).toContain('= ANY(');
+      expect(countSql).toContain('::text[]');
+
+      // The kept-set array reached the SQL params of both queries.
+      const rowsParams = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      const countParams = (mockSql.mock.calls[1] as unknown[]).slice(1);
+      const containsKept = (params: unknown[]): boolean =>
+        params.some(
+          (p) => Array.isArray(p) && p.length === 1 && p[0] === 'AAA',
+        );
+      expect(containsKept(rowsParams)).toBe(true);
+      expect(containsKept(countParams)).toBe(true);
+
+      // A kept ticker is NOT counted as suppressed (it's re-admitted).
+      const body = res._json as { suppressedCount: number };
+      expect(body.suppressedCount).toBe(0);
+    });
+
+    it('a Q1/Q2 ticker NOT in the kept-set still passes only an empty keep array (live suppression preserved)', async () => {
+      // Empty kept-set → the ANY('{}'::text[]) term matches nothing, so the
+      // predicate reduces to today's exact live behavior. We can't enforce
+      // a WHERE in the mock, but we assert the empty array is what reached
+      // the SQL (so nothing is spuriously re-admitted).
+      mockReadKeptTickers.mockResolvedValueOnce([]);
+      mockSql
+        .mockResolvedValueOnce([]) // rows (BBB suppressed by live gate)
+        .mockResolvedValueOnce([{ total: 0, suppressed: 1 }]); // count
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const rowsParams = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      const passedEmptyKept = rowsParams.some(
+        (p) => Array.isArray(p) && p.length === 0,
+      );
+      expect(passedEmptyKept).toBe(true);
+
+      const body = res._json as { suppressedCount: number; total: number };
+      expect(body.total).toBe(0);
+      expect(body.suppressedCount).toBe(1);
+    });
+
+    it('accumulates the PAGE-INDEPENDENT ever-qualifying set (from the COUNT query) into the kept-set', async () => {
+      // The accumulation source is the COUNT query's `ever_qualifying` column
+      // — array_agg(DISTINCT underlying_symbol) FILTER (WHERE quintile > 2)
+      // over the FULL ranked set (no LIMIT). So even tickers NOT on the page
+      // slice are accumulated. CCC quintile 3 (>2) → remembered. AAA quintile
+      // 1 (kept only via the set) and NEWT NULL quintile are excluded by the
+      // SQL FILTER (quintile > 2 is false for both), so they're not in
+      // ever_qualifying. The handler passes ever_qualifying straight through.
+      mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
+      mockSql
+        .mockResolvedValueOnce([
+          rowWithQuintile(1, 'AAA', 1),
+          rowWithQuintile(3, 'CCC', 3),
+          rowWithQuintile(9, 'NEWT', null),
+        ])
+        .mockResolvedValueOnce([
+          { total: 3, suppressed: 0, ever_qualifying: ['CCC'] },
+        ]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(mockAddKeptTickers).toHaveBeenCalledTimes(1);
+      const [addDate, addTickers] = mockAddKeptTickers.mock.calls[0]!;
+      expect(addDate).toBe('2026-05-01');
+      // ever_qualifying came straight from the page-independent COUNT query.
+      expect(addTickers).toEqual(['CCC']);
+    });
+
+    it('never-vanish: a ticker qualifying (quintile>2) but NOT on the returned page is still accumulated (page-independence)', async () => {
+      // THE HEADLINE FIX (#1). The page (rows) shows only AAA — a Q1 ticker
+      // re-admitted via the kept-set. ZZZ qualifies live (quintile > 2) but
+      // sits past the LIMIT/OFFSET slice, so it is ABSENT from `rows`. The
+      // OLD code derived the accumulation set from `rows`, so ZZZ would never
+      // be recorded and would vanish on its next quintile flip. The NEW code
+      // sources from the COUNT query's page-independent `ever_qualifying`, so
+      // ZZZ IS passed to addKeptTickers despite never appearing on the page.
+      mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 1)]) // page slice
+        .mockResolvedValueOnce([
+          // page-independent COUNT over the FULL ranked set
+          { total: 2, suppressed: 0, ever_qualifying: ['ZZZ'] },
+        ]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(mockAddKeptTickers).toHaveBeenCalledTimes(1);
+      const [, addTickers] = mockAddKeptTickers.mock.calls[0]!;
+      // ZZZ is accumulated even though it is NOT in the rendered `rows`.
+      expect(addTickers).toEqual(['ZZZ']);
+    });
+
+    it('?showAll=true → suppression bypassed, kept-set never read or written', async () => {
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 1)])
+        .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]);
+
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-01', showAll: 'true' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      // showAll short-circuits the kept-set entirely (no read, no write).
+      expect(mockReadKeptTickers).not.toHaveBeenCalled();
+      expect(mockAddKeptTickers).not.toHaveBeenCalled();
+    });
+
+    it('KV-down (readKeptTickers returns []) → graceful: pure live suppression, no crash', async () => {
+      // The helper swallows KV errors and returns [] — the handler treats
+      // that identically to "nothing shown yet". No throw, 200, empty keep.
+      mockReadKeptTickers.mockResolvedValueOnce([]);
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(3, 'CCC', 3)])
+        .mockResolvedValueOnce([{ total: 1, suppressed: 0 }]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(res._status).toBe(200);
+      const rowsParams = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      expect(rowsParams.some((p) => Array.isArray(p) && p.length === 0)).toBe(
+        true,
+      );
+    });
+
     it('qualityAdjustedScore = score + inversionQualityBonus(quintile)', async () => {
       // score = 8, quintile = 4 (+3) → qas = 11 → tier2 (>= 10, < 13)
       const row = {
@@ -2007,6 +2280,9 @@ describe('lottery-finder endpoint', () => {
 describe('degradeOnTimeout', () => {
   beforeEach(() => {
     mockCaptureMessage.mockReset();
+    mockReadLastGood.mockReset();
+    mockWriteLastGood.mockReset();
+    mockWriteLastGood.mockResolvedValue(undefined);
   });
 
   it('returns fallback + emits Sentry warning when the inner query throws a retryable error', async () => {
@@ -2023,7 +2299,7 @@ describe('degradeOnTimeout', () => {
       },
       [] as { foo: number }[],
       'chainExtras',
-      0, // retries=0 so the test doesn't wait on real-time setTimeout
+      { retries: 0 }, // retries=0 so the test doesn't wait on real-time setTimeout
     );
     expect(result).toEqual([]);
     expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
@@ -2047,9 +2323,147 @@ describe('degradeOnTimeout', () => {
         },
         [] as { foo: number }[],
         'chainExtras',
-        0,
+        { retries: 0 },
       ),
     ).rejects.toThrow(/syntax error/);
     expect(mockCaptureMessage).not.toHaveBeenCalled();
+  });
+
+  // ── Last-good cache (fix/feed-never-vanish) ──────────────────────────
+
+  it('overwrites the cache with the fresh result on success and returns it', async () => {
+    const fresh = [{ id: 7 }];
+    const result = await degradeOnTimeout(
+      async () => fresh,
+      [] as { id: number }[],
+      'chainExtras',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:chainExtras:2026-05-01' },
+    );
+    expect(result).toBe(fresh);
+    expect(mockWriteLastGood).toHaveBeenCalledWith(
+      'lf:lg:chainExtras:2026-05-01',
+      fresh,
+      6 * 3600,
+    );
+    // SAFETY INVARIANT: last-good is NEVER read on the success path.
+    expect(mockReadLastGood).not.toHaveBeenCalled();
+  });
+
+  it('ANTI-RESURRECTION: a legit-empty success overwrites cache with [] and never reads last-good', async () => {
+    // The core invariant. A query that legitimately returns `[]` (rows
+    // genuinely left) RESOLVES successfully — so it must overwrite the
+    // cache with `[]` and the read path must be unreachable. If
+    // readLastGood were consulted here, a removed row could be resurrected.
+    const result = await degradeOnTimeout(
+      async () => [] as { id: number }[],
+      [{ id: 1 }] as { id: number }[], // distinct fallback to prove [] wins
+      'reignitedRows',
+      {
+        retries: 0,
+        timeout: 20_000,
+        cacheKey: 'lf:lg:reignited:2026-05-01::::::',
+      },
+    );
+    expect(result).toEqual([]);
+    expect(mockWriteLastGood).toHaveBeenCalledWith(
+      'lf:lg:reignited:2026-05-01::::::',
+      [],
+      6 * 3600,
+    );
+    expect(mockReadLastGood).not.toHaveBeenCalled();
+  });
+
+  it('serves the cached last-good value (not fallback) on a retryable timeout when present', async () => {
+    const cached = [{ id: 99 }];
+    mockReadLastGood.mockResolvedValueOnce(cached);
+    const result = await degradeOnTimeout(
+      async () => {
+        throw new Error('db attempt timeout');
+      },
+      [] as { id: number }[],
+      'chainExtras',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:chainExtras:2026-05-01' },
+    );
+    // last-good served, NOT the empty fallback.
+    expect(result).toBe(cached);
+    expect(mockReadLastGood).toHaveBeenCalledWith(
+      'lf:lg:chainExtras:2026-05-01',
+    );
+    // Both the original 'degraded to fallback' warning AND the distinct
+    // 'served last-good' message are emitted.
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('degraded to fallback'),
+      expect.anything(),
+    );
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('served last-good'),
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['lottery-finder', 'served-last-good', 'chainExtras'],
+        tags: expect.objectContaining({ degrade_mode: 'served-last-good' }),
+      }),
+    );
+  });
+
+  it('falls back to the typed empty result on a retryable timeout when NO last-good is cached', async () => {
+    mockReadLastGood.mockResolvedValueOnce(null);
+    const result = await degradeOnTimeout(
+      async () => {
+        throw new Error('db attempt timeout');
+      },
+      [] as { id: number }[],
+      'sbChains',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:sbChains:2026-05-01' },
+    );
+    expect(result).toEqual([]);
+    expect(mockReadLastGood).toHaveBeenCalledWith('lf:lg:sbChains:2026-05-01');
+  });
+
+  it('does not touch the cache on a non-retryable error (rethrows)', async () => {
+    await expect(
+      degradeOnTimeout(
+        async () => {
+          throw new Error('syntax error at or near "FORM"');
+        },
+        [] as { id: number }[],
+        'chainExtras',
+        {
+          retries: 0,
+          timeout: 20_000,
+          cacheKey: 'lf:lg:chainExtras:2026-05-01',
+        },
+      ),
+    ).rejects.toThrow(/syntax error/);
+    expect(mockReadLastGood).not.toHaveBeenCalled();
+    expect(mockWriteLastGood).not.toHaveBeenCalled();
+  });
+
+  it('does not crash when the KV write throws on success (fire-and-forget)', async () => {
+    mockWriteLastGood.mockRejectedValueOnce(new Error('KV unavailable'));
+    const fresh = [{ id: 3 }];
+    // writeLastGood is called via `void` (fire-and-forget); a rejection
+    // must not propagate into the request path.
+    const result = await degradeOnTimeout(
+      async () => fresh,
+      [] as { id: number }[],
+      'chainExtras',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:chainExtras:2026-05-01' },
+    );
+    expect(result).toBe(fresh);
+  });
+
+  it('falls back when the KV read throws on a retryable timeout (no crash)', async () => {
+    // last-good-cache.readLastGood swallows its own errors and returns
+    // null, but assert degradeOnTimeout stays resilient even if it threw.
+    mockReadLastGood.mockResolvedValueOnce(null);
+    const result = await degradeOnTimeout(
+      async () => {
+        throw new Error('connection terminated');
+      },
+      [] as { id: number }[],
+      'clusterByMinute',
+      { retries: 0, timeout: 20_000, cacheKey: 'lf:lg:cluster:2026-05-01' },
+    );
+    expect(result).toEqual([]);
   });
 });

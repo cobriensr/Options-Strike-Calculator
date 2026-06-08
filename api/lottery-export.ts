@@ -16,7 +16,8 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import { Sentry } from './_lib/sentry.js';
 import logger from './_lib/logger.js';
 import { guardOwnerEndpoint } from './_lib/api-helpers.js';
@@ -90,7 +91,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // chronologically forward so the spreadsheet reads top-to-bottom
     // by trigger time. The (date, trigger_time_ct, id) shape lets the
     // existing index handle this without a sort.
-    const rows = (await db`
+    const rows = (await withDbRetry(
+      () => db`
       SELECT
         f.*,
         s.n_fires AS ticker_n_fires,
@@ -110,7 +112,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
         AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
       ORDER BY f.trigger_time_ct ASC, f.id ASC
-    `) as Record<string, unknown>[];
+    `,
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
+    )) as Record<string, unknown>[];
 
     const normalized = rows.map(normalizeRow);
 

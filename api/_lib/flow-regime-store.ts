@@ -1,12 +1,15 @@
 /**
  * Flow Regime Recognition — snapshot store.
  *
- * Reads previously captured per-(date, slot) rows from the
- * `flow_regime_snapshots` table (migration #185) and shapes them for
- * the `GET /api/flow-regime` endpoint. The capture-flow-regime cron
+ * Reads the LATEST captured per-(date, slot) row from the
+ * `flow_regime_snapshots` table (migration #185) and shapes it for the
+ * `GET /api/flow-regime` endpoint. The capture-flow-regime cron
  * (api/cron/capture-flow-regime.ts) writes one row per 30-min RTH slot
  * every 5 min during market hours, refining the in-progress slot via
  * ON CONFLICT (date, slot) DO UPDATE.
+ *
+ * The badge consumes only the latest slot, so the store fetches only the
+ * highest slot for the date (LIMIT 1) rather than the full 13-slot series.
  *
  * RECOGNITION ONLY — these snapshots score the current intraday flow
  * against the SAME time-of-day bucket historically; they do NOT
@@ -15,6 +18,8 @@
  * Phase 2 of docs/superpowers/specs/flow-regime-badge-2026-06-06.md
  */
 import { getDb } from './db.js';
+import { numOrNull } from './numeric-coercion.js';
+import { neonDateStr, neonIso } from './db-date.js';
 import type { FlowRegime, FlowRegimeColor } from './flow-regime.js';
 
 /**
@@ -35,6 +40,7 @@ interface FlowRegimeSnapshotRow {
   regime: string | null;
   color: string | null;
   n_trades: number | null;
+  baseline_version: number | null;
 }
 
 /** Public, fully-coerced snapshot shape returned by the endpoint. */
@@ -49,28 +55,15 @@ export interface FlowRegimeSnapshot {
   regime: FlowRegime;
   color: FlowRegimeColor;
   nTrades: number;
-}
-
-function toIso(v: string | Date): string {
-  return typeof v === 'string' ? v : v.toISOString();
-}
-
-function toDateStr(v: string | Date): string {
-  return typeof v === 'string' ? v.slice(0, 10) : v.toISOString().slice(0, 10);
-}
-
-/** Coerce a Neon NUMERIC (string | null) to number | null. */
-function numOrNull(v: string | null): number | null {
-  if (v == null) return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  /** Baseline artifact schema_version this snapshot was scored against. */
+  baselineVersion: number | null;
 }
 
 function rowToSnapshot(r: FlowRegimeSnapshotRow): FlowRegimeSnapshot {
   return {
-    date: toDateStr(r.date),
+    date: neonDateStr(r.date),
     slot: r.slot,
-    computedAt: toIso(r.computed_at),
+    computedAt: neonIso(r.computed_at),
     ndTilt: numOrNull(r.nd_tilt),
     idx0dtePutShare: numOrNull(r.idx0dte_put_share),
     ndPercentile: numOrNull(r.nd_percentile),
@@ -80,18 +73,17 @@ function rowToSnapshot(r: FlowRegimeSnapshotRow): FlowRegimeSnapshot {
     regime: (r.regime ?? 'normal') as FlowRegime,
     color: (r.color ?? 'gray') as FlowRegimeColor,
     nTrades: r.n_trades ?? 0,
+    baselineVersion: numOrNull(r.baseline_version),
   };
 }
 
 /**
- * Read all captured slot snapshots for a single ET trading date,
- * ordered by slot ascending (the slot series the badge renders), plus
- * the latest/current snapshot (highest slot present). Returns an empty
- * series + null latest when the cron has not yet written for `date`.
+ * Read the latest captured slot snapshot for a single ET trading date (the
+ * highest slot present — the in-progress / most-recent bucket). Returns a null
+ * latest when the cron has not yet written for `date`.
  */
 export async function readFlowRegimeDay(date: string): Promise<{
   date: string;
-  slots: FlowRegimeSnapshot[];
   latest: FlowRegimeSnapshot | null;
 }> {
   const sql = getDb();
@@ -106,16 +98,14 @@ export async function readFlowRegimeDay(date: string): Promise<{
       idxput_percentile,
       regime,
       color,
-      n_trades
+      n_trades,
+      baseline_version
     FROM flow_regime_snapshots
     WHERE date = ${date}::date
-    ORDER BY slot ASC
+    ORDER BY slot DESC
+    LIMIT 1
   `) as FlowRegimeSnapshotRow[];
 
-  const slots = rows.map(rowToSnapshot);
-  // Latest = the highest slot captured today (the in-progress / most
-  // recent bucket). slots is slot-ascending so `.at(-1)` is the latest.
-  const latest = slots.at(-1) ?? null;
-
-  return { date, slots, latest };
+  const first = rows[0];
+  return { date, latest: first ? rowToSnapshot(first) : null };
 }

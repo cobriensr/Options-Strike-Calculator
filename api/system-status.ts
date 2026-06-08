@@ -12,7 +12,8 @@ import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { metrics } from './_lib/sentry.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { getDarkPoolLastUpdated } from './_lib/dark-pool-query.js';
-import { redis, getAccessToken } from './_lib/schwab.js';
+import { getAccessToken } from './_lib/schwab.js';
+import { redis } from './_lib/redis.js';
 
 interface ServiceCheck {
   status: 'ok' | 'error';

@@ -5200,7 +5200,51 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 186,
     description:
-      'Create flow_regime_0dte_daily table for the live 0DTE gamma-regime panel self-scoring scorecard. The nightly cron upserts one row per trading day with gate classification, GEX open/mid/flip context, intraday signal timestamps (mostly_red, iv_break, midday_deep_neg), and realized outcome columns (oc_ret_pct, range_pct, dir_eff, big_down, big_up). DATE PRIMARY KEY enforces one row per session; idempotent upsert on the cron path. See docs/superpowers/plans/2026-06-07-regime-0dte-panel.md Task 4.',
+      'Add baseline_version INT column to flow_regime_snapshots so each captured snapshot records the schema_version of the flow-regime-baseline.json artifact it was scored against. The capture-flow-regime cron stamps FLOW_REGIME_BASELINE.schema_version on every upsert; the read store surfaces it. Makes a stale-vs-current baseline detectable after a regeneration (the baseline is rebuilt offline via scripts/build-flow-regime-baseline.py as the WS archive accumulates — see the spec). Nullable: legacy rows written before this migration stay NULL.',
+    statements: (sql) => [
+      sql`ALTER TABLE flow_regime_snapshots
+            ADD COLUMN IF NOT EXISTS baseline_version INT`,
+    ],
+  },
+  {
+    id: 187,
+    description:
+      'Create flow_regime_slot_daily table for the self-maintaining flow-regime baseline (resolves code-review finding #6 — the frozen, manually-refreshed baseline). One row per (date, slot) accumulates that trading day’s per-slot component sums (nd_num/nd_den for net_delta_tilt, idx_put_premium/total_premium for idx0dte_put_share) plus the bucket trade count. The capture-flow-regime-daily cron runs once post-close and UPSERTs all 13 RTH slots for the day via ON CONFLICT (date, slot) DO UPDATE. The live capture-flow-regime cron then computes percentile breakpoints ON READ from this accumulating table (api/_lib/flow-regime-baseline-live.ts), falling back per-slot to the committed flow-regime-baseline.json until a slot has ≥15 days of history. UNIQUE(date, slot) gives the daily upsert its conflict target. The (slot) index is NOT used by the loader’s aggregation — that query is a `GROUP BY slot` with no WHERE, so the planner full-scans this tiny table regardless; the index is retained only for potential future per-slot point reads (the table is small enough that dropping it isn’t worth a prod migration). No parquet / Desktop dependency — the baseline now self-maintains from Neon. See docs/superpowers/specs/flow-regime-baseline-refresh-2026-06-07.md.',
+    statements: (sql) => [
+      sql`
+        CREATE TABLE IF NOT EXISTS flow_regime_slot_daily (
+          id               BIGSERIAL PRIMARY KEY,
+          date             DATE NOT NULL,
+          slot             INT NOT NULL,
+          nd_num           NUMERIC,
+          nd_den           NUMERIC,
+          idx_put_premium  NUMERIC,
+          total_premium    NUMERIC,
+          n_trades         INT,
+          computed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (date, slot)
+        )
+      `,
+      sql`CREATE INDEX IF NOT EXISTS flow_regime_slot_daily_slot_idx
+            ON flow_regime_slot_daily (slot)`,
+    ],
+  },
+  {
+    id: 188,
+    description:
+      'Create lottery_kept_tickers table for the DB-backed never-vanish kept-set (Phase 1 of docs/superpowers/specs/2026-06-07-never-vanish-review-fixes-round2.md). Replaces the per-day Redis set (lf:kept:<date>) with a durable Postgres table so kept-ticker records survive Redis eviction and can be read page-independently by both the feed and ticker-counts endpoints. One row per (trade_date, underlying_symbol); the composite PRIMARY KEY enforces the natural dedup constraint and provides the lookup index — no separate index needed. The writer (lottery-finder.ts, Phase 3) derives the ever-shown set from the full ranked CTE (no LIMIT), so a ticker that flips Q1/Q2 while sitting past row 50 is still kept for the rest of the session. Both readKeptTickers and addKeptTickers swallow all errors and degrade to [] on DB failure, mirroring the prior Redis semantics.',
+    statements: (sql) => [
+      sql`CREATE TABLE IF NOT EXISTS lottery_kept_tickers (
+        trade_date        date NOT NULL,
+        underlying_symbol text NOT NULL,
+        PRIMARY KEY (trade_date, underlying_symbol)
+      )`,
+    ],
+  },
+  {
+    id: 189,
+    description:
+      'Create flow_regime_0dte_daily table for the live 0DTE gamma-regime panel self-scoring scorecard. The nightly cron upserts one row per trading day with gate classification, GEX open/mid/flip context, intraday signal timestamps (mostly_red, iv_break, midday_deep_neg), and realized outcome columns (oc_ret_pct, range_pct, dir_eff, big_down, big_up). DATE PRIMARY KEY enforces one row per session; idempotent upsert on the cron path. Renumbered 186->189 after rebase/merge collisions with parallel migrations. See docs/superpowers/plans/2026-06-07-regime-0dte-panel.md Task 4.',
     statements: (sql) => [
       sql`
         CREATE TABLE IF NOT EXISTS flow_regime_0dte_daily (

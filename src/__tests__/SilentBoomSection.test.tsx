@@ -269,6 +269,476 @@ describe('SilentBoomSection: populated rendering', () => {
 });
 
 // ============================================================
+// NEVER-VANISH — useStickyUnion accumulator (live view)
+// ============================================================
+//
+// Once a Silent Boom alert appears in the live polling view it must stay
+// rendered for the rest of the day even if a later poll omits it (server
+// degrade `[]`, a takeit-gate / ask-100-demote wobble, or a transient
+// empty response). The section pins alerts via useStickyUnion keyed by
+// the immutable spike-bucket identity `optionChainId|bucketCt`
+// (the (option_chain_id, bucket_ct) unique key the detector inserts on
+// with ON CONFLICT DO NOTHING — so the row, and its id, never change once
+// seen), day-scoped by storageKey. These tests drive the guarantee by
+// rerendering with the mocked feed dropping a row.
+//
+// The default `date` is today (todayCt()), `bucketIso` is null, and
+// `page` is 0 — exactly the live view where the union engages.
+
+describe('SilentBoomSection: never-vanish accumulator', () => {
+  it('keeps an alert pinned after a later poll omits it (server degrade [])', () => {
+    const alertX = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    const alertY = makeAlert({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+    });
+
+    // Poll 1: both X and Y present.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [alertX, alertY], total: 2 }),
+    );
+    const { rerender } = render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+
+    // Poll 2: server degrades and returns ONLY Y (X dropped). Without the
+    // union X would vanish; with it, X must remain rendered.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [alertY], total: 1 }),
+    );
+    rerender(<SilentBoomSection marketOpen={true} />);
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps an alert pinned when the entire feed blanks to [] on a poll', () => {
+    const alertX = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [alertX], total: 1 }),
+    );
+    const { rerender } = render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Full degrade: empty alerts + total 0.
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts: [], total: 0 }));
+    rerender(<SilentBoomSection marketOpen={true} />);
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps two distinct buckets of the SAME chain pinned independently', () => {
+    // Silent Boom is one row per (chain, bucket): two spike buckets on the
+    // same option chain are DISTINCT alerts. The union key must include
+    // bucketCt or the second bucket would clobber the first.
+    const bucketA = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      bucketCt: '2026-05-08T14:30:00Z',
+    });
+    const bucketB = makeAlert({
+      id: 2,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      bucketCt: '2026-05-08T15:05:00Z',
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [bucketA, bucketB], total: 2 }),
+    );
+    const { rerender } = render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getAllByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toHaveLength(2);
+
+    // Poll 2 drops bucketA; both buckets must still render.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [bucketB], total: 1 }),
+    );
+    rerender(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getAllByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toHaveLength(2);
+  });
+
+  it('updates a pinned alert in place when it reappears with changed fields', () => {
+    const alertX = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [alertX], total: 1 }),
+    );
+    const { rerender } = render(<SilentBoomSection marketOpen={true} />);
+    expect(screen.getByText('AAPL 200')).toBeInTheDocument();
+
+    // Poll 2: same chain id + bucket, changed strike-derived label. The
+    // stub renders "{ticker} {strike}", so a strike bump proves the
+    // in-place UPSERT (same key, refreshed value — not a second row).
+    const alertXUpdated = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 205,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [alertXUpdated], total: 1 }),
+    );
+    rerender(<SilentBoomSection marketOpen={true} />);
+
+    // Exactly one row for the chain/bucket, now showing the updated value.
+    expect(
+      screen.getAllByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toHaveLength(1);
+    expect(screen.getByText('AAPL 205')).toBeInTheDocument();
+    expect(screen.queryByText('AAPL 200')).not.toBeInTheDocument();
+  });
+
+  it('resets the union on date change so a prior day’s pinned alert is not shown', () => {
+    const alertX = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [alertX], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Change the date input → storageKey flips → union resets to the new
+    // day. The new day's feed returns nothing, so the prior day's pinned
+    // alert must NOT carry over. Picking a past date also flips the view
+    // to historical (union disengaged), which independently shows the raw
+    // (empty) response — both paths must hide the stale row.
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts: [], total: 0 }));
+    const dateInput = screen.getByLabelText(/select trading day/i);
+    fireEvent.change(dateInput, { target: { value: '2026-05-07' } });
+
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('counts the union: per-ticker chip count never under-counts a pinned-but-dropped alert', () => {
+    const alertX = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    // Server ticker-counts endpoint reports AAPL=1 on poll 1.
+    mockUseSilentBoomTickerCounts.mockReturnValue({
+      data: { tickers: [{ ticker: 'AAPL', count: 1 }] },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [alertX], total: 1 }),
+    );
+    const { rerender } = render(<SilentBoomSection marketOpen={true} />);
+    // AAPL chip shows count 1.
+    expect(screen.getByTitle(/Filter to AAPL only/i)).toHaveTextContent('1');
+
+    // Poll 2: BOTH the feed and the counts endpoint degrade to empty. The
+    // union still holds AAPL, so the chip must keep AAPL with count ≥ 1.
+    mockUseSilentBoomTickerCounts.mockReturnValue({
+      data: { tickers: [] },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts: [], total: 0 }));
+    rerender(<SilentBoomSection marketOpen={true} />);
+
+    expect(screen.getByTitle(/Filter to AAPL only/i)).toHaveTextContent('1');
+  });
+
+  it('does not duplicate a page-0-pinned alert on page > 0 when it demotes past PAGE_SIZE', () => {
+    // Pagination hole: page 0 renders the WHOLE union, so an alert pinned
+    // on page 0 that later demotes past the 50-row cut is also returned by
+    // the server on page 1. Without the dedup guard it shows on BOTH pages.
+    const pinned = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    const tail = makeAlert({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+    });
+    // total > PAGE_SIZE so the Next button renders. Page 0 returns the
+    // pinned alert (→ union); page 1 returns the SAME pinned alert
+    // (demoted) plus a genuine tail alert the server only serves on p1.
+    mockUseSilentBoomFeed.mockImplementation(({ page }: { page: number }) =>
+      page > 0
+        ? feedResult({
+            alerts: [pinned, tail],
+            total: 100,
+            offset: 50,
+            hasMore: false,
+          })
+        : feedResult({ alerts: [pinned], total: 100, hasMore: true }),
+    );
+
+    render(<SilentBoomSection marketOpen={true} />);
+    // Page 0: pinned alert visible.
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Navigate to page 1.
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+
+    // The demoted pinned alert must NOT re-render on page 1 (already shown
+    // via the page-0 union), but the genuine tail alert must be reachable.
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// NEVER-VANISH FINDINGS #1 / #3 (useNeverVanishFeed rewire)
+// ============================================================
+//
+//   #1 filter-signature storageKey — tightening a SERVER filter rescopes
+//      the union so a previously-pinned now-excluded row drops; a CLIENT
+//      filter does NOT rescope.
+//   #1 ticker — selecting a ticker chip (server filter) drops other-ticker
+//      pinned rows.
+//   #3 server-anchored pagination — union > serverTotal on the live page
+//      does not advertise an unreachable page.
+
+describe('SilentBoomSection: never-vanish findings #1/#3', () => {
+  it('#1: tightening the TAKE-IT floor (server filter) drops a previously-pinned now-excluded alert', () => {
+    // Pin an alert under the default 0.70 floor.
+    const pinned = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [pinned], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Raise the TAKE-IT floor to 0.80 — a SERVER-SIDE filter. The new feed
+    // (post-tighten) no longer returns the alert (below the stricter floor
+    // server-side). With the filter-signature storageKey the union RESCOPES
+    // (new slot) so the stale pin does NOT carry over. Without the sig
+    // (date-only key) the row would stay pinned in the same union.
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts: [], total: 0 }));
+    fireEvent.click(screen.getByTestId('takeit-floor-0.8'));
+
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#1 control: a CLIENT-only filter change (hide-ghosts) does NOT rescope the union (pin survives)', () => {
+    // hide-ghosts is a CLIENT-side filter — it must NOT be in the filterSig,
+    // so toggling it leaves the union intact. The pinned alert survives a
+    // subsequent empty poll because the storageKey is unchanged. Use a
+    // healthy-baseline alert so the hide-ghosts predicate never strips it.
+    const pinned = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      baselineVolume: 500,
+      spikeRatio: 10,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [pinned], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Toggle hide-ghosts (client filter) AND degrade the feed to []. The
+    // union slot is unchanged, so the pin persists.
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts: [], total: 0 }));
+    fireEvent.click(screen.getByRole('button', { name: /hide ghosts/i }));
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+
+  it('#1 ticker: selecting a ticker chip (server filter) drops a previously-pinned other-ticker alert', () => {
+    // Pin two tickers in the union under the default (no ticker) filter.
+    const aapl = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    const tsla = makeAlert({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [aapl, tsla], total: 2 }),
+    );
+    // Both ticker chips must render so AAPL is clickable.
+    mockUseSilentBoomTickerCounts.mockReturnValue({
+      data: {
+        tickers: [
+          { ticker: 'AAPL', count: 1 },
+          { ticker: 'TSLA', count: 1 },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+
+    // Select the AAPL ticker chip — a SERVER-SIDE filter (forwarded to
+    // useSilentBoomFeed as `ticker`). The narrowed feed returns only AAPL.
+    // With the ticker in the filter-signature storageKey the union RESCOPES
+    // (new slot) so the stale TSLA pin does NOT carry over. Without the
+    // ticker in the sig the TSLA row would stay pinned in the same union.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [aapl], total: 1 }),
+    );
+    fireEvent.click(screen.getByTitle(/Filter to AAPL only/i));
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#3: union larger than serverTotal on the live page does not advertise an unreachable page', () => {
+    // Live page pins 2 alerts via the union but the server reports total=1
+    // (a degrade dropped one from the reachable set). totalPages is
+    // server-anchored = ceil(1 / 50) = 1, so NO pager renders even though
+    // the union floors the displayed `total` at 2. Without server-anchored
+    // pagination the old `ceil(total / PAGE_SIZE)` would still be 1 here, so
+    // to make this non-vacuous we drive serverTotal across the PAGE_SIZE
+    // boundary in the companion assertion below.
+    const a1 = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    const a2 = makeAlert({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+    });
+    // Poll 1: both present, server reports a small total.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [a1, a2], total: 2, hasMore: false }),
+    );
+    const { rerender } = render(<SilentBoomSection marketOpen={true} />);
+
+    // Poll 2: server degrades to a SINGLE reachable alert (total=1) but the
+    // union still pins both. serverTotal=1 → totalPages=1 → no pager, and
+    // crucially Next stays gated on the server `hasMore` (false), so no
+    // unreachable page can be navigated to.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [a2], total: 1, hasMore: false }),
+    );
+    rerender(<SilentBoomSection marketOpen={true} />);
+
+    // Both pinned rows render (never-vanish) ...
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+    // ... but the pager is suppressed: server-anchored totalPages keeps the
+    // Next button from offering a page the server cannot serve.
+    expect(
+      screen.queryByRole('button', { name: /next page/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('#3 non-vacuous: server-anchored totalPages uses serverTotal, not the union-floored total', () => {
+    // serverTotal = 60 (> PAGE_SIZE 50) → server-anchored totalPages = 2.
+    // The union pins exactly 1 visible alert on the live page, so the
+    // union-floored `total` would be max(60, 1) = 60 either way here; the
+    // load-bearing distinction is that the DENOMINATOR is serverTotal. We
+    // assert the pager shows "/ 2" — the server's reachable page count.
+    const pinned = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [pinned], total: 60, hasMore: true }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+
+    // page 1 / 2 — ceil(60 / 50) = 2 reachable server pages.
+    expect(screen.getByText(/page 1 \/ 2/)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // KEY INTERACTION — filter toggles
 // ============================================================
 
@@ -846,6 +1316,75 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
     // The page should have reset: the hook must be called with page 0.
     const callAfterFilter = mockUseSilentBoomFeed.mock.calls.at(-1);
     expect(callAfterFilter?.[0]).toMatchObject({ page: 0 });
+  });
+});
+
+// ============================================================
+// COMPACT MODE — filter toolbar collapses behind CompactDisclosure
+// ============================================================
+
+describe('SilentBoomSection: compact mode', () => {
+  it('does NOT render the Filters disclosure trigger in the default (non-compact) layout', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(
+      screen.queryByRole('button', { name: /^Filters$/ }),
+    ).not.toBeInTheDocument();
+    // The filter chips render inline (e.g. the conviction Tier 1 chip).
+    expect(screen.getByRole('button', { name: /Tier 1/ })).toBeInTheDocument();
+  });
+
+  it('collapses the filter chips behind the Filters trigger when compact, revealing them on click', () => {
+    render(<SilentBoomSection marketOpen={false} compact />);
+
+    // The sticky Filters trigger is present and collapsed by default.
+    const trigger = screen.getByRole('button', { name: /^Filters$/ });
+    expect(trigger).toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    // A representative toolbar chip (conviction Tier 1) is hidden until
+    // the disclosure is opened.
+    expect(
+      screen.queryByRole('button', { name: /Tier 1/ }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /Tier 1/ })).toBeInTheDocument();
+  });
+
+  it('keeps the DATE / Live / EXPORT row + heading visible in compact mode (not collapsed)', () => {
+    render(<SilentBoomSection marketOpen={false} compact />);
+    // Export anchors live in the always-visible date/export row.
+    expect(screen.getByText(/⤓ filtered/)).toBeInTheDocument();
+    expect(screen.getByText(/⤓ all/)).toBeInTheDocument();
+    // The section heading is untouched (not wrapped in the disclosure).
+    expect(
+      screen.getByRole('heading', { name: /silent boom/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('hides the methodology blurb, regime banner, and day-status placeholder in compact mode', () => {
+    render(<SilentBoomSection marketOpen={false} compact />);
+    // 1. Methodology/description blurb.
+    expect(screen.queryByText(/trade quietly/i)).not.toBeInTheDocument();
+    // 2. Regime-context banner (SilentBoomRegimeBanner empty state).
+    expect(
+      screen.queryByText(/regime context will appear/i),
+    ).not.toBeInTheDocument();
+    // 3. Day-status placeholder banner (SilentBoomDayBanner empty state).
+    expect(
+      screen.queryByText(/no silent-boom alerts yet today/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it('still renders the methodology blurb + day-status placeholder in non-compact mode', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    // Confirms the three blocks were gated by compact, not deleted.
+    expect(screen.getByText(/trade quietly/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/no silent-boom alerts yet today/i),
+    ).toBeInTheDocument();
   });
 });
 

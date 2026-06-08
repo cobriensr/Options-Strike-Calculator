@@ -23,12 +23,12 @@
 
 import { POLL_INTERVALS } from '../constants';
 import { useFetchedData } from './useFetchedData';
+import type { FlowRegime, FlowRegimeColor } from '../types/flow-regime';
 
-/** Recognition regime classification (mirrors api/_lib/flow-regime.ts). */
-export type FlowRegime = 'normal' | 'caution' | 'bearish' | 'bullish';
-
-/** Semantic color for a regime (mirrors api/_lib/flow-regime.ts). */
-export type FlowRegimeColor = 'green' | 'amber' | 'red' | 'gray';
+// Re-export the shared union types so existing importers (the badge component,
+// its classifier, tests) keep importing them from this hook unchanged. The
+// single source of truth is src/types/flow-regime.ts.
+export type { FlowRegime, FlowRegimeColor };
 
 /**
  * One captured 30-min slot snapshot, matching the fully-coerced shape the
@@ -50,20 +50,19 @@ export interface FlowRegimeSnapshot {
   regime: FlowRegime;
   color: FlowRegimeColor;
   nTrades: number;
+  /** Baseline artifact schema_version this snapshot was scored against. */
+  baselineVersion: number | null;
 }
 
 /** Top-level GET /api/flow-regime response envelope. */
 export interface FlowRegimeResponse {
   date: string;
-  slots: FlowRegimeSnapshot[];
   latest: FlowRegimeSnapshot | null;
 }
 
 export interface UseFlowRegimeReturn {
   /** The latest (highest) captured slot today, or null pre-open / no data. */
   latest: FlowRegimeSnapshot | null;
-  /** Today's full slot series, ascending by slot (empty before first write). */
-  slots: FlowRegimeSnapshot[];
   /** The ET trade date the snapshot describes, or null before first fetch. */
   date: string | null;
   loading: boolean;
@@ -109,17 +108,16 @@ function parseSnapshot(raw: unknown): FlowRegimeSnapshot {
     regime,
     color,
     nTrades: typeof o.nTrades === 'number' ? o.nTrades : 0,
+    baselineVersion: numOrNull(o.baselineVersion),
   };
 }
 
 /** Parse the raw endpoint envelope into a typed FlowRegimeResponse. */
 export function parseFlowRegime(raw: unknown): FlowRegimeResponse {
   const o = (raw ?? {}) as Record<string, unknown>;
-  const slots = Array.isArray(o.slots) ? o.slots.map(parseSnapshot) : [];
   const latest = o.latest != null ? parseSnapshot(o.latest) : null;
   return {
     date: typeof o.date === 'string' ? o.date : '',
-    slots,
     latest,
   };
 }
@@ -134,7 +132,6 @@ export function useFlowRegime({ marketOpen }: Options): UseFlowRegimeReturn {
 
   return {
     latest: data?.latest ?? null,
-    slots: data?.slots ?? [],
     date: data?.date ?? null,
     loading,
     error,

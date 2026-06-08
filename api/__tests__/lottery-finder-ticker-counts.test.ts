@@ -8,9 +8,85 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
+// A Phase-4 suppression fragment marker. The real keptSuppressionSql returns
+// a composable neon fragment; here we model it as a tagged object so the
+// outer query's tagged-template can FLATTEN it into raw predicate text +
+// (showAll, keptTickers) params — exactly mirroring how @neondatabase splices
+// a nested `db`…`` fragment. This keeps every existing SQL-text and param
+// assertion in this file valid against the helper-wired query without coupling
+// the test to the helper's internals (those are pinned in
+// api/__tests__/lottery-suppression.test.ts).
+interface SuppressionFragment {
+  __suppressionFragment: true;
+  showAll: boolean;
+  kept: string[];
+}
+const isSuppressionFragment = (v: unknown): v is SuppressionFragment =>
+  typeof v === 'object' && v !== null && '__suppressionFragment' in v;
+
+const { mockKeptSuppressionSql } = vi.hoisted(() => ({
+  mockKeptSuppressionSql: vi.fn(
+    (
+      _db: unknown,
+      alias: string,
+      showAll: boolean | undefined,
+      kept: string[],
+    ) =>
+      ({
+        __suppressionFragment: true as const,
+        // Carry the alias only for debugging; the canonical predicate text is
+        // emitted by the flattener below so SQL-text assertions match.
+        alias,
+        showAll: showAll ?? false,
+        kept,
+      }) as unknown as SuppressionFragment,
+  ),
+}));
+
+vi.mock('../_lib/lottery-suppression.js', () => ({
+  keptSuppressionSql: mockKeptSuppressionSql,
+  SYMBOL_ALIAS_WHITELIST: ['f', 'ranked', 'cd'] as const,
+}));
+
+// Raw mock query fn — receives the FLATTENED (strings, ...values) so that
+// `mock.calls[N][0]` is the full template-strings array (with the suppression
+// predicate text inlined) and the values include showAll + keptTickers.
 const mockSql = vi.fn();
+
+// The `db` handle the handler uses. A tagged-template wrapper that flattens
+// any SuppressionFragment in the interpolated values into raw predicate text
+// + its two params before delegating to mockSql. Non-fragment template calls
+// pass straight through unchanged (so existing tests are unaffected).
+function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
+  if (!values.some(isSuppressionFragment)) {
+    return mockSql(strings, ...values);
+  }
+  const outStrings: string[] = [strings[0]!];
+  const outValues: unknown[] = [];
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (isSuppressionFragment(v)) {
+      // Splice the canonical predicate: text + (showAll, kept) params.
+      // `<prefix>(${showAll}::boolean OR s.inversion_quintile IS NULL OR
+      //  s.inversion_quintile > 2 OR <alias>.underlying_symbol =
+      //  ANY(${kept}::text[]))<suffix>`
+      outStrings[outStrings.length - 1] += '(';
+      outValues.push(v.showAll);
+      outStrings.push(
+        '::boolean OR s.inversion_quintile IS NULL OR s.inversion_quintile > 2 OR cd.underlying_symbol = ANY(',
+      );
+      outValues.push(v.kept);
+      outStrings.push('::text[]))' + strings[i + 1]!);
+    } else {
+      outValues.push(v);
+      outStrings.push(strings[i + 1]!);
+    }
+  }
+  return mockSql(outStrings as unknown as TemplateStringsArray, ...outValues);
+}
+
 vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
+  getDb: vi.fn(() => dbTag),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
@@ -22,11 +98,21 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+const { mockReadKeptTickers } = vi.hoisted(() => ({
+  mockReadKeptTickers: vi.fn(),
+}));
+
+vi.mock('../_lib/kept-tickers.js', () => ({
+  readKeptTickers: mockReadKeptTickers,
+}));
+
 import handler from '../lottery-finder-ticker-counts.js';
 
 describe('lottery-finder-ticker-counts handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // Default empty kept-set → pure live suppression (pre-change behavior).
+    mockReadKeptTickers.mockResolvedValue([]);
   });
 
   it('returns chain-deduped counts sorted by count desc', async () => {
@@ -339,5 +425,71 @@ describe('lottery-finder-ticker-counts handler', () => {
       tickers: { peakBestPct: number | null }[];
     };
     expect(body.tickers[0]?.peakBestPct).toBeNull();
+  });
+
+  // ============================================================
+  // MONOTONIC Q1/Q2 SUPPRESSION (fix/feed-never-vanish)
+  // ============================================================
+  //
+  // The chip strip must mirror the feed: a ticker ever shown today
+  // (quintile > 2 at some point) stays counted after a quintile flip into
+  // Q1/Q2. The endpoint reads the per-day kept-set and adds an ANY() keep
+  // term to the suppression predicate. It is READ-ONLY here — the feed
+  // endpoint owns accumulation.
+  it('reads the kept-set and binds the monotonic keep term into the suppression SQL', async () => {
+    mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'AAA',
+        count: 1,
+        peak_best_pct: '40.0',
+        latest_trigger_time_ct: '2026-05-14T15:00:00Z',
+      },
+    ]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // kept-set read for the request date.
+    expect(mockReadKeptTickers).toHaveBeenCalledWith('2026-05-14');
+
+    const sql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(' ');
+    // NON-VACUOUS: the monotonic keep is exactly this ANY(...) term.
+    expect(sql).toContain('= ANY(');
+    expect(sql).toContain('::text[]');
+    // The kept-set array reached the SQL params.
+    const params = (mockSql.mock.calls[0] as unknown[]).slice(1);
+    expect(
+      params.some((p) => Array.isArray(p) && p.length === 1 && p[0] === 'AAA'),
+    ).toBe(true);
+  });
+
+  it('showAll=true short-circuits the kept-set (never read)', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', showAll: 'true' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockReadKeptTickers).not.toHaveBeenCalled();
+  });
+
+  it('KV-down (readKeptTickers returns []) → empty keep array, no crash', async () => {
+    mockReadKeptTickers.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const params = (mockSql.mock.calls[0] as unknown[]).slice(1);
+    expect(params.some((p) => Array.isArray(p) && p.length === 0)).toBe(true);
   });
 });

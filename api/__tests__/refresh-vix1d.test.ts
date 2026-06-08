@@ -28,7 +28,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: vi.fn(),
 }));
 
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: { set: vi.fn().mockResolvedValue('OK') },
 }));
 
@@ -38,7 +38,7 @@ vi.mock('../_lib/axiom.js', () => ({
 
 import handler, { parseCboeCsv } from '../cron/refresh-vix1d.js';
 import { cronGuard } from '../_lib/api-helpers.js';
-import { redis } from '../_lib/schwab.js';
+import { redis } from '../_lib/redis.js';
 import { Sentry } from '../_lib/sentry.js';
 
 // ── Fixture CSV ───────────────────────────────────────────────

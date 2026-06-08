@@ -4,10 +4,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async () => {
+  // Keep the REAL withDbRetry so the retry path is genuinely exercised;
+  // only the db handle is stubbed.
+  const actual =
+    await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+  return {
+    getDb: vi.fn(() => mockSql),
+    withDbRetry: actual.withDbRetry,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
@@ -196,5 +202,35 @@ describe('GET /api/lottery-export', () => {
     );
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });
+  });
+
+  it('retries a transient DB blip on the first attempt and then succeeds', async () => {
+    // First attempt: a retryable Neon blip (matches DB_RETRYABLE_RX).
+    // Without withDbRetry wrapping the SELECT, this single rejection
+    // would propagate and 500 the export. With the wrap, attempt 2
+    // resolves and the CSV is served.
+    mockSql
+      .mockRejectedValueOnce(new Error('db attempt timeout'))
+      .mockResolvedValueOnce([ROW]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-05-04' } }),
+      res,
+    );
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(res._status).toBe(200);
+    expect(res._headers['Content-Type']).toBe('text/csv');
+    expect(res._body.split('\n')[1]).toContain('NVDA');
+  });
+
+  it('does NOT retry a non-retryable DB error (single 500)', async () => {
+    mockSql.mockRejectedValueOnce(new Error('syntax error at or near'));
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-05-04' } }),
+      res,
+    );
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(res._status).toBe(500);
   });
 });

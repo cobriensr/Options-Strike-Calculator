@@ -98,18 +98,8 @@ export function getPanelRegistry(
         group: 'Market Context',
       },
       {
-        id: 'sec-lottery-finder',
-        label: 'Lottery Finder',
-        group: 'Market Context',
-      },
-      {
         id: 'sec-greek-heatmap',
         label: '0DTE Greek Heatmap',
-        group: 'Market Context',
-      },
-      {
-        id: 'sec-silent-boom',
-        label: 'Silent Boom',
         group: 'Market Context',
       },
       {

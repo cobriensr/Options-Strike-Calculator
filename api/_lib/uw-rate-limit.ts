@@ -22,7 +22,7 @@
  * `docs/superpowers/specs/uw-rate-limiter-2026-04-27.md` for context.
  */
 
-import { redis } from './schwab.js';
+import { redis } from './redis.js';
 import { metrics, Sentry } from './sentry.js';
 import logger from './logger.js';
 

@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: {
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
@@ -16,7 +16,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../events.js';
-import { redis } from '../_lib/schwab.js';
+import { redis } from '../_lib/redis.js';
 import { checkBot } from '../_lib/api-helpers.js';
 
 describe('GET /api/events', () => {

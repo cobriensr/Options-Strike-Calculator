@@ -17,7 +17,7 @@
  */
 
 import { Sentry, metrics } from '../_lib/sentry.js';
-import { redis } from '../_lib/schwab.js';
+import { redis } from '../_lib/redis.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { cronGuard } from '../_lib/api-helpers.js';

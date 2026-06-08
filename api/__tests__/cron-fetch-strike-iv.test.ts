@@ -35,7 +35,7 @@ vi.mock('../_lib/sentry.js', () => ({
 // tests we don't have Upstash env vars, so the real client hangs with
 // retries. Stub it to a resolved-null so the detection path returns
 // quickly.
-vi.mock('../_lib/schwab.js', () => ({
+vi.mock('../_lib/redis.js', () => ({
   redis: { get: vi.fn().mockResolvedValue(null) },
 }));
 

@@ -17,9 +17,10 @@
  *
  * Outside RTH the cron no-ops (status 'skipped') — there is no current
  * slot to capture. ws_option_trades is ALREADY restricted to the
- * ~50-ticker WS Lottery universe, so no extra ticker filter is needed;
- * computeFlowMetrics applies the index-set restriction for the
- * idx0dte_put_share numerator internally.
+ * ~50-ticker WS Lottery universe, so no extra ticker filter is needed in
+ * SQL; computeFlowMetrics additionally restricts ALL sums to the baseline
+ * universe (defence-in-depth if the WS subscription ever widens) and
+ * applies the index-set restriction for the idx0dte_put_share numerator.
  *
  * RECOGNITION ONLY — the snapshot scores "is today's flow abnormal for
  * this time of day, as it forms"; it does NOT forecast direction.
@@ -37,52 +38,19 @@ import {
   computeFlowMetrics,
   evaluateFlowRegime,
   slotForEtMinute,
-  FLOW_REGIME_BASELINE,
-  type FlowTradeRow,
+  slotStartEtMinute,
 } from '../_lib/flow-regime.js';
+import { loadFlowRegimeBaseline } from '../_lib/flow-regime-baseline-live.js';
+import {
+  toFlowTradeRow,
+  type WsOptionTradeRow,
+} from '../_lib/flow-regime-rows.js';
+import type { FlowTradeRow } from '../_lib/flow-regime.js';
 import {
   getETDateStr,
   getETTotalMinutes,
   etWallClockToUtcIso,
 } from '../../src/utils/timezone.js';
-
-/**
- * Minimum trades in the (in-progress) bucket before we attach a
- * directional regime/color. Below this the net-delta tilt is dominated
- * by one or two prints — early in a slot a single large bid-side put can
- * push ndTilt ≈ −1 and flash a false "bearish/red". The baseline slots
- * aggregate thousands of trades, so a live bucket with < 50 trades is a
- * thin/degraded window: we still persist the raw metrics + n_trades for
- * transparency, but force regime 'normal'/color 'gray' so the badge reads
- * low-confidence rather than a spurious signal. During RTH the ~50-ticker
- * universe (incl. very active SPXW/QQQ) clears this within seconds of a
- * slot opening, so this only suppresses genuinely sparse windows.
- */
-const MIN_BUCKET_TRADES = 50;
-
-/**
- * Raw shape of one ws_option_trades row from Neon. NUMERIC columns
- * come back as STRINGS (price/strike/delta/underlying_price); delta and
- * underlying_price are NULLABLE in the schema. We coerce explicitly
- * before building FlowTradeRow so a raw null/string never reaches the
- * numeric metric math.
- */
-interface WsOptionTradeRow {
-  ticker: string;
-  option_type: string;
-  strike: string;
-  expiry: string | Date;
-  executed_at: string | Date;
-  price: string;
-  size: number;
-  underlying_price: string | null;
-  side: string;
-  delta: string | null;
-}
-
-function toDateStr(v: string | Date): string {
-  return typeof v === 'string' ? v.slice(0, 10) : v.toISOString().slice(0, 10);
-}
 
 export default withCronInstrumentation(
   'capture-flow-regime',
@@ -108,15 +76,14 @@ export default withCronInstrumentation(
     }
 
     // Lower bound = the slot's start minute as a UTC instant; upper
-    // bound = now. This window is the in-progress bucket so far.
-    const slotStartEtMinute =
-      FLOW_REGIME_BASELINE.rth_start_minute +
-      slot * FLOW_REGIME_BASELINE.bucket_minutes;
-    const slotStartIso = etWallClockToUtcIso(date, slotStartEtMinute);
+    // bound = now. This window is the in-progress bucket so far. The
+    // slot↔minute inverse is deduped into slotStartEtMinute (#10c).
+    const startMinute = slotStartEtMinute(slot);
+    const slotStartIso = etWallClockToUtcIso(date, startMinute);
     if (slotStartIso === null) {
       // getETDateStr should never produce a malformed date; defensive.
       ctx.logger.warn(
-        { date, slotStartEtMinute },
+        { date, slotStartEtMinute: startMinute },
         'capture-flow-regime: could not resolve slot start, skipping',
       );
       return {
@@ -136,12 +103,10 @@ export default withCronInstrumentation(
         SELECT
           ticker,
           option_type,
-          strike,
           expiry,
           executed_at,
           price,
           size,
-          underlying_price,
           side,
           delta
         FROM ws_option_trades
@@ -153,48 +118,60 @@ export default withCronInstrumentation(
       10_000,
     )) as WsOptionTradeRow[];
 
-    // Coerce NUMERIC-as-string + nullable columns to plain numbers
-    // BEFORE the metric math. delta/underlying_price null → 0 (a null
-    // delta contributes 0 to both the net-delta numerator and the
-    // |delta| denominator, which is the documented evaluator behavior).
-    const tradeRows: FlowTradeRow[] = rows.map((r) => ({
-      ticker: r.ticker,
-      optionType: r.option_type,
-      expiry: toDateStr(r.expiry),
-      tradeDateEt: date,
-      side: r.side,
-      delta: r.delta != null ? Number(r.delta) : 0,
-      size: r.size,
-      price: r.price != null ? Number(r.price) : 0,
-    }));
+    // Coerce NUMERIC-as-string + nullable columns to plain finite numbers
+    // BEFORE the metric math via the shared mapper (same coercion the daily
+    // accumulator cron uses, so both score the same population). delta null →
+    // 0; price null/invalid → 0 (excluded from the put-share ratio). expiry +
+    // tradeDateEt are ET-consistent calendar-date strings so the 0DTE
+    // `expiry === tradeDateEt` test compares like-for-like.
+    const tradeRows: FlowTradeRow[] = rows.map((r) => toFlowTradeRow(r, date));
 
+    // Self-maintaining baseline: compute percentile breakpoints ON READ from
+    // the accumulating flow_regime_slot_daily table (per-slot, ≥15 days), with
+    // a per-slot fallback to the committed JSON. One query per run. Empty table
+    // → everything falls back to the committed JSON (identical to pre-self-
+    // maintaining behavior).
+    const { baseline, liveSlots } = await withDbRetry(
+      () => loadFlowRegimeBaseline(sql),
+      2,
+      10_000,
+    );
+
+    // The evaluator OWNS the low-confidence floor: pass nTrades so a thin
+    // bucket is suppressed to normal/gray with null percentiles INSIDE the
+    // evaluator. The raw nd_tilt / idx0dte_put_share are still returned (and
+    // persisted) for transparency; the percentiles are NULL whenever
+    // confidence is 'low' (thin bucket OR thin baseline), keeping the pill
+    // color and the frontend detail copy from ever disagreeing.
     const sums = computeFlowMetrics(tradeRows);
-    const evaluated = evaluateFlowRegime({ sums, slot });
+    const result = evaluateFlowRegime({
+      sums,
+      slot,
+      nTrades: tradeRows.length,
+      baseline,
+    });
 
-    // Low-confidence gate: a thin bucket can produce an extreme tilt off a
-    // couple of prints. Keep the raw metrics/percentiles, but suppress the
-    // directional regime/color to normal/gray below the floor so the badge
-    // never flashes a false signal on near-zero data.
-    const lowConfidence = tradeRows.length < MIN_BUCKET_TRADES;
-    const result = lowConfidence
-      ? { ...evaluated, regime: 'normal' as const, color: 'gray' as const }
-      : evaluated;
-
-    // UPSERT — ON CONFLICT (date, slot) refines the in-progress bucket
-    // on each 5-min tick. Percentiles are NULL when the slot lacks
-    // baseline depth (hasBaseline === false).
+    // UPSERT — ON CONFLICT (date, slot) refines the in-progress bucket on each
+    // 5-min tick. baseline_version records WHICH distribution scored this slot:
+    //   2 → DB-computed (live) breakpoints from flow_regime_slot_daily,
+    //   1 → fell back to the committed flow-regime-baseline.json (slot < 15d).
+    // So a snapshot is self-describing about its scoring distribution. When the
+    // accumulator table is empty every slot falls back → version 1 (same as the
+    // pre-self-maintaining cron, which always stamped schema_version 1).
+    const baselineVersion = liveSlots.has(slot) ? 2 : 1;
     await withDbRetry(
       () => sql`
         INSERT INTO flow_regime_snapshots (
           date, slot, computed_at,
           nd_tilt, idx0dte_put_share,
           nd_percentile, idxput_percentile,
-          regime, color, n_trades
+          regime, color, n_trades, baseline_version
         ) VALUES (
           ${date}::date, ${slot}, NOW(),
           ${result.ndTilt}, ${result.idx0dtePutShare},
           ${result.ndPercentile}, ${result.idxputPercentile},
-          ${result.regime}, ${result.color}, ${tradeRows.length}
+          ${result.regime}, ${result.color}, ${tradeRows.length},
+          ${baselineVersion}
         )
         ON CONFLICT (date, slot) DO UPDATE SET
           computed_at = NOW(),
@@ -204,7 +181,8 @@ export default withCronInstrumentation(
           idxput_percentile = EXCLUDED.idxput_percentile,
           regime = EXCLUDED.regime,
           color = EXCLUDED.color,
-          n_trades = EXCLUDED.n_trades
+          n_trades = EXCLUDED.n_trades,
+          baseline_version = EXCLUDED.baseline_version
       `,
       2,
       10_000,
@@ -218,7 +196,8 @@ export default withCronInstrumentation(
         regime: result.regime,
         color: result.color,
         hasBaseline: result.hasBaseline,
-        lowConfidence,
+        confidence: result.confidence,
+        confidenceReason: result.confidenceReason,
       },
       'capture-flow-regime completed',
     );
@@ -232,7 +211,7 @@ export default withCronInstrumentation(
         nTrades: tradeRows.length,
         regime: result.regime,
         hasBaseline: result.hasBaseline,
-        lowConfidence,
+        confidence: result.confidence,
       },
     };
   },

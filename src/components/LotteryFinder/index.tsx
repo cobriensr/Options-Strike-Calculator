@@ -13,8 +13,10 @@ import {
   type UsePersistedStateOptions,
 } from '../../hooks/usePersistedState.js';
 import { SectionBox } from '../ui/SectionBox.js';
+import { CompactDisclosure } from '../ui/CompactDisclosure.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
+import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from './ct-window.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
@@ -307,6 +309,12 @@ const TOD_FILTERS: Array<{ value: TimeOfDay | null; label: string }> = [
 
 interface LotteryFinderSectionProps {
   marketOpen: boolean;
+  /**
+   * Render inside a bounded scroll pane (Options Alerts split view): drives
+   * `fill` on the SectionBox so the card is content-height and the pane's
+   * own overflow scroll works instead of the card bleeding past the divider.
+   */
+  compact?: boolean;
 }
 
 const EXIT_POLICIES: ExitPolicy[] = [
@@ -331,6 +339,65 @@ const todayCt = (): string => {
   });
   return fmt.format(new Date());
 };
+
+/**
+ * djb2 string hash → unsigned base36. Produces a single opaque token with
+ * NO `:`/`|` delimiters, so it can be appended to a `:`-delimited union
+ * storageKey without confusing useStickyUnion's segment-aware stale-key
+ * sweep (which parses `feed-union:<feed>:<date>[:<sig>]`).
+ */
+function hashToken(input: string): string {
+  let h = 5381;
+  for (let i = 0; i < input.length; i++) {
+    h = (h * 33) ^ input.charCodeAt(i);
+  }
+  // >>> 0 coerces to an unsigned 32-bit int before base36.
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * Active SERVER-SIDE filter params that scope the lottery feed. Changing any
+ * of these rescopes the never-vanish union (finding #1) — previously-excluded
+ * rows must drop rather than stay pinned. Client-only filters (hide-toggles,
+ * moneyness, minute scrub) are intentionally EXCLUDED: they prune the rendered
+ * view without changing the server's reachable set, so they must not rescope
+ * the union.
+ */
+interface LotteryFilterSigParams {
+  minTakeitProb: number;
+  minScore: number | null;
+  minFireCount: number;
+  mode: LotteryMode | null;
+  optionType: OptionType | null;
+  tod: TimeOfDay | null;
+  reload: boolean;
+  cheapCallPm: boolean;
+  minPremium: number;
+  showAll: boolean;
+  ticker: string | null;
+}
+
+/**
+ * Stable, compact signature of the active server-side filters. Joined in a
+ * fixed field order so the same filter setting always yields the same token,
+ * then hashed to a delimiter-free base36 string for the storageKey suffix.
+ */
+function buildLotteryFilterSig(p: LotteryFilterSigParams): string {
+  const raw = [
+    `t${p.minTakeitProb}`,
+    `s${p.minScore ?? 'x'}`,
+    `f${p.minFireCount}`,
+    `m${p.mode ?? 'x'}`,
+    `o${p.optionType ?? 'x'}`,
+    `d${p.tod ?? 'x'}`,
+    `r${p.reload ? 1 : 0}`,
+    `c${p.cheapCallPm ? 1 : 0}`,
+    `p${p.minPremium}`,
+    `a${p.showAll ? 1 : 0}`,
+    `k${p.ticker ?? 'x'}`,
+  ].join('|');
+  return hashToken(raw);
+}
 
 const formatTimeCT = (input: string | number | Date): string => {
   const d = input instanceof Date ? input : new Date(input);
@@ -372,8 +439,16 @@ const buildExportUrl = (params: ExportUrlParams): string => {
 
 export function LotteryFinderSection({
   marketOpen,
+  compact = false,
 }: LotteryFinderSectionProps) {
   const [date, setDate] = useState<string>(todayCt());
+  // True once the user has manually picked a date from the date input.
+  // Gates the ET-midnight auto-roll (finding #4): a tab left open past
+  // midnight should advance to the new trading day so the never-vanish
+  // union rescopes (storageKey flips) instead of upserting the new day's
+  // fires into the prior day's union — but ONLY when the user is sitting on
+  // the live day, never when they've scrubbed back to a historical date.
+  const [manualDatePick, setManualDatePick] = useState<boolean>(false);
   /** 1-minute bucket the slider is on; null = whole day. */
   const [minute, setMinute] = useState<string | null>(null);
   const [exitPolicy, setExitPolicy] = useState<ExitPolicy>(
@@ -521,26 +596,20 @@ export function LotteryFinderSection({
   // array reference and the `useMemo` deps below pin on
   // `lotteryFinder.data` (which is itself referentially stable across
   // ticks where the response is unchanged).
-  const fires = useMemo(
+  const fetchedFires = useMemo(
     () => lotteryFinder.data?.fires ?? [],
     [lotteryFinder.data],
   );
-  const rawReignitedFires = useMemo(
+  const fetchedReignitedFires = useMemo(
     () => lotteryFinder.data?.reignitedFires ?? [],
     [lotteryFinder.data],
   );
-  const total = lotteryFinder.data?.total ?? 0;
-  // Chains hidden by the server-side Q1/Q2 inversion-quality suppression.
-  // `total` now excludes these (server counts the reachable set), so we
-  // surface this separately as a "(N hidden by quality filter)" hint.
-  const suppressedCount = lotteryFinder.data?.suppressedCount ?? 0;
-  const offset = lotteryFinder.data?.offset ?? 0;
-  const hasMore = lotteryFinder.data?.hasMore ?? false;
 
-  // All-day ticker counts for the chip strip — chain-day deduped on
-  // the server so counts match what the user sees in the list.
-  // Independent of pagination + the minute scrubber so the strip
-  // always shows every ticker that fired today.
+  // All-day ticker counts for the chip strip — chain-day deduped on the
+  // server so counts match what the user sees in the list. Independent of
+  // pagination + the minute scrubber so the strip always shows every ticker
+  // that fired today. Declared before the never-vanish block so its rows feed
+  // the per-ticker MAX-merge inside `useNeverVanishFeed`.
   const tickerCounts = useLotteryFinderTickerCounts({
     date,
     marketOpen,
@@ -556,6 +625,129 @@ export function LotteryFinderSection({
     minTakeitProb: takeitFloor,
     showAll: showFilteredTickers,
   });
+  const tickerCountsData = useMemo(
+    () => tickerCounts.data?.tickers ?? [],
+    [tickerCounts.data],
+  );
+
+  // ── Never-vanish accumulator (spec never-vanish-feed-hook-2026-06-07) ──
+  //
+  // Once a lottery chain appears in the live feed it must never visually
+  // disappear for the rest of the trading day, even when a later poll
+  // omits it — a server-degrade `[]` (degradeOnTimeout), a Q1/Q2
+  // inversion-quality suppression flip, or a chain_max_takeit gate wobble.
+  // `useNeverVanishFeed` wraps `useStickyUnion` and consolidates the
+  // engaged-gate + page>0 dedup + total floor + server-anchored pagination +
+  // per-ticker MAX-merge that this panel (and Silent Boom) previously
+  // hand-rolled.
+  //
+  // The stable key is `optionChainId` — the OCC OSI symbol the server emits
+  // for every fire. It encodes (underlying, expiry, type, strike), which is
+  // exactly the chain-day dedup partition the API groups on (one row per
+  // chain per day), so it's unique across the response and stable across
+  // polls as the chain reignites (the row's `id` is the LATEST fire's id and
+  // changes on every reignite — not usable as a key).
+  //
+  // storageKey = `feed-union:lottery:${date}:${filterSig}` (finding #1):
+  // OCC symbols repeat across days (expiry, not trigger date, is encoded), so
+  // the union is day-scoped to keep days isolated; AND it carries a signature
+  // of the active SERVER-SIDE filters so changing a server filter rescopes
+  // the union — a previously-pinned row that the tightened filter now excludes
+  // drops instead of staying pinned. useStickyUnion's hardened stale-key sweep
+  // preserves same-day different-sig siblings, so toggling a filter back and
+  // forth re-shows the original union.
+  //
+  // The union is only engaged in the live polling view (today, all-day,
+  // page 0): the only view that re-polls and can drop a row out from under
+  // the trader. Minute-scrub buckets and paged slices pass through the raw
+  // server response; the union persists in localStorage across the detour and
+  // resumes on return.
+  const unionEngaged = minute == null && page === 0;
+  const filterSig = buildLotteryFilterSig({
+    minTakeitProb: takeitFloor,
+    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minFireCount: minFireCountFloor,
+    mode: modeFilter,
+    optionType: optionTypeFilter,
+    tod: todFilter,
+    reload: reloadOnly,
+    cheapCallPm: cheapCallPmOnly,
+    minPremium: minPremiumK * 1000,
+    showAll: showFilteredTickers,
+    ticker: tickerFilter,
+  });
+  const firesStorageKey = `feed-union:lottery:${date}:${filterSig}`;
+  const reignitedStorageKey = `feed-union:lottery-reignited:${date}:${filterSig}`;
+  const fireKey = useCallback((f: LotteryFire) => f.optionChainId, []);
+  const fireSymbol = useCallback((f: LotteryFire) => f.underlyingSymbol, []);
+
+  const serverTotal = lotteryFinder.data?.total ?? 0;
+  const serverHasMore = lotteryFinder.data?.hasMore ?? false;
+
+  const firesFeed = useNeverVanishFeed<LotteryFire>({
+    fetched: fetchedFires,
+    engaged: unionEngaged,
+    storageKey: firesStorageKey,
+    key: fireKey,
+    getSymbol: fireSymbol,
+    serverTotal,
+    hasMore: serverHasMore,
+    pageSize: PAGE_SIZE,
+    serverTickerCounts: tickerCountsData,
+  });
+  const reignitedFeed = useNeverVanishFeed<LotteryFire>({
+    fetched: fetchedReignitedFires,
+    engaged: unionEngaged,
+    storageKey: reignitedStorageKey,
+    key: fireKey,
+    getSymbol: fireSymbol,
+    // Reignited rows are served independent of pagination, so they have no
+    // own server total / hasMore — pass the fires feed's so the (unused)
+    // pagination outputs stay coherent.
+    serverTotal,
+    hasMore: serverHasMore,
+    pageSize: PAGE_SIZE,
+  });
+
+  // Pagination-hole guard. The live page renders the WHOLE union, so a chain
+  // pinned on page 0 that later demotes past the PAGE_SIZE cut is also
+  // returned by the server on a later page — without a guard it renders on
+  // BOTH. On the live view's pages > 0 we drop any fetched row already pinned
+  // on page 0; the long tail the server only serves on later pages stays
+  // reachable.
+  const livePagedView = minute == null && page > 0;
+  const dedupedPagedFires = useMemo(
+    () => fetchedFires.filter((f) => !firesFeed.unionKeys.has(fireKey(f))),
+    [fetchedFires, firesFeed.unionKeys, fireKey],
+  );
+  // Downstream surfaces (banners, filters, grouping, counts) consume the
+  // unioned array on page 0, the de-duplicated server slice on later live
+  // pages, and the raw response on the minute-scrub view.
+  const fires = unionEngaged
+    ? firesFeed.rows
+    : livePagedView
+      ? dedupedPagedFires
+      : fetchedFires;
+  const rawReignitedFires = unionEngaged
+    ? reignitedFeed.rows
+    : fetchedReignitedFires;
+  // Reignited-union key set drives the ticker-group partition (finding #2):
+  // a chain that left the per-poll top-N is `reignited:false` on the main
+  // row but still pinned in the reignited union — it must render ONLY in
+  // "Hot Right Now", never also in a ticker group.
+  const reignitedKeys = reignitedFeed.unionKeys;
+
+  // Engaged → union length floor (the "N pinned" count); disengaged →
+  // server total. Pagination is server-anchored via firesFeed.totalPages
+  // (finding #3) so a union rendering > PAGE_SIZE pinned rows on the live
+  // page never advertises an unreachable page.
+  const total = firesFeed.total;
+  // Chains hidden by the server-side Q1/Q2 inversion-quality suppression.
+  // `total` now excludes these (server counts the reachable set), so we
+  // surface this separately as a "(N hidden by quality filter)" hint.
+  const suppressedCount = lotteryFinder.data?.suppressedCount ?? 0;
+  const offset = lotteryFinder.data?.offset ?? 0;
+  const hasMore = serverHasMore;
 
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
   // browser-TZ-independent. See ct-window.ts.
@@ -577,6 +769,25 @@ export function LotteryFinderSection({
     return () => clearInterval(id);
   }, []);
 
+  // Midnight auto-roll (finding #4). A tab left open across the trading-day
+  // boundary must advance `date` to the new live day so the never-vanish
+  // union's storageKey rescopes — otherwise the new day's fires would upsert
+  // into the prior day's union and the count / pin state would bleed across
+  // days. We only auto-advance when the user is sitting on the live day
+  // (`!manualDatePick`); a user who scrubbed back to a historical replay is
+  // left untouched. Low-frequency (60s) check off its own interval — the
+  // `setDate` is a true no-op on the dominant case where the day is
+  // unchanged (React bails out on an equal primitive), so this cannot drive
+  // a render loop.
+  useEffect(() => {
+    if (manualDatePick) return;
+    const id = setInterval(() => {
+      const live = todayCt();
+      setDate((prev) => (prev === live ? prev : live));
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [manualDatePick]);
+
   const isLive = minute == null && date === todayCt();
   const isHistorical = date !== todayCt();
   // Counts on the chips reflect the current page only — after filter
@@ -593,13 +804,13 @@ export function LotteryFinderSection({
   );
 
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
-  // totalPages is now accurate because every load-bearing filter
-  // (Burst + TAKE-IT) is pushed server-side, so `total` reflects what
-  // pagination will actually traverse. The smaller client-side chips
-  // (hideLatePm, hideGated, etc.) can still leave a page lighter than
-  // PAGE_SIZE but cannot inflate the total page count by 10×+ the way
-  // TAKE-IT 0.70 used to.
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // SERVER-anchored totalPages (finding #3): derived from the server's
+  // reachable set (serverTotal), NOT the union-floored `total`. The
+  // never-vanish union may render MORE than PAGE_SIZE pinned rows on the
+  // live page — that's fine — but it must NOT advertise pages the server's
+  // `hasMore` can't reach. `useNeverVanishFeed` computes this as
+  // ceil(serverTotal / PAGE_SIZE).
+  const totalPages = firesFeed.totalPages;
 
   // Late-PM cutoff is applied client-side: keep `total` and pagination
   // tied to the server's view (so filter chips and counts remain
@@ -698,19 +909,25 @@ export function LotteryFinderSection({
         return f.optionType === 'C' ? delta < 0 : delta > 0;
       }).length
     : 0;
-  // All tickers with at least one fire today, from the dedicated
-  // all-day counts endpoint — independent of pagination + the minute
-  // scrubber so tickers that fired off the current page slice still
-  // appear in the strip. Previously capped to 12 (hid the long tail of
-  // low-count tickers like XOM/MSFT/WDC/UNH on busy days); now uncapped
-  // because the API already sorts count desc and `flex flex-wrap`
-  // handles the row growing vertically. Mirrors the Silent Boom fix.
+  // All tickers with at least one fire today, from the dedicated all-day
+  // counts endpoint — independent of pagination + the minute scrubber so
+  // tickers that fired off the current page slice still appear in the strip.
+  // Uncapped: the API sorts count desc and `flex flex-wrap` handles the row
+  // growing vertically.
+  //
+  // The per-ticker MAX-merge (server count vs. never-vanish union count) now
+  // lives in `useNeverVanishFeed`: the server count wins on tickers it still
+  // reports, the union backfills any ticker the server dropped (degrade `[]`
+  // / Q1-Q2 flip), server count-desc order preserved with union-only tickers
+  // appended. Engaged in the live view only; paged / scrubbed views pass
+  // through raw server counts. Re-shaped to the `[ticker, n]` tuple the chip
+  // strip consumes.
   const topTickers = useMemo(
     () =>
-      (tickerCounts.data?.tickers ?? []).map(
-        (t) => [t.ticker, t.count] as const,
+      firesFeed.tickerCounts.map(
+        (t) => [t.ticker, t.count] as readonly [string, number],
       ),
-    [tickerCounts.data],
+    [firesFeed.tickerCounts],
   );
 
   // Task A of lottery-reignition-ui-2026-05-17 — promote REIGNITED
@@ -725,12 +942,17 @@ export function LotteryFinderSection({
   //
   // Both outputs come from one consolidated memo so the chain
   // `fires → applyClientFilters → displayedFires → tickerGroupFires`
-  // collapses to a single invalidation pass on every fires/filter
-  // change — important on the 30s poll tick, which previously
-  // rebuilt three chained memos in sequence per tick. Each fire still
-  // renders in EXACTLY ONE place (reignited list OR ticker group);
-  // `tickerGroupFires` drops any reignited rows that happen to live
-  // in the page slice.
+  // collapses to a single invalidation pass on every fires/filter change.
+  // Each fire still renders in EXACTLY ONE place (reignited list OR ticker
+  // group).
+  //
+  // Finding #2 — partition by the REIGNITED-UNION key set, not the stale
+  // per-row `reignited` flag. A chain that left the per-poll top-N is
+  // `reignited:false` on its main-union row but is still pinned in the
+  // reignited never-vanish union (it must never vanish from "Hot Right
+  // Now"). Filtering ticker groups on `reignitedKeys` (the pinned set) — not
+  // `f.reignited !== true` — guarantees such a chain renders ONLY in the
+  // reignited section, never also in a ticker group.
   const { filteredFires, tickerGroupFires, reignitedFires } = useMemo(() => {
     const filtered = applyClientFilters(fires);
     const filteredReignited = [...applyClientFilters(rawReignitedFires)].sort(
@@ -745,10 +967,12 @@ export function LotteryFinderSection({
     );
     return {
       filteredFires: filtered,
-      tickerGroupFires: filtered.filter((f) => f.reignited !== true),
+      tickerGroupFires: filtered.filter(
+        (f) => !reignitedKeys.has(fireKey(f)) && f.reignited !== true,
+      ),
       reignitedFires: filteredReignited,
     };
-  }, [fires, rawReignitedFires, applyClientFilters]);
+  }, [fires, rawReignitedFires, applyClientFilters, reignitedKeys, fireKey]);
 
   // Group displayed fires by ticker so each underlying renders as one
   // collapsible row. Grouping + ordering + conviction/storm rollups
@@ -855,29 +1079,417 @@ export function LotteryFinderSection({
     setTickerExpandedMap((prev) => ({ ...prev, [ticker]: !prev[ticker] }));
   }, []);
 
-  return (
-    <SectionBox label="Lottery Finder" collapsible>
-      <div className="space-y-3">
-        <p className="text-[11px] text-neutral-500">
-          Signal detector — not a backtested profitable strategy. Most days
-          lose; wins come from rare explosive moves. Edge concentrated in 1-2
-          outlier days per 15 in the cheap-call-PM RE-LOAD subset.{' '}
-          <a
-            className="text-neutral-400 underline hover:text-white"
-            href="/docs/superpowers/specs/lottery-finder-2026-05-02.md"
-            target="_blank"
-            rel="noreferrer"
+  // Filter-chip rows (sort/conviction/burst/TAKE-IT/min-prem/mode/type/
+  // moneyness/tod/hide-toggles/ticker/realized-exit). Extracted so the
+  // toolbar can render inline in the normal layout or collapsed behind a
+  // sticky CompactDisclosure in the dense Options Alerts pane. The
+  // date/scrub/export row stays outside this block (always visible).
+  const lotteryToolbar = (
+    <div className="space-y-2.5">
+      {/* Row 2: Sort + Conviction — score-driven controls that gate
+            the API ORDER BY and WHERE clauses. Persist to localStorage
+            so the user's preferred ranking sticks across reloads. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>sort</span>
+        {SORT_OPTIONS.map((s) => (
+          <FilterChip
+            key={s.value}
+            active={sortMode === s.value}
+            activeColor="sky"
+            onClick={() => setSortMode(s.value)}
+            title={s.tooltip}
+            ariaPressed={sortMode === s.value}
           >
-            methodology
-          </a>
-        </p>
+            {s.label}
+          </FilterChip>
+        ))}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>conviction</span>
+        {CONVICTION_OPTIONS.map((c) => {
+          const active = convictionFloor === c.value;
+          // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
+          // emerald. The active style tracks the floor so the user
+          // can read the filter at a glance.
+          const activeColor: FilterChipColor =
+            c.value === 'tier1'
+              ? 'rose'
+              : c.value === 'tier2'
+                ? 'amber'
+                : 'emerald';
+          return (
+            <FilterChip
+              key={c.value}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setConvictionFloor(c.value)}
+              title={c.tooltip}
+              ariaPressed={active}
+            >
+              {c.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>burst</span>
+        {MIN_FIRE_COUNT_OPTIONS.map((c) => {
+          const active = minFireCount === c.value;
+          // Tighter floor → deeper orange. Matches the row's ×N
+          // badge + the REIGNITION pinned section palette so the
+          // visual hierarchy stays consistent.
+          const activeColor: FilterChipColor =
+            c.value === 'gte16'
+              ? 'rose'
+              : c.value === 'gte8'
+                ? 'orange'
+                : c.value === 'gte3'
+                  ? 'amber'
+                  : 'emerald';
+          return (
+            <FilterChip
+              key={c.value}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setMinFireCount(c.value)}
+              title={c.tooltip}
+              ariaPressed={active}
+              testId={`burst-filter-${c.value}`}
+            >
+              {c.label}
+            </FilterChip>
+          );
+        })}
+      </div>
+      <div className="flex w-full basis-full flex-wrap items-center gap-x-2 gap-y-1">
+        <span className={SECTION_LABEL}>TAKE-IT</span>
+        {TAKEIT_FLOOR_OPTIONS.map((o) => {
+          const active = takeitFloor === o.value;
+          return (
+            <FilterChip
+              key={o.value}
+              active={active}
+              activeColor="sky"
+              onClick={() => setTakeitFloor(o.value)}
+              title={o.tooltip}
+              ariaPressed={active}
+              testId={`takeit-floor-${o.value}`}
+            >
+              {o.label}
+            </FilterChip>
+          );
+        })}
+      </div>
 
-        {/* Day-level macro banner — at-a-glance regime context */}
-        <LotteryDayBanner fires={fires} />
+      {/* Row 2b: numeric server-side filter — min premium $K. Mirrors
+            SilentBoom's "min prem $K" input. Server-side filter so
+            pagination + ticker counts reflect the post-filter result.
+            Floor is entry_price * trigger_window_size * 100 ≥ N
+            dollars; the LF detector's trigger_window_size is the
+            rolling window volume (analog of SB's spike_volume). */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <label
+          className="flex items-center gap-1.5"
+          title="Minimum premium floor (entry_price × trigger_window_size × 100), in $K. 0 = no floor. Server-side filter so pagination + ticker counts reflect the post-filter result."
+        >
+          <span className={SECTION_LABEL}>min prem $K</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={100_000}
+            step={10}
+            value={minPremiumK === 0 ? '' : minPremiumK}
+            placeholder="0"
+            onChange={(e) => {
+              const raw = e.target.value;
+              if (raw === '') {
+                setMinPremiumK(0);
+                return;
+              }
+              const n = Number.parseInt(raw, 10);
+              if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
+            }}
+            aria-label="Minimum premium in thousands of dollars"
+            data-testid="lottery-min-premium-input"
+            className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
+          />
+        </label>
+      </div>
+
+      {/* Row 3: Tag toggles + Mode (A/B/all). RE-LOAD and
+            cheap-call-PM are independent boolean toggles with their
+            own counts; the MODE_FILTERS group is a single-select
+            radio set. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>mode</span>
+        <FilterChip
+          active={reloadOnly}
+          activeColor="amber"
+          onClick={() => setReloadOnly(!reloadOnly)}
+          title="Show only fires tagged RE-LOAD (burst ≥2× prior AND entry dropped ≥30%)."
+          ariaPressed={reloadOnly}
+        >
+          RE-LOAD only{' '}
+          <span className="text-[10px] opacity-70">{reloadCount}</span>
+        </FilterChip>
+        <FilterChip
+          active={cheapCallPmOnly}
+          activeColor="fuchsia"
+          onClick={() => setCheapCallPmOnly(!cheapCallPmOnly)}
+          title="Show only fires tagged cheap-call-PM (call + PM session + entry < $1). The Phase 1 selection rule."
+          ariaPressed={cheapCallPmOnly}
+        >
+          Cheap-call-PM only{' '}
+          <span className="text-[10px] opacity-70">{cheapPmCount}</span>
+        </FilterChip>
+        {/* Phase 4 inversion-quality escape hatch (spec
+              lottery-inversion-quality-filter-2026-05-19.md). When ON,
+              flips ?showAll=true on the lottery feed URL and the server
+              stops suppressing Q1/Q2 tickers. Off by default — the
+              narrowed feed is the intentional default; the toggle is a
+              debug / spot-check surface, not a daily-use chip. Reverts
+              to OFF on reload (local useState, not persisted). */}
+        <FilterChip
+          active={showFilteredTickers}
+          activeColor="amber"
+          testId="lottery-show-filtered-toggle"
+          onClick={() => setShowFilteredTickers(!showFilteredTickers)}
+          title="Show filtered tickers — bypass the server-side Q1/Q2 inversion-quality suppression and include the bottom-quintile tickers. Off by default."
+          ariaPressed={showFilteredTickers}
+        >
+          Show filtered tickers
+        </FilterChip>
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        {MODE_FILTERS.map((m) => (
+          <FilterChip
+            key={m.label}
+            active={modeFilter === m.value}
+            activeColor="blue"
+            onClick={() => setModeFilter(m.value)}
+            ariaPressed={modeFilter === m.value}
+          >
+            {m.label}
+          </FilterChip>
+        ))}
+      </div>
+
+      {/* Row 4: Type (calls/puts) + Moneyness + Time-of-day. Three
+            single-select option-type groups merged into one row with
+            dividers — narrow-cardinality filters that read cleanly
+            side-by-side. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>type</span>
+        {[
+          { value: null, label: 'all' },
+          { value: 'C' as OptionType, label: 'calls' },
+          { value: 'P' as OptionType, label: 'puts' },
+        ].map((o) => {
+          const active = optionTypeFilter === o.value;
+          const activeColor: FilterChipColor =
+            o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
+          return (
+            <FilterChip
+              key={o.label}
+              active={active}
+              activeColor={activeColor}
+              onClick={() => setOptionTypeFilter(o.value)}
+              ariaPressed={active}
+            >
+              {o.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>moneyness</span>
+        {MONEYNESS_FILTERS.map((m) => {
+          const active = moneynessMode === m.value;
+          const activeColor: FilterChipColor =
+            m.value === 'otm'
+              ? 'emerald'
+              : m.value === 'itm'
+                ? 'amber'
+                : 'neutral';
+          return (
+            <FilterChip
+              key={m.value}
+              active={active}
+              activeColor={activeColor}
+              testId={`lottery-moneyness-${m.value}-chip`}
+              onClick={() => setMoneynessMode(m.value)}
+              title={
+                m.value === 'otm'
+                  ? 'Show only out-of-the-money fires (calls: strike > spotAtFirst, puts: strike < spotAtFirst). Client-side filter.'
+                  : m.value === 'itm'
+                    ? 'Show only in-the-money fires (calls: strike ≤ spotAtFirst, puts: strike ≥ spotAtFirst). Client-side filter.'
+                    : 'Show fires regardless of moneyness.'
+              }
+              ariaPressed={active}
+            >
+              {m.label}
+            </FilterChip>
+          );
+        })}
+        <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
+        <span className={SECTION_LABEL}>tod</span>
+        {TOD_FILTERS.map((t) => (
+          <FilterChip
+            key={t.label}
+            active={todFilter === t.value}
+            activeColor="orange"
+            onClick={() => setTodFilter(t.value)}
+            ariaPressed={todFilter === t.value}
+          >
+            {t.label}
+          </FilterChip>
+        ))}
+      </div>
+
+      {/* Row 5: Hide-toggles + aggressive premium. Independent
+            boolean filters that prune the displayed result set without
+            affecting the underlying DB query. Grouped here so the
+            muscle-memory position matches SilentBoom. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <FilterChip
+          active={hideLatePm}
+          activeColor="purple"
+          onClick={() => setHideLatePm(!hideLatePm)}
+          title="Hide fires triggered after 14:30 CT. Late-PM fires often lack enough remaining session for the flow_inversion signal to develop, so they devolve into theta-decay coin flips. Client-side filter — toolbar counts and pagination still reflect the full DB result."
+          ariaPressed={hideLatePm}
+        >
+          hide post-14:30
+          {hideLatePm && hiddenLatePmCount > 0 && (
+            <span className="text-[10px] opacity-70">−{hiddenLatePmCount}</span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={hideGated}
+          activeColor="amber"
+          testId="lottery-hide-gated-chip"
+          onClick={() => setHideGated(!hideGated)}
+          title="Hide counter-trend fires demoted to tier3 by the Phase 4 direction gate (T=±150M on mkt_tide_otm_diff). Puts when otm_diff > +150M, calls when otm_diff < -150M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
+          ariaPressed={hideGated}
+        >
+          hide counter-trend
+          {hideGated && hiddenGatedCount > 0 && (
+            <span className="text-[10px] opacity-70">−{hiddenGatedCount}</span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={hideCounterFlow}
+          activeColor="amber"
+          testId="lottery-hide-counter-flow-chip"
+          onClick={() => setHideCounterFlow(!hideCounterFlow)}
+          title="Hide counter-flow alerts — rows where the per-ticker net flow (cumNcpAtFire − cumNppAtFire) at fire time contradicts the option type. Calls hidden when NCP < NPP; puts hidden when NCP > NPP. Rows with no fire-time snapshot are never hidden. Client-side filter — does not affect score or tier."
+          ariaPressed={hideCounterFlow}
+        >
+          hide counter-flow
+          {hideCounterFlow && hiddenCounterFlowCount > 0 && (
+            <span className="text-[10px] opacity-70">
+              −{hiddenCounterFlowCount}
+            </span>
+          )}
+        </FilterChip>
+        <FilterChip
+          active={aggressivePremium}
+          activeColor="sky"
+          testId="lottery-aggressive-premium-chip"
+          onClick={() => setAggressivePremium(!aggressivePremium)}
+          title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs spotAtFirst). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
+          ariaPressed={aggressivePremium}
+        >
+          💎 aggressive premium
+        </FilterChip>
+      </div>
+
+      {/* Row 6 (conditional): Ticker chips — top tickers in the
+            current result set, click to scope to one ticker. Universe
+            is ~50 tickers; we show only those actually present so the
+            user can spot the dominant tickers of the day at a glance. */}
+      {(topTickers.length > 0 || tickerFilter) && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className={SECTION_LABEL}>ticker</span>
+          <FilterChip
+            active={tickerFilter == null}
+            activeColor="emerald"
+            onClick={() => setTickerFilter(null)}
+            ariaPressed={tickerFilter == null}
+          >
+            all
+          </FilterChip>
+          {topTickers.map(([t, n]) => (
+            <FilterChip
+              key={t}
+              active={tickerFilter === t}
+              activeColor="emerald"
+              onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
+              title={`Filter to ${t} only (${n} fire${n === 1 ? '' : 's'} today)`}
+              ariaPressed={tickerFilter === t}
+            >
+              {t} <span className="text-[10px] opacity-70">{n}</span>
+            </FilterChip>
+          ))}
+          {tickerFilter && !topTickers.some(([t]) => t === tickerFilter) && (
+            <FilterChip
+              active
+              activeColor="emerald"
+              onClick={() => setTickerFilter(null)}
+              title="Filter active but no fires for this ticker in the current view — click to clear"
+            >
+              {tickerFilter} <span className="text-[10px] opacity-70">0</span>
+            </FilterChip>
+          )}
+        </div>
+      )}
+
+      {/* Row 7: Exit policy selector — single-select set governing
+            which realized-exit metric drives the row badges below. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className={SECTION_LABEL}>realized exit</span>
+        {EXIT_POLICIES.map((p) => (
+          <FilterChip
+            key={p}
+            active={exitPolicy === p}
+            activeColor="purple"
+            onClick={() => setExitPolicy(p)}
+            title={EXIT_POLICY_TOOLTIPS[p]}
+            ariaPressed={exitPolicy === p}
+          >
+            {EXIT_POLICY_LABELS[p]}
+          </FilterChip>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <SectionBox label="Lottery Finder" collapsible fill={compact}>
+      <div className="space-y-3">
+        {/* Methodology blurb — hidden in compact (half-height alerts pane)
+            to reclaim vertical space; kept in the full calculator view. */}
+        {!compact && (
+          <p className="text-[11px] text-neutral-500">
+            Signal detector — not a backtested profitable strategy. Most days
+            lose; wins come from rare explosive moves. Edge concentrated in 1-2
+            outlier days per 15 in the cheap-call-PM RE-LOAD subset.{' '}
+            <a
+              className="text-neutral-400 underline hover:text-white"
+              href="/docs/superpowers/specs/lottery-finder-2026-05-02.md"
+              target="_blank"
+              rel="noreferrer"
+            >
+              methodology
+            </a>
+          </p>
+        )}
+
+        {/* Day-level macro banner — at-a-glance regime context. Hidden in
+            compact mode to maximize row density. */}
+        {!compact && <LotteryDayBanner fires={fires} />}
 
         {/* Day-level tier breakdown — counts + dominant ticker + top
-            score on the current page. Mirrors SilentBoomDayBanner. */}
-        <LotteryTierBanner fires={fires} total={total} />
+            score on the current page. Mirrors SilentBoomDayBanner. Hidden
+            in compact mode (carries the "No lottery fires yet today"
+            placeholder + populated day stats). */}
+        {!compact && <LotteryTierBanner fires={fires} total={total} />}
 
         {/* Filter toolbar — single contained panel for date/scrub,
             sort/conviction, type/TOD, mode tags, ticker, and exit
@@ -902,6 +1514,10 @@ export function LotteryFinderSection({
                 onChange={(e) => {
                   setDate(e.target.value);
                   setMinute(null);
+                  // Mark the date as user-chosen so the ET-midnight
+                  // auto-roll won't yank them off a historical replay.
+                  // Picking today again re-arms the auto-roll.
+                  setManualDatePick(e.target.value !== todayCt());
                 }}
                 className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none"
                 aria-label="Select trading day"
@@ -1052,388 +1668,22 @@ export function LotteryFinderSection({
             </div>
           </div>
 
-          {/* Row 2: Sort + Conviction — score-driven controls that gate
-            the API ORDER BY and WHERE clauses. Persist to localStorage
-            so the user's preferred ranking sticks across reloads. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>sort</span>
-            {SORT_OPTIONS.map((s) => (
-              <FilterChip
-                key={s.value}
-                active={sortMode === s.value}
-                activeColor="sky"
-                onClick={() => setSortMode(s.value)}
-                title={s.tooltip}
-                ariaPressed={sortMode === s.value}
-              >
-                {s.label}
-              </FilterChip>
-            ))}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>conviction</span>
-            {CONVICTION_OPTIONS.map((c) => {
-              const active = convictionFloor === c.value;
-              // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
-              // emerald. The active style tracks the floor so the user
-              // can read the filter at a glance.
-              const activeColor: FilterChipColor =
-                c.value === 'tier1'
-                  ? 'rose'
-                  : c.value === 'tier2'
-                    ? 'amber'
-                    : 'emerald';
-              return (
-                <FilterChip
-                  key={c.value}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setConvictionFloor(c.value)}
-                  title={c.tooltip}
-                  ariaPressed={active}
-                >
-                  {c.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>burst</span>
-            {MIN_FIRE_COUNT_OPTIONS.map((c) => {
-              const active = minFireCount === c.value;
-              // Tighter floor → deeper orange. Matches the row's ×N
-              // badge + the REIGNITION pinned section palette so the
-              // visual hierarchy stays consistent.
-              const activeColor: FilterChipColor =
-                c.value === 'gte16'
-                  ? 'rose'
-                  : c.value === 'gte8'
-                    ? 'orange'
-                    : c.value === 'gte3'
-                      ? 'amber'
-                      : 'emerald';
-              return (
-                <FilterChip
-                  key={c.value}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setMinFireCount(c.value)}
-                  title={c.tooltip}
-                  ariaPressed={active}
-                  testId={`burst-filter-${c.value}`}
-                >
-                  {c.label}
-                </FilterChip>
-              );
-            })}
-          </div>
-          <div className="flex w-full basis-full flex-wrap items-center gap-x-2 gap-y-1">
-            <span className={SECTION_LABEL}>TAKE-IT</span>
-            {TAKEIT_FLOOR_OPTIONS.map((o) => {
-              const active = takeitFloor === o.value;
-              return (
-                <FilterChip
-                  key={o.value}
-                  active={active}
-                  activeColor="sky"
-                  onClick={() => setTakeitFloor(o.value)}
-                  title={o.tooltip}
-                  ariaPressed={active}
-                  testId={`takeit-floor-${o.value}`}
-                >
-                  {o.label}
-                </FilterChip>
-              );
-            })}
-          </div>
-
-          {/* Row 2b: numeric server-side filter — min premium $K. Mirrors
-            SilentBoom's "min prem $K" input. Server-side filter so
-            pagination + ticker counts reflect the post-filter result.
-            Floor is entry_price * trigger_window_size * 100 ≥ N
-            dollars; the LF detector's trigger_window_size is the
-            rolling window volume (analog of SB's spike_volume). */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <label
-              className="flex items-center gap-1.5"
-              title="Minimum premium floor (entry_price × trigger_window_size × 100), in $K. 0 = no floor. Server-side filter so pagination + ticker counts reflect the post-filter result."
-            >
-              <span className={SECTION_LABEL}>min prem $K</span>
-              <input
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={100_000}
-                step={10}
-                value={minPremiumK === 0 ? '' : minPremiumK}
-                placeholder="0"
-                onChange={(e) => {
-                  const raw = e.target.value;
-                  if (raw === '') {
-                    setMinPremiumK(0);
-                    return;
-                  }
-                  const n = Number.parseInt(raw, 10);
-                  if (Number.isFinite(n) && n >= 0) setMinPremiumK(n);
-                }}
-                aria-label="Minimum premium in thousands of dollars"
-                data-testid="lottery-min-premium-input"
-                className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
-              />
-            </label>
-          </div>
-
-          {/* Row 3: Tag toggles + Mode (A/B/all). RE-LOAD and
-            cheap-call-PM are independent boolean toggles with their
-            own counts; the MODE_FILTERS group is a single-select
-            radio set. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>mode</span>
-            <FilterChip
-              active={reloadOnly}
-              activeColor="amber"
-              onClick={() => setReloadOnly(!reloadOnly)}
-              title="Show only fires tagged RE-LOAD (burst ≥2× prior AND entry dropped ≥30%)."
-              ariaPressed={reloadOnly}
-            >
-              RE-LOAD only{' '}
-              <span className="text-[10px] opacity-70">{reloadCount}</span>
-            </FilterChip>
-            <FilterChip
-              active={cheapCallPmOnly}
-              activeColor="fuchsia"
-              onClick={() => setCheapCallPmOnly(!cheapCallPmOnly)}
-              title="Show only fires tagged cheap-call-PM (call + PM session + entry < $1). The Phase 1 selection rule."
-              ariaPressed={cheapCallPmOnly}
-            >
-              Cheap-call-PM only{' '}
-              <span className="text-[10px] opacity-70">{cheapPmCount}</span>
-            </FilterChip>
-            {/* Phase 4 inversion-quality escape hatch (spec
-              lottery-inversion-quality-filter-2026-05-19.md). When ON,
-              flips ?showAll=true on the lottery feed URL and the server
-              stops suppressing Q1/Q2 tickers. Off by default — the
-              narrowed feed is the intentional default; the toggle is a
-              debug / spot-check surface, not a daily-use chip. Reverts
-              to OFF on reload (local useState, not persisted). */}
-            <FilterChip
-              active={showFilteredTickers}
-              activeColor="amber"
-              testId="lottery-show-filtered-toggle"
-              onClick={() => setShowFilteredTickers(!showFilteredTickers)}
-              title="Show filtered tickers — bypass the server-side Q1/Q2 inversion-quality suppression and include the bottom-quintile tickers. Off by default."
-              ariaPressed={showFilteredTickers}
-            >
-              Show filtered tickers
-            </FilterChip>
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            {MODE_FILTERS.map((m) => (
-              <FilterChip
-                key={m.label}
-                active={modeFilter === m.value}
-                activeColor="blue"
-                onClick={() => setModeFilter(m.value)}
-                ariaPressed={modeFilter === m.value}
-              >
-                {m.label}
-              </FilterChip>
-            ))}
-          </div>
-
-          {/* Row 4: Type (calls/puts) + Moneyness + Time-of-day. Three
-            single-select option-type groups merged into one row with
-            dividers — narrow-cardinality filters that read cleanly
-            side-by-side. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>type</span>
-            {[
-              { value: null, label: 'all' },
-              { value: 'C' as OptionType, label: 'calls' },
-              { value: 'P' as OptionType, label: 'puts' },
-            ].map((o) => {
-              const active = optionTypeFilter === o.value;
-              const activeColor: FilterChipColor =
-                o.value === 'C' ? 'green' : o.value === 'P' ? 'red' : 'neutral';
-              return (
-                <FilterChip
-                  key={o.label}
-                  active={active}
-                  activeColor={activeColor}
-                  onClick={() => setOptionTypeFilter(o.value)}
-                  ariaPressed={active}
-                >
-                  {o.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>moneyness</span>
-            {MONEYNESS_FILTERS.map((m) => {
-              const active = moneynessMode === m.value;
-              const activeColor: FilterChipColor =
-                m.value === 'otm'
-                  ? 'emerald'
-                  : m.value === 'itm'
-                    ? 'amber'
-                    : 'neutral';
-              return (
-                <FilterChip
-                  key={m.value}
-                  active={active}
-                  activeColor={activeColor}
-                  testId={`lottery-moneyness-${m.value}-chip`}
-                  onClick={() => setMoneynessMode(m.value)}
-                  title={
-                    m.value === 'otm'
-                      ? 'Show only out-of-the-money fires (calls: strike > spotAtFirst, puts: strike < spotAtFirst). Client-side filter.'
-                      : m.value === 'itm'
-                        ? 'Show only in-the-money fires (calls: strike ≤ spotAtFirst, puts: strike ≥ spotAtFirst). Client-side filter.'
-                        : 'Show fires regardless of moneyness.'
-                  }
-                  ariaPressed={active}
-                >
-                  {m.label}
-                </FilterChip>
-              );
-            })}
-            <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
-            <span className={SECTION_LABEL}>tod</span>
-            {TOD_FILTERS.map((t) => (
-              <FilterChip
-                key={t.label}
-                active={todFilter === t.value}
-                activeColor="orange"
-                onClick={() => setTodFilter(t.value)}
-                ariaPressed={todFilter === t.value}
-              >
-                {t.label}
-              </FilterChip>
-            ))}
-          </div>
-
-          {/* Row 5: Hide-toggles + aggressive premium. Independent
-            boolean filters that prune the displayed result set without
-            affecting the underlying DB query. Grouped here so the
-            muscle-memory position matches SilentBoom. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <FilterChip
-              active={hideLatePm}
-              activeColor="purple"
-              onClick={() => setHideLatePm(!hideLatePm)}
-              title="Hide fires triggered after 14:30 CT. Late-PM fires often lack enough remaining session for the flow_inversion signal to develop, so they devolve into theta-decay coin flips. Client-side filter — toolbar counts and pagination still reflect the full DB result."
-              ariaPressed={hideLatePm}
-            >
-              hide post-14:30
-              {hideLatePm && hiddenLatePmCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenLatePmCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={hideGated}
-              activeColor="amber"
-              testId="lottery-hide-gated-chip"
-              onClick={() => setHideGated(!hideGated)}
-              title="Hide counter-trend fires demoted to tier3 by the Phase 4 direction gate (T=±150M on mkt_tide_otm_diff). Puts when otm_diff > +150M, calls when otm_diff < -150M. Score is preserved on the row; only the displayed tier is forced down. Client-side filter."
-              ariaPressed={hideGated}
-            >
-              hide counter-trend
-              {hideGated && hiddenGatedCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenGatedCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={hideCounterFlow}
-              activeColor="amber"
-              testId="lottery-hide-counter-flow-chip"
-              onClick={() => setHideCounterFlow(!hideCounterFlow)}
-              title="Hide counter-flow alerts — rows where the per-ticker net flow (cumNcpAtFire − cumNppAtFire) at fire time contradicts the option type. Calls hidden when NCP < NPP; puts hidden when NCP > NPP. Rows with no fire-time snapshot are never hidden. Client-side filter — does not affect score or tier."
-              ariaPressed={hideCounterFlow}
-            >
-              hide counter-flow
-              {hideCounterFlow && hiddenCounterFlowCount > 0 && (
-                <span className="text-[10px] opacity-70">
-                  −{hiddenCounterFlowCount}
-                </span>
-              )}
-            </FilterChip>
-            <FilterChip
-              active={aggressivePremium}
-              activeColor="sky"
-              testId="lottery-aggressive-premium-chip"
-              onClick={() => setAggressivePremium(!aggressivePremium)}
-              title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs spotAtFirst). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
-              ariaPressed={aggressivePremium}
-            >
-              💎 aggressive premium
-            </FilterChip>
-          </div>
-
-          {/* Row 6 (conditional): Ticker chips — top tickers in the
-            current result set, click to scope to one ticker. Universe
-            is ~50 tickers; we show only those actually present so the
-            user can spot the dominant tickers of the day at a glance. */}
-          {(topTickers.length > 0 || tickerFilter) && (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className={SECTION_LABEL}>ticker</span>
-              <FilterChip
-                active={tickerFilter == null}
-                activeColor="emerald"
-                onClick={() => setTickerFilter(null)}
-                ariaPressed={tickerFilter == null}
-              >
-                all
-              </FilterChip>
-              {topTickers.map(([t, n]) => (
-                <FilterChip
-                  key={t}
-                  active={tickerFilter === t}
-                  activeColor="emerald"
-                  onClick={() => setTickerFilter(tickerFilter === t ? null : t)}
-                  title={`Filter to ${t} only (${n} fire${n === 1 ? '' : 's'} today)`}
-                  ariaPressed={tickerFilter === t}
-                >
-                  {t} <span className="text-[10px] opacity-70">{n}</span>
-                </FilterChip>
-              ))}
-              {tickerFilter &&
-                !topTickers.some(([t]) => t === tickerFilter) && (
-                  <FilterChip
-                    active
-                    activeColor="emerald"
-                    onClick={() => setTickerFilter(null)}
-                    title="Filter active but no fires for this ticker in the current view — click to clear"
-                  >
-                    {tickerFilter}{' '}
-                    <span className="text-[10px] opacity-70">0</span>
-                  </FilterChip>
-                )}
-            </div>
+          {/* Filter chips — inline in the normal layout, collapsed
+            behind a sticky CompactDisclosure in the dense Options
+            Alerts pane. The date/scrub/export row above stays visible
+            in both modes. */}
+          {compact ? (
+            <CompactDisclosure label="Filters">
+              {lotteryToolbar}
+            </CompactDisclosure>
+          ) : (
+            lotteryToolbar
           )}
-
-          {/* Row 7: Exit policy selector — single-select set governing
-            which realized-exit metric drives the row badges below. */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className={SECTION_LABEL}>realized exit</span>
-            {EXIT_POLICIES.map((p) => (
-              <FilterChip
-                key={p}
-                active={exitPolicy === p}
-                activeColor="purple"
-                onClick={() => setExitPolicy(p)}
-                title={EXIT_POLICY_TOOLTIPS[p]}
-                ariaPressed={exitPolicy === p}
-              >
-                {EXIT_POLICY_LABELS[p]}
-              </FilterChip>
-            ))}
-          </div>
         </div>
         {/* /toolbar panel */}
 
         {/* Body */}
-        {loading && fires.length === 0 ? (
+        {loading && fires.length === 0 && reignitedFires.length === 0 ? (
           <div className="text-sm text-neutral-500">Loading lottery feed…</div>
         ) : error ? (
           <div
@@ -1442,7 +1692,7 @@ export function LotteryFinderSection({
           >
             Error: {error}
           </div>
-        ) : fires.length === 0 ? (
+        ) : fires.length === 0 && reignitedFires.length === 0 ? (
           <div
             className="space-y-2 rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400"
             data-testid={
