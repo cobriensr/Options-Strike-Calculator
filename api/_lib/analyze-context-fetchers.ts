@@ -197,11 +197,11 @@ export async function fetchMainData(
       getFlowData(analysisDate, 'qqq_etf_tide', asOf),
       getFlowData(analysisDate, 'zero_dte_index', asOf),
       getFlowData(analysisDate, 'zero_dte_greek_flow', asOf),
-      getGreekExposure(analysisDate),
+      getGreekExposure(analysisDate, 'SPX', asOf),
       getSpotExposures(analysisDate, 'SPX', asOf),
       getStrikeExposures(analysisDate, 'SPX', asOf),
       getAllExpiryStrikeExposures(analysisDate, 'SPX', asOf),
-      getNetGexHeatmap(analysisDate),
+      getNetGexHeatmap(analysisDate, asOf),
       getRecentNope('SPY', 60, asOf),
       getMarketInternalsToday(analysisDate),
     ]);

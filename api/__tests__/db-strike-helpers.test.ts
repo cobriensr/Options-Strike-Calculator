@@ -1554,6 +1554,34 @@ describe('getNetGexHeatmap', () => {
     expect(rows).toEqual([]);
   });
 
+  it('clamps to the latest snapshot at-or-before asOf when provided', async () => {
+    // Two intraday snapshots straddle asOf=14:00. The MAX(timestamp <= asOf)
+    // step returns the earlier (13:00) snapshot and the data step reads it.
+    const asOf = '2026-04-10T14:00:00.000Z';
+    const earlierTs = '2026-04-10T13:00:00.000Z';
+    mockSql.mockResolvedValueOnce([{ latest_ts: earlierTs }]);
+    mockSql.mockResolvedValueOnce([
+      {
+        strike: 6800,
+        call_gamma_oi: '1000000000',
+        put_gamma_oi: '-400000000',
+        call_delta_oi: '0',
+        put_delta_oi: '0',
+        call_charm_oi: '0',
+        put_charm_oi: '0',
+      },
+    ]);
+
+    const rows = await getNetGexHeatmap('2026-04-10', asOf);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.netGex).toBe(600_000_000);
+    // The MAX query carried the asOf cutoff; the data query carried the
+    // chosen earlier timestamp.
+    expect(mockSql.mock.calls[0]!).toContain(asOf);
+    expect(mockSql.mock.calls[1]!).toContain(earlierTs);
+  });
+
   it('computes null callGexFraction when absGex is zero', async () => {
     mockSql.mockResolvedValueOnce([{ latest_ts: '2026-04-10T18:00:00.000Z' }]);
     mockSql.mockResolvedValueOnce([

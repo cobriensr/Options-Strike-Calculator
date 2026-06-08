@@ -567,5 +567,47 @@ describe('engineerGexFeatures', () => {
       expect(features.dte0_charm_pct).toBeGreaterThan(0);
       expect(features.dte0_charm_pct).toBeLessThanOrEqual(1);
     });
+
+    it('uses ONLY the latest snapshot for charm-% (no append-model inflation)', async () => {
+      // greek_exposure now appends one snapshot per cron run. The SQL collapses
+      // to MAX(timestamp), so the query returns exactly one row per dte — the
+      // latest snapshot. We mock that already-collapsed result (2 dtes) and
+      // assert dte0_charm_pct reflects a single snapshot, not a ~13× sum.
+      //
+      // Latest snapshot: dte=-1 (agg) charm 100K/-80K, dte=0 charm 60K/-40K.
+      // |dte0 charm| = |60K - 40K| = 20K
+      // total |charm| = |20K| (agg) + |20K| (dte0) = 40K
+      // dte0_charm_pct = 20K / 40K = 0.5
+      const features = makeFeatures();
+
+      mockSql.mockResolvedValueOnce([]); // spot_exposures
+      mockSql.mockResolvedValueOnce([
+        {
+          expiry: '2026-03-24',
+          dte: '-1',
+          call_gamma: '5000000',
+          put_gamma: '-3000000',
+          call_charm: '100000',
+          put_charm: '-80000',
+        },
+        {
+          expiry: '2026-03-24',
+          dte: '0',
+          call_gamma: null,
+          put_gamma: null,
+          call_charm: '60000',
+          put_charm: '-40000',
+        },
+      ]); // greek_exposure (latest snapshot, already collapsed by MAX(timestamp))
+      mockSql.mockResolvedValueOnce([]); // strike_exposures (0DTE)
+      mockSql.mockResolvedValueOnce([]); // strike_exposures (all-expiry)
+
+      await engineerGexFeatures(mockSql as never, DATE_STR, features);
+
+      expect(features.dte0_net_charm).toBe(20000); // 60K - 40K, single snapshot
+      // If the append model leaked (~13 snapshots summed), totalCharm would
+      // balloon and this would collapse toward ~0.077; the collapse keeps 0.5.
+      expect(features.dte0_charm_pct).toBe(0.5);
+    });
   });
 });

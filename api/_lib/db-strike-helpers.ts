@@ -341,19 +341,37 @@ function mapNetGexRow(r: Record<string, unknown>): NetGexRow {
  * Uses the most recent intraday timestamp for the given date (same pattern
  * as getStrikeExposures). Derived fields (netGex, absGex, callGexFraction)
  * are computed from the raw call_gamma_oi / put_gamma_oi columns.
+ *
+ * @param asOf - optional ISO timestamp cutoff for point-in-time reads. When
+ *   provided, only snapshots taken at-or-before this instant are considered
+ *   (strike_exposures has genuine intraday history, so this is a clean clamp).
  */
-export async function getNetGexHeatmap(date: string): Promise<NetGexRow[]> {
+export async function getNetGexHeatmap(
+  date: string,
+  asOf?: string,
+): Promise<NetGexRow[]> {
   const db = getDb();
 
-  const tsRows = await withDbRetry(
-    () => db`
-      SELECT MAX(timestamp) AS latest_ts
-      FROM strike_exposures
-      WHERE date = ${date} AND ticker = 'SPX' AND expiry = ${date}
-    `,
-    2,
-    10_000,
-  );
+  const tsRows = asOf
+    ? await withDbRetry(
+        () => db`
+          SELECT MAX(timestamp) AS latest_ts
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = 'SPX' AND expiry = ${date}
+            AND timestamp <= ${asOf}
+        `,
+        2,
+        10_000,
+      )
+    : await withDbRetry(
+        () => db`
+          SELECT MAX(timestamp) AS latest_ts
+          FROM strike_exposures
+          WHERE date = ${date} AND ticker = 'SPX' AND expiry = ${date}
+        `,
+        2,
+        10_000,
+      );
   const latestTs = tsRows[0]?.latest_ts;
   if (!latestTs) return [];
 

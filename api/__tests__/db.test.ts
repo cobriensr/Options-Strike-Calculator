@@ -618,6 +618,7 @@ describe('db.ts', () => {
         { id: 187 },
         { id: 188 },
         { id: 189 },
+        { id: 190 },
       ]);
 
       const applied = await migrateDb();
@@ -825,18 +826,19 @@ describe('db.ts', () => {
         '#187: Create flow_regime_slot_daily table for the self-maintaining flow-regime baseline (resolves code-review finding #6 — the frozen, manually-refreshed baseline). One row per (date, slot) accumulates that trading day’s per-slot component sums (nd_num/nd_den for net_delta_tilt, idx_put_premium/total_premium for idx0dte_put_share) plus the bucket trade count. The capture-flow-regime-daily cron runs once post-close and UPSERTs all 13 RTH slots for the day via ON CONFLICT (date, slot) DO UPDATE. The live capture-flow-regime cron then computes percentile breakpoints ON READ from this accumulating table (api/_lib/flow-regime-baseline-live.ts), falling back per-slot to the committed flow-regime-baseline.json until a slot has ≥15 days of history. UNIQUE(date, slot) gives the daily upsert its conflict target. The (slot) index is NOT used by the loader’s aggregation — that query is a `GROUP BY slot` with no WHERE, so the planner full-scans this tiny table regardless; the index is retained only for potential future per-slot point reads (the table is small enough that dropping it isn’t worth a prod migration). No parquet / Desktop dependency — the baseline now self-maintains from Neon. See docs/superpowers/specs/flow-regime-baseline-refresh-2026-06-07.md.',
         '#188: Create lottery_kept_tickers table for the DB-backed never-vanish kept-set (Phase 1 of docs/superpowers/specs/2026-06-07-never-vanish-review-fixes-round2.md). Replaces the per-day Redis set (lf:kept:<date>) with a durable Postgres table so kept-ticker records survive Redis eviction and can be read page-independently by both the feed and ticker-counts endpoints. One row per (trade_date, underlying_symbol); the composite PRIMARY KEY enforces the natural dedup constraint and provides the lookup index — no separate index needed. The writer (lottery-finder.ts, Phase 3) derives the ever-shown set from the full ranked CTE (no LIMIT), so a ticker that flips Q1/Q2 while sitting past row 50 is still kept for the rest of the session. Both readKeptTickers and addKeptTickers swallow all errors and degrade to [] on DB failure, mirroring the prior Redis semantics.',
         '#189: Create flow_regime_0dte_daily table for the live 0DTE gamma-regime panel self-scoring scorecard. The nightly cron upserts one row per trading day with gate classification, GEX open/mid/flip context, intraday signal timestamps (mostly_red, iv_break, midday_deep_neg), and realized outcome columns (oc_ret_pct, range_pct, dir_eff, big_down, big_up). DATE PRIMARY KEY enforces one row per session; idempotent upsert on the cron path. Renumbered 186->189 after rebase/merge collisions with parallel migrations. See docs/superpowers/plans/2026-06-07-regime-0dte-panel.md Task 4.',
+        '#190: Add timestamp column to greek_exposure and switch from in-place upsert to append-per-cron-run, retaining intraday history (Phase 6a of the analyze-endpoint lookahead-bias fix, H3). The table previously had UNIQUE(date, ticker, expiry, dte) with ON CONFLICT DO UPDATE/DO NOTHING, so it kept only the LATEST snapshot per (date, ticker, expiry, dte) — point-in-time analysis (review/backtest) leaked end-of-session greek state. This migration: (1) adds a nullable timestamp TIMESTAMPTZ, (2) backfills it from created_at for existing rows (pre-migration dates only ever had one snapshot, so created_at is the best available point-in-time), (3) sets DEFAULT NOW() so an old cron instance inserting mid-deploy without an explicit timestamp still gets a value, (4) sets NOT NULL once backfilled, (5) replaces the old greek_exposure_date_ticker_expiry_dte_key unique constraint (added by migration #6) with greek_exposure_date_ticker_expiry_dte_ts_key UNIQUE(date, ticker, expiry, dte, timestamp) so each cron run appends a fresh snapshot instead of overwriting, and (6) adds idx_greek_exposure_date_ticker_ts (date, ticker, timestamp DESC) to serve the asOf-clamped point-in-time read coming in the next phase. The fetch-greek-exposure cron now stamps one run timestamp on every row of a run and uses ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING (conflicts only on same-run retry).',
       ]);
       // Pyramid migrations #65/66/67 remain in the chain (migration history is
       // immutable — fresh DBs replay create → alter → alter → drop). TRACE
       // migrations #56/57 also remain — #69 drops the table they created.
-      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) + 7 (#62: CREATE+5 INDEX+INSERT) + 3 (#63: CREATE+1 INDEX+INSERT) + 2 (#64: ALTER+INSERT) + 6 (#65: CREATE chains+2 INDEX+CREATE legs+1 INDEX+INSERT) + 8 (#66: 7 ALTER+INSERT) + 5 (#67: DROP CONSTRAINT+ADD CONSTRAINT+2 ALTER+INSERT) + 3 (#68: 2 DROP+INSERT) + 3 (#69: DELETE+DROP+INSERT) + 4 (#70: CREATE+2 INDEX+INSERT) + 3 (#71: CREATE+1 INDEX+INSERT) + 3 (#72: CREATE+1 INDEX+INSERT) + 4 (#73: CREATE EXTENSION+CREATE TABLE+CREATE INDEX+INSERT) + 3 (#74: CREATE TABLE+CREATE INDEX+INSERT) + 3 (#75: CREATE TABLE+CREATE INDEX+INSERT) + 2 (#76: ALTER+INSERT) + 3 (#77: ALTER+INDEX+INSERT) + 3 (#78: CREATE TABLE+INDEX+INSERT) + 3 (#79: CREATE TABLE+INDEX+INSERT) + 2 (#80: CREATE TABLE+INSERT) + 4 (#81: CREATE TABLE+2 INDEX+INSERT) + 3 (#82: CREATE TABLE+1 INDEX+INSERT) + 4 (#83: CREATE TABLE+2 INDEX+INSERT) + 4 (#84: CREATE TABLE+2 INDEX+INSERT) + 2 (#85: ALTER+INSERT) + 3 (#86: 2 ALTER+INSERT) + 4 (#87: CREATE TABLE+2 INDEX+INSERT) + 5 (#88: CREATE EXTENSION+CREATE TABLE+2 INDEX+INSERT) + 2 (#89: ALTER+INSERT) + 3 (#90: ALTER+INDEX+INSERT) + 2 (#91: ALTER+INSERT) + 3 (#92: CREATE TABLE+1 INDEX+INSERT) + 4 (#93: CREATE TABLE+2 INDEX+INSERT) + 3 (#94: CREATE TABLE+1 INDEX+INSERT) + 5 (#95: 4 ALTER+INSERT) + 2 (#96: ALTER+INSERT) + 4 (#97: CREATE TABLE+2 INDEX+INSERT) + 11 (#98: 5 DELETE+5 CREATE UNIQUE INDEX+INSERT) + 5 (#99: CREATE TABLE+3 INDEX+INSERT) + 2 (#100: DROP TABLE+INSERT) + 2 (#101: ALTER+INSERT) + 2 (#102: CREATE TABLE+INSERT) + 6 (#103: CREATE TABLE+4 INDEX+INSERT) + 4 (#104: 3 ALTER+INSERT) + 2 (#105: ALTER DROP+INSERT) + 2 (#106: UPDATE+INSERT) + 2 (#107: DROP TABLE+INSERT) + 9 (#108: CREATE TABLE+6 INDEX+CREATE VIEW+INSERT) + 6 (#109: CREATE TABLE+4 INDEX+INSERT) + 7 (#110: CREATE TABLE+5 INDEX+INSERT) + 4 (#111: CREATE TABLE+2 INDEX+INSERT) + 8 (#112: ALTER RENAME+ALTER ADD COLUMN+ALTER DROP CONSTRAINT+ALTER ADD CONSTRAINT+DROP INDEX+CREATE PARTIAL UNIQUE INDEX+CREATE VIEW+INSERT) + 2 (#113: ALTER ADD COLUMN+INSERT) + 3 (#114: DROP VIEW+DROP INDEX+INSERT) + 3 (#115: DROP TABLE+DROP TABLE+INSERT) + 4 (#116: CREATE TABLE+2 INDEX+INSERT) + 2 (#117: DROP TABLE+INSERT) + 2 (#118: DROP TABLE+INSERT) + 2 (#119: DROP TABLE+INSERT) + 2 (#120: DROP TABLE+INSERT) + 5 (#121: CREATE TABLE+3 INDEX+INSERT) + 4 (#122: CREATE TABLE+2 INDEX+INSERT) + 2 (#123: CREATE INDEX+INSERT) + 2 (#124: ALTER+INSERT) + 4 (#125: CREATE TABLE+2 INDEX+INSERT) + 5 (#126: ALTER+INDEX+CREATE TABLE+INSERT seed+INSERT) + 3 (#127: 2 CREATE TABLE+INSERT) + 3 (#128: 2 DROP TABLE+INSERT) + 5 (#129: ALTER ADD COLUMN+ALTER DROP CONSTRAINT+ALTER ADD CONSTRAINT+CREATE INDEX+INSERT) + 8 (#130: DROP TABLE+CREATE TABLE+5 INDEX+INSERT) + 2 (#131: ALTER ADD COLUMN+INSERT) + 2 (#132: ALTER ADD COLUMN+INSERT) + 4 (#133: CREATE TABLE+2 INDEX+INSERT) + 6 (#134: CREATE TABLE+4 INDEX+INSERT) + 4 (#135: 2 ALTER+1 INDEX+INSERT) + 2 (#136: 1 ALTER+INSERT) + 3 (#137: 2 ALTER+INSERT) + 2 (#138: CREATE TABLE+INSERT) + 2 (#139: CREATE TABLE+INSERT) + 3 (#140: CREATE TABLE+INDEX+INSERT) + 2 (#141: ALTER ADD COLUMN+INSERT) + 8 (#142: 5 ALTER+UNIQUE INDEX+PARTIAL INDEX+INSERT) + 5 (#143: CREATE TABLE+3 INDEX+INSERT) + 4 (#144: CREATE TABLE+2 INDEX+INSERT) + 3 (#145: CREATE TABLE+1 INDEX+INSERT) + 3 (#146: ALTER ADD COLUMN+PARTIAL INDEX+INSERT) + 3 (#147: ALTER ADD COLUMN+GIN INDEX+INSERT) + 2 (#148: CREATE INDEX+INSERT) + 2 (#149: ALTER ADD COLUMN+INSERT) + 2 (#150: ALTER ADD COLUMN+INSERT) + 3 (#151: 2 ALTER ADD COLUMN+INSERT) + 2 (#152: ALTER ADD COLUMN+INSERT) + 2 (#153: ALTER ADD COLUMN+INSERT) + 7 (#154: 4 ALTER ADD COLUMN+2 PARTIAL INDEX+INSERT) + 9 (#155: 6 ALTER ADD COLUMN+2 PARTIAL INDEX+INSERT) + 9 (#156: 3 CREATE TABLE+5 INDEX+INSERT) + 3 (#157: 2 ALTER+INSERT) + 5 (#158: 4 ALTER ADD COLUMN+INSERT) + 5 (#159: 2 ALTER ADD GENERATED COLUMN+2 INDEX+INSERT) + 9 (#160: 8 ALTER ADD COLUMN+INSERT) + 4 (#161: CREATE TABLE+2 INDEX+INSERT) + 3 (#162: CREATE TABLE+1 INDEX+INSERT) + 3 (#163: CREATE TABLE+1 UNIQUE INDEX+INSERT) + 7 (#164: 4 ALTER ADD COLUMN+2 PARTIAL INDEX+INSERT) + 2 (#165: CREATE TABLE+INSERT) + 2 (#166: ALTER ADD 2 COLUMNS+INSERT) + 9 (#167: ALTER ADD COLUMN+UPDATE backfill+ALTER DROP combined_score+ALTER ADD GENERATED combined_score+CREATE INDEX+CREATE FUNCTION+DROP TRIGGER+CREATE TRIGGER+INSERT) + 6 (#168: 2 ALTER ADD COLUMN+ALTER DROP combined_score+ALTER ADD GENERATED combined_score+CREATE INDEX+INSERT) + 3 (#169: ALTER ADD COLUMN+PARTIAL INDEX+INSERT) + 3 (#170: ALTER ADD COLUMN+PARTIAL INDEX+INSERT) + 3 (#171: 2 ALTER ADD COLUMN+INSERT) + 5 (#172: CREATE TABLE+3 INDEX+INSERT) + 3 (#173: CREATE TABLE+1 INDEX+INSERT) + 2 (#174: 1 INDEX+INSERT) + 2 (#175: 1 ALTER ADD 6 COLUMNS+INSERT) + 2 (#176: 1 ALTER ADD COLUMN+INSERT) + 2 (#177: 1 CREATE VIEW+INSERT) + 2 (#178: 1 ALTER ADD COLUMN+INSERT) + 4 (#179: CREATE TABLE+2 INDEX+INSERT) + 2 (#180: 1 ALTER ADD 8 COLUMNS+INSERT) + 2 (#181: 1 ALTER ADD 8 COLUMNS+INSERT) + 3 (#182: CREATE TABLE+CREATE INDEX+INSERT) + 2 (#183: ALTER ADD COLUMN+INSERT) + 3 (#184: 2 PARTIAL INDEX+INSERT) + 3 (#185: CREATE TABLE+1 INDEX+INSERT) + 2 (#186: ALTER ADD COLUMN+INSERT) + 3 (#187: CREATE TABLE+1 INDEX+INSERT) + 2 (#188: CREATE TABLE+INSERT) + 2 (#189: CREATE TABLE+INSERT) = 665
+      // 134 (migrations #1-41) + 4 (#42) + 4 (#43) + 2 (#44) + 2 (#45) + 3 (#46) + 4 (#47: CREATE+2 INDEX+INSERT) + 2 (#48: ALTER+INSERT) + 4 (#49: CREATE+2 INDEX+INSERT) + 3 (#50: DELETE+CREATE UNIQUE INDEX+INSERT) + 5 (#51: CREATE+3 INDEX+INSERT) + 3 (#52: CREATE+1 INDEX+INSERT) + 4 (#53: CREATE+2 INDEX+INSERT) + 2 (#54: ALTER+INSERT) + 2 (#55: ALTER+INSERT) + 2 (#56: CREATE+INSERT) + 2 (#57: ALTER+INSERT) + 3 (#58: DROP INDEX+ALTER+INSERT) + 7 (#59: CREATE+5 INDEX+INSERT) + 2 (#60: CREATE+INSERT) + 2 (#61: ALTER+INSERT) + 7 (#62: CREATE+5 INDEX+INSERT) + 3 (#63: CREATE+1 INDEX+INSERT) + 2 (#64: ALTER+INSERT) + 6 (#65: CREATE chains+2 INDEX+CREATE legs+1 INDEX+INSERT) + 8 (#66: 7 ALTER+INSERT) + 5 (#67: DROP CONSTRAINT+ADD CONSTRAINT+2 ALTER+INSERT) + 3 (#68: 2 DROP+INSERT) + 3 (#69: DELETE+DROP+INSERT) + 4 (#70: CREATE+2 INDEX+INSERT) + 3 (#71: CREATE+1 INDEX+INSERT) + 3 (#72: CREATE+1 INDEX+INSERT) + 4 (#73: CREATE EXTENSION+CREATE TABLE+CREATE INDEX+INSERT) + 3 (#74: CREATE TABLE+CREATE INDEX+INSERT) + 3 (#75: CREATE TABLE+CREATE INDEX+INSERT) + 2 (#76: ALTER+INSERT) + 3 (#77: ALTER+INDEX+INSERT) + 3 (#78: CREATE TABLE+INDEX+INSERT) + 3 (#79: CREATE TABLE+INDEX+INSERT) + 2 (#80: CREATE TABLE+INSERT) + 4 (#81: CREATE TABLE+2 INDEX+INSERT) + 3 (#82: CREATE TABLE+1 INDEX+INSERT) + 4 (#83: CREATE TABLE+2 INDEX+INSERT) + 4 (#84: CREATE TABLE+2 INDEX+INSERT) + 2 (#85: ALTER+INSERT) + 3 (#86: 2 ALTER+INSERT) + 4 (#87: CREATE TABLE+2 INDEX+INSERT) + 5 (#88: CREATE EXTENSION+CREATE TABLE+2 INDEX+INSERT) + 2 (#89: ALTER+INSERT) + 3 (#90: ALTER+INDEX+INSERT) + 2 (#91: ALTER+INSERT) + 3 (#92: CREATE TABLE+1 INDEX+INSERT) + 4 (#93: CREATE TABLE+2 INDEX+INSERT) + 3 (#94: CREATE TABLE+1 INDEX+INSERT) + 5 (#95: 4 ALTER+INSERT) + 2 (#96: ALTER+INSERT) + 4 (#97: CREATE TABLE+2 INDEX+INSERT) + 11 (#98: 5 DELETE+5 CREATE UNIQUE INDEX+INSERT) + 5 (#99: CREATE TABLE+3 INDEX+INSERT) + 2 (#100: DROP TABLE+INSERT) + 2 (#101: ALTER+INSERT) + 2 (#102: CREATE TABLE+INSERT) + 6 (#103: CREATE TABLE+4 INDEX+INSERT) + 4 (#104: 3 ALTER+INSERT) + 2 (#105: ALTER DROP+INSERT) + 2 (#106: UPDATE+INSERT) + 2 (#107: DROP TABLE+INSERT) + 9 (#108: CREATE TABLE+6 INDEX+CREATE VIEW+INSERT) + 6 (#109: CREATE TABLE+4 INDEX+INSERT) + 7 (#110: CREATE TABLE+5 INDEX+INSERT) + 4 (#111: CREATE TABLE+2 INDEX+INSERT) + 8 (#112: ALTER RENAME+ALTER ADD COLUMN+ALTER DROP CONSTRAINT+ALTER ADD CONSTRAINT+DROP INDEX+CREATE PARTIAL UNIQUE INDEX+CREATE VIEW+INSERT) + 2 (#113: ALTER ADD COLUMN+INSERT) + 3 (#114: DROP VIEW+DROP INDEX+INSERT) + 3 (#115: DROP TABLE+DROP TABLE+INSERT) + 4 (#116: CREATE TABLE+2 INDEX+INSERT) + 2 (#117: DROP TABLE+INSERT) + 2 (#118: DROP TABLE+INSERT) + 2 (#119: DROP TABLE+INSERT) + 2 (#120: DROP TABLE+INSERT) + 5 (#121: CREATE TABLE+3 INDEX+INSERT) + 4 (#122: CREATE TABLE+2 INDEX+INSERT) + 2 (#123: CREATE INDEX+INSERT) + 2 (#124: ALTER+INSERT) + 4 (#125: CREATE TABLE+2 INDEX+INSERT) + 5 (#126: ALTER+INDEX+CREATE TABLE+INSERT seed+INSERT) + 3 (#127: 2 CREATE TABLE+INSERT) + 3 (#128: 2 DROP TABLE+INSERT) + 5 (#129: ALTER ADD COLUMN+ALTER DROP CONSTRAINT+ALTER ADD CONSTRAINT+CREATE INDEX+INSERT) + 8 (#130: DROP TABLE+CREATE TABLE+5 INDEX+INSERT) + 2 (#131: ALTER ADD COLUMN+INSERT) + 2 (#132: ALTER ADD COLUMN+INSERT) + 4 (#133: CREATE TABLE+2 INDEX+INSERT) + 6 (#134: CREATE TABLE+4 INDEX+INSERT) + 4 (#135: 2 ALTER+1 INDEX+INSERT) + 2 (#136: 1 ALTER+INSERT) + 3 (#137: 2 ALTER+INSERT) + 2 (#138: CREATE TABLE+INSERT) + 2 (#139: CREATE TABLE+INSERT) + 3 (#140: CREATE TABLE+INDEX+INSERT) + 2 (#141: ALTER ADD COLUMN+INSERT) + 8 (#142: 5 ALTER+UNIQUE INDEX+PARTIAL INDEX+INSERT) + 5 (#143: CREATE TABLE+3 INDEX+INSERT) + 4 (#144: CREATE TABLE+2 INDEX+INSERT) + 3 (#145: CREATE TABLE+1 INDEX+INSERT) + 3 (#146: ALTER ADD COLUMN+PARTIAL INDEX+INSERT) + 3 (#147: ALTER ADD COLUMN+GIN INDEX+INSERT) + 2 (#148: CREATE INDEX+INSERT) + 2 (#149: ALTER ADD COLUMN+INSERT) + 2 (#150: ALTER ADD COLUMN+INSERT) + 3 (#151: 2 ALTER ADD COLUMN+INSERT) + 2 (#152: ALTER ADD COLUMN+INSERT) + 2 (#153: ALTER ADD COLUMN+INSERT) + 7 (#154: 4 ALTER ADD COLUMN+2 PARTIAL INDEX+INSERT) + 9 (#155: 6 ALTER ADD COLUMN+2 PARTIAL INDEX+INSERT) + 9 (#156: 3 CREATE TABLE+5 INDEX+INSERT) + 3 (#157: 2 ALTER+INSERT) + 5 (#158: 4 ALTER ADD COLUMN+INSERT) + 5 (#159: 2 ALTER ADD GENERATED COLUMN+2 INDEX+INSERT) + 9 (#160: 8 ALTER ADD COLUMN+INSERT) + 4 (#161: CREATE TABLE+2 INDEX+INSERT) + 3 (#162: CREATE TABLE+1 INDEX+INSERT) + 3 (#163: CREATE TABLE+1 UNIQUE INDEX+INSERT) + 7 (#164: 4 ALTER ADD COLUMN+2 PARTIAL INDEX+INSERT) + 2 (#165: CREATE TABLE+INSERT) + 2 (#166: ALTER ADD 2 COLUMNS+INSERT) + 9 (#167: ALTER ADD COLUMN+UPDATE backfill+ALTER DROP combined_score+ALTER ADD GENERATED combined_score+CREATE INDEX+CREATE FUNCTION+DROP TRIGGER+CREATE TRIGGER+INSERT) + 6 (#168: 2 ALTER ADD COLUMN+ALTER DROP combined_score+ALTER ADD GENERATED combined_score+CREATE INDEX+INSERT) + 3 (#169: ALTER ADD COLUMN+PARTIAL INDEX+INSERT) + 3 (#170: ALTER ADD COLUMN+PARTIAL INDEX+INSERT) + 3 (#171: 2 ALTER ADD COLUMN+INSERT) + 5 (#172: CREATE TABLE+3 INDEX+INSERT) + 3 (#173: CREATE TABLE+1 INDEX+INSERT) + 2 (#174: 1 INDEX+INSERT) + 2 (#175: 1 ALTER ADD 6 COLUMNS+INSERT) + 2 (#176: 1 ALTER ADD COLUMN+INSERT) + 2 (#177: 1 CREATE VIEW+INSERT) + 2 (#178: 1 ALTER ADD COLUMN+INSERT) + 4 (#179: CREATE TABLE+2 INDEX+INSERT) + 2 (#180: 1 ALTER ADD 8 COLUMNS+INSERT) + 2 (#181: 1 ALTER ADD 8 COLUMNS+INSERT) + 3 (#182: CREATE TABLE+CREATE INDEX+INSERT) + 2 (#183: ALTER ADD COLUMN+INSERT) + 3 (#184: 2 PARTIAL INDEX+INSERT) + 3 (#185: CREATE TABLE+1 INDEX+INSERT) + 2 (#186: ALTER ADD COLUMN+INSERT) + 3 (#187: CREATE TABLE+1 INDEX+INSERT) + 2 (#188: CREATE TABLE+INSERT) + 2 (#189: CREATE TABLE+INSERT) + 8 (#190: ALTER ADD COLUMN+UPDATE backfill+ALTER SET DEFAULT+ALTER SET NOT NULL+DROP CONSTRAINT+ADD CONSTRAINT+CREATE INDEX+INSERT) = 673
       // Migration #3 was converted from run: to statements: (BE-CRON-010);
       // its 4 calls (DROP INDEX + ALTER + CREATE INDEX + INSERT) still count
       // toward the total — the only delta is that they route through
       // sql.transaction() instead of sequential awaits.
-      expect(mockSql).toHaveBeenCalledTimes(665);
-      // Migrations #3 and #15-189 each call sql.transaction() once for atomic execution
-      expect(mockSql.transaction).toHaveBeenCalledTimes(176);
+      expect(mockSql).toHaveBeenCalledTimes(673);
+      // Migrations #3 and #15-190 each call sql.transaction() once for atomic execution
+      expect(mockSql.transaction).toHaveBeenCalledTimes(177);
     });
 
     it('propagates errors from migration SQL', async () => {
@@ -1515,6 +1517,11 @@ describe('db.ts', () => {
   // ============================================================
   describe('getGreekExposure', () => {
     it('returns mapped Greek exposure rows', async () => {
+      // Step 1: MAX(timestamp) lookup
+      mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-03-24T20:00:00.000Z' },
+      ]);
+      // Step 2: snapshot rows
       mockSql.mockResolvedValueOnce([
         {
           expiry: '2026-03-24',
@@ -1552,6 +1559,9 @@ describe('db.ts', () => {
 
     it('handles null gamma values (basic tier)', async () => {
       mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-03-24T20:00:00.000Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
         {
           expiry: '2026-03-24',
           dte: 0,
@@ -1581,6 +1591,9 @@ describe('db.ts', () => {
       // comparisons (e.g. e.expiry === analysisDate). Assert the runtime value
       // is the normalized 'YYYY-MM-DD' string.
       mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-06-08T20:00:00.000Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
         {
           expiry: new Date('2026-06-08T00:00:00Z'),
           dte: 0,
@@ -1606,6 +1619,9 @@ describe('db.ts', () => {
       // NULL means the greek is unknown, so the mapped value must be null and
       // the net aggregates must propagate null rather than summing to 0.
       mockSql.mockResolvedValueOnce([
+        { latest_ts: '2026-06-08T20:00:00.000Z' },
+      ]);
+      mockSql.mockResolvedValueOnce([
         {
           expiry: '2026-06-08',
           dte: 0,
@@ -1630,6 +1646,88 @@ describe('db.ts', () => {
       expect(result[0]!.netDelta).toBeNull();
       expect(result[0]!.callVanna).toBeNull();
       expect(result[0]!.putVanna).toBeNull();
+    });
+
+    it('returns only the latest-timestamp snapshot (collapses append history)', async () => {
+      // The append model writes one snapshot per cron run. The MAX(timestamp)
+      // step picks the later run; the data step must read ONLY that snapshot's
+      // rows (not the union of both runs). We feed the later timestamp from
+      // step 1 and the later run's rows from step 2, and assert that the data
+      // query is bound to the chosen timestamp.
+      const lateTs = '2026-06-08T20:00:00.000Z';
+      mockSql.mockResolvedValueOnce([{ latest_ts: lateTs }]);
+      mockSql.mockResolvedValueOnce([
+        {
+          expiry: '2026-06-08',
+          dte: 0,
+          call_gamma: '900',
+          put_gamma: '100',
+          call_charm: '0',
+          put_charm: '0',
+          call_delta: '0',
+          put_delta: '0',
+          call_vanna: '0',
+          put_vanna: '0',
+        },
+      ]);
+
+      const result = await getGreekExposure('2026-06-08');
+
+      // Only one (expiry, dte) row — the later snapshot, not 2× duplicated.
+      expect(result).toHaveLength(1);
+      expect(result[0]!.netGamma).toBe(1000); // 900 + 100, single snapshot
+
+      // Two queries: MAX(timestamp) then the timestamp-bound row read.
+      expect(mockSql).toHaveBeenCalledTimes(2);
+      // The data query interpolates the chosen latest_ts.
+      const dataCallArgs = mockSql.mock.calls[1]!;
+      expect(dataCallArgs).toContain(lateTs);
+    });
+
+    it('with asOf, picks the latest snapshot AT-OR-BEFORE the cutoff', async () => {
+      // Two snapshots straddle asOf=14:00. The MAX(timestamp <= asOf) step
+      // returns the earlier (13:00) snapshot, and the data step reads its rows.
+      const asOf = '2026-06-08T14:00:00.000Z';
+      const earlierTs = '2026-06-08T13:00:00.000Z';
+      mockSql.mockResolvedValueOnce([{ latest_ts: earlierTs }]);
+      mockSql.mockResolvedValueOnce([
+        {
+          expiry: '2026-06-08',
+          dte: 0,
+          call_gamma: '500',
+          put_gamma: '200',
+          call_charm: '0',
+          put_charm: '0',
+          call_delta: '0',
+          put_delta: '0',
+          call_vanna: '0',
+          put_vanna: '0',
+        },
+      ]);
+
+      const result = await getGreekExposure('2026-06-08', 'SPX', asOf);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.netGamma).toBe(700);
+      // The MAX query carried the asOf cutoff; the data query carried the
+      // chosen earlier timestamp.
+      expect(mockSql.mock.calls[0]!).toContain(asOf);
+      expect(mockSql.mock.calls[1]!).toContain(earlierTs);
+    });
+
+    it('returns empty when no snapshot exists at-or-before asOf', async () => {
+      // MAX(timestamp <= asOf) yields NULL → short-circuit, no data query.
+      mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+
+      const result = await getGreekExposure(
+        '2026-06-08',
+        'SPX',
+        '2026-06-08T09:00:00.000Z',
+      );
+
+      expect(result).toEqual([]);
+      // Only the MAX query ran; the data query was skipped.
+      expect(mockSql).toHaveBeenCalledTimes(1);
     });
   });
 

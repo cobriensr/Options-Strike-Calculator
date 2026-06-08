@@ -5269,4 +5269,18 @@ export const MIGRATIONS: Migration[] = [
       `,
     ],
   },
+  {
+    id: 190,
+    description:
+      'Add timestamp column to greek_exposure and switch from in-place upsert to append-per-cron-run, retaining intraday history (Phase 6a of the analyze-endpoint lookahead-bias fix, H3). The table previously had UNIQUE(date, ticker, expiry, dte) with ON CONFLICT DO UPDATE/DO NOTHING, so it kept only the LATEST snapshot per (date, ticker, expiry, dte) — point-in-time analysis (review/backtest) leaked end-of-session greek state. This migration: (1) adds a nullable timestamp TIMESTAMPTZ, (2) backfills it from created_at for existing rows (pre-migration dates only ever had one snapshot, so created_at is the best available point-in-time), (3) sets DEFAULT NOW() so an old cron instance inserting mid-deploy without an explicit timestamp still gets a value, (4) sets NOT NULL once backfilled, (5) replaces the old greek_exposure_date_ticker_expiry_dte_key unique constraint (added by migration #6) with greek_exposure_date_ticker_expiry_dte_ts_key UNIQUE(date, ticker, expiry, dte, timestamp) so each cron run appends a fresh snapshot instead of overwriting, and (6) adds idx_greek_exposure_date_ticker_ts (date, ticker, timestamp DESC) to serve the asOf-clamped point-in-time read coming in the next phase. The fetch-greek-exposure cron now stamps one run timestamp on every row of a run and uses ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING (conflicts only on same-run retry).',
+    statements: (sql) => [
+      sql`ALTER TABLE greek_exposure ADD COLUMN IF NOT EXISTS timestamp TIMESTAMPTZ`,
+      sql`UPDATE greek_exposure SET timestamp = created_at WHERE timestamp IS NULL`,
+      sql`ALTER TABLE greek_exposure ALTER COLUMN timestamp SET DEFAULT NOW()`,
+      sql`ALTER TABLE greek_exposure ALTER COLUMN timestamp SET NOT NULL`,
+      sql`ALTER TABLE greek_exposure DROP CONSTRAINT IF EXISTS greek_exposure_date_ticker_expiry_dte_key`,
+      sql`ALTER TABLE greek_exposure ADD CONSTRAINT greek_exposure_date_ticker_expiry_dte_ts_key UNIQUE(date, ticker, expiry, dte, timestamp)`,
+      sql`CREATE INDEX IF NOT EXISTS idx_greek_exposure_date_ticker_ts ON greek_exposure (date, ticker, timestamp DESC)`,
+    ],
+  },
 ];

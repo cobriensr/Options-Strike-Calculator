@@ -101,22 +101,35 @@ async function fetchByExpiry(date) {
 
 // ── Store aggregate row (dte = -1) ──────────────────────────
 
+// Synthetic per-date EOD snapshot timestamp for backfilled rows.
+//
+// greek_exposure switched from an in-place upsert to an append-per-cron-run
+// model (migration #190), so the unique constraint is now
+// (date, ticker, expiry, dte, timestamp). Backfilled historical data has no
+// real intraday timestamp, so we stamp a single deterministic per-date value
+// (the date at 20:00:00Z, i.e. session close) that keeps exactly one row per
+// (date, ticker, expiry, dte). Re-running the backfill for a date is therefore
+// idempotent (same synthetic timestamp -> ON CONFLICT DO NOTHING/UPDATE).
+function eodTimestamp(date) {
+  return `${date}T20:00:00Z`;
+}
+
 async function storeAggregate(row, date) {
   try {
     const result = await sql`
       INSERT INTO greek_exposure (
-        date, ticker, expiry, dte,
+        date, ticker, expiry, dte, timestamp,
         call_gamma, put_gamma, call_charm, put_charm,
         call_delta, put_delta, call_vanna, put_vanna
       )
       VALUES (
-        ${date}, 'SPX', ${date}, -1,
+        ${date}, 'SPX', ${date}, -1, ${eodTimestamp(date)},
         ${row.call_gamma}, ${row.put_gamma},
         ${row.call_charm}, ${row.put_charm},
         ${row.call_delta}, ${row.put_delta},
         ${row.call_vanna}, ${row.put_vanna}
       )
-      ON CONFLICT (date, ticker, expiry, dte) DO UPDATE SET
+      ON CONFLICT (date, ticker, expiry, dte, timestamp) DO UPDATE SET
         call_gamma = EXCLUDED.call_gamma,
         put_gamma = EXCLUDED.put_gamma
       RETURNING id
@@ -137,18 +150,18 @@ async function storeExpiryRows(rows, date) {
     try {
       const result = await sql`
         INSERT INTO greek_exposure (
-          date, ticker, expiry, dte,
+          date, ticker, expiry, dte, timestamp,
           call_gamma, put_gamma, call_charm, put_charm,
           call_delta, put_delta, call_vanna, put_vanna
         )
         VALUES (
-          ${date}, 'SPX', ${row.expiry}, ${row.dte},
+          ${date}, 'SPX', ${row.expiry}, ${row.dte}, ${eodTimestamp(date)},
           ${row.call_gamma}, ${row.put_gamma},
           ${row.call_charm}, ${row.put_charm},
           ${row.call_delta}, ${row.put_delta},
           ${row.call_vanna}, ${row.put_vanna}
         )
-        ON CONFLICT (date, ticker, expiry, dte) DO NOTHING
+        ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING
         RETURNING id
       `;
       if (result.length > 0) stored++;

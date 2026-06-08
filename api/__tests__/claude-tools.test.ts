@@ -394,7 +394,10 @@ describe('executeDbTool — get_net_gex_heatmap', () => {
 
     expect(result.type).toBe('tool_result');
     expect(result.tool_use_id).toBe('tool_abc123');
-    expect(vi.mocked(getNetGexHeatmap)).toHaveBeenCalledWith(ANALYSIS_DATE);
+    expect(vi.mocked(getNetGexHeatmap)).toHaveBeenCalledWith(
+      ANALYSIS_DATE,
+      undefined,
+    );
     expect(result.content).toBe('SPX 0DTE Net GEX Heatmap...');
   });
 

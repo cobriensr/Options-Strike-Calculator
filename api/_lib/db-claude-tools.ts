@@ -286,7 +286,9 @@ export async function executeDbTool(
       }
 
       case 'get_net_gex_heatmap': {
-        const rows = await getNetGexHeatmap(analysisDate);
+        // Clamp to the analysis asOf ceiling so the point-in-time path does
+        // not leak post-asOf snapshots (strike_exposures has intraday history).
+        const rows = await getNetGexHeatmap(analysisDate, asOf);
         const formatted = formatNetGexHeatmapForClaude(rows);
 
         return {

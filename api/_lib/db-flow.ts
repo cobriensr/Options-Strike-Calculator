@@ -178,18 +178,57 @@ export interface GreekExposureRow {
 /**
  * Get all Greek exposure rows for a given date and ticker.
  * Returns rows ordered by DTE ascending (aggregate at dte=-1 first, then 0DTE, etc).
+ *
+ * The greek_exposure table appends a fresh snapshot per cron run (one
+ * timestamp per run, ~13 rows per (expiry, dte) per day). This collapses to
+ * a single point-in-time snapshot: the latest timestamp at-or-before `asOf`
+ * (or the latest of the day when `asOf` is omitted), yielding exactly one row
+ * per (expiry, dte). Without this, every reader would sum/duplicate ~13
+ * intraday snapshots.
+ *
+ * @param asOf - optional ISO timestamp cutoff for point-in-time reads
+ *   (review/backtest). When provided, only snapshots taken at-or-before this
+ *   instant are considered.
  */
 export async function getGreekExposure(
   date: string,
   ticker: string = 'SPX',
+  asOf?: string,
 ): Promise<GreekExposureRow[]> {
   const db = getDb();
+
+  // Step 1: find the latest snapshot timestamp for this date (optionally
+  // capped by asOf for point-in-time reads).
+  const tsRows = asOf
+    ? await withDbRetry(
+        () => db`
+          SELECT MAX(timestamp) AS latest_ts
+          FROM greek_exposure
+          WHERE date = ${date} AND ticker = ${ticker}
+            AND timestamp <= ${asOf}
+        `,
+        2,
+        10_000,
+      )
+    : await withDbRetry(
+        () => db`
+          SELECT MAX(timestamp) AS latest_ts
+          FROM greek_exposure
+          WHERE date = ${date} AND ticker = ${ticker}
+        `,
+        2,
+        10_000,
+      );
+  const latestTs = tsRows[0]?.latest_ts;
+  if (!latestTs) return [];
+
+  // Step 2: read exactly the rows from that one snapshot (one per expiry/dte).
   const rows = await withDbRetry(
     () => db`
       SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm,
              call_delta, put_delta, call_vanna, put_vanna
       FROM greek_exposure
-      WHERE date = ${date} AND ticker = ${ticker}
+      WHERE date = ${date} AND ticker = ${ticker} AND timestamp = ${latestTs}
       ORDER BY dte ASC
     `,
     2,

@@ -221,11 +221,23 @@ export async function engineerGexFeatures(
   features.gex_oi_slope =
     firstGex != null && lastGex != null ? lastGex - firstGex : null;
 
-  // Greek exposure features
+  // Greek exposure features (latest snapshot for the date).
+  //
+  // greek_exposure appends one timestamped snapshot per cron run, so an
+  // unfiltered read returns ~13 rows per (expiry, dte). The aggregate reduce
+  // below (totalCharm) would then sum ~13× and `.find(dte === N)` would pick
+  // a non-deterministic snapshot. Restrict to the latest snapshot per date so
+  // this returns exactly one row per dte, matching pre-append-model behavior.
+  // EOD ML feature build => "latest of the day" is the correct semantic.
   const greekRows = (await sql`
-    SELECT expiry, dte, call_gamma, put_gamma, call_charm, put_charm
-    FROM greek_exposure
-    WHERE date = ${dateStr} AND ticker = 'SPX'
+    WITH latest AS (
+      SELECT MAX(timestamp) AS ts
+      FROM greek_exposure
+      WHERE date = ${dateStr} AND ticker = 'SPX'
+    )
+    SELECT g.expiry, g.dte, g.call_gamma, g.put_gamma, g.call_charm, g.put_charm
+    FROM greek_exposure g, latest l
+    WHERE g.date = ${dateStr} AND g.ticker = 'SPX' AND g.timestamp = l.ts
   `) as GreekRow[];
 
   const aggRow = greekRows.find((r) => Number(r.dte) === -1);
