@@ -33,6 +33,7 @@ import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import {
   DB_RETRY_ATTEMPTS,
   DB_RETRY_TIMEOUT_MS,
+  KEPT_RETENTION_DAYS,
   MACRO_WINDOW_MS,
   MEGA_CLUSTER_MIN_DISTINCT_TICKERS,
   MIN_ALERT_ENTRY_PRICE,
@@ -48,6 +49,16 @@ import {
   clusterKey,
   type ClusterCandidateRow,
 } from './_lib/suspicious-cluster.js';
+
+// Module-load invariant: the diff-skip below only re-inserts NEWLY-qualifying
+// tickers, relying on the retention prune (enrich-lottery-outcomes.ts) never
+// deleting today's rows. That holds only while KEPT_RETENTION_DAYS >= 1.
+if (KEPT_RETENTION_DAYS < 1) {
+  throw new Error(
+    `KEPT_RETENTION_DAYS must be >= 1 (got ${KEPT_RETENTION_DAYS}); ` +
+      `the lottery never-vanish diff-skip requires today's kept rows to survive the prune.`,
+  );
+}
 
 type DbId = number | string;
 type DbNumeric = string | number;
@@ -1297,17 +1308,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // the full `everQualifying` set was ~100% no-op `ON CONFLICT DO NOTHING`
     // churn on the Neon primary every poll. Skipping already-persisted tickers
     // is SAFE because today's kept rows are durable and never pruned
-    // intraday: Phase 4's retention prune only deletes rows with
-    // `trade_date < today - 7d`, never today's. A ticker already in
-    // `keptTickers` therefore cannot be lost by skipping its re-insert.
-    // ⚠️ If a future change ever prunes today's rows mid-session, this
-    // diff-skip must be revisited — re-inserting on every poll would be the
-    // only way to self-heal a same-day deletion.
+    // intraday: the retention prune in enrich-lottery-outcomes.ts only deletes
+    // rows with `trade_date < today - KEPT_RETENTION_DAYS` (>= 1), so today's
+    // rows always persist. A ticker already in `keptTickers` therefore cannot
+    // be lost by skipping its re-insert.
+    // ⚠️ This diff-skip is correct ONLY while KEPT_RETENTION_DAYS >= 1 AND the
+    // prune cutoff stays a strict `<`. If a future change ever prunes today's
+    // rows mid-session, this diff-skip must be revisited — re-inserting on
+    // every poll would be the only way to self-heal a same-day deletion. The
+    // module-load assertion above binds the KEPT_RETENTION_DAYS >= 1 half of
+    // that invariant (a tightening to 0 throws at boot); the cron's prune test
+    // binds the matching strict-`<` cutoff on the other side.
     if (!showAll) {
       const everQualifying = totalRows[0]?.ever_qualifying ?? [];
-      const newlyQualifying = everQualifying.filter(
-        (t) => !keptTickers.includes(t),
-      );
+      const keptSet = new Set(keptTickers);
+      const newlyQualifying = everQualifying.filter((t) => !keptSet.has(t));
       if (newlyQualifying.length > 0) {
         void addKeptTickers(targetDate, newlyQualifying);
       }
