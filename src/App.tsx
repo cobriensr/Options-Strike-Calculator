@@ -144,6 +144,9 @@ const DealerRegimeTile = lazy(() =>
 const BWBCalculator = lazy(() =>
   import('./components/BWBCalculator').catch(handleStaleChunk),
 );
+const Regime0dte = lazy(() =>
+  import('./components/Regime0dte').catch(handleStaleChunk),
+);
 const GreekHeatmapSection = lazy(() =>
   import('./components/GreekHeatmap')
     .then((m) => ({ default: m.GreekHeatmapSection }))
@@ -922,6 +925,18 @@ export default function StrikeCalculator() {
                 chain={chainData.chain}
                 defaultCollapsed
               />
+            </LazySection>
+          ),
+        ],
+        [
+          'sec-regime-0dte',
+          () => (
+            <LazySection
+              id="sec-regime-0dte"
+              label="0DTE Gamma Regime"
+              fallback={<SkeletonSection lines={5} />}
+            >
+              <Regime0dte />
             </LazySection>
           ),
         ],

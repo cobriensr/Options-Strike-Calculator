@@ -56,6 +56,11 @@ export function getPanelRegistry(
     { id: 'sec-iv', label: 'Implied Volatility', group: 'Inputs' },
     { id: 'sec-risk', label: 'Risk Calculator', group: 'Inputs' },
     { id: 'sec-regime', label: 'Market Regime', group: 'Market Context' },
+    {
+      id: 'sec-regime-0dte',
+      label: '0DTE Gamma Regime',
+      group: 'Market Context',
+    },
   ];
   if (isAuthenticated && hasMarketOrSnapshot) {
     list.push(

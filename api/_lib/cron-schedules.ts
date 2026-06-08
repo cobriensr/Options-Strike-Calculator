@@ -92,6 +92,16 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'capture-regime-0dte': {
+    // 21:30 UTC weekdays (16:30 ET / 15:30 CT) — after the 15:00 CT cash
+    // close + settle. Nightly self-scoring: evaluates the day's 0DTE
+    // gamma regime as-of 15:00 CT and upserts the verdict + realized
+    // outcome into flow_regime_0dte_daily. Low-frequency daily job →
+    // default failure threshold (a single miss is genuinely significant).
+    schedule: '30 21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'check-cone-breach': {
     schedule: '* 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
