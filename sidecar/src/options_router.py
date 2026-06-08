@@ -88,6 +88,15 @@ WINDOW_FILTER_STALE_DROP_THRESHOLD = 150
 # false-matching a genuinely off-grid / off-window strike.
 STRIKE_MATCH_TOLERANCE = 0.5
 
+# M7: prune past-expiry entries from option_definitions at most once per
+# this interval. The Definition subscribe uses start=0 (full snapshot) and
+# is re-issued on every reconnect, so iids accumulate across every expiry
+# and reconnect for the whole 24/7 process lifetime — unbounded slow memory
+# growth without pruning. One hour is far below the daily-expiry cadence that
+# makes entries stale, while keeping the prune well off the hot per-message
+# path.
+DEFINITION_PRUNE_INTERVAL_S = 3600.0
+
 
 class OptionsRecordRouter:
     """Owns options-side state and dispatches Definition/Trade/Stat records.
@@ -139,6 +148,11 @@ class OptionsRecordRouter:
         self.window_filter_drops = 0
         self.last_window_summary_ts = 0.0
 
+        # M7: throttle state for periodic pruning of past-expiry entries
+        # from option_definitions. Matches the time.time() source used by
+        # the SIDE-012 / FINDING 4 throttles above.
+        self.last_prune_ts = 0.0
+
         # Guards concurrent writes to option_definitions from the SDK
         # callback thread vs reads from other handlers.
         self._lock = threading.Lock()
@@ -179,6 +193,14 @@ class OptionsRecordRouter:
             return
 
         iid = getattr(record, "instrument_id", 0)
+
+        # M7: periodically drop past-expiry entries so the cache doesn't grow
+        # unbounded across expiries/reconnects. Runs BEFORE we take self._lock
+        # for the insert below — the prune does its own locking, so the lock is
+        # never acquired twice (threading.Lock is non-reentrant). The throttle
+        # state (last_prune_ts) is touched only on this single SDK callback
+        # thread, matching how the SIDE-012 throttle fields are handled.
+        self._maybe_prune_expired_definitions()
 
         with self._lock:
             self.option_definitions[iid] = {
@@ -343,6 +365,58 @@ class OptionsRecordRouter:
     def _get_option_info(self, instrument_id: int) -> dict | None:
         """Look up option strike/type/expiry for an instrument_id."""
         return self.option_definitions.get(instrument_id)
+
+    def _maybe_prune_expired_definitions(self) -> None:
+        """Throttle gate for ``_prune_expired_definitions`` (M7).
+
+        Called from ``handle_definition`` on every definition message. Runs
+        the prune only when at least ``DEFINITION_PRUNE_INTERVAL_S`` seconds
+        have elapsed since the last prune, so the O(n) scan stays off the hot
+        per-message path. Uses ``time.time()`` to match the SIDE-012 /
+        FINDING 4 throttles. The throttle bookkeeping (``last_prune_ts``) is
+        read/written without the lock because definitions are processed on a
+        single SDK callback thread — the lock guards only ``option_definitions``
+        itself, which the prune mutates under its own ``with self._lock``.
+        """
+        now = time.time()
+        if now - self.last_prune_ts < DEFINITION_PRUNE_INTERVAL_S:
+            return
+        self.last_prune_ts = now
+        self._prune_expired_definitions()
+
+    def _prune_expired_definitions(self) -> None:
+        """Remove option_definitions entries whose expiry is in the past (M7).
+
+        The Definition subscribe uses ``start=0`` (full snapshot) and is
+        re-issued on every reconnect, so ``option_definitions`` would otherwise
+        accumulate every iid ever seen — across every expiry and reconnect —
+        for the whole 24/7 process lifetime. This drops entries that can never
+        match a live trade again: any cached ``expiry`` strictly before today.
+
+        ``today`` is the current UTC date, matching ``handle_definition``'s
+        ``datetime.fromtimestamp(expiry_ns / 1e9, tz=timezone.utc).date()`` so
+        the comparison is apples-to-apples. Stale iids are collected first, then
+        deleted, to avoid mutating the dict while iterating it. All mutation
+        happens under ``self._lock`` (the same guard as the inserts).
+        """
+        from datetime import datetime, timezone
+
+        today = datetime.now(timezone.utc).date()
+        with self._lock:
+            stale_iids = [
+                iid
+                for iid, info in self.option_definitions.items()
+                if info["expiry"] < today
+            ]
+            for iid in stale_iids:
+                del self.option_definitions[iid]
+
+        if stale_iids:
+            log.info(
+                "Pruned %d past-expiry ES option definitions (cache now %d)",
+                len(stale_iids),
+                len(self.option_definitions),
+            )
 
     def _maybe_log_definition_lag_summary(self) -> None:
         """Emit a periodic summary of definition-lag drops (SIDE-012).
