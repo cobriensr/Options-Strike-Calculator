@@ -71,6 +71,36 @@ describe('isValidGuestKey', () => {
     expect(isValidGuestKey('alpha-key-12345')).toBe(false); // length differs
     expect(isValidGuestKey('')).toBe(false);
   });
+
+  // L1 — constant-work comparison: correctness must be identical whether the
+  // wrong key matches the configured length or not. (Timing itself is not
+  // unit-testable here; we assert the boolean result is preserved.)
+  it('rejects a wrong key of the SAME length as a configured key', () => {
+    process.env.GUEST_ACCESS_KEYS = 'alpha-key-1234'; // 14 chars
+    expect(isValidGuestKey('alpha-key-9999')).toBe(false); // same length
+  });
+
+  it('rejects a wrong key of a DIFFERENT length than any configured key', () => {
+    process.env.GUEST_ACCESS_KEYS = 'alpha-key-1234'; // 14 chars
+    expect(isValidGuestKey('x')).toBe(false); // shorter
+    expect(isValidGuestKey('alpha-key-1234-and-much-longer-suffix')).toBe(
+      false,
+    ); // longer
+  });
+
+  it('still accepts the exact configured key after the constant-work change', () => {
+    process.env.GUEST_ACCESS_KEYS = 'alpha-key-1234,bravo-key-5678';
+    expect(isValidGuestKey('alpha-key-1234')).toBe(true);
+    expect(isValidGuestKey('bravo-key-5678')).toBe(true);
+  });
+
+  it('rejects an over-long presented key that shares a configured prefix', () => {
+    // A presented key longer than MAX_KEY_LEN (128) truncates into the fixed
+    // buffer; the exact-length AND must still reject it.
+    process.env.GUEST_ACCESS_KEYS = 'short-config-key';
+    const overLong = 'short-config-key' + 'z'.repeat(200);
+    expect(isValidGuestKey(overLong)).toBe(false);
+  });
 });
 
 describe('isGuest', () => {

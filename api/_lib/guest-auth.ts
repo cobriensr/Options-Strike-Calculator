@@ -29,6 +29,15 @@ export const GUEST_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 let guestKeysWarned = false;
 
 /**
+ * Fixed buffer width for the constant-time key comparison. Matches
+ * `guestKeySchema`'s max (128 chars) so any well-formed key fits. Keys
+ * longer than this can never match a schema-validated configured key, so
+ * truncation into the fixed buffer is safe — the exact-length AND below
+ * still rejects them.
+ */
+const MAX_KEY_LEN = 128;
+
+/**
  * Returns the comma-separated GUEST_ACCESS_KEYS as a clean array.
  * Empty array means the feature is disabled (env var unset).
  */
@@ -55,11 +64,23 @@ export function isValidGuestKey(presented: string): boolean {
     return false;
   }
 
-  const a = Buffer.from(presented);
+  // Constant-work comparison: copy both presented and candidate keys into
+  // fixed-size buffers and ALWAYS call timingSafeEqual on equal-length
+  // buffers, regardless of the real key lengths. A length mismatch must not
+  // take a measurably shorter path — that would leak the configured key
+  // length via timing. The byte-equality result is ANDed with an exact
+  // length check so differing-length keys still fail correctly.
+  const presentedBuf = Buffer.alloc(MAX_KEY_LEN);
+  presentedBuf.write(presented);
+  const presentedLen = Buffer.byteLength(presented);
+
+  const candidateBuf = Buffer.alloc(MAX_KEY_LEN);
   let matched = false;
   for (const key of keys) {
-    const b = Buffer.from(key);
-    if (a.length === b.length && timingSafeEqual(a, b)) {
+    candidateBuf.fill(0);
+    candidateBuf.write(key);
+    const bytesEqual = timingSafeEqual(presentedBuf, candidateBuf);
+    if (bytesEqual && presentedLen === Buffer.byteLength(key)) {
       matched = true;
     }
   }

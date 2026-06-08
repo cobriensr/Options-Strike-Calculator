@@ -379,4 +379,32 @@ describe('Sentry.init beforeSend', () => {
     const result = beforeSend!(event) as { fingerprint?: string[] };
     expect(result.fingerprint).toBeUndefined();
   });
+
+  it('scrubs secret-named keys from request.cookies, leaving others intact', () => {
+    const event = {
+      request: {
+        cookies: {
+          'sc-owner': 'OWNER_SECRET_VALUE',
+          'sc-guest': 'guest-key-value',
+          'session-id': 'abc',
+          theme: 'dark',
+          other: 'x',
+        },
+      },
+    };
+    const result = beforeSend!(event) as {
+      request: { cookies: Record<string, string> };
+    };
+    expect(result.request.cookies['sc-owner']).toBe('[Filtered]');
+    expect(result.request.cookies['sc-guest']).toBe('[Filtered]');
+    expect(result.request.cookies['session-id']).toBe('[Filtered]');
+    // Non-secret cookies are untouched.
+    expect(result.request.cookies.theme).toBe('dark');
+    expect(result.request.cookies.other).toBe('x');
+  });
+
+  it('does not throw when request.cookies is absent', () => {
+    const event = { request: { headers: {} } };
+    expect(() => beforeSend!(event)).not.toThrow();
+  });
 });
