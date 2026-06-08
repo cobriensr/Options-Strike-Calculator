@@ -5,7 +5,7 @@
  * recommendations for analysis continuity.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 
 // ============================================================
@@ -40,7 +40,8 @@ export async function saveAnalysis(
   const entryTime = context.entryTime ?? 'unknown';
   const mode = analysis.mode ?? 'entry';
 
-  await sql`
+  await withDbRetry(
+    () => sql`
     INSERT INTO analyses (
       snapshot_id, date, entry_time, mode, structure, confidence,
       suggested_delta, spx, vix, vix1d, hedge, full_response,
@@ -55,7 +56,10 @@ export async function saveAnalysis(
       ${JSON.stringify(analysis)},
       ${promptHash ?? null}
     )
-  `;
+  `,
+    2,
+    10_000,
+  );
 }
 
 // ============================================================
@@ -77,7 +81,8 @@ export async function saveOutcome(input: {
     input.dayOpen > 0 ? (input.dayHigh - input.dayLow) / input.dayOpen : null;
   const closeVsOpen = input.settlement - input.dayOpen;
 
-  await sql`
+  await withDbRetry(
+    () => sql`
     INSERT INTO outcomes (
       date, settlement, day_open, day_high, day_low,
       day_range_pts, day_range_pct, close_vs_open,
@@ -98,7 +103,10 @@ export async function saveOutcome(input: {
       close_vs_open = EXCLUDED.close_vs_open,
       vix_close = EXCLUDED.vix_close,
       vix1d_close = EXCLUDED.vix1d_close
-  `;
+  `,
+    2,
+    10_000,
+  );
 }
 
 // ============================================================
@@ -129,17 +137,22 @@ export async function getPreviousRecommendation(
 
   if (currentMode === 'midday') {
     // Get the most recent analysis for this date (any mode)
-    rows = await sql`
+    rows = await withDbRetry(
+      () => sql`
       SELECT mode, entry_time, structure, confidence, suggested_delta, hedge,
              spx, vix, vix1d, full_response, created_at
       FROM analyses
       WHERE date = ${date}
       ORDER BY created_at DESC
       LIMIT 1
-    `;
+    `,
+      2,
+      10_000,
+    );
   } else if (currentMode === 'review') {
     // Prefer the most recent midday, fall back to most recent entry
-    rows = await sql`
+    rows = await withDbRetry(
+      () => sql`
       SELECT mode, entry_time, structure, confidence, suggested_delta, hedge,
              spx, vix, vix1d, full_response, created_at
       FROM analyses
@@ -149,7 +162,10 @@ export async function getPreviousRecommendation(
         CASE WHEN mode = 'midday' THEN 0 ELSE 1 END,
         created_at DESC
       LIMIT 1
-    `;
+    `,
+      2,
+      10_000,
+    );
   } else {
     return null;
   }

@@ -5,7 +5,7 @@
  * and dark pool snapshot persistence captured at analysis time.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 import type { DarkPoolCluster } from './darkpool.js';
 
 // ============================================================
@@ -106,7 +106,8 @@ export async function saveSnapshot(
       ? input.vix / input.vix9d
       : null;
 
-  const result = await sql`
+  const result = await withDbRetry(
+    () => sql`
     INSERT INTO market_snapshots (
       date, entry_time,
       spx, spy, spx_open, spx_high, spx_low, prev_close,
@@ -197,7 +198,10 @@ export async function saveSnapshot(
       event_names = EXCLUDED.event_names,
       is_backtest = EXCLUDED.is_backtest
     RETURNING id
-  `;
+  `,
+    2,
+    10_000,
+  );
 
   return result.length > 0 ? ((result[0]?.id as number) ?? null) : null;
 }
@@ -251,7 +255,14 @@ export async function getRecentVixSnapshots(
   limit = 120,
 ): Promise<VixTrajectoryRow[]> {
   const sql = getDb();
-  const rows = await sql`
+  // ORDER BY created_at DESC (insertion time = chronological), NOT
+  // entry_time. entry_time is a TEXT column ("9:35 AM", "3:00 PM") whose
+  // lexicographic sort mis-orders the clock ('10:00 AM' < '9:35 AM'),
+  // so an ASC entry_time + LIMIT would keep the WRONG subset on heavy
+  // days. Keeping the most-recent N by created_at, then re-sorting
+  // ascending by parsed minutes below, yields the correct window.
+  const rows = await withDbRetry(
+    () => sql`
     SELECT entry_time,
            vix::text        AS vix,
            vix1d::text      AS vix1d,
@@ -261,9 +272,12 @@ export async function getRecentVixSnapshots(
     WHERE date = ${date}
       AND vix IS NOT NULL
       AND (vix1d IS NOT NULL OR vix9d IS NOT NULL)
-    ORDER BY entry_time ASC
+    ORDER BY created_at DESC
     LIMIT ${limit}
-  `;
+  `,
+    2,
+    10_000,
+  );
 
   return rows
     .map((r) => {
@@ -316,11 +330,15 @@ export async function getVixOhlcFromSnapshots(date: string): Promise<{
   count: number;
 } | null> {
   const sql = getDb();
-  const rows = await sql`
+  const rows = await withDbRetry(
+    () => sql`
     SELECT entry_time, vix::text AS vix
     FROM market_snapshots
     WHERE date = ${date} AND vix IS NOT NULL
-  `;
+  `,
+    2,
+    10_000,
+  );
 
   if (rows.length === 0) return null;
 
@@ -360,7 +378,8 @@ export async function saveDarkPoolSnapshot(
   input: DarkPoolSnapshotInput,
 ): Promise<number | null> {
   const sql = getDb();
-  const rows = await sql`
+  const rows = await withDbRetry(
+    () => sql`
     INSERT INTO dark_pool_snapshots (
       date, timestamp, snapshot_id, spx_price, clusters
     ) VALUES (
@@ -375,6 +394,9 @@ export async function saveDarkPoolSnapshot(
       spx_price = EXCLUDED.spx_price,
       clusters = EXCLUDED.clusters
     RETURNING id
-  `;
+  `,
+    2,
+    10_000,
+  );
   return rows.length > 0 ? (rows[0]!.id as number) : null;
 }
