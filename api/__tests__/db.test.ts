@@ -860,7 +860,10 @@ describe('db.ts', () => {
         if (seen.has(id)) duplicates.push(id);
         seen.add(id);
       }
-      expect(duplicates, `Duplicate migration ids found: ${duplicates.join(', ')}`).toHaveLength(0);
+      expect(
+        duplicates,
+        `Duplicate migration ids found: ${duplicates.join(', ')}`,
+      ).toHaveLength(0);
     });
 
     it('has strictly monotonically increasing migration ids', () => {
@@ -880,7 +883,9 @@ describe('db.ts', () => {
     });
 
     it('has only positive integer migration ids', () => {
-      const nonPositive = MIGRATIONS.filter((m) => !Number.isInteger(m.id) || m.id < 1);
+      const nonPositive = MIGRATIONS.filter(
+        (m) => !Number.isInteger(m.id) || m.id < 1,
+      );
       expect(
         nonPositive.map((m) => m.id),
         `Non-positive or non-integer migration ids: ${nonPositive.map((m) => m.id).join(', ')}`,
