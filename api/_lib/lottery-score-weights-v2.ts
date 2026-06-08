@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-06-05T03:59:14.698682+00:00
+ * Trained at    : 2026-06-06T05:13:17.783390+00:00
  *
  * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
  * Until then the old lottery-score-weights.ts continues to drive production.
@@ -76,13 +76,13 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   RUTW: 0,
   SHOP: 0,
   SLV: -1,
-  SMCI: 0,
+  SMCI: 1,
   SMH: 0,
-  SNDK: 1,
+  SNDK: 2,
   SNOW: 0,
   SOFI: -1,
   SOUN: 5,
-  SOXL: -1,
+  SOXL: 0,
   SOXS: -1,
   SPXW: 0,
   SPY: 0,
@@ -94,7 +94,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   TQQQ: 1,
   TSLA: 0,
   TSLL: 1,
-  TSM: 1,
+  TSM: 2,
   UBER: 0,
   UNH: 1,
   USAR: -1,
@@ -159,7 +159,7 @@ export const DTE_WEIGHTS_V2: Readonly<Record<string, number>> = {
 // ---------------------------------------------------------------------------
 
 /** Per-quintile score uplift for vol_to_oi_window (length 5, index = quintile 0-4). */
-export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [2, 0, 2, 0, -3];
+export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
 
 /**
  * Boundaries that define the vol/OI quintiles (length 4).
@@ -168,8 +168,8 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [2, 0, 2, 0, -3];
  * Quintile 4 : value >= boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.059949909804775624, 0.09660766961651918, 0.15451692581794618,
-  0.3767090994813767,
+  0.059964726631393295, 0.09665214366402004, 0.15452152478777695,
+  0.3767112093693593,
 ];
 
 // ---------------------------------------------------------------------------
@@ -180,17 +180,15 @@ export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
   3, -2, -2, -2, -1,
 ];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.012236543932584271, 0.02544302740073095, 0.04242031680254777,
-  0.06927197914979756,
+  0.01223795282897044, 0.025459276640998073, 0.0424280085940143,
+  0.06928316910596881,
 ];
 
 // ---------------------------------------------------------------------------
 // Ask-pct quintile weights + boundaries
 // ---------------------------------------------------------------------------
 
-export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -1, 1, 2, 2, -4,
-];
+export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [0, 1, 1, 2, -4];
 export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
   0.5333333333333333, 0.5714285714285714, 0.625, 0.75,
 ];
@@ -291,7 +289,7 @@ export const COMPOSITE_BONUSES_V2: ReadonlyArray<CompositeBonus> = [
 
 export const LOTTERY_TIER_THRESHOLDS_V2 = {
   t1: 9,
-  t2: 7,
+  t2: 6,
 } as const;
 
 // ---------------------------------------------------------------------------
