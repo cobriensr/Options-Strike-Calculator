@@ -17,12 +17,12 @@
  * `docs/superpowers/specs/lottery-flow-inversion-automation-2026-05-05.md`
  * for the broader Phase 2 design.
  *
- * Cadence: 21:30 UTC Mon-Fri (30 min after market close).
+ * Cadence: 21:40 UTC Mon-Fri (40 min after market close).
  *
  * Environment: CRON_SECRET, UW_API_KEY
  */
 
-import { getDb, withDbRetry } from '../_lib/db.js';
+import { getDb, withDbRetry, safeDbVoid } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import {
   withCronInstrumentation,
@@ -117,6 +117,32 @@ async function loadMatchedFlow(
   return out;
 }
 
+/**
+ * Best-effort retention prune for `lottery_kept_tickers` (the DB-backed
+ * never-vanish kept-set). The table grows one row per (trade_date,
+ * underlying_symbol) with no other cleanup, so without this it accumulates
+ * forever. Keep ~1 week of history and drop anything older.
+ *
+ * Wrapped in `safeDbVoid` so a prune failure is swallowed (increments the
+ * `db.error` metric) and NEVER fails this cron's primary enrichment job —
+ * retention is strictly secondary to outcome enrichment.
+ *
+ * 7-day window: today's rows (and any from the last 7 days) are never
+ * touched. This preserves the Phase 1 write-amplification invariant in
+ * `lottery-finder.ts`, whose diff-skip on `addKeptTickers` depends on
+ * today's rows always being present in the table.
+ */
+async function pruneKeptTickers(): Promise<void> {
+  await safeDbVoid(async () => {
+    const db = getDb();
+    await db`
+      DELETE FROM lottery_kept_tickers
+      WHERE trade_date
+            < ((now() AT TIME ZONE 'America/New_York')::date - INTERVAL '7 days')::date
+    `;
+  });
+}
+
 export default withCronInstrumentation(
   'enrich-lottery-outcomes',
   async (ctx): Promise<CronResult> => {
@@ -153,6 +179,7 @@ export default withCronInstrumentation(
     )) as UnenrichedFire[];
 
     if (fires.length === 0) {
+      await pruneKeptTickers();
       return { status: 'success', message: 'No unenriched fires' };
     }
 
@@ -255,6 +282,10 @@ export default withCronInstrumentation(
 
       enriched++;
     }
+
+    // Best-effort retention prune, AFTER all enrichment work has landed so a
+    // prune failure can never roll back or fail the primary job.
+    await pruneKeptTickers();
 
     return {
       status: 'success',
