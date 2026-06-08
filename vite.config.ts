@@ -175,6 +175,9 @@ export default defineConfig({
         'api/_lib/api-helpers.ts', // re-exports auth-helpers, uw-fetch, cron-helpers, schwab-fetch
         'api/_lib/csv-parser.ts', // re-exports csv-parser/parse + csv-parser/summary
         'api/bwb-anchor.ts', // integration-tested via API
+        'src/components/OpeningFlowSignal/index.ts',
+        'src/components/PeriscopeLottery/types.ts',
+        'src/components/GammaNodeDetector/index.tsx',
       ],
     },
   },
