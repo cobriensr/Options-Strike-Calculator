@@ -19,7 +19,10 @@ import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { uwFetch, cronGuard, withRetry } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
-import { withCronCheckin } from '../_lib/cron-instrumentation.js';
+import {
+  withCronCheckin,
+  deriveCronStatus,
+} from '../_lib/cron-instrumentation.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -144,7 +147,17 @@ async function storeRealizedVol(
         rv_30d             = EXCLUDED.rv_30d,
         iv_rv_spread       = EXCLUDED.iv_rv_spread,
         iv_overpricing_pct = EXCLUDED.iv_overpricing_pct,
-        iv_rank            = EXCLUDED.iv_rank
+        -- iv_rank comes from a SEPARATE leg (the iv-rank fetch) than the
+        -- realized-vol leg that gates this whole upsert. On a partial run
+        -- where realized-vol landed but iv-rank failed, EXCLUDED.iv_rank is
+        -- NULL — and a plain assignment would clobber a previously-stored
+        -- good value. COALESCE keeps the existing iv_rank when the incoming
+        -- value is NULL ("no new iv-rank data this run"). The other columns
+        -- are NOT coalesced: they all derive from the realized-vol leg, which
+        -- is guaranteed non-empty here (storeRealizedVol returns early when
+        -- rvRows is empty), so their NULLs mean "this run had no parseable
+        -- value" — a meaningful current-run state, not stale-vs-fresh.
+        iv_rank            = COALESCE(EXCLUDED.iv_rank, vol_realized.iv_rank)
     `,
     2,
     10_000,
@@ -230,11 +243,15 @@ export default withCronCheckin('fetch-vol-surface', async (req, res) => {
     const tsResult = await storeTermStructure(tsRows, today);
     const rvStored = await storeRealizedVol(rvRows, ivRankRows, today);
 
-    // Status demotion: all three endpoints failed → 'error', some → 'partial',
-    // none → 'success'. Surfaced to Axiom so a UW outage no longer reports
-    // a clean 'ok' run with zero rows written.
-    const allFailed = failureCount === 3;
-    const status = allFailed ? 'error' : failureCount > 0 ? 'partial' : 'ok';
+    // Status demotion via the shared helper. The leg count is derived from
+    // the fetch list (term-structure, realized-vol, iv-rank), not a literal,
+    // so 'error' tracks the number of legs. This cron's legacy success token
+    // is 'ok' (its Axiom/response contract pins it), so we translate the
+    // helper's 'success' → 'ok'; 'partial' and 'error' pass through unchanged.
+    const VOL_SURFACE_LEGS = 3;
+    const derived = deriveCronStatus(failureCount, VOL_SURFACE_LEGS);
+    const status = derived === 'success' ? 'ok' : derived;
+    const allFailed = derived === 'error';
 
     logger.info(
       {

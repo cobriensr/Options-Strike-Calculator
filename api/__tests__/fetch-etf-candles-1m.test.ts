@@ -352,6 +352,42 @@ describe('fetch-etf-candles-1m handler', () => {
     });
   });
 
+  // ── Status derivation regression (BE-CRON #8) ─────────────
+  //
+  // The status used to be hand-rolled as `failureCount === 2`, hardcoding
+  // the ticker count. It is now `deriveCronStatus(failureCount, TICKERS.length)`
+  // (TICKERS = ['SPY','QQQ'], length 2). These two cases pin that the
+  // demotion still tracks the ACTUAL ticker count, not a literal: all N
+  // tickers failing → 'error', a strict subset failing → 'partial'. With the
+  // old magic number this contract held only by coincidence; with the derived
+  // count it holds structurally and survives adding a third ticker.
+
+  it('derives error from the ticker count: all (both) tickers failing → error', async () => {
+    // Both legs fail → failureCount (2) >= TICKERS.length (2) → 'error'.
+    mockWithRetry.mockRejectedValue(new Error('UW total outage'));
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._json).toMatchObject({ status: 'error', failureCount: 2 });
+  });
+
+  it('derives partial from the ticker count: a single ticker failing → partial (not error)', async () => {
+    // Only SPY's fetch rejects; QQQ succeeds. failureCount (1) < TICKERS.length
+    // (2) and > 0 → 'partial'. A magic `=== 2` would also (correctly) avoid
+    // 'error' here, but this case anchors that a strict-subset failure is
+    // 'partial' and that 'error' is reserved for full-fleet failure.
+    mockWithRetry
+      .mockImplementationOnce(() => Promise.reject(new Error('SPY 429')))
+      .mockImplementationOnce((fn: () => unknown) => fn());
+    mockSql.mockResolvedValue([{ id: 1 }]);
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._json).toMatchObject({ status: 'partial', failureCount: 1 });
+  });
+
   // ── INSERT column coverage ────────────────────────────────
 
   it('persists all OHLC + volume columns in the INSERT (field coverage)', async () => {

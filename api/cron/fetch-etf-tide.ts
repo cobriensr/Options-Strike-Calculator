@@ -23,6 +23,7 @@ import {
 } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
+  deriveCronStatus,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 
@@ -181,14 +182,10 @@ export default withCronInstrumentation(
       }
     }
 
-    // Status demotion (matches fetch-gex-strike-expiry-etfs convention):
-    //   all tickers failed → 'error', some failed → 'partial', none → 'success'.
-    const allFailed = failureCount === TICKERS.length;
-    const status = allFailed
-      ? 'error'
-      : failureCount > 0
-        ? 'partial'
-        : 'success';
+    // Status demotion via the shared helper: all tickers failed → 'error',
+    // some failed → 'partial', none → 'success'. totalLegs is derived from
+    // the ticker list so adding a ticker can never make 'error' unreachable.
+    const status = deriveCronStatus(failureCount, TICKERS.length);
 
     logger.info({ results, failureCount, status }, 'fetch-etf-tide completed');
 

@@ -34,8 +34,15 @@ import logger from '../_lib/logger.js';
 import { cronJitter, uwFetch, withRetry } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
+  deriveCronStatus,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+
+// Tickers this cron fetches 1-minute OHLC for. Derive the leg count from
+// this list so status demotion can never silently break if a ticker is
+// added (the prior `failureCount === 2` hardcode made 'error' unreachable
+// the moment a third ticker landed).
+const TICKERS = ['SPY', 'QQQ'] as const;
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -174,15 +181,12 @@ export default withCronInstrumentation(
         ? qqqStore.value
         : { stored: 0, skipped: 0 };
 
-    // Status demotion (matches fetch-gex-strike-expiry-etfs convention):
-    //   both tickers failed → 'error', one failed → 'partial', none → 'success'.
+    // Status demotion via the shared helper: all tickers failed → 'error',
+    // some failed → 'partial', none → 'success'. totalLegs is derived from
+    // TICKERS.length (was a hardcoded `=== 2`, which made 'error' unreachable
+    // the moment a third ticker was added).
     const failureCount = failedTickers.size;
-    const allFailed = failureCount === 2;
-    const status = allFailed
-      ? 'error'
-      : failureCount > 0
-        ? 'partial'
-        : 'success';
+    const status = deriveCronStatus(failureCount, TICKERS.length);
 
     logger.info(
       {

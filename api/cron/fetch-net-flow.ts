@@ -27,6 +27,7 @@ import {
 } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
+  deriveCronStatus,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 
@@ -218,14 +219,12 @@ export default withCronInstrumentation(
       });
     }
 
-    // Status demotion (matches fetch-gex-strike-expiry-etfs convention):
-    //   all sources failed → 'error', some failed → 'partial', none → 'success'.
-    const allFailed = failureCount === TICKERS.length;
-    const status = allFailed
-      ? 'error'
-      : failureCount > 0
-        ? 'partial'
-        : 'success';
+    // Status demotion via the shared helper: all sources failed → 'error',
+    // some failed → 'partial', none → 'success'. The source count is derived
+    // from the TICKERS list, not a literal, so 'error' tracks the list size.
+    const status = deriveCronStatus(failureCount, TICKERS.length);
+    // `allFailed` still drives the `stored` metadata flag below.
+    const allFailed = status === 'error';
 
     ctx.logger.info(
       { results, failureCount, status },
