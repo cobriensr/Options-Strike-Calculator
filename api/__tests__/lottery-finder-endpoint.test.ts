@@ -2008,14 +2008,19 @@ describe('lottery-finder endpoint', () => {
       expect(body.suppressedCount).toBe(1);
     });
 
-    it('accumulates the PAGE-INDEPENDENT ever-qualifying set (from the COUNT query) into the kept-set', async () => {
+    it('accumulates only the SET DIFFERENCE (newly-qualifying) into the kept-set, skipping already-persisted tickers (#1 write-amp fix)', async () => {
       // The accumulation source is the COUNT query's `ever_qualifying` column
       // — array_agg(DISTINCT underlying_symbol) FILTER (WHERE quintile > 2)
-      // over the FULL ranked set (no LIMIT). So even tickers NOT on the page
-      // slice are accumulated. CCC quintile 3 (>2) → remembered. AAA quintile
-      // 1 (kept only via the set) and NEWT NULL quintile are excluded by the
-      // SQL FILTER (quintile > 2 is false for both), so they're not in
-      // ever_qualifying. The handler passes ever_qualifying straight through.
+      // over the FULL ranked set (no LIMIT). CCC quintile 3 (>2) → qualifies;
+      // AAA quintile 1 / NEWT NULL quintile are excluded by the SQL FILTER, so
+      // ever_qualifying = ['AAA', 'CCC'] reflects only the live gate.
+      //
+      // (#1) Write-amplification fix: the handler now INSERTs only the set
+      // DIFFERENCE of `ever_qualifying` vs. the kept-set it already read at
+      // request start. AAA is ALREADY in the kept-set read (durable, never
+      // pruned today) → (b) it must NOT be re-inserted. CCC is qualifying but
+      // NOT yet persisted → (a) it IS passed to addKeptTickers. Steady state
+      // (everything already persisted) → addKeptTickers is never called.
       mockReadKeptTickers.mockResolvedValueOnce(['AAA']);
       mockSql
         .mockResolvedValueOnce([
@@ -2024,7 +2029,7 @@ describe('lottery-finder endpoint', () => {
           rowWithQuintile(9, 'NEWT', null),
         ])
         .mockResolvedValueOnce([
-          { total: 3, suppressed: 0, ever_qualifying: ['CCC'] },
+          { total: 3, suppressed: 0, ever_qualifying: ['AAA', 'CCC'] },
         ]);
 
       const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
@@ -2034,8 +2039,31 @@ describe('lottery-finder endpoint', () => {
       expect(mockAddKeptTickers).toHaveBeenCalledTimes(1);
       const [addDate, addTickers] = mockAddKeptTickers.mock.calls[0]!;
       expect(addDate).toBe('2026-05-01');
-      // ever_qualifying came straight from the page-independent COUNT query.
+      // (a) CCC (newly-qualifying) IS inserted; (b) AAA (already in the
+      // kept-set read) is NOT re-inserted — only the set difference is written.
       expect(addTickers).toEqual(['CCC']);
+    });
+
+    it('issues ZERO writes in steady state when every qualifying ticker is already in the kept-set (#1 write-amp fix)', async () => {
+      // Mid-session steady state: the whole qualifying universe was persisted
+      // earlier today, so the kept-set read already contains every ticker in
+      // `ever_qualifying`. The set difference is empty → addKeptTickers must
+      // not be called at all (no no-op ON CONFLICT churn on the Neon primary).
+      mockReadKeptTickers.mockResolvedValueOnce(['AAA', 'CCC']);
+      mockSql
+        .mockResolvedValueOnce([
+          rowWithQuintile(1, 'AAA', 3),
+          rowWithQuintile(3, 'CCC', 3),
+        ])
+        .mockResolvedValueOnce([
+          { total: 2, suppressed: 0, ever_qualifying: ['AAA', 'CCC'] },
+        ]);
+
+      const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(mockAddKeptTickers).not.toHaveBeenCalled();
     });
 
     it('never-vanish: a ticker qualifying (quintile>2) but NOT on the returned page is still accumulated (page-independence)', async () => {

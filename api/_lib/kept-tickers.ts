@@ -17,7 +17,7 @@
  *
  * ── DESIGN ─────────────────────────────────────────────────────────────
  * Backed by `lottery_kept_tickers(trade_date, underlying_symbol)` created
- * in migration #187. The composite PRIMARY KEY is both the uniqueness
+ * in migration #188. The composite PRIMARY KEY is both the uniqueness
  * constraint (dedups concurrent writers) and the lookup index. Date-scoped
  * rows replace the prior Redis set (lf:kept:<date>) so records survive
  * Redis eviction and can be read page-independently by both the feed and
@@ -33,8 +33,7 @@
  * `db.error` metric only, mirroring last-good-cache.ts / schwab.ts.
  */
 
-import { getDb } from './db.js';
-import { metrics } from './sentry.js';
+import { getDb, safeDb, safeDbVoid } from './db.js';
 
 /**
  * Read the set of tickers shown at least once today (`date`).
@@ -43,7 +42,7 @@ import { metrics } from './sentry.js';
  *          result OR on any error (DB unavailable, timeout). Never throws.
  */
 export async function readKeptTickers(date: string): Promise<string[]> {
-  try {
+  return safeDb(async () => {
     const sql = getDb();
     const rows = (await sql`
       SELECT underlying_symbol
@@ -51,47 +50,36 @@ export async function readKeptTickers(date: string): Promise<string[]> {
       WHERE trade_date = ${date}::date
     `) as { underlying_symbol: string }[];
     return rows.map((r) => r.underlying_symbol);
-  } catch {
-    metrics.increment('db.error');
-    return [];
-  }
+  }, []);
 }
 
 /**
  * Persist `tickers` into the kept-set for `date`.
  *
- * No-op on empty input (avoids a needless round-trip). Deduplicates input
- * via Set before building the INSERT. Issues a SINGLE batched multi-row
- * INSERT ... ON CONFLICT DO NOTHING so concurrent cron calls and page
- * re-renders are idempotent. Swallows all errors — accumulation is
- * best-effort and must never throw into the request path.
+ * No-op on empty input (avoids a needless round-trip). Issues a SINGLE
+ * batched multi-row INSERT ... ON CONFLICT DO NOTHING via `unnest` so
+ * concurrent cron calls and page re-renders are idempotent. Swallows all
+ * errors — accumulation is best-effort and must never throw into the
+ * request path.
+ *
+ * The caller passes the set-difference of `array_agg(DISTINCT …)` (already
+ * distinct), and ON CONFLICT DO NOTHING absorbs any residual duplicates, so
+ * no client-side dedup is needed.
  */
 export async function addKeptTickers(
   date: string,
   tickers: string[],
 ): Promise<void> {
-  const unique = [...new Set(tickers)];
-  if (unique.length === 0) return;
-  try {
+  if (tickers.length === 0) return;
+  await safeDbVoid(async () => {
     const sql = getDb();
-    // Build a single multi-row INSERT using sql.query() — one round-trip
-    // regardless of how many tickers we're adding (batched-insert convention,
-    // see feedback_batched_inserts.md). Each ticker contributes two params:
-    // the date and the symbol.
-    const params: string[] = [];
-    const tuples: string[] = [];
-    for (const ticker of unique) {
-      const base = params.length;
-      params.push(date, ticker);
-      tuples.push(`($${base + 1}, $${base + 2})`);
-    }
-    const stmt = `
+    // Single round-trip via `unnest`: binds ONE text[] param for the whole
+    // batch (no per-row $N tuples, no 65535-param ceiling). Neon sends the
+    // JS string array as a Postgres text[] — same pattern as path-shape.ts.
+    await sql`
       INSERT INTO lottery_kept_tickers (trade_date, underlying_symbol)
-      VALUES ${tuples.join(', ')}
+      SELECT ${date}::date, t FROM unnest(${tickers}::text[]) AS t
       ON CONFLICT DO NOTHING
     `;
-    await sql.query(stmt, params);
-  } catch {
-    metrics.increment('db.error');
-  }
+  });
 }

@@ -1289,9 +1289,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     //     off the kept-set (the predicate reads the LIVE quintile, never the
     //     kept-set itself), so accumulation is non-circular.
     // Fire-and-forget; never blocks or throws into the response path.
+    //
+    // (#1) Write-amplification fix: INSERT only the SET DIFFERENCE of the
+    // currently-qualifying set vs. the kept-set we already read at request
+    // start (`keptTickers`, line ~518). In mid-session steady state the whole
+    // universe was persisted earlier today, so the old unconditional write of
+    // the full `everQualifying` set was ~100% no-op `ON CONFLICT DO NOTHING`
+    // churn on the Neon primary every poll. Skipping already-persisted tickers
+    // is SAFE because today's kept rows are durable and never pruned
+    // intraday: Phase 4's retention prune only deletes rows with
+    // `trade_date < today - 7d`, never today's. A ticker already in
+    // `keptTickers` therefore cannot be lost by skipping its re-insert.
+    // ⚠️ If a future change ever prunes today's rows mid-session, this
+    // diff-skip must be revisited — re-inserting on every poll would be the
+    // only way to self-heal a same-day deletion.
     if (!showAll) {
       const everQualifying = totalRows[0]?.ever_qualifying ?? [];
-      void addKeptTickers(targetDate, everQualifying);
+      const newlyQualifying = everQualifying.filter(
+        (t) => !keptTickers.includes(t),
+      );
+      if (newlyQualifying.length > 0) {
+        void addKeptTickers(targetDate, newlyQualifying);
+      }
     }
 
     // Build the suspicious-cluster lookup from the day-scoped 0DTE scan.

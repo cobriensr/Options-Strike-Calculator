@@ -14,6 +14,15 @@ const { mockSql, mockCronGuard, mockFetchIntraday, mockSimulateInversion } =
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  // Real best-effort semantics: run the op, swallow any throw (so a prune
+  // failure can never fail the cron). Mirrors the real safeDbVoid in db.ts.
+  safeDbVoid: async (op: () => Promise<void>): Promise<void> => {
+    try {
+      await op();
+    } catch {
+      /* swallowed — db.error metric in the real impl */
+    }
+  },
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -43,6 +52,27 @@ vi.mock('../_lib/flow-inversion.js', () => ({
 import handler from '../cron/enrich-lottery-outcomes.js';
 
 const GUARD = { apiKey: 'test-key', today: '2026-05-02' };
+
+/**
+ * The tagged-template mock receives the SQL string fragments as its first
+ * arg (a TemplateStringsArray). Join them to match against the query text.
+ */
+function queryText(call: unknown[]): string {
+  const strings = call[0];
+  return Array.isArray(strings) ? strings.join('') : '';
+}
+
+/** Find the retention-prune DELETE among all mockSql calls. */
+function findPruneCall(calls: unknown[][]): unknown[] | undefined {
+  return calls.find((c) => {
+    const text = queryText(c);
+    return (
+      text.includes('DELETE FROM lottery_kept_tickers') &&
+      text.includes("INTERVAL '7 days'") &&
+      text.includes("AT TIME ZONE 'America/New_York'")
+    );
+  });
+}
 
 const baseFire = {
   id: 1,
@@ -90,6 +120,7 @@ describe('enrich-lottery-outcomes', () => {
       },
     ]); // loadMatchedFlow SELECT
     mockSql.mockResolvedValueOnce([]); // UPDATE
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
 
     mockFetchIntraday.mockResolvedValueOnce([
       { ts: new Date('2026-05-02T14:31:00Z'), mid: 1.55 },
@@ -119,7 +150,15 @@ describe('enrich-lottery-outcomes', () => {
       '2026-05-02',
     );
     expect(mockSimulateInversion).toHaveBeenCalled();
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // 4 enrichment queries + 1 retention-prune DELETE.
+    expect(mockSql).toHaveBeenCalledTimes(5);
+
+    // The retention prune ran, and ran AFTER the main work (it is the last
+    // mockSql call — the UPDATE that lands enrichment is call index 3).
+    const calls = mockSql.mock.calls;
+    const pruneCall = findPruneCall(calls);
+    expect(pruneCall).toBeDefined();
+    expect(calls.indexOf(pruneCall!)).toBe(calls.length - 1);
   });
 
   it('skips fires with no post-entry ticks', async () => {
@@ -134,6 +173,7 @@ describe('enrich-lottery-outcomes', () => {
       },
     ]);
     mockSql.mockResolvedValueOnce([]); // ticks empty
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
 
     const req = mockRequest({
       method: 'GET',
@@ -148,12 +188,15 @@ describe('enrich-lottery-outcomes', () => {
       status: 'success',
       message: expect.stringContaining('skipped 1'),
     });
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // SELECT fires + SELECT ticks + retention-prune DELETE.
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
     expect(mockFetchIntraday).not.toHaveBeenCalled();
   });
 
-  it('returns early when no unenriched fires exist', async () => {
-    mockSql.mockResolvedValueOnce([]);
+  it('returns early when no unenriched fires exist, but still prunes', async () => {
+    mockSql.mockResolvedValueOnce([]); // SELECT fires (empty)
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
 
     const req = mockRequest({
       method: 'GET',
@@ -169,6 +212,31 @@ describe('enrich-lottery-outcomes', () => {
       message: 'No unenriched fires',
     });
 
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // Even on the no-work early return, the retention prune still runs.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
+  });
+
+  it('still succeeds when the retention prune throws (best-effort)', async () => {
+    mockSql.mockResolvedValueOnce([]); // SELECT fires (empty) → early return path
+    // The prune DELETE rejects; safeDbVoid must swallow it so the handler
+    // still returns success.
+    mockSql.mockRejectedValueOnce(new Error('neon: connection reset'));
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: 'No unenriched fires',
+    });
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
   });
 });

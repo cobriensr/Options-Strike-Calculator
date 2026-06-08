@@ -11,6 +11,7 @@ vi.mock('@neondatabase/serverless', () => ({
   neon: vi.fn(() => mockSql),
 }));
 
+import { MIGRATIONS } from '../_lib/db-migrations.js';
 import {
   getDb,
   _resetDb,
@@ -846,6 +847,51 @@ describe('db.ts', () => {
       mockSql.mockRejectedValueOnce(new Error('DB error'));
 
       await expect(migrateDb()).rejects.toThrow('DB error');
+    });
+  });
+
+  // ============================================================
+  // migration integrity
+  // ============================================================
+  describe('migration integrity', () => {
+    it('has no duplicate migration ids', () => {
+      const ids = MIGRATIONS.map((m) => m.id);
+      const seen = new Set<number>();
+      const duplicates: number[] = [];
+      for (const id of ids) {
+        if (seen.has(id)) duplicates.push(id);
+        seen.add(id);
+      }
+      expect(
+        duplicates,
+        `Duplicate migration ids found: ${duplicates.join(', ')}`,
+      ).toHaveLength(0);
+    });
+
+    it('has strictly monotonically increasing migration ids', () => {
+      const ids = MIGRATIONS.map((m) => m.id);
+      const violations: string[] = [];
+      for (let i = 0; i < ids.length - 1; i++) {
+        const curr = ids[i] as number;
+        const next = ids[i + 1] as number;
+        if (curr >= next) {
+          violations.push(`ids[${i}]=${curr} >= ids[${i + 1}]=${next}`);
+        }
+      }
+      expect(
+        violations,
+        `Migration ids are not strictly increasing: ${violations.join('; ')}`,
+      ).toHaveLength(0);
+    });
+
+    it('has only positive integer migration ids', () => {
+      const nonPositive = MIGRATIONS.filter(
+        (m) => !Number.isInteger(m.id) || m.id < 1,
+      );
+      expect(
+        nonPositive.map((m) => m.id),
+        `Non-positive or non-integer migration ids: ${nonPositive.map((m) => m.id).join(', ')}`,
+      ).toHaveLength(0);
     });
   });
 
