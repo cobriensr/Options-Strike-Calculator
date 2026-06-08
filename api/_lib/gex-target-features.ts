@@ -34,6 +34,7 @@
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { getDb, withDbRetry } from './db.js';
+import { gexCtDayFilterSql } from './gex-strike-day.js';
 import logger from './logger.js';
 import {
   numOrNull as canonicalNumOrNull,
@@ -169,11 +170,11 @@ export async function loadSnapshotHistory(
       call_vanna_oi, put_vanna_oi,
       call_vanna_vol, put_vanna_vol
     FROM gex_strike_0dte
-    WHERE date = $1
+    WHERE ${gexCtDayFilterSql('$1')}
       AND timestamp IN (
         SELECT DISTINCT timestamp
         FROM gex_strike_0dte
-        WHERE date = $1 AND timestamp <= $2
+        WHERE ${gexCtDayFilterSql('$1')} AND timestamp <= $2
         ORDER BY timestamp DESC
         LIMIT $3
       )

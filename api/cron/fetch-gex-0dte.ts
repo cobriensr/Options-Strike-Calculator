@@ -271,6 +271,37 @@ export default withCronInstrumentation(
     }
 
     const price = Number.parseFloat(rows[0]!.price);
+
+    // Stale-cache guard (root cause of mis-dated "stray" rows): UW occasionally
+    // serves a FROZEN prior-session cache (see file JSDoc). Storing it under the
+    // current wall-clock `date` is what creates a prior-evening snapshot
+    // mis-stamped into the next trading day. Compare the data's OWN CT calendar
+    // date to today's CT date; if it is strictly older, the payload is stale —
+    // skip the write rather than poison `gex_strike_0dte`.
+    const ctDate = (d: Date) =>
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Chicago',
+      }).format(d); // 'YYYY-MM-DD' (lexicographic == chronological order)
+    const dataCtDate = ctDate(new Date(rows[0]!.time));
+    const nowCtDate = ctDate(new Date());
+    if (dataCtDate < nowCtDate) {
+      logger.warn(
+        { dataCtDate, nowCtDate, today, rowTime: rows[0]!.time },
+        'fetch-gex-0dte: stale UW cache (data CT-date older than today) — skipping store',
+      );
+      metrics.increment('fetch_gex_0dte.stale_cache_skip');
+      return {
+        status: 'skipped',
+        message: 'stale UW cache (prior CT day)',
+        metadata: {
+          stored: false,
+          reason: 'stale_cache',
+          dataCtDate,
+          nowCtDate,
+        },
+      };
+    }
+
     const result = await withRetry(() => storeStrikes(rows, today));
 
     logger.info(

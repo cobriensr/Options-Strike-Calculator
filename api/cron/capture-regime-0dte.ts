@@ -54,7 +54,7 @@ import {
  * 'HH:MM' clock string for the `*_at` TEXT columns. Null in → null out
  * (the trigger did not fire).
  */
-function ctMinToHhmm(ctMin: number | null): string | null {
+export function ctMinToHhmm(ctMin: number | null): string | null {
   if (ctMin == null) return null;
   const h = Math.floor(ctMin / 60);
   const m = ctMin % 60;
@@ -70,7 +70,7 @@ function ctMinToHhmm(ctMin: number | null): string | null {
  * `symbol='SPX' AND market_time='r'` SPX 1-min source as the live panel) so
  * the day's OHLC is read through one canonical helper, not a duplicated query.
  */
-function realizedOutcome(ohlc: DayOhlc | null): {
+export function realizedOutcome(ohlc: DayOhlc | null): {
   ocRetPct: number;
   rangePct: number;
   dirEff: number;

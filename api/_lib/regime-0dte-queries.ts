@@ -24,6 +24,7 @@
 
 import { getDb } from './db.js';
 import { withRetry } from './api-helpers.js';
+import { gexCtDayFilter } from './gex-strike-day.js';
 import { REGIME_0DTE } from './regime-0dte.js';
 import type { GexStrike, IvPoint, Candle30 } from './regime-0dte.js';
 
@@ -67,9 +68,12 @@ export async function getGexStrikes(
   // a stray prior-evening snapshot under the NEXT trading day's `date` column, so
   // a bare min/max(timestamp) WHERE date=... picks that stray row (e.g. a 06-04
   // 15:14 CT row labeled 06-05) instead of the day's real open/midday/close
-  // profile. Restricting every anchor to rows whose ACTUAL CT date == the trading
-  // day excludes it. (`timestamp` is unqualified inside these CTEs.)
-  const ctDate = sql.unsafe(`date(timestamp AT TIME ZONE 'America/Chicago')`);
+  // profile. `gexCtDayFilter` keeps `date = X` (so the composite (date,timestamp,
+  // strike) index still drives the scan) AND additionally bounds `timestamp` to
+  // X's actual CT calendar day [00:00 CT, next 00:00 CT). The stray (prior-day
+  // 15:14 CT) sits before X's CT-midnight and is excluded. The bounds are query
+  // constants, so the predicate is sargable — a range-scan, not a per-row
+  // `date(timestamp AT TIME ZONE …)` evaluation.
 
   // The anchor CTE selects the single timestamp whose profile we read. Each
   // arm resolves to one `ts`; the outer query then pulls that minute's strikes.
@@ -78,19 +82,19 @@ export async function getGexStrikes(
       ? sql`
           SELECT min(timestamp) AS ts
           FROM gex_strike_0dte
-          WHERE date = ${dateIso}::date AND ${ctDate} = ${dateIso}::date
+          WHERE ${gexCtDayFilter(sql, dateIso)}
         `
       : anchor === 'midday'
         ? sql`
             SELECT min(timestamp) AS ts
             FROM gex_strike_0dte
-            WHERE date = ${dateIso}::date AND ${ctDate} = ${dateIso}::date
+            WHERE ${gexCtDayFilter(sql, dateIso)}
               AND ${sql.unsafe(ctMinExpr('timestamp'))} >= ${REGIME_0DTE.MIDDAY_AFTER_MIN}
           `
         : sql`
             SELECT max(timestamp) AS ts
             FROM gex_strike_0dte
-            WHERE date = ${dateIso}::date AND ${ctDate} = ${dateIso}::date
+            WHERE ${gexCtDayFilter(sql, dateIso)}
           `;
 
   // For `'midday'`, fall back to the latest minute when no minute reached
@@ -101,7 +105,7 @@ export async function getGexStrikes(
           , latest_fallback AS (
             SELECT max(timestamp) AS ts
             FROM gex_strike_0dte
-            WHERE date = ${dateIso}::date AND ${ctDate} = ${dateIso}::date
+            WHERE ${gexCtDayFilter(sql, dateIso)}
           )`
       : sql``;
   const tsExpr =
@@ -114,7 +118,7 @@ export async function getGexStrikes(
       WITH anchor AS (${anchorCte})${fallbackTs}
       SELECT g.strike, g.call_gamma_oi, g.put_gamma_oi, g.price
       FROM gex_strike_0dte g
-      WHERE g.date = ${dateIso}::date AND g.timestamp = ${tsExpr}
+      WHERE ${gexCtDayFilter(sql, dateIso, 'g.date', 'g.timestamp')} AND g.timestamp = ${tsExpr}
       ORDER BY g.strike
     `,
   )) as {
