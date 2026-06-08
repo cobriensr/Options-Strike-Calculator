@@ -76,6 +76,21 @@ vi.mock('../_lib/analyze-precheck.js', () => ({
   runAnalysisPreCheck: vi.fn().mockResolvedValue(null),
 }));
 
+// Mock @sentry/node so sentry.ts's re-exported `Sentry` namespace is a plain
+// (configurable) object — the real ESM namespace can't be spied on. This keeps
+// Sentry calls inert and lets tests assert captureMessage/captureException.
+const { mockSentry } = vi.hoisted(() => ({
+  mockSentry: {
+    init: vi.fn(),
+    metrics: { count: vi.fn(), distribution: vi.fn() },
+    captureMessage: vi.fn(),
+    captureException: vi.fn(),
+    withScope: vi.fn(),
+  },
+}));
+
+vi.mock('@sentry/node', () => mockSentry);
+
 // Mock the Anthropic SDK — capture the stream call
 // The handler uses `anthropic.messages.stream(params).finalMessage()`
 const mockFinalMessage = vi.fn();
@@ -184,6 +199,8 @@ import {
   formatGreekFlowForClaude,
 } from '../_lib/db-strike-helpers.js';
 import { formatNopeForClaude } from '../_lib/db-nope.js';
+import { metrics, Sentry } from '../_lib/sentry.js';
+import { runAnalysisPreCheck } from '../_lib/analyze-precheck.js';
 
 /** Parse the final NDJSON line from the response chunks (skips keepalive pings). */
 function parseNdjsonResponse(res: {
@@ -272,6 +289,9 @@ describe('POST /api/analyze', () => {
     });
     vi.mocked(getHistoricalWinRate).mockResolvedValue(null);
     vi.mocked(formatWinRateForClaude).mockReturnValue('');
+    // Clear shared Sentry mock call history between tests
+    mockSentry.captureMessage.mockClear();
+    mockSentry.captureException.mockClear();
     // Silence expected console.error/log from error-path tests
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -400,6 +420,8 @@ describe('POST /api/analyze', () => {
   });
 
   it('returns stream corruption error when Claude response is not valid JSON', async () => {
+    const incrementSpy = vi.spyOn(metrics, 'increment');
+
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: 'Not valid JSON response' }],
       usage: { input_tokens: 100, output_tokens: 50 },
@@ -414,6 +436,13 @@ describe('POST /api/analyze', () => {
     expect(res._status).toBe(200);
     const json = parseNdjsonResponse(res) as { error: string };
     expect(json.error).toContain('corrupted in transit');
+    // Corruption metric/message distinct from the empty-response path
+    expect(incrementSpy).toHaveBeenCalledWith('analyze.stream_corruption');
+    expect(incrementSpy).not.toHaveBeenCalledWith('analyze.empty_response');
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'analyze stream corruption',
+      expect.objectContaining({ level: 'error' }),
+    );
   });
 
   it('parses structured output JSON directly', async () => {
@@ -728,7 +757,9 @@ describe('POST /api/analyze', () => {
     expect(json.error).toContain('Analysis service error (529)');
   });
 
-  it('handles response with only thinking blocks (no text)', async () => {
+  it('returns 502 empty-response error when Claude returns no text (all thinking)', async () => {
+    const incrementSpy = vi.spyOn(metrics, 'increment');
+
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'thinking', thinking: 'internal only...' }],
       usage: { input_tokens: 100, output_tokens: 50 },
@@ -738,10 +769,17 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
+    // Streaming default status is 200; the empty-response guard writes an
+    // error payload (the done({status:502}) telemetry doesn't touch res.status).
     expect(res._status).toBe(200);
-    const json = parseNdjsonResponse(res) as { analysis: null; raw: string };
-    expect(json.analysis).toBeNull();
-    expect(json.raw).toBe('');
+    const json = parseNdjsonResponse(res) as { error: string };
+    expect(json.error).toContain('empty response');
+    expect(incrementSpy).toHaveBeenCalledWith('analyze.empty_response');
+    expect(incrementSpy).not.toHaveBeenCalledWith('analyze.stream_corruption');
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'analyze empty response',
+      expect.objectContaining({ level: 'error' }),
+    );
   });
 
   it('injects lessons_learned block as separate system block', async () => {
@@ -1598,6 +1636,8 @@ describe('POST /api/analyze — pre-check integration', () => {
     });
     vi.mocked(getHistoricalWinRate).mockResolvedValue(null);
     vi.mocked(formatWinRateForClaude).mockReturnValue('');
+    mockSentry.captureMessage.mockClear();
+    mockSentry.captureException.mockClear();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -1683,5 +1723,46 @@ describe('POST /api/analyze — pre-check integration', () => {
       analysis: typeof SAMPLE_ANALYSIS;
     };
     expect(json.analysis.structure).toBe('IRON CONDOR');
+  });
+
+  it('proceeds with no-op fallback when pre-check exceeds its timeout', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const incrementSpy = vi.spyOn(metrics, 'increment');
+
+    mockFinalMessage.mockResolvedValue(makeSDKResponse(SAMPLE_ANALYSIS));
+
+    // Pre-check never resolves — only the module-level timeout can settle the
+    // race. Fake timers let us fast-forward past PRECHECK_TIMEOUT_MS (90s)
+    // instead of waiting in real time.
+    vi.mocked(runAnalysisPreCheck).mockReturnValue(
+      new Promise<string | null>(() => {
+        /* intentionally never resolves */
+      }),
+    );
+
+    const req = mockRequest({ method: 'POST', body: makeBody() });
+    const res = mockResponse();
+    // Kick off the handler without awaiting so we can advance timers while it
+    // is blocked on the pre-check race.
+    const handlerDone = handler(req, res);
+    // Advance past the 90s pre-check timeout to fire the fallback.
+    await vi.advanceTimersByTimeAsync(90_000);
+    await handlerDone;
+
+    // Handler did not hang; main call proceeded and succeeded.
+    expect(res._status).toBe(200);
+    const json = parseNdjsonResponse(res) as {
+      analysis: typeof SAMPLE_ANALYSIS;
+    };
+    expect(json.analysis.structure).toBe('IRON CONDOR');
+    // Timeout metric fired.
+    expect(incrementSpy).toHaveBeenCalledWith('analyze.precheck_timeout');
+    // extraContext fell back to null — no pre-check block appended (3 blocks).
+    const params = mockStream.mock.calls[0]![0];
+    expect(params.messages[0].content).toHaveLength(3);
+    const lastBlock = params.messages[0].content.at(-1);
+    expect(lastBlock.text).not.toContain('Additional Market Data');
+
+    vi.useRealTimers();
   });
 });
