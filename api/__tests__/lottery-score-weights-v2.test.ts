@@ -18,7 +18,19 @@ import {
   VOL_OI_QUINTILE_BOUNDARIES,
   TOD_WEIGHTS_DOW_OVERRIDES_V2,
   TOD_WEIGHTS_V2,
+  LOTTERY_TICKER_WEIGHTS_V2,
 } from '../_lib/lottery-score-weights-v2.js';
+
+// The per-ticker weights are regenerated on every nightly model retrain, so any
+// assertion about the *difference* between two tickers' scores must derive the
+// ticker-weight delta from the live table — never hardcode a magnitude. These
+// helpers isolate the pure per-feature ticker contribution that survives when a
+// composite does NOT fire, so the composite tests can assert the mechanism
+// (bonus applied additively on top of the per-feature weights) independent of
+// the nightly weight values.
+const tickerWeight = (t: string): number => LOTTERY_TICKER_WEIGHTS_V2[t] ?? 0;
+const tickerDelta = (a: string, b: string): number =>
+  tickerWeight(a) - tickerWeight(b);
 
 describe('computeLotteryScoreV2 — hard alignment gate', () => {
   it('returns null when isAligned is false', () => {
@@ -292,14 +304,15 @@ describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
     });
     expect(sndkScore).not.toBeNull();
     expect(noMatchScore).not.toBeNull();
-    // SNDK gets the +3 composite bonus on top of the same per-feature weights.
+    // SNDK gets its composite bonus on top of the same per-feature weights.
+    // The delta vs an AMZN fire is therefore: (SNDK ticker weight − AMZN ticker
+    // weight) + the composite bonus. Both terms are derived from the live tables
+    // so a nightly retrain that shifts either magnitude does not break this.
     const sndkBonus = COMPOSITE_BONUSES_V2.find(
       (e) => e.match.ticker === 'SNDK',
     )!.bonus;
     expect(sndkScore! - noMatchScore!).toBe(
-      // SNDK ticker weight (1) vs AMZN (0) = +1, plus the composite (+3) = +4 delta
-      // Use the actual bonus from the array rather than hardcoding 3.
-      1 + sndkBonus,
+      tickerDelta('SNDK', 'AMZN') + sndkBonus,
     );
   });
 
@@ -320,12 +333,15 @@ describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
     });
     expect(wdcScore).not.toBeNull();
     expect(noMatchScore).not.toBeNull();
-    // WDC gets the -5 composite penalty on top of the same per-feature weights.
+    // WDC gets its composite penalty on top of the same per-feature weights.
+    // Delta vs AMZN = (WDC ticker weight − AMZN ticker weight) + the penalty;
+    // both derived from the live tables, robust to nightly retrains.
     const wdcPenalty = COMPOSITE_BONUSES_V2.find(
       (e) => e.match.ticker === 'WDC',
     )!.bonus;
-    // WDC ticker weight (-1) vs AMZN (0) = -1, plus the composite (-5) = -6 delta
-    expect(wdcScore! - noMatchScore!).toBe(-1 + wdcPenalty);
+    expect(wdcScore! - noMatchScore!).toBe(
+      tickerDelta('WDC', 'AMZN') + wdcPenalty,
+    );
   });
 
   it('composite does not fire when only some match keys agree', () => {
@@ -346,8 +362,11 @@ describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
     });
     expect(withoutComposite).not.toBeNull();
     expect(baselineScore).not.toBeNull();
-    // Only ticker weight differs (SNDK=1 vs AMZN=0); no composite bonus.
-    expect(withoutComposite! - baselineScore!).toBe(1);
+    // Only the ticker weight differs (SNDK vs AMZN); no composite bonus fires,
+    // so the gap is the pure per-feature ticker delta from the live table.
+    expect(withoutComposite! - baselineScore!).toBe(
+      tickerDelta('SNDK', 'AMZN'),
+    );
   });
 
   it('null quintile features do not spuriously match a string-keyed composite', () => {
@@ -367,8 +386,9 @@ describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
     });
     expect(sndkNullGamma).not.toBeNull();
     expect(amznNullGamma).not.toBeNull();
-    // Only ticker weight difference — no composite.
-    expect(sndkNullGamma! - amznNullGamma!).toBe(1);
+    // Only the ticker-weight difference — no composite (null gamma_q label is
+    // "null", which the string-keyed SNDK composite cannot match).
+    expect(sndkNullGamma! - amznNullGamma!).toBe(tickerDelta('SNDK', 'AMZN'));
   });
 });
 
