@@ -49,16 +49,16 @@ export function _resetDb() {
 }
 
 /**
- * Run a DB operation, swallowing ANY throw: on error it increments the
- * `db.error` metric and returns `fallback`. The DB-side mirror of
- * `safeRedis` in `redis.ts` — centralizes the "best-effort DB, never crash
- * the request" pattern that callers (e.g. `kept-tickers.ts`) previously
- * duplicated with their own try/catch + `metrics.increment('db.error')`.
+ * ⚠️ BEST-EFFORT ONLY. Runs `op`; on ANY throw, swallows it, increments the
+ * `db.error` metric, and returns `fallback` — the caller NEVER sees the error.
  *
- * This swallows DB errors entirely (degrade-to-fallback). It is the
- * complement of `withDbRetry`, which RETHROWS after exhausting retries — use
- * `withDbRetry` when the caller still wants to handle the failure, and
- * `safeDb` when a dead DB must silently degrade to a no-op/empty result.
+ * Use ONLY for idempotent or fire-and-forget DB ops where a silent failure is
+ * acceptable (e.g. the kept-tickers accumulation, the retention prune). NEVER
+ * wrap a write whose failure must surface to the caller or whose loss matters
+ * (journal inserts, position saves, anything a user expects to persist) — those
+ * MUST use `withDbRetry` (retries then rethrows) so the failure propagates.
+ *
+ * The DB-side mirror of `safeRedis` in `redis.ts`.
  *
  * @param op       the DB operation to run.
  * @param fallback the value to return if `op` throws.
@@ -72,9 +72,14 @@ export async function safeDb<T>(op: () => Promise<T>, fallback: T): Promise<T> {
   }
 }
 
-/** Void-returning convenience wrapper over {@link safeDb} for best-effort
- *  write paths that have no meaningful return value (no explicit `undefined`
- *  fallback to thread). */
+/**
+ * ⚠️ BEST-EFFORT ONLY. Void-returning convenience wrapper over {@link safeDb}
+ * for best-effort write paths that have no meaningful return value.
+ *
+ * Same contract as `safeDb`: swallows any throw and increments `db.error`.
+ * Use ONLY for idempotent or fire-and-forget ops. NEVER for writes whose
+ * failure must surface — use `withDbRetry` for those.
+ */
 export async function safeDbVoid(op: () => Promise<void>): Promise<void> {
   await safeDb(op, undefined);
 }
@@ -297,12 +302,42 @@ export async function initDb() {
 // ============================================================
 
 /**
+ * Asserts that a migrations array has unique ids in strictly increasing order.
+ *
+ * Throws immediately (fail-fast) if any id is duplicated or not strictly
+ * greater than the previous id. This is a compile-time / boot-time guard
+ * against concurrent-branch merge mistakes (e.g. two branches each adding
+ * id 189). The real MIGRATIONS array is always well-formed (ids 1..N, no
+ * dups); this throws only on a developer/merge error, never on runtime data.
+ *
+ * @param migrations array of objects with a numeric `id` field.
+ * @throws Error naming the first offending id or pair.
+ */
+export function assertMigrationsWellFormed(migrations: { id: number }[]): void {
+  for (let i = 0; i < migrations.length; i++) {
+    const curr = migrations[i]!.id;
+    if (i === 0) continue;
+    const prev = migrations[i - 1]!.id;
+    if (curr <= prev) {
+      throw new Error(
+        `Malformed MIGRATIONS: id ${curr} is not strictly greater than previous id ${prev} (duplicate or out-of-order) at index ${i}`,
+      );
+    }
+  }
+}
+
+/**
  * Run pending database migrations.
  * Creates a `schema_migrations` table to track applied migrations.
  * Safe to call multiple times — already-applied migrations are skipped.
  * Returns an array of descriptions for newly applied migrations.
  */
 export async function migrateDb(): Promise<string[]> {
+  // Fail-fast guard: a duplicate or out-of-order id in MIGRATIONS is always a
+  // developer/merge error. Catch it at boot rather than silently skipping a
+  // migration whose id was already recorded in schema_migrations.
+  assertMigrationsWellFormed(MIGRATIONS);
+
   const sql = getDb();
 
   // Ensure the tracking table exists

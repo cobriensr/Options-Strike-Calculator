@@ -23,6 +23,8 @@
  */
 
 import { getDb, withDbRetry, safeDbVoid } from '../_lib/db.js';
+import { metrics } from '../_lib/sentry.js';
+import { KEPT_RETENTION_DAYS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
 import {
   withCronInstrumentation,
@@ -121,16 +123,29 @@ async function loadMatchedFlow(
  * Best-effort retention prune for `lottery_kept_tickers` (the DB-backed
  * never-vanish kept-set). The table grows one row per (trade_date,
  * underlying_symbol) with no other cleanup, so without this it accumulates
- * forever. Keep ~1 week of history and drop anything older.
+ * forever. Keep `KEPT_RETENTION_DAYS` of history and drop anything older.
  *
  * Wrapped in `safeDbVoid` so a prune failure is swallowed (increments the
  * `db.error` metric) and NEVER fails this cron's primary enrichment job —
  * retention is strictly secondary to outcome enrichment.
  *
- * 7-day window: today's rows (and any from the last 7 days) are never
- * touched. This preserves the Phase 1 write-amplification invariant in
- * `lottery-finder.ts`, whose diff-skip on `addKeptTickers` depends on
- * today's rows always being present in the table.
+ * Retention window: today's rows (and any from the last KEPT_RETENTION_DAYS
+ * days) are never touched. The strict `<` cutoff is LOAD-BEARING — it
+ * preserves the Phase 1 write-amplification invariant in
+ * `lottery-finder.ts`, whose set-difference diff-skip on `addKeptTickers`
+ * depends on today's rows always being present in the table.
+ *
+ * SQL form: `(now() AT TIME ZONE 'America/New_York')::date
+ * - ${KEPT_RETENTION_DAYS}::int` stays a `date` (date − integer = date), no
+ * double-cast. The `::int` cast on the bound param resolves the otherwise-
+ * ambiguous `date - $param` operator (Postgres can't infer the param type
+ * for bare `-`), matching the codebase's existing numeric-param-vs-temporal
+ * pattern (e.g. gexbot-queries.ts `${windowMinutes}::int * INTERVAL ...`).
+ * KEPT_RETENTION_DAYS is a trusted compile-time constant, so binding it as
+ * a param is safe (and keeps it observable in the cron test's mock harness).
+ *
+ * Emits the `lottery.kept_prune` heartbeat counter on each successful prune
+ * so a silently-disabled/renamed cron shows up as a flatlined metric.
  */
 async function pruneKeptTickers(): Promise<void> {
   await safeDbVoid(async () => {
@@ -138,8 +153,9 @@ async function pruneKeptTickers(): Promise<void> {
     await db`
       DELETE FROM lottery_kept_tickers
       WHERE trade_date
-            < ((now() AT TIME ZONE 'America/New_York')::date - INTERVAL '7 days')::date
+            < (now() AT TIME ZONE 'America/New_York')::date - ${KEPT_RETENTION_DAYS}::int
     `;
+    metrics.increment('lottery.kept_prune');
   });
 }
 

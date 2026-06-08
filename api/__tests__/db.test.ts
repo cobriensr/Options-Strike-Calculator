@@ -17,6 +17,7 @@ import {
   _resetDb,
   initDb,
   migrateDb,
+  assertMigrationsWellFormed,
   saveSnapshot,
   saveAnalysis,
   saveOutcome,
@@ -892,6 +893,69 @@ describe('db.ts', () => {
         nonPositive.map((m) => m.id),
         `Non-positive or non-integer migration ids: ${nonPositive.map((m) => m.id).join(', ')}`,
       ).toHaveLength(0);
+    });
+  });
+
+  // ============================================================
+  // assertMigrationsWellFormed
+  // ============================================================
+  describe('assertMigrationsWellFormed', () => {
+    it('does not throw on a valid strictly-increasing array', () => {
+      expect(() =>
+        assertMigrationsWellFormed([
+          { id: 1 },
+          { id: 2 },
+          { id: 5 },
+          { id: 10 },
+        ]),
+      ).not.toThrow();
+    });
+
+    it('does not throw on a single-element array', () => {
+      expect(() => assertMigrationsWellFormed([{ id: 42 }])).not.toThrow();
+    });
+
+    it('does not throw on an empty array', () => {
+      expect(() => assertMigrationsWellFormed([])).not.toThrow();
+    });
+
+    it('throws on a duplicate id', () => {
+      expect(() =>
+        assertMigrationsWellFormed([
+          { id: 1 },
+          { id: 2 },
+          { id: 2 },
+          { id: 3 },
+        ]),
+      ).toThrow(
+        'Malformed MIGRATIONS: id 2 is not strictly greater than previous id 2 (duplicate or out-of-order) at index 2',
+      );
+    });
+
+    it('throws on an out-of-order (descending) id', () => {
+      expect(() =>
+        assertMigrationsWellFormed([{ id: 1 }, { id: 3 }, { id: 2 }]),
+      ).toThrow(
+        'Malformed MIGRATIONS: id 2 is not strictly greater than previous id 3 (duplicate or out-of-order) at index 2',
+      );
+    });
+
+    it('throws naming the first offending pair when multiple violations exist', () => {
+      // id 5 <= 5 is the FIRST violation; id 3 <= 5 is the second — only first is reported
+      expect(() =>
+        assertMigrationsWellFormed([
+          { id: 1 },
+          { id: 5 },
+          { id: 5 }, // first violation
+          { id: 3 }, // second violation — never reached
+        ]),
+      ).toThrow('at index 2');
+    });
+
+    it('passes on the real MIGRATIONS array (ids 1..189, no dups)', () => {
+      // This is the critical integration assertion: the actual compile-time
+      // MIGRATIONS constant must satisfy the guard that migrateDb() calls.
+      expect(() => assertMigrationsWellFormed(MIGRATIONS)).not.toThrow();
     });
   });
 

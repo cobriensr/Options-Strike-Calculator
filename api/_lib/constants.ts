@@ -573,3 +573,10 @@ export const MACRO_WINDOW_DAYS = 7;
 
 /** MACRO_WINDOW_DAYS expressed as milliseconds for Date arithmetic. */
 export const MACRO_WINDOW_MS = MACRO_WINDOW_DAYS * 24 * 3600 * 1000;
+
+// ============================================================
+// LOTTERY KEPT-TICKERS RETENTION
+// ============================================================
+
+// Days of lottery_kept_tickers history to retain. Floor is >=1 trading day (the never-vanish "current day" guarantee); 7 = margin for weekend/holiday gaps + late enrichment. The set-difference diff-skip in lottery-finder.ts depends on today's rows never being pruned, so this MUST stay >= 1.
+export const KEPT_RETENTION_DAYS = 7;
