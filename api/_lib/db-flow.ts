@@ -6,6 +6,7 @@
  */
 
 import { getDb, withDbRetry } from './db.js';
+import { neonDateStr } from './db-date.js';
 import type { InternalSymbol } from '../../src/types/market-internals.js';
 
 // ============================================================
@@ -164,14 +165,14 @@ export interface GreekExposureRow {
   callGamma: number | null;
   putGamma: number | null;
   netGamma: number | null;
-  callCharm: number;
-  putCharm: number;
-  netCharm: number;
-  callDelta: number;
-  putDelta: number;
-  netDelta: number;
-  callVanna: number;
-  putVanna: number;
+  callCharm: number | null;
+  putCharm: number | null;
+  netCharm: number | null;
+  callDelta: number | null;
+  putDelta: number | null;
+  netDelta: number | null;
+  callVanna: number | null;
+  putVanna: number | null;
 }
 
 /**
@@ -198,21 +199,27 @@ export async function getGreekExposure(
   return rows.map((r) => {
     const cg = r.call_gamma != null ? Number(r.call_gamma) : null;
     const pg = r.put_gamma != null ? Number(r.put_gamma) : null;
+    const cc = r.call_charm != null ? Number(r.call_charm) : null;
+    const pc = r.put_charm != null ? Number(r.put_charm) : null;
+    const cd = r.call_delta != null ? Number(r.call_delta) : null;
+    const pd = r.put_delta != null ? Number(r.put_delta) : null;
+    const cv = r.call_vanna != null ? Number(r.call_vanna) : null;
+    const pv = r.put_vanna != null ? Number(r.put_vanna) : null;
 
     return {
-      expiry: r.expiry as string,
+      expiry: neonDateStr(r.expiry as string | Date),
       dte: r.dte as number,
       callGamma: cg,
       putGamma: pg,
       netGamma: cg != null && pg != null ? cg + pg : null,
-      callCharm: Number(r.call_charm),
-      putCharm: Number(r.put_charm),
-      netCharm: Number(r.call_charm) + Number(r.put_charm),
-      callDelta: Number(r.call_delta),
-      putDelta: Number(r.put_delta),
-      netDelta: Number(r.call_delta) + Number(r.put_delta),
-      callVanna: Number(r.call_vanna),
-      putVanna: Number(r.put_vanna),
+      callCharm: cc,
+      putCharm: pc,
+      netCharm: cc != null && pc != null ? cc + pc : null,
+      callDelta: cd,
+      putDelta: pd,
+      netDelta: cd != null && pd != null ? cd + pd : null,
+      callVanna: cv,
+      putVanna: pv,
     };
   });
 }
@@ -241,7 +248,7 @@ export function formatGreekExposureForClaude(
   // Non-aggregate, non-0DTE expiries sorted by charm magnitude
   const otherExpiries = rows
     .filter((r) => r.dte > 0)
-    .sort((a, b) => Math.abs(b.netCharm) - Math.abs(a.netCharm))
+    .sort((a, b) => Math.abs(b.netCharm ?? 0) - Math.abs(a.netCharm ?? 0))
     .slice(0, 3);
 
   const lines: string[] = [];
@@ -269,8 +276,8 @@ export function formatGreekExposureForClaude(
     lines.push(
       `  OI Net Gamma Exposure (all expiries): ${formatGreekValue(gex)}`,
       `  Rule 16 Regime: ${regime}`,
-      `  Net Charm (all expiries): ${formatGreekValue(aggregate.netCharm)}`,
-      `  Net Delta (all expiries): ${formatGreekValue(aggregate.netDelta)}`,
+      `  Net Charm (all expiries): ${formatGreekValueOrNa(aggregate.netCharm)}`,
+      `  Net Delta (all expiries): ${formatGreekValueOrNa(aggregate.netDelta)}`,
     );
   }
 
@@ -279,13 +286,18 @@ export function formatGreekExposureForClaude(
     lines.push(
       '',
       '  0DTE Breakdown:',
-      `    Net Charm: ${formatGreekValue(zeroDte.netCharm)}`,
-      `    Call Charm: ${formatGreekValue(zeroDte.callCharm)} | Put Charm: ${formatGreekValue(zeroDte.putCharm)}`,
-      `    Net Delta: ${formatGreekValue(zeroDte.netDelta)}`,
-      `    Call Delta: ${formatGreekValue(zeroDte.callDelta)} | Put Delta: ${formatGreekValue(zeroDte.putDelta)}`,
+      `    Net Charm: ${formatGreekValueOrNa(zeroDte.netCharm)}`,
+      `    Call Charm: ${formatGreekValueOrNa(zeroDte.callCharm)} | Put Charm: ${formatGreekValueOrNa(zeroDte.putCharm)}`,
+      `    Net Delta: ${formatGreekValueOrNa(zeroDte.netDelta)}`,
+      `    Call Delta: ${formatGreekValueOrNa(zeroDte.callDelta)} | Put Delta: ${formatGreekValueOrNa(zeroDte.putDelta)}`,
     );
 
-    if (aggregate && aggregate.netCharm !== 0) {
+    if (
+      aggregate &&
+      aggregate.netCharm != null &&
+      aggregate.netCharm !== 0 &&
+      zeroDte.netCharm != null
+    ) {
       const charmPct = ((zeroDte.netCharm / aggregate.netCharm) * 100).toFixed(
         1,
       );
@@ -298,12 +310,21 @@ export function formatGreekExposureForClaude(
     lines.push('', '  Largest Non-0DTE Charm Concentrations:');
     for (const r of otherExpiries) {
       lines.push(
-        `    ${r.expiry} (${r.dte}DTE): Net Charm ${formatGreekValue(r.netCharm)}, Net Delta ${formatGreekValue(r.netDelta)}`,
+        `    ${r.expiry} (${r.dte}DTE): Net Charm ${formatGreekValueOrNa(r.netCharm)}, Net Delta ${formatGreekValueOrNa(r.netDelta)}`,
       );
     }
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Format a possibly-null Greek exposure value for display, rendering NULL
+ * columns as an explicit 'n/a' rather than a misleading 0. A SQL NULL means
+ * the greek is unknown (e.g. basic-tier rows), not literally zero.
+ */
+function formatGreekValueOrNa(value: number | null): string {
+  return value == null ? 'n/a' : formatGreekValue(value);
 }
 
 /**

@@ -1573,6 +1573,64 @@ describe('db.ts', () => {
       expect(result[0]!.netGamma).toBeNull();
       expect(result[0]!.netCharm).toBe(10000);
     });
+
+    it('coerces a Neon Date-object expiry to a YYYY-MM-DD string', async () => {
+      // The Neon HTTP driver materializes a Postgres DATE column as a JS Date
+      // at UTC midnight. The previous `as string` cast was erased at compile
+      // time and left the Date in place, silently breaking downstream string
+      // comparisons (e.g. e.expiry === analysisDate). Assert the runtime value
+      // is the normalized 'YYYY-MM-DD' string.
+      mockSql.mockResolvedValueOnce([
+        {
+          expiry: new Date('2026-06-08T00:00:00Z'),
+          dte: 0,
+          call_gamma: null,
+          put_gamma: null,
+          call_charm: '50000',
+          put_charm: '-40000',
+          call_delta: '100000',
+          put_delta: '-75000',
+          call_vanna: '25000',
+          put_vanna: '-15000',
+        },
+      ]);
+
+      const result = await getGreekExposure('2026-06-08');
+
+      expect(result[0]!.expiry).toBe('2026-06-08');
+      expect(typeof result[0]!.expiry).toBe('string');
+    });
+
+    it('yields null (not 0) for NULL charm/delta/vanna columns', async () => {
+      // Number(null) === 0, which would fabricate a real zero greek. A SQL
+      // NULL means the greek is unknown, so the mapped value must be null and
+      // the net aggregates must propagate null rather than summing to 0.
+      mockSql.mockResolvedValueOnce([
+        {
+          expiry: '2026-06-08',
+          dte: 0,
+          call_gamma: null,
+          put_gamma: null,
+          call_charm: null,
+          put_charm: null,
+          call_delta: null,
+          put_delta: null,
+          call_vanna: null,
+          put_vanna: null,
+        },
+      ]);
+
+      const result = await getGreekExposure('2026-06-08');
+
+      expect(result[0]!.callCharm).toBeNull();
+      expect(result[0]!.putCharm).toBeNull();
+      expect(result[0]!.netCharm).toBeNull();
+      expect(result[0]!.callDelta).toBeNull();
+      expect(result[0]!.putDelta).toBeNull();
+      expect(result[0]!.netDelta).toBeNull();
+      expect(result[0]!.callVanna).toBeNull();
+      expect(result[0]!.putVanna).toBeNull();
+    });
   });
 
   // ============================================================
@@ -1693,6 +1751,39 @@ describe('db.ts', () => {
 
       expect(result).toContain('SPX Greek Exposure');
       expect(result).not.toContain('Rule 16 Regime');
+    });
+
+    it('renders null 0DTE greeks as n/a, not a misleading 0', () => {
+      const zeroDteNull = makeZeroDteRow({
+        callCharm: null,
+        putCharm: null,
+        netCharm: null,
+        callDelta: null,
+        putDelta: null,
+        netDelta: null,
+        callVanna: null,
+        putVanna: null,
+      });
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(100_000), zeroDteNull],
+        '2026-03-24',
+      )!;
+
+      expect(result).toContain('Net Charm: n/a');
+      expect(result).toContain('Call Charm: n/a | Put Charm: n/a');
+      expect(result).toContain('Net Delta: n/a');
+      // A null netCharm must NOT produce a "0DTE Charm as % of total" line.
+      expect(result).not.toContain('0DTE Charm as % of total');
+    });
+
+    it('renders null aggregate charm/delta as n/a', () => {
+      const result = formatGreekExposureForClaude(
+        [makeAggRow(100_000, { netCharm: null, netDelta: null })],
+        '2026-03-24',
+      )!;
+
+      expect(result).toContain('Net Charm (all expiries): n/a');
+      expect(result).toContain('Net Delta (all expiries): n/a');
     });
   });
 
