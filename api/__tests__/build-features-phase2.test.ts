@@ -18,6 +18,10 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+}));
+
 import {
   engineerPhase2Features,
   isWithinUWWindow,
@@ -31,6 +35,7 @@ import {
   addOptionsVolumeFeatures,
 } from '../_lib/build-features-phase2.js';
 import { fetchMaxPain } from '../_lib/max-pain.js';
+import { Sentry } from '../_lib/sentry.js';
 import type { FeatureRow } from '../_lib/build-features-types.js';
 
 // ── Helpers ───────────────────────────────────────────────
@@ -827,7 +832,12 @@ describe('engineerPhase2Features', () => {
         engineerPhase2Features(mockSql as never, DATE_STR, features),
       ).resolves.toBeUndefined();
 
+      // Fallback preserved: feature stays a genuine NaN (undefined), not 0.
       expect(features.max_pain_0dte).toBeUndefined();
+      // And the failure is now visible in Sentry.
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+        expect.any(Error),
+      );
     });
 
     it('handles missing UW_API_KEY', async () => {
@@ -1023,7 +1033,12 @@ describe('engineerPhase2Features', () => {
         engineerPhase2Features(mockSql as never, DATE_STR, features),
       ).resolves.toBeUndefined();
 
+      // Fallback preserved: feature left undefined.
       expect(features.dp_total_premium).toBeUndefined();
+      // Failure surfaced to Sentry.
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+        expect.any(Error),
+      );
     });
   });
 
@@ -1177,7 +1192,12 @@ describe('engineerPhase2Features', () => {
         engineerPhase2Features(mockSql as never, DATE_STR, features),
       ).resolves.toBeUndefined();
 
+      // Fallback preserved: feature left undefined.
       expect(features.opt_call_volume).toBeUndefined();
+      // Failure surfaced to Sentry.
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+        expect.any(Error),
+      );
     });
 
     it('handles non-OK API response', async () => {
@@ -1449,7 +1469,12 @@ describe('engineerPhase2Features', () => {
         engineerPhase2Features(mockSql as never, DATE_STR, features),
       ).resolves.toBeUndefined();
 
+      // Fallback preserved: feature left undefined.
       expect(features.oic_net_oi_change).toBeUndefined();
+      // Failure surfaced to Sentry.
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+        expect.any(Error),
+      );
     });
 
     it('sets null for concentration when total abs diff is zero', async () => {
@@ -1680,8 +1705,13 @@ describe('engineerPhase2Features', () => {
         engineerPhase2Features(mockSql as never, DATE_STR, features),
       ).resolves.toBeUndefined();
 
+      // Fallback preserved: features left undefined.
       expect(features.iv_ts_spread).toBeUndefined();
       expect(features.uw_rv_30d).toBeUndefined();
+      // Failure surfaced to Sentry.
+      expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+        expect.any(Error),
+      );
     });
   });
 

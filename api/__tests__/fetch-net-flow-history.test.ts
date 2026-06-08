@@ -44,6 +44,7 @@ vi.mock('../_lib/api-helpers.js', async () => {
 });
 
 import handler from '../cron/fetch-net-flow-history.js';
+import { Sentry } from '../_lib/sentry.js';
 
 const GUARD = { apiKey: 'test-key', today: '2026-05-02' };
 
@@ -137,6 +138,16 @@ describe('fetch-net-flow-history', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
+    // Fallback preserved: the run still succeeds across the remaining
+    // tickers despite the single failure (zero-stored row for the
+    // failed ticker, never a throw).
     expect((res._json as { status: string }).status).toBe('success');
+    // The swallowed UW failure is now visible in Sentry.
+    expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: expect.objectContaining({ cron: 'fetch-net-flow-history' }),
+      }),
+    );
   });
 });

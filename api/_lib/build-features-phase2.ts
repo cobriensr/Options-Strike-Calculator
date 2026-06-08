@@ -20,6 +20,7 @@ import { getDarkPoolLevels } from './dark-pool-query.js';
 import { fetchMaxPain } from './max-pain.js';
 import { uwFetch } from './api-helpers.js';
 import logger from './logger.js';
+import { Sentry } from './sentry.js';
 
 /**
  * Check whether `dateStr` falls inside the Unusual Whales 30-trading-day
@@ -329,6 +330,7 @@ export async function addMaxPainFeatures(
     }
   } catch (error_) {
     logger.warn({ err: error_ }, 'Max pain feature extraction failed');
+    Sentry.captureException(error_);
   }
 }
 
@@ -394,6 +396,7 @@ export async function addDarkPoolFeatures(
     }
   } catch (error_) {
     logger.warn({ err: error_ }, 'Dark pool feature extraction failed');
+    Sentry.captureException(error_);
   }
 }
 
@@ -484,6 +487,7 @@ export async function addOptionsVolumeFeatures(
     }
   } catch (error_) {
     logger.warn({ err: error_ }, 'Options volume feature extraction failed');
+    Sentry.captureException(error_);
   }
 }
 
@@ -582,6 +586,7 @@ export async function addOiChangeFeatures(
     }
   } catch (error_) {
     logger.warn({ err: error_ }, 'OI change feature extraction failed');
+    Sentry.captureException(error_);
   }
 }
 
@@ -660,6 +665,7 @@ export async function addVolSurfaceFeatures(
     }
   } catch (error_) {
     logger.warn({ err: error_ }, 'Vol surface feature extraction failed');
+    Sentry.captureException(error_);
   }
 }
 
