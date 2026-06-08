@@ -9,8 +9,8 @@
  * Model version : rescore-v1-2026-05-22
  * Trained at    : 2026-06-06T05:13:17.783390+00:00
  *
- * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
- * Until then the old lottery-score-weights.ts continues to drive production.
+ * computeLotteryScoreV2() is wired into detect-lottery-fires.ts (feeds the
+ * quality-adjusted score / qas; see lottery-tier.ts).
  */
 
 // ---------------------------------------------------------------------------

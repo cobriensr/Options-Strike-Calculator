@@ -16,21 +16,13 @@ import {
   GAMMA_QUINTILE_BOUNDARIES,
   ASK_PCT_QUINTILE_BOUNDARIES,
   VOL_OI_QUINTILE_BOUNDARIES,
+  GAMMA_QUINTILE_WEIGHTS,
+  ASK_PCT_QUINTILE_WEIGHTS,
+  VOL_OI_QUINTILE_WEIGHTS,
   TOD_WEIGHTS_DOW_OVERRIDES_V2,
   TOD_WEIGHTS_V2,
-  LOTTERY_TICKER_WEIGHTS_V2,
 } from '../_lib/lottery-score-weights-v2.js';
-
-// The per-ticker weights are regenerated on every nightly model retrain, so any
-// assertion about the *difference* between two tickers' scores must derive the
-// ticker-weight delta from the live table — never hardcode a magnitude. These
-// helpers isolate the pure per-feature ticker contribution that survives when a
-// composite does NOT fire, so the composite tests can assert the mechanism
-// (bonus applied additively on top of the per-feature weights) independent of
-// the nightly weight values.
-const tickerWeight = (t: string): number => LOTTERY_TICKER_WEIGHTS_V2[t] ?? 0;
-const tickerDelta = (a: string, b: string): number =>
-  tickerWeight(a) - tickerWeight(b);
+import type { CompositeBonus } from '../_lib/lottery-score-weights-v2.js';
 
 describe('computeLotteryScoreV2 — hard alignment gate', () => {
   it('returns null when isAligned is false', () => {
@@ -256,14 +248,114 @@ describe('computeLotteryScoreV2 — Monday DOW override', () => {
 });
 
 describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
-  // Base args that are definitely aligned and in-universe.
-  const aligned = {
-    dte: 1,
-    optionType: 'C' as const,
-    isAligned: true,
-    volOiWindow: null,
-    gammaAtTrigger: null,
-    triggerAskPct: null,
+  // ---------------------------------------------------------------------------
+  // Marginal-effect harness.
+  //
+  // Every composite test holds the TICKER (and every other feature) CONSTANT
+  // and varies ONLY the composite's trigger quintile key. Because the ticker is
+  // identical on both sides, the ticker weight — and the tod/dte/option-type
+  // weights — cancel exactly. The score delta therefore isolates the composite's
+  // MARGINAL effect: after subtracting the (table-derived) per-quintile weight
+  // of the one key that moved, what remains is precisely the composite `bonus`
+  // when it fires, and exactly 0 when it does not. No ticker-weight table, no
+  // AMZN baseline, no `?? 0` over the ticker map — so a nightly retrain that
+  // shifts ticker-weight magnitudes cannot perturb these. A change to the bonus
+  // mechanism (the score function applying `entry.bonus`) DOES break them.
+  //
+  // The trigger value for each quintile key is derived generically from the
+  // matching boundary array, so a future composite keyed on a different
+  // quintile (vol_oi_q / ask_pct_q instead of gamma_q) is exercised by the same
+  // code path with no hardcoded gamma assumptions.
+  // ---------------------------------------------------------------------------
+
+  const QUINTILE_BOUNDARIES_BY_KEY = {
+    gamma_q: GAMMA_QUINTILE_BOUNDARIES,
+    vol_oi_q: VOL_OI_QUINTILE_BOUNDARIES,
+    ask_pct_q: ASK_PCT_QUINTILE_BOUNDARIES,
+  } as const;
+
+  // Per-quintile weight array for each key — used by the "did not fire" tests
+  // to express the expected delta as a pure quintile-weight difference (no
+  // composite bonus term), derived from the same live table.
+  const QUINTILE_WEIGHTS_BY_KEY = {
+    gamma_q: GAMMA_QUINTILE_WEIGHTS,
+    vol_oi_q: VOL_OI_QUINTILE_WEIGHTS,
+    ask_pct_q: ASK_PCT_QUINTILE_WEIGHTS,
+  } as const;
+
+  type QuintileKey = keyof typeof QUINTILE_BOUNDARIES_BY_KEY;
+
+  // The function arg field each quintile key reads its raw value from.
+  const FEATURE_FIELD_BY_KEY: Record<
+    QuintileKey,
+    'volOiWindow' | 'gammaAtTrigger' | 'triggerAskPct'
+  > = {
+    gamma_q: 'gammaAtTrigger',
+    vol_oi_q: 'volOiWindow',
+    ask_pct_q: 'triggerAskPct',
+  };
+
+  // Boundary arrays are length-4 (quintiles 0-4). Guard once so a regenerated
+  // shorter array fails loudly here rather than producing silent NaN selectors.
+  for (const [key, bounds] of Object.entries(QUINTILE_BOUNDARIES_BY_KEY)) {
+    it(`${key} boundary array has 4 entries`, () => {
+      expect(bounds).toHaveLength(4);
+    });
+  }
+
+  /**
+   * Return a raw feature value that `assignQuintile` maps to quintile `q`
+   * under `boundaries`. Derived purely from the boundary array.
+   */
+  const valueForQuintile = (
+    boundaries: ReadonlyArray<number>,
+    q: number,
+  ): number => {
+    if (q <= 0) return boundaries[0]! * 0.5; // strictly below boundaries[0]
+    if (q >= 4) return boundaries[3]! * 2; // strictly at/above boundaries[3]
+    // Midpoint of [boundaries[q-1], boundaries[q]) lands in quintile q.
+    const lo = boundaries[q - 1]!;
+    const hi = boundaries[q]!;
+    return (lo + hi) / 2;
+  };
+
+  /** A quintile index guaranteed to differ from `q` (for the non-firing side). */
+  const otherQuintile = (q: number): number => (q === 0 ? 4 : 0);
+
+  /**
+   * Build args that satisfy every key of `entry.match`: the entry's ticker,
+   * its tod (or a default), and a raw value inside each quintile the match
+   * specifies. Returns the args plus the single quintile key/quintile that the
+   * composite hinges on, so a caller can flip just that one key off.
+   */
+  const argsForComposite = (entry: CompositeBonus) => {
+    const quintileKeys = (
+      Object.keys(QUINTILE_BOUNDARIES_BY_KEY) as QuintileKey[]
+    ).filter((k) => entry.match[k] !== undefined);
+
+    const args: Parameters<typeof computeLotteryScoreV2>[0] = {
+      dte: 1,
+      optionType: 'C',
+      isAligned: true,
+      volOiWindow: null,
+      gammaAtTrigger: null,
+      triggerAskPct: null,
+      ticker: entry.match.ticker ?? 'AMZN',
+      tod: entry.match.tod ?? 'AM_open',
+    };
+
+    for (const key of quintileKeys) {
+      const q = Number.parseInt(entry.match[key]!, 10);
+      args[FEATURE_FIELD_BY_KEY[key]] = valueForQuintile(
+        QUINTILE_BOUNDARIES_BY_KEY[key],
+        q,
+      );
+    }
+
+    // Pick the quintile key the test will flip. Prefer a quintile-typed key;
+    // every composite in the table has at least one.
+    const pivotKey = quintileKeys[0];
+    return { args, pivotKey };
   };
 
   it('COMPOSITE_BONUSES_V2 has the expected 7 entries from the 2026-05-22 mining report', () => {
@@ -286,109 +378,155 @@ describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
     }
   });
 
-  it('SNDK + AM_open + gamma_q=0 fire scores higher than an identical non-matching fire', () => {
-    // gamma_q=0 requires gammaAtTrigger < GAMMA_QUINTILE_BOUNDARIES[0]
-    const gammaQ0 = GAMMA_QUINTILE_BOUNDARIES[0]! * 0.5; // safely inside Q0
-    const sndkScore = computeLotteryScoreV2({
-      ...aligned,
-      ticker: 'SNDK',
-      tod: 'AM_open',
-      gammaAtTrigger: gammaQ0,
+  it("a winning composite's marginal effect equals exactly its bonus", () => {
+    // Derive a winning composite from the table (don't hardcode SNDK).
+    const entry = COMPOSITE_BONUSES_V2.find((e) => e.winRate >= 0.9);
+    expect(entry).toBeDefined();
+    if (!entry) return; // guard so a regen dropping all winners fails cleanly above
+
+    const { args, pivotKey } = argsForComposite(entry);
+    expect(pivotKey).toBeDefined();
+    if (!pivotKey) return;
+
+    const firedQ = Number.parseInt(entry.match[pivotKey]!, 10);
+    const offQ = otherQuintile(firedQ);
+    const offField = FEATURE_FIELD_BY_KEY[pivotKey];
+    const weights = QUINTILE_WEIGHTS_BY_KEY[pivotKey];
+
+    // SAME ticker/tod/everything; only the pivot quintile changes (firing → off).
+    const scoreWhenFires = computeLotteryScoreV2(args);
+    const scoreWhenOff = computeLotteryScoreV2({
+      ...args,
+      [offField]: valueForQuintile(QUINTILE_BOUNDARIES_BY_KEY[pivotKey], offQ),
     });
-    // Same fire but different ticker — composite does not fire.
-    const noMatchScore = computeLotteryScoreV2({
-      ...aligned,
-      ticker: 'AMZN',
-      tod: 'AM_open',
-      gammaAtTrigger: gammaQ0,
-    });
-    expect(sndkScore).not.toBeNull();
-    expect(noMatchScore).not.toBeNull();
-    // SNDK gets its composite bonus on top of the same per-feature weights.
-    // The delta vs an AMZN fire is therefore: (SNDK ticker weight − AMZN ticker
-    // weight) + the composite bonus. Both terms are derived from the live tables
-    // so a nightly retrain that shifts either magnitude does not break this.
-    const sndkBonus = COMPOSITE_BONUSES_V2.find(
-      (e) => e.match.ticker === 'SNDK',
-    )!.bonus;
-    expect(sndkScore! - noMatchScore!).toBe(
-      tickerDelta('SNDK', 'AMZN') + sndkBonus,
+
+    expect(scoreWhenFires).not.toBeNull();
+    expect(scoreWhenOff).not.toBeNull();
+    // The ticker/tod/dte/option-type weights are identical on both sides and
+    // cancel entirely — no tickerDelta, no AMZN baseline. Two components differ:
+    // (1) the composite bonus (fires on one side only) and (2) the pivot
+    // quintile's own per-quintile weight (firing-quintile vs off-quintile),
+    // both read from the same live table. Subtracting the known quintile-weight
+    // component leaves the bonus exactly, so a bonus change still breaks this.
+    const quintileWeightDelta = (weights[firedQ] ?? 0) - (weights[offQ] ?? 0);
+    expect(scoreWhenFires! - scoreWhenOff! - quintileWeightDelta).toBe(
+      entry.bonus,
     );
   });
 
-  it('WDC + ask_pct_q=0 fire scores lower than an identical non-matching fire', () => {
-    // ask_pct_q=0 requires triggerAskPct < ASK_PCT_QUINTILE_BOUNDARIES[0]
-    const askQ0 = ASK_PCT_QUINTILE_BOUNDARIES[0]! * 0.5;
-    const wdcScore = computeLotteryScoreV2({
-      ...aligned,
-      ticker: 'WDC',
-      tod: 'AM_open',
-      triggerAskPct: askQ0,
+  it("a losing composite's marginal effect equals exactly its (negative) bonus", () => {
+    const entry = COMPOSITE_BONUSES_V2.find((e) => e.winRate === 0);
+    expect(entry).toBeDefined();
+    if (!entry) return;
+
+    const { args, pivotKey } = argsForComposite(entry);
+    expect(pivotKey).toBeDefined();
+    if (!pivotKey) return;
+
+    const firedQ = Number.parseInt(entry.match[pivotKey]!, 10);
+    const offQ = otherQuintile(firedQ);
+    const offField = FEATURE_FIELD_BY_KEY[pivotKey];
+    const weights = QUINTILE_WEIGHTS_BY_KEY[pivotKey];
+
+    const scoreWhenFires = computeLotteryScoreV2(args);
+    const scoreWhenOff = computeLotteryScoreV2({
+      ...args,
+      [offField]: valueForQuintile(QUINTILE_BOUNDARIES_BY_KEY[pivotKey], offQ),
     });
-    const noMatchScore = computeLotteryScoreV2({
-      ...aligned,
-      ticker: 'AMZN',
-      tod: 'AM_open',
-      triggerAskPct: askQ0,
-    });
-    expect(wdcScore).not.toBeNull();
-    expect(noMatchScore).not.toBeNull();
-    // WDC gets its composite penalty on top of the same per-feature weights.
-    // Delta vs AMZN = (WDC ticker weight − AMZN ticker weight) + the penalty;
-    // both derived from the live tables, robust to nightly retrains.
-    const wdcPenalty = COMPOSITE_BONUSES_V2.find(
-      (e) => e.match.ticker === 'WDC',
-    )!.bonus;
-    expect(wdcScore! - noMatchScore!).toBe(
-      tickerDelta('WDC', 'AMZN') + wdcPenalty,
+
+    expect(scoreWhenFires).not.toBeNull();
+    expect(scoreWhenOff).not.toBeNull();
+    expect(entry.bonus).toBeLessThan(0);
+    const quintileWeightDelta = (weights[firedQ] ?? 0) - (weights[offQ] ?? 0);
+    expect(scoreWhenFires! - scoreWhenOff! - quintileWeightDelta).toBe(
+      entry.bonus,
     );
   });
 
-  it('composite does not fire when only some match keys agree', () => {
-    // SNDK + AM_open but gamma is Q4, not Q0 — composite must NOT fire.
-    const gammaQ4 = GAMMA_QUINTILE_BOUNDARIES[3]! * 2; // safely in Q4
-    const withoutComposite = computeLotteryScoreV2({
-      ...aligned,
-      ticker: 'SNDK',
-      tod: 'AM_open',
-      gammaAtTrigger: gammaQ4,
+  it('composite does not fire on ANY non-firing quintile of its pivot key', () => {
+    // Hold ticker+tod constant. The composite fires only at `firedQ`. For EVERY
+    // other quintile of the pivot key, a fire there must carry NO composite
+    // bonus — a spurious-firing bug confined to a middle quintile (e.g. q2/q3
+    // for a composite whose firing quintile is 0) must not slip through.
+    //
+    // Reference: a fixed non-firing quintile `refQ`. For each non-firing `q`,
+    // the marginal delta of a fire-at-q vs fire-at-ref is the pure per-quintile
+    // weight difference (`weights[q] - weights[refQ]`), with NO `+ bonus` term —
+    // both sides are non-firing. If the composite spuriously fired at `q`, the
+    // bonus would leak into that iteration's delta and the assertion fails.
+    const entry = COMPOSITE_BONUSES_V2.find((e) => e.winRate >= 0.9);
+    expect(entry).toBeDefined();
+    if (!entry) return; // a regen dropping all winners fails the earlier guard
+
+    const { args, pivotKey } = argsForComposite(entry);
+    expect(pivotKey).toBeDefined();
+    if (!pivotKey) return;
+
+    const firedQ = Number.parseInt(entry.match[pivotKey]!, 10);
+    const offField = FEATURE_FIELD_BY_KEY[pivotKey];
+    const bounds = QUINTILE_BOUNDARIES_BY_KEY[pivotKey];
+    const weights = QUINTILE_WEIGHTS_BY_KEY[pivotKey];
+
+    // All 5 quintile indices; the non-firing ones are everything but firedQ.
+    const allQuintiles = [0, 1, 2, 3, 4];
+    const nonFiring = allQuintiles.filter((q) => q !== firedQ);
+    // Fixed non-firing reference (also non-firing → its side carries no bonus).
+    const refQ = nonFiring[0]!;
+
+    const refScore = computeLotteryScoreV2({
+      ...args,
+      [offField]: valueForQuintile(bounds, refQ),
     });
-    // Same fire but AMZN — definitely no composite.
-    const baselineScore = computeLotteryScoreV2({
-      ...aligned,
-      ticker: 'AMZN',
-      tod: 'AM_open',
-      gammaAtTrigger: gammaQ4,
-    });
-    expect(withoutComposite).not.toBeNull();
-    expect(baselineScore).not.toBeNull();
-    // Only the ticker weight differs (SNDK vs AMZN); no composite bonus fires,
-    // so the gap is the pure per-feature ticker delta from the live table.
-    expect(withoutComposite! - baselineScore!).toBe(
-      tickerDelta('SNDK', 'AMZN'),
-    );
+    expect(refScore).not.toBeNull();
+
+    // Exhaustively assert NO spurious composite fire at any non-firing quintile.
+    for (const q of nonFiring) {
+      const scoreAtQ = computeLotteryScoreV2({
+        ...args,
+        [offField]: valueForQuintile(bounds, q),
+      });
+      expect(scoreAtQ).not.toBeNull();
+      // Pure quintile-weight delta, no composite bonus term. (q === refQ is a
+      // harmless identity: 0 === weights[refQ] - weights[refQ].)
+      expect(scoreAtQ! - refScore!).toBe(
+        (weights[q] ?? 0) - (weights[refQ] ?? 0),
+      );
+    }
   });
 
-  it('null quintile features do not spuriously match a string-keyed composite', () => {
-    // A fire with null gammaAtTrigger: gamma_q label is "null".
-    // The SNDK composite requires gamma_q="0" — must not match.
-    const sndkNullGamma = computeLotteryScoreV2({
-      ...aligned,
-      ticker: 'SNDK',
-      tod: 'AM_open',
-      gammaAtTrigger: null,
+  it('null quintile feature does not spuriously match a string-keyed composite', () => {
+    // The composite requires its pivot quintile == a numeric label (e.g. "0").
+    // A null raw value gets the label "null", which a string-keyed composite
+    // can never match. Holding ticker+tod constant, compare a null-pivot fire
+    // against a definitely-non-matching NUMERIC-quintile fire. Neither fires
+    // the composite, so the delta is just (off-quintile weight − null's 0
+    // contribution) — no bonus. A null-pivot fire that wrongly matched would
+    // inject the bonus and break this.
+    const entry = COMPOSITE_BONUSES_V2.find((e) => e.winRate >= 0.9);
+    expect(entry).toBeDefined();
+    if (!entry) return;
+
+    const { args, pivotKey } = argsForComposite(entry);
+    expect(pivotKey).toBeDefined();
+    if (!pivotKey) return;
+
+    const firedQ = Number.parseInt(entry.match[pivotKey]!, 10);
+    const offField = FEATURE_FIELD_BY_KEY[pivotKey];
+    const bounds = QUINTILE_BOUNDARIES_BY_KEY[pivotKey];
+    const weights = QUINTILE_WEIGHTS_BY_KEY[pivotKey];
+
+    const offQ = otherQuintile(firedQ);
+    const numericNonMatch = computeLotteryScoreV2({
+      ...args,
+      [offField]: valueForQuintile(bounds, offQ),
     });
-    const amznNullGamma = computeLotteryScoreV2({
-      ...aligned,
-      ticker: 'AMZN',
-      tod: 'AM_open',
-      gammaAtTrigger: null,
-    });
-    expect(sndkNullGamma).not.toBeNull();
-    expect(amznNullGamma).not.toBeNull();
-    // Only the ticker-weight difference — no composite (null gamma_q label is
-    // "null", which the string-keyed SNDK composite cannot match).
-    expect(sndkNullGamma! - amznNullGamma!).toBe(tickerDelta('SNDK', 'AMZN'));
+    const nullPivot = computeLotteryScoreV2({ ...args, [offField]: null });
+
+    expect(numericNonMatch).not.toBeNull();
+    expect(nullPivot).not.toBeNull();
+    // null contributes 0 to the quintile component; the off quintile contributes
+    // its own weight. Neither side gets the composite bonus.
+    expect(numericNonMatch! - nullPivot!).toBe(weights[offQ] ?? 0);
   });
 });
 

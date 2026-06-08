@@ -229,8 +229,8 @@ def render_ts(w: dict) -> str:  # noqa: PLR0914 — intentionally flat render fu
  * Model version : {model_version}
  * Trained at    : {trained_at}
  *
- * Phase 3 will wire computeLotteryScoreV2() into detect-lottery-fires.ts.
- * Until then the old lottery-score-weights.ts continues to drive production.
+ * computeLotteryScoreV2() is wired into detect-lottery-fires.ts (feeds the
+ * quality-adjusted score / qas; see lottery-tier.ts).
  */
 
 // ---------------------------------------------------------------------------
