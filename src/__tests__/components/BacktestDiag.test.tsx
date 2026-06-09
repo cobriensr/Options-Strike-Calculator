@@ -294,7 +294,27 @@ describe('BacktestDiag', () => {
     expect(noDataCell).toHaveStyle({ color: 'var(--color-danger)' });
   });
 
-  it('renders a drag handle button with an accessible label', () => {
+  it('dismisses the overlay when the × button is clicked', () => {
+    const { container } = render(
+      <BacktestDiag
+        snapshot={makeSnapshot()}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+
+    // Visible initially.
+    expect(screen.getByText('Backtest Diagnostic')).toBeInTheDocument();
+
+    // Click the dismiss button → overlay unmounts entirely.
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Dismiss diagnostics' }),
+    );
+    expect(screen.queryByText('Backtest Diagnostic')).not.toBeInTheDocument();
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('exposes only a dismiss control (no drag or collapse)', () => {
     render(
       <BacktestDiag
         snapshot={makeSnapshot()}
@@ -302,16 +322,26 @@ describe('BacktestDiag', () => {
         {...timeProps}
       />,
     );
+
+    // The only button is the dismiss "×".
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toHaveAccessibleName('Dismiss diagnostics');
+
+    // No drag handle, no collapse-toggle arrows.
     expect(
-      screen.getByRole('button', { name: 'Drag panel' }),
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: 'Drag panel' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('▼')).not.toBeInTheDocument();
+    expect(screen.queryByText('▲')).not.toBeInTheDocument();
+
+    // The diagnostic title is a static label, not a button.
+    expect(
+      screen.queryByRole('button', { name: /Backtest Diagnostic/ }),
+    ).not.toBeInTheDocument();
   });
 
-  it('restores a saved position from localStorage on mount', () => {
-    localStorage.setItem(
-      'backtestDiag.position',
-      JSON.stringify({ x: 40, y: 80 }),
-    );
+  it('does not write any backtestDiag localStorage keys', () => {
     render(
       <BacktestDiag
         snapshot={makeSnapshot()}
@@ -319,94 +349,10 @@ describe('BacktestDiag', () => {
         {...timeProps}
       />,
     );
-    const panel = screen
-      .getByText('Backtest Diagnostic')
-      .closest('div[style*="position"]') as HTMLElement | null;
-    expect(panel).not.toBeNull();
-    expect(panel!.style.top).toBe('80px');
-    expect(panel!.style.left).toBe('40px');
-  });
-
-  it('ignores malformed localStorage entries and falls back to default position', () => {
-    localStorage.setItem('backtestDiag.position', 'not-json');
-    render(
-      <BacktestDiag
-        snapshot={makeSnapshot()}
-        history={makeHistory()}
-        {...timeProps}
-      />,
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Dismiss diagnostics' }),
     );
-    // Should still render without throwing
-    expect(screen.getByText('Backtest Diagnostic')).toBeInTheDocument();
-  });
-
-  it('collapses and expands when header is clicked', () => {
-    render(
-      <BacktestDiag
-        snapshot={makeSnapshot()}
-        history={makeHistory()}
-        {...timeProps}
-      />,
-    );
-
-    // Table should be visible initially
-    expect(screen.getByText('5800.25')).toBeInTheDocument();
-    expect(screen.getByText('▼')).toBeInTheDocument();
-
-    // Click to collapse
-    fireEvent.click(screen.getByText('Backtest Diagnostic'));
-    expect(screen.queryByText('5800.25')).not.toBeInTheDocument();
-    expect(screen.getByText('▲')).toBeInTheDocument();
-
-    // Click to expand
-    fireEvent.click(screen.getByText('Backtest Diagnostic'));
-    expect(screen.getByText('5800.25')).toBeInTheDocument();
-    expect(screen.getByText('▼')).toBeInTheDocument();
-  });
-
-  it('mounts collapsed when localStorage flag is set', () => {
-    localStorage.setItem('backtestDiag.collapsed', '1');
-    render(
-      <BacktestDiag
-        snapshot={makeSnapshot()}
-        history={makeHistory()}
-        {...timeProps}
-      />,
-    );
-
-    // Header is still visible.
-    expect(screen.getByText('Backtest Diagnostic')).toBeInTheDocument();
-    // Table body is not.
-    expect(screen.queryByText('5800.25')).not.toBeInTheDocument();
-    // Arrow reflects collapsed state.
-    expect(screen.getByText('▲')).toBeInTheDocument();
-  });
-
-  it('persists collapsed=true to localStorage when toggled', () => {
-    render(
-      <BacktestDiag
-        snapshot={makeSnapshot()}
-        history={makeHistory()}
-        {...timeProps}
-      />,
-    );
-
-    fireEvent.click(screen.getByText('Backtest Diagnostic'));
-    expect(localStorage.getItem('backtestDiag.collapsed')).toBe('1');
-  });
-
-  it('removes the localStorage entry when expanded back', () => {
-    localStorage.setItem('backtestDiag.collapsed', '1');
-    render(
-      <BacktestDiag
-        snapshot={makeSnapshot()}
-        history={makeHistory()}
-        {...timeProps}
-      />,
-    );
-
-    // Mounted collapsed; expand and the key is removed.
-    fireEvent.click(screen.getByText('Backtest Diagnostic'));
+    expect(localStorage.getItem('backtestDiag.position')).toBeNull();
     expect(localStorage.getItem('backtestDiag.collapsed')).toBeNull();
   });
 });

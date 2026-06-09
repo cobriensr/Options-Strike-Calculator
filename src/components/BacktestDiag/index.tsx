@@ -9,19 +9,12 @@
  *   <BacktestDiag snapshot={historySnapshot} history={historyData} />
  */
 
-import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import { useState } from 'react';
+import type { CSSProperties } from 'react';
 import type {
   HistorySnapshot,
   UseHistoryDataReturn,
 } from '../../hooks/useHistoryData';
-import {
-  POSITION_STORAGE_KEY,
-  clamp,
-  loadStoredCollapsed,
-  loadStoredPosition,
-  writeStoredCollapsed,
-} from './helpers';
 
 interface Props {
   snapshot: HistorySnapshot | null;
@@ -32,11 +25,6 @@ interface Props {
   timezone: string;
 }
 
-export interface Position {
-  x: number;
-  y: number;
-}
-
 export default function BacktestDiag({
   snapshot,
   history,
@@ -45,85 +33,18 @@ export default function BacktestDiag({
   timeAmPm,
   timezone,
 }: Readonly<Props>) {
-  const [collapsed, setCollapsed] = useState<boolean>(loadStoredCollapsed);
-  const [position, setPosition] = useState<Position | null>(loadStoredPosition);
+  const [dismissed, setDismissed] = useState(false);
 
-  useEffect(() => {
-    writeStoredCollapsed(collapsed);
-  }, [collapsed]);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{
-    startX: number;
-    startY: number;
-    origX: number;
-    origY: number;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!position) return;
-    try {
-      localStorage.setItem(POSITION_STORAGE_KEY, JSON.stringify(position));
-    } catch {
-      // localStorage may be unavailable (private mode, quota); ignore
-    }
-  }, [position]);
-
-  useEffect(() => {
-    if (!position || !containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const maxX = window.innerWidth - rect.width;
-    const maxY = window.innerHeight - rect.height;
-    const nextX = clamp(position.x, 0, maxX);
-    const nextY = clamp(position.y, 0, maxY);
-    if (nextX !== position.x || nextY !== position.y) {
-      setPosition({ x: nextX, y: nextY });
-    }
-    // Run once on mount to rescue off-screen saved positions
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const handleDragStart = (e: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!containerRef.current) return;
-    e.preventDefault();
-    const rect = containerRef.current.getBoundingClientRect();
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      origX: rect.left,
-      origY: rect.top,
-    };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
-  const handleDragMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!dragRef.current || !containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
-    setPosition({
-      x: clamp(dragRef.current.origX + dx, 0, window.innerWidth - rect.width),
-      y: clamp(dragRef.current.origY + dy, 0, window.innerHeight - rect.height),
-    });
-  };
-
-  const handleDragEnd = (e: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  };
-
-  if (!snapshot) return null;
+  if (!snapshot || dismissed) return null;
 
   const displayTime = `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`;
 
   const rows: [string, string][] = [
-    ['Mode', '\u25CF BACKTEST'],
-    ['Date', history.history?.date ?? '\u2014'],
+    ['Mode', '● BACKTEST'],
+    ['Date', history.history?.date ?? '—'],
     [
       'Entry Time',
-      `${displayTime} \u2192 candle ${snapshot.candleIndex + 1}/${snapshot.totalCandles}`,
+      `${displayTime} → candle ${snapshot.candleIndex + 1}/${snapshot.totalCandles}`,
     ],
     ['SPX Spot', snapshot.spot.toFixed(2)],
     ['SPY', snapshot.spy.toFixed(2)],
@@ -173,115 +94,87 @@ export default function BacktestDiag({
     maxWidth: 320,
     boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
     border: '1px solid var(--color-edge)',
-    touchAction: 'none',
-    ...(position
-      ? { top: position.y, left: position.x }
-      : { bottom: 12, right: 12 }),
+    bottom: 12,
+    right: 12,
   };
 
   return (
-    <div ref={containerRef} style={containerStyle}>
+    <div style={containerStyle}>
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 6,
-          marginBottom: collapsed ? 0 : 6,
+          justifyContent: 'space-between',
+          gap: 8,
+          marginBottom: 6,
         }}
       >
-        <button
-          type="button"
-          aria-label="Drag panel"
-          title="Drag to move"
-          onPointerDown={handleDragStart}
-          onPointerMove={handleDragMove}
-          onPointerUp={handleDragEnd}
-          onPointerCancel={handleDragEnd}
-          style={{
-            cursor: 'grab',
-            background: 'none',
-            border: 'none',
-            padding: '0 4px',
-            color: 'var(--color-muted)',
-            fontSize: 12,
-            lineHeight: 1,
-            touchAction: 'none',
-            userSelect: 'none',
-          }}
-        >
-          ⋮⋮
-        </button>
-        <button
-          onClick={() => setCollapsed((c) => !c)}
-          aria-expanded={!collapsed}
+        <span
           style={{
             fontWeight: 700,
             fontSize: 12,
             color: 'var(--color-backtest)',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8,
-            flex: 1,
-            background: 'none',
-            border: 'none',
-            padding: 0,
-            textAlign: 'left',
           }}
         >
-          Backtest Diagnostic{' '}
-          <span
-            aria-hidden="true"
-            style={{ fontSize: 10, color: 'var(--color-muted)' }}
-          >
-            {collapsed ? '▲' : '▼'}
-          </span>
+          Backtest Diagnostic
+        </span>
+        <button
+          type="button"
+          aria-label="Dismiss diagnostics"
+          title="Dismiss"
+          onClick={() => setDismissed(true)}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: '0 4px',
+            color: 'var(--color-muted)',
+            fontSize: 16,
+            lineHeight: 1,
+            cursor: 'pointer',
+          }}
+        >
+          ×
         </button>
       </div>
-      {!collapsed && (
-        <>
-          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-            <tbody>
-              {rows.map(([label, value]) => (
-                <tr key={label}>
-                  <td
-                    style={{
-                      padding: '1px 8px 1px 0',
-                      color: 'var(--color-muted)',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {label}
-                  </td>
-                  <td
-                    style={{
-                      padding: '1px 0',
-                      color:
-                        value === 'no data' || value.includes('n/a')
-                          ? 'var(--color-danger)'
-                          : 'var(--color-primary)',
-                      textAlign: 'right',
-                    }}
-                  >
-                    {value}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {history.error && (
-            <div
-              style={{
-                marginTop: 6,
-                color: 'var(--color-danger)',
-                fontSize: 10,
-              }}
-            >
-              Error: {history.error}
-            </div>
-          )}
-        </>
+      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+        <tbody>
+          {rows.map(([label, value]) => (
+            <tr key={label}>
+              <td
+                style={{
+                  padding: '1px 8px 1px 0',
+                  color: 'var(--color-muted)',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {label}
+              </td>
+              <td
+                style={{
+                  padding: '1px 0',
+                  color:
+                    value === 'no data' || value.includes('n/a')
+                      ? 'var(--color-danger)'
+                      : 'var(--color-primary)',
+                  textAlign: 'right',
+                }}
+              >
+                {value}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {history.error && (
+        <div
+          style={{
+            marginTop: 6,
+            color: 'var(--color-danger)',
+            fontSize: 10,
+          }}
+        >
+          Error: {history.error}
+        </div>
       )}
     </div>
   );
