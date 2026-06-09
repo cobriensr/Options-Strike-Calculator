@@ -694,17 +694,8 @@ export function SilentBoomSection({
   // components (banners, ticker-group) consume the array reference and
   // `useMemo` deps below pin on `silentBoomFeed.data`.
   const fetchedAlerts = useMemo(
-    () =>
-      // Cross-day contamination guard. `useFetchedData` is stale-while-
-      // revalidate, so during the Central-midnight auto-roll (or any date
-      // change) `data` briefly holds the PRIOR day's response while the new
-      // day's fetch is in flight. The never-vanish union's storageKey has
-      // already flipped to the new day, so ingesting those rows would pin
-      // them into the new day's union where they would never disappear
-      // (the "yesterday's alerts under today's date" bug). Only surface
-      // alerts whose response `date` matches the requested day.
-      silentBoomFeed.data?.date === date ? silentBoomFeed.data.alerts : [],
-    [silentBoomFeed.data, date],
+    () => silentBoomFeed.data?.alerts ?? [],
+    [silentBoomFeed.data],
   );
   const serverTotal = silentBoomFeed.data?.total ?? 0;
   const offset = silentBoomFeed.data?.offset ?? 0;

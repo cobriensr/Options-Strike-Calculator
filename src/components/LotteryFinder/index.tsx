@@ -613,24 +613,13 @@ export function LotteryFinderSection({
   // array reference and the `useMemo` deps below pin on
   // `lotteryFinder.data` (which is itself referentially stable across
   // ticks where the response is unchanged).
-  // Cross-day contamination guard. `useFetchedData` is stale-while-
-  // revalidate, so during the Central-midnight auto-roll (or any date
-  // change) `data` briefly holds the PRIOR day's response while the new
-  // day's fetch is in flight. The never-vanish union's storageKey has
-  // already flipped to the new day, so ingesting those rows would pin
-  // them into the new day's union where they would never disappear
-  // (the "yesterday's fires under today's date" bug). Only surface fires
-  // whose response `date` matches the requested day.
   const fetchedFires = useMemo(
-    () => (lotteryFinder.data?.date === date ? lotteryFinder.data.fires : []),
-    [lotteryFinder.data, date],
+    () => lotteryFinder.data?.fires ?? [],
+    [lotteryFinder.data],
   );
   const fetchedReignitedFires = useMemo(
-    () =>
-      lotteryFinder.data?.date === date
-        ? (lotteryFinder.data.reignitedFires ?? [])
-        : [],
-    [lotteryFinder.data, date],
+    () => lotteryFinder.data?.reignitedFires ?? [],
+    [lotteryFinder.data],
   );
 
   // All-day ticker counts for the chip strip — chain-day deduped on the

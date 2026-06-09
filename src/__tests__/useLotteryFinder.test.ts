@@ -477,4 +477,30 @@ describe('useLotteryFinder', () => {
     await waitFor(() => expect(result.current.data?.total).toBe(5));
     expect(result.current.data?.total).not.toBe(9999);
   });
+
+  it('nulls a cross-day response whose echoed date != the requested date', async () => {
+    // Cross-day staleness gate sits BEFORE the page cache: a prior-day
+    // response is nulled at the data layer, so the cache never stores
+    // cross-day data and every derived value (fires, total, hasMore,
+    // offset) stays coherent.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(emptyFinder({ date: '2026-05-06', total: 100, count: 1 })),
+    );
+    const { result } = renderHook(() =>
+      useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+  });
+
+  it('keeps a matching-date response (gate control)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(emptyFinder({ date: '2026-05-07', total: 100, count: 1 })),
+    );
+    const { result } = renderHook(() =>
+      useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data?.total).toBe(100);
+  });
 });

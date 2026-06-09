@@ -31,7 +31,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as Response;
 }
 
-const EMPTY = { tickers: [] };
+const EMPTY = { date: '2026-05-14', tickers: [] };
 
 describe('useSilentBoomTickerCounts', () => {
   it('builds the URL with date + default min thresholds when no optional filters are set', async () => {
@@ -87,6 +87,7 @@ describe('useSilentBoomTickerCounts', () => {
   it('exposes tickers + clears loading on success', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
+        date: '2026-05-14',
         tickers: [
           {
             ticker: 'SNDK',
@@ -208,5 +209,56 @@ describe('useSilentBoomTickerCounts', () => {
       result.current.refresh();
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('nulls a cross-day response whose echoed date != the requested date', async () => {
+    // Cross-day staleness gate: a response echoing a different day than
+    // the one requested must surface as "not loaded" (data === null), so
+    // stale ticker counts never render under today's date.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        date: '2026-05-13', // prior day, != requested 2026-05-14
+        tickers: [
+          {
+            ticker: 'SNDK',
+            count: 9,
+            peakBestPct: 50,
+            latestBucketCt: '15:55',
+          },
+        ],
+      }),
+    );
+    const { result } = renderHook(() =>
+      useSilentBoomTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+  });
+
+  it('keeps a matching-date response (gate control)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        date: '2026-05-14',
+        tickers: [
+          {
+            ticker: 'SNDK',
+            count: 9,
+            peakBestPct: 50,
+            latestBucketCt: '15:55',
+          },
+        ],
+      }),
+    );
+    const { result } = renderHook(() =>
+      useSilentBoomTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data?.tickers).toHaveLength(1);
   });
 });

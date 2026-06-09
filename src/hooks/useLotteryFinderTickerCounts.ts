@@ -18,7 +18,11 @@ import type {
   OptionType,
   TimeOfDay,
 } from '../components/LotteryFinder/types.js';
-import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
+import {
+  gateResponseToDate,
+  useFetchedData,
+  type UseFetchedDataResult,
+} from './useFetchedData.js';
 
 export interface LotteryFinderTickerCount {
   ticker: string;
@@ -61,6 +65,9 @@ interface UseLotteryFinderTickerCountsArgs {
 }
 
 export interface LotteryFinderTickerCountsResponse {
+  /** Requested trading day, echoed by the server. Drives the cross-day
+   *  staleness gate in `gateResponseToDate`. */
+  date: string;
   tickers: LotteryFinderTickerCount[];
 }
 
@@ -94,10 +101,11 @@ export function useLotteryFinderTickerCounts({
   if (showAll) params.set('showAll', 'true');
   const url = `/api/lottery-finder-ticker-counts?${params.toString()}`;
 
-  return useFetchedData<LotteryFinderTickerCountsResponse>({
+  const result = useFetchedData<LotteryFinderTickerCountsResponse>({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
     historical,
   });
+  return gateResponseToDate(result, date);
 }

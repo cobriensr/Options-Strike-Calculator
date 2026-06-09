@@ -175,3 +175,25 @@ export function useFetchedData<T>({
     [state, fetchOnce],
   );
 }
+
+/**
+ * Drop a stale cross-day response. `useFetchedData` is stale-while-
+ * revalidate: when the requested `date` changes (e.g. the Central-midnight
+ * auto-roll, or a manual date pick) it retains the PRIOR day's response
+ * until the new fetch resolves. Every feed/ticker-count response echoes the
+ * requested day in `data.date`; this nulls `data` when that echo doesn't
+ * match `requestedDate`, so the brief window surfaces as "not yet loaded"
+ * (spinner/empty) instead of yesterday's rows/counts/totals under today's
+ * date. Resolving it here — once, at the data layer — keeps every derived
+ * value (rows, total, hasMore, offset, ticker counts) coherent and prevents
+ * a never-vanish union from ingesting cross-day rows.
+ */
+export function gateResponseToDate<T extends { date: string }>(
+  result: UseFetchedDataResult<T>,
+  requestedDate: string,
+): UseFetchedDataResult<T> {
+  if (result.data != null && result.data.date !== requestedDate) {
+    return { ...result, data: null };
+  }
+  return result;
+}

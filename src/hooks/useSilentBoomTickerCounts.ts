@@ -20,7 +20,11 @@ import type {
   SilentBoomDteBucket,
   SilentBoomTod,
 } from '../components/SilentBoom/types.js';
-import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
+import {
+  gateResponseToDate,
+  useFetchedData,
+  type UseFetchedDataResult,
+} from './useFetchedData.js';
 
 export interface SilentBoomTickerCount {
   ticker: string;
@@ -55,6 +59,9 @@ interface UseSilentBoomTickerCountsArgs {
 }
 
 export interface SilentBoomTickerCountsResponse {
+  /** Requested trading day, echoed by the server. Drives the cross-day
+   *  staleness gate in `gateResponseToDate`. */
+  date: string;
   tickers: SilentBoomTickerCount[];
 }
 
@@ -92,10 +99,11 @@ export function useSilentBoomTickerCounts({
   if (minTakeitProb > 0) params.set('minTakeitProb', String(minTakeitProb));
   const url = `/api/silent-boom-ticker-counts?${params.toString()}`;
 
-  return useFetchedData<SilentBoomTickerCountsResponse>({
+  const result = useFetchedData<SilentBoomTickerCountsResponse>({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
     historical,
   });
+  return gateResponseToDate(result, date);
 }
