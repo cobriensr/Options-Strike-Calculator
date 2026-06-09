@@ -23,6 +23,7 @@ import { isFireOtm } from './fire-spot.js';
 import { DEFAULT_TAKEIT_FLOOR } from '../../constants/takeit.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryTierBanner } from './LotteryTierBanner.js';
+import { SessionQualityBanner } from './SessionQualityBanner.js';
 import { LotteryFinderTickerGroup } from './LotteryFinderTickerGroup.js';
 import { ReignitionSection } from './ReignitionSection.js';
 import {
@@ -1537,6 +1538,15 @@ export function LotteryFinderSection({
               methodology
             </a>
           </p>
+        )}
+
+        {/* Session-quality backdrop — current time-of-day bucket + its
+            historical expectancy. Decision-support only; renders only on the
+            live trading session (gated on isLive so it never shows on a
+            historical replay). Reuses nowMinuteMs (refreshes every 30s) so it
+            advances across bucket boundaries without its own interval. */}
+        {!compact && isLive && (
+          <SessionQualityBanner now={new Date(nowMinuteMs)} />
         )}
 
         {/* Day-level macro banner — at-a-glance regime context. Hidden in
