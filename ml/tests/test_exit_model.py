@@ -26,8 +26,10 @@ def test_greedy_stop_holds_to_end_when_always_high():
 def test_feature_columns_excludes_labels_and_identity():
     cols = m.feature_columns(
         ["ret_from_entry_pct", "slope_3m", "y_has_upside", "y_log_upside",
-         "fire_id", "date", "mode", "mid", "forward_ratio", "minute", "entry_price"]
+         "fire_id", "date", "mode", "mid", "forward_ratio", "minute", "entry_price",
+         "fold", "p_upside"]
     )
     assert "ret_from_entry_pct" in cols and "slope_3m" in cols
     assert not ({"y_has_upside", "y_log_upside", "fire_id", "date", "mode",
-                 "mid", "forward_ratio", "minute", "entry_price"} & set(cols))
+                 "mid", "forward_ratio", "minute", "entry_price",
+                 "fold", "p_upside"} & set(cols))

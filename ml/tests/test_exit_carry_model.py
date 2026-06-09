@@ -19,3 +19,12 @@ def test_eod_row_label_flatten_when_next_session_lower():
         days_of_life_left=1, close_vs_peak_pct=-30.0, late_slope=-0.2,
     )
     assert row["y_carry_pays"] == 0
+
+
+def test_eod_row_label_flatten_when_move_below_theta():
+    # 2.05 / 2.0 - 1 = 0.025 which is < THETA_FORWARD_DEFAULT (0.15) -> carry does NOT pay
+    row = cm.build_eod_decision_row(
+        fire_id=3, close_mid=2.0, next_session_forward_max=2.05,
+        days_of_life_left=1, close_vs_peak_pct=-1.0, late_slope=0.0,
+    )
+    assert row["y_carry_pays"] == 0

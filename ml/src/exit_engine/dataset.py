@@ -35,6 +35,18 @@ def build_fire_rows(
     return rows
 
 
+def select_session_dates(
+    entry_date: str, available_dates: list[str], max_sessions: int
+) -> list[str]:
+    """Up to max_sessions trading-session date strings (YYYY-MM-DD) starting at
+    entry_date inclusive, drawn in order from available_dates (the sorted set of
+    dates that actually have a parquet file). Because available_dates contains only
+    real trading sessions, weekends/holidays are skipped automatically — callers
+    must NOT stop at the first missing calendar day."""
+    later = [d for d in available_dates if d >= entry_date]
+    return later[:max_sessions]
+
+
 def assign_walkforward_folds(
     dates: pd.Series, n_train_days: int, test_block_days: int
 ) -> pd.Series:

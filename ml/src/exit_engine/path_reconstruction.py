@@ -33,6 +33,7 @@ def build_minute_path(
              bid=("nbbo_bid", "last"), ask=("nbbo_ask", "last"))
         .reset_index()
     )
+    grouped = grouped[grouped["mid"] > 0].reset_index(drop=True)
     entry_minute = entry_ts.floor("min")
     grouped = grouped[grouped["minute"] >= entry_minute].reset_index(drop=True)
     if grouped.empty:

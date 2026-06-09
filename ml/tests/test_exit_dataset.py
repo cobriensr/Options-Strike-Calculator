@@ -13,6 +13,14 @@ def test_assign_walkforward_folds_is_time_ordered():
     assert folds.tolist() == [-1, -1, -1, 0, 1]
 
 
+def test_select_session_dates_skips_non_trading_days():
+    # Fri 2026-05-01, then weekend gap, then Mon/Tue 05-04/05-05
+    avail = ["2026-04-30", "2026-05-01", "2026-05-04", "2026-05-05", "2026-05-06"]
+    assert ds.select_session_dates("2026-05-01", avail, 1) == ["2026-05-01"]
+    assert ds.select_session_dates("2026-05-01", avail, 3) == ["2026-05-01", "2026-05-04", "2026-05-05"]
+    assert ds.select_session_dates("2026-05-06", avail, 4) == ["2026-05-06"]
+
+
 def test_build_fire_rows_tags_identity_columns():
     path = pd.DataFrame({
         "mid": [1.0, 2.0],

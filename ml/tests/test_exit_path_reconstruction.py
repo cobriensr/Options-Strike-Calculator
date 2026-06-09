@@ -33,3 +33,18 @@ def test_assemble_multiday_concats_sessions_in_order():
     assert len(path) == 2
     assert path["minutes_since_entry"].is_monotonic_increasing
     assert path["mid"].iloc[-1] == pytest.approx(3.1)
+
+
+def test_minute_path_drops_zero_mid_minutes():
+    """A minute with 0/0 NBBO (no market) must be excluded from the path."""
+    t = _trades([
+        ("2026-04-13T14:30:10Z", "X", 1.0, 1.2, 1.1, False),   # minute 0 -> mid 1.1
+        ("2026-04-13T14:31:10Z", "X", 0.0, 0.0, 0.0, False),    # minute 1 -> mid 0 (no market)
+        ("2026-04-13T14:32:10Z", "X", 2.0, 2.4, 2.2, False),    # minute 2 -> mid 2.2
+    ])
+    path = pr.build_minute_path(t, entry_ts=pd.Timestamp("2026-04-13T14:30:00Z"), entry_price=1.0)
+    # Zero-mid minute at 14:31 must be absent
+    assert len(path) == 2
+    assert path["mid"].tolist() == pytest.approx([1.1, 2.2])
+    # minutes_since_entry reflects only the surviving minutes (0 and 2)
+    assert path["minutes_since_entry"].tolist() == pytest.approx([0.0, 2.0])

@@ -14,3 +14,10 @@ def test_theta_default_is_forward_from_here():
 
 def test_parquet_dir_points_at_full_tape():
     assert cfg.PARQUET_DIR.name == "Bot-Eod-parquet"
+
+
+def test_walkforward_and_session_constants():
+    assert cfg.N_TRAIN_DAYS == 20
+    assert cfg.TEST_BLOCK_DAYS == 5
+    assert cfg.EOD_CT_HOUR == 15
+    assert cfg.SESSION_MINUTES == 390

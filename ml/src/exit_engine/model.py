@@ -6,7 +6,7 @@ import xgboost as xgb
 
 _NON_FEATURE = {
     "y_has_upside", "y_log_upside", "fire_id", "date", "mode",
-    "mid", "forward_ratio", "minute", "entry_price",
+    "mid", "forward_ratio", "minute", "entry_price", "fold", "p_upside",
 }
 
 

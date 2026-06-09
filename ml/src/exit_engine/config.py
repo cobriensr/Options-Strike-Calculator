@@ -29,3 +29,10 @@ DATASET_PARQUET = (
     / "exit-timing-engine"
     / "decision_dataset.parquet"
 )
+
+# Walk-forward split (shared by all phase drivers).
+N_TRAIN_DAYS = 20
+TEST_BLOCK_DAYS = 5
+# Regular-session timing (CT).
+EOD_CT_HOUR = 15
+SESSION_MINUTES = 390  # 6.5h regular cash session
