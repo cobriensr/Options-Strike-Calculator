@@ -61,3 +61,33 @@ def test_minute_path_drops_zero_mid_minutes():
     assert path["mid"].tolist() == pytest.approx([1.1, 2.2])
     # minutes_since_entry reflects only the surviving minutes (0 and 2)
     assert path["minutes_since_entry"].tolist() == pytest.approx([0.0, 2.0])
+
+
+def test_build_minute_path_carries_greeks_and_coerces_decimal():
+    from decimal import Decimal
+    t = pd.DataFrame(
+        [
+            ("2026-01-02T14:30:10Z", "X", Decimal("1.0"), Decimal("1.2"), Decimal("1.1"), False,
+             Decimal("0.45"), Decimal("0.30"), Decimal("0.02"), Decimal("500.0"), Decimal("495.0"), "call"),
+        ],
+        columns=["executed_at", "option_chain_id", "nbbo_bid", "nbbo_ask", "price", "canceled",
+                 "implied_volatility", "delta", "gamma", "underlying_price", "strike", "option_type"],
+    ).astype({"executed_at": "datetime64[ns, UTC]"})
+    path = pr.build_minute_path(t, entry_ts=pd.Timestamp("2026-01-02T14:30:00Z"), entry_price=1.0)
+    assert path["implied_volatility"].iloc[0] == pytest.approx(0.45)
+    assert path["delta"].iloc[0] == pytest.approx(0.30)
+    assert path["gamma"].iloc[0] == pytest.approx(0.02)
+    assert path["underlying_price"].iloc[0] == pytest.approx(500.0)
+    assert path["strike"].iloc[0] == pytest.approx(495.0)
+    assert path["option_type"].iloc[0] == "call"
+    assert path["implied_volatility"].dtype == "float64"
+
+
+def test_build_minute_path_without_greeks_still_works():
+    t = pd.DataFrame(
+        [("2026-04-13T14:30:10Z", "X", 1.0, 1.2, 1.1, False)],
+        columns=["executed_at", "option_chain_id", "nbbo_bid", "nbbo_ask", "price", "canceled"],
+    ).astype({"executed_at": "datetime64[ns, UTC]"})
+    path = pr.build_minute_path(t, entry_ts=pd.Timestamp("2026-04-13T14:30:00Z"), entry_price=1.0)
+    assert path["mid"].iloc[0] == pytest.approx(1.1)
+    assert "implied_volatility" not in path.columns

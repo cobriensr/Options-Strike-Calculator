@@ -29,12 +29,25 @@ def build_minute_path(
     df["minute"] = df["executed_at"].dt.floor("min")
     df["mid"] = (df["nbbo_bid"] + df["nbbo_ask"]) / 2.0
     df["spread"] = df["nbbo_ask"] - df["nbbo_bid"]
-    grouped = (
-        df.groupby("minute", observed=True)
-        .agg(mid=("mid", "last"), spread=("spread", "last"),
-             bid=("nbbo_bid", "last"), ask=("nbbo_ask", "last"))
-        .reset_index()
+    _GREEK_NUM = ["implied_volatility", "delta", "gamma", "underlying_price", "strike"]
+    has_greeks = all(c in df.columns for c in ["implied_volatility", "delta", "gamma", "underlying_price"])
+    for c in _GREEK_NUM:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce").astype("float64")
+    agg = dict(
+        mid=("mid", "last"), spread=("spread", "last"),
+        bid=("nbbo_bid", "last"), ask=("nbbo_ask", "last"),
     )
+    if has_greeks:
+        agg["implied_volatility"] = ("implied_volatility", "last")
+        agg["delta"] = ("delta", "last")
+        agg["gamma"] = ("gamma", "last")
+        agg["underlying_price"] = ("underlying_price", "last")
+    if "strike" in df.columns:
+        agg["strike"] = ("strike", "first")
+    if "option_type" in df.columns:
+        agg["option_type"] = ("option_type", "first")
+    grouped = df.groupby("minute", observed=True).agg(**agg).reset_index()
     grouped = grouped[grouped["mid"] > 0].reset_index(drop=True)
     entry_minute = entry_ts.floor("min")
     grouped = grouped[grouped["minute"] >= entry_minute].reset_index(drop=True)
