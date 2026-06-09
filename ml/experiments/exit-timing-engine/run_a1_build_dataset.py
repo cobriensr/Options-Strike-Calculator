@@ -28,7 +28,10 @@ from exit_engine import config as cfg
 from exit_engine.dataset import build_fire_rows, select_session_dates
 from exit_engine.path_reconstruction import assemble_multiday_path
 
-TRADE_COLS = ["executed_at", "option_chain_id", "nbbo_bid", "nbbo_ask", "price", "canceled"]
+TRADE_COLS = [
+    "executed_at", "option_chain_id", "nbbo_bid", "nbbo_ask", "price", "canceled",
+    "implied_volatility", "delta", "gamma", "underlying_price", "strike", "option_type",
+]
 FLUSH_ROWS = 1_000_000
 
 
