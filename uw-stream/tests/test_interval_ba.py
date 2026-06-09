@@ -44,6 +44,7 @@ def _reset_recent_fires():
     yield
     recent_fires._reset_for_tests()
 
+
 # Bucket containing 17:06 UTC (2026-05-12 12:05-12:10 CT). All "same
 # bucket" timestamps below derive from this anchor so the alignment is
 # obvious in failure messages.
@@ -110,7 +111,9 @@ def _payload(
 
 class TestAlertEmission:
     def test_alert_fires_immediately_when_first_ask_trade_clears_both_gates(
-        self, handler, base_payload,
+        self,
+        handler,
+        base_payload,
     ):
         """Today's event: the $408K ASK print on SPXW 7360c fires on its own.
 
@@ -153,7 +156,9 @@ class TestAlertEmission:
         assert int(bucket_start.timestamp()) == _BUCKET_ANCHOR_MS // 1000
 
     def test_alert_fires_when_accumulated_ask_crosses_floor(
-        self, handler, base_payload,
+        self,
+        handler,
+        base_payload,
     ):
         """Two sub-floor ASK prints together cross the floor → fires on #2."""
         # $130K alone is below $250K floor → no alert.
@@ -258,7 +263,9 @@ class TestMultiLegGate:
     """
 
     def test_no_alert_when_single_multi_leg_print_dominates_bucket(
-        self, handler, base_payload,
+        self,
+        handler,
+        base_payload,
     ):
         """The 2026-05-13 SPXW 6850 false fire: 1 print, 100% ask, mlet."""
         p = _payload(
@@ -276,7 +283,10 @@ class TestMultiLegGate:
         ["mlat", "mlet", "mlft", "mfto", "masl", "mesl", "mfsl", "mlct"],
     )
     def test_all_opra_multi_leg_codes_are_rejected(
-        self, handler, base_payload, code,
+        self,
+        handler,
+        base_payload,
+        code,
     ):
         """All 8 OPRA multi-leg sale conditions gate the alert."""
         p = _payload(
@@ -302,7 +312,9 @@ class TestMultiLegGate:
         assert handler._pending_alerts == []
 
     def test_alert_fires_when_multi_leg_share_below_threshold(
-        self, handler, base_payload,
+        self,
+        handler,
+        base_payload,
     ):
         """≥50% single-leg → alert still fires (multi-leg < 50% share)."""
         # Single-leg ask: $408K
@@ -328,7 +340,9 @@ class TestMultiLegGate:
         assert len(handler._pending_alerts) == 1
 
     def test_alert_fires_with_no_trade_code_in_payload(
-        self, handler, base_payload,
+        self,
+        handler,
+        base_payload,
     ):
         """Payload missing trade_code → tick is treated as single-leg."""
         # Build a payload WITHOUT the field; fixture doesn't include it
@@ -639,7 +653,10 @@ class TestAlertRowShape:
 class TestFlush:
     @pytest.mark.asyncio
     async def test_flush_writes_alerts_and_clears_buffer(
-        self, handler, base_payload, monkeypatch,
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
     ):
         """_flush must call bulk_insert_ignore_conflict for alerts.
 
@@ -710,7 +727,10 @@ class TestFlush:
 
     @pytest.mark.asyncio
     async def test_feature_flag_disabled_skips_alert_db_write(
-        self, handler, base_payload, monkeypatch,
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
     ):
         """With _enabled=False (default for Phase 1), no alert DB write."""
         assert handler._enabled is False
@@ -748,7 +768,10 @@ class TestFlush:
 
     @pytest.mark.asyncio
     async def test_flush_clears_buffer_when_alert_insert_fails(
-        self, handler, base_payload, monkeypatch,
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
     ):
         """Alert-only failure: raw ticks succeed, alert insert raises.
 
@@ -794,7 +817,10 @@ class TestFlush:
 
     @pytest.mark.asyncio
     async def test_flush_clears_buffer_when_raw_tick_insert_fails(
-        self, handler, base_payload, monkeypatch,
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
     ):
         """Raw-tick failure with alerts pending: alerts cleared anyway.
 
@@ -835,7 +861,10 @@ class TestFlush:
 class TestPushConfluenceOnlyGate:
     @pytest.mark.asyncio
     async def test_solo_alert_skips_notify_when_confluence_only_on(
-        self, handler, base_payload, monkeypatch,
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
     ):
         """With confluence_only=True (default), a solo fire writes to
         the DB but doesn't reach schedule_notify."""
@@ -878,7 +907,10 @@ class TestPushConfluenceOnlyGate:
 
     @pytest.mark.asyncio
     async def test_partnered_alert_pushes_when_confluence_only_on(
-        self, handler, base_payload, monkeypatch,
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
     ):
         """A SPXW fire that follows a SPY same-direction fire within
         the confluence window DOES reach schedule_notify."""
@@ -944,7 +976,10 @@ class TestPushConfluenceOnlyGate:
 
     @pytest.mark.asyncio
     async def test_solo_alert_pushes_when_confluence_only_off(
-        self, handler, base_payload, monkeypatch,
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
     ):
         """Backward-compat path: confluence_only=False restores
         pre-Phase-4 behavior — every alert fires a push."""
@@ -952,7 +987,9 @@ class TestPushConfluenceOnlyGate:
 
         handler._enabled = True
         monkeypatch.setattr(
-            settings, "interval_ba_push_confluence_only", False,
+            settings,
+            "interval_ba_push_confluence_only",
+            False,
         )
         handler._transform(
             _payload(
@@ -1033,14 +1070,17 @@ class TestBucketFloor:
     @pytest.mark.parametrize(
         "ms,expected_minute",
         [
-            (_BUCKET_ANCHOR_MS, 5),            # exactly on boundary
-            (_BUCKET_ANCHOR_MS + 1_000, 5),    # +1s
+            (_BUCKET_ANCHOR_MS, 5),  # exactly on boundary
+            (_BUCKET_ANCHOR_MS + 1_000, 5),  # +1s
             (_BUCKET_ANCHOR_MS + 299_000, 5),  # bucket end - 1s
-            (_BUCKET_ANCHOR_MS + 300_000, 10), # next bucket start
+            (_BUCKET_ANCHOR_MS + 300_000, 10),  # next bucket start
         ],
     )
     def test_bucket_epoch_aligns_to_5min_boundary(
-        self, handler, ms, expected_minute,
+        self,
+        handler,
+        ms,
+        expected_minute,
     ):
         ts = datetime.fromtimestamp(ms / 1000.0, tz=UTC)
         bucket_epoch = handler._bucket_epoch(ts)
@@ -1055,11 +1095,7 @@ class TestBucketFloor:
     def test_bucket_size_matches_window_seconds(self, handler):
         anchor = datetime(2026, 5, 12, 17, 5, 0, tzinfo=UTC)
         next_bucket = anchor + timedelta(seconds=_BUCKET_SECONDS)
-        assert (
-            handler._bucket_epoch(next_bucket)
-            - handler._bucket_epoch(anchor)
-            == _BUCKET_SECONDS
-        )
+        assert handler._bucket_epoch(next_bucket) - handler._bucket_epoch(anchor) == _BUCKET_SECONDS
 
 
 # ----------------------------------------------------------------------
@@ -1104,8 +1140,7 @@ class TestChannelRouting:
         for ticker in ("TSLA", "AAPL", "NVDA", "IWM"):
             cls = handler_class_for_channel(f"option_trades:{ticker}")
             assert cls is OptionTradesHandler, (
-                f"option_trades:{ticker} should map to OptionTradesHandler, "
-                f"got {cls.__name__}"
+                f"option_trades:{ticker} should map to OptionTradesHandler, got {cls.__name__}"
             )
 
     def test_all_three_interval_ba_channel_tokens_are_known(self):
@@ -1130,7 +1165,9 @@ class TestChannelRouting:
 
 class TestOutOfOrderTicks:
     def test_late_tick_from_prior_bucket_does_not_wipe_current(
-        self, handler, base_payload,
+        self,
+        handler,
+        base_payload,
     ):
         # Bucket A: one big ASK that crosses the threshold → fires.
         handler._transform(
@@ -1185,7 +1222,9 @@ class TestOutOfOrderTicks:
         assert (chain, bucket_a_epoch) in handler._fired
 
     def test_two_contracts_interleaved_stay_independent(
-        self, handler, base_payload,
+        self,
+        handler,
+        base_payload,
     ):
         """Trades on 7360c and 7370c in the same bucket don't cross-pollute."""
         # $260K ASK on 7360c → fires.
@@ -1234,9 +1273,7 @@ class TestOutOfOrderTicks:
             handler._transform(
                 _payload(
                     base_payload,
-                    executed_at_ms=(
-                        _BUCKET_ANCHOR_MS + i * _BUCKET_SECONDS * 1000 + 10_000
-                    ),
+                    executed_at_ms=(_BUCKET_ANCHOR_MS + i * _BUCKET_SECONDS * 1000 + 10_000),
                     price="0.10",  # tiny; never crosses threshold
                     size=1,
                 ),
@@ -1253,7 +1290,10 @@ class TestOutOfOrderTicks:
 
 class TestObserveSwallow:
     def test_transform_returns_row_when_observe_raises(
-        self, handler, base_payload, monkeypatch,
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
     ):
         # Force _observe to raise — _transform must still return the
         # row built by the inherited OptionTradesHandler._transform so
@@ -1301,7 +1341,10 @@ class TestSubclassFiltering:
         ],
     )
     def test_subclass_ignores_other_ticker_ticks(
-        self, base_payload, subclass, foreign_chain,
+        self,
+        base_payload,
+        subclass,
+        foreign_chain,
     ):
         """A SPY handler must drop SPXW ticks (and vice versa) silently."""
         h = subclass()
@@ -1443,16 +1486,22 @@ class TestConfluenceTagging:
         spxw = SPXWIntervalBAHandler()
 
         _fire_one_alert(
-            spy, base_payload,
-            chain="SPY260512C00580000", underlying_symbol="SPY",
+            spy,
+            base_payload,
+            chain="SPY260512C00580000",
+            underlying_symbol="SPY",
         )
         qqq_alert = _fire_one_alert(
-            qqq, base_payload,
-            chain="QQQ260512C00510000", underlying_symbol="QQQ",
+            qqq,
+            base_payload,
+            chain="QQQ260512C00510000",
+            underlying_symbol="QQQ",
         )
         spxw_alert = _fire_one_alert(
-            spxw, base_payload,
-            chain="SPXW260512C07360000", underlying_symbol="SPXW",
+            spxw,
+            base_payload,
+            chain="SPXW260512C07360000",
+            underlying_symbol="SPXW",
         )
         # QQQ saw only SPY before it.
         assert qqq_alert[_AI["confluence_tickers"]] == ["SPY"]
@@ -1461,7 +1510,8 @@ class TestConfluenceTagging:
         assert spxw_alert[_AI["confluence_tickers"]] == ["QQQ", "SPY"]
 
     def test_opposite_direction_does_not_count_as_confluence(
-        self, base_payload,
+        self,
+        base_payload,
     ):
         """SPY CALL fires; SPXW PUT fires same-time → NOT confluence.
 
@@ -1472,8 +1522,10 @@ class TestConfluenceTagging:
         spxw = SPXWIntervalBAHandler()
 
         _fire_one_alert(
-            spy, base_payload,
-            chain="SPY260512C00580000", underlying_symbol="SPY",
+            spy,
+            base_payload,
+            chain="SPY260512C00580000",
+            underlying_symbol="SPY",
         )
         # SPXW PUT — different direction.
         spxw._transform(
@@ -1498,8 +1550,10 @@ class TestConfluenceTagging:
         h = SPXWIntervalBAHandler()
         # First fire on 7360c.
         _fire_one_alert(
-            h, base_payload,
-            chain="SPXW260512C07360000", underlying_symbol="SPXW",
+            h,
+            base_payload,
+            chain="SPXW260512C07360000",
+            underlying_symbol="SPXW",
         )
         # Second fire on 7370c — same direction, different contract.
         # No deduping at the registry layer; the second alert just
@@ -1550,7 +1604,9 @@ class TestTickerGate:
 
         monkeypatch.setattr(settings, "interval_ba_enabled", False)
         monkeypatch.setattr(
-            settings, "interval_ba_tickers_csv", "SPY,SPXW,QQQ",
+            settings,
+            "interval_ba_tickers_csv",
+            "SPY,SPXW,QQQ",
         )
         for subclass in (
             SPYIntervalBAHandler,
@@ -1570,7 +1626,8 @@ class TestTickerGate:
         assert QQQIntervalBAHandler()._enabled is False
 
     def test_lowercase_env_value_still_matches_uppercase_ticker(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """Operator typing ``spy,spxw`` (lowercase) still enables them."""
         from config import settings
@@ -1582,7 +1639,8 @@ class TestTickerGate:
         assert QQQIntervalBAHandler()._enabled is False
 
     def test_empty_ticker_list_disables_all_even_with_master_on(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         """Master on but ticker list empty → all three disabled."""
         from config import settings

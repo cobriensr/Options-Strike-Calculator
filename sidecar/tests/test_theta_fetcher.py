@@ -421,3 +421,282 @@ def test_fetch_strike_pair_p_side_denial_keeps_c_rows() -> None:
     assert len(rows) == 1
     assert rows[0].option_type == "C"
     assert fake_client.fetch_eod.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _flush_batch — empty-batch short-circuit + non-empty upsert
+# ---------------------------------------------------------------------------
+
+
+def test_flush_batch_empty_returns_zero_without_upsert(monkeypatch) -> None:
+    """An empty batch must not touch the db and must return 0."""
+    import theta_fetcher
+
+    upsert_mock = MagicMock()
+    monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", upsert_mock)
+
+    assert theta_fetcher._flush_batch([]) == 0
+    upsert_mock.assert_not_called()
+
+
+def test_flush_batch_upserts_and_returns_count(monkeypatch) -> None:
+    """A non-empty batch upserts tuples in column order and returns len."""
+    import theta_fetcher
+
+    upsert_calls: list[list[tuple]] = []
+    monkeypatch.setattr(
+        theta_fetcher.db,
+        "upsert_theta_option_eod_batch",
+        lambda rows: upsert_calls.append(rows),
+    )
+
+    batch = [_make_eod_row("C"), _make_eod_row("P")]
+    assert theta_fetcher._flush_batch(batch) == 2
+    # One upsert call carrying both rows as tuples.
+    assert len(upsert_calls) == 1
+    assert len(upsert_calls[0]) == 2
+    # Tuples, not EodRow objects, and in the documented column order.
+    assert upsert_calls[0][0][0] == "SPXW"
+    assert upsert_calls[0][0][3] == "C"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_root_range — list_strikes failure + mid-loop batch flush
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_root_range_list_strikes_exception_skips_expiration(monkeypatch) -> None:
+    """A non-subscription error from list_strikes is captured to Sentry and
+    that expiration is skipped — the loop continues without raising."""
+    import theta_fetcher
+
+    in_window = date(2024, 4, 19)
+    fake_client = MagicMock()
+    fake_client.list_expirations.return_value = [in_window]
+    fake_client.list_strikes.side_effect = RuntimeError("theta http 500")
+
+    capture_calls: list[Exception] = []
+    monkeypatch.setattr(
+        theta_fetcher,
+        "capture_exception",
+        lambda exc, **_kw: capture_calls.append(exc),
+    )
+    upsert_mock = MagicMock()
+    monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", upsert_mock)
+
+    result = theta_fetcher._fetch_root_range(
+        fake_client, "SPXW", date(2024, 4, 18), date(2024, 4, 18)
+    )
+
+    assert result == 0
+    # The expiration's strike fetch was skipped — fetch_eod never reached.
+    fake_client.fetch_eod.assert_not_called()
+    upsert_mock.assert_not_called()
+    # The error was reported to Sentry exactly once.
+    assert len(capture_calls) == 1
+    assert isinstance(capture_calls[0], RuntimeError)
+
+
+def test_fetch_root_range_flushes_batch_when_threshold_reached(monkeypatch) -> None:
+    """When the rolling batch reaches BATCH_FLUSH_SIZE, _fetch_root_range
+    flushes mid-loop rather than only at expiration end."""
+    import theta_fetcher
+
+    in_window = date(2024, 4, 19)
+    # Enough strikes that the C+P pairs cross the flush threshold mid-loop.
+    flush_size = theta_fetcher.BATCH_FLUSH_SIZE
+    n_strikes = flush_size + 5
+    strikes = [Decimal(str(5000 + i)) for i in range(n_strikes)]
+
+    fake_client = MagicMock()
+    fake_client.list_expirations.return_value = [in_window]
+    fake_client.list_strikes.return_value = strikes
+    # Each fetch_eod (called once per side) returns one row.
+    fake_client.fetch_eod.side_effect = lambda *a, **k: [_make_eod_row(a[3])]
+
+    flush_sizes: list[int] = []
+    monkeypatch.setattr(
+        theta_fetcher.db,
+        "upsert_theta_option_eod_batch",
+        lambda rows: flush_sizes.append(len(rows)),
+    )
+
+    result = theta_fetcher._fetch_root_range(
+        fake_client, "SPXW", date(2024, 4, 18), date(2024, 4, 18)
+    )
+
+    # Two rows per strike (C + P).
+    expected_rows = n_strikes * 2
+    assert result == expected_rows
+    assert sum(flush_sizes) == expected_rows
+    # At least one mid-loop flush happened (more than a single end-of-loop one).
+    assert len(flush_sizes) >= 2
+    # The first flush fired at the threshold boundary (>= BATCH_FLUSH_SIZE).
+    assert flush_sizes[0] >= flush_size
+
+
+# ---------------------------------------------------------------------------
+# stop_scheduler — swallows shutdown errors
+# ---------------------------------------------------------------------------
+
+
+def test_stop_scheduler_swallows_shutdown_exception(monkeypatch) -> None:
+    """A scheduler whose shutdown() raises must not propagate; the handle
+    is still cleared to None so a later start_scheduler can re-create it."""
+    import theta_fetcher
+
+    failing_scheduler = MagicMock()
+    failing_scheduler.shutdown.side_effect = RuntimeError("already dead")
+    monkeypatch.setattr(theta_fetcher, "_scheduler", failing_scheduler)
+
+    # Must not raise.
+    theta_fetcher.stop_scheduler()
+
+    failing_scheduler.shutdown.assert_called_once_with(wait=False)
+    assert theta_fetcher._scheduler is None
+
+
+# ---------------------------------------------------------------------------
+# run_nightly — happy path, exception re-raise, and over-duration warning
+# ---------------------------------------------------------------------------
+
+
+def test_run_nightly_happy_path_logs_total(monkeypatch) -> None:
+    """run_nightly fetches each configured root for the prior trading day
+    and completes without warning when under the duration cap."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+
+    fetched_roots: list[str] = []
+
+    def fake_fetch(_client, root, start_date, end_date) -> int:
+        fetched_roots.append(root)
+        assert start_date == end_date  # nightly fetches a single day
+        return 3
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", fake_fetch)
+    msg_mock = MagicMock()
+    monkeypatch.setattr(theta_fetcher, "capture_message", msg_mock)
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        theta_fetcher.run_nightly()
+
+    assert fetched_roots == ["SPXW", "VIX"]
+    # Under the duration cap -> no warning fired.
+    msg_mock.assert_not_called()
+
+
+def test_run_nightly_captures_and_reraises_on_failure(monkeypatch) -> None:
+    """An unexpected error mid-fetch is reported to Sentry with the
+    nightly phase context, then re-raised for APScheduler to log."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW")
+
+    boom = RuntimeError("theta terminal vanished")
+    monkeypatch.setattr(
+        theta_fetcher,
+        "_fetch_root_range",
+        MagicMock(side_effect=boom),
+    )
+
+    capture_calls: list[tuple] = []
+    monkeypatch.setattr(
+        theta_fetcher,
+        "capture_exception",
+        lambda exc, **kw: capture_calls.append((exc, kw)),
+    )
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        with pytest.raises(RuntimeError, match="theta terminal vanished"):
+            theta_fetcher.run_nightly()
+
+    assert len(capture_calls) == 1
+    exc, kw = capture_calls[0]
+    assert exc is boom
+    assert kw["context"]["phase"] == "theta_nightly"
+
+
+def test_run_nightly_warns_when_over_max_duration(monkeypatch) -> None:
+    """When elapsed exceeds MAX_JOB_DURATION_S, a warning Sentry message
+    is emitted with the elapsed time and row count."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW")
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", lambda *a, **k: 7)
+
+    # Force a large elapsed: first time.time() call is the start anchor,
+    # every subsequent call returns a moment well past the duration cap.
+    clock = {"calls": 0}
+
+    def fake_time() -> float:
+        clock["calls"] += 1
+        if clock["calls"] == 1:
+            return 1000.0
+        return 1000.0 + theta_fetcher.MAX_JOB_DURATION_S + 1
+
+    monkeypatch.setattr(theta_fetcher.time, "time", fake_time)
+
+    msg_calls: list[tuple] = []
+    monkeypatch.setattr(
+        theta_fetcher,
+        "capture_message",
+        lambda msg, **kw: msg_calls.append((msg, kw)),
+    )
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        theta_fetcher.run_nightly()
+
+    assert len(msg_calls) == 1
+    msg, kw = msg_calls[0]
+    assert "exceeded max duration" in msg
+    assert kw["level"] == "warning"
+    assert kw["context"]["rows_written"] == 7
+
+
+# ---------------------------------------------------------------------------
+# run_backfill_if_needed — per-root failure is isolated, loop continues
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_per_root_exception_is_captured_and_loop_continues(
+    monkeypatch,
+) -> None:
+    """A failure on one root is captured to Sentry but must not stop the
+    backfill from proceeding to the next root."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+    monkeypatch.setattr(theta_fetcher.settings, "theta_backfill_days", 5)
+    monkeypatch.setattr(
+        theta_fetcher.db, "has_theta_option_eod_rows", lambda _root: False
+    )
+
+    processed: list[str] = []
+
+    def fake_fetch(_client, root, _start, _end) -> int:
+        processed.append(root)
+        if root == "SPXW":
+            raise RuntimeError("SPXW blew up")
+        return 4
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", fake_fetch)
+
+    capture_calls: list[tuple] = []
+    monkeypatch.setattr(
+        theta_fetcher,
+        "capture_exception",
+        lambda exc, **kw: capture_calls.append((exc, kw)),
+    )
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        theta_fetcher.run_backfill_if_needed()
+
+    # Both roots attempted despite SPXW raising.
+    assert processed == ["SPXW", "VIX"]
+    # Exactly one capture, tagged with the backfill phase and the bad root.
+    assert len(capture_calls) == 1
+    _exc, kw = capture_calls[0]
+    assert kw["context"]["phase"] == "theta_backfill"
+    assert kw["context"]["root"] == "SPXW"

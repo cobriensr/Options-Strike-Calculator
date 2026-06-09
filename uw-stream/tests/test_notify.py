@@ -31,30 +31,31 @@ def _reset_shared_session():
     yield
     notify._session = None
 
+
 # Mirror the alert tuple shape from SPXWIntervalBAHandler. NOT every
 # field is used by the payload formatter — the rest are passed through
 # for the DB write — but the test fixture must populate the full tuple
 # so build_payload's index lookups all succeed.
 _FIXTURE_ROW = (
-    "SPXW260512C07360000",            # option_chain
-    "SPXW",                           # ticker
-    "C",                              # option_type
-    Decimal("7360.000"),              # strike
-    date(2026, 5, 12),                # expiry
-    datetime(2026, 5, 12, 17, 5, tzinfo=UTC),   # bucket_start
+    "SPXW260512C07360000",  # option_chain
+    "SPXW",  # ticker
+    "C",  # option_type
+    Decimal("7360.000"),  # strike
+    date(2026, 5, 12),  # expiry
+    datetime(2026, 5, 12, 17, 5, tzinfo=UTC),  # bucket_start
     datetime(2026, 5, 12, 17, 10, tzinfo=UTC),  # bucket_end
     datetime(2026, 5, 12, 17, 6, 24, tzinfo=UTC),  # fired_at
-    Decimal("71.23"),                 # ratio_pct
-    Decimal("950000.00"),             # ask_premium
-    Decimal("1330000.00"),            # total_premium
-    5,                                # trade_count
-    Decimal("408480.00"),             # top_trade_premium
-    888,                              # top_trade_size
+    Decimal("71.23"),  # ratio_pct
+    Decimal("950000.00"),  # ask_premium
+    Decimal("1330000.00"),  # total_premium
+    5,  # trade_count
+    Decimal("408480.00"),  # top_trade_premium
+    888,  # top_trade_size
     datetime(2026, 5, 12, 17, 6, 23, tzinfo=UTC),  # top_trade_executed_at
-    True,                             # top_trade_is_sweep
-    False,                            # top_trade_is_floor
-    Decimal("7355.00"),               # underlying_price
-    [],                               # confluence_tickers — solo by default
+    True,  # top_trade_is_sweep
+    False,  # top_trade_is_floor
+    Decimal("7355.00"),  # underlying_price
+    [],  # confluence_tickers — solo by default
 )
 
 
@@ -182,7 +183,9 @@ class TestConfluenceDecoration:
 
     def test_confluence_only_true_returns_none_for_solo(self):
         payload = build_payload(
-            _FIXTURE_ROW, _ALERT_COLUMNS, confluence_only=True,
+            _FIXTURE_ROW,
+            _ALERT_COLUMNS,
+            confluence_only=True,
         )
         assert payload is None
 
@@ -191,7 +194,9 @@ class TestConfluenceDecoration:
         idx = {n: i for i, n in enumerate(_ALERT_COLUMNS)}
         row[idx["confluence_tickers"]] = ["SPY"]
         payload = build_payload(
-            tuple(row), _ALERT_COLUMNS, confluence_only=True,
+            tuple(row),
+            _ALERT_COLUMNS,
+            confluence_only=True,
         )
         assert payload is not None
         assert "+SPY" in payload["title"]
@@ -199,7 +204,9 @@ class TestConfluenceDecoration:
     def test_confluence_only_false_returns_payload_for_solo(self):
         """Backward-compat: pre-Phase-4 callers don't pass the kwarg."""
         payload = build_payload(
-            _FIXTURE_ROW, _ALERT_COLUMNS, confluence_only=False,
+            _FIXTURE_ROW,
+            _ALERT_COLUMNS,
+            confluence_only=False,
         )
         assert payload is not None
         assert payload["title"] == "SPXW 7360C 71% ASK"
@@ -213,7 +220,8 @@ class TestNotifyAlertDormantState:
     async def test_noops_when_url_empty(self, monkeypatch):
         monkeypatch.setattr("notify.settings.vercel_notify_url", "")
         monkeypatch.setattr(
-            "notify.settings.internal_notify_secret", "non-empty",
+            "notify.settings.internal_notify_secret",
+            "non-empty",
         )
         with patch("aiohttp.ClientSession") as mock_session:
             await notify_alert({"title": "x", "body": "y"})
@@ -241,7 +249,8 @@ class TestNotifyAlertHttpPath:
             "https://example.com/api/push/notify",
         )
         monkeypatch.setattr(
-            "notify.settings.internal_notify_secret", "my-secret",
+            "notify.settings.internal_notify_secret",
+            "my-secret",
         )
 
         mock_resp = MagicMock()
@@ -276,10 +285,12 @@ class TestNotifyAlertHttpPath:
     @pytest.mark.asyncio
     async def test_swallows_4xx_after_logging(self, monkeypatch):
         monkeypatch.setattr(
-            "notify.settings.vercel_notify_url", "https://example.com/x",
+            "notify.settings.vercel_notify_url",
+            "https://example.com/x",
         )
         monkeypatch.setattr(
-            "notify.settings.internal_notify_secret", "s",
+            "notify.settings.internal_notify_secret",
+            "s",
         )
 
         mock_resp = MagicMock()
@@ -300,10 +311,12 @@ class TestNotifyAlertHttpPath:
     @pytest.mark.asyncio
     async def test_swallows_network_exception(self, monkeypatch):
         monkeypatch.setattr(
-            "notify.settings.vercel_notify_url", "https://example.com/x",
+            "notify.settings.vercel_notify_url",
+            "https://example.com/x",
         )
         monkeypatch.setattr(
-            "notify.settings.internal_notify_secret", "s",
+            "notify.settings.internal_notify_secret",
+            "s",
         )
 
         def raise_on_create(*_args, **_kwargs):
@@ -323,6 +336,7 @@ class TestSentryThrottle:
     @pytest.fixture(autouse=True)
     def reset_seen(self):
         from notify import _SENTRY_SEEN
+
         _SENTRY_SEEN.clear()
         yield
         _SENTRY_SEEN.clear()
@@ -330,7 +344,8 @@ class TestSentryThrottle:
     @pytest.mark.asyncio
     async def test_4xx_sentry_throttles_to_one_per_status(self, monkeypatch):
         monkeypatch.setattr(
-            "notify.settings.vercel_notify_url", "https://example.com/x",
+            "notify.settings.vercel_notify_url",
+            "https://example.com/x",
         )
         monkeypatch.setattr("notify.settings.internal_notify_secret", "s")
 
@@ -357,7 +372,8 @@ class TestSentryThrottle:
     @pytest.mark.asyncio
     async def test_different_status_codes_each_report_once(self, monkeypatch):
         monkeypatch.setattr(
-            "notify.settings.vercel_notify_url", "https://example.com/x",
+            "notify.settings.vercel_notify_url",
+            "https://example.com/x",
         )
         monkeypatch.setattr("notify.settings.internal_notify_secret", "s")
 
@@ -386,18 +402,17 @@ class TestSentryThrottle:
                 await notify_alert({"title": "x", "body": "y"})
 
         assert mock_capture.call_count == 2
-        statuses_reported = {
-            call.kwargs["tags"]["status"]
-            for call in mock_capture.call_args_list
-        }
+        statuses_reported = {call.kwargs["tags"]["status"] for call in mock_capture.call_args_list}
         assert statuses_reported == {"401", "503"}
 
     @pytest.mark.asyncio
     async def test_exception_sentry_throttles_to_one_per_class(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         monkeypatch.setattr(
-            "notify.settings.vercel_notify_url", "https://example.com/x",
+            "notify.settings.vercel_notify_url",
+            "https://example.com/x",
         )
         monkeypatch.setattr("notify.settings.internal_notify_secret", "s")
 
@@ -421,7 +436,8 @@ class TestSharedSession:
     @pytest.mark.asyncio
     async def test_session_created_once_and_reused(self, monkeypatch):
         monkeypatch.setattr(
-            "notify.settings.vercel_notify_url", "https://example.com/x",
+            "notify.settings.vercel_notify_url",
+            "https://example.com/x",
         )
         monkeypatch.setattr("notify.settings.internal_notify_secret", "s")
 
@@ -436,7 +452,8 @@ class TestSharedSession:
         mock_session.post = MagicMock(return_value=mock_resp)
 
         with patch(
-            "aiohttp.ClientSession", return_value=mock_session,
+            "aiohttp.ClientSession",
+            return_value=mock_session,
         ) as ctor:
             await notify_alert({"title": "x", "body": "y"})
             await notify_alert({"title": "x", "body": "y"})

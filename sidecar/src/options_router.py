@@ -416,7 +416,11 @@ class OptionsRecordRouter:
             stale_iids = [
                 iid
                 for iid, info in self.option_definitions.items()
-                if info["expiry"] < today
+                # A None expiry can't be ordered against ``today`` and is not
+                # "before today" — skip it instead of raising TypeError on the
+                # live trade path. handle_definition early-returns on a falsy
+                # expiry, but the cache is shared and may hold None defensively.
+                if info["expiry"] is not None and info["expiry"] < today
             ]
             for iid in stale_iids:
                 del self.option_definitions[iid]

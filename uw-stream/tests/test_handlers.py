@@ -29,9 +29,7 @@ from handlers.flow_alerts import (
     _to_uuid,
 )
 
-_FIXTURE_PATH = (
-    Path(__file__).parent / "fixtures" / "flow_alerts_sample.json"
-)
+_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "flow_alerts_sample.json"
 
 
 @pytest.fixture
@@ -184,10 +182,11 @@ class TestTypeCoercion:
     @pytest.mark.parametrize(
         "v,expected",
         [
-            ("29ed5829-e4ce-4934-876b-51985d2f9b70",
-             UUID("29ed5829-e4ce-4934-876b-51985d2f9b70")),
-            (UUID("29ed5829-e4ce-4934-876b-51985d2f9b70"),
-             UUID("29ed5829-e4ce-4934-876b-51985d2f9b70")),
+            ("29ed5829-e4ce-4934-876b-51985d2f9b70", UUID("29ed5829-e4ce-4934-876b-51985d2f9b70")),
+            (
+                UUID("29ed5829-e4ce-4934-876b-51985d2f9b70"),
+                UUID("29ed5829-e4ce-4934-876b-51985d2f9b70"),
+            ),
             (None, None),
             ("", None),
             ("not-a-uuid", None),
@@ -506,10 +505,7 @@ async def test_drain_exceeds_deadline_logs_warning(monkeypatch):
     flushed = await h.drain(deadline_s=0.1)
 
     assert flushed == 0
-    assert any(
-        "deadline" in msg.lower() or "deadline_s" in extra
-        for msg, extra in warnings
-    )
+    assert any("deadline" in msg.lower() or "deadline_s" in extra for msg, extra in warnings)
 
     state.channels.clear()
 

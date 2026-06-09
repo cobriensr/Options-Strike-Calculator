@@ -637,6 +637,24 @@ class TestPruneExpiredDefinitions:
         router._prune_expired_definitions()
         assert set(router.option_definitions) == {1, 2}
 
+    def test_none_expiry_does_not_raise_and_is_kept(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """A cache entry with a None expiry must not crash the prune on the
+        live trade path (``None < today`` raises TypeError). The None entry is
+        not "before today", so it is retained while past entries are dropped.
+        Regression for the SIGKILL'd prune in handle_trade."""
+        router, _ = router_setup
+        router.option_definitions = {
+            1: {"strike": 5800.0, "option_type": "C", "expiry": None},
+            2: _def_entry(5810.0, _LAST_WEEK),
+            3: _def_entry(5820.0, _TOMORROW),
+        }
+
+        router._prune_expired_definitions()  # must not raise
+
+        assert set(router.option_definitions) == {1, 3}
+
     def test_throttle_skips_prune_on_rapid_calls(
         self,
         router_setup: tuple[OptionsRecordRouter, dict],

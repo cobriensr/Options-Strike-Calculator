@@ -67,9 +67,7 @@ class FakeSession:
         self.sent: list[list[Any]] = []
         self.headers_seen: list[dict[str, str]] = []
 
-    def post(
-        self, url: str, *, json: list[Any], headers: dict[str, str]
-    ) -> _FakeResponse:
+    def post(self, url: str, *, json: list[Any], headers: dict[str, str]) -> _FakeResponse:
         assert url == _BASE_URL
         self.sent.append(json)
         self.headers_seen.append(headers)
@@ -161,9 +159,7 @@ async def test_acquire_succeeds_first_try() -> None:
 @pytest.mark.asyncio
 async def test_acquire_contended_then_succeeds(monkeypatch) -> None:
     # Held by the old gen for 3 polls, then released → 4th SET acquires.
-    session = FakeSession(
-        [{"result": None}, {"result": None}, {"result": None}, {"result": "OK"}]
-    )
+    session = FakeSession([{"result": None}, {"result": None}, {"result": None}, {"result": "OK"}])
     lease = _make_lease(session)
 
     # Skip real backoff sleeps so the test doesn't wait on the poll interval.
@@ -197,9 +193,7 @@ async def test_acquire_times_out_returns_false(monkeypatch) -> None:
             clock["t"] += 0.4
             return t
 
-    monkeypatch.setattr(
-        "ws_lease.asyncio.get_running_loop", lambda: _FakeLoop()
-    )
+    monkeypatch.setattr("ws_lease.asyncio.get_running_loop", lambda: _FakeLoop())
 
     async def _no_sleep(_d: float) -> None:
         return None

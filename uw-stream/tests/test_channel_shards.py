@@ -12,8 +12,7 @@ from __future__ import annotations
 from config import PER_CONN_MAX, Settings
 
 FULL_LOTTERY = (
-    "flow-alerts,off_lit_trades,option_trades_lottery,"
-    "net_flow_lottery,gex_strike_expiry_lottery"
+    "flow-alerts,off_lit_trades,option_trades_lottery,net_flow_lottery,gex_strike_expiry_lottery"
 )
 
 
@@ -69,9 +68,7 @@ class TestChannelShards:
         shards = _settings("option_trades_lottery").channel_shards
         assert len(shards) >= 2
         assert all(len(s) <= PER_CONN_MAX for s in shards)
-        assert all(
-            {c.split(":", 1)[0] for c in s} == {"option_trades"} for s in shards
-        )
+        assert all({c.split(":", 1)[0] for c in s} == {"option_trades"} for s in shards)
         flat = [c for s in shards for c in s]
         assert len(flat) == len(set(flat))  # no duplicate across chunks
 

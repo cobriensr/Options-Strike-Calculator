@@ -42,9 +42,7 @@ class TestBeforeSendFingerprinting:
         event = {}
         out = _before_send(
             event,
-            _hint_with(
-                asyncpg.exceptions.ConnectionDoesNotExistError("57P01")
-            ),
+            _hint_with(asyncpg.exceptions.ConnectionDoesNotExistError("57P01")),
         )
         assert out["fingerprint"] == [
             "uw-stream-transient-db",
@@ -118,11 +116,7 @@ class TestTokenScrubbing:
         assert "token=REDACTED" in rendered
 
     def test_scrubs_token_when_followed_by_extra_params(self):
-        event = {
-            "message": (
-                "url=wss://api.unusualwhales.com/socket?token=ABCDEFG&trace=1"
-            )
-        }
+        event = {"message": ("url=wss://api.unusualwhales.com/socket?token=ABCDEFG&trace=1")}
         out = _before_send(event, {})
         assert "ABCDEFG" not in out["message"]
         assert "token=REDACTED&trace=1" in out["message"]
@@ -133,12 +127,7 @@ class TestTokenScrubbing:
                 "values": [
                     {
                         "category": "websocket",
-                        "data": {
-                            "url": (
-                                "wss://api.unusualwhales.com/socket"
-                                "?token=NESTED_KEY"
-                            )
-                        },
+                        "data": {"url": ("wss://api.unusualwhales.com/socket?token=NESTED_KEY")},
                     }
                 ]
             }
@@ -154,13 +143,7 @@ class TestTokenScrubbing:
         assert out["message"] == "ordinary log line, no secret"
 
     def test_scrub_runs_even_when_fingerprint_branch_fires(self):
-        event = {
-            "exception": {
-                "values": [
-                    {"value": "url=wss://x/y?token=COMBO_KEY (transient)"}
-                ]
-            }
-        }
+        event = {"exception": {"values": [{"value": "url=wss://x/y?token=COMBO_KEY (transient)"}]}}
         out = _before_send(event, _hint_with(TimeoutError("flush")))
         assert "COMBO_KEY" not in out["exception"]["values"][0]["value"]
         assert out["fingerprint"] == ["uw-stream-transient-db", "TimeoutError"]

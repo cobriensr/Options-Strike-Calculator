@@ -33,9 +33,7 @@ from db import (
 
 class TestBuildMultiRowInsert:
     def test_single_row_one_value_group(self):
-        sql, params = _build_multi_row_insert(
-            "t", ("a", "b", "c"), [(1, 2, 3)]
-        )
+        sql, params = _build_multi_row_insert("t", ("a", "b", "c"), [(1, 2, 3)])
         assert sql == "INSERT INTO t (a, b, c) VALUES ($1, $2, $3)"
         assert params == [1, 2, 3]
 
@@ -71,7 +69,9 @@ class TestBuildMultiRowInsert:
     def test_wrong_column_count_raises_with_row_index(self):
         with pytest.raises(ValueError) as exc:
             _build_multi_row_insert(
-                "t", ("a", "b", "c"), [(1, 2, 3), (4, 5)]  # row 1 short
+                "t",
+                ("a", "b", "c"),
+                [(1, 2, 3), (4, 5)],  # row 1 short
             )
         msg = str(exc.value)
         assert "row 1" in msg
@@ -90,9 +90,7 @@ class TestBuildMultiRowInsert:
 
     def test_suffix_is_appended_verbatim(self):
         suffix = "ON CONFLICT (a) DO NOTHING"
-        sql, _params = _build_multi_row_insert(
-            "t", ("a", "b"), [(1, 2)], suffix=suffix
-        )
+        sql, _params = _build_multi_row_insert("t", ("a", "b"), [(1, 2)], suffix=suffix)
         assert sql.endswith(f" {suffix}")
 
     def test_no_suffix_no_trailing_space(self):
@@ -470,14 +468,10 @@ class TestIsTransientDbError:
         assert is_transient_db_error(TimeoutError("command_timeout"))
 
     def test_asyncpg_interface_error_is_transient(self):
-        assert is_transient_db_error(
-            asyncpg.exceptions.InterfaceError("connection closed")
-        )
+        assert is_transient_db_error(asyncpg.exceptions.InterfaceError("connection closed"))
 
     def test_asyncpg_connection_does_not_exist_is_transient(self):
-        assert is_transient_db_error(
-            asyncpg.exceptions.ConnectionDoesNotExistError("57P01")
-        )
+        assert is_transient_db_error(asyncpg.exceptions.ConnectionDoesNotExistError("57P01"))
 
     def test_value_error_is_not_transient(self):
         assert not is_transient_db_error(ValueError("bad row"))
@@ -494,14 +488,10 @@ class TestBulkInsertRetry:
         the second attempt's parsed count.
         """
         conn = MagicMock()
-        conn.execute = AsyncMock(
-            side_effect=[TimeoutError("command_timeout"), "INSERT 0 1"]
-        )
+        conn.execute = AsyncMock(side_effect=[TimeoutError("command_timeout"), "INSERT 0 1"])
         pool = _mock_pool_with_conn(conn)
 
-        with patch("db.get_pool", return_value=pool), patch(
-            "asyncio.sleep", new=AsyncMock()
-        ):
+        with patch("db.get_pool", return_value=pool), patch("asyncio.sleep", new=AsyncMock()):
             result = await bulk_insert_ignore_conflict(
                 table="t",
                 columns=["a", "b"],
@@ -526,9 +516,7 @@ class TestBulkInsertRetry:
         )
         pool = _mock_pool_with_conn(conn)
 
-        with patch("db.get_pool", return_value=pool), patch(
-            "asyncio.sleep", new=AsyncMock()
-        ):
+        with patch("db.get_pool", return_value=pool), patch("asyncio.sleep", new=AsyncMock()):
             await bulk_insert_ignore_conflict(
                 table="t",
                 columns=["a", "b"],
@@ -548,9 +536,11 @@ class TestBulkInsertRetry:
         conn.execute = AsyncMock(side_effect=TimeoutError("persistent"))
         pool = _mock_pool_with_conn(conn)
 
-        with patch("db.get_pool", return_value=pool), patch(
-            "asyncio.sleep", new=AsyncMock()
-        ), pytest.raises(TimeoutError):
+        with (
+            patch("db.get_pool", return_value=pool),
+            patch("asyncio.sleep", new=AsyncMock()),
+            pytest.raises(TimeoutError),
+        ):
             await bulk_insert_ignore_conflict(
                 table="t",
                 columns=["a", "b"],
@@ -570,9 +560,11 @@ class TestBulkInsertRetry:
         conn.execute = AsyncMock(side_effect=ValueError("bad row"))
         pool = _mock_pool_with_conn(conn)
 
-        with patch("db.get_pool", return_value=pool), patch(
-            "asyncio.sleep", new=AsyncMock()
-        ) as sleep_mock, pytest.raises(ValueError):
+        with (
+            patch("db.get_pool", return_value=pool),
+            patch("asyncio.sleep", new=AsyncMock()) as sleep_mock,
+            pytest.raises(ValueError),
+        ):
             await bulk_insert_ignore_conflict(
                 table="t",
                 columns=["a", "b"],
@@ -601,9 +593,7 @@ class TestBulkUpsertRetry:
         )
         pool = _mock_pool_with_conn(conn)
 
-        with patch("db.get_pool", return_value=pool), patch(
-            "asyncio.sleep", new=AsyncMock()
-        ):
+        with patch("db.get_pool", return_value=pool), patch("asyncio.sleep", new=AsyncMock()):
             result = await bulk_upsert_replace(
                 table="t",
                 columns=["a", "b"],

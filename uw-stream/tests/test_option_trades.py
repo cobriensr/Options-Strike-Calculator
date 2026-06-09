@@ -20,6 +20,11 @@ from handlers.option_trades import (
     _COLUMNS,
     OptionTradesHandler,
     _derive_side,
+    _ms_epoch_to_dt,
+    _to_bool,
+    _to_decimal,
+    _to_int,
+    _to_uuid,
 )
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "option_trades_sample.json"
@@ -82,7 +87,10 @@ class TestTransform:
         assert row[col_idx["canceled"]] is False
 
     def test_canceled_defaults_to_false_when_payload_omits_it(
-        self, handler, payload, col_idx,
+        self,
+        handler,
+        payload,
+        col_idx,
     ):
         del payload["canceled"]
         row = handler._transform(payload)
@@ -126,7 +134,13 @@ class TestFieldNameAliases:
         row = handler._transform(payload)
         assert row is not None
         assert row[col_idx["executed_at"]] == datetime(
-            2026, 5, 1, 19, 25, 0, tzinfo=UTC,
+            2026,
+            5,
+            1,
+            19,
+            25,
+            0,
+            tzinfo=UTC,
         )
 
     def test_accepts_iv_alias(self, handler, payload, col_idx):
@@ -142,7 +156,10 @@ class TestFieldNameAliases:
         assert row[col_idx["open_interest"]] == 1450
 
     def test_falls_back_to_occ_root_when_underlying_symbol_missing(
-        self, handler, payload, col_idx,
+        self,
+        handler,
+        payload,
+        col_idx,
     ):
         del payload["underlying_symbol"]
         row = handler._transform(payload)
@@ -206,3 +223,119 @@ class TestSideDerivation:
     )
     def test_derive(self, tags, expected):
         assert _derive_side(tags) == expected
+
+
+class TestToDecimal:
+    """Type coercion for the priced columns (price, IV, delta, etc.)."""
+
+    def test_empty_string_returns_none(self):
+        # UW occasionally sends "" for absent numeric fields; coalesce to
+        # None so the column lands NULL rather than raising.
+        assert _to_decimal("") is None
+
+    def test_none_returns_none(self):
+        assert _to_decimal(None) is None
+
+    def test_numeric_string_parses(self):
+        assert _to_decimal("0.55") == Decimal("0.55")
+
+    def test_garbage_string_returns_none(self):
+        # InvalidOperation/ValueError on a non-numeric string is swallowed.
+        assert _to_decimal("not-a-number") is None
+
+
+class TestToInt:
+    """Type coercion for integer columns (size, open_interest)."""
+
+    def test_empty_string_returns_none(self):
+        assert _to_int("") is None
+
+    def test_none_returns_none(self):
+        assert _to_int(None) is None
+
+    def test_numeric_string_parses(self):
+        assert _to_int("1450") == 1450
+
+    def test_decimal_string_truncates_via_decimal(self):
+        # Goes through Decimal("1450.0") → int, so a float-shaped string parses.
+        assert _to_int("1450.0") == 1450
+
+    def test_garbage_string_returns_none(self):
+        assert _to_int("not-a-number") is None
+
+
+class TestToBool:
+    """Type coercion for the `canceled` flag — UW has sent bool, str, and
+    int spellings historically, so accept all three."""
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (None, None),
+            (True, True),
+            (False, False),
+            ("true", True),
+            ("T", True),
+            ("1", True),
+            ("yes", True),
+            ("  True  ", True),  # whitespace-stripped, case-folded
+            ("false", False),
+            ("f", False),
+            ("0", False),
+            ("no", False),
+            ("maybe", None),  # unrecognised string → None
+            (1, True),
+            (0, False),
+            (2.5, True),  # any non-zero numeric is truthy
+            ([], None),  # unsupported type → None
+        ],
+    )
+    def test_coerce(self, value, expected):
+        assert _to_bool(value) is expected
+
+
+class TestMsEpochToDt:
+    """ms-epoch → tz-aware datetime coercion for executed_at."""
+
+    def test_empty_string_returns_none(self):
+        assert _ms_epoch_to_dt("") is None
+
+    def test_none_returns_none(self):
+        assert _ms_epoch_to_dt(None) is None
+
+    def test_numeric_string_parses(self):
+        assert _ms_epoch_to_dt("1777663500000") == datetime(
+            2026,
+            5,
+            1,
+            19,
+            25,
+            0,
+            tzinfo=UTC,
+        )
+
+    def test_garbage_string_returns_none(self):
+        assert _ms_epoch_to_dt("not-a-number") is None
+
+
+class TestToUuid:
+    """ws_trade_id coercion — the table's NOT NULL UNIQUE dedupe key."""
+
+    def test_none_returns_none(self):
+        assert _to_uuid(None) is None
+
+    def test_empty_string_returns_none(self):
+        assert _to_uuid("") is None
+
+    def test_passthrough_existing_uuid(self):
+        # Already-typed UUID is returned as-is, not re-parsed.
+        u = UUID("12345678-1234-5678-1234-567812345678")
+        assert _to_uuid(u) is u
+
+    def test_uuid_string_parses(self):
+        assert _to_uuid("12345678-1234-5678-1234-567812345678") == UUID(
+            "12345678-1234-5678-1234-567812345678",
+        )
+
+    def test_garbage_string_returns_none(self):
+        assert _to_uuid("not-a-uuid") is None

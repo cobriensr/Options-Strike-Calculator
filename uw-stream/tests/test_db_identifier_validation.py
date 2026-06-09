@@ -27,17 +27,17 @@ class TestValidateIdentifier:
     @pytest.mark.parametrize(
         "name",
         [
-            "1table",          # starts with digit
-            "tab le",          # whitespace
-            "tab;le",          # statement terminator
-            "tab--le",         # SQL comment marker
-            "tab/*le*/",       # block comment
-            "tab\"le",         # quote
-            "tab'le",          # single quote
-            "tab`le",          # backtick
-            "users; DROP TABLE", # textbook injection
-            "",                # empty
-            "café",            # non-ASCII letter
+            "1table",  # starts with digit
+            "tab le",  # whitespace
+            "tab;le",  # statement terminator
+            "tab--le",  # SQL comment marker
+            "tab/*le*/",  # block comment
+            'tab"le',  # quote
+            "tab'le",  # single quote
+            "tab`le",  # backtick
+            "users; DROP TABLE",  # textbook injection
+            "",  # empty
+            "café",  # non-ASCII letter
         ],
     )
     def test_rejects_unsafe_identifiers(self, name: str) -> None:

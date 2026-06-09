@@ -453,18 +453,14 @@ def test_ssrf_extra_allowed_host_env_permits_second_host(
     # Without the env var the second host is rejected.
     monkeypatch.delenv(archive_seeder.ARCHIVE_BLOB_ALLOWED_HOSTS_ENV, raising=False)
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        rejected = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="t"
-        )
+        rejected = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="t")
     assert rejected.failed == 1
     assert rejected.downloaded == 0
 
     # With the env var it is permitted.
     monkeypatch.setenv(archive_seeder.ARCHIVE_BLOB_ALLOWED_HOSTS_ENV, "cdn.example")
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        allowed = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="t"
-        )
+        allowed = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="t")
     assert allowed.downloaded == 1
     assert allowed.failed == 0
 

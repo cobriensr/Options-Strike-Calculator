@@ -53,12 +53,8 @@ async def test_dispatches_payload_to_handler(router: Router, fake: FakeHandler):
 
 
 @pytest.mark.asyncio
-async def test_join_ack_marks_subscribed_and_skips_handler(
-    router: Router, fake: FakeHandler
-):
-    await router.dispatch(
-        _wire("flow-alerts", {"response": {}, "status": "ok"})
-    )
+async def test_join_ack_marks_subscribed_and_skips_handler(router: Router, fake: FakeHandler):
+    await router.dispatch(_wire("flow-alerts", {"response": {}, "status": "ok"}))
     assert fake.received == []
     assert state.channel("flow-alerts").subscribed is True
 
@@ -133,9 +129,7 @@ async def test_touch_not_called_for_join_ack(router: Router, fake: FakeHandler):
     """ACK frames shouldn't bump last_message_ts; that's reserved for
     real channel data. Otherwise /healthz would never go stale on a
     channel that's only sending acks."""
-    await router.dispatch(
-        _wire("flow-alerts", {"response": {}, "status": "ok"})
-    )
+    await router.dispatch(_wire("flow-alerts", {"response": {}, "status": "ok"}))
     assert state.channel("flow-alerts").last_message_ts is None
 
 

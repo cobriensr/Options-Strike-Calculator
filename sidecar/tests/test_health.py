@@ -1596,9 +1596,7 @@ class TestTakeitExplainBodyCap:
 
 
 class TestArchive500Sentry:
-    def test_es_range_500_captures_to_sentry(
-        self, configure_base_callables
-    ) -> None:
+    def test_es_range_500_captures_to_sentry(self, configure_base_callables) -> None:
         with (
             patch(
                 "archive_query.es_day_summary",

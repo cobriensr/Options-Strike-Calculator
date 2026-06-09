@@ -1015,9 +1015,7 @@ def test_tbbo_ofi_percentile_uses_front_contract_only(tmp_path: Path) -> None:
         (2024, 6, 3), 101, "NQU4", [(m, "B", 10) for m in range(80)]
     )
     # Back month (NQZ4): sell-only, 80 min x 5 -> volume 400 (< front), OFI = -1.
-    back = _tbbo_day_trades(
-        (2024, 6, 3), 202, "NQZ4", [(m, "A", 5) for m in range(80)]
-    )
+    back = _tbbo_day_trades((2024, 6, 3), 202, "NQZ4", [(m, "A", 5) for m in range(80)])
     sym_open = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
     sym_close = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)
     _build_tbbo_archive(

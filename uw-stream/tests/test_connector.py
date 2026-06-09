@@ -411,9 +411,7 @@ async def test_storm_threshold_scales_with_shard_count(monkeypatch) -> None:
         for _ in range(base):  # base reconnects, below the scaled 3*base
             state.record_reconnect()
         connector._maybe_alert_storm()
-        assert captured == [], (
-            "base reconnects across 3 shards must not trip a single-socket storm"
-        )
+        assert captured == [], "base reconnects across 3 shards must not trip a single-socket storm"
 
         # Push to the scaled threshold (3 * base) — now it fires once.
         while state.reconnects_last_hour() < base * 3:
@@ -474,9 +472,7 @@ async def test_reconcile_once_rejoins_only_unacked_channels() -> None:
     subscribed=False, and skip the ones the router has already acked.
     """
     ws = FakeWebSocket()
-    connector = Connector(
-        channels=["a", "b", "c"], receive_queue=asyncio.Queue(maxsize=1)
-    )
+    connector = Connector(channels=["a", "b", "c"], receive_queue=asyncio.Queue(maxsize=1))
     state.channel("a").subscribed = True  # acked → must NOT re-join
     state.channel("b").subscribed = False  # stuck → re-join
     state.channel("c").subscribed = False  # stuck → re-join

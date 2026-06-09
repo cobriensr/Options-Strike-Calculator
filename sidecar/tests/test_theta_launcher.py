@@ -387,9 +387,7 @@ def test_spawn_subprocess_reaps_old_proc_before_replacing(
     theta_launcher._state.drain_threads = [old_t1, old_t2]
 
     new_proc = MagicMock()
-    monkeypatch.setattr(
-        theta_launcher.subprocess, "Popen", lambda *_a, **_kw: new_proc
-    )
+    monkeypatch.setattr(theta_launcher.subprocess, "Popen", lambda *_a, **_kw: new_proc)
 
     # Stub out Thread so the new drain loops don't actually run.
     real_thread = theta_launcher.threading.Thread

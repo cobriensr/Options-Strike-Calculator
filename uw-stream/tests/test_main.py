@@ -161,22 +161,14 @@ async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
 
     # Lease enabled with creds present so _run takes the lease branch.
     monkeypatch.setattr(main.settings, "ws_lease_enabled", True, raising=False)
-    monkeypatch.setattr(
-        main.settings, "kv_rest_api_url", "https://test.upstash.io", raising=False
-    )
-    monkeypatch.setattr(
-        main.settings, "kv_rest_api_token", "tok", raising=False
-    )
+    monkeypatch.setattr(main.settings, "kv_rest_api_url", "https://test.upstash.io", raising=False)
+    monkeypatch.setattr(main.settings, "kv_rest_api_token", "tok", raising=False)
 
     fake_session = _FakeLeaseSession()
-    monkeypatch.setattr(
-        main.aiohttp, "ClientSession", lambda *a, **k: fake_session
-    )
+    monkeypatch.setattr(main.aiohttp, "ClientSession", lambda *a, **k: fake_session)
 
     built_connectors: list[object] = []
-    monkeypatch.setattr(
-        main, "Connector", lambda *a, **k: built_connectors.append(object())
-    )
+    monkeypatch.setattr(main, "Connector", lambda *a, **k: built_connectors.append(object()))
 
     class _FakeLease:
         def __init__(self, **_kwargs) -> None:
@@ -219,13 +211,9 @@ async def test_run_wires_renewal_task_with_stop_as_on_lost(monkeypatch):
     monkeypatch.setattr(main, "close_pool", _noop_pool)
 
     monkeypatch.setattr(main.settings, "ws_lease_enabled", True, raising=False)
-    monkeypatch.setattr(
-        main.settings, "kv_rest_api_url", "https://t.upstash.io", raising=False
-    )
+    monkeypatch.setattr(main.settings, "kv_rest_api_url", "https://t.upstash.io", raising=False)
     monkeypatch.setattr(main.settings, "kv_rest_api_token", "tok", raising=False)
-    monkeypatch.setattr(
-        main.aiohttp, "ClientSession", lambda *a, **k: _FakeLeaseSession()
-    )
+    monkeypatch.setattr(main.aiohttp, "ClientSession", lambda *a, **k: _FakeLeaseSession())
 
     # Stub the data pipeline so _run reaches the renewal wiring + asyncio.wait
     # cleanly without real connectors/router/health/watchdog.
@@ -307,9 +295,7 @@ async def test_shutdown_releases_lease_after_producers_then_closes_session(
         async def release(self) -> bool:
             # By the time release runs, the producer must be cancelled
             # (our sockets closed) — that's the invariant under test.
-            assert producer.done(), (
-                "lease must be released only after producers are cancelled"
-            )
+            assert producer.done(), "lease must be released only after producers are cancelled"
             self._events.append("lease_release")
             return True
 

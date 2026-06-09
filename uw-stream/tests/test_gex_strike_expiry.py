@@ -24,9 +24,7 @@ from handlers.gex_strike_expiry import (
     _to_decimal,
 )
 
-_FIXTURE_PATH = (
-    Path(__file__).parent / "fixtures" / "gex_strike_expiry_sample.json"
-)
+_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "gex_strike_expiry_sample.json"
 # Fixture's expiry is 2026-05-01 — pin "today" to match so the
 # 0DTE-only filter introduced by the greek-heatmap retention spec
 # (docs/superpowers/specs/greek-heatmap-ws-retention-2026-05-15.md)
@@ -40,9 +38,7 @@ def pin_today_to_fixture(monkeypatch):
     """Pin _today_et to the fixture's expiry by default. Tests that
     explicitly exercise the today-ET filter (TestExpiryNotTodayFilter)
     override this monkeypatch with their own values."""
-    monkeypatch.setattr(
-        "handlers.gex_strike_expiry._today_et", lambda: _FIXTURE_EXPIRY
-    )
+    monkeypatch.setattr("handlers.gex_strike_expiry._today_et", lambda: _FIXTURE_EXPIRY)
 
 
 @pytest.fixture
@@ -445,25 +441,19 @@ class TestExpiryNotTodayFilter:
     """
 
     def test_today_expiry_admitted(self, handler, payload, monkeypatch):
-        monkeypatch.setattr(
-            "handlers.gex_strike_expiry._today_et", lambda: date(2026, 5, 1)
-        )
+        monkeypatch.setattr("handlers.gex_strike_expiry._today_et", lambda: date(2026, 5, 1))
         # Fixture expiry == 2026-05-01; same as pinned today → admitted.
         row = handler._transform(payload)
         assert row is not None
 
     def test_future_expiry_rejected(self, handler, payload, monkeypatch):
-        monkeypatch.setattr(
-            "handlers.gex_strike_expiry._today_et", lambda: date(2026, 4, 28)
-        )
+        monkeypatch.setattr("handlers.gex_strike_expiry._today_et", lambda: date(2026, 4, 28))
         # Today is 2026-04-28; fixture expiry 2026-05-01 is a future
         # expiry that UW is already emitting — must be dropped.
         assert handler._transform(payload) is None
 
     def test_past_expiry_rejected(self, handler, payload, monkeypatch):
-        monkeypatch.setattr(
-            "handlers.gex_strike_expiry._today_et", lambda: date(2026, 5, 2)
-        )
+        monkeypatch.setattr("handlers.gex_strike_expiry._today_et", lambda: date(2026, 5, 2))
         # Today is 2026-05-02; fixture expiry 2026-05-01 is in the
         # past. UW shouldn't normally emit these on a per-ticker
         # channel, but a late-arriving payload at the day boundary
