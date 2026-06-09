@@ -14,6 +14,7 @@ import {
   silentBoomExportQuerySchema,
   lotteryExportQuerySchema,
   lotteryContractTapeQuerySchema,
+  lotteryFinderTickerCountsQuerySchema,
 } from '../../_lib/validation/lottery.js';
 
 // ── lotteryFinderQuerySchema ─────────────────────────────────
@@ -65,6 +66,71 @@ describe('lotteryFinderQuerySchema', () => {
 
   it('rejects minScore > 50 (boundary)', () => {
     const result = lotteryFinderQuerySchema.safeParse({ minScore: 51 });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses maxFireCount from a 2-digit string (coerces to int)', () => {
+    const result = lotteryFinderQuerySchema.safeParse({ maxFireCount: '12' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.maxFireCount).toBe(12);
+  });
+
+  it('parses maxFireCount=1 (boundary, min cap)', () => {
+    const result = lotteryFinderQuerySchema.safeParse({ maxFireCount: '1' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.maxFireCount).toBe(1);
+  });
+
+  it('omits maxFireCount when absent (optional)', () => {
+    const result = lotteryFinderQuerySchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.maxFireCount).toBeUndefined();
+  });
+
+  it('rejects maxFireCount below 1 (Zod min(1))', () => {
+    const result = lotteryFinderQuerySchema.safeParse({ maxFireCount: '0' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects maxFireCount above 1000 (Zod max(1000))', () => {
+    const result = lotteryFinderQuerySchema.safeParse({ maxFireCount: '1001' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects non-integer maxFireCount', () => {
+    const result = lotteryFinderQuerySchema.safeParse({ maxFireCount: '3.5' });
+    expect(result.success).toBe(false);
+  });
+});
+
+// ── lotteryFinderTickerCountsQuerySchema ─────────────────────
+
+describe('lotteryFinderTickerCountsQuerySchema', () => {
+  it('parses maxFireCount from a 2-digit string (coerces to int)', () => {
+    const result = lotteryFinderTickerCountsQuerySchema.safeParse({
+      maxFireCount: '12',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.maxFireCount).toBe(12);
+  });
+
+  it('omits maxFireCount when absent (optional)', () => {
+    const result = lotteryFinderTickerCountsQuerySchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.maxFireCount).toBeUndefined();
+  });
+
+  it('rejects maxFireCount below 1 (Zod min(1))', () => {
+    const result = lotteryFinderTickerCountsQuerySchema.safeParse({
+      maxFireCount: '0',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects maxFireCount above 1000 (Zod max(1000))', () => {
+    const result = lotteryFinderTickerCountsQuerySchema.safeParse({
+      maxFireCount: '1001',
+    });
     expect(result.success).toBe(false);
   });
 });

@@ -69,6 +69,14 @@ interface UseLotteryFinderArgs {
    */
   minFireCount?: number | null;
   /**
+   * Chain-day fire_count CAP — show only chains with AT MOST N fires.
+   * Inverse of `minFireCount`: hides high-fire-count "spam" chains.
+   * Server-side so pagination + ticker counts reflect the post-filter
+   * total. null / 0 = no cap (default OFF). Unlike the floor, a cap of
+   * 1 IS meaningful (single-fire chains only), so the gate is >= 1.
+   */
+  maxFireCount?: number | null;
+  /**
    * TAKE-IT calibrated P(peak >= +20%) floor. 0 / null = no floor.
    * Server-side so pagination + ticker counts reflect the post-
    * filter total. Mirrors the TAKEIT_FLOOR chip group; default UI
@@ -108,6 +116,7 @@ export function useLotteryFinder({
   minScore = null,
   minPremium = null,
   minFireCount = null,
+  maxFireCount = null,
   minTakeitProb = null,
   showAll = false,
   page = 0,
@@ -131,6 +140,8 @@ export function useLotteryFinder({
     params.set('minPremium', String(minPremium));
   if (minFireCount != null && minFireCount > 1)
     params.set('minFireCount', String(minFireCount));
+  if (maxFireCount != null && maxFireCount >= 1)
+    params.set('maxFireCount', String(maxFireCount));
   if (minTakeitProb != null && minTakeitProb > 0)
     params.set('minTakeitProb', String(minTakeitProb));
   if (showAll) params.set('showAll', 'true');

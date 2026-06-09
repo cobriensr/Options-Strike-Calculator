@@ -13,6 +13,8 @@ import type {
   LotteryTickerStats,
 } from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
+import { fireSpot as resolveFireSpot } from './fire-spot.js';
+import { signedOtmPct } from '../../utils/moneyness.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import {
   deltaFromAtFire,
@@ -397,6 +399,12 @@ export const LotteryRow = memo(function LotteryRow({
   // default so we don't burn network on rows the user hasn't looked at.
   const [expanded, setExpanded] = useState(false);
   /**
+   * Reignites disclosure — INDEPENDENT of the charts `expanded` state.
+   * When true, the "+N reignites" list renders the later fires on this
+   * chain today. Collapsed by default so multi-fire rows stay compact.
+   */
+  const [reignitesOpen, setReignitesOpen] = useState(false);
+  /**
    * Cross-panel hover sync: lifted to LotteryRow so both children can
    * read each other's cursor position. The value is a UTC second
    * timestamp (matches lightweight-charts' UTCTimestamp + the bar `ts`
@@ -492,29 +500,26 @@ export const LotteryRow = memo(function LotteryRow({
    * detail), so the moneyness shown is what it was when the alert
    * fired — not what it is right now.
    */
-  const fireSpot = useMemo<number | null>(() => {
-    if (
-      fire.entry.spotAtTrigger != null &&
-      Number.isFinite(fire.entry.spotAtTrigger) &&
-      fire.entry.spotAtTrigger > 0
-    ) {
-      return fire.entry.spotAtTrigger;
-    }
-    if (Number.isFinite(fire.entry.spotAtFirst)) return fire.entry.spotAtFirst;
-    return null;
-  }, [fire.entry.spotAtTrigger, fire.entry.spotAtFirst]);
+  const fireSpot = useMemo<number | null>(
+    () => resolveFireSpot(fire),
+    // resolveFireSpot reads ONLY these two primitive fields; depending on
+    // the whole `fire` would recompute every poll when unrelated fields
+    // churn. The exhaustive-deps rule can't see inside the helper.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [fire.entry.spotAtTrigger, fire.entry.spotAtFirst],
+  );
 
   /**
    * Distance-from-spot in percent, signed so the reader can tell ITM
-   * vs OTM at a glance. Call OTM: strike > spot → positive. Put OTM:
-   * strike < spot → positive. Sign flipped to negative for ITM.
-   * Result is null when spot is unavailable.
+   * vs OTM at a glance: > 0 = OTM, < 0 = ITM, 0 = exactly ATM (counts
+   * as OTM). Derived from the shared `signedOtmPct` so the badge's
+   * percentage AND its OTM/ITM label use the same inclusive boundary as
+   * the moneyness FILTER (`isFireOtm`). Null when spot is unavailable.
    */
-  const otmPct = useMemo<number | null>(() => {
-    if (fireSpot == null || fireSpot <= 0) return null;
-    const raw = (fire.strike - fireSpot) / fireSpot;
-    return fire.optionType === 'C' ? raw : -raw;
-  }, [fireSpot, fire.strike, fire.optionType]);
+  const otmPct = useMemo<number | null>(
+    () => signedOtmPct(fire.optionType, fire.strike, fireSpot),
+    [fireSpot, fire.strike, fire.optionType],
+  );
 
   /**
    * Total premium $ across the contract tape. Each contract represents
@@ -619,6 +624,28 @@ export const LotteryRow = memo(function LotteryRow({
         : `Cheaper than first fire on this chain — small option-price drop. ${deltaSentence}.`;
     return { label, className, title };
   }, [reloadDelta, fire.tags.reload]);
+
+  /**
+   * Later fires on this chain today — everything AFTER the first fire,
+   * surfaced by the "+N reignites" expander. The full ordered fire list
+   * is `[...historicalFires, latest]` (oldest → newest); the first fire
+   * is the header anchor, so the reignites are `historicalFires.slice(1)`
+   * plus the latest fire (`fire.triggerTimeCt` / `fire.entry.price`).
+   * Empty when there are no historical fires (single-fire chain).
+   */
+  const laterFires = useMemo<
+    Array<{ triggerTimeCt: string; entryPrice: number }>
+  >(() => {
+    const history = fire.historicalFires ?? [];
+    if (history.length === 0) return [];
+    return [
+      ...history.slice(1).map((h) => ({
+        triggerTimeCt: h.triggerTimeCt,
+        entryPrice: h.entryPrice,
+      })),
+      { triggerTimeCt: fire.triggerTimeCt, entryPrice: fire.entry.price },
+    ];
+  }, [fire.historicalFires, fire.triggerTimeCt, fire.entry.price]);
 
   const roundTripDeduct = fire.roundTripScoreDeduct ?? 0;
   const isRoundTripped = roundTripDeduct < 0;
@@ -843,26 +870,48 @@ export const LotteryRow = memo(function LotteryRow({
           </span>
         </a>
 
-        {/* Time of trigger */}
-        <span className="font-mono text-xs text-neutral-400">
-          {formatTimeCT(fire.triggerTimeCt)} CT
+        {/* Time of trigger — anchored on the FIRST fire of the chain
+            today so the morning entry isn't hidden behind the latest
+            re-fire. The "+N reignites" expander below reveals the later
+            fires. The grouping hook sorts on `triggerTimeCt` (latest),
+            independent of this displayed time, so the row's sort
+            position is unaffected. */}
+        <span
+          className="font-mono text-xs text-neutral-400"
+          title={
+            fire.fireCount > 1
+              ? `First fire ${formatTimeCT(fire.firstFireTimeCt || fire.triggerTimeCt)} CT · latest ${formatTimeCT(fire.triggerTimeCt)} CT`
+              : undefined
+          }
+        >
+          {formatTimeCT(fire.firstFireTimeCt || fire.triggerTimeCt)} CT
         </span>
 
         {/* Alert seq + RE-LOAD + cheap-call-PM badges */}
         <span className="text-[11px] text-neutral-400">
           fire #{fire.entry.alertSeq}
         </span>
-        {/* Chain-day cluster: shown only when the API collapsed >1
-            fires on this chain (ticker × strike × type × expiry) into a
-            single row for `date`. Carries the count + first-fire time
-            so the user sees the burst span at a glance. */}
+        {/* "+N reignites" expander — shown only when the API collapsed
+            >1 fires on this chain (ticker × strike × type × expiry) into
+            a single row for `date`. The header above is anchored on the
+            FIRST fire; this control reveals the LATER fires (reignite
+            history). Replaces the old "×N · since" burst chip, whose two
+            facts (count + first-fire time) are now both shown elsewhere
+            (header anchor = first-fire time; this button = +N reignites).
+            Independent `reignitesOpen` state — does NOT touch the charts
+            expander. */}
         {fire.fireCount > 1 && (
-          <span
-            className="rounded border border-orange-500/40 bg-orange-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-orange-200"
-            title={`${fire.fireCount} fires on this chain since ${formatTimeCT(fire.firstFireTimeCt)} CT — collapsed to the latest. Hot chains routinely trigger 50-300+ times in a session; this row carries the freshest macro / score / exit-policy.`}
+          <button
+            type="button"
+            data-testid="lottery-reignites-toggle"
+            onClick={() => setReignitesOpen((v) => !v)}
+            aria-expanded={reignitesOpen}
+            className="rounded border border-orange-500/40 bg-orange-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-orange-200 hover:text-orange-100"
+            title="Show the later fires (reignite history) on this chain today. Hot chains routinely trigger 50-300+ times in a session; the header time is the FIRST fire and this row carries the freshest macro / score / exit-policy."
           >
-            ×{fire.fireCount} · since {formatTimeCT(fire.firstFireTimeCt)}
-          </span>
+            {reignitesOpen ? '▾' : '▸'} +{fire.fireCount - 1} reignite
+            {fire.fireCount - 1 === 1 ? '' : 's'}
+          </button>
         )}
         {/* REIGNITED chip — chain matches the daily top-N reignition
             pattern (multi-fire chain that went quiet ≥30 min, then had
@@ -1019,6 +1068,30 @@ export const LotteryRow = memo(function LotteryRow({
           </span>
         </div>
       </div>
+
+      {/* Reignites list — the LATER fires on this chain today (everything
+          after the first fire). Toggled by the "+N reignites" button in
+          the header. Each entry shows its CT time + entry price; the
+          first-fire time is the header anchor and is deliberately NOT
+          listed here. */}
+      {reignitesOpen && fire.fireCount > 1 && (
+        <ul
+          data-testid="lottery-reignites-list"
+          className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 border-l-2 border-orange-500/40 pl-2 text-[11px] text-orange-200/90"
+        >
+          {laterFires.map((r, i) => (
+            <li
+              key={`${r.triggerTimeCt}-${i}`}
+              className="font-mono whitespace-nowrap"
+            >
+              {formatTimeCT(r.triggerTimeCt)} CT{' '}
+              <span className="text-orange-300">
+                {formatDollar(r.entryPrice)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
 
       {/* Second row: entry + flow + trigger */}
       <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px] text-neutral-400">

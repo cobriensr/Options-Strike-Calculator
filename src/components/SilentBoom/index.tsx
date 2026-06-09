@@ -48,6 +48,8 @@ import {
   type FilterChipColor,
 } from '../ui/filter-toolbar-tokens.js';
 import { FilterChip } from '../ui/FilterChip.js';
+import { isOtm, usableSpot } from '../../utils/moneyness.js';
+import { DEFAULT_TAKEIT_FLOOR } from '../../constants/takeit.js';
 
 const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'silentBoom.sortMode';
@@ -618,7 +620,7 @@ export function SilentBoomSection({
   // TAKE-IT floor — calibrated XGBoost P(peak ≥ +20%) floor. Default 0.70.
   const [takeitFloor, setTakeitFloor] = usePersistedState<number>(
     TAKEIT_FLOOR_LS_KEY,
-    0.7,
+    DEFAULT_TAKEIT_FLOOR,
     floatPersistOpts,
   );
   /** ISO of the 5-min bucket the scrubber is on; null = whole day. */
@@ -796,26 +798,13 @@ export function SilentBoomSection({
     serverTickerCounts: tickerCountsData,
   });
 
-  // Pagination-hole guard. The live page renders the WHOLE union, so an
-  // alert pinned on page 0 that later demotes past the PAGE_SIZE cut is
-  // also returned by the server on a later page — without a guard it
-  // renders on BOTH. On the live view's pages > 0 we drop any fetched row
-  // already pinned on page 0; the long tail the server only serves on
-  // later pages stays reachable.
-  const livePagedView = !isHistorical && bucketIso == null && page > 0;
-  const dedupedPagedAlerts = useMemo(
-    () => fetchedAlerts.filter((a) => !alertsFeed.unionKeys.has(alertKey(a))),
-    [fetchedAlerts, alertsFeed.unionKeys, alertKey],
-  );
-  // Downstream surfaces (banners, filters, grouping, counts) consume the
-  // unioned array on the live page 0, the de-duplicated server slice on
-  // later live pages, and the raw response on the bucket-scrub / historical
-  // views.
-  const alerts = unionEngaged
-    ? alertsFeed.rows
-    : livePagedView
-      ? dedupedPagedAlerts
-      : fetchedAlerts;
+  // The live (engaged) view is a single never-vanish union rendered on one
+  // page — the pager is suppressed in engaged mode (see the pagination render
+  // gate below), so `page` never leaves 0 while live and there is no
+  // engaged-mode paged slice to reconcile. Downstream surfaces consume the
+  // unioned array when engaged and the raw server slice on the historical /
+  // bucket-scrub (non-engaged) views, where pagination is server-anchored.
+  const alerts = unionEngaged ? alertsFeed.rows : fetchedAlerts;
 
   // Engaged → union length floor (the "N alerts" count); disengaged →
   // server total. Pagination is server-anchored via alertsFeed.totalPages
@@ -895,10 +884,14 @@ export function SilentBoomSection({
     }
     if (moneynessMode !== 'all') {
       out = out.filter((a) => {
-        const spot = a.underlyingPriceAtSpike;
+        // Shared moneyness module is the single source of truth for the
+        // spot guard + inclusive-ATM boundary, so the filter here, the
+        // row badge in SilentBoomRow.tsx, and the hidden-no-spot count
+        // below can never drift apart.
+        const spot = usableSpot(a.underlyingPriceAtSpike);
         if (spot == null) return false;
-        const isOtm = a.optionType === 'C' ? a.strike > spot : a.strike < spot;
-        return moneynessMode === 'otm' ? isOtm : !isOtm;
+        const isOtmFire = isOtm(a.optionType, a.strike, spot);
+        return moneynessMode === 'otm' ? isOtmFire : !isOtmFire;
       });
     }
     // TAKE-IT floor is applied server-side via `minTakeitProb` on
@@ -946,7 +939,8 @@ export function SilentBoomSection({
   // page on backfill-pending dates.
   const hiddenNoSpotCount =
     bucketIso == null && moneynessMode !== 'all'
-      ? alerts.filter((a) => a.underlyingPriceAtSpike == null).length
+      ? alerts.filter((a) => usableSpot(a.underlyingPriceAtSpike) == null)
+          .length
       : 0;
   // All tickers with at least one alert today, from the dedicated counts
   // endpoint — independent of pagination so tickers that fired on later
@@ -1157,6 +1151,24 @@ export function SilentBoomSection({
             </FilterChip>
           );
         })}
+        {takeitFloor !== DEFAULT_TAKEIT_FLOOR && (
+          <span
+            className="inline-flex items-center gap-1 text-[10px] text-neutral-400"
+            data-testid="silentboom-takeit-floor-saved-marker"
+          >
+            <span>saved: {takeitFloor.toFixed(2)}</span>
+            <button
+              type="button"
+              onClick={() => setTakeitFloor(DEFAULT_TAKEIT_FLOOR)}
+              aria-label={`Reset take-it floor to ${DEFAULT_TAKEIT_FLOOR.toFixed(2)}`}
+              title={`Reset take-it floor to the ${DEFAULT_TAKEIT_FLOOR.toFixed(2)} default.`}
+              className="rounded border border-neutral-700 px-1 py-0.5 text-[10px] text-neutral-300 transition-colors hover:border-neutral-600 hover:text-neutral-100"
+              data-testid="silentboom-takeit-floor-reset"
+            >
+              reset to {DEFAULT_TAKEIT_FLOOR.toFixed(2)}
+            </button>
+          </span>
+        )}
       </div>
 
       {/* Row 3: panel-specific numeric + flow filters — min DTE,
@@ -1299,9 +1311,9 @@ export function SilentBoomSection({
               onClick={() => setMoneynessMode(m.value)}
               title={
                 m.value === 'otm'
-                  ? 'Show only out-of-the-money alerts (calls: strike > spot, puts: strike < spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
+                  ? 'Show only out-of-the-money alerts (calls: strike ≥ spot, puts: strike ≤ spot (ATM counts as OTM)). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
                   : m.value === 'itm'
-                    ? 'Show only in-the-money alerts (calls: strike ≤ spot, puts: strike ≥ spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
+                    ? 'Show only in-the-money alerts (calls: strike < spot, puts: strike > spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
                     : 'Show alerts regardless of moneyness.'
               }
               ariaPressed={active}
@@ -1399,7 +1411,7 @@ export function SilentBoomSection({
           activeColor="sky"
           testId="silent-boom-aggressive-premium-chip"
           onClick={() => setAggressivePremium(!aggressivePremium)}
-          title="Aggressive Premium: surface only alerts with premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg (multi_leg_share < 10%), and OTM (calls strike > spot, puts strike < spot). Mirrors the trader's UW filter. Server-side enforced via #152 underlying_price_at_spike — alerts with no spot snapshot are excluded from the OTM check."
+          title="Aggressive Premium: surface only alerts with premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg (multi_leg_share < 10%), and OTM (calls strike ≥ spot, puts strike ≤ spot). Mirrors the trader's UW filter. Server-side enforced via #152 underlying_price_at_spike — alerts with no spot snapshot are excluded from the OTM check."
           ariaPressed={aggressivePremium}
         >
           💎 aggressive premium
@@ -1819,12 +1831,14 @@ export function SilentBoomSection({
                   </span>
                 )}
               </span>
-              {/* Pagination — suppressed entirely when scrubbed to a
-                  single 5-min bucket. The bucket filter is client-side,
-                  so server-page navigation produces mostly-empty pages
-                  and the page denominator has no useful meaning at that
-                  zoom level. */}
-              {bucketIso == null && total > PAGE_SIZE && (
+              {/* Pagination — only in the historical full-day view, where
+                  the feed renders a raw, server-anchored slice. The live
+                  (engaged) view is a single never-vanish union on one page,
+                  so a literal pager there only produced phantom empty pages.
+                  Still suppressed in the bucket-scrub view: the bucket filter
+                  is client-side, so server-page navigation there produces
+                  mostly-empty pages with a meaningless denominator. */}
+              {isHistorical && bucketIso == null && totalPages > 1 && (
                 <span className="flex items-center gap-1.5">
                   <button
                     type="button"

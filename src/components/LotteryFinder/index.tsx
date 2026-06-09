@@ -19,8 +19,11 @@ import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTicker
 import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from './ct-window.js';
+import { isFireOtm } from './fire-spot.js';
+import { DEFAULT_TAKEIT_FLOOR } from '../../constants/takeit.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryTierBanner } from './LotteryTierBanner.js';
+import { SessionQualityBanner } from './SessionQualityBanner.js';
 import { LotteryFinderTickerGroup } from './LotteryFinderTickerGroup.js';
 import { ReignitionSection } from './ReignitionSection.js';
 import {
@@ -100,10 +103,12 @@ const AGGRESSIVE_PREMIUM_MIN_USD = 50_000;
 const AGGRESSIVE_PREMIUM_MAX_DTE = 3;
 
 /**
- * Moneyness chip — tri-state filter on strike vs. spot at first fire.
- * Client-side filter only; `entry.spotAtFirst` is always populated by
- * the lottery feed so there's no null fallthrough. `MoneynessMode` is
- * imported from the shared persist-encoding module.
+ * Moneyness chip — tri-state filter on strike vs. fire-time spot.
+ * Client-side filter only. Classification goes through the shared
+ * `isFireOtm`/`fireSpot` helper (./fire-spot) so the OTM/ITM filter and
+ * the row's OTM/ITM badge resolve against the SAME spot
+ * (`spotAtTrigger ?? spotAtFirst`) and can never disagree.
+ * `MoneynessMode` is imported from the shared persist-encoding module.
  */
 const MONEYNESS_FILTERS: ReadonlyArray<{
   value: MoneynessMode;
@@ -113,12 +118,6 @@ const MONEYNESS_FILTERS: ReadonlyArray<{
   { value: 'otm', label: 'OTM' },
   { value: 'itm', label: 'ITM' },
 ];
-
-function isFireOtm(fire: LotteryFire): boolean {
-  return fire.optionType === 'C'
-    ? fire.strike > fire.entry.spotAtFirst
-    : fire.strike < fire.entry.spotAtFirst;
-}
 
 function isFireAggressivePremium(fire: LotteryFire): boolean {
   const estimatedPremium =
@@ -180,6 +179,14 @@ const CONVICTION_TO_MIN_SCORE: Record<ConvictionFloor, number | null> = {
 // launch; users opt-in to de-clutter.
 
 const MIN_FIRE_COUNT_LS_KEY = 'lottery.minFireCount';
+
+// Burst CAP — inverse of the burst floor. A FREE-TEXT numeric input
+// (not preset chips): show only chains with AT MOST N fires, to hide
+// high-fire-count "spam" alerts. 0 = no cap (default OFF). Clamped to
+// the schema ceiling (1000) and floored at 1. Server-side filter so
+// pagination + ticker counts reflect the post-filter total.
+const MAX_FIRE_COUNT_LS_KEY = 'lottery.maxFireCount';
+const MAX_FIRE_COUNT_CEILING = 1000;
 
 type MinFireCountFloor = 'all' | 'gte3' | 'gte8' | 'gte16';
 
@@ -367,6 +374,7 @@ interface LotteryFilterSigParams {
   minTakeitProb: number;
   minScore: number | null;
   minFireCount: number;
+  maxFireCount: number;
   mode: LotteryMode | null;
   optionType: OptionType | null;
   tod: TimeOfDay | null;
@@ -387,6 +395,7 @@ function buildLotteryFilterSig(p: LotteryFilterSigParams): string {
     `t${p.minTakeitProb}`,
     `s${p.minScore ?? 'x'}`,
     `f${p.minFireCount}`,
+    `F${p.maxFireCount}`,
     `m${p.mode ?? 'x'}`,
     `o${p.optionType ?? 'x'}`,
     `d${p.tod ?? 'x'}`,
@@ -494,6 +503,12 @@ export function LotteryFinderSection({
     'all',
     minFireCountPersistOpts,
   );
+  // Burst CAP (max fires) — free-text numeric. 0 = no cap (default OFF).
+  const [maxFireCount, setMaxFireCount] = usePersistedState<number>(
+    MAX_FIRE_COUNT_LS_KEY,
+    0,
+    intPersistOpts,
+  );
   const [hideLatePm, setHideLatePm] = usePersistedState<boolean>(
     HIDE_LATE_PM_LS_KEY,
     false,
@@ -530,7 +545,7 @@ export function LotteryFinderSection({
   // TAKE-IT floor — calibrated XGBoost P(peak ≥ +20%) floor. Default 0.70.
   const [takeitFloor, setTakeitFloor] = usePersistedState<number>(
     TAKEIT_FLOOR_LS_KEY,
-    0.7,
+    DEFAULT_TAKEIT_FLOOR,
     floatPersistOpts,
   );
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
@@ -564,6 +579,7 @@ export function LotteryFinderSection({
     moneynessMode,
     minPremiumK,
     minFireCount,
+    maxFireCount,
     showFilteredTickers,
   ]);
 
@@ -585,6 +601,7 @@ export function LotteryFinderSection({
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
+    maxFireCount,
     minTakeitProb: takeitFloor,
     showAll: showFilteredTickers,
     page,
@@ -622,6 +639,7 @@ export function LotteryFinderSection({
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
+    maxFireCount,
     minTakeitProb: takeitFloor,
     showAll: showFilteredTickers,
   });
@@ -667,6 +685,7 @@ export function LotteryFinderSection({
     minTakeitProb: takeitFloor,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minFireCount: minFireCountFloor,
+    maxFireCount,
     mode: modeFilter,
     optionType: optionTypeFilter,
     tod: todFilter,
@@ -709,25 +728,13 @@ export function LotteryFinderSection({
     pageSize: PAGE_SIZE,
   });
 
-  // Pagination-hole guard. The live page renders the WHOLE union, so a chain
-  // pinned on page 0 that later demotes past the PAGE_SIZE cut is also
-  // returned by the server on a later page — without a guard it renders on
-  // BOTH. On the live view's pages > 0 we drop any fetched row already pinned
-  // on page 0; the long tail the server only serves on later pages stays
-  // reachable.
-  const livePagedView = minute == null && page > 0;
-  const dedupedPagedFires = useMemo(
-    () => fetchedFires.filter((f) => !firesFeed.unionKeys.has(fireKey(f))),
-    [fetchedFires, firesFeed.unionKeys, fireKey],
-  );
-  // Downstream surfaces (banners, filters, grouping, counts) consume the
-  // unioned array on page 0, the de-duplicated server slice on later live
-  // pages, and the raw response on the minute-scrub view.
-  const fires = unionEngaged
-    ? firesFeed.rows
-    : livePagedView
-      ? dedupedPagedFires
-      : fetchedFires;
+  // The live (engaged) view is a single never-vanish union rendered on one
+  // page — the pager is suppressed in engaged mode (see the pagination render
+  // gate below), so `page` never leaves 0 while live and there is no
+  // engaged-mode paged slice to reconcile. Downstream surfaces consume the
+  // unioned array when engaged and the raw server slice on the minute-scrub
+  // (non-engaged) view, where pagination is server-anchored.
+  const fires = unionEngaged ? firesFeed.rows : fetchedFires;
   const rawReignitedFires = unionEngaged
     ? reignitedFeed.rows
     : fetchedReignitedFires;
@@ -1177,6 +1184,24 @@ export function LotteryFinderSection({
             </FilterChip>
           );
         })}
+        {takeitFloor !== DEFAULT_TAKEIT_FLOOR && (
+          <span
+            className="inline-flex items-center gap-1 text-[10px] text-neutral-400"
+            data-testid="lottery-takeit-floor-saved-marker"
+          >
+            <span>saved: {takeitFloor.toFixed(2)}</span>
+            <button
+              type="button"
+              onClick={() => setTakeitFloor(DEFAULT_TAKEIT_FLOOR)}
+              aria-label={`Reset take-it floor to ${DEFAULT_TAKEIT_FLOOR.toFixed(2)}`}
+              title={`Reset take-it floor to the ${DEFAULT_TAKEIT_FLOOR.toFixed(2)} default.`}
+              className="rounded border border-neutral-700 px-1 py-0.5 text-[10px] text-neutral-300 transition-colors hover:border-neutral-600 hover:text-neutral-100"
+              data-testid="lottery-takeit-floor-reset"
+            >
+              reset to {DEFAULT_TAKEIT_FLOOR.toFixed(2)}
+            </button>
+          </span>
+        )}
       </div>
 
       {/* Row 2b: numeric server-side filter — min premium $K. Mirrors
@@ -1211,6 +1236,40 @@ export function LotteryFinderSection({
             aria-label="Minimum premium in thousands of dollars"
             data-testid="lottery-min-premium-input"
             className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
+          />
+        </label>
+        {/* Burst CAP — free-text "max fires" input (inverse of the burst
+              floor chips). Hides high-fire-count "spam" chains. Empty /
+              0 / invalid = no cap (default OFF). Clamped to the schema
+              ceiling (1000), floored at 1. Server-side so pagination +
+              ticker counts reflect the post-filter total. */}
+        <label
+          className="flex items-center gap-1.5"
+          title="Maximum fires per chain — show only chains with AT MOST N fires, to hide high-fire-count spam. Empty / 0 = no cap. Server-side filter so pagination + ticker counts reflect the post-filter result."
+        >
+          <span className={SECTION_LABEL}>max fires</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={2}
+            value={maxFireCount === 0 ? '' : maxFireCount}
+            placeholder="∞"
+            onChange={(e) => {
+              const raw = e.target.value.trim();
+              if (raw === '') {
+                setMaxFireCount(0);
+                return;
+              }
+              const n = Number.parseInt(raw, 10);
+              if (!Number.isFinite(n) || n <= 0) {
+                setMaxFireCount(0);
+                return;
+              }
+              setMaxFireCount(Math.min(n, MAX_FIRE_COUNT_CEILING));
+            }}
+            aria-label="Max fires"
+            data-testid="lottery-max-fires-input"
+            className="w-16 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
           />
         </label>
       </div>
@@ -1317,9 +1376,9 @@ export function LotteryFinderSection({
               onClick={() => setMoneynessMode(m.value)}
               title={
                 m.value === 'otm'
-                  ? 'Show only out-of-the-money fires (calls: strike > spotAtFirst, puts: strike < spotAtFirst). Client-side filter.'
+                  ? 'Show only out-of-the-money fires (calls: strike ≥ fire-time spot, puts: strike ≤ fire-time spot (ATM counts as OTM), using spotAtTrigger ?? spotAtFirst — same spot as the row badge). Client-side filter.'
                   : m.value === 'itm'
-                    ? 'Show only in-the-money fires (calls: strike ≤ spotAtFirst, puts: strike ≥ spotAtFirst). Client-side filter.'
+                    ? 'Show only in-the-money fires (calls: strike < fire-time spot, puts: strike > fire-time spot, using spotAtTrigger ?? spotAtFirst — same spot as the row badge). Client-side filter.'
                     : 'Show fires regardless of moneyness.'
               }
               ariaPressed={active}
@@ -1393,7 +1452,7 @@ export function LotteryFinderSection({
           activeColor="sky"
           testId="lottery-aggressive-premium-chip"
           onClick={() => setAggressivePremium(!aggressivePremium)}
-          title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs spotAtFirst). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
+          title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs fire-time spot). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
           ariaPressed={aggressivePremium}
         >
           💎 aggressive premium
@@ -1479,6 +1538,15 @@ export function LotteryFinderSection({
               methodology
             </a>
           </p>
+        )}
+
+        {/* Session-quality backdrop — current time-of-day bucket + its
+            historical expectancy. Decision-support only; renders only on the
+            live trading session (gated on isLive so it never shows on a
+            historical replay). Reuses nowMinuteMs (refreshes every 30s) so it
+            advances across bucket boundaries without its own interval. */}
+        {!compact && isLive && (
+          <SessionQualityBanner now={new Date(nowMinuteMs)} />
         )}
 
         {/* Day-level macro banner — at-a-glance regime context. Hidden in
@@ -1814,8 +1882,12 @@ export function LotteryFinderSection({
                   </span>
                 )}
               </span>
-              {/* Pagination — only render when there's more than one page. */}
-              {total > PAGE_SIZE && (
+              {/* Pagination — only in the non-engaged (minute-scrub) view,
+                  where the feed renders a raw, server-anchored slice. The
+                  engaged (live) view is a single never-vanish union on one
+                  page, so a literal pager there only produced phantom empty
+                  pages. */}
+              {!unionEngaged && totalPages > 1 && (
                 <span className="flex items-center gap-1.5">
                   <button
                     type="button"

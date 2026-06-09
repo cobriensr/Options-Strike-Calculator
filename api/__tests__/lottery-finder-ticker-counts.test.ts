@@ -332,6 +332,51 @@ describe('lottery-finder-ticker-counts handler', () => {
     expect(body.filters.minFireCount).toBeNull();
   });
 
+  it('binds maxFireCount to the ranked-CTE cap + echoes it in filters', async () => {
+    // Inverse of minFireCount — the chip strip must stay aligned with
+    // the burst-CAPPED feed, so the ranked CTE filters fc <= cap at
+    // WHERE rn = 1. Mirrors the cap subquery in /api/lottery-finder so
+    // a chain in the feed and a chain in the strip are the same set.
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'TSLA',
+        count: 4,
+        peak_best_pct: '85.0',
+        latest_trigger_time_ct: '2026-05-14T15:00:00Z',
+      },
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', maxFireCount: '12' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      filters: { maxFireCount: number | null };
+    };
+    expect(body.filters.maxFireCount).toBe(12);
+
+    const sql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(' ');
+    expect(sql).toContain('WITH ranked');
+    expect(sql).toContain('WHERE rn = 1');
+    expect(sql).toContain('fc <=');
+    expect((mockSql.mock.calls[0] as unknown[]).slice(1)).toContain(12);
+  });
+
+  it('omits maxFireCount from filters echo when not provided', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { filters: { maxFireCount: number | null } };
+    expect(body.filters.maxFireCount).toBeNull();
+  });
+
   it('rejects minFireCount below 1 with 400 (Zod min(1))', async () => {
     const req = mockRequest({
       method: 'GET',

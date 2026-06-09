@@ -1074,6 +1074,115 @@ describe('LotteryFinderTickerGroup', () => {
     });
   });
 
+  describe('converging glow emphasis', () => {
+    // In-place visual emphasis: when a ticker group is converging
+    // (isHighConviction / isStrongConviction), the OUTER container gets
+    // a glowing ring so the winning group pops where it already sits in
+    // the feed. Purely decorative — no new text/badges, no data change.
+    // The ✦ / ✦✦ badges still convey the meaning; this is the container
+    // emphasis only.
+    it('applies the converging glow container when conviction is true', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={true}
+        />,
+      );
+      const glow = screen.getByTestId('lottery-group-converging');
+      expect(glow).toBeInTheDocument();
+      // Lighter tier for plain high-conviction.
+      expect(glow).toHaveAttribute('data-conviction', 'high');
+    });
+
+    it('applies the STRONG converging glow when strongConviction is true', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={true}
+          strongConviction={true}
+        />,
+      );
+      const glow = screen.getByTestId('lottery-group-converging');
+      expect(glow).toBeInTheDocument();
+      // Stronger tier gets the brighter treatment.
+      expect(glow).toHaveAttribute('data-conviction', 'strong');
+    });
+
+    it('applies the glow on strongConviction even if conviction prop is omitted', () => {
+      // strongConviction implies the high-conviction gate upstream, so
+      // the glow must trigger on strongConviction alone too.
+      const fires = [
+        makeFire({
+          optionChainId: 'XOM260515C00150000',
+          underlyingSymbol: 'XOM',
+          strike: 150,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="XOM"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          strongConviction={true}
+        />,
+      );
+      const glow = screen.getByTestId('lottery-group-converging');
+      expect(glow).toBeInTheDocument();
+      expect(glow).toHaveAttribute('data-conviction', 'strong');
+    });
+
+    it('does NOT apply the glow when the group is not converging', () => {
+      const fires = [
+        makeFire({
+          optionChainId: 'SNDK260515P01295000',
+          underlyingSymbol: 'SNDK',
+          optionType: 'P',
+          strike: 1295,
+        }),
+      ];
+      render(
+        <LotteryFinderTickerGroup
+          ticker="SNDK"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+      expect(
+        screen.queryByTestId('lottery-group-converging'),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe('flow rollup chip', () => {
     function makeFireWithFlow(
       tickerCumNcpAtFire: number | null,

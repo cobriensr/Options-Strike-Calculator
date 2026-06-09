@@ -81,6 +81,38 @@ describe('useLotteryFinderTickerCounts', () => {
     expect(url).toContain('showAll=true');
   });
 
+  it('omits maxFireCount from the URL when unset (default OFF — no cap)', async () => {
+    // Mirrors the minFireCount floor, inverted. The free-text cap is
+    // default-OFF; an unset cap (0/undefined) must NOT serialize, so
+    // the server's `.optional()` default holds and the count CTE stays
+    // unfiltered.
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+        maxFireCount: 0,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('maxFireCount=');
+  });
+
+  it('appends maxFireCount to the URL when set (>= 1, server-side cap)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+        maxFireCount: 12,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('maxFireCount=12');
+  });
+
   it('omits showAll from the URL when false (default)', async () => {
     // The chip-strip endpoint applies Q1/Q2 suppression by default,
     // matching the feed. The URL builder must NOT send `showAll=false`
