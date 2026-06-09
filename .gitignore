@@ -204,3 +204,6 @@ docs/tmp/
 # not affect already-committed files. Use `git add -f` to opt in.
 data/*.csv
 data/*.parquet
+
+# Git worktrees (isolated workspaces for parallel sessions)
+.worktrees/
