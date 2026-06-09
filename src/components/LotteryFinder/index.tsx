@@ -657,12 +657,22 @@ export function LotteryFinderSection({
   // preserves same-day different-sig siblings, so toggling a filter back and
   // forth re-shows the original union.
   //
-  // The union is only engaged in the live polling view (today, all-day,
-  // page 0): the only view that re-polls and can drop a row out from under
-  // the trader. Minute-scrub buckets and paged slices pass through the raw
-  // server response; the union persists in localStorage across the detour and
-  // resumes on return.
-  const unionEngaged = minute == null && page === 0;
+  // The union backs the LIVE polling view (today, all-day) — the only view
+  // that re-polls and can drop a row out from under the trader. It now backs
+  // ALL live pages (not just page 0) so the never-vanish union, not a server
+  // slice, drives pagination: when the filtered server set fits in one page
+  // (no server tail) the hook paginates the union itself, keeping the pager
+  // visibility / label / Next mutually consistent (the filtered-set pager
+  // bug). Minute-scrub buckets pass through the raw server response; the union
+  // persists in localStorage across the detour and resumes on return.
+  //
+  // `unionEngaged` (live, page-independent) gates whether the union is the
+  // source of truth; `unionIngesting` (live AND page 0) gates whether it
+  // GROWS — so a server page>0 slice (large-set tail) can't pile onto the
+  // page-0 union.
+  const isLiveView = minute == null;
+  const unionEngaged = isLiveView;
+  const unionIngesting = isLiveView && page === 0;
   const filterSig = buildLotteryFilterSig({
     minTakeitProb: takeitFloor,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
@@ -687,6 +697,8 @@ export function LotteryFinderSection({
   const firesFeed = useNeverVanishFeed<LotteryFire>({
     fetched: fetchedFires,
     engaged: unionEngaged,
+    ingest: unionIngesting,
+    page,
     storageKey: firesStorageKey,
     key: fireKey,
     getSymbol: fireSymbol,
@@ -697,7 +709,10 @@ export function LotteryFinderSection({
   });
   const reignitedFeed = useNeverVanishFeed<LotteryFire>({
     fetched: fetchedReignitedFires,
+    // Reignited rows are served independent of pagination — always page 0,
+    // never sliced — so engage/ingest on the live view regardless of `page`.
     engaged: unionEngaged,
+    ingest: unionEngaged,
     storageKey: reignitedStorageKey,
     key: fireKey,
     getSymbol: fireSymbol,
@@ -709,25 +724,30 @@ export function LotteryFinderSection({
     pageSize: PAGE_SIZE,
   });
 
-  // Pagination-hole guard. The live page renders the WHOLE union, so a chain
-  // pinned on page 0 that later demotes past the PAGE_SIZE cut is also
-  // returned by the server on a later page — without a guard it renders on
-  // BOTH. On the live view's pages > 0 we drop any fetched row already pinned
-  // on page 0; the long tail the server only serves on later pages stays
-  // reachable.
-  const livePagedView = minute == null && page > 0;
+  // When the server has a tail (large set: serverTotal > PAGE_SIZE) AND we're
+  // past page 0, the union never saw this server slice, so we dedup it against
+  // the page-0 union (a chain pinned on page 0 that later demotes can reappear
+  // on a later server page — without the guard it renders on BOTH). Otherwise
+  // (union-complete or page 0) the hook's `rows` is authoritative: it's the
+  // union page slice when the union holds the whole set, else the whole union.
+  // Keyed on `serverTotal`, not `serverHasMore` — matching the hook's
+  // union-complete signal (hasMore is false on the last page of a large set).
+  const livePagedServerTail =
+    unionEngaged && serverTotal > PAGE_SIZE && page > 0;
   const dedupedPagedFires = useMemo(
     () => fetchedFires.filter((f) => !firesFeed.unionKeys.has(fireKey(f))),
     [fetchedFires, firesFeed.unionKeys, fireKey],
   );
   // Downstream surfaces (banners, filters, grouping, counts) consume the
-  // unioned array on page 0, the de-duplicated server slice on later live
-  // pages, and the raw response on the minute-scrub view.
-  const fires = unionEngaged
-    ? firesFeed.rows
-    : livePagedView
+  // hook's union page slice when the union is complete, the de-duplicated
+  // server slice on later pages of a large (server-tail) set, the whole union
+  // on page 0 of a server-tail set, and the raw response on the minute-scrub
+  // view.
+  const fires = !unionEngaged
+    ? fetchedFires
+    : livePagedServerTail
       ? dedupedPagedFires
-      : fetchedFires;
+      : firesFeed.rows;
   const rawReignitedFires = unionEngaged
     ? reignitedFeed.rows
     : fetchedReignitedFires;
@@ -747,7 +767,6 @@ export function LotteryFinderSection({
   // surface this separately as a "(N hidden by quality filter)" hint.
   const suppressedCount = lotteryFinder.data?.suppressedCount ?? 0;
   const offset = lotteryFinder.data?.offset ?? 0;
-  const hasMore = serverHasMore;
 
   // Regular-session bounds (08:30 → 15:00 CT) for the selected date,
   // browser-TZ-independent. See ct-window.ts.
@@ -803,14 +822,21 @@ export function LotteryFinderSection({
     [fires],
   );
 
-  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
-  // SERVER-anchored totalPages (finding #3): derived from the server's
-  // reachable set (serverTotal), NOT the union-floored `total`. The
-  // never-vanish union may render MORE than PAGE_SIZE pinned rows on the
-  // live page — that's fine — but it must NOT advertise pages the server's
-  // `hasMore` can't reach. `useNeverVanishFeed` computes this as
-  // ceil(serverTotal / PAGE_SIZE).
+  // 1-based current page. On the live view the client `page` is authoritative
+  // (the union, not the server offset, backs the slices when union-complete);
+  // on the minute-scrub view the server `offset` is the source of truth.
+  const currentPage = unionEngaged
+    ? page + 1
+    : Math.floor(offset / PAGE_SIZE) + 1;
+  // Pagination authority comes from the hook (`useNeverVanishFeed`), which
+  // keeps `totalPages` / `canPrev` / `canNext` mutually consistent: when the
+  // union holds the whole server set it paginates the union (ceil(union /
+  // PAGE_SIZE)); otherwise it stays server-anchored (ceil(serverTotal /
+  // PAGE_SIZE), Next via the server's `hasMore`). This fixes the filtered-set
+  // pager bug where pager visibility, the page label, and Next disagreed.
   const totalPages = firesFeed.totalPages;
+  const canPrevPage = firesFeed.canPrev;
+  const canNextPage = firesFeed.canNext;
 
   // Late-PM cutoff is applied client-side: keep `total` and pagination
   // tied to the server's view (so filter chips and counts remain
@@ -1814,13 +1840,16 @@ export function LotteryFinderSection({
                   </span>
                 )}
               </span>
-              {/* Pagination — only render when there's more than one page. */}
-              {total > PAGE_SIZE && (
+              {/* Pagination — render only when there's more than one page.
+                  Gated on `totalPages` (the SAME count that backs the page
+                  slices), not the union-floored `total`, so visibility, the
+                  label, and the Next gate all agree. */}
+              {totalPages > 1 && (
                 <span className="flex items-center gap-1.5">
                   <button
                     type="button"
                     onClick={() => setPage((p) => Math.max(0, p - 1))}
-                    disabled={page === 0}
+                    disabled={!canPrevPage}
                     className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
                     aria-label="Previous page"
                   >
@@ -1832,7 +1861,7 @@ export function LotteryFinderSection({
                   <button
                     type="button"
                     onClick={() => setPage((p) => p + 1)}
-                    disabled={!hasMore}
+                    disabled={!canNextPage}
                     className="rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-xs font-semibold text-neutral-300 enabled:hover:text-white disabled:opacity-40"
                     aria-label="Next page"
                   >
@@ -1863,9 +1892,7 @@ export function LotteryFinderSection({
               >
                 All {fires.length} fire{fires.length === 1 ? '' : 's'} on this
                 page were hidden by active filter chips.{' '}
-                {hasMore
-                  ? 'Try Next to skip to the next server page, or'
-                  : 'Try'}{' '}
+                {canNextPage ? 'Try Next to skip to the next page, or' : 'Try'}{' '}
                 relaxing a filter (TAKE-IT floor, hide-* toggles, moneyness,
                 etc.).
               </div>

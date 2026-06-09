@@ -782,11 +782,14 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
     ).toHaveLength(1);
   });
 
-  it('#3: union > serverTotal on the live page does not advertise an unreachable page', () => {
-    // 60 distinct chains pinned in the union but the server reports total=10
-    // and hasMore=false. PAGE_SIZE is 50 → server reachable set is 1 page.
-    // The union renders all 60 on the live page (never-vanish) but the pager
-    // must read "page 1 / 1", NOT "/ 2" — totalPages is server-anchored.
+  it('#3: union > serverTotal with a small filtered set paginates the union (no phantom page)', () => {
+    // The filtered-set pager bug. 60 distinct chains pinned in the union but
+    // the CURRENT filtered server response is tiny (total=10, fits one page →
+    // union-complete: no unreachable server tail). PAGE_SIZE is 50 → the union
+    // spans 2 client pages. The pager MUST read "page 1 / 2" and enable Next
+    // so the 10 overflow pinned rows are reachable — and it must NOT advertise
+    // a phantom 3rd page. (Previously this anchored to ceil(serverTotal/50)=1,
+    // showed a visible pager via total>50, and stranded the overflow rows.)
     const fires = Array.from({ length: 60 }, (_, i) =>
       makeFire({
         id: i + 1,
@@ -802,13 +805,25 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
 
     render(<LotteryFinderSection marketOpen={true} />);
 
-    // total floors at the union length (60) for the "N fires" display, but
-    // the pager is server-anchored. With total(60) > PAGE_SIZE(50) the pager
-    // renders; it must read page 1 / 1 (ceil(10/50)=1), never 1 / 2.
-    expect(screen.getByText(/page 1 \/ 1/)).toBeInTheDocument();
-    expect(screen.queryByText(/page 1 \/ 2/)).not.toBeInTheDocument();
-    // The Next button is disabled because the server reports no more pages.
+    // ceil(union 60 / 50) = 2 — the label, visibility, and Next all agree.
+    expect(screen.getByText(/page 1 \/ 2/)).toBeInTheDocument();
+    expect(screen.queryByText(/page 1 \/ 3/)).not.toBeInTheDocument();
+    // Next is enabled on page 1 of 2 so the overflow rows are reachable.
+    expect(
+      screen.getByRole('button', { name: /next page/i }),
+    ).not.toBeDisabled();
+    // Prev is disabled on the first page.
+    expect(
+      screen.getByRole('button', { name: /previous page/i }),
+    ).toBeDisabled();
+
+    // Navigate to the second (last) client page: no phantom trailing page.
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    expect(screen.getByText(/page 2 \/ 2/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /next page/i })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: /previous page/i }),
+    ).not.toBeDisabled();
   });
 });
 

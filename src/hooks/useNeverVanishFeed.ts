@@ -24,23 +24,46 @@
  * engaged (the caller passes `fetched` while engaged, `[]` otherwise — see
  * below), so the persisted union survives the detour and resumes on return.
  *
- * Pagination coherence (finding #3)
- * ---------------------------------
- * The union may render MORE than `pageSize` pinned rows on the live page —
- * that's the never-vanish behavior and is fine. But it must NOT advertise
- * extra pages the server's `hasMore` can't reach. So `totalPages` is anchored
- * to the SERVER's reachable set (`ceil(serverTotal / pageSize)`), decoupled
- * from `total`. The live page shows ALL `rows` regardless of `pageSize`; only
- * disengaged paged views are server slices, and the pager only ever offers
- * pages the server can actually serve.
+ * Pagination coherence (finding #3 + filtered-set pager bug)
+ * ----------------------------------------------------------
+ * Three "size" numbers used to drive three controls and could disagree:
+ * pager VISIBILITY floored at the union length, the page LABEL anchored to
+ * `ceil(serverTotal / pageSize)`, and the Next button driven by the raw
+ * server `hasMore`. With a filter active the server set is small (one page,
+ * `hasMore` false) yet the page-0 union can hold MORE than `pageSize` pinned
+ * rows — so the pager showed, the label said "1", and Next + page>0 dedup
+ * produced a one-row page 2 plus a phantom trailing page.
+ *
+ * The hook now OWNS pagination and keeps the three numbers consistent by
+ * branching on whether the union is COMPLETE (holds the whole server set):
+ *
+ *   - Union-complete (engaged AND `serverTotal <= pageSize` → the whole
+ *     filtered set fit in page 0, so the union is the complete ordered set):
+ *     paginate the UNION itself. One ordered list backs every page, so `rows`
+ *     is the `page` slice, `total`/`totalPages` come from the union length,
+ *     and `canPrev`/`canNext` derive from the same length. No server
+ *     round-trip, no dedup hole, no phantom page. (We key on `serverTotal`,
+ *     not `hasMore` — `hasMore` is false on the LAST page of ANY multi-page
+ *     set, which would wrongly strand a large set's tail.)
+ *   - Server-has-more (engaged AND `serverTotal > pageSize` → the union only
+ *     saw page 0 and the server holds an unreachable tail): stay SERVER-
+ *     anchored (`totalPages = ceil(serverTotal / pageSize)`, Next via server
+ *     `hasMore`). `rows` is the WHOLE union (never-vanish) — the caller
+ *     renders it on page 0 and dedups its own server slices on later pages.
+ *   - Disengaged (minute/bucket scrub, paged offset, historical replay):
+ *     pass-through server slice; `canPrev = page > 0`, `canNext = hasMore`.
+ *
+ * `page` and `ingest` default to page 0 / `engaged` when omitted, so callers
+ * that don't paginate keep the original single-page behavior.
  *
  * Ingest gating
  * -------------
- * The caller is responsible for passing `fetched` ONLY while the union should
- * grow — i.e. on the live page 0 — and `[]` (or the engaged flag false) on
- * paged views, so page-2+ rows don't pile onto the page-0 union. The hook
- * forwards `fetched` to `useStickyUnion` verbatim; it does not second-guess
- * the caller's engaged gate.
+ * Whether the union GROWS this render is `ingest` (defaults to `engaged`).
+ * In union-complete mode the caller keeps `engaged` true across pages so the
+ * union still backs the slices, but passes `ingest === false` on pages > 0 so
+ * a later server slice can't pile onto the union (it normally passes `[]` as
+ * `fetched` on those pages anyway; `ingest` is the explicit belt-and-braces
+ * gate). The hook forwards to `useStickyUnion` only when `ingest` is true.
  */
 
 import { useMemo } from 'react';
@@ -71,10 +94,27 @@ export interface UseNeverVanishFeedArgs<T> {
   key: (t: T) => string;
   /** Server's reachable row count for the day (drives pagination). */
   serverTotal: number;
-  /** Whether the server can serve another page. */
+  /**
+   * Whether the server can serve another page. Drives the Next gate in the
+   * server-anchored (large-set) mode. NOTE: union-completeness keys on
+   * `serverTotal <= pageSize`, NOT this flag — `hasMore` is false on the last
+   * page of any multi-page set.
+   */
   hasMore: boolean;
   /** Page size — pagination divisor. */
   pageSize: number;
+  /**
+   * Current 0-based page index. Defaults to 0. In union-complete mode the
+   * hook slices the union by this; in server-anchored / disengaged modes it
+   * only informs `canPrev`. The caller still drives the server fetch.
+   */
+  page?: number;
+  /**
+   * Whether the union should GROW this render. Defaults to `engaged`. Pass
+   * `false` on pages > 0 in union-complete mode so a later server slice can't
+   * pile onto the page-0 union.
+   */
+  ingest?: boolean;
   /** Symbol accessor for the per-ticker count merge. */
   getSymbol: (t: T) => string;
   /**
@@ -87,14 +127,27 @@ export interface UseNeverVanishFeedArgs<T> {
 }
 
 export interface UseNeverVanishFeedResult<T> {
-  /** Engaged → the whole union (never-vanish); disengaged → `fetched`. */
+  /**
+   * Union-complete → the `page` slice of the union; server-has-more (engaged)
+   * → the WHOLE union (caller paginates/dedups); disengaged → `fetched`.
+   */
   rows: T[];
   /** Engaged → max(serverTotal, union length); disengaged → serverTotal. */
   total: number;
-  /** SERVER-anchored: ceil(serverTotal / pageSize). Never inflated by union. */
+  /**
+   * Page count that BACKS the slices: union-complete → ceil(union / pageSize);
+   * otherwise ceil(serverTotal / pageSize). Always ≥ 1.
+   */
   totalPages: number;
   /** Server's reachable-more flag, surfaced for the Next gate. */
   hasMore: boolean;
+  /** True when there is a previous page to navigate to (page > 0). */
+  canPrev: boolean;
+  /**
+   * True when there is a next page. Union-complete → page < totalPages - 1;
+   * otherwise the server `hasMore`. Mutually consistent with `totalPages`.
+   */
+  canNext: boolean;
   /** Per-ticker MAX(server, union); server order preserved, union appended. */
   tickerCounts: TickerCount[];
   /** The pinned union key set, for caller-side page>0 dedup / partition. */
@@ -115,12 +168,15 @@ export function useNeverVanishFeed<T>(
     getSymbol,
     serverTickerCounts,
     tombstones,
+    page = 0,
+    ingest = engaged,
   } = args;
 
-  // The never-vanish accumulator. The caller already gates ingest via
-  // `engaged` (passing `[]` on paged views), but we also pass the raw
-  // `fetched` only when engaged so a disengaged view never grows the union.
-  const union = useStickyUnion(engaged ? fetched : [], {
+  // The never-vanish accumulator. Ingest is gated by `ingest` (defaults to
+  // `engaged`): we forward `fetched` only when the union should grow this
+  // render, so a disengaged view — or a page > 0 in union-complete mode —
+  // never grows the union.
+  const union = useStickyUnion(ingest ? fetched : [], {
     key,
     storageKey,
     ...(tombstones !== undefined && { tombstones }),
@@ -136,14 +192,52 @@ export function useNeverVanishFeed<T>(
     return keys;
   }, [union, key]);
 
-  const rows = engaged ? union : fetched;
-
   // `total` floors at the union length in the live view (so the header / pager
-  // never claim fewer rows than are actually rendered) but pagination is
-  // anchored to the SERVER's reachable set, so the union rendering > pageSize
-  // pinned rows on the live page does NOT advertise an unreachable page.
-  const total = engaged ? Math.max(serverTotal, rows.length) : serverTotal;
-  const totalPages = Math.max(1, Math.ceil(serverTotal / pageSize));
+  // never claim fewer rows than are actually rendered); disengaged → server
+  // total.
+  const total = engaged ? Math.max(serverTotal, union.length) : serverTotal;
+
+  // The union is COMPLETE — i.e. it holds the whole server set, so it is the
+  // authoritative ordered list — exactly when we're engaged AND the entire
+  // filtered server set fits in one page (`serverTotal <= pageSize`): page 0
+  // already returned every row the set has, so there is no unreachable server
+  // tail. In that case we paginate the union itself so the pager visibility,
+  // the page label, and the Next gate all derive from the SAME union length
+  // and cannot disagree (the filtered-set pager bug).
+  //
+  // `serverTotal <= pageSize` (a page-INDEPENDENT property of the set) is the
+  // right signal, NOT `!hasMore`: the server reports `hasMore` false on the
+  // LAST page of ANY multi-page set, so keying on it would wrongly treat the
+  // final page of a genuinely large (server-tail) set as union-complete and
+  // strand the tail the page-0 union never saw.
+  const unionComplete = engaged && serverTotal <= pageSize;
+
+  // Page count that backs the rendered slices. Union-complete → the union
+  // length (so overflow pinned rows past pageSize are reachable); otherwise
+  // server-anchored to the reachable set (the union only saw page 0, so it
+  // must NOT advertise pages the server's `hasMore` can't reach — finding #3).
+  const totalPages = unionComplete
+    ? Math.max(1, Math.ceil(union.length / pageSize))
+    : Math.max(1, Math.ceil(serverTotal / pageSize));
+
+  // `rows`:
+  //  - union-complete → the `page` slice of the ordered union (one list backs
+  //    every page; never under-filled by a dedup, never a phantom tail);
+  //  - engaged + server-has-more → the WHOLE union on page 0 (never-vanish);
+  //    the caller renders the deduped server slice on its own later pages;
+  //  - disengaged → the raw server slice.
+  const rows = useMemo<T[]>(() => {
+    if (!engaged) return fetched;
+    if (!unionComplete) return union;
+    const start = page * pageSize;
+    return union.slice(start, start + pageSize);
+  }, [engaged, unionComplete, fetched, union, page, pageSize]);
+
+  // Pager flags. Always kept consistent with `totalPages`:
+  //  - union-complete → derive Next from the union page count;
+  //  - otherwise → defer to the server `hasMore`.
+  const canPrev = page > 0;
+  const canNext = unionComplete ? page < totalPages - 1 : hasMore;
 
   // Per-ticker MAX(server, union). Server count wins on tickers it still
   // reports; the union backfills any ticker the server dropped. Only engaged
@@ -176,5 +270,14 @@ export function useNeverVanishFeed<T>(
     }));
   }, [engaged, union, getSymbol, serverTickerCounts]);
 
-  return { rows, total, totalPages, hasMore, tickerCounts, unionKeys };
+  return {
+    rows,
+    total,
+    totalPages,
+    hasMore,
+    canPrev,
+    canNext,
+    tickerCounts,
+    unionKeys,
+  };
 }
