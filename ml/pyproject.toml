@@ -45,6 +45,28 @@ omit = [
   "__pycache__/*",
   "experiments/*",
   "plots/*",
+  # ── Run-once research / EDA / plotting scripts ────────────────────────────
+  # Standalone analyses executed via `make` targets (eda, moc-*, nq-flow-*,
+  # etc.), imported by nothing and not intended to carry unit tests. Measuring
+  # them blended the maintained-library surface (~85%) with ~7k untested
+  # research statements, dragging the headline coverage to ~42%. Omitting them
+  # makes the metric reflect the code we actually maintain. Production/library
+  # modules (multileg_*, takeit/*, score_components, setups_backtest harness,
+  # etc.) are deliberately NOT omitted.
+  "src/moc_*.py",
+  "src/eod_flow_*.py",
+  "src/nq_flow_leadership/*.py",
+  "src/periscope_eda/*.py",
+  "src/cross_section_eda*.py",
+  "src/vega_spike_eda.py",
+  "src/payoff_eda_probe.py",
+  "src/whale_plots.py",
+  "src/compute_realized_outcomes.py",
+  "src/lottery_exit_policies.py",
+  "src/setups_backtest/cli.py",
+  "src/setups_backtest/evaluators/setup_0_smoke.py",
+  "src/setups_backtest/evaluators/setup_1a_nq_ofi_extreme_daily.py",
+  "src/takeit/generate_parity_fixture.py",
 ]
 
 [tool.coverage.report]
