@@ -4,8 +4,7 @@
  * Three columns (Gamma / Charm / Vanna) × one row per strike. Each
  * cell's background is shaded green (positive) or rose (negative) with
  * alpha scaled by `|value| / max-per-column`, so the eye finds the
- * walls instantly. Brightest cell per column gets a ring outline to
- * mark the column's peak. Matches the Periscope visual idiom for
+ * walls instantly. Matches the Periscope visual idiom for
  * "find the dealer wall at a glance".
  *
  * ATM row (closest of the chain to spot) gets a left-border accent +

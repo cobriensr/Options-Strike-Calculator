@@ -236,6 +236,25 @@ describe('greek-heatmap endpoint', () => {
     expect(body.netGexK).toBeLessThan(0);
   });
 
+  it('returns neutral (null) regime when total net gamma is exactly zero', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        // One strike net +100 (call +100 gamma, put 0) and one net -100
+        // (call 0, put -100 gamma) → totalNetGamma === 0 exactly.
+        gexRow(440, 100, 0, 0, 0, 0, 0, '450.00', '2026-05-15T16:00:00Z'),
+        gexRow(450, 0, -100, 0, 0, 0, 0, '450.00', '2026-05-15T16:00:00Z'),
+      ])
+      .mockResolvedValueOnce([]);
+
+    const req = mockRequest({ method: 'GET', query: { ticker: 'TSLA' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { regime: string | null; netGexK: number };
+    expect(body.regime).toBeNull();
+    expect(body.netGexK).toBe(0);
+  });
+
   it('rejects ticker outside the alerts universe with 400', async () => {
     const req = mockRequest({ method: 'GET', query: { ticker: 'ZZZZ' } });
     const res = mockResponse();

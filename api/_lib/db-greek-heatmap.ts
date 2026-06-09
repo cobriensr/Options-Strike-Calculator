@@ -245,7 +245,11 @@ export async function getGreekHeatmapSnapshot(
   // wants to know the dealer's net Γ posture across every strike.
   const totalNetGamma = allStrikes.reduce((acc, s) => acc + s.netGamma, 0);
   const netGexK = totalNetGamma / 1000;
-  const regime: 'Long Γ' | 'Short Γ' = totalNetGamma > 0 ? 'Long Γ' : 'Short Γ';
+  // Exactly-flat net gamma is genuinely neutral, not short — return null
+  // so the grid renders an em-dash rather than mislabeling a true zero.
+  let regime: 'Long Γ' | 'Short Γ' | null = null;
+  if (totalNetGamma > 0) regime = 'Long Γ';
+  else if (totalNetGamma < 0) regime = 'Short Γ';
 
   // UW emits one batch per ticker per minute; every row in a batch
   // shares the same ts_minute and price. Use MAX defensively.
