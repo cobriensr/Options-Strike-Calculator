@@ -13,6 +13,7 @@ import type {
   LotteryTickerStats,
 } from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
+import { fireSpot as resolveFireSpot } from './fire-spot.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import {
   deltaFromAtFire,
@@ -492,17 +493,7 @@ export const LotteryRow = memo(function LotteryRow({
    * detail), so the moneyness shown is what it was when the alert
    * fired — not what it is right now.
    */
-  const fireSpot = useMemo<number | null>(() => {
-    if (
-      fire.entry.spotAtTrigger != null &&
-      Number.isFinite(fire.entry.spotAtTrigger) &&
-      fire.entry.spotAtTrigger > 0
-    ) {
-      return fire.entry.spotAtTrigger;
-    }
-    if (Number.isFinite(fire.entry.spotAtFirst)) return fire.entry.spotAtFirst;
-    return null;
-  }, [fire.entry.spotAtTrigger, fire.entry.spotAtFirst]);
+  const fireSpot = useMemo<number | null>(() => resolveFireSpot(fire), [fire]);
 
   /**
    * Distance-from-spot in percent, signed so the reader can tell ITM

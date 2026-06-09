@@ -19,6 +19,7 @@ import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTicker
 import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from './ct-window.js';
+import { isFireOtm } from './fire-spot.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryTierBanner } from './LotteryTierBanner.js';
 import { LotteryFinderTickerGroup } from './LotteryFinderTickerGroup.js';
@@ -100,10 +101,12 @@ const AGGRESSIVE_PREMIUM_MIN_USD = 50_000;
 const AGGRESSIVE_PREMIUM_MAX_DTE = 3;
 
 /**
- * Moneyness chip — tri-state filter on strike vs. spot at first fire.
- * Client-side filter only; `entry.spotAtFirst` is always populated by
- * the lottery feed so there's no null fallthrough. `MoneynessMode` is
- * imported from the shared persist-encoding module.
+ * Moneyness chip — tri-state filter on strike vs. fire-time spot.
+ * Client-side filter only. Classification goes through the shared
+ * `isFireOtm`/`fireSpot` helper (./fire-spot) so the OTM/ITM filter and
+ * the row's OTM/ITM badge resolve against the SAME spot
+ * (`spotAtTrigger ?? spotAtFirst`) and can never disagree.
+ * `MoneynessMode` is imported from the shared persist-encoding module.
  */
 const MONEYNESS_FILTERS: ReadonlyArray<{
   value: MoneynessMode;
@@ -113,12 +116,6 @@ const MONEYNESS_FILTERS: ReadonlyArray<{
   { value: 'otm', label: 'OTM' },
   { value: 'itm', label: 'ITM' },
 ];
-
-function isFireOtm(fire: LotteryFire): boolean {
-  return fire.optionType === 'C'
-    ? fire.strike > fire.entry.spotAtFirst
-    : fire.strike < fire.entry.spotAtFirst;
-}
 
 function isFireAggressivePremium(fire: LotteryFire): boolean {
   const estimatedPremium =
@@ -1317,9 +1314,9 @@ export function LotteryFinderSection({
               onClick={() => setMoneynessMode(m.value)}
               title={
                 m.value === 'otm'
-                  ? 'Show only out-of-the-money fires (calls: strike > spotAtFirst, puts: strike < spotAtFirst). Client-side filter.'
+                  ? 'Show only out-of-the-money fires (calls: strike > fire-time spot, puts: strike < fire-time spot, using spotAtTrigger ?? spotAtFirst — same spot as the row badge). Client-side filter.'
                   : m.value === 'itm'
-                    ? 'Show only in-the-money fires (calls: strike ≤ spotAtFirst, puts: strike ≥ spotAtFirst). Client-side filter.'
+                    ? 'Show only in-the-money fires (calls: strike ≤ fire-time spot, puts: strike ≥ fire-time spot, using spotAtTrigger ?? spotAtFirst — same spot as the row badge). Client-side filter.'
                     : 'Show fires regardless of moneyness.'
               }
               ariaPressed={active}
@@ -1393,7 +1390,7 @@ export function LotteryFinderSection({
           activeColor="sky"
           testId="lottery-aggressive-premium-chip"
           onClick={() => setAggressivePremium(!aggressivePremium)}
-          title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs spotAtFirst). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
+          title={`Aggressive Premium: surface only fires with estimated $-premium ≥ $${AGGRESSIVE_PREMIUM_MIN_USD.toLocaleString()}, DTE ≤ ${AGGRESSIVE_PREMIUM_MAX_DTE}, tier 1 or 2, and OTM (strike vs fire-time spot). Premium estimated as entry.price × trigger.volToOiWindow × entry.openInterest × 100. Client-side filter.`}
           ariaPressed={aggressivePremium}
         >
           💎 aggressive premium
