@@ -137,6 +137,52 @@ describe('runAnalysisPreCheck — basic behavior', () => {
     expect(result).toBeNull();
     expect(mockLogger.warn).toHaveBeenCalled();
   });
+
+  it('passes the AbortSignal through to anthropic.messages.create', async () => {
+    const anthropic = makeMockAnthropic([
+      { stop_reason: 'end_turn', content: [{ type: 'text', text: 'none' }] },
+    ]);
+    const controller = new AbortController();
+
+    await runAnalysisPreCheck(
+      anthropic,
+      CONTEXT,
+      ANALYSIS_DATE,
+      AS_OF,
+      controller.signal,
+    );
+
+    // create is called as (body, options) — options carries the signal so an
+    // upstream timeout can abort the in-flight request.
+    expect(anthropic._createFn).toHaveBeenCalledWith(
+      expect.objectContaining({ model: expect.any(String) }),
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it('swallows an AbortError from a timed-out request to null', async () => {
+    const abortErr = Object.assign(new Error('Request was aborted.'), {
+      name: 'AbortError',
+    });
+    const anthropic = {
+      messages: { create: vi.fn().mockRejectedValue(abortErr) },
+    } as unknown as import('@anthropic-ai/sdk').default;
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runAnalysisPreCheck(
+      anthropic,
+      CONTEXT,
+      ANALYSIS_DATE,
+      AS_OF,
+      controller.signal,
+    );
+
+    // The AbortError is caught and coalesced to null — no rethrow / unhandled
+    // rejection — identical to any other pre-check failure.
+    expect(result).toBeNull();
+    expect(mockLogger.warn).toHaveBeenCalled();
+  });
 });
 
 // ── Group 2: Tool execution ────────────────────────────────────

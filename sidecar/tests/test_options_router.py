@@ -687,3 +687,44 @@ class TestPruneExpiredDefinitions:
         clock["now"] += DEFINITION_PRUNE_INTERVAL_S
         router.handle_definition(_future_def(3))
         assert 999 not in router.option_definitions, "prune should run now"
+
+    def test_handle_trade_drives_throttled_prune(
+        self,
+        router_setup: tuple[OptionsRecordRouter, dict],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """During quiet periods with only Trade traffic (no Definition
+        messages), handle_trade must still drive the throttled prune so the
+        past-expiry cleanup keeps running. A trade fired after the interval
+        elapses prunes an expired entry.
+
+        Time is controlled via a mutable fake clock so the throttle gate is
+        deterministic (no real wall-clock reads).
+        """
+        import options_router
+
+        clock = {"now": 2_000_000.0}
+        monkeypatch.setattr(options_router.time, "time", lambda: clock["now"])
+
+        router, _ = router_setup
+        # Pin the prune throttle to "now" so the gate is initially closed —
+        # isolates the assertion to the post-interval trade firing the prune.
+        router.last_prune_ts = clock["now"]
+
+        # Seed a definition for the traded iid (in the ATM window) so the trade
+        # itself doesn't short-circuit on a missing definition, plus an
+        # already-expired entry that a prune WOULD remove.
+        router.option_definitions[99] = _def_entry(5025.0, _TOMORROW)
+        router.option_definitions[999] = _def_entry(6000.0, _YESTERDAY)
+        router.options_strikes.strikes = {5025.0}
+
+        # A trade inside the throttle interval must NOT prune yet.
+        clock["now"] += DEFINITION_PRUNE_INTERVAL_S / 2.0
+        router.handle_trade(_make_trade_record(iid=99))
+        assert 999 in router.option_definitions, "throttle should skip prune"
+
+        # Cross the interval boundary; the next trade prunes the stale id even
+        # though no Definition message arrived.
+        clock["now"] += DEFINITION_PRUNE_INTERVAL_S
+        router.handle_trade(_make_trade_record(iid=99))
+        assert 999 not in router.option_definitions, "trade should drive prune"

@@ -38,8 +38,24 @@ let guestKeysWarned = false;
 const MAX_KEY_LEN = 128;
 
 /**
+ * Min/max byte-length bounds for a configured key, mirroring
+ * `guestKeySchema` (min 8 / max 128) in api/_lib/validation/common.ts.
+ * A configured key longer than `MAX_KEY_LEN` would be silently truncated
+ * into the fixed 128-byte comparison buffer — two distinct over-long keys
+ * sharing their first 128 bytes AND total length would then compare equal
+ * (false-positive auth). Bounding the configured side here guarantees every
+ * key fits the buffer with no truncation.
+ */
+const MIN_KEY_LEN = 8;
+
+/**
  * Returns the comma-separated GUEST_ACCESS_KEYS as a clean array.
  * Empty array means the feature is disabled (env var unset).
+ *
+ * Keys outside the `guestKeySchema` byte-length bounds (min 8 / max 128)
+ * are dropped with a warning so a malformed env entry can never be
+ * truncated into the fixed comparison buffer. The key value is never
+ * logged.
  */
 export function getConfiguredGuestKeys(): string[] {
   const raw = process.env.GUEST_ACCESS_KEYS;
@@ -47,7 +63,18 @@ export function getConfiguredGuestKeys(): string[] {
   return raw
     .split(',')
     .map((k) => k.trim())
-    .filter((k) => k.length > 0);
+    .filter((k) => k.length > 0)
+    .filter((k) => {
+      const byteLen = Buffer.byteLength(k);
+      if (byteLen < MIN_KEY_LEN || byteLen > MAX_KEY_LEN) {
+        logger.warn(
+          { byteLen, minLen: MIN_KEY_LEN, maxLen: MAX_KEY_LEN },
+          'Dropping out-of-bounds GUEST_ACCESS_KEYS entry (length outside guestKeySchema bounds)',
+        );
+        return false;
+      }
+      return true;
+    });
 }
 
 /**

@@ -1733,21 +1733,32 @@ describe('POST /api/analyze — pre-check integration', () => {
 
     // Pre-check never resolves — only the module-level timeout can settle the
     // race. Fake timers let us fast-forward past PRECHECK_TIMEOUT_MS (90s)
-    // instead of waiting in real time.
-    vi.mocked(runAnalysisPreCheck).mockReturnValue(
-      new Promise<string | null>(() => {
-        /* intentionally never resolves */
-      }),
+    // instead of waiting in real time. Capture the AbortSignal the handler
+    // threads in so we can assert the timeout aborts the in-flight request.
+    let capturedSignal: AbortSignal | undefined;
+    vi.mocked(runAnalysisPreCheck).mockImplementation(
+      (_anthropic, _context, _date, _asOf, signal) => {
+        capturedSignal = signal;
+        return new Promise<string | null>(() => {
+          /* intentionally never resolves */
+        });
+      },
     );
 
     const req = mockRequest({ method: 'POST', body: makeBody() });
     const res = mockResponse();
     // Kick off the handler without awaiting so we can advance timers while it
-    // is blocked on the pre-check race.
+    // is blocked on the pre-check race. advanceTimersByTimeAsync also flushes
+    // the awaited buildAnalysisContext microtasks before the pre-check starts.
     const handlerDone = handler(req, res);
     // Advance past the 90s pre-check timeout to fire the fallback.
     await vi.advanceTimersByTimeAsync(90_000);
     await handlerDone;
+
+    // The handler threaded an AbortSignal into the pre-check, and onTimeout
+    // aborted the in-flight request (rather than letting it run to 720s).
+    expect(capturedSignal).toBeInstanceOf(AbortSignal);
+    expect(capturedSignal?.aborted).toBe(true);
 
     // Handler did not hang; main call proceeded and succeeded.
     expect(res._status).toBe(200);

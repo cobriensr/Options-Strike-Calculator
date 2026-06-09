@@ -146,12 +146,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // needs. Uses ~500 tokens of input (vs 75K for the main call). Falls back to
   // null on any error — the main call is completely unaffected. Wrapped in an
   // independent timeout so a hung pre-check can never eat the main analysis's
-  // time budget (see PRECHECK_TIMEOUT_MS).
+  // time budget (see PRECHECK_TIMEOUT_MS). On timeout we also abort the
+  // in-flight Anthropic request so it doesn't keep burning tokens / holding a
+  // connection until the client's 720s timeout. The resulting AbortError is
+  // caught inside runAnalysisPreCheck and coalesced to null.
+  const precheckAbort = new AbortController();
   const extraContext = await withTimeout(
-    runAnalysisPreCheck(anthropic, context, analysisDate, asOf),
+    runAnalysisPreCheck(
+      anthropic,
+      context,
+      analysisDate,
+      asOf,
+      precheckAbort.signal,
+    ),
     PRECHECK_TIMEOUT_MS,
     null,
     () => {
+      precheckAbort.abort();
       metrics.increment('analyze.precheck_timeout');
       logger.warn(
         { timeoutMs: PRECHECK_TIMEOUT_MS },

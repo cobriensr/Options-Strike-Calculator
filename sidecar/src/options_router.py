@@ -226,6 +226,16 @@ class OptionsRecordRouter:
         if self._is_shutting_down():
             return
 
+        # M7: also drive the throttled past-expiry prune from the trade path.
+        # handle_definition is the original caller, but during long stretches
+        # with only Trade/Stat traffic (no Definition messages) the 1-hour prune
+        # would never fire. Trades arrive continuously, so calling the throttled
+        # gate here keeps the prune running regardless of definition traffic. The
+        # time.time() compare makes a no-op call ~free. handle_trade holds NO
+        # lock at this point — the prune acquires self._lock itself, so there is
+        # no double-lock (threading.Lock is non-reentrant).
+        self._maybe_prune_expired_definitions()
+
         # Lazy import: matches the original databento_client behavior
         # — keeps cold-start cost off the import path.
         from databento import Side
