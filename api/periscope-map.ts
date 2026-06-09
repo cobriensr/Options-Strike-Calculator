@@ -278,10 +278,10 @@ export default async function handler(
       availableSlots,
     });
   } catch (error) {
-    done({ status: 500, error: 'unhandled' });
     sendDbErrorResponse(res, error, {
       label: 'periscope_map',
       serverErrorBody: { error: 'Internal server error' },
+      done,
     });
   }
 }

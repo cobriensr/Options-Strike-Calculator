@@ -34,6 +34,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { setCacheHeaders, isMarketOpen } from './_lib/api-helpers.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getDb, withDbRetry } from './_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { fetchSpxSpot } from './_lib/periscope-query.js';
 import { getETDateStr } from '../src/utils/timezone.js';
@@ -156,15 +157,22 @@ async function fetchPanelSlot(
  */
 async function fetchAvailableMinutes(date: string): Promise<string[]> {
   const sql = getDb();
-  const rows = (await sql`
-    SELECT DISTINCT date_trunc('minute', captured_at) AS minute
-    FROM gexbot_api_capture
-    WHERE ticker = ${TICKER}
-      AND endpoint = 'state'
-      AND category = 'gamma_zero'
-      AND captured_at::date = ${date}::date
-    ORDER BY minute ASC
-  `) as Array<{ minute: Date | string }>;
+  // Wrap in withDbRetry so a transient blip on this secondary read surfaces
+  // as a TransientDbError (→ soft 503) instead of a raw NeonDbError that
+  // hard-500s the whole endpoint.
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT DISTINCT date_trunc('minute', captured_at) AS minute
+      FROM gexbot_api_capture
+      WHERE ticker = ${TICKER}
+        AND endpoint = 'state'
+        AND category = 'gamma_zero'
+        AND captured_at::date = ${date}::date
+      ORDER BY minute ASC
+    `,
+    DB_RETRY_ATTEMPTS,
+    DB_RETRY_TIMEOUT_MS,
+  )) as Array<{ minute: Date | string }>;
   return rows.map((r) =>
     r.minute instanceof Date ? r.minute.toISOString() : r.minute,
   );
@@ -313,10 +321,10 @@ export default async function handler(
       availableMinutes,
     });
   } catch (error) {
-    done({ status: 500, error: 'unhandled' });
     sendDbErrorResponse(res, error, {
       label: 'gex_landscape',
       serverErrorBody: { error: 'Internal server error' },
+      done,
     });
   }
 }

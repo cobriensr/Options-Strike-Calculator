@@ -421,10 +421,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       done({ status: 200 });
       return res.status(200).json({ alerts, summary });
     } catch (err) {
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'interval_ba_feed',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
       return;
     }

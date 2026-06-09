@@ -97,7 +97,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   } catch (err) {
     sendDbErrorResponse(res, err, {
       label: 'greek_heatmap',
-      serverErrorBody: { error: 'internal error' },
+      serverErrorBody: { error: 'Internal error' },
     });
   }
 }

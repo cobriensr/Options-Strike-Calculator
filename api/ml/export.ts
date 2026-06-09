@@ -126,10 +126,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 200 });
     return res.status(200).json(normalized);
   } catch (err) {
-    done({ status: 500, error: 'unhandled' });
     sendDbErrorResponse(res, err, {
       label: 'ml_export',
       serverErrorBody: { error: 'Internal error' },
+      done,
     });
     return;
   }

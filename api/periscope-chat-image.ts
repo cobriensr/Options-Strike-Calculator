@@ -141,10 +141,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 200 });
     return;
   } catch (err) {
-    done({ status: 500, error: 'unhandled' });
     sendDbErrorResponse(res, err, {
       label: 'periscope_chat_image',
       serverErrorBody: { error: 'Internal error' },
+      done,
     });
     return;
   }

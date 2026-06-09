@@ -167,10 +167,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         })),
       });
     } catch (err) {
-      done({ status: 500, error: 'unhandled' });
       sendDbErrorResponse(res, err, {
         label: 'periscope_chat_list',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
       return;
     }
@@ -238,10 +238,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 200 });
     return res.status(200).json({ items, nextBefore });
   } catch (err) {
-    done({ status: 500, error: 'unhandled' });
     sendDbErrorResponse(res, err, {
       label: 'periscope_chat_list',
       serverErrorBody: { error: 'Internal error' },
+      done,
     });
     return;
   }

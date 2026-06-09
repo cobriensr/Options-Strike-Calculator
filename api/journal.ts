@@ -147,10 +147,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 200 });
     return res.status(200).json({ analyses: rows, count: rows.length });
   } catch (err) {
-    done({ status: 500, error: 'unhandled' });
     sendDbErrorResponse(res, err, {
       label: 'journal',
       serverErrorBody: { error: 'Query failed' },
+      done,
     });
     return;
   }

@@ -28,18 +28,32 @@ describe('sendDbErrorResponse', () => {
   describe('transient DB error (TransientDbError)', () => {
     it('responds 503 with a Retry-After header and transient body', () => {
       const res = mockResponse();
-      sendDbErrorResponse(
+      const status = sendDbErrorResponse(
         res,
         new TransientDbError(new Error('db attempt timeout')),
         { label: 'greek_heatmap', serverErrorBody: SERVER_ERROR_BODY },
       );
 
+      expect(status).toBe(503);
       expect(res._status).toBe(503);
       expect(res._headers['Retry-After']).toBe('5');
       expect(res._json).toEqual({
         error: 'temporarily unavailable',
         transient: true,
       });
+    });
+
+    it('returns 503 and calls done({ status: 503 }) when done is provided', () => {
+      const res = mockResponse();
+      const done = vi.fn();
+      const status = sendDbErrorResponse(
+        res,
+        new TransientDbError(new Error('db attempt timeout')),
+        { label: 'greek_heatmap', serverErrorBody: SERVER_ERROR_BODY, done },
+      );
+
+      expect(status).toBe(503);
+      expect(done).toHaveBeenCalledWith({ status: 503 });
     });
 
     it('logs at warn and increments the <label>.db_timeout metric', () => {
@@ -90,14 +104,39 @@ describe('sendDbErrorResponse', () => {
   describe('non-transient error', () => {
     it('responds 500 with the passed serverErrorBody', () => {
       const res = mockResponse();
-      sendDbErrorResponse(res, new Error('boom'), {
+      const status = sendDbErrorResponse(res, new Error('boom'), {
         label: 'greek_heatmap',
         serverErrorBody: { error: 'Internal server error' },
       });
 
+      expect(status).toBe(500);
       expect(res._status).toBe(500);
       expect(res._json).toEqual({ error: 'Internal server error' });
       expect(res._headers['Retry-After']).toBeUndefined();
+    });
+
+    it('returns 500 and calls done({ status: 500 }) when done is provided', () => {
+      const res = mockResponse();
+      const done = vi.fn();
+      const status = sendDbErrorResponse(res, new Error('boom'), {
+        label: 'greek_heatmap',
+        serverErrorBody: SERVER_ERROR_BODY,
+        done,
+      });
+
+      expect(status).toBe(500);
+      expect(done).toHaveBeenCalledWith({ status: 500 });
+    });
+
+    it('defaults to { error: "Internal error" } when serverErrorBody is omitted', () => {
+      const res = mockResponse();
+      const status = sendDbErrorResponse(res, new Error('boom'), {
+        label: 'greek_heatmap',
+      });
+
+      expect(status).toBe(500);
+      expect(res._status).toBe(500);
+      expect(res._json).toEqual({ error: 'Internal error' });
     });
 
     it('captures the exception in Sentry and logs at error', () => {

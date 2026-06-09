@@ -12,6 +12,10 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 
+vi.mock('../_lib/logger.js', () => ({
+  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+}));
+
 vi.mock('../_lib/db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../_lib/db.js')>();
   return {
@@ -186,7 +190,11 @@ describe('GET /api/journal/status', () => {
     );
   });
 
-  it('degrades to 503 + Retry-After on a transient db timeout', async () => {
+  // Health/diagnostic endpoint contract: a transient blip must NOT
+  // soft-degrade to a 503 (which drops `connected: false`). A health check
+  // reports DB-down state explicitly, so a transient timeout — like any
+  // other DB failure — surfaces as a hard 500 with `connected: false`.
+  it('hard-500s with connected:false on a transient db timeout (no soft-degrade)', async () => {
     process.env.DATABASE_URL = 'postgres://test';
     const mockSql = vi.fn().mockRejectedValue(new Error('db attempt timeout'));
     vi.mocked(getDb).mockReturnValue(mockSql as never);
@@ -194,11 +202,11 @@ describe('GET /api/journal/status', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
 
-    expect(res._status).toBe(503);
-    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._status).toBe(500);
+    expect(res._headers['Retry-After']).toBeUndefined();
     expect(res._json).toEqual({
-      error: 'temporarily unavailable',
-      transient: true,
+      connected: false,
+      error: 'Database connection failed',
     });
   });
 });

@@ -159,10 +159,10 @@ export default withRequestScope(
       done({ status: 200 });
       return result;
     } catch (err) {
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'futures_snapshot',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
       return;
     }

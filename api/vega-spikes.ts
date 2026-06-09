@@ -172,10 +172,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       done({ status: 200 });
       return res.status(200).json({ spikes, range });
     } catch (err) {
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'vega_spikes',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
       return;
     }

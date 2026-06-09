@@ -170,10 +170,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       done({ status: 200 });
       return res.status(200).json(response);
     } catch (err) {
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'strike_trade_volume',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
       return;
     }

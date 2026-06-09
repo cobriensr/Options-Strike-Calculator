@@ -5,11 +5,11 @@
  * Owner-or-guest.
  */
 
-import { metrics } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
+import logger from '../_lib/logger.js';
 
 // Public diagnostic surface — list every table whose row count is safe
 // to expose to a guest cookie. Anything not on this list gets dropped
@@ -124,14 +124,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       tables,
     });
   } catch (err) {
+    // Health/diagnostic endpoint: must report DB-down state explicitly via
+    // `connected: false`, NOT soft-degrade to a 503 that drops that field.
+    // A transient blip and a genuine failure both mean "DB unreachable
+    // right now" for a health check — surface both as a hard 500.
     done({ status: 500, error: 'unhandled' });
-    sendDbErrorResponse(res, err, {
-      label: 'journal_status',
-      serverErrorBody: {
-        connected: false,
-        error: 'Database connection failed',
-      },
+    Sentry.captureException(err);
+    logger.error({ err }, 'journal status check failed');
+    return res.status(500).json({
+      connected: false,
+      error: 'Database connection failed',
     });
-    return;
   }
 }

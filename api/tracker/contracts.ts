@@ -123,10 +123,10 @@ async function handleList(
     done({ status: 200 });
     return res.status(200).json({ contracts: rows, count: rows.length });
   } catch (err) {
-    done({ status: 500 });
     sendDbErrorResponse(res, err, {
       label: 'tracker_contracts',
       serverErrorBody: { error: 'Internal error' },
+      done,
     });
     return;
   }

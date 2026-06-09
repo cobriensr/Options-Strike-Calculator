@@ -19,8 +19,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { getDb, withDbRetry } from '../_lib/db.js';
-import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
+import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
@@ -88,11 +87,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const format = parseFormat(req.query.format);
 
       const sql = getDb();
-      const rows = await withDbRetry(
-        () => loadFiresForExport(sql, from, to),
-        DB_RETRY_ATTEMPTS,
-        DB_RETRY_TIMEOUT_MS,
-      );
+      // loadFiresForExport already wraps its query in withDbRetry, so we
+      // must NOT wrap it again — a double wrap multiplies the attempt count
+      // (~9 attempts on a blip) since TransientDbError is itself retryable.
+      const rows = await loadFiresForExport(sql, from, to);
       const normalized = rows.map((r) => normalizeRow(r));
 
       if (format === 'json') {
@@ -131,10 +129,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       done({ status: 200 });
       res.status(200).send(lines.join('\n'));
     } catch (err) {
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'gamma_setups_export',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
     }
   });

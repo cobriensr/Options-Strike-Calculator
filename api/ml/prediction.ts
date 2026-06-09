@@ -97,10 +97,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 200 });
     return res.status(200).json({ prediction });
   } catch (err) {
-    done({ status: 500 });
     sendDbErrorResponse(res, err, {
       label: 'ml_prediction',
       serverErrorBody: { error: 'Failed to fetch prediction' },
+      done,
     });
     return;
   }

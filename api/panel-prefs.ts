@@ -82,10 +82,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         groupOrder: asStringArray(row?.group_order),
       });
     } catch (err) {
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'panel_prefs',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
       return;
     }

@@ -161,10 +161,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .status(400)
       .json({ error: 'Provide ?dates=true, ?date=YYYY-MM-DD, or ?id=N' });
   } catch (err) {
-    done({ status: 500, error: 'unhandled' });
     sendDbErrorResponse(res, err, {
       label: 'analyses',
       serverErrorBody: { error: 'Internal error' },
+      done,
     });
     return;
   }

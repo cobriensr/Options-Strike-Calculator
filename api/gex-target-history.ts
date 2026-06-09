@@ -443,10 +443,10 @@ export default withRequestScope(
         done({ status: 200 });
         return res.status(200).json(cached.body);
       }
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'gex_target_history',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
       return;
     }

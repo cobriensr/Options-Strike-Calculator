@@ -49,23 +49,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const sql = getDb();
 
-    // Fetch plot analyses and findings in parallel
-    const [plotRows, findingsRows] = await withDbRetry(
-      () =>
-        Promise.all([
-          sql`
-            SELECT plot_name, blob_url, analysis, model,
-                   pipeline_date, updated_at
-            FROM ml_plot_analyses
-            ORDER BY plot_name
-          ` as unknown as Promise<PlotRow[]>,
-          sql`
-            SELECT findings FROM ml_findings WHERE id = 1
-          `,
-        ]),
-      DB_RETRY_ATTEMPTS,
-      DB_RETRY_TIMEOUT_MS,
-    );
+    // Fetch plot analyses and findings in parallel. Each query gets its
+    // OWN withDbRetry so a transient failure of one retries only that
+    // query — wrapping the whole Promise.all would retry both reads when
+    // either blips.
+    const [plotRows, findingsRows] = await Promise.all([
+      withDbRetry(
+        () => sql`
+          SELECT plot_name, blob_url, analysis, model,
+                 pipeline_date, updated_at
+          FROM ml_plot_analyses
+          ORDER BY plot_name
+        `,
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      ) as unknown as Promise<PlotRow[]>,
+      withDbRetry(
+        () => sql`
+          SELECT findings FROM ml_findings WHERE id = 1
+        `,
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      ),
+    ]);
 
     const findings =
       findingsRows.length > 0
@@ -108,10 +114,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       pipelineDate,
     });
   } catch (err) {
-    done({ status: 500 });
     sendDbErrorResponse(res, err, {
       label: 'ml_plots',
       serverErrorBody: { error: 'Failed to fetch plot data' },
+      done,
     });
     return;
   }

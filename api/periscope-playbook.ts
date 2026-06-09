@@ -332,10 +332,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (data == null) body.reason = 'no_playbook';
       return res.status(200).json(body);
     } catch (err) {
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'periscope_playbook',
         serverErrorBody: { error: 'Internal error' },
+        done,
       });
       return;
     }

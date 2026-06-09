@@ -67,10 +67,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       done({ status: 200 });
       return res.status(200).json({ data: null });
     } catch (err) {
-      done({ status: 500 });
       sendDbErrorResponse(res, err, {
         label: 'pre_market',
         serverErrorBody: { error: 'Failed to fetch' },
+        done,
       });
       return;
     }

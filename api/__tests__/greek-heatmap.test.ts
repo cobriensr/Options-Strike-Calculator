@@ -517,7 +517,7 @@ describe('greek-heatmap endpoint', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'internal error' });
+    expect(res._json).toEqual({ error: 'Internal error' });
     expect(res._headers['Retry-After']).toBeUndefined();
     expect(Sentry.captureException).toHaveBeenCalled();
   });

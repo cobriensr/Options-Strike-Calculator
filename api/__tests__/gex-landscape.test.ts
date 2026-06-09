@@ -389,4 +389,22 @@ describe('/api/gex-landscape', () => {
     });
     expect(mockSentryCapture).not.toHaveBeenCalled();
   });
+
+  it('soft-degrades to 503 when the fetchAvailableMinutes read is transient', async () => {
+    // fetchAvailableMinutes is the FIRST sql call; it is now wrapped in
+    // withDbRetry so a transient blip there surfaces as a TransientDbError
+    // (→ 503) instead of a raw NeonDbError that would hard-500.
+    mockSql.mockRejectedValueOnce(
+      new TransientDbError(new Error('db attempt timeout')),
+    );
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(mockSentryCapture).not.toHaveBeenCalled();
+  });
 });

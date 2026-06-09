@@ -21,9 +21,28 @@ import { Sentry, metrics } from './sentry.js';
 interface SendDbErrorResponseOptions {
   /** Telemetry label, e.g. `greek_heatmap`. Used in log + metric keys. */
   label: string;
-  /** Body to return on a genuine (non-transient) 500. */
-  serverErrorBody: Record<string, unknown>;
+  /**
+   * Body to return on a genuine (non-transient) 500. Optional —
+   * defaults to `{ error: 'Internal error' }` so callers that have no
+   * special body don't have to repeat the boilerplate.
+   */
+  serverErrorBody?: Record<string, unknown>;
+  /**
+   * The request-metric callback returned by `metrics.request(route)`.
+   * When provided, the helper invokes it with the status it actually
+   * sent (`503` for a transient blip, `500` for a genuine error) so the
+   * recorded `api.request` status matches the real response. Without
+   * this, callers had to guess `done({ status: 500 })` BEFORE the helper
+   * ran — which mis-records a transient blip as a 500. Optional and
+   * backward-compatible: callers that still record their own status can
+   * omit it.
+   */
+  done?: (opts: { status: number }) => void;
 }
+
+const DEFAULT_SERVER_ERROR_BODY: Record<string, unknown> = {
+  error: 'Internal error',
+};
 
 /**
  * Map a caught error to the correct HTTP response.
@@ -31,15 +50,21 @@ interface SendDbErrorResponseOptions {
  * - Transient DB error → `503` `{ error, transient: true }` with a
  *   `Retry-After: 5` header. Logged at `warn`; a `<label>.db_timeout`
  *   counter is incremented. NOT sent to Sentry — infra blips are noise.
- * - Anything else → `500` with `serverErrorBody`, logged at `error`,
- *   and captured in Sentry.
+ *   `done?.({ status: 503 })` is called so the request metric records the
+ *   blip as a 503, not a 500.
+ * - Anything else → `500` with `serverErrorBody` (default
+ *   `{ error: 'Internal error' }`), logged at `error`, and captured in
+ *   Sentry. `done?.({ status: 500 })` is called.
+ *
+ * @returns the HTTP status actually sent — `503` for a transient blip,
+ *   `500` for a genuine error. Safe to ignore.
  */
 export function sendDbErrorResponse(
   res: VercelResponse,
   err: unknown,
   opts: SendDbErrorResponseOptions,
-): void {
-  const { label, serverErrorBody } = opts;
+): number {
+  const { label, serverErrorBody = DEFAULT_SERVER_ERROR_BODY, done } = opts;
 
   // Telemetry runs BEFORE any response write so it fires even when the
   // response was already partially committed (headersSent guard below).
@@ -52,10 +77,13 @@ export function sendDbErrorResponse(
         .status(503)
         .json({ error: 'temporarily unavailable', transient: true });
     }
-    return;
+    done?.({ status: 503 });
+    return 503;
   }
 
   Sentry.captureException(err);
   logger.error({ err }, `${label} failed`);
   if (!res.headersSent) res.status(500).json(serverErrorBody);
+  done?.({ status: 500 });
+  return 500;
 }
