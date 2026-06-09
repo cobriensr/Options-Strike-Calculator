@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 
+import numpy as np
 import pandas as pd
 
 
@@ -30,6 +31,51 @@ def decide_exit_index(
             elif r <= peak - giveback_pct:
                 return i
     return last_in_time
+
+
+def decide_exit_index_vec(
+    ret: np.ndarray,
+    mse: np.ndarray,
+    activate_pct: float,
+    giveback_pct: float,
+    hard_stop_min: float,
+) -> int:
+    """Numpy-vectorized equivalent of decide_exit_index.
+
+    Parameters mirror the scalar version but accept raw numpy arrays instead
+    of a DataFrame so callers can avoid per-fire Series construction.
+    Semantics are identical: hard-stop beats trail when both fire at the same row.
+    """
+    n = ret.shape[0]
+    if n == 0:
+        return 0
+
+    # First row where mse exceeds hard_stop_min (scalar: return max(0, i-1)).
+    over = np.nonzero(mse > hard_stop_min)[0]
+    hard_iter = int(over[0]) if over.size else n  # row index of overrun, or sentinel n
+
+    # First activation row, then first giveback row after it.
+    act = np.nonzero(ret >= activate_pct)[0]
+    trail_iter = n  # sentinel: no trail exit
+    if act.size:
+        a = int(act[0])
+        sub = ret[a:]
+        peak = np.maximum.accumulate(sub)
+        trig = np.nonzero(sub <= peak - giveback_pct)[0]
+        if trig.size:
+            trail_iter = a + int(trig[0])
+
+    # Neither triggered: return last index.
+    if hard_iter == n and trail_iter == n:
+        return n - 1
+
+    # Hard stop at row hard_iter beats trail at the same row (scalar checks hard
+    # first inside the loop), so use <= not < for the hard-wins condition.
+    if hard_iter <= trail_iter:
+        # hard_iter might be n only if trail also fired, but trail_iter < n here
+        # means hard_iter is also < n (since hard_iter <= trail_iter < n).
+        return max(0, hard_iter - 1)
+    return trail_iter
 
 
 def grid() -> list[dict]:
