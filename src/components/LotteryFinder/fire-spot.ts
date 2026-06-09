@@ -33,14 +33,17 @@ export function fireSpot(fire: LotteryFire): number | null {
 /**
  * Classify a fire as out-of-the-money against `fireSpot(fire)`.
  *
- * Call OTM ⇔ strike > spot; put OTM ⇔ strike < spot. When no usable
- * spot exists the fire cannot be classified and is treated as NOT OTM
- * (so it surfaces under the "ITM" branch rather than vanishing — the
- * badge shows no %OTM chip in this case either, keeping the two
- * surfaces consistent).
+ * Call OTM ⇔ strike >= spot; put OTM ⇔ strike <= spot. The boundary is
+ * inclusive so an exactly-ATM fire (strike === spot) counts as OTM,
+ * matching the row badge's `otmPct >= 0` convention in LotteryRow.tsx —
+ * otherwise an ATM fire would show an OTM badge yet hide under the OTM
+ * filter. When no usable spot exists the fire cannot be classified and
+ * is treated as NOT OTM (so it surfaces under the "ITM" branch rather
+ * than vanishing — the badge shows no %OTM chip in this case either,
+ * keeping the two surfaces consistent).
  */
 export function isFireOtm(fire: LotteryFire): boolean {
   const spot = fireSpot(fire);
   if (spot == null || spot <= 0) return false;
-  return fire.optionType === 'C' ? fire.strike > spot : fire.strike < spot;
+  return fire.optionType === 'C' ? fire.strike >= spot : fire.strike <= spot;
 }

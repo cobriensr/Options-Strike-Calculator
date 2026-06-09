@@ -112,15 +112,17 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
 
 /**
  * Mirror of the BADGE's classification (LotteryRow.tsx `otmPct`): a
- * fire is OTM ⇔ signed distance-from-spot is positive, computed against
- * `fireSpot(fire)`. Used to assert filter and badge agree.
+ * fire is OTM ⇔ signed distance-from-spot is >= 0, computed against
+ * `fireSpot(fire)`. The badge renders "out of the money" for
+ * `otmPct >= 0`, so the boundary (strike === spot, signed === 0) counts
+ * as OTM. Used to assert filter and badge agree.
  */
 function badgeSaysOtm(fire: LotteryFire): boolean | null {
   const spot = fireSpot(fire);
   if (spot == null || spot <= 0) return null;
   const raw = (fire.strike - spot) / spot;
   const signed = fire.optionType === 'C' ? raw : -raw;
-  return signed > 0;
+  return signed >= 0;
 }
 
 describe('fireSpot', () => {
@@ -195,6 +197,45 @@ describe('isFireOtm', () => {
   it('classifies a put as OTM when strike < spot', () => {
     const fire = makeFire({ optionType: 'P', strike: 195 });
     expect(isFireOtm(fire)).toBe(true);
+  });
+
+  it('treats an exactly-ATM call as OTM, matching the badge', () => {
+    // strike === spot (spotAtTrigger 200). The badge's `otmPct >= 0`
+    // renders "out of the money" at the boundary, so the filter must
+    // too — a strict `>` here would hide an OTM-badged fire.
+    const fire = makeFire({
+      optionType: 'C',
+      strike: 200,
+      entry: {
+        price: 0.85,
+        openInterest: 5000,
+        spotAtFirst: 198.5,
+        spotAtTrigger: 200,
+        alertSeq: 7,
+        minutesSincePrevFire: 30,
+      },
+    });
+    expect(fireSpot(fire)).toBe(200);
+    expect(isFireOtm(fire)).toBe(true);
+    expect(isFireOtm(fire)).toBe(badgeSaysOtm(fire));
+  });
+
+  it('treats an exactly-ATM put as OTM, matching the badge', () => {
+    const fire = makeFire({
+      optionType: 'P',
+      strike: 200,
+      entry: {
+        price: 0.85,
+        openInterest: 5000,
+        spotAtFirst: 201.5,
+        spotAtTrigger: 200,
+        alertSeq: 7,
+        minutesSincePrevFire: 30,
+      },
+    });
+    expect(fireSpot(fire)).toBe(200);
+    expect(isFireOtm(fire)).toBe(true);
+    expect(isFireOtm(fire)).toBe(badgeSaysOtm(fire));
   });
 });
 
