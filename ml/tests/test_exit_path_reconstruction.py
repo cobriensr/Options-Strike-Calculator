@@ -35,6 +35,19 @@ def test_assemble_multiday_concats_sessions_in_order():
     assert path["mid"].iloc[-1] == pytest.approx(3.1)
 
 
+def test_build_minute_path_coerces_decimal_nbbo():
+    from decimal import Decimal
+    t = pd.DataFrame(
+        [("2026-01-02T14:30:10Z", "X", Decimal("1.00"), Decimal("1.20"), Decimal("1.10"), False)],
+        columns=["executed_at", "option_chain_id", "nbbo_bid", "nbbo_ask", "price", "canceled"],
+    ).astype({"executed_at": "datetime64[ns, UTC]"})
+    path = pr.build_minute_path(t, entry_ts=pd.Timestamp("2026-01-02T14:30:00Z"), entry_price=1.0)
+    assert path["mid"].iloc[0] == pytest.approx(1.10)
+    assert path["spread"].iloc[0] == pytest.approx(0.20)
+    # mid must be a real float, not Decimal/object
+    assert path["mid"].dtype == "float64"
+
+
 def test_minute_path_drops_zero_mid_minutes():
     """A minute with 0/0 NBBO (no market) must be excluded from the path."""
     t = _trades([
