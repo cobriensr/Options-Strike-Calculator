@@ -121,7 +121,16 @@ interface SentryMonitorConfigPayload {
   max_runtime: number;
   failure_issue_threshold: number;
   recovery_threshold: number;
-  timezone: 'UTC';
+  /**
+   * IANA timezone the `schedule` crontab is evaluated in. Defaults to
+   * UTC (Vercel's cron timezone) so the schedule string matches
+   * vercel.json verbatim. Entries that carry an explicit `timezone`
+   * (e.g. `America/New_York`) supply an ET-LOCAL crontab instead — used
+   * for market-hours crons whose handler gate (`isMarketHours()`) is
+   * ET-anchored and therefore DST-shifts vs. the fixed-UTC vercel.json
+   * window. See SCHEDULE_MAP for the why.
+   */
+  timezone: string;
 }
 
 function toMonitorConfigPayload(
@@ -133,7 +142,7 @@ function toMonitorConfigPayload(
     max_runtime: c.maxRuntime,
     failure_issue_threshold: c.failureIssueThreshold ?? 1,
     recovery_threshold: c.recoveryThreshold ?? 1,
-    timezone: 'UTC',
+    timezone: c.timezone ?? 'UTC',
   };
 }
 

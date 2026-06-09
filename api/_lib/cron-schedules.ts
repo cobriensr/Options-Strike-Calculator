@@ -14,7 +14,16 @@
  */
 
 export interface CronMonitorConfig {
-  /** Crontab string from vercel.json (UTC, Vercel's cron timezone). */
+  /**
+   * Crontab string the Sentry monitor evaluates ticks against.
+   *
+   * For UTC entries (the default — `timezone` absent) this MUST match
+   * vercel.json verbatim; the cross-check test enforces it.
+   *
+   * For ET-anchored entries (`timezone: 'America/New_York'`) this is an
+   * ET-LOCAL crontab that the cross-check test reconciles against the
+   * UTC vercel.json window in both DST regimes (see DST_TAIL_NOTE).
+   */
   schedule: string;
   /** Minutes a check-in can be late before alerting. */
   checkinMargin: number;
@@ -24,6 +33,13 @@ export interface CronMonitorConfig {
   failureIssueThreshold?: number;
   /** Successful check-ins required to resolve (default 1). */
   recoveryThreshold?: number;
+  /**
+   * IANA timezone for the `schedule` crontab. Omit for UTC (the default,
+   * and what vercel.json uses). Set to `'America/New_York'` for
+   * market-hours crons whose handler gate is ET-anchored — see
+   * DST_TAIL_NOTE below.
+   */
+  timezone?: string;
 }
 
 const DEFAULT_MARGIN = 5;
@@ -46,6 +62,53 @@ const LONG_RUNNER_MAX_RUNTIME = 10;
  * significant and would not be masked by network noise.
  */
 const HIGH_FREQ_FAILURE_THRESHOLD = 3;
+
+/**
+ * DST_TAIL_NOTE — why four market-hours monitors use an ET-local schedule.
+ *
+ * Diagnosis (2026-06-08, pulled from Sentry monitor check-in history):
+ * detect-periscope-{put,call}-lottery, evaluate-round-trip, and
+ * refresh-tracker-contracts accumulated hundreds of "missed" check-ins
+ * NOT from network drops (the failureIssueThreshold:3 + direct-HTTP
+ * bypass already silence those) but from a deterministic DST window
+ * mismatch:
+ *
+ *   - vercel.json runs these on a fixed-UTC every-5/10-min crontab over
+ *     the UTC hours 13-21 (or 13-20) sized to cover the EST cash session
+ *     (close 21:00 UTC).
+ *   - The handler gate, cronGuard → isMarketHours(), is ET-anchored:
+ *     it opens ~09:25 ET and closes ~16:05 ET. In EDT (summer) 16:05 ET
+ *     = 20:05 UTC, so from 20:10 UTC through the end of the UTC crontab
+ *     window (21:55) the handler is past close and intentionally skips.
+ *   - On the skip path the wrapper sends a lone `ok` check-in, but a
+ *     standalone `ok` with no preceding `in_progress` does not satisfy
+ *     the scheduled tick — so every 5-min tick in that ~2h EDT tail
+ *     expires to `missed`. Verified: `ok` check-ins (with real durations)
+ *     stop exactly at 20:05 UTC; 20:10→21:55 are all `missed`, every day.
+ *
+ * Why NOT widen checkinMargin: margin only rescues a check-in that
+ * arrives LATE. In the EDT tail the check-in never arrives for those
+ * ticks (market is closed), so no finite margin covers a 2-hour blackout
+ * — it would only mask the real-outage signal we want to keep.
+ *
+ * Fix: evaluate these monitors' schedule in `America/New_York`. An
+ * ET-local crontab DST-shifts in lockstep with the isMarketHours() gate,
+ * so the monitor expects ticks only during the live session in BOTH EST
+ * and EDT. Vercel still invokes on its UTC union window; the out-of-
+ * session UTC invocations are intentional skips the ET monitor simply
+ * does not expect. failureIssueThreshold:3 is retained, so a genuine 3+-
+ * window outage (≥15 min dark during the live session) still pages.
+ *
+ * Residual: the ET crontab uses whole-hour ranges (`9-16` / `9-15`)
+ * while isMarketHours() opens at :25 and closes at :05-past, so a few
+ * boundary ticks (9:00-9:20 ET pre-open; close-hour tail) can still be
+ * intentional skips. These are SYMMETRIC across DST (same handful summer
+ * and winter, not a 60-min seasonal blackout) and are individually
+ * covered by the 3-window threshold. Eliminating them entirely would
+ * require minute-precise ranges or an in_progress-anchored skip check-in
+ * (wrapper change) — out of scope for this alerting-only fix.
+ */
+const MARKET_HOURS_TZ = 'America/New_York';
 
 export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   'auto-prefill-premarket': {
@@ -137,13 +200,23 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'detect-periscope-call-lottery': {
-    schedule: '*/5 13-21 * * 1-5',
+    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-21`
+    // UTC (EST-sized union); the handler's isMarketHours() gate is
+    // ET-anchored (09:25–16:05 ET), so in EDT the 20:10–21:55 UTC ticks
+    // are always intentional skips that expire to `missed`. Evaluating in
+    // America/New_York makes the monitor expect ticks only during the live
+    // session in both DST regimes. `9-16` is the guaranteed served subset.
+    schedule: '*/5 9-16 * * 1-5',
+    timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'detect-periscope-put-lottery': {
-    schedule: '*/5 13-21 * * 1-5',
+    // ET-local schedule — see DST_TAIL_NOTE. Identical cadence to the call
+    // sibling; vercel.json `*/5 13-21` UTC → ET-local `*/5 9-16`.
+    schedule: '*/5 9-16 * * 1-5',
+    timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
@@ -154,7 +227,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'evaluate-round-trip': {
-    schedule: '*/10 14-21 * * 1-5',
+    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/10 14-21`
+    // UTC. 14 UTC = 09 ET (EST) / 10 ET (EDT); the guaranteed served-AND-
+    // fired subset across both regimes is 10:00–16:00 ET, so the ET-local
+    // crontab starts an hour later than the lottery pair.
+    schedule: '*/10 10-16 * * 1-5',
+    timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
@@ -402,7 +480,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'refresh-tracker-contracts': {
-    schedule: '*/5 13-20 * * 1-5',
+    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/5 13-20`
+    // UTC. 20 UTC = 15 ET (EST) / 16 ET (EDT); since EST caps the fired
+    // window at 15:00 ET, the guaranteed served-AND-fired subset across
+    // both regimes is 09:00–15:00 ET → ET-local `*/5 9-15`.
+    schedule: '*/5 9-15 * * 1-5',
+    timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,

@@ -7,14 +7,16 @@
  * Once per trading day, after the cash close, this:
  *   1. Resolves TODAY's full RTH window [09:30 ET, 16:00 ET] as UTC bounds
  *      (DST-safe via etWallClockToUtcIso).
- *   2. Reads the whole day's ws_option_trades (canceled = FALSE) for that
- *      window in ONE query.
- *   3. Buckets every row into its ET 30-min slot (0..12) and runs the shared
- *      computeFlowMetrics per slot to get the component sums (nd_num/nd_den,
- *      idx_put_premium/total_premium) — the SAME bucketing + coercion the live
- *      capture-flow-regime cron uses, so the accumulated distribution matches
- *      what the live cron scores against.
- *   4. UPSERTs one row per populated slot into flow_regime_slot_daily via
+ *   2. Reduces the whole day's ws_option_trades (canceled = FALSE) for that
+ *      window into per-ET-30min-slot component sums (nd_num/nd_den,
+ *      idx_put_premium/total_premium) IN SQL via the shared
+ *      aggregateFlowWindowBySlot builder — one GROUP BY slot query, no raw-row
+ *      stream. (Streaming raw rows serialized past Neon's 64MB HTTP cap once the
+ *      full ~50-ticker option_trades universe landed in the table.) The SQL
+ *      algebra is byte-identical to the live cron's aggregateFlowWindow and
+ *      mirrors computeFlowMetrics, so the accumulated distribution matches what
+ *      the live cron scores against.
+ *   3. UPSERTs one row per populated slot into flow_regime_slot_daily via
  *      ON CONFLICT (date, slot) DO UPDATE — idempotent if the cron re-runs.
  *
  * The live capture-flow-regime cron then computes percentile breakpoints ON
@@ -35,11 +37,7 @@ import {
 } from '../_lib/cron-instrumentation.js';
 import { FLOW_REGIME_BASELINE } from '../_lib/flow-regime.js';
 import { MIN_DAY_SLOT_TRADES } from '../_lib/flow-regime-baseline-live.js';
-import {
-  accumulateDailySlots,
-  type SlotAccumulation,
-  type WsOptionTradeRow,
-} from '../_lib/flow-regime-rows.js';
+import { aggregateFlowWindowBySlot } from '../_lib/flow-regime-rows.js';
 import { getETDateStr, etWallClockToUtcIso } from '../../src/utils/timezone.js';
 
 /**
@@ -96,37 +94,36 @@ async function accumulateDate(
     return { rows: [], totalRows: 0, skippedThin: 0 };
   }
 
-  // ws_option_trades is already restricted to the WS universe, so no ticker
-  // filter. canceled = FALSE matches the baseline convention. The full-day
-  // window [09:30, 16:00) ET keeps the upper bound exclusive so a 16:00:00
-  // print (the close auction edge) does not leak into a non-existent slot 13.
-  const tradeRows = (await withDbRetry(
-    () => sql`
-      SELECT
-        ticker,
-        option_type,
-        expiry,
-        executed_at,
-        price,
-        size,
-        side,
-        delta
-      FROM ws_option_trades
-      WHERE canceled = FALSE
-        AND executed_at >= ${startIso}::timestamptz
-        AND executed_at < ${endIso}::timestamptz
-    `,
+  // ws_option_trades is already restricted to the WS universe, but the
+  // aggregation re-applies the baseline universe/index filters (consistency
+  // rule) and reduces the full day to per-slot component sums IN SQL via the
+  // shared builder (byte-identical algebra to the live cron). Streaming raw rows
+  // here serialized past Neon's 64MB HTTP cap once the full ~50-ticker
+  // option_trades universe landed in the table (NeonDbError 507). canceled =
+  // FALSE matches the baseline convention; the full-day window [09:30, 16:00) ET
+  // keeps the upper bound exclusive so a 16:00:00 print (close auction edge) does
+  // not leak into a non-existent slot 13 (the slot expression is bounded
+  // [0, slot_count) in SQL).
+  const accum = await withDbRetry(
+    () => aggregateFlowWindowBySlot(sql, startIso, endIso),
     2,
     10_000,
-  )) as WsOptionTradeRow[];
-
-  // Bucket by ET 30-min slot and reduce each bucket to component sums via the
-  // shared accumulator (same coercion + computeFlowMetrics as the live cron).
-  const accum: SlotAccumulation[] = accumulateDailySlots(tradeRows, date);
+  );
 
   let skippedThin = 0;
+  let totalRows = 0;
   const rows: SlotDailyRow[] = [];
-  for (const { slot, sums, nTrades } of accum) {
+  for (const {
+    slot,
+    nTrades,
+    ndNum,
+    ndDen,
+    idxPutPremium,
+    totalPremium,
+  } of accum) {
+    // n_trades counts every row in the slot (NOT universe-restricted) — matches
+    // the old JS `bucket.length`. Accumulate it for the per-date log summary.
+    totalRows += nTrades;
     // Per-day volume quorum: a slot with < MIN_DAY_SLOT_TRADES is a
     // holiday/partial-session straggler. Don't persist it — a degenerate daily
     // ratio would skew the thin percentile population the loader builds (#1a).
@@ -137,16 +134,16 @@ async function accumulateDate(
     rows.push({
       date,
       slot,
-      nd_num: sums.ndNum,
-      nd_den: sums.ndDen,
-      idx_put_premium: sums.idxPutPremium,
-      total_premium: sums.totalPremium,
+      nd_num: ndNum,
+      nd_den: ndDen,
+      idx_put_premium: idxPutPremium,
+      total_premium: totalPremium,
       n_trades: nTrades,
       computed_at: computedAt,
     });
   }
 
-  return { rows, totalRows: tradeRows.length, skippedThin };
+  return { rows, totalRows, skippedThin };
 }
 
 export default withCronInstrumentation(

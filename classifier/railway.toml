@@ -1,2 +1,48 @@
 [deploy]
 watchPatterns = ["classifier/**", "ml/src/multileg_*.py"]
+
+# Railway-level healthcheck so unhealthy instances get RECYCLED by the
+# platform, not just OOM-killed by the kernel. The Docker HEALTHCHECK in
+# the Dockerfile is NOT used by Railway for instance management — only
+# this `healthcheckPath` is. `/health` is an unconditional 200-OK
+# liveness probe (server.py do_GET): it returns ok as long as the process
+# is alive AND a worker thread is free to service the request. During the
+# market-open request burst, if the box is thrashing toward OOM the probe
+# starts failing/timing out, and Railway restarts the instance cleanly
+# instead of waiting for the kernel SIGKILL. Unlike uw-stream's /healthz
+# (which 503s on legitimately-silent windows), /health has no
+# false-negative path, so wiring it here is safe.
+healthcheckPath = "/health"
+# 30s: generous for a liveness probe whose handler does no I/O. Tighter
+# than Railway's 300s default so a wedged/OOM-thrashing instance is
+# recycled within ~30s during the open burst rather than lingering for
+# five minutes. server.py uses ThreadingHTTPServer (thread-per-request) and
+# /health never acquires the classify BoundedSemaphore (cap = 2 in
+# multileg_routes.py), so the probe stays responsive even when both classify
+# slots are busy — 30s is comfortable headroom for its no-I/O handler.
+healthcheckTimeout = 30
+
+# MEMORY CEILING — NOT settable in railway.toml.
+# Railway's config-as-code (railway.toml/json) only covers the `build`
+# and `deploy` sections; per-service memory/CPU limits live on a separate
+# API surface (`serviceInstanceLimits` / dashboard "Resource Limits"),
+# which is why sidecar/railway.toml carries only watchPatterns despite
+# running with a 24 GB dashboard limit. Set the classifier ceiling in the
+# Railway dashboard (Service → Settings → Resource Limits) or via the
+# GraphQL `serviceInstanceLimitsUpdate` mutation.
+#
+# Recommended ceiling: 8 GB.
+# Rationale: per-request peak memory ≈ concurrency × the 0DTE calls×puts
+# cross-join intermediate. The in-process guards already bound this:
+#   - _CLASSIFY_CONCURRENCY = 2        (multileg_routes.py)
+#   - _CROSS_JOIN_PAIR_CAP  = 500_000  (multileg_assembler.py)
+#   - _MAX_CELL_ROWS_PER_CLASSIFY = 500_000 (per-ticker overload skip)
+# At concurrency 4 the box (24 GB) per-minute-sampled 16.74 GB with
+# sub-minute spikes past 24 GB; halving to concurrency 2 + the 500K caps
+# roughly halves the concurrent peak, so steady-state open-burst peak
+# should sit in the ~8 GB band. An 8 GB ceiling gives clear headroom over
+# that while making OOM DETERMINISTIC and OBSERVABLE (the instance is
+# killed at a known bound and the healthcheck recycles it) instead of
+# letting it climb until the 24 GB host OOMs unpredictably. Owner can
+# adjust up (e.g. 12 GB) in the dashboard if Railway metrics show the
+# open-burst peak creeping above ~6 GB after this lands.
