@@ -8,6 +8,16 @@ interface Props {
   spot: number;
 }
 
+/**
+ * Width as a percentage of spot, guarded against invalid market data.
+ * A non-positive or non-finite spot would otherwise render "Infinity%"
+ * or "NaN%"; we degrade to an em-dash placeholder instead.
+ */
+function widthPctLabel(width: number, spot: number): string {
+  if (!Number.isFinite(spot) || spot <= 0) return '—';
+  return ((width / spot) * 100).toFixed(1);
+}
+
 export default function DeltaStrikesTable({
   allDeltas,
   spot,
@@ -28,7 +38,7 @@ export default function DeltaStrikesTable({
           if ('error' in row) return null;
           const r = row;
           const width = r.callStrike - r.putStrike;
-          const widthPct = ((width / spot) * 100).toFixed(1);
+          const widthPct = widthPctLabel(width, spot);
           return (
             <div
               key={r.delta}
@@ -202,10 +212,7 @@ export default function DeltaStrikesTable({
                     <td className={`${mkTd()} text-secondary`}>
                       {r.callStrike - r.putStrike}
                       <span className="text-muted ml-0.5 text-[11px]">
-                        (
-                        {(((r.callStrike - r.putStrike) / spot) * 100).toFixed(
-                          1,
-                        )}
+                        ({widthPctLabel(r.callStrike - r.putStrike, spot)}
                         %)
                       </span>
                     </td>

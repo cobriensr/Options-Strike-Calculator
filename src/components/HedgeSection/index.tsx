@@ -197,9 +197,16 @@ export default function HedgeSection({
               />
             </div>
             <div className="text-muted mt-1.5 font-mono text-[10px]">
-              Breakeven at {'\u2193'}
-              {hedge.breakEvenCrashPts} pts (
-              {((hedge.breakEvenCrashPts / results.spot) * 100).toFixed(1)}%)
+              {hedge.breakEvenCrashPts === null ? (
+                <>No breakeven (hedge covers full crash range)</>
+              ) : (
+                <>
+                  Breakeven at {'\u2193'}
+                  {hedge.breakEvenCrashPts} pts (
+                  {((hedge.breakEvenCrashPts / results.spot) * 100).toFixed(1)}
+                  %)
+                </>
+              )}
             </div>
           </div>
 
@@ -231,9 +238,16 @@ export default function HedgeSection({
               />
             </div>
             <div className="text-muted mt-1.5 font-mono text-[10px]">
-              Breakeven at {'\u2191'}
-              {hedge.breakEvenRallyPts} pts (
-              {((hedge.breakEvenRallyPts / results.spot) * 100).toFixed(1)}%)
+              {hedge.breakEvenRallyPts === null ? (
+                <>No breakeven (hedge covers full rally range)</>
+              ) : (
+                <>
+                  Breakeven at {'\u2191'}
+                  {hedge.breakEvenRallyPts} pts (
+                  {((hedge.breakEvenRallyPts / results.spot) * 100).toFixed(1)}
+                  %)
+                </>
+              )}
             </div>
           </div>
         </div>

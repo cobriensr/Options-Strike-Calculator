@@ -126,10 +126,17 @@ describe('calcHedge', () => {
     expect(result.dailyCostDollars).toBeGreaterThanOrEqual(0);
   });
 
-  it('breakeven crash/rally points are positive', () => {
+  it('breakeven crash/rally points are positive when they exist', () => {
     const result = calcHedge(baseParams);
-    expect(result.breakEvenCrashPts).toBeGreaterThan(0);
-    expect(result.breakEvenRallyPts).toBeGreaterThan(0);
+    // breakEvenCrashPts/RallyPts are null when the hedge stays net-positive
+    // across the entire search range (no real breakeven). When present, they
+    // are positive crash/rally sizes in points.
+    if (result.breakEvenCrashPts !== null) {
+      expect(result.breakEvenCrashPts).toBeGreaterThan(0);
+    }
+    if (result.breakEvenRallyPts !== null) {
+      expect(result.breakEvenRallyPts).toBeGreaterThan(0);
+    }
   });
 
   it('scenario table has both crash and rally scenarios', () => {

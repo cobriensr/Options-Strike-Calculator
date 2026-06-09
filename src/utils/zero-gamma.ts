@@ -107,9 +107,39 @@ function findZeroCrossings(
     const prev = sortedWithCumulative[i - 1]!;
     const curr = sortedWithCumulative[i]!;
 
-    // Exact zero at current point (rare but possible).
+    // Exact zero at current point (rare but possible). Suppress only the
+    // tangent case: cumulative gamma touches zero and *returns to the same
+    // sign* (e.g. cumulative [-5, 0, -3]) — that is a touch-and-return, not a
+    // regime flip, so it must not emit a phantom crossing. Every other shape
+    // is kept: an opposite-sign flip through the zero ([-5, 0, +3]), and a
+    // trailing zero where the walk reaches zero at the final strike with no
+    // return (e.g. [-100, 0]) — the latter is the flip landing exactly on the
+    // last strike and is preserved to match the interpolated-crossing behavior.
     if (curr.cumulative === 0) {
-      crossings.push(curr.strike);
+      // Nearest non-zero cumulative before `curr` (0 if none — leading zeros).
+      let before = 0;
+      for (let j = i - 1; j >= 0; j--) {
+        const c = sortedWithCumulative[j]!.cumulative;
+        if (c !== 0) {
+          before = c;
+          break;
+        }
+      }
+      // Nearest non-zero cumulative after `curr` (0 if none — trailing zeros).
+      let after = 0;
+      for (let j = i + 1; j < sortedWithCumulative.length; j++) {
+        const c = sortedWithCumulative[j]!.cumulative;
+        if (c !== 0) {
+          after = c;
+          break;
+        }
+      }
+
+      // Tangent = both neighbors exist (non-zero) and share a sign. Skip those.
+      const isTangent = before !== 0 && after !== 0 && before * after > 0;
+      if (!isTangent) {
+        crossings.push(curr.strike);
+      }
       continue;
     }
 

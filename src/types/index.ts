@@ -313,10 +313,18 @@ export interface HedgeResult {
   readonly dailyCostPts: number;
   /** Net daily hedge cost in dollars (entry - EOD recovery) */
   readonly dailyCostDollars: number;
-  /** SPX crash size (pts) where net P&L ≈ 0 with recommended puts */
-  readonly breakEvenCrashPts: number;
-  /** SPX rally size (pts) where net P&L ≈ 0 with recommended calls */
-  readonly breakEvenRallyPts: number;
+  /**
+   * SPX crash size (pts) where net P&L ≈ 0 with recommended puts, or `null`
+   * when the hedge stays net-positive across the whole crash range (no real
+   * breakeven — the crash side is fully covered).
+   */
+  readonly breakEvenCrashPts: number | null;
+  /**
+   * SPX rally size (pts) where net P&L ≈ 0 with recommended calls, or `null`
+   * when the hedge stays net-positive across the whole rally range (no real
+   * breakeven — the rally side is fully covered).
+   */
+  readonly breakEvenRallyPts: number | null;
   /** IC credit minus net hedge cost in dollars */
   readonly netCreditAfterHedge: number;
   /** Vega of a single hedge put ($ change per 1% IV move) */

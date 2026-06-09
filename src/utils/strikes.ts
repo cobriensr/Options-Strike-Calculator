@@ -96,6 +96,15 @@ export function calcStrikes(
     return { error: `No z-score for delta ${String(delta)}` };
   }
 
+  // Defensive guard: matches every function in black-scholes.ts. Without
+  // it, T <= 0 makes Math.sqrt(T) = 0/NaN and sigma/spot <= 0 yield NaN
+  // strikes that silently propagate into the strike table.
+  if (T <= 0 || sigma <= 0 || spotPrice <= 0) {
+    return {
+      error: `Invalid inputs: T=${T}, sigma=${sigma}, spot=${spotPrice}`,
+    };
+  }
+
   const sqrtT = Math.sqrt(T);
   const putSkew = calcScaledSkew(skew, z);
   // When callSkewOverride is provided, use it independently; otherwise derive from put skew

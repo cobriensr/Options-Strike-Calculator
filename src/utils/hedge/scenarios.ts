@@ -129,12 +129,27 @@ export function computeScenarioPnL(params: {
 
 /**
  * Binary search for the crash/rally size where net P&L crosses zero.
+ *
+ * Returns `null` when the search range does not bracket a root, i.e. when
+ * net P&L shares the same sign at both endpoints. The common case is a
+ * well-sized hedge that stays net-positive across the entire crash/rally
+ * range (the desired outcome) — there is no real breakeven point, so we
+ * report "no breakeven / fully covered" rather than a meaningless number.
  */
 export function findBreakEven(
   computeFn: (move: number) => number,
   searchMin: number,
   searchMax: number,
-): number {
+): number | null {
+  // Bisection is only meaningful when the endpoints bracket a sign change.
+  // Without this guard, an all-positive function collapses to searchMin and
+  // an all-negative one to searchMax — both bogus "breakevens".
+  const fMin = computeFn(searchMin);
+  const fMax = computeFn(searchMax);
+  if (fMin === 0) return Math.round(searchMin);
+  if (fMax === 0) return Math.round(searchMax);
+  if (Math.sign(fMin) === Math.sign(fMax)) return null;
+
   let lo = searchMin;
   let hi = searchMax;
   for (let i = 0; i < BREAKEVEN_MAX_ITER; i++) {

@@ -166,20 +166,22 @@ describe('computeScenarioPnL', () => {
 
 describe('findBreakEven', () => {
   it('finds the zero crossing of a monotonic increasing function', () => {
-    // f(x) = x - 50, zero at x=50
+    // f(x) = x - 50, zero at x=50 — genuine sign change inside [0, 100]
     const result = findBreakEven((x) => x - 50, 0, 100);
     expect(result).toBe(50);
   });
 
-  it('handles never-crossing-zero by returning searchMax', () => {
-    // f(x) = 1 (always positive) — bisection collapses to lo=searchMin
-    // and hi stays = searchMax since computeFn never returns < 0
-    const result = findBreakEven(() => 1, 0, 100);
-    // Bisection with always-positive f collapses hi → lo; the answer
-    // is searchMin in that limit. Just verify it's a finite number
-    // in-range and doesn't throw.
-    expect(result).toBeGreaterThanOrEqual(0);
-    expect(result).toBeLessThanOrEqual(100);
+  it('returns null when net P&L is positive across the entire range', () => {
+    // f(x) = +500 everywhere — no bracketed root. A well-sized hedge that
+    // stays net-positive across all crash sizes has no real breakeven.
+    const result = findBreakEven(() => 500, 100, 600);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when net P&L is negative across the entire range', () => {
+    // f(x) = -500 everywhere — no bracketed root, so no real breakeven.
+    const result = findBreakEven(() => -500, 100, 600);
+    expect(result).toBeNull();
   });
 });
 

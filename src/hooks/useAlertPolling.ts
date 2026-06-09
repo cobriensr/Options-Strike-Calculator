@@ -210,11 +210,23 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
     }
   }, []);
 
-  // Eager fetch on gate-open — usePolling only schedules, never fires
-  // immediately, so the initial fetch lives in its own effect.
+  // Eager fetch + chime-stop-on-gate-flip. usePolling only schedules the
+  // recurring poll, never fires immediately, so the initial fetch lives
+  // here. The cleanup contract is broader though: when the gate flips
+  // closed (marketOpen → false, owner session lost, unmount), any chime
+  // this hook started must stop. Without this, a chime that fired during
+  // market hours would keep ringing every 5–15s after 4:01 PM ET, after
+  // the tab is backgrounded, and across SPA teardown — and because
+  // activeChimes is module-scoped, it would survive remounts. stopChime is
+  // idempotent, so iterating the full seen-IDs set is safe even for
+  // already-acknowledged alerts.
   useEffect(() => {
     if (!isOwner || !marketOpen) return;
     fetchAlerts();
+    const seen = seenIdsRef.current;
+    return () => {
+      for (const alertId of seen) stopChime(alertId);
+    };
   }, [isOwner, marketOpen, fetchAlerts]);
 
   // Recurring poll — gated identically to the eager fetch.

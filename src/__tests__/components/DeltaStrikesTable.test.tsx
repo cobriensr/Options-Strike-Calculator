@@ -111,6 +111,30 @@ describe('DeltaStrikesTable', () => {
     ).toBeInTheDocument();
   });
 
+  // ── Defensive spot guard (FE-MATH width %) ────────────────
+  //
+  // The width column divides (callStrike - putStrike) by `spot`. If the
+  // app is handed invalid market data (spot <= 0 or non-finite), the
+  // raw division renders "Infinity%" / "NaN%". Guard so it degrades to
+  // a safe placeholder instead.
+
+  it('does not render "Infinity" when spot is 0', () => {
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={0} />);
+    expect(screen.queryByText(/Infinity/)).not.toBeInTheDocument();
+    // The width itself (callStrike - putStrike = 139) still renders.
+    expect(screen.getAllByText(/139/).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not render "Infinity" when spot is negative', () => {
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={-100} />);
+    expect(screen.queryByText(/Infinity/)).not.toBeInTheDocument();
+  });
+
+  it('does not render "NaN" when spot is not finite', () => {
+    render(<DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={NaN} />);
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+  });
+
   // ── IV acceleration indicator ─────────────────────────────
 
   it('does not show IV acceleration indicator when ivAccelMult is 1.0', () => {
