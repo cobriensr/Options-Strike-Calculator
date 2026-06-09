@@ -1,11 +1,11 @@
 {
   "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-06-06T05:13:17.783390+00:00",
+  "trained_at": "2026-06-08T22:41:03.667018+00:00",
   "training_sample": {
-    "n": 150035,
+    "n": 150072,
     "date_range": [
       "2026-03-10 00:00:00",
-      "2026-06-05 00:00:00"
+      "2026-06-08 00:00:00"
     ],
     "filters_applied": [
       "last 90 days",
@@ -44,10 +44,10 @@
       -3
     ],
     "vol_oi_quintile_boundaries": [
-      0.059964726631393295,
-      0.09665214366402004,
-      0.15452152478777695,
-      0.3767112093693593
+      0.0599721059972106,
+      0.0966800991174921,
+      0.15451692581794618,
+      0.37671056351221
     ],
     "gamma_quintile_weights": [
       3,
@@ -57,10 +57,10 @@
       -1
     ],
     "gamma_quintile_boundaries": [
-      0.01223795282897044,
-      0.025459276640998073,
-      0.0424280085940143,
-      0.06928316910596881
+      0.012244930299708225,
+      0.025463785396704724,
+      0.04242341339086596,
+      0.0692692934252652
     ],
     "ask_pct_quintile_weights": [
       0,
@@ -249,13 +249,13 @@
     "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift."
   },
   "validation": {
-    "tier1_count": 9568,
-    "tier2_count": 19399,
-    "tier3_count": 121068,
-    "tier1_mean_outcome_pct": 37.134809219530574,
-    "tier2_mean_outcome_pct": 28.45042429933668,
-    "tier3_mean_outcome_pct": 4.563715335458301,
-    "spearman_score_outcome": 0.17039850335053963,
+    "tier1_count": 9569,
+    "tier2_count": 19403,
+    "tier3_count": 121100,
+    "tier1_mean_outcome_pct": 37.13701062520605,
+    "tier2_mean_outcome_pct": 28.438526000560916,
+    "tier3_mean_outcome_pct": 4.558525978959379,
+    "spearman_score_outcome": 0.17031786354612047,
     "spearman_p_value": 0.0
   }
 }

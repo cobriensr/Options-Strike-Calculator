@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-06-06T05:13:17.783390+00:00
+ * Trained at    : 2026-06-08T22:41:03.667018+00:00
  *
  * computeLotteryScoreV2() is wired into detect-lottery-fires.ts (feeds the
  * quality-adjusted score / qas; see lottery-tier.ts).
@@ -168,8 +168,7 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
  * Quintile 4 : value >= boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.059964726631393295, 0.09665214366402004, 0.15452152478777695,
-  0.3767112093693593,
+  0.0599721059972106, 0.0966800991174921, 0.15451692581794618, 0.37671056351221,
 ];
 
 // ---------------------------------------------------------------------------
@@ -180,8 +179,8 @@ export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
   3, -2, -2, -2, -1,
 ];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.01223795282897044, 0.025459276640998073, 0.0424280085940143,
-  0.06928316910596881,
+  0.012244930299708225, 0.025463785396704724, 0.04242341339086596,
+  0.0692692934252652,
 ];
 
 // ---------------------------------------------------------------------------
