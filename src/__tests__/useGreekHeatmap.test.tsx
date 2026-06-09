@@ -19,11 +19,19 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import { useGreekHeatmap } from '../hooks/useGreekHeatmap';
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 
 const mockFetch = vi.fn();
 vi.mock('../utils/fetchWithRetry', () => ({
   fetchWithRetry: (...args: unknown[]) => mockFetch(...args),
 }));
+
+// Mock the Sentry helper so we can assert the hook reports backend
+// contract drift (Zod failure) without touching the real Sentry SDK.
+vi.mock('../lib/sentry-helpers', () => ({
+  captureUnlessAuth: vi.fn(),
+}));
+const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
 const HAPPY_RESPONSE = {
   ticker: 'SPY',
@@ -50,6 +58,7 @@ function okResponse(body: unknown): Response {
 describe('useGreekHeatmap', () => {
   beforeEach(() => {
     mockFetch.mockReset();
+    mockCaptureUnlessAuth.mockReset();
   });
 
   afterEach(() => {
@@ -176,6 +185,46 @@ describe('useGreekHeatmap', () => {
     expect(result.current.data).toBeNull();
     expect(result.current.error).not.toBeNull();
     expect(result.current.stale).toBe(false);
+  });
+
+  it('reports a Zod-failing response to Sentry exactly once', async () => {
+    // A malformed payload (atmStrike is a string) fails schema validation.
+    // The hook must report the contract drift to Sentry via the helper
+    // exactly once, with the request context attached.
+    mockFetch.mockResolvedValue(
+      okResponse({ ...HAPPY_RESPONSE, atmStrike: 'not-a-number' }),
+    );
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', date: '2026-05-15', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).not.toBeNull();
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        contexts: expect.objectContaining({
+          greekHeatmap: expect.objectContaining({
+            ticker: 'SPY',
+            date: '2026-05-15',
+            issues: expect.any(Array),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('does NOT report to Sentry on a successful response', async () => {
+    mockFetch.mockResolvedValue(okResponse(HAPPY_RESPONSE));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.ticker).toBe('SPY');
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
   });
 
   it('thrown network error surfaces message via state.error', async () => {

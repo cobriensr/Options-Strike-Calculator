@@ -17,56 +17,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 
+import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { getErrorMessage } from '../utils/error';
 import { fetchWithRetry } from '../utils/fetchWithRetry';
 import { usePolling } from './usePolling';
 
 const POLL_INTERVAL_MS = 30_000;
 
-export interface GreekHeatmapTopStrike {
-  strike: number;
-  callGammaOi: number | null;
-  putGammaOi: number | null;
-  netGamma: number;
-  callCharmOi: number | null;
-  putCharmOi: number | null;
-  netCharm: number;
-  callVannaOi: number | null;
-  putVannaOi: number | null;
-  netVanna: number;
-}
+// Single source of truth for the dealer-gamma regime literals: the Zod
+// enum below derives from this, and so (via `z.infer`) does the exported
+// `GreekHeatmapResponse['regime']` type. Keep both in lockstep here.
+const REGIME_VALUES = ['Long Γ', 'Short Γ'] as const;
 
-export interface GreekHeatmapNetFlow {
-  cumulativeCallPrem: number;
-  cumulativeCallVol: number;
-  cumulativePutPrem: number;
-  cumulativePutVol: number;
-  asOf: string;
-}
-
-export interface GreekHeatmapIntradayRange {
-  min: string;
-  max: string;
-  count: number;
-}
-
-export interface GreekHeatmapResponse {
-  ticker: string;
-  date: string;
-  at: string | null;
-  asOf: string | null;
-  underlyingPrice: number | null;
-  atmStrike: number | null;
-  regime: 'Long Γ' | 'Short Γ' | null;
-  netGexK: number | null;
-  chainStrikes: GreekHeatmapTopStrike[];
-  topStrikes: GreekHeatmapTopStrike[];
-  intradayRange: GreekHeatmapIntradayRange | null;
-  netFlow: GreekHeatmapNetFlow | null;
-}
-
-// Runtime schema mirroring the interfaces above. The `/api/greek-heatmap`
-// response is validated against this after `res.json()` so a malformed
-// payload is routed through the error path instead of rendering as garbage.
+// Runtime schemas are the single source of truth for these shapes. The
+// `/api/greek-heatmap` response is validated against `greekHeatmapResponseSchema`
+// after `res.json()` so a malformed payload is routed through the error
+// path instead of rendering as garbage. The exported TS types below are
+// derived from the schemas via `z.infer` — there is no hand-maintained
+// parallel interface to drift.
 const topStrikeSchema = z.object({
   strike: z.number(),
   callGammaOi: z.number().nullable(),
@@ -101,7 +69,7 @@ const greekHeatmapResponseSchema = z.object({
   asOf: z.string().nullable(),
   underlyingPrice: z.number().nullable(),
   atmStrike: z.number().nullable(),
-  regime: z.enum(['Long Γ', 'Short Γ']).nullable(),
+  regime: z.enum(REGIME_VALUES).nullable(),
   netGexK: z.number().nullable(),
   chainStrikes: z.array(topStrikeSchema),
   topStrikes: z.array(topStrikeSchema),
@@ -109,12 +77,12 @@ const greekHeatmapResponseSchema = z.object({
   netFlow: netFlowSchema.nullable(),
 });
 
-// The schema's inferred output is assigned into `state.data` (typed
-// `GreekHeatmapResponse | null`) at the success setState below, so `tsc`
-// already enforces that `z.infer<typeof greekHeatmapResponseSchema>`
-// stays assignable to the hand-written `GreekHeatmapResponse` interface
-// that other files import. If the schema drifts from the interface, that
-// assignment fails the type-check — no separate assertion needed.
+// Types derived from the schemas — single source of truth (D3). Other
+// files import these names; the export identifiers must stay identical.
+export type GreekHeatmapTopStrike = z.infer<typeof topStrikeSchema>;
+export type GreekHeatmapNetFlow = z.infer<typeof netFlowSchema>;
+export type GreekHeatmapIntradayRange = z.infer<typeof intradayRangeSchema>;
+export type GreekHeatmapResponse = z.infer<typeof greekHeatmapResponseSchema>;
 
 interface UseGreekHeatmapArgs {
   ticker: string;
@@ -193,8 +161,23 @@ export function useGreekHeatmap({
       if (ctrl.signal.aborted) return;
       const parsed = greekHeatmapResponseSchema.safeParse(json);
       if (!parsed.success) {
-        // Malformed payload — route through the same preserve-last-good
-        // path as a network error instead of rendering garbage.
+        // Backend contract drift — capture the Zod issues to Sentry with
+        // request context so a frozen grid becomes a triageable event
+        // instead of silently surfacing a generic message (D4). Then route
+        // through the same preserve-last-good path as a network error
+        // instead of rendering garbage.
+        captureUnlessAuth(
+          new Error('greek-heatmap response failed schema validation'),
+          {
+            contexts: {
+              greekHeatmap: {
+                ticker,
+                date: date ?? null,
+                issues: parsed.error.issues,
+              },
+            },
+          },
+        );
         setState((s) => ({
           data: s.data,
           loading: false,
@@ -216,7 +199,7 @@ export function useGreekHeatmap({
       if (err instanceof DOMException && err.name === 'AbortError') return;
       if (ctrl.signal.aborted) return;
       if (!mountedRef.current) return;
-      const msg = err instanceof Error ? err.message : 'unknown fetch error';
+      const msg = getErrorMessage(err);
       // Preserve last-good data on a transient error so one failed poll
       // doesn't blank the live grid (flicker-to-blank). Only set
       // `data: null` when there was no prior data to keep. Always
