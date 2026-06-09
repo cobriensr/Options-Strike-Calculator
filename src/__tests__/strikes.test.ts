@@ -244,6 +244,18 @@ describe('calcStrikes', () => {
     }
   });
 
+  it('returns an error for NaN / Infinity inputs (routed through isValidBSInputs)', () => {
+    // calcStrikes now shares the Black-Scholes input-validity predicate, which
+    // rejects non-finite inputs in addition to non-positive ones. A NaN or
+    // ±Infinity spot/sigma/T would otherwise propagate NaN strikes silently.
+    const badValues = [NaN, Infinity, -Infinity];
+    for (const bad of badValues) {
+      expect(isStrikeError(calcStrikes(bad, sigma, T, 10))).toBe(true);
+      expect(isStrikeError(calcStrikes(spot, bad, T, 10))).toBe(true);
+      expect(isStrikeError(calcStrikes(spot, sigma, bad, 10))).toBe(true);
+    }
+  });
+
   it('returns finite, non-NaN strikes for valid inputs (regression)', () => {
     const result = calcStrikes(spot, sigma, T, 10);
     expect(isStrikeError(result)).toBe(false);

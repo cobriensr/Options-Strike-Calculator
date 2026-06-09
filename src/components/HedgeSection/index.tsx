@@ -32,6 +32,35 @@ function clampBeTarget(value: number): number {
   return Math.min(BE_TARGET_MAX, Math.max(BE_TARGET_MIN, value));
 }
 
+/**
+ * Renders the breakeven sub-label shared by the put (crash) and call (rally)
+ * hedge blocks. When `pts` is null there is no breakeven on the search grid —
+ * the hedge stays net-positive across the whole range — so we say so instead of
+ * printing a bogus number. `spot` is guaranteed positive-finite upstream
+ * (CalculationResults.spot), so the % division needs no guard.
+ */
+function BreakevenLabel({
+  pts,
+  spot,
+  arrow,
+  direction,
+}: Readonly<{
+  pts: number | null;
+  spot: number;
+  arrow: string;
+  direction: 'crash' | 'rally';
+}>) {
+  if (pts === null) {
+    return <>No breakeven (hedge covers full {direction} range)</>;
+  }
+  return (
+    <>
+      Breakeven at {arrow}
+      {pts} pts ({((pts / spot) * 100).toFixed(1)}%)
+    </>
+  );
+}
+
 export default function HedgeSection({
   results,
   ic,
@@ -197,16 +226,12 @@ export default function HedgeSection({
               />
             </div>
             <div className="text-muted mt-1.5 font-mono text-[10px]">
-              {hedge.breakEvenCrashPts === null ? (
-                <>No breakeven (hedge covers full crash range)</>
-              ) : (
-                <>
-                  Breakeven at {'\u2193'}
-                  {hedge.breakEvenCrashPts} pts (
-                  {((hedge.breakEvenCrashPts / results.spot) * 100).toFixed(1)}
-                  %)
-                </>
-              )}
+              <BreakevenLabel
+                pts={hedge.breakEvenCrashPts}
+                spot={results.spot}
+                arrow={'\u2193'}
+                direction="crash"
+              />
             </div>
           </div>
 
@@ -238,16 +263,12 @@ export default function HedgeSection({
               />
             </div>
             <div className="text-muted mt-1.5 font-mono text-[10px]">
-              {hedge.breakEvenRallyPts === null ? (
-                <>No breakeven (hedge covers full rally range)</>
-              ) : (
-                <>
-                  Breakeven at {'\u2191'}
-                  {hedge.breakEvenRallyPts} pts (
-                  {((hedge.breakEvenRallyPts / results.spot) * 100).toFixed(1)}
-                  %)
-                </>
-              )}
+              <BreakevenLabel
+                pts={hedge.breakEvenRallyPts}
+                spot={results.spot}
+                arrow={'\u2191'}
+                direction="rally"
+              />
             </div>
           </div>
         </div>

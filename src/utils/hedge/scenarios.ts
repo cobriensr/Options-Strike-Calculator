@@ -128,39 +128,91 @@ export function computeScenarioPnL(params: {
 }
 
 /**
- * Binary search for the crash/rally size where net P&L crosses zero.
+ * Number of grid samples used to scan [searchMin, searchMax] for sign
+ * changes before bisecting. Net hedge P&L vs. crash/rally size is
+ * NON-MONOTONIC (it can dip into a loss band and recover), so an
+ * endpoint-only sign check misses interior roots entirely. ~160 samples
+ * over a ~1000-pt range is ~6-pt resolution — fine enough to bracket
+ * every real crossing for realistic inputs without excessive compute.
+ */
+const BREAKEVEN_GRID_SAMPLES = 160;
+
+/**
+ * Finds the crash/rally size where net P&L crosses zero — i.e. where hedge
+ * coverage breaks down.
  *
- * Returns `null` when the search range does not bracket a root, i.e. when
- * net P&L shares the same sign at both endpoints. The common case is a
- * well-sized hedge that stays net-positive across the entire crash/rally
- * range (the desired outcome) — there is no real breakeven point, so we
- * report "no breakeven / fully covered" rather than a meaningless number.
+ * Net hedge P&L vs. move size is NON-MONOTONIC: a well-sized hedge can be
+ * net-positive at the IC's loss threshold, dip negative through a loss band
+ * as the IC takes its full wing loss before the hedge fully kicks in, then
+ * recover to strongly positive on a large tail move. That means the endpoints
+ * frequently share a sign while two (or more) real roots sit in the interior —
+ * an endpoint-only sign check would return `null` and the UI would falsely
+ * report "fully covered", hiding a genuine loss band.
+ *
+ * Strategy: sample net P&L on an even grid across [searchMin, searchMax], find
+ * the FIRST adjacent pair whose sign changes (nearest `searchMin`), and bisect
+ * that sub-interval. The returned value is the breakeven NEAREST `searchMin`
+ * ("coverage breaks here"). Direction-agnostic: the bisection brackets on the
+ * actual endpoint signs, so it locates the root whether the crossing is
+ * increasing (− → +) or decreasing (+ → −).
+ *
+ * NOTE: a second (far) root often exists where P&L recovers back through zero
+ * — out of scope for this single-value field, which models where coverage
+ * first breaks. Returns `null` only when no sign change exists anywhere on the
+ * grid (genuinely no breakeven across the whole range).
  */
 export function findBreakEven(
   computeFn: (move: number) => number,
   searchMin: number,
   searchMax: number,
 ): number | null {
-  // Bisection is only meaningful when the endpoints bracket a sign change.
-  // Without this guard, an all-positive function collapses to searchMin and
-  // an all-negative one to searchMax — both bogus "breakevens".
-  const fMin = computeFn(searchMin);
-  const fMax = computeFn(searchMax);
-  if (fMin === 0) return Math.round(searchMin);
-  if (fMax === 0) return Math.round(searchMax);
-  if (Math.sign(fMin) === Math.sign(fMax)) return null;
-
-  let lo = searchMin;
-  let hi = searchMax;
-  for (let i = 0; i < BREAKEVEN_MAX_ITER; i++) {
-    const mid = (lo + hi) / 2;
-    if (computeFn(mid) < 0) {
-      lo = mid;
-    } else {
-      hi = mid;
-    }
+  if (
+    !Number.isFinite(searchMin) ||
+    !Number.isFinite(searchMax) ||
+    searchMax <= searchMin
+  ) {
+    return null;
   }
-  return Math.round((lo + hi) / 2);
+
+  const step = (searchMax - searchMin) / BREAKEVEN_GRID_SAMPLES;
+
+  // Sample the grid once and reuse the values — the bisection below only
+  // recomputes inside the single bracketing sub-interval, so each grid point
+  // is evaluated at most once here.
+  let prevX = searchMin;
+  let prevF = computeFn(prevX);
+  if (prevF === 0) return Math.round(prevX);
+
+  for (let i = 1; i <= BREAKEVEN_GRID_SAMPLES; i++) {
+    const x = i === BREAKEVEN_GRID_SAMPLES ? searchMax : searchMin + i * step;
+    const f = computeFn(x);
+    if (f === 0) return Math.round(x);
+
+    if (Math.sign(f) !== Math.sign(prevF)) {
+      // First bracketing sub-interval [prevX, x] — bisect it. The bracket
+      // direction (which side is + / −) is read from prevF, so this works for
+      // both increasing and decreasing crossings.
+      let lo = prevX;
+      let hi = x;
+      const loIsNegative = prevF < 0;
+      for (let iter = 0; iter < BREAKEVEN_MAX_ITER; iter++) {
+        const mid = (lo + hi) / 2;
+        const fMid = computeFn(mid);
+        // Keep the sub-interval that still straddles zero.
+        if (fMid < 0 === loIsNegative) {
+          lo = mid;
+        } else {
+          hi = mid;
+        }
+      }
+      return Math.round((lo + hi) / 2);
+    }
+
+    prevX = x;
+    prevF = f;
+  }
+
+  return null;
 }
 
 /**

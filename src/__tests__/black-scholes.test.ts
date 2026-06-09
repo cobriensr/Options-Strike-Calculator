@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   normalCDF,
   normalPDF,
+  isValidBSInputs,
   calcBSDelta,
   calcBSGamma,
   calcBSTheta,
@@ -12,6 +13,72 @@ import {
   impliedVolatility,
 } from '../utils/black-scholes';
 import { MARKET, DEFAULTS } from '../constants';
+
+// ── isValidBSInputs ────────────────────────────────────────────
+//
+// Shared input-validity predicate that replaces the hand-rolled
+// `T <= 0 || sigma <= 0 || spot <= 0 [|| strike <= 0]` guard duplicated
+// across every Black-Scholes function (and the calcStrikes copy that
+// omits the strike term). Returns false when any *provided* value is
+// non-positive or non-finite, true otherwise. `strike` is optional so
+// strike-derivation callers (calcStrikes) can validate spot/T/sigma
+// without supplying a strike they're about to compute.
+
+describe('isValidBSInputs', () => {
+  const spot = 5800;
+  const T = 1 / 252;
+  const sigma = 0.15;
+  const strike = 5800;
+
+  it('returns true for valid positive inputs (strike omitted)', () => {
+    expect(isValidBSInputs(spot, T, sigma)).toBe(true);
+  });
+
+  it('returns true for valid positive inputs (strike provided)', () => {
+    expect(isValidBSInputs(spot, T, sigma, strike)).toBe(true);
+  });
+
+  it('returns false when spot <= 0', () => {
+    expect(isValidBSInputs(0, T, sigma)).toBe(false);
+    expect(isValidBSInputs(-5800, T, sigma)).toBe(false);
+  });
+
+  it('returns false when T <= 0', () => {
+    expect(isValidBSInputs(spot, 0, sigma)).toBe(false);
+    expect(isValidBSInputs(spot, -1, sigma)).toBe(false);
+  });
+
+  it('returns false when sigma <= 0', () => {
+    expect(isValidBSInputs(spot, T, 0)).toBe(false);
+    expect(isValidBSInputs(spot, T, -0.1)).toBe(false);
+  });
+
+  it('returns false when the provided strike <= 0', () => {
+    expect(isValidBSInputs(spot, T, sigma, 0)).toBe(false);
+    expect(isValidBSInputs(spot, T, sigma, -5800)).toBe(false);
+  });
+
+  it('ignores the strike term when it is omitted', () => {
+    // Without a strike argument, a valid spot/T/sigma trio is valid even
+    // though no strike was supplied (calcStrikes use case).
+    expect(isValidBSInputs(spot, T, sigma)).toBe(true);
+  });
+
+  it('returns false for NaN in any argument', () => {
+    expect(isValidBSInputs(NaN, T, sigma)).toBe(false);
+    expect(isValidBSInputs(spot, NaN, sigma)).toBe(false);
+    expect(isValidBSInputs(spot, T, NaN)).toBe(false);
+    expect(isValidBSInputs(spot, T, sigma, NaN)).toBe(false);
+  });
+
+  it('returns false for Infinity / -Infinity in any argument', () => {
+    expect(isValidBSInputs(Infinity, T, sigma)).toBe(false);
+    expect(isValidBSInputs(spot, Infinity, sigma)).toBe(false);
+    expect(isValidBSInputs(spot, T, Infinity)).toBe(false);
+    expect(isValidBSInputs(spot, T, sigma, Infinity)).toBe(false);
+    expect(isValidBSInputs(-Infinity, T, sigma)).toBe(false);
+  });
+});
 
 // ── normalCDF ──────────────────────────────────────────────────
 

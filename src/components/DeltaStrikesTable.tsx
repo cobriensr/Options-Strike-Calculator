@@ -9,13 +9,17 @@ interface Props {
 }
 
 /**
- * Width as a percentage of spot, guarded against invalid market data.
- * A non-positive or non-finite spot would otherwise render "Infinity%"
- * or "NaN%"; we degrade to an em-dash placeholder instead.
+ * Width as a percentage of spot, formatted as a complete parenthesized
+ * display token (e.g. "(2.4%)"), guarded against invalid market data.
+ * A non-positive or non-finite spot would otherwise render "(Infinity%)"
+ * or "(NaN%)"; we degrade to a clean "(—)" placeholder instead. The
+ * helper owns the full token — including the surrounding parens and the
+ * percent sign — so call sites must NOT re-wrap it, which previously
+ * produced the malformed "(—%)" on the degraded path.
  */
 function widthPctLabel(width: number, spot: number): string {
-  if (!Number.isFinite(spot) || spot <= 0) return '—';
-  return ((width / spot) * 100).toFixed(1);
+  if (!Number.isFinite(spot) || spot <= 0) return '(—)';
+  return `(${((width / spot) * 100).toFixed(1)}%)`;
 }
 
 export default function DeltaStrikesTable({
@@ -52,8 +56,7 @@ export default function DeltaStrikesTable({
                   {'Δ'}
                 </span>
                 <span className="text-secondary font-mono text-[11px]">
-                  Width {width}{' '}
-                  <span className="text-muted">({widthPct}%)</span>
+                  Width {width} <span className="text-muted">{widthPct}</span>
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -212,8 +215,7 @@ export default function DeltaStrikesTable({
                     <td className={`${mkTd()} text-secondary`}>
                       {r.callStrike - r.putStrike}
                       <span className="text-muted ml-0.5 text-[11px]">
-                        ({widthPctLabel(r.callStrike - r.putStrike, spot)}
-                        %)
+                        {widthPctLabel(r.callStrike - r.putStrike, spot)}
                       </span>
                     </td>
                   </tr>

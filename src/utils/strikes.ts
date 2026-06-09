@@ -18,6 +18,7 @@ import {
   calcBSTheta,
   blackScholesPrice,
   calcIVAcceleration,
+  isValidBSInputs,
 } from './black-scholes.js';
 import { roundToHalf } from './formatting.js';
 
@@ -96,10 +97,12 @@ export function calcStrikes(
     return { error: `No z-score for delta ${String(delta)}` };
   }
 
-  // Defensive guard: matches every function in black-scholes.ts. Without
-  // it, T <= 0 makes Math.sqrt(T) = 0/NaN and sigma/spot <= 0 yield NaN
-  // strikes that silently propagate into the strike table.
-  if (T <= 0 || sigma <= 0 || spotPrice <= 0) {
+  // Defensive guard: shares the Black-Scholes input-validity predicate. The
+  // strike is computed *from* spot here, so we validate spot/T/sigma only and
+  // omit the strike term. Without this, T <= 0 makes Math.sqrt(T) = 0/NaN and
+  // sigma/spot <= 0 (or any non-finite input) yields NaN strikes that silently
+  // propagate into the strike table.
+  if (!isValidBSInputs(spotPrice, T, sigma)) {
     return {
       error: `Invalid inputs: T=${T}, sigma=${sigma}, spot=${spotPrice}`,
     };

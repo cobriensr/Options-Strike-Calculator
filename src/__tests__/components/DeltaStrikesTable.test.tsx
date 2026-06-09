@@ -135,6 +135,58 @@ describe('DeltaStrikesTable', () => {
     expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
   });
 
+  // ── Degraded width-% token is clean, not malformed `(—%)` ──────
+  //
+  // The width-% helper must own the FULL display token (parens +
+  // percent) so the invalid path renders a clean placeholder rather
+  // than the malformed `(—%)` that resulted from call sites wrapping
+  // the bare helper output in literal parens/percent. Both the mobile
+  // card and desktop table render in JSDOM, so we assert against the
+  // full container text to cover BOTH layouts at once.
+
+  it('renders a clean placeholder (no malformed "(—%)") at spot 0 for both layouts', () => {
+    const { container } = render(
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={0} />,
+    );
+    const text = container.textContent ?? '';
+    // No malformed token in either the mobile or desktop path.
+    expect(text).not.toContain('(—%)');
+    expect(text).not.toContain('—%');
+    // A clean placeholder is present instead.
+    expect(text).toContain('(—)');
+  });
+
+  it('renders a clean placeholder (no malformed "(—%)") at negative spot for both layouts', () => {
+    const { container } = render(
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={-100} />,
+    );
+    const text = container.textContent ?? '';
+    expect(text).not.toContain('(—%)');
+    expect(text).not.toContain('—%');
+    expect(text).toContain('(—)');
+  });
+
+  it('renders a clean placeholder (no malformed "(—%)") at NaN spot for both layouts', () => {
+    const { container } = render(
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={NaN} />,
+    );
+    const text = container.textContent ?? '';
+    expect(text).not.toContain('(—%)');
+    expect(text).not.toContain('—%');
+    expect(text).toContain('(—)');
+  });
+
+  it('renders the width-% as a clean "(N%)" token at a valid spot', () => {
+    // width = callStrike - putStrike = 139; 139 / 5700 * 100 = 2.4%.
+    const { container } = render(
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
+    );
+    const text = container.textContent ?? '';
+    expect(text).toContain('(2.4%)');
+    // No malformed/duplicated percent artifacts.
+    expect(text).not.toContain('%%');
+  });
+
   // ── IV acceleration indicator ─────────────────────────────
 
   it('does not show IV acceleration indicator when ivAccelMult is 1.0', () => {

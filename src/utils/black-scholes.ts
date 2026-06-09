@@ -36,6 +36,43 @@ export function normalPDF(x: number): number {
 }
 
 /**
+ * Shared Black-Scholes input-validity predicate.
+ *
+ * Returns `false` when any *provided* value is non-positive or non-finite,
+ * `true` otherwise. Every pricing/greek function in this module routes its
+ * defensive guard through this helper so the validity rule lives in exactly
+ * one place.
+ *
+ * `strike` is optional: strike-derivation callers (`calcStrikes`) compute the
+ * strike *from* spot, so they validate spot/T/sigma only and omit it. When a
+ * strike is supplied it is held to the same `> 0` + finite rule as the rest.
+ *
+ * The `Number.isFinite` checks reject NaN/±Infinity inputs (e.g. a stale
+ * `Math.log` of a bad ratio upstream) before they propagate into the model.
+ */
+export function isValidBSInputs(
+  spot: number,
+  T: number,
+  sigma: number,
+  strike?: number,
+): boolean {
+  if (
+    !Number.isFinite(spot) ||
+    !Number.isFinite(T) ||
+    !Number.isFinite(sigma) ||
+    spot <= 0 ||
+    T <= 0 ||
+    sigma <= 0
+  ) {
+    return false;
+  }
+  if (strike !== undefined && (!Number.isFinite(strike) || strike <= 0)) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Black-Scholes delta for a European option.
  * r is assumed 0 for 0DTE.
  *
@@ -52,7 +89,7 @@ export function calcBSDelta(
   T: number,
   type: 'call' | 'put',
 ): number {
-  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+  if (!isValidBSInputs(spot, T, sigma, strike)) return 0;
 
   const sqrtT = Math.sqrt(T);
   const sigmaRootT = sigma * sqrtT;
@@ -81,7 +118,7 @@ export function calcBSGamma(
   sigma: number,
   T: number,
 ): number {
-  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+  if (!isValidBSInputs(spot, T, sigma, strike)) return 0;
 
   const sqrtT = Math.sqrt(T);
   const sigmaRootT = sigma * sqrtT;
@@ -105,7 +142,7 @@ export function calcBSVega(
   sigma: number,
   T: number,
 ): number {
-  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+  if (!isValidBSInputs(spot, T, sigma, strike)) return 0;
 
   const sqrtT = Math.sqrt(T);
   const sigmaRootT = sigma * sqrtT;
@@ -130,7 +167,7 @@ export function calcBSTheta(
   sigma: number,
   T: number,
 ): number {
-  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+  if (!isValidBSInputs(spot, T, sigma, strike)) return 0;
 
   const sqrtT = Math.sqrt(T);
   const sigmaRootT = sigma * sqrtT;
@@ -157,7 +194,7 @@ export function blackScholesPrice(
   T: number,
   type: 'call' | 'put',
 ): number {
-  if (T <= 0 || sigma <= 0 || strike <= 0 || spot <= 0) return 0;
+  if (!isValidBSInputs(spot, T, sigma, strike)) return 0;
 
   const sqrtT = Math.sqrt(T);
   const sigmaRootT = sigma * sqrtT;
@@ -210,16 +247,12 @@ export function impliedVolatility(
 ): number | null {
   const { tol = 1e-6, maxIter = 50, sigmaMin = 1e-6, sigmaMax = 5 } = opts;
 
-  if (
-    !Number.isFinite(price) ||
-    !Number.isFinite(spot) ||
-    !Number.isFinite(strike) ||
-    !Number.isFinite(T) ||
-    spot <= 0 ||
-    strike <= 0 ||
-    T <= 0 ||
-    price <= 0
-  ) {
+  // Reuse the shared positive-and-finite predicate. This function solves for
+  // σ rather than taking it as input, so `price` occupies the helper's third
+  // (sigma) slot — both must be strictly positive and finite, so the validity
+  // rule is identical to the original inline guard
+  // (price/spot/strike/T all finite, spot/strike/T/price all > 0).
+  if (!isValidBSInputs(spot, T, price, strike)) {
     return null;
   }
 

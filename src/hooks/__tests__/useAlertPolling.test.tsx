@@ -16,6 +16,7 @@ vi.mock('../usePolling', () => ({
   usePolling: () => undefined,
 }));
 
+import * as alertChime from '../../utils/alert-chime';
 import { useAlertPolling } from '../useAlertPolling';
 
 function criticalAlert(id: number) {
@@ -87,6 +88,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The shared chime map is module-scoped and survives across cases; tear
+  // down any interval a case left running so it can't suppress startChime()
+  // in the next test (the same property the in-app remount relies on).
+  alertChime.__resetChimesForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -147,5 +152,40 @@ describe('useAlertPolling — chime interval cleanup', () => {
     });
 
     expect(clearIntervalSpy).toHaveBeenCalledWith(chimeHandle);
+  });
+});
+
+describe('useAlertPolling — re-arm after market reopen (BUG 1)', () => {
+  it('re-chimes a still-active alert after marketOpen flips false→true', async () => {
+    // Same id every poll: the server still reports this critical alert as
+    // active (acknowledged: false) after the reopen. Before the seenIds
+    // clear-on-gate-flip fix, the id stayed in seenIdsRef across the gate
+    // flip, so the reopened fetch filtered it out of `fresh` → no re-chime.
+    mockFetchWithAlert(2001);
+    const startChimeSpy = vi.spyOn(alertChime, 'startChime');
+
+    const { rerender } = renderHook(
+      ({ marketOpen }) => useAlertPolling(marketOpen),
+      { initialProps: { marketOpen: true } },
+    );
+
+    // First open: eager fetch resolves and arms the chime.
+    await waitFor(() => expect(startChimeSpy).toHaveBeenCalledTimes(1));
+
+    // Gate flips closed (e.g. 4:01 PM ET / halt). Cleanup stops the chime
+    // AND must clear seenIdsRef so the reopen re-arms.
+    act(() => {
+      rerender({ marketOpen: false });
+    });
+
+    // Gate flips open again (reopen / extended-hours boundary). The eager
+    // fetch runs once more with the SAME still-active alert in the response.
+    act(() => {
+      rerender({ marketOpen: true });
+    });
+
+    // The still-active alert must chime AGAIN. Fails before the fix because
+    // the id was never cleared from seenIdsRef.
+    await waitFor(() => expect(startChimeSpy).toHaveBeenCalledTimes(2));
   });
 });

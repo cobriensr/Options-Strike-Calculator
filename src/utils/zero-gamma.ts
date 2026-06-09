@@ -103,31 +103,53 @@ function findZeroCrossings(
   sortedWithCumulative: ReadonlyArray<{ strike: number; cumulative: number }>,
 ): number[] {
   const crossings: number[] = [];
-  for (let i = 1; i < sortedWithCumulative.length; i++) {
+
+  // Cumulative value of the last strictly-non-zero point seen so far. Tracks
+  // the "sign before a zero plateau" so a contiguous run of exact-zero
+  // cumulative points can be resolved with a single before/after comparison
+  // (rather than once per zero index, which double-counts a single flip).
+  let lastNonZero = 0;
+
+  let i = 1;
+  while (i < sortedWithCumulative.length) {
     const prev = sortedWithCumulative[i - 1]!;
     const curr = sortedWithCumulative[i]!;
+    if (prev.cumulative !== 0) lastNonZero = prev.cumulative;
 
-    // Exact zero at current point (rare but possible). Suppress only the
-    // tangent case: cumulative gamma touches zero and *returns to the same
-    // sign* (e.g. cumulative [-5, 0, -3]) — that is a touch-and-return, not a
-    // regime flip, so it must not emit a phantom crossing. Every other shape
-    // is kept: an opposite-sign flip through the zero ([-5, 0, +3]), and a
-    // trailing zero where the walk reaches zero at the final strike with no
-    // return (e.g. [-100, 0]) — the latter is the flip landing exactly on the
-    // last strike and is preserved to match the interpolated-crossing behavior.
+    // Contiguous run of exact-zero cumulative points (rare but possible). A
+    // run is ONE regime decision, not one per index: collapse it. Compare the
+    // nearest non-zero cumulative BEFORE the run against the nearest non-zero
+    // cumulative AFTER the run.
+    //   - opposite signs → a genuine flip through the plateau → ONE crossing.
+    //   - same sign      → a (possibly wide) tangent touch     → NO crossing.
+    //   - no "before" (leading zeros) / no "after" (trailing zeros) → preserve
+    //     prior behavior and emit a crossing (e.g. trailing zero [-100, 0] is
+    //     the flip landing exactly on the last strike).
+    // The representative strike for an emitted crossing is the run member
+    // closest to spot's role in selection — we use the run's first strike,
+    // and `computeZeroGammaStrike` / `analyzeZeroGamma` already pick the
+    // crossing closest to spot when several exist, so a single in-run strike
+    // is the right granularity.
     if (curr.cumulative === 0) {
-      // Nearest non-zero cumulative before `curr` (0 if none — leading zeros).
-      let before = 0;
-      for (let j = i - 1; j >= 0; j--) {
-        const c = sortedWithCumulative[j]!.cumulative;
-        if (c !== 0) {
-          before = c;
-          break;
-        }
+      // Find the end of the contiguous zero run.
+      let runEnd = i;
+      while (
+        runEnd + 1 < sortedWithCumulative.length &&
+        sortedWithCumulative[runEnd + 1]!.cumulative === 0
+      ) {
+        runEnd++;
       }
-      // Nearest non-zero cumulative after `curr` (0 if none — trailing zeros).
+
+      // `before` is the last non-zero cumulative seen prior to the run.
+      // `prev` is the immediate predecessor; lastNonZero already accounts for
+      // a chain of leading zeros (it stays 0 when there is no non-zero before).
+      const before = prev.cumulative !== 0 ? prev.cumulative : lastNonZero;
+
+      // `after` is the nearest non-zero cumulative past the run (single
+      // forward scan; we then advance `i` past the run so this is not
+      // re-walked — keeping the whole routine O(n)).
       let after = 0;
-      for (let j = i + 1; j < sortedWithCumulative.length; j++) {
+      for (let j = runEnd + 1; j < sortedWithCumulative.length; j++) {
         const c = sortedWithCumulative[j]!.cumulative;
         if (c !== 0) {
           after = c;
@@ -138,14 +160,19 @@ function findZeroCrossings(
       // Tangent = both neighbors exist (non-zero) and share a sign. Skip those.
       const isTangent = before !== 0 && after !== 0 && before * after > 0;
       if (!isTangent) {
-        crossings.push(curr.strike);
+        // Representative strike: the run's first zero strike.
+        crossings.push(sortedWithCumulative[i]!.strike);
       }
+
+      // Advance past the entire run. The point at runEnd has cumulative 0, so
+      // lastNonZero stays as `before` for any subsequent interpolation step.
+      i = runEnd + 1;
       continue;
     }
 
-    // Strict sign change between adjacent points. We use strict inequality
-    // so an exact-zero at `prev` isn't double-counted here — it was already
-    // pushed when that iteration ran.
+    // Strict sign change between adjacent non-zero points. We use strict
+    // inequality so an exact-zero at `prev` isn't double-counted here — a
+    // zero `prev` is always consumed by the run branch above.
     const crossed =
       (prev.cumulative < 0 && curr.cumulative > 0) ||
       (prev.cumulative > 0 && curr.cumulative < 0);
@@ -157,6 +184,7 @@ function findZeroCrossings(
       const t = -prev.cumulative / (curr.cumulative - prev.cumulative);
       crossings.push(prev.strike + t * (curr.strike - prev.strike));
     }
+    i++;
   }
   return crossings;
 }

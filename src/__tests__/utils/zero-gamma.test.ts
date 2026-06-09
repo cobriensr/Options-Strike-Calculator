@@ -142,6 +142,37 @@ describe('computeZeroGammaStrike', () => {
     expect(result).toBe(110);
   });
 
+  it('collapses a multi-strike zero plateau that straddles a flip into one crossing', () => {
+    // Cumulative profile [−5, 0, 0, +3] at strikes [100, 110, 120, 130].
+    // Two contiguous exact-zero strikes (110, 120) straddle a single genuine
+    // sign flip (−5 before the run, +3 after). The whole plateau is ONE
+    // regime boundary, so it must yield a single crossing — not one per
+    // zero index. The returned strike lands inside the plateau.
+    const strikes: StrikeGamma[] = [
+      { strike: 100, netGamma: -5 }, // cum = -5
+      { strike: 110, netGamma: 5 }, // cum = 0  (run start)
+      { strike: 120, netGamma: 0 }, // cum = 0  (run end)
+      { strike: 130, netGamma: 3 }, // cum = +3
+    ];
+    const result = computeZeroGammaStrike(strikes, 110);
+    expect(result).not.toBeNull();
+    expect(result!).toBeGreaterThanOrEqual(110);
+    expect(result!).toBeLessThanOrEqual(120);
+  });
+
+  it('emits no crossing for a multi-strike zero plateau with same-sign neighbors (tangent)', () => {
+    // Cumulative profile [−5, 0, 0, −3] at strikes [100, 110, 120, 130].
+    // The plateau touches zero but cumulative is negative on both sides —
+    // a wide tangent, not a flip. No crossing should be reported.
+    const strikes: StrikeGamma[] = [
+      { strike: 100, netGamma: -5 }, // cum = -5
+      { strike: 110, netGamma: 5 }, // cum = 0  (run start)
+      { strike: 120, netGamma: 0 }, // cum = 0  (run end)
+      { strike: 130, netGamma: -3 }, // cum = -3
+    ];
+    expect(computeZeroGammaStrike(strikes, 110)).toBeNull();
+  });
+
   // ── Multiple crossings ──────────────────────────────────────
 
   it('returns the crossing closest to spot when multiple exist', () => {
@@ -353,6 +384,38 @@ describe('analyzeZeroGamma', () => {
     const result = analyzeZeroGamma(strikes, 110, null);
     expect(result.crossingCount).toBe(1);
     expect(result.zeroGammaStrike).toBe(110);
+  });
+
+  it('counts a multi-strike zero plateau straddling a flip as exactly one crossing', () => {
+    // [−5, 0, 0, +3]: the contiguous run of exact zeros (110, 120) sits over
+    // a single genuine sign flip. crossingCount is load-bearing — a value
+    // >= 2 injects a "DISTORTED PROFILE" warning into the analyze context —
+    // so a clean flip through a plateau must count as ONE, not two.
+    const strikes: StrikeGamma[] = [
+      { strike: 100, netGamma: -5 }, // cum = -5
+      { strike: 110, netGamma: 5 }, // cum = 0
+      { strike: 120, netGamma: 0 }, // cum = 0
+      { strike: 130, netGamma: 3 }, // cum = +3
+    ];
+    const result = analyzeZeroGamma(strikes, 110, null);
+    expect(result.crossingCount).toBe(1);
+    expect(result.zeroGammaStrike).not.toBeNull();
+    expect(result.zeroGammaStrike!).toBeGreaterThanOrEqual(110);
+    expect(result.zeroGammaStrike!).toBeLessThanOrEqual(120);
+  });
+
+  it('counts a same-sign multi-strike zero plateau as zero crossings (wide tangent)', () => {
+    // [−5, 0, 0, −3]: contiguous zero run with negative cumulative on both
+    // sides → no flip, no crossing.
+    const strikes: StrikeGamma[] = [
+      { strike: 100, netGamma: -5 }, // cum = -5
+      { strike: 110, netGamma: 5 }, // cum = 0
+      { strike: 120, netGamma: 0 }, // cum = 0
+      { strike: 130, netGamma: -3 }, // cum = -3
+    ];
+    const result = analyzeZeroGamma(strikes, 110, null);
+    expect(result.crossingCount).toBe(0);
+    expect(result.zeroGammaStrike).toBeNull();
   });
 
   it('reports a single crossing for a normal interval sign change (no exact zero)', () => {
