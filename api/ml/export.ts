@@ -16,11 +16,12 @@
  * Environment: DATABASE_URL, OWNER_SECRET
  */
 
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
-import { getDb } from '../_lib/db.js';
-import logger from '../_lib/logger.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
+import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 
 /** Normalize Neon Date objects to YYYY-MM-DD strings in result rows. */
 function normalizeDates(
@@ -67,7 +68,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     // All params are parameterized — no string interpolation in SQL
-    const rows = (await sql`
+    const rows = (await withDbRetry(
+      () => sql`
       SELECT f.*,
           o.settlement, o.day_open, o.day_high, o.day_low,
           o.day_range_pts, o.day_range_pct, o.close_vs_open,
@@ -88,7 +90,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND f.feature_completeness >= ${minFeature}
           AND COALESCE(l.label_completeness, 0) >= ${minLabel}
         ORDER BY f.date ASC
-    `) as Record<string, unknown>[];
+    `,
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
+    )) as Record<string, unknown>[];
 
     const normalized = normalizeDates(rows);
 
@@ -122,8 +127,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json(normalized);
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(err);
-    logger.error({ err }, 'ml/export error');
-    return res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'ml_export',
+      serverErrorBody: { error: 'Internal error' },
+    });
+    return;
   }
 }

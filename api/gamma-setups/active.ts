@@ -20,6 +20,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
+import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import {
   findNearestCeilingAbove,
@@ -230,9 +231,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       done({ status: 200 });
       res.status(200).json(response);
     } catch (err) {
-      Sentry.captureException(err);
       done({ status: 500 });
-      res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'gamma_setups_active',
+        serverErrorBody: { error: 'Internal error' },
+      });
     }
   });
 }

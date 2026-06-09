@@ -16,13 +16,13 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
+import { getDb, withDbRetry } from './_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { lotteryContractTapeQuerySchema } from './_lib/validation.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 import { ctSessionBounds } from '../src/components/LotteryFinder/ct-window.js';
@@ -90,7 +90,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Per-minute aggregation. Bid/ask/mid stacks come from the OPRA
     // side classification on each print; volume-weighted price gives
     // the line. Filter `canceled = FALSE` to drop wipe-outs.
-    const rows = (await db`
+    const rows = (await withDbRetry(
+      () => db`
       SELECT
         date_trunc('minute', executed_at) AS bucket,
         SUM(CASE WHEN side = 'ask' THEN size ELSE 0 END) AS ask_vol,
@@ -108,7 +109,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         AND executed_at <= ${toTs}::timestamptz
       GROUP BY bucket
       ORDER BY bucket ASC
-    `) as TapeRow[];
+    `,
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
+    )) as TapeRow[];
 
     const series = rows.map((r) => ({
       ts: toIso(r.bucket),
@@ -133,10 +137,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       series,
     });
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'lottery-contract-tape error');
-    res.status(500).json({
-      error: err instanceof Error ? err.message : String(err),
+    sendDbErrorResponse(res, err, {
+      label: 'lottery_contract_tape',
+      serverErrorBody: { error: 'Internal error' },
     });
   }
 }

@@ -9,13 +9,28 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
-  metrics: { request: vi.fn(() => vi.fn()) },
+  metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
+}));
+
+vi.mock('../_lib/logger.js', () => ({
+  default: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }));
 
 const mockSql = vi.fn();
+const { TransientDbError } = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(cause?: unknown) {
+      super('db attempt timeout');
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  }
+  return { TransientDbError };
+});
 vi.mock('../_lib/db.js', () => ({
   getDb: () => mockSql,
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
 }));
 
 import handler from '../ml/export.js';
@@ -184,6 +199,18 @@ describe('GET /api/ml/export', () => {
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });
+  });
+
+  it('returns 503 + Retry-After on a transient DB error', async () => {
+    mockSql.mockRejectedValue(new TransientDbError());
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(503);
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(res._headers['Retry-After']).toBe('5');
   });
 
   it('returns generic error message for non-Error throws', async () => {

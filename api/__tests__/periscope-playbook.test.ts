@@ -17,17 +17,32 @@
 
 import { vi, beforeEach, describe, it, expect } from 'vitest';
 
-const { mockSql, mockGuard, mockSetCacheHeaders, mockIsMarketOpen } =
-  vi.hoisted(() => ({
+const {
+  mockSql,
+  mockGuard,
+  mockSetCacheHeaders,
+  mockIsMarketOpen,
+  TransientDbError,
+} = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'TransientDbError';
+    }
+  }
+  return {
     mockSql: vi.fn(),
     mockGuard: vi.fn(),
     mockSetCacheHeaders: vi.fn(),
     mockIsMarketOpen: vi.fn(),
-  }));
+    TransientDbError,
+  };
+});
 
 vi.mock('../_lib/db.js', () => ({
   getDb: () => mockSql,
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({

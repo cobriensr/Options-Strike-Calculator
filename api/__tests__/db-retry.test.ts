@@ -16,7 +16,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { withDbRetry, isRetryableDbError, TransientDbError } from '../_lib/db.js';
+import {
+  withDbRetry,
+  isRetryableDbError,
+  TransientDbError,
+} from '../_lib/db.js';
 import { DB_RETRY_ATTEMPTS } from '../_lib/constants.js';
 
 beforeEach(() => {

@@ -63,6 +63,7 @@ import {
   guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
 import type {
@@ -331,10 +332,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (data == null) body.reason = 'no_playbook';
       return res.status(200).json(body);
     } catch (err) {
-      Sentry.captureException(err);
-      logger.error({ err }, '/api/periscope-playbook: handler threw');
       done({ status: 500 });
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'periscope_playbook',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   });
 }

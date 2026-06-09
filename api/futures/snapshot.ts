@@ -27,6 +27,7 @@ import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { withRequestScope } from '../_lib/request-scope.js';
+import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 import logger from '../_lib/logger.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
 import {
@@ -159,9 +160,11 @@ export default withRequestScope(
       return result;
     } catch (err) {
       done({ status: 500 });
-      Sentry.captureException(err);
-      logger.error({ err }, 'futures snapshot fetch error');
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'futures_snapshot',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   },
 );

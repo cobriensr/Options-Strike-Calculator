@@ -5,10 +5,24 @@ import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn().mockResolvedValue([]);
 
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    getDb: vi.fn(() => mockSql),
+    withDbRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (err) {
+        if (actual.isRetryableDbError(err)) {
+          throw new actual.TransientDbError(err);
+        }
+        throw err;
+      }
+    },
+    TransientDbError: actual.TransientDbError,
+    isRetryableDbError: actual.isRetryableDbError,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
@@ -18,7 +32,7 @@ vi.mock('../_lib/sentry.js', () => ({
         fn({ setTransactionName: vi.fn() }),
     ),
   },
-  metrics: { request: vi.fn(() => vi.fn()) },
+  metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -349,5 +363,20 @@ describe('GET /api/futures/snapshot', () => {
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal error' });
     expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+  });
+
+  it('degrades to 503 + Retry-After on a transient db timeout (no Sentry)', async () => {
+    mockSql.mockRejectedValueOnce(new Error('db attempt timeout'));
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 });

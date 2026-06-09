@@ -12,10 +12,18 @@ const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError: class TransientDbError extends Error {
+    constructor(cause?: unknown) {
+      super('transient');
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  },
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -963,6 +971,24 @@ describe('silent-boom-feed handler', () => {
     expect(res._json).toMatchObject({ error: 'Internal error' });
     expect(sentryMod.Sentry.captureException).toHaveBeenCalledWith(dbErr);
     expect(loggerMod.default.error).toHaveBeenCalled();
+  });
+
+  it('soft-degrades a transient DB blip to 503 + Retry-After (no Sentry)', async () => {
+    const { TransientDbError } = await import('../_lib/db.js');
+    mockSql.mockRejectedValueOnce(
+      new TransientDbError(new Error('fetch failed')),
+    );
+
+    const sentryMod = await import('../_lib/sentry.js');
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({ transient: true });
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(sentryMod.Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('defaults date to today (getETDateStr) when no date query param', async () => {

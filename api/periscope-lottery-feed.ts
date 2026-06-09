@@ -18,12 +18,11 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type DbNumeric = string | number;
@@ -180,8 +179,9 @@ export default async function handler(
       fires: rows.map(serializeFire),
     });
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'periscope-lottery-feed failed');
-    res.status(500).json({ error: 'internal_error' });
+    sendDbErrorResponse(res, err, {
+      label: 'periscope_lottery_feed',
+      serverErrorBody: { error: 'internal_error' },
+    });
   }
 }

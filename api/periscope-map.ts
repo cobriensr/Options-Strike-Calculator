@@ -36,6 +36,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { setCacheHeaders, isMarketOpen } from './_lib/api-helpers.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getDb, withDbRetry } from './_lib/db.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import {
   computePeriscopeView,
   fetchConeLevels,
@@ -278,8 +279,9 @@ export default async function handler(
     });
   } catch (error) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(error);
-    logger.error({ err: error }, '/api/periscope-map handler failed');
-    res.status(500).json({ error: 'Internal server error' });
+    sendDbErrorResponse(res, error, {
+      label: 'periscope_map',
+      serverErrorBody: { error: 'Internal server error' },
+    });
   }
 }

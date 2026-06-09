@@ -13,10 +13,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn();
+const { mockSql, TransientDbError } = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'TransientDbError';
+    }
+  }
+  return { mockSql: vi.fn(), TransientDbError };
+});
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -236,6 +245,17 @@ describe('GET /api/periscope-chat-list', () => {
     expect(res._status).toBe(500);
   });
 
+  it('returns 503 + Retry-After on a transient DB error in list mode', async () => {
+    mockSql.mockRejectedValueOnce(new TransientDbError('db attempt timeout'));
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    const body = res._json as { transient?: boolean };
+    expect(body.transient).toBe(true);
+  });
+
   it('applies markdown stripping to prose_text', async () => {
     mockSql.mockResolvedValueOnce([
       {
@@ -316,6 +336,18 @@ describe('GET /api/periscope-chat-list?dates=true', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(500);
+  });
+
+  it('returns 503 on a transient DB error in dates aggregation', async () => {
+    mockSql.mockRejectedValueOnce(new TransientDbError('db attempt timeout'));
+    const req = mockRequest({
+      method: 'GET',
+      query: { dates: 'true' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
   });
 
   it('dates=true bypasses the query-schema parse step', async () => {

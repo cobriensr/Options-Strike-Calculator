@@ -21,6 +21,13 @@ const { mockSql, mockSentryCapture, mockGuardOwnerOrGuest } = vi.hoisted(
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError: class TransientDbError extends Error {
+    constructor(cause: unknown) {
+      super(cause instanceof Error ? cause.message : String(cause));
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -38,6 +45,7 @@ vi.mock('../_lib/sentry.js', () => ({
   },
   metrics: {
     request: vi.fn(() => vi.fn()),
+    increment: vi.fn(),
   },
 }));
 
@@ -59,6 +67,7 @@ vi.mock('../../src/utils/timezone.js', () => ({
 }));
 
 import handler from '../gex-landscape.js';
+import { TransientDbError } from '../_lib/db.js';
 
 /**
  * A full row in GEXBot mini_contracts shape — `value` populates
@@ -346,5 +355,38 @@ describe('/api/gex-landscape', () => {
     expect(res._status).toBe(200);
     const body = res._json as { data: unknown };
     expect(body.data).not.toBeNull();
+  });
+
+  it('returns 500 and captures the exception on a generic DB error', async () => {
+    const dbError = new Error('connection refused');
+    mockSql.mockRejectedValue(dbError);
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal server error' });
+    expect(mockSentryCapture).toHaveBeenCalledWith(dbError);
+  });
+
+  it('returns 503 with Retry-After (and skips Sentry) on a transient DB error', async () => {
+    mockSql.mockRejectedValue(
+      new TransientDbError(new Error('db attempt timeout')),
+    );
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(mockSentryCapture).not.toHaveBeenCalled();
   });
 });

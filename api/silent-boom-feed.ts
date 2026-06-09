@@ -14,8 +14,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
@@ -853,8 +852,9 @@ export default async function handler(
     setCacheHeaders(res, 30, 60);
     res.status(200).json(response);
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'silent-boom-feed: unexpected error');
-    res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'silent_boom_feed',
+      serverErrorBody: { error: 'Internal error' },
+    });
   }
 }

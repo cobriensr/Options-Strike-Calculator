@@ -22,7 +22,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import {
   guardOwnerOrGuestEndpoint,
   isMarketOpen,
@@ -166,9 +166,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json(response);
     } catch (err) {
       done({ status: 500 });
-      Sentry.captureException(err);
-      logger.error({ err, ticker }, 'zero-gamma fetch error');
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'zero_gamma',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   });
 }

@@ -9,13 +9,27 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
-  metrics: { request: vi.fn(() => vi.fn()) },
+  metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    getDb: vi.fn(),
+    withDbRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (err) {
+        if (actual.isRetryableDbError(err)) {
+          throw new actual.TransientDbError(err);
+        }
+        throw err;
+      }
+    },
+    TransientDbError: actual.TransientDbError,
+    isRetryableDbError: actual.isRetryableDbError,
+  };
+});
 
 import handler from '../journal/status.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
@@ -170,5 +184,21 @@ describe('GET /api/journal/status', () => {
     expect((res._json as { error: string }).error).toBe(
       'Database connection failed',
     );
+  });
+
+  it('degrades to 503 + Retry-After on a transient db timeout', async () => {
+    process.env.DATABASE_URL = 'postgres://test';
+    const mockSql = vi.fn().mockRejectedValue(new Error('db attempt timeout'));
+    vi.mocked(getDb).mockReturnValue(mockSql as never);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
   });
 });

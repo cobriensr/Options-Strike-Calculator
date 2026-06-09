@@ -17,12 +17,11 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { lotteryFinderTickerCountsQuerySchema } from './_lib/validation.js';
 import { readKeptTickers } from './_lib/kept-tickers.js';
 import { keptSuppressionSql } from './_lib/lottery-suppression.js';
@@ -231,8 +230,9 @@ export default async function handler(
     setCacheHeaders(res, 30, 60);
     res.status(200).json(response);
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'lottery-finder-ticker-counts: unexpected error');
-    res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'lottery_finder_ticker_counts',
+      serverErrorBody: { error: 'Internal error' },
+    });
   }
 }

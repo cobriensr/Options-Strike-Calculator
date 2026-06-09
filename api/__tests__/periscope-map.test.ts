@@ -3,14 +3,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockSql, mockSentryCapture } = vi.hoisted(() => ({
-  mockSql: vi.fn(),
-  mockSentryCapture: vi.fn(),
-}));
+const { mockSql, mockSentryCapture, TransientDbError } = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'TransientDbError';
+    }
+  }
+  return {
+    mockSql: vi.fn(),
+    mockSentryCapture: vi.fn(),
+    TransientDbError,
+  };
+});
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -28,6 +38,7 @@ vi.mock('../_lib/sentry.js', () => ({
   },
   metrics: {
     request: vi.fn(() => vi.fn()),
+    increment: vi.fn(),
   },
 }));
 
@@ -143,6 +154,31 @@ describe('/api/periscope-map', () => {
     expect(typeof body.ageSec).toBe('number');
     expect(body.ageSec).toBeGreaterThanOrEqual(0);
     expect(body.priorAvailable).toBe(true);
+  });
+
+  it('returns 503 + Retry-After on a transient DB error', async () => {
+    mockSql.mockRejectedValue(new TransientDbError('db attempt timeout'));
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    const body = res._json as { transient?: boolean };
+    expect(body.transient).toBe(true);
+  });
+
+  it('returns 500 on a generic DB error', async () => {
+    mockSql.mockRejectedValue(new Error('Neon pool exhausted'));
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(500);
   });
 
   it('sets priorAvailable=false when no qualifying prior slice exists', async () => {

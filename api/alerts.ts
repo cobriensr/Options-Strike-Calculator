@@ -14,9 +14,9 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
-import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -70,9 +70,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ alerts });
     } catch (err) {
       done({ status: 500 });
-      Sentry.captureException(err);
-      logger.error({ err }, 'alerts fetch error');
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'alerts',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   });
 }

@@ -12,6 +12,13 @@ const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError: class TransientDbError extends Error {
+    constructor(cause?: unknown) {
+      super('transient');
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  },
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -19,11 +26,11 @@ vi.mock('../_lib/sentry.js', () => ({
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
   },
-  metrics: { request: vi.fn(() => vi.fn()) },
+  metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
-  default: { error: vi.fn() },
+  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 import getHandler, { _internal } from '../interval-ba-alerts.js';
@@ -170,6 +177,18 @@ describe('GET /api/interval-ba-alerts', () => {
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
     expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('soft-degrades a transient DB blip to 503 + Retry-After (no Sentry)', async () => {
+    vi.mocked(Sentry.captureException).mockClear();
+    const { TransientDbError } = await import('../_lib/db.js');
+    mockSql.mockRejectedValue(new TransientDbError(new Error('fetch failed')));
+    const res = mockResponse();
+    await getHandler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({ transient: true });
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('coalesces null confluence_tickers to empty array', async () => {

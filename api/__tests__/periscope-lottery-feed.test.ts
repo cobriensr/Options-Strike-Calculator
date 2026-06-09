@@ -4,13 +4,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+  return {
+    getDb: vi.fn(() => mockSql),
+    withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    TransientDbError: actual.TransientDbError,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -23,6 +29,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
+import { TransientDbError } from '../_lib/db.js';
 import handler from '../periscope-lottery-feed.js';
 
 const ROW = {
@@ -169,6 +176,23 @@ describe('GET /api/periscope-lottery-feed', () => {
 
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'internal_error' });
+  });
+
+  it('soft-degrades to 503 + Retry-After on a transient DB blip', async () => {
+    mockSql.mockRejectedValueOnce(
+      new TransientDbError(new Error('db attempt timeout')),
+    );
+
+    const req = mockRequest({ query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
   });
 
   it('bails out without DB call when guard rejects (auth-fail regression)', async () => {

@@ -22,6 +22,13 @@ const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError: class TransientDbError extends Error {
+    constructor(cause: unknown) {
+      super(cause instanceof Error ? cause.message : String(cause));
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  },
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -32,7 +39,7 @@ vi.mock('../_lib/sentry.js', () => ({
     ),
     captureException: vi.fn(),
   },
-  metrics: { request: vi.fn(() => vi.fn()) },
+  metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -41,6 +48,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 import handler from '../strike-trade-volume.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { TransientDbError } from '../_lib/db.js';
 
 function makeRow(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -199,5 +207,25 @@ describe('GET /api/strike-trade-volume', () => {
       res,
     );
     expect(res._status).toBe(500);
+  });
+
+  it('returns 503 with Retry-After on a transient DB error', async () => {
+    mockSql.mockRejectedValueOnce(
+      new TransientDbError(new Error('db attempt timeout')),
+    );
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { ticker: 'SPY', since: '2026-04-23T13:30:00Z' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
   });
 });

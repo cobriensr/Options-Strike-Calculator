@@ -5,9 +5,20 @@ import { mockRequest, mockResponse } from './helpers';
 
 // ── Mocks ─────────────────────────────────────────────────────
 const mockDbFn = vi.fn();
+const { TransientDbError } = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(cause?: unknown) {
+      super('db attempt timeout');
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  }
+  return { TransientDbError };
+});
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockDbFn),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -22,6 +33,7 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
   metrics: {
     request: vi.fn(() => vi.fn()),
+    increment: vi.fn(),
   },
 }));
 
@@ -230,6 +242,24 @@ describe('GET /api/ml/prediction', () => {
     expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
       expect.any(Error),
     );
+  });
+
+  it('returns 503 + Retry-After on a transient DB error', async () => {
+    vi.mocked(Sentry.captureException).mockClear();
+    mockDbFn.mockRejectedValueOnce(new TransientDbError());
+
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(vi.mocked(Sentry.captureException)).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.warn)).toHaveBeenCalled();
   });
 
   it('converts string probability values to numbers', async () => {

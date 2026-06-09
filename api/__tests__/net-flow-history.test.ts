@@ -4,19 +4,38 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
+const { TransientDbError } = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(cause?: unknown) {
+      super('db attempt timeout');
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  }
+  return { TransientDbError };
+});
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   // Identity passthrough — tests assert on the underlying SQL result,
   // not retry/timeout behavior (that's covered in db.test.ts).
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
+}));
+
+const { mockCaptureException, mockIncrement } = vi.hoisted(() => ({
+  mockCaptureException: vi.fn(),
+  mockIncrement: vi.fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: { captureException: mockCaptureException, setTag: vi.fn() },
+  metrics: { increment: mockIncrement },
 }));
 
+const { mockLogWarn } = vi.hoisted(() => ({ mockLogWarn: vi.fn() }));
+
 vi.mock('../_lib/logger.js', () => ({
-  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  default: { info: vi.fn(), warn: mockLogWarn, error: vi.fn() },
 }));
 
 const { mockGuard } = vi.hoisted(() => ({ mockGuard: vi.fn() }));
@@ -222,5 +241,40 @@ describe('net-flow-history endpoint', () => {
 
     const body = res._json as { series: Array<{ ts: string }> };
     expect(body.series[0]!.ts).toBe('2026-05-01T19:00:00.000Z');
+  });
+
+  it('returns 500 + reports to Sentry on a generic SQL failure', async () => {
+    mockCaptureException.mockClear();
+    const boom = new Error('relation "ws_net_flow_per_ticker" does not exist');
+    mockSql.mockRejectedValueOnce(boom);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'TSLA', date: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(mockCaptureException).toHaveBeenCalledWith(boom);
+  });
+
+  it('returns 503 + Retry-After + no Sentry on a TransientDbError', async () => {
+    mockCaptureException.mockClear();
+    mockSql.mockRejectedValueOnce(new TransientDbError());
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { ticker: 'TSLA', date: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({ transient: true });
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(mockIncrement).toHaveBeenCalledWith('net_flow_history.db_timeout');
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 });

@@ -18,9 +18,10 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
-import logger from '../_lib/logger.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
+import { metrics } from '../_lib/sentry.js';
+import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 
 interface PlotAnalysis {
   what_it_means: string;
@@ -49,17 +50,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sql = getDb();
 
     // Fetch plot analyses and findings in parallel
-    const [plotRows, findingsRows] = await Promise.all([
-      sql`
-        SELECT plot_name, blob_url, analysis, model,
-               pipeline_date, updated_at
-        FROM ml_plot_analyses
-        ORDER BY plot_name
-      ` as unknown as Promise<PlotRow[]>,
-      sql`
-        SELECT findings FROM ml_findings WHERE id = 1
-      `,
-    ]);
+    const [plotRows, findingsRows] = await withDbRetry(
+      () =>
+        Promise.all([
+          sql`
+            SELECT plot_name, blob_url, analysis, model,
+                   pipeline_date, updated_at
+            FROM ml_plot_analyses
+            ORDER BY plot_name
+          ` as unknown as Promise<PlotRow[]>,
+          sql`
+            SELECT findings FROM ml_findings WHERE id = 1
+          `,
+        ]),
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
+    );
 
     const findings =
       findingsRows.length > 0
@@ -102,9 +108,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       pipelineDate,
     });
   } catch (err) {
-    logger.error({ err }, 'ML plots query failed');
-    Sentry.captureException(err);
     done({ status: 500 });
-    return res.status(500).json({ error: 'Failed to fetch plot data' });
+    sendDbErrorResponse(res, err, {
+      label: 'ml_plots',
+      serverErrorBody: { error: 'Failed to fetch plot data' },
+    });
+    return;
   }
 }

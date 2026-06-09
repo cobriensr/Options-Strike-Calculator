@@ -30,6 +30,7 @@ import {
 } from './_lib/api-helpers.js';
 import { GUEST_COOKIE, guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getDb, withDbRetry } from './_lib/db.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import logger from './_lib/logger.js';
 import { panelPrefsBodySchema } from './_lib/validation.js';
 
@@ -81,10 +82,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         groupOrder: asStringArray(row?.group_order),
       });
     } catch (err) {
-      Sentry.captureException(err);
-      logger.error({ err }, 'panel-prefs GET failed');
       done({ status: 500 });
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'panel_prefs',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   }
 

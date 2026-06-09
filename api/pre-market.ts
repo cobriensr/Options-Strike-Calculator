@@ -22,7 +22,9 @@ import {
   respondIfInvalid,
 } from './_lib/api-helpers.js';
 import { metrics } from './_lib/sentry.js';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import logger from './_lib/logger.js';
 import { preMarketBodySchema } from './_lib/validation.js';
 import { getETDateStr } from '../src/utils/timezone.js';
@@ -48,11 +50,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'GET') {
     const date = (req.query.date as string) || getTodayET();
     try {
-      const rows = await db`
+      const rows = await withDbRetry(
+        () => db`
         SELECT pre_market_data FROM market_snapshots
         WHERE date = ${date} AND pre_market_data IS NOT NULL
         ORDER BY created_at DESC LIMIT 1
-      `;
+      `,
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      );
       setCacheHeaders(res, 120, 60);
       if (rows.length > 0 && rows[0]?.pre_market_data) {
         done({ status: 200 });
@@ -62,8 +68,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ data: null });
     } catch (err) {
       done({ status: 500 });
-      logger.error({ err }, 'Failed to fetch pre-market data');
-      return res.status(500).json({ error: 'Failed to fetch' });
+      sendDbErrorResponse(res, err, {
+        label: 'pre_market',
+        serverErrorBody: { error: 'Failed to fetch' },
+      });
+      return;
     }
   }
 

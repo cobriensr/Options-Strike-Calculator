@@ -85,13 +85,19 @@ function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
   return mockSql(outStrings as unknown as TemplateStringsArray, ...outValues);
 }
 
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => dbTag),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+  return {
+    getDb: vi.fn(() => dbTag),
+    withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    TransientDbError: actual.TransientDbError,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -106,6 +112,7 @@ vi.mock('../_lib/kept-tickers.js', () => ({
   readKeptTickers: mockReadKeptTickers,
 }));
 
+import { TransientDbError } from '../_lib/db.js';
 import handler from '../lottery-finder-ticker-counts.js';
 
 describe('lottery-finder-ticker-counts handler', () => {
@@ -536,5 +543,23 @@ describe('lottery-finder-ticker-counts handler', () => {
     expect(res._status).toBe(200);
     const params = (mockSql.mock.calls[0] as unknown[]).slice(1);
     expect(params.some((p) => Array.isArray(p) && p.length === 0)).toBe(true);
+  });
+
+  it('soft-degrades to 503 + Retry-After on a transient DB blip', async () => {
+    mockReadKeptTickers.mockResolvedValueOnce([]);
+    mockSql.mockRejectedValueOnce(
+      new TransientDbError(new Error('db attempt timeout')),
+    );
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
   });
 });

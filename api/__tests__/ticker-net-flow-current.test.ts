@@ -4,19 +4,32 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
+const { TransientDbError } = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(cause?: unknown) {
+      super('db attempt timeout');
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  }
+  return { TransientDbError };
+});
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   // Identity passthrough — tests assert on the underlying SQL result,
   // not retry/timeout behavior (that's covered in db.test.ts).
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
 }));
 
-const { mockCaptureException } = vi.hoisted(() => ({
+const { mockCaptureException, mockIncrement } = vi.hoisted(() => ({
   mockCaptureException: vi.fn(),
+  mockIncrement: vi.fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: mockCaptureException, setTag: vi.fn() },
+  metrics: { increment: mockIncrement },
 }));
 
 const { mockLogError } = vi.hoisted(() => ({ mockLogError: vi.fn() }));
@@ -227,7 +240,8 @@ describe('ticker-net-flow-current endpoint', () => {
     expect(body.snapshots[0]!.asOfTs).toBe('2026-05-01T19:00:00.000Z');
   });
 
-  it('returns 500 + reports to Sentry on SQL failure', async () => {
+  it('returns 500 + static body + reports to Sentry on a generic SQL failure', async () => {
+    mockCaptureException.mockClear();
     const boom = new Error('relation "ws_net_flow_per_ticker" does not exist');
     mockSql.mockRejectedValueOnce(boom);
 
@@ -239,18 +253,18 @@ describe('ticker-net-flow-current endpoint', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({
-      error: 'relation "ws_net_flow_per_ticker" does not exist',
-    });
+    // The raw DB error message must NOT leak into the response body.
+    expect(res._json).toEqual({ error: 'Internal error' });
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
     expect(mockCaptureException).toHaveBeenCalledWith(boom);
     expect(mockLogError).toHaveBeenCalledWith(
       { err: boom },
-      'ticker-net-flow-current error',
+      'ticker_net_flow_current failed',
     );
   });
 
-  it('stringifies non-Error throwables in the 500 payload', async () => {
+  it('returns a static 500 body for non-Error throwables (no leak)', async () => {
+    mockCaptureException.mockClear();
     mockSql.mockRejectedValueOnce('boom-as-string');
 
     const req = mockRequest({
@@ -261,7 +275,27 @@ describe('ticker-net-flow-current endpoint', () => {
     await handler(req, res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'boom-as-string' });
+    expect(res._json).toEqual({ error: 'Internal error' });
     expect(mockCaptureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns 503 + Retry-After + no Sentry on a TransientDbError', async () => {
+    mockCaptureException.mockClear();
+    mockSql.mockRejectedValueOnce(new TransientDbError());
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { tickers: 'TSLA', date: '2026-05-01' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({ transient: true });
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(mockIncrement).toHaveBeenCalledWith(
+      'ticker_net_flow_current.db_timeout',
+    );
+    expect(mockCaptureException).not.toHaveBeenCalled();
   });
 });

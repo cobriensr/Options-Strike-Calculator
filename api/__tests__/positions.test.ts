@@ -9,17 +9,32 @@ vi.mock('../_lib/api-helpers.js', () => ({
   schwabTraderFetch: vi.fn(),
 }));
 
-vi.mock('../_lib/db.js', () => ({
-  savePositions: vi.fn(),
-  getDb: vi.fn(),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    savePositions: vi.fn(),
+    getDb: vi.fn(),
+    withDbRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (err) {
+        if (actual.isRetryableDbError(err)) {
+          throw new actual.TransientDbError(err);
+        }
+        throw err;
+      }
+    },
+    TransientDbError: actual.TransientDbError,
+    isRetryableDbError: actual.isRetryableDbError,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
   metrics: {
     request: vi.fn(() => vi.fn()),
     dbSave: vi.fn(),
+    increment: vi.fn(),
   },
 }));
 
@@ -396,6 +411,38 @@ describe('GET /api/positions', () => {
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Failed to fetch positions' });
     expect(Sentry.captureException).toHaveBeenCalledWith('string error');
+  });
+
+  it('degrades to 503 + Retry-After when the snapshot read trips a transient db timeout', async () => {
+    // Schwab succeeds; the in-handler snapshot SELECT (via withDbRetry)
+    // hits the per-attempt timeout → TransientDbError → soft 503.
+    vi.mocked(schwabTraderFetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        data: [{ accountNumber: '123', hashValue: 'hash1' }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          securitiesAccount: {
+            accountNumber: '123',
+            type: 'MARGIN',
+            positions: [],
+          },
+        },
+      });
+    mockSql.mockRejectedValueOnce(new Error('db attempt timeout'));
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('rejects a malformed ?date with 400 (no DB / Schwab call)', async () => {

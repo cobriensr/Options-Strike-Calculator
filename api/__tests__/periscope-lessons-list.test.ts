@@ -13,10 +13,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn();
+const { mockSql, TransientDbError } = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = 'TransientDbError';
+    }
+  }
+  return { mockSql: vi.fn(), TransientDbError };
+});
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -165,6 +174,25 @@ describe('GET /api/periscope-lessons-list', () => {
       lessons: Array<{ id: number; status: string }>;
     };
     expect(body.lessons.map((l) => l.id)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('returns 503 + Retry-After on a transient DB error', async () => {
+    mockSql.mockRejectedValueOnce(new TransientDbError('db attempt timeout'));
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await listHandler(req, res);
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    const body = res._json as { transient?: boolean };
+    expect(body.transient).toBe(true);
+  });
+
+  it('returns 500 on a generic DB error', async () => {
+    mockSql.mockRejectedValueOnce(new Error('Neon pool exhausted'));
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await listHandler(req, res);
+    expect(res._status).toBe(500);
   });
 
   it('handles null source_ids defensively (legacy / partial rows)', async () => {

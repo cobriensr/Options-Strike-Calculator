@@ -12,7 +12,7 @@
  *   ?id=42                                             — Get a single analysis by ID
  */
 
-import { Sentry, metrics } from './_lib/sentry.js';
+import { metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   guardOwnerOrGuestEndpoint,
@@ -20,7 +20,7 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 
 function parseRow(r: Record<string, unknown>) {
   return {
@@ -162,8 +162,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ error: 'Provide ?dates=true, ?date=YYYY-MM-DD, or ?id=N' });
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(err);
-    logger.error({ err }, 'analyses endpoint error');
-    return res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'analyses',
+      serverErrorBody: { error: 'Internal error' },
+    });
+    return;
   }
 }

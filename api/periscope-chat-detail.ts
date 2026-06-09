@@ -22,8 +22,8 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
-import logger from './_lib/logger.js';
-import { Sentry, metrics } from './_lib/sentry.js';
+import { metrics } from './_lib/sentry.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { periscopeChatDetailQuerySchema } from './_lib/validation.js';
 import { toIsoDate, toIsoTimestamp } from './_lib/periscope-db.js';
 import type {
@@ -240,8 +240,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json(parseDetailRow(rows[0]!));
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(err);
-    logger.error({ err }, 'periscope-chat-detail endpoint error');
-    return res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'periscope_chat_detail',
+      serverErrorBody: { error: 'Internal error' },
+    });
+    return;
   }
 }

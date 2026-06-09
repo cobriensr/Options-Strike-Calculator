@@ -32,8 +32,8 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
-import logger from './_lib/logger.js';
-import { Sentry, metrics } from './_lib/sentry.js';
+import { metrics } from './_lib/sentry.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { periscopeChatListQuerySchema } from './_lib/validation.js';
 
 /**
@@ -168,9 +168,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     } catch (err) {
       done({ status: 500, error: 'unhandled' });
-      Sentry.captureException(err);
-      logger.error({ err }, 'periscope-chat-list dates aggregation error');
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'periscope_chat_list',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   }
 
@@ -237,8 +239,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ items, nextBefore });
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(err);
-    logger.error({ err }, 'periscope-chat-list endpoint error');
-    return res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'periscope_chat_list',
+      serverErrorBody: { error: 'Internal error' },
+    });
+    return;
   }
 }

@@ -40,9 +40,10 @@ import {
   rejectIfRateLimited,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
-import { getDb } from './_lib/db.js';
-import logger from './_lib/logger.js';
-import { Sentry, metrics } from './_lib/sentry.js';
+import { getDb, withDbRetry } from './_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
+import { metrics } from './_lib/sentry.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { toIsoTimestamp } from './_lib/periscope-db.js';
 import type { PeriscopeLessonStatus } from './_lib/periscope-lessons.js';
 
@@ -115,7 +116,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // the panel's three tabs land in the natural review order (proposed
     // first, then active, then archived). citation_count + created_at
     // are the secondary keys within each status group.
-    const rows = await sql`
+    const rows = await withDbRetry(
+      () => sql`
       SELECT id, lesson_text, source_ids, status, citation_count,
              created_at, promoted_at, archived_at
       FROM periscope_lessons
@@ -128,15 +130,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         END ASC,
         citation_count DESC,
         created_at DESC
-    `;
+    `,
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
+    );
 
     const lessons = rows.map(parseRow);
     done({ status: 200 });
     return res.status(200).json({ lessons });
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(err);
-    logger.error({ err }, 'periscope-lessons-list endpoint error');
-    return res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'periscope_lessons_list',
+      serverErrorBody: { error: 'Internal error' },
+    });
+    return;
   }
 }

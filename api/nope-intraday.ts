@@ -16,7 +16,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 
 const TICKER = 'SPY';
 
@@ -141,9 +141,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json(response);
     } catch (err) {
       done({ status: 500 });
-      Sentry.captureException(err);
-      logger.error({ err }, 'nope-intraday fetch error');
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'nope_intraday',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   });
 }

@@ -22,10 +22,11 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
+import { getDb, withDbRetry } from './_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
-import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type Range = 'today' | '7d' | '30d';
@@ -93,7 +94,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       let rows: VegaSpikeRow[];
       if (range === 'today') {
-        rows = (await sql`
+        rows = (await withDbRetry(
+          () => sql`
           SELECT
             id, ticker, date, timestamp,
             dir_vega_flow, z_score, vs_prior_max,
@@ -105,9 +107,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           WHERE date = ${today}
           ORDER BY timestamp DESC
           LIMIT 100
-        `) as VegaSpikeRow[];
+        `,
+          DB_RETRY_ATTEMPTS,
+          DB_RETRY_TIMEOUT_MS,
+        )) as VegaSpikeRow[];
       } else if (range === '7d') {
-        rows = (await sql`
+        rows = (await withDbRetry(
+          () => sql`
           SELECT
             id, ticker, date, timestamp,
             dir_vega_flow, z_score, vs_prior_max,
@@ -119,9 +125,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           WHERE date >= CURRENT_DATE - INTERVAL '7 days'
           ORDER BY timestamp DESC
           LIMIT 100
-        `) as VegaSpikeRow[];
+        `,
+          DB_RETRY_ATTEMPTS,
+          DB_RETRY_TIMEOUT_MS,
+        )) as VegaSpikeRow[];
       } else {
-        rows = (await sql`
+        rows = (await withDbRetry(
+          () => sql`
           SELECT
             id, ticker, date, timestamp,
             dir_vega_flow, z_score, vs_prior_max,
@@ -133,7 +143,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           WHERE date >= CURRENT_DATE - INTERVAL '30 days'
           ORDER BY timestamp DESC
           LIMIT 100
-        `) as VegaSpikeRow[];
+        `,
+          DB_RETRY_ATTEMPTS,
+          DB_RETRY_TIMEOUT_MS,
+        )) as VegaSpikeRow[];
       }
 
       const spikes = rows.map((row) => ({
@@ -160,9 +173,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({ spikes, range });
     } catch (err) {
       done({ status: 500 });
-      Sentry.captureException(err);
-      logger.error({ err }, 'vega-spikes fetch error');
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'vega_spikes',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   });
 }

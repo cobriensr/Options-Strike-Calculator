@@ -15,11 +15,11 @@
  * Response: { analyses: [...], count: N }
  */
 
-import { Sentry, metrics } from './_lib/sentry.js';
+import { metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/journal');
@@ -148,8 +148,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({ analyses: rows, count: rows.length });
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(err);
-    logger.error({ err }, 'Journal query error');
-    return res.status(500).json({ error: 'Query failed' });
+    sendDbErrorResponse(res, err, {
+      label: 'journal',
+      serverErrorBody: { error: 'Query failed' },
+    });
+    return;
   }
 }

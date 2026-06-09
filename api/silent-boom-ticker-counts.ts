@@ -14,9 +14,9 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getDb } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
+import { getDb, withDbRetry } from './_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
@@ -139,7 +139,8 @@ export default async function handler(
   try {
     const db = getDb();
 
-    const rows = (await db`
+    const rows = (await withDbRetry(
+      () => db`
       SELECT
         underlying_symbol AS ticker,
         COUNT(*)::int AS count,
@@ -173,7 +174,10 @@ export default async function handler(
         )
       GROUP BY underlying_symbol
       ORDER BY count DESC, latest_bucket_ct DESC, underlying_symbol ASC
-    `) as CountRow[];
+    `,
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
+    )) as CountRow[];
 
     const response: SilentBoomTickerCountsResponse = {
       date,
@@ -199,8 +203,9 @@ export default async function handler(
     setCacheHeaders(res, 30, 60);
     res.status(200).json(response);
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'silent-boom-ticker-counts: unexpected error');
-    res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'silent_boom_ticker_counts',
+      serverErrorBody: { error: 'Internal error' },
+    });
   }
 }

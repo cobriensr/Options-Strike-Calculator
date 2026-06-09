@@ -16,11 +16,13 @@ vi.mock('../_lib/db.js', async () => {
   return {
     getDb: vi.fn(() => mockSql),
     withDbRetry: actual.withDbRetry,
+    TransientDbError: actual.TransientDbError,
   };
 });
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -207,5 +209,17 @@ describe('silent-boom-export handler', () => {
 
     expect(mockSql).toHaveBeenCalledTimes(1);
     expect(res._status).toBe(500);
+  });
+
+  it('soft-degrades an exhausted transient blip to 503 + Retry-After', async () => {
+    const { TransientDbError } = await import('../_lib/db.js');
+    mockSql.mockRejectedValue(new TransientDbError(new Error('fetch failed')));
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({ transient: true });
+    expect(res._headers['Retry-After']).toBe('5');
   });
 });

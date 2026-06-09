@@ -1,10 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import crypto from 'node:crypto';
 
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    getDb: vi.fn(),
+    withDbRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (err) {
+        if (actual.isRetryableDbError(err)) {
+          throw new actual.TransientDbError(err);
+        }
+        throw err;
+      }
+    },
+    TransientDbError: actual.TransientDbError,
+    isRetryableDbError: actual.isRetryableDbError,
+  };
+});
 vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../_lib/api-helpers.js')>();
@@ -170,6 +184,25 @@ describe('GET /api/panel-prefs', () => {
     const res = makeRes();
     await handler(req, res as never);
     expect(res.statusCode).toBe(401);
+  });
+
+  it('degrades to 503 + Retry-After on a transient db timeout', async () => {
+    mockSql.mockRejectedValueOnce(new Error('db attempt timeout'));
+    process.env.OWNER_SECRET = 'secret';
+    const req = {
+      method: 'GET',
+      headers: { cookie: 'sc-owner=secret' },
+      query: {},
+      body: undefined,
+    } as never;
+    const res = makeRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(503);
+    expect(res.headers['Retry-After']).toBe('5');
+    expect(res.body).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
   });
 });
 

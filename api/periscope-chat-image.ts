@@ -29,7 +29,8 @@ import {
 } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import logger from './_lib/logger.js';
-import { Sentry, metrics } from './_lib/sentry.js';
+import { metrics } from './_lib/sentry.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { periscopeChatImageQuerySchema } from './_lib/validation.js';
 
 interface PeriscopeImageEntry {
@@ -141,8 +142,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(err);
-    logger.error({ err }, 'periscope-chat-image endpoint error');
-    return res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'periscope_chat_image',
+      serverErrorBody: { error: 'Internal error' },
+    });
+    return;
   }
 }

@@ -9,9 +9,20 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 const mockSql = vi.fn();
+const { TransientDbError } = vi.hoisted(() => {
+  class TransientDbError extends Error {
+    constructor(cause?: unknown) {
+      super('db attempt timeout');
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  }
+  return { TransientDbError };
+});
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError,
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -19,16 +30,16 @@ vi.mock('../_lib/sentry.js', () => ({
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
   },
-  metrics: { request: vi.fn(() => vi.fn()) },
+  metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
-  default: { error: vi.fn() },
+  default: { warn: vi.fn(), error: vi.fn() },
 }));
 
 import handler from '../alerts.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 
 // ── Tests ─────────────────────────────────────────────────────
@@ -157,6 +168,20 @@ describe('GET /api/alerts', () => {
     expect(res._json).toEqual({ error: 'Internal error' });
     expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
     expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('returns 503 + Retry-After + no Sentry on a TransientDbError', async () => {
+    vi.mocked(Sentry.captureException).mockClear();
+    mockSql.mockRejectedValue(new TransientDbError());
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({ transient: true });
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(metrics.increment).toHaveBeenCalledWith('alerts.db_timeout');
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('calls scope.setTransactionName', async () => {

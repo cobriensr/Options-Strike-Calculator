@@ -24,8 +24,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
@@ -170,10 +169,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       series,
     });
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'net-flow-history error');
-    res.status(500).json({
-      error: err instanceof Error ? err.message : String(err),
+    sendDbErrorResponse(res, err, {
+      label: 'net_flow_history',
+      serverErrorBody: { error: 'Internal error' },
     });
   }
 }

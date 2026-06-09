@@ -19,8 +19,10 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
+import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import {
   aggregateFireStats,
@@ -62,7 +64,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const from = daysAgoEtDateStr(days);
 
       const sql = getDb();
-      const rows = await loadFireStatsRows(sql, from, today);
+      const rows = await withDbRetry(
+        () => loadFireStatsRows(sql, from, today),
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      );
       const stats: AggregateStats = aggregateFireStats(rows, from, today);
 
       done({ status: 200 });
@@ -72,9 +78,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       res.setHeader('Cache-Control', 'private, max-age=30');
       res.status(200).json(stats);
     } catch (err) {
-      Sentry.captureException(err);
       done({ status: 500 });
-      res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'gamma_setups_weekly_stats',
+        serverErrorBody: { error: 'Internal error' },
+      });
     }
   });
 }

@@ -16,9 +16,13 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { guardOwnerOrGuestEndpoint } from '../../_lib/api-helpers.js';
-import { getDb } from '../../_lib/db.js';
-import logger from '../../_lib/logger.js';
+import { getDb, withDbRetry } from '../../_lib/db.js';
+import {
+  DB_RETRY_ATTEMPTS,
+  DB_RETRY_TIMEOUT_MS,
+} from '../../_lib/constants.js';
 import { Sentry, metrics } from '../../_lib/sentry.js';
+import { sendDbErrorResponse } from '../../_lib/transient-db-response.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
@@ -34,7 +38,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     try {
       const sql = getDb();
-      const rows = await sql`
+      const rows = await withDbRetry(
+        () => sql`
         SELECT
           a.id              AS id,
           a.contract_id     AS contract_id,
@@ -57,15 +62,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         INNER JOIN tracker_contracts c ON c.id = a.contract_id
         WHERE a.acknowledged = FALSE
         ORDER BY a.fired_at DESC, a.id DESC
-      `;
+      `,
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      );
       res.setHeader('Cache-Control', 'no-store');
       done({ status: 200 });
       return res.status(200).json({ alerts: rows, count: rows.length });
     } catch (err) {
       done({ status: 500 });
-      Sentry.captureException(err);
-      logger.error({ err }, 'tracker-alerts unread fetch error');
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'tracker_alerts_unread',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   });
 }

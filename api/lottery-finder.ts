@@ -17,11 +17,11 @@ import { getDb, isRetryableDbError, withDbRetry } from './_lib/db.js';
 import { Sentry } from './_lib/sentry.js';
 import { readLastGood, writeLastGood } from './_lib/last-good-cache.js';
 import { readKeptTickers, addKeptTickers } from './_lib/kept-tickers.js';
-import logger from './_lib/logger.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { lotteryFinderQuerySchema } from './_lib/validation.js';
 import {
   gammaScoreAdjustment,
@@ -1849,10 +1849,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       reignitedFires,
     });
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'lottery-finder error');
-    res.status(500).json({
-      error: err instanceof Error ? err.message : String(err),
+    sendDbErrorResponse(res, err, {
+      label: 'lottery_finder',
+      serverErrorBody: { error: 'Internal error' },
     });
   }
 }

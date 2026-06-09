@@ -26,10 +26,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
-import { getDb } from '../_lib/db.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
 import logger from '../_lib/logger.js';
 import { parseFreeText, toOccSymbol } from '../_lib/occ.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
+import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 import {
   contractCreateSchema,
   freeTextContractSchema,
@@ -89,7 +91,8 @@ async function handleList(
     // ("2026-05-22T00:00:00.000Z") — that breaks helpers.dteFromExpiry
     // which splits on '-'. Bind the format at the SQL boundary so every
     // consumer (REST, ML export, tests) gets the same shape.
-    const rows = await sql`
+    const rows = await withDbRetry(
+      () => sql`
       SELECT
         c.id, c.occ_symbol, c.ticker,
         TO_CHAR(c.expiry, 'YYYY-MM-DD') AS expiry,
@@ -112,15 +115,20 @@ async function handleList(
       ) t ON true
       WHERE c.status = ${status}
       ORDER BY c.expiry ASC, c.ticker ASC, c.id ASC
-    `;
+    `,
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
+    );
     res.setHeader('Cache-Control', 'no-store');
     done({ status: 200 });
     return res.status(200).json({ contracts: rows, count: rows.length });
   } catch (err) {
     done({ status: 500 });
-    Sentry.captureException(err);
-    logger.error({ err }, 'tracker-contracts list error');
-    return res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'tracker_contracts',
+      serverErrorBody: { error: 'Internal error' },
+    });
+    return;
   }
 }
 

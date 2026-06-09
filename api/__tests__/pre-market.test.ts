@@ -27,14 +27,28 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
-  metrics: { request: vi.fn(() => vi.fn()) },
+  metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 
 const mockDbFn = vi.fn();
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockDbFn),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    getDb: vi.fn(() => mockDbFn),
+    withDbRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (err) {
+        if (actual.isRetryableDbError(err)) {
+          throw new actual.TransientDbError(err);
+        }
+        throw err;
+      }
+    },
+    TransientDbError: actual.TransientDbError,
+    isRetryableDbError: actual.isRetryableDbError,
+  };
+});
 
 import handler from '../pre-market.js';
 import {
@@ -178,6 +192,24 @@ describe('GET /api/pre-market', () => {
 
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Failed to fetch' });
+  });
+
+  it('degrades to 503 + Retry-After on a transient db timeout', async () => {
+    mockDbFn.mockRejectedValueOnce(new Error('db attempt timeout'));
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-03-28' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
   });
 });
 

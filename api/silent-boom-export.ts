@@ -17,8 +17,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { guardOwnerEndpoint } from './_lib/auth-helpers.js';
 import { silentBoomExportQuerySchema } from './_lib/validation.js';
 import { getETDateStr } from '../src/utils/timezone.js';
@@ -205,8 +204,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     return res.status(200).send(lines.join('\n'));
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'silent-boom-export error');
-    return res.status(500).json({ error: 'Internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'silent_boom_export',
+      serverErrorBody: { error: 'Internal error' },
+    });
+    return;
   }
 }

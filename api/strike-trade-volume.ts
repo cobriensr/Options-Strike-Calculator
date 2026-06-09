@@ -22,7 +22,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { Sentry, metrics } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
@@ -171,9 +171,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json(response);
     } catch (err) {
       done({ status: 500 });
-      logger.error({ err }, 'strike-trade-volume failed');
-      Sentry.captureException(err);
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'strike_trade_volume',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   });
 }

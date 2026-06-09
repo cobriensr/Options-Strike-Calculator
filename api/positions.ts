@@ -32,6 +32,7 @@ import {
   type PositionLeg,
 } from './_lib/db.js';
 import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { parseFullCSV, buildFullSummary } from './_lib/csv-parser.js';
 import {
   buildPositionResponse,
@@ -391,8 +392,10 @@ async function handleSchwabFetch(
       fetchTime,
     });
   } catch (err) {
-    Sentry.captureException(err);
-    logger.error({ err }, 'Positions fetch error');
-    return res.status(500).json({ error: 'Failed to fetch positions' });
+    sendDbErrorResponse(res, err, {
+      label: 'positions',
+      serverErrorBody: { error: 'Failed to fetch positions' },
+    });
+    return;
   }
 }

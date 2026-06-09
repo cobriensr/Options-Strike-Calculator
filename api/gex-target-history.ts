@@ -30,7 +30,7 @@
  */
 
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { withRequestScope } from './_lib/request-scope.js';
 import logger from './_lib/logger.js';
@@ -444,9 +444,11 @@ export default withRequestScope(
         return res.status(200).json(cached.body);
       }
       done({ status: 500 });
-      Sentry.captureException(err);
-      logger.error({ err }, 'gex-target-history fetch error');
-      return res.status(500).json({ error: 'Internal error' });
+      sendDbErrorResponse(res, err, {
+        label: 'gex_target_history',
+        serverErrorBody: { error: 'Internal error' },
+      });
+      return;
     }
   },
 );

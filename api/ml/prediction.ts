@@ -13,11 +13,12 @@
  * Environment: DATABASE_URL, OWNER_SECRET
  */
 
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
-import { getDb } from '../_lib/db.js';
-import logger from '../_lib/logger.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
+import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
+import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/ml/prediction');
@@ -40,24 +41,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     let rows;
     if (dateParam) {
-      rows = await sql`
+      rows = await withDbRetry(
+        () => sql`
         SELECT date, ccs_prob, pcs_prob, ic_prob, sit_out_prob,
                predicted_class, model_version, feature_count,
                top_features, created_at
         FROM predictions
         WHERE date = ${dateParam}::date
         LIMIT 1
-      `;
+      `,
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      );
     } else {
       // Most recent prediction
-      rows = await sql`
+      rows = await withDbRetry(
+        () => sql`
         SELECT date, ccs_prob, pcs_prob, ic_prob, sit_out_prob,
                predicted_class, model_version, feature_count,
                top_features, created_at
         FROM predictions
         ORDER BY date DESC
         LIMIT 1
-      `;
+      `,
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      );
     }
 
     if (!rows || rows.length === 0) {
@@ -88,9 +97,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 200 });
     return res.status(200).json({ prediction });
   } catch (err) {
-    logger.error({ err }, 'ML prediction query failed');
-    Sentry.captureException(err);
     done({ status: 500 });
-    return res.status(500).json({ error: 'Failed to fetch prediction' });
+    sendDbErrorResponse(res, err, {
+      label: 'ml_prediction',
+      serverErrorBody: { error: 'Failed to fetch prediction' },
+    });
+    return;
   }
 }

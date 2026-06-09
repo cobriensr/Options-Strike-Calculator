@@ -12,11 +12,13 @@ vi.mock('../_lib/db.js', async () => {
   return {
     getDb: vi.fn(() => mockSql),
     withDbRetry: actual.withDbRetry,
+    TransientDbError: actual.TransientDbError,
   };
 });
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -232,5 +234,28 @@ describe('GET /api/lottery-export', () => {
     );
     expect(mockSql).toHaveBeenCalledTimes(1);
     expect(res._status).toBe(500);
+  });
+
+  it('soft-degrades to 503 + Retry-After on an exhausted transient blip', async () => {
+    // The REAL withDbRetry is used here, so a persistent retryable blip
+    // exhausts both attempts and throws a TransientDbError, which
+    // sendDbErrorResponse maps to a soft, auto-retrying 503 (no Sentry).
+    // Fake timers skip the inter-attempt backoff sleeps.
+    vi.useFakeTimers();
+    mockSql.mockRejectedValue(new Error('db attempt timeout'));
+    const res = mockResponse();
+    const promise = handler(
+      mockRequest({ method: 'GET', query: { date: '2026-05-04' } }),
+      res,
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+    vi.useRealTimers();
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
   });
 });

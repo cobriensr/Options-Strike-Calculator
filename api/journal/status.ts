@@ -5,10 +5,11 @@
  * Owner-or-guest.
  */
 
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 
 // Public diagnostic surface — list every table whose row count is safe
 // to expose to a guest cookie. Anything not on this list gets dropped
@@ -124,10 +125,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (err) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(err);
-    return res.status(500).json({
-      connected: false,
-      error: 'Database connection failed',
+    sendDbErrorResponse(res, err, {
+      label: 'journal_status',
+      serverErrorBody: {
+        connected: false,
+        error: 'Database connection failed',
+      },
     });
+    return;
   }
 }

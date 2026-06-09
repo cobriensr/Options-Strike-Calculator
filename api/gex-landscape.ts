@@ -34,6 +34,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { setCacheHeaders, isMarketOpen } from './_lib/api-helpers.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getDb, withDbRetry } from './_lib/db.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { fetchSpxSpot } from './_lib/periscope-query.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
@@ -313,8 +314,9 @@ export default async function handler(
     });
   } catch (error) {
     done({ status: 500, error: 'unhandled' });
-    Sentry.captureException(error);
-    logger.error({ err: error }, '/api/gex-landscape handler failed');
-    res.status(500).json({ error: 'Internal server error' });
+    sendDbErrorResponse(res, error, {
+      label: 'gex_landscape',
+      serverErrorBody: { error: 'Internal server error' },
+    });
   }
 }

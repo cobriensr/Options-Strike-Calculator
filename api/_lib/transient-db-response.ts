@@ -48,7 +48,9 @@ export function sendDbErrorResponse(
     metrics.increment(`${label}.db_timeout`);
     if (!res.headersSent) {
       res.setHeader('Retry-After', '5');
-      res.status(503).json({ error: 'temporarily unavailable', transient: true });
+      res
+        .status(503)
+        .json({ error: 'temporarily unavailable', transient: true });
     }
     return;
   }

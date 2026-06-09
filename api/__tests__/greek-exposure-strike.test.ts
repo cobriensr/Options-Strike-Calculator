@@ -13,6 +13,13 @@ const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  TransientDbError: class TransientDbError extends Error {
+    constructor(cause: unknown) {
+      super(cause instanceof Error ? cause.message : String(cause));
+      this.name = 'TransientDbError';
+      this.cause = cause;
+    }
+  },
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
@@ -20,17 +27,18 @@ vi.mock('../_lib/sentry.js', () => ({
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
   },
-  metrics: { request: vi.fn(() => vi.fn()) },
+  metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
-  default: { error: vi.fn() },
+  default: { error: vi.fn(), warn: vi.fn() },
 }));
 
 import handler from '../greek-exposure-strike.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { TransientDbError } from '../_lib/db.js';
 
 // ── Fixture ──────────────────────────────────────────────────────────
 
@@ -279,6 +287,22 @@ describe('GET /api/greek-exposure-strike', () => {
     expect(res._json).toEqual({ error: 'Internal error' });
     expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
     expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('returns 503 with Retry-After (and skips Sentry) on a transient DB error', async () => {
+    vi.mocked(Sentry.captureException).mockClear();
+    mockSql.mockRejectedValue(
+      new TransientDbError(new Error('db attempt timeout')),
+    );
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   // ── Sentry scope ──────────────────────────────────────────────────
