@@ -40,7 +40,7 @@ def _best_exit_under_lambda(rows: pd.DataFrame, lam: float) -> int:
 
 
 def main() -> int:
-    ds = pd.read_parquet(cfg.DATASET_PARQUET)
+    ds = pd.read_parquet(cfg.DATASET_DIR)
     ds["fold"] = assign_walkforward_folds(ds["date"], cfg.N_TRAIN_DAYS, cfg.TEST_BLOCK_DAYS)
     per_fire = {fid: g.reset_index(drop=True) for fid, g in ds.groupby("fire_id")}
     fmeta = ds.groupby("fire_id").agg(fold=("fold", "first")).reset_index()

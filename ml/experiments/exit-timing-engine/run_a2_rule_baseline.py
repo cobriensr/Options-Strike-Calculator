@@ -30,10 +30,10 @@ def _fire_realized(fire_rows: pd.DataFrame, knobs: dict) -> float:
 
 
 def main() -> int:
-    if not cfg.DATASET_PARQUET.exists():
-        print("Run A1 first — decision_dataset.parquet missing.", file=sys.stderr)
+    if not list(cfg.DATASET_DIR.glob("part-*.parquet")):
+        print("Run A1 first — no part files found in decision_dataset dir.", file=sys.stderr)
         return 1
-    ds = pd.read_parquet(cfg.DATASET_PARQUET)
+    ds = pd.read_parquet(cfg.DATASET_DIR)
     ds["fold"] = assign_walkforward_folds(ds["date"], cfg.N_TRAIN_DAYS, cfg.TEST_BLOCK_DAYS)
 
     per_fire = {fid: g.reset_index(drop=True) for fid, g in ds.groupby("fire_id")}

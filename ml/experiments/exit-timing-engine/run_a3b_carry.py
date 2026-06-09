@@ -21,7 +21,7 @@ from exit_engine.carry_model import (
 from exit_engine.dataset import assign_walkforward_folds
 
 def main() -> int:
-    ds = pd.read_parquet(cfg.DATASET_PARQUET)
+    ds = pd.read_parquet(cfg.DATASET_DIR)
     b = ds[ds["mode"] == cfg.MODE_MULTIDAY].copy()
     if b.empty:
         print("No mode-B fires in dataset.")

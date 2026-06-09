@@ -42,7 +42,7 @@ def _engine_realized(per_fire, fire_ids, model, fcols, threshold) -> dict:
 
 
 def main() -> int:
-    ds = pd.read_parquet(cfg.DATASET_PARQUET)
+    ds = pd.read_parquet(cfg.DATASET_DIR)
     ds["fold"] = assign_walkforward_folds(ds["date"], cfg.N_TRAIN_DAYS, cfg.TEST_BLOCK_DAYS)
     fcols = feature_columns(list(ds.columns))
     per_fire = {fid: g.reset_index(drop=True) for fid, g in ds.groupby("fire_id")}

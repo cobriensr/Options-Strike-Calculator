@@ -22,12 +22,12 @@ PARQUET_DIR = Path.home() / "Desktop" / "Eod-Full-Tape-parquet"
 PARQUET_TRADES_PATTERN = "{date}-trades.parquet"
 PARQUET_FULLTAPE_PATTERN = "{date}-fulltape.parquet"
 
-# Cached dataset artifact built by run_a1_build_dataset.py.
-DATASET_PARQUET = (
+# Partitioned, resumable decision dataset (one part-YYYY-MM.parquet per entry month).
+DATASET_DIR = (
     Path(__file__).resolve().parents[2]
     / "experiments"
     / "exit-timing-engine"
-    / "decision_dataset.parquet"
+    / "decision_dataset"
 )
 
 # Walk-forward split (shared by all phase drivers).
