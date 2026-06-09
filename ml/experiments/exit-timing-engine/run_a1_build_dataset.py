@@ -2,7 +2,13 @@
 """A1: build the per-minute decision dataset from the parquet full tape.
 
 Run: ml/.venv/bin/python ml/experiments/exit-timing-engine/run_a1_build_dataset.py
-Env: DATABASE_URL must be set (vercel env pull .env.local).
+Env:
+  DATABASE_URL        (required)
+  A1_SMOKE_DATES=<N>  (optional) limit to the last N sessions for a fast smoke test.
+
+Reads each needed daily parquet ONCE (predicate-pushdown filtered to the chains
+that day's fires need), assembles + frees each fire as soon as its last needed
+session is read (bounded memory), and logs per-date progress.
 """
 from __future__ import annotations
 
@@ -83,12 +89,18 @@ def main() -> int:
     if not available:
         print(f"No parquet files in {cfg.PARQUET_DIR}", file=sys.stderr)
         return 1
+    smoke = os.environ.get("A1_SMOKE_DATES")
+    if smoke:
+        n = int(smoke)
+        available = available[-n:]
+        print(f"SMOKE MODE: limited to last {n} sessions ({available[0]} .. {available[-1]})", flush=True)
 
-    # Plan: each fire's needed trading sessions + a date -> fires index, so each
-    # daily parquet is read exactly ONCE and serves every fire that needs it.
+    # Plan: each fire's needed sessions, a date->fires index, and the session on
+    # which each fire becomes assemblable (its last needed session).
     fires_by_id = {int(f.id): f for f in fires.itertuples(index=False)}
     fire_dates: dict[int, list[str]] = {}
     date_to_fire_ids: dict[str, list[int]] = {}
+    last_date_fire_ids: dict[str, list[int]] = {}
     for fid, fire in fires_by_id.items():
         max_sessions = cfg.MAX_HOLD_DAYS if fire.mode == cfg.MODE_MULTIDAY else 1
         needed = select_session_dates(fire.date_str, available, max_sessions)
@@ -97,45 +109,53 @@ def main() -> int:
         fire_dates[fid] = needed
         for d in needed:
             date_to_fire_ids.setdefault(d, []).append(fid)
+        last_date_fire_ids.setdefault(needed[-1], []).append(fid)
+
+    ordered_dates = sorted(date_to_fire_ids)
+    n_dates = len(ordered_dates)
+    print(f"planning: {len(fire_dates):,} fires across {n_dates} sessions", flush=True)
 
     frames: dict[int, list[pd.DataFrame]] = {fid: [] for fid in fire_dates}
-    days_read = 0
-    for date_str in sorted(date_to_fire_ids):
-        base = _parquet_path(date_str)
-        if base is None:
-            continue
-        day_fids = date_to_fire_ids[date_str]
-        wanted = {fires_by_id[fid].option_chain_id for fid in day_fids}
-        day = pd.read_parquet(base, columns=TRADE_COLS)
-        day = day[day["option_chain_id"].isin(wanted)].copy()
-        days_read += 1
-        if day.empty:
-            continue
-        day["executed_at"] = pd.to_datetime(day["executed_at"], utc=True)
-        by_chain = dict(tuple(day.groupby("option_chain_id", observed=True)))
-        for fid in day_fids:
-            ch = fires_by_id[fid].option_chain_id
-            if ch in by_chain:
-                frames[fid].append(by_chain[ch])
-
     all_rows: list[pd.DataFrame] = []
     peak_checks: list[tuple[float, float]] = []
-    for fid, day_frames in frames.items():
-        if not day_frames:
-            continue
-        fire = fires_by_id[fid]
-        path = assemble_multiday_path(day_frames, fire.entry_ts, float(fire.entry_price))
-        if path.empty:
-            continue
-        rows = build_fire_rows(
-            path, fire_id=fid, date=fire.date_str, mode=fire.mode,
-            entry_price=float(fire.entry_price),
-            minutes_to_close=_minutes_to_close(path),
-            theta=cfg.THETA_FORWARD_DEFAULT,
-        )
-        all_rows.append(rows)
-        rebuilt_peak = (path["mid"].max() - fire.entry_price) / fire.entry_price * 100.0
-        peak_checks.append((float(fire.peak_ceiling_pct), float(rebuilt_peak)))
+
+    for i, date_str in enumerate(ordered_dates, 1):
+        base = _parquet_path(date_str)
+        if base is not None:
+            day_fids = date_to_fire_ids[date_str]
+            wanted = list({fires_by_id[fid].option_chain_id for fid in day_fids})
+            day = pd.read_parquet(
+                base, columns=TRADE_COLS,
+                filters=[("option_chain_id", "in", wanted)],
+            )
+            if not day.empty:
+                day["executed_at"] = pd.to_datetime(day["executed_at"], utc=True)
+                by_chain = dict(tuple(day.groupby("option_chain_id", observed=True)))
+                for fid in day_fids:
+                    ch = fires_by_id[fid].option_chain_id
+                    if ch in by_chain:
+                        frames[fid].append(by_chain[ch])
+            del day
+        # assemble + free fires whose window ends on this session (memory bound)
+        for fid in last_date_fire_ids.get(date_str, []):
+            day_frames = frames.pop(fid, [])
+            if not day_frames:
+                continue
+            fire = fires_by_id[fid]
+            path = assemble_multiday_path(day_frames, fire.entry_ts, float(fire.entry_price))
+            if path.empty:
+                continue
+            rows = build_fire_rows(
+                path, fire_id=fid, date=fire.date_str, mode=fire.mode,
+                entry_price=float(fire.entry_price),
+                minutes_to_close=_minutes_to_close(path),
+                theta=cfg.THETA_FORWARD_DEFAULT,
+            )
+            all_rows.append(rows)
+            rebuilt_peak = (path["mid"].max() - fire.entry_price) / fire.entry_price * 100.0
+            peak_checks.append((float(fire.peak_ceiling_pct), float(rebuilt_peak)))
+        if i % 5 == 0 or i == n_dates:
+            print(f"[{i}/{n_dates}] {date_str}  assembled={len(all_rows):,}  in-flight={len(frames):,}", flush=True)
 
     if not all_rows:
         print("No reconstructable paths.")
@@ -149,7 +169,7 @@ def main() -> int:
     print(f"fires planned:         {len(fire_dates):,}")
     print(f"fires reconstructed:   {dataset['fire_id'].nunique():,}")
     print(f"decision rows:         {len(dataset):,}")
-    print(f"daily parquets read:   {days_read} (one per needed session)")
+    print(f"sessions read:         {n_dates}")
     print(f"by mode:\n{dataset.groupby('mode')['fire_id'].nunique()}")
     print(f"peak rebuild within 5pp of stored: {within:.1f}%  (sanity check)")
     print(f"wrote {cfg.DATASET_PARQUET}")
