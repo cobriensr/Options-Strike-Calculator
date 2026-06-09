@@ -1,6 +1,7 @@
 """XGBoost upside-remaining model + greedy stopping policy."""
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 
@@ -35,3 +36,12 @@ def greedy_stop_index(
         if mse[i] > arm_after_min and score[i] < exit_threshold:
             return i
     return len(rows) - 1
+
+
+def greedy_stop_index_arr(
+    mse: np.ndarray, score: np.ndarray, exit_threshold: float, arm_after_min: float
+) -> int:
+    """Array form of greedy_stop_index: first armed minute below threshold, else last."""
+    armed_low = (mse > arm_after_min) & (score < exit_threshold)
+    hit = np.nonzero(armed_low)[0]
+    return int(hit[0]) if hit.size else len(mse) - 1

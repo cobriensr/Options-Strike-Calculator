@@ -23,6 +23,21 @@ def test_greedy_stop_holds_to_end_when_always_high():
     assert idx == 2
 
 
+def test_greedy_stop_from_arrays_matches_dataframe_version():
+    mse = np.array([0.0, 1.0, 2.0, 3.0])
+    p = np.array([0.9, 0.8, 0.2, 0.1])
+    idx_arr = m.greedy_stop_index_arr(mse, p, exit_threshold=0.5, arm_after_min=1.0)
+    rows = pd.DataFrame({"minutes_since_entry": mse, "p_upside": p})
+    idx_df = m.greedy_stop_index(rows, exit_threshold=0.5, arm_after_min=1.0)
+    assert idx_arr == idx_df == 2
+
+
+def test_greedy_stop_arr_holds_to_end_when_never_armed_low():
+    mse = np.array([0.0, 1.0, 2.0])
+    p = np.array([0.9, 0.95, 0.92])
+    assert m.greedy_stop_index_arr(mse, p, exit_threshold=0.5, arm_after_min=1.0) == 2
+
+
 def test_feature_columns_excludes_labels_and_identity():
     cols = m.feature_columns(
         ["ret_from_entry_pct", "slope_3m", "y_has_upside", "y_log_upside",
