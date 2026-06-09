@@ -126,7 +126,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
     setScrubbedAt(null);
   }, [ticker, selectedDate]);
 
-  const { data, loading, error, refresh } = useGreekHeatmap({
+  const { data, loading, error, stale, refresh } = useGreekHeatmap({
     ticker,
     date: isViewingToday ? undefined : selectedDate,
     at: scrubbedAt ?? undefined,
@@ -264,7 +264,12 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
         </div>
       )}
 
-      {error !== null && (
+      {/* First-load failure (no last-good data to fall back on): show the
+          full error banner. A transient poll failure that left us with
+          stale-but-valid data renders the subtle stale badge below the
+          grid instead, so we never stack an alarming banner over a
+          still-readable heatmap. */}
+      {error !== null && data === null && (
         <div className="flex items-center justify-between rounded-md border border-rose-800/70 bg-rose-950/30 p-3 text-xs text-rose-300">
           <span>Failed to load heatmap: {error}</span>
           <button
@@ -279,6 +284,28 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
 
       {data !== null && (
         <>
+          {/* Stale affordance: the latest poll failed but we're still
+              showing the prior good snapshot. Muted amber (matches the
+              Historical badge) rather than the rose error banner, so the
+              grid stays the focus. The failing error text is preserved in
+              the title for hover/triage. */}
+          {stale && (
+            <div
+              className="flex items-center justify-between rounded-md border border-amber-500/50 bg-amber-950/30 px-2 py-1 text-[10px] tracking-wide text-amber-200/90"
+              title={error ?? undefined}
+            >
+              <span className="uppercase">
+                ⚠ Stale — last good snapshot{data.asOf ? ` (${data.asOf})` : ''}
+              </span>
+              <button
+                type="button"
+                onClick={() => refresh()}
+                className="rounded border border-amber-500/50 px-2 py-0.5 text-[10px] uppercase hover:bg-amber-900/40"
+              >
+                Retry
+              </button>
+            </div>
+          )}
           <NetFlowRow netFlow={data.netFlow} />
           <div className="max-h-[60vh] overflow-y-auto">
             <GreekHeatmapTable

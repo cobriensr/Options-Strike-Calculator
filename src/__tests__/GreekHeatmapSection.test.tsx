@@ -224,15 +224,46 @@ describe('GreekHeatmapSection', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows an error message and retry button when the hook errors', () => {
+  it('shows the full error banner only on first-load failure (no data)', () => {
     mockUseGreekHeatmap.mockReturnValue({
       data: null,
       loading: false,
       error: 'HTTP 500',
+      stale: false,
       refresh: mockRefresh,
     });
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText(/failed to load heatmap/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a stale poll failure shows the stale badge + grid, NOT the error banner', () => {
+    // Transient poll failure: error is set but last-good data is preserved
+    // and `stale` is true. The grid must stay rendered and the alarming
+    // rose error banner must NOT stack over it — instead a muted stale
+    // affordance appears (D1 regression fix).
+    mockUseGreekHeatmap.mockReturnValue({
+      data: makeData(),
+      loading: false,
+      error: 'poll boom',
+      stale: true,
+      refresh: mockRefresh,
+    });
+    render(<GreekHeatmapSection marketOpen={true} />);
+
+    // No full error banner.
+    expect(
+      screen.queryByText(/failed to load heatmap/i),
+    ).not.toBeInTheDocument();
+
+    // Stale badge is shown instead.
+    expect(screen.getByText(/stale — last good snapshot/i)).toBeInTheDocument();
+
+    // The grid is still rendered (ATM row present).
+    expect(document.getElementById('heatmap-strike-562_5')).not.toBeNull();
+
+    // Stale-badge Retry still wires to refresh.
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(mockRefresh).toHaveBeenCalledTimes(1);
   });
