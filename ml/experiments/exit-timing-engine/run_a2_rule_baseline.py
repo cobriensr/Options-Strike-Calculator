@@ -24,10 +24,6 @@ from exit_engine.backtest import (
 from exit_engine.dataset import assign_walkforward_folds
 from exit_engine.rule_family import decide_exit_index, grid
 
-N_TRAIN_DAYS = 20
-TEST_BLOCK_DAYS = 5
-
-
 def _fire_realized(fire_rows: pd.DataFrame, knobs: dict) -> float:
     idx = decide_exit_index(fire_rows, **knobs)
     return realized_return_for_exit(fire_rows, idx)
@@ -38,7 +34,7 @@ def main() -> int:
         print("Run A1 first — decision_dataset.parquet missing.", file=sys.stderr)
         return 1
     ds = pd.read_parquet(cfg.DATASET_PARQUET)
-    ds["fold"] = assign_walkforward_folds(ds["date"], N_TRAIN_DAYS, TEST_BLOCK_DAYS)
+    ds["fold"] = assign_walkforward_folds(ds["date"], cfg.N_TRAIN_DAYS, cfg.TEST_BLOCK_DAYS)
 
     per_fire = {fid: g.reset_index(drop=True) for fid, g in ds.groupby("fire_id")}
     fire_meta = ds.groupby("fire_id").agg(date=("date", "first"),

@@ -26,8 +26,6 @@ from exit_engine.backtest import (
 from exit_engine.dataset import assign_walkforward_folds
 from exit_engine.model import feature_columns, greedy_stop_index, train_classifier
 
-N_TRAIN_DAYS = 20
-TEST_BLOCK_DAYS = 5
 EXIT_THRESHOLDS = [0.3, 0.4, 0.5, 0.6, 0.7]
 ARM_AFTER_MIN = 1.0
 PLOTS_DIR = Path(__file__).resolve().parents[2] / "plots" / "exit-timing-engine"
@@ -45,21 +43,23 @@ def _engine_realized(per_fire, fire_ids, model, fcols, threshold) -> dict:
 
 def main() -> int:
     ds = pd.read_parquet(cfg.DATASET_PARQUET)
-    ds["fold"] = assign_walkforward_folds(ds["date"], N_TRAIN_DAYS, TEST_BLOCK_DAYS)
+    ds["fold"] = assign_walkforward_folds(ds["date"], cfg.N_TRAIN_DAYS, cfg.TEST_BLOCK_DAYS)
     fcols = feature_columns(list(ds.columns))
     per_fire = {fid: g.reset_index(drop=True) for fid, g in ds.groupby("fire_id")}
     fmeta = ds.groupby("fire_id").agg(mode=("mode", "first"), fold=("fold", "first")).reset_index()
 
     realized = {}
     last_model = None
+    last_train_df = None
     for fold in sorted(f for f in fmeta["fold"].unique() if f >= 0):
         train_ids = fmeta.loc[fmeta["fold"] < fold, "fire_id"].tolist()
         test_ids = fmeta.loc[fmeta["fold"] == fold, "fire_id"].tolist()
         if not train_ids or not test_ids:
             continue
-        train_df = ds[ds["fire_id"].isin(train_ids)]
+        train_df = ds[ds["fold"] < fold]
         model = train_classifier(train_df, fcols)
         last_model = model
+        last_train_df = train_df
         best_t, best_s = EXIT_THRESHOLDS[0], -1e18
         for t in EXIT_THRESHOLDS:
             tr = _engine_realized(per_fire, train_ids, model, fcols, t)
@@ -94,8 +94,8 @@ def main() -> int:
         print("WARNING: near-uniform lift across modes — possible leakage. Investigate before trusting.")
 
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    if last_model is not None:
-        sample = ds[fcols].sample(min(5000, len(ds)), random_state=1)
+    if last_model is not None and last_train_df is not None:
+        sample = last_train_df[fcols].sample(min(5000, len(last_train_df)), random_state=1)
         sv = shap.TreeExplainer(last_model).shap_values(sample)
         shap.summary_plot(sv, sample, show=False, max_display=15)
         plt.tight_layout()

@@ -20,11 +20,6 @@ from exit_engine.carry_model import (
 )
 from exit_engine.dataset import assign_walkforward_folds
 
-N_TRAIN_DAYS = 20
-TEST_BLOCK_DAYS = 5
-SESSION_MIN = 60 * 6.5  # minutes in a session; rows beyond this are next-session
-
-
 def main() -> int:
     ds = pd.read_parquet(cfg.DATASET_PARQUET)
     b = ds[ds["mode"] == cfg.MODE_MULTIDAY].copy()
@@ -35,8 +30,8 @@ def main() -> int:
     rows = []
     for fid, g in b.groupby("fire_id"):
         g = g.sort_values("minutes_since_entry").reset_index(drop=True)
-        first_session = g[g["minutes_since_entry"] <= SESSION_MIN]
-        later = g[g["minutes_since_entry"] > SESSION_MIN]
+        first_session = g[g["minutes_since_entry"] <= cfg.SESSION_MINUTES]
+        later = g[g["minutes_since_entry"] > cfg.SESSION_MINUTES]
         if first_session.empty or later.empty:
             continue
         close = first_session.iloc[-1]
@@ -57,7 +52,7 @@ def main() -> int:
         print(f"carry-pays base rate: {eod['y_carry_pays'].mean():.1%}")
         return 0
 
-    eod["fold"] = assign_walkforward_folds(eod["date"], N_TRAIN_DAYS, TEST_BLOCK_DAYS)
+    eod["fold"] = assign_walkforward_folds(eod["date"], cfg.N_TRAIN_DAYS, cfg.TEST_BLOCK_DAYS)
     correct, n = 0, 0
     for fold in sorted(f for f in eod["fold"].unique() if f >= 0):
         train = eod[eod["fold"] < fold]
