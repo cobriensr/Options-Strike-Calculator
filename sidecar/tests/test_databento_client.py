@@ -231,7 +231,7 @@ class TestDefinitionLagDrops:
         client._option_definitions[99] = {
             "strike": 5800.0,
             "option_type": "C",
-            "expiry": None,
+            "expiry": date.today(),
         }
         client._options_strikes = MagicMock()
         client._options_strikes.strikes = [5800.0]
