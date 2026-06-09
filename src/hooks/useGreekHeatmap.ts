@@ -15,6 +15,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { z } from 'zod';
 
 import { fetchWithRetry } from '../utils/fetchWithRetry';
 import { usePolling } from './usePolling';
@@ -63,6 +64,58 @@ export interface GreekHeatmapResponse {
   netFlow: GreekHeatmapNetFlow | null;
 }
 
+// Runtime schema mirroring the interfaces above. The `/api/greek-heatmap`
+// response is validated against this after `res.json()` so a malformed
+// payload is routed through the error path instead of rendering as garbage.
+const topStrikeSchema = z.object({
+  strike: z.number(),
+  callGammaOi: z.number().nullable(),
+  putGammaOi: z.number().nullable(),
+  netGamma: z.number(),
+  callCharmOi: z.number().nullable(),
+  putCharmOi: z.number().nullable(),
+  netCharm: z.number(),
+  callVannaOi: z.number().nullable(),
+  putVannaOi: z.number().nullable(),
+  netVanna: z.number(),
+});
+
+const netFlowSchema = z.object({
+  cumulativeCallPrem: z.number(),
+  cumulativeCallVol: z.number(),
+  cumulativePutPrem: z.number(),
+  cumulativePutVol: z.number(),
+  asOf: z.string(),
+});
+
+const intradayRangeSchema = z.object({
+  min: z.string(),
+  max: z.string(),
+  count: z.number(),
+});
+
+const greekHeatmapResponseSchema = z.object({
+  ticker: z.string(),
+  date: z.string(),
+  at: z.string().nullable(),
+  asOf: z.string().nullable(),
+  underlyingPrice: z.number().nullable(),
+  atmStrike: z.number().nullable(),
+  regime: z.enum(['Long Γ', 'Short Γ']).nullable(),
+  netGexK: z.number().nullable(),
+  chainStrikes: z.array(topStrikeSchema),
+  topStrikes: z.array(topStrikeSchema),
+  intradayRange: intradayRangeSchema.nullable(),
+  netFlow: netFlowSchema.nullable(),
+});
+
+// The schema's inferred output is assigned into `state.data` (typed
+// `GreekHeatmapResponse | null`) at the success setState below, so `tsc`
+// already enforces that `z.infer<typeof greekHeatmapResponseSchema>`
+// stays assignable to the hand-written `GreekHeatmapResponse` interface
+// that other files import. If the schema drifts from the interface, that
+// assignment fails the type-check — no separate assertion needed.
+
 interface UseGreekHeatmapArgs {
   ticker: string;
   /**
@@ -98,6 +151,12 @@ export function useGreekHeatmap({
   at,
   enabled,
 }: UseGreekHeatmapArgs): State & {
+  /**
+   * True when we're showing the last-good `data` despite the most recent
+   * fetch failing (`error !== null && data !== null`). Lets the UI badge
+   * the grid as stale instead of blanking it during a transient outage.
+   */
+  stale: boolean;
   refresh: () => void;
 } {
   const [state, setState] = useState<State>(INITIAL_STATE);
@@ -130,9 +189,20 @@ export function useGreekHeatmap({
         maxRetries: 2,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as GreekHeatmapResponse;
+      const json: unknown = await res.json();
       if (ctrl.signal.aborted) return;
-      setState({ data: json, loading: false, error: null });
+      const parsed = greekHeatmapResponseSchema.safeParse(json);
+      if (!parsed.success) {
+        // Malformed payload — route through the same preserve-last-good
+        // path as a network error instead of rendering garbage.
+        setState((s) => ({
+          data: s.data,
+          loading: false,
+          error: 'invalid response shape',
+        }));
+        return;
+      }
+      setState({ data: parsed.data, loading: false, error: null });
     } catch (err) {
       // AbortError on a still-mounted component means the parent
       // triggered a new fetch (rapid ticker/date switch); the new
@@ -147,7 +217,11 @@ export function useGreekHeatmap({
       if (ctrl.signal.aborted) return;
       if (!mountedRef.current) return;
       const msg = err instanceof Error ? err.message : 'unknown fetch error';
-      setState({ data: null, loading: false, error: msg });
+      // Preserve last-good data on a transient error so one failed poll
+      // doesn't blank the live grid (flicker-to-blank). Only set
+      // `data: null` when there was no prior data to keep. Always
+      // surface the error message.
+      setState((s) => ({ data: s.data, loading: false, error: msg }));
     }
   }, [ticker, date, at]);
 
@@ -163,5 +237,12 @@ export function useGreekHeatmap({
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  return useMemo(() => ({ ...state, refresh: fetchOnce }), [state, fetchOnce]);
+  return useMemo(
+    () => ({
+      ...state,
+      stale: state.error !== null && state.data !== null,
+      refresh: fetchOnce,
+    }),
+    [state, fetchOnce],
+  );
 }

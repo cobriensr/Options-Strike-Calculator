@@ -100,6 +100,82 @@ describe('useGreekHeatmap', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toBeNull();
     expect(result.current.error).toBe('HTTP 500');
+    expect(result.current.stale).toBe(false);
+  });
+
+  it('first-load failure (no prior data) sets data null, error, stale false', async () => {
+    mockFetch.mockRejectedValue(new Error('network down'));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+    expect(result.current.error).toBe('network down');
+    expect(result.current.stale).toBe(false);
+  });
+
+  it('preserves last-good data on a transient poll failure and flags stale', async () => {
+    // First fetch succeeds, second (a refresh) fails — the grid must NOT
+    // blank: keep the previous data, surface the error, mark stale.
+    mockFetch.mockResolvedValueOnce(okResponse(HAPPY_RESPONSE));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data?.ticker).toBe('SPY');
+    expect(result.current.stale).toBe(false);
+
+    mockFetch.mockRejectedValueOnce(new Error('poll boom'));
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => expect(result.current.error).toBe('poll boom'));
+    // Last-good data preserved, not blanked.
+    expect(result.current.data?.ticker).toBe('SPY');
+    expect(result.current.data?.atmStrike).toBe(540);
+    expect(result.current.stale).toBe(true);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('malformed JSON (fails Zod) routes through error path without throwing', async () => {
+    // First fetch returns a valid payload, second returns a shape that
+    // fails validation (atmStrike is a string). The hook must not throw,
+    // must keep last-good data, and must mark stale.
+    mockFetch.mockResolvedValueOnce(okResponse(HAPPY_RESPONSE));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data?.ticker).toBe('SPY');
+
+    mockFetch.mockResolvedValueOnce(
+      okResponse({ ...HAPPY_RESPONSE, atmStrike: 'not-a-number' }),
+    );
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    expect(result.current.data?.ticker).toBe('SPY');
+    expect(result.current.stale).toBe(true);
+  });
+
+  it('malformed JSON on first load (no prior data) sets data null + error', async () => {
+    mockFetch.mockResolvedValue(
+      okResponse({ ...HAPPY_RESPONSE, atmStrike: 'not-a-number' }),
+    );
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.stale).toBe(false);
   });
 
   it('thrown network error surfaces message via state.error', async () => {
