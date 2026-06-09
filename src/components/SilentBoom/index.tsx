@@ -907,8 +907,15 @@ export function SilentBoomSection({
     if (moneynessMode !== 'all') {
       out = out.filter((a) => {
         const spot = a.underlyingPriceAtSpike;
-        if (spot == null) return false;
-        const isOtm = a.optionType === 'C' ? a.strike > spot : a.strike < spot;
+        // Guard must match the row badge's `otmPct` guard in
+        // SilentBoomRow.tsx (spot == null || !finite || <= 0) so an
+        // unclassifiable fire is bucketed the same way on both surfaces.
+        if (spot == null || !Number.isFinite(spot) || spot <= 0) return false;
+        // OTM boundary is INCLUSIVE (>= / <=) to match the badge's
+        // `otmPct >= 0` convention: an exactly-ATM fire (strike === spot)
+        // shows an OTM badge, so it must also surface under the OTM filter.
+        const isOtm =
+          a.optionType === 'C' ? a.strike >= spot : a.strike <= spot;
         return moneynessMode === 'otm' ? isOtm : !isOtm;
       });
     }

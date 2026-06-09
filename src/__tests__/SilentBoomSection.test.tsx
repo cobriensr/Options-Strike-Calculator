@@ -955,6 +955,73 @@ describe('SilentBoomSection: filter interactions', () => {
     ).toBeInTheDocument();
   });
 
+  it('classifies an exactly-ATM call as OTM so the filter matches the badge', () => {
+    // strike === underlyingPriceAtSpike: the row badge renders this as OTM
+    // (otmPct === 0 → `otmPct >= 0`), so the inclusive filter boundary must
+    // surface it under the OTM chip rather than hiding it under ITM.
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'AAPL-atm-call',
+        optionType: 'C',
+        strike: 200,
+        underlyingPriceAtSpike: 200,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'AAPL-itm-call',
+        optionType: 'C',
+        strike: 195,
+        underlyingPriceAtSpike: 200,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
+
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('silent-boom-moneyness-otm-chip'));
+
+    // ATM call appears under OTM (consistent with its OTM badge).
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL-atm-call'),
+    ).toBeInTheDocument();
+    // The genuinely ITM call is hidden.
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL-itm-call'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('classifies an exactly-ATM put as OTM so the filter matches the badge', () => {
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'SPY-atm-put',
+        optionType: 'P',
+        strike: 500,
+        underlyingPriceAtSpike: 500,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'SPY-itm-put',
+        optionType: 'P',
+        strike: 510,
+        underlyingPriceAtSpike: 500,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 2 }));
+
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('silent-boom-moneyness-otm-chip'));
+
+    // ATM put appears under OTM (consistent with its OTM badge).
+    expect(
+      screen.getByTestId('silent-boom-row-SPY-atm-put'),
+    ).toBeInTheDocument();
+    // The genuinely ITM put is hidden.
+    expect(
+      screen.queryByTestId('silent-boom-row-SPY-itm-put'),
+    ).not.toBeInTheDocument();
+  });
+
   it('persists the conviction-floor selection to localStorage when changed', () => {
     render(<SilentBoomSection marketOpen={false} />);
     const tier1Chip = screen.getByRole('button', { name: /Tier 1/ });
