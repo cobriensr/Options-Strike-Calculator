@@ -66,6 +66,37 @@ drop `MAX_WINDOW_TRADES` from 10000 to 7500 to match the new cap.
 **None of that has shipped yet** — Phase 1 is fault isolation only;
 back-pressure lands in Phase 2.
 
+## Memory limit
+
+The per-replica memory **ceiling** is NOT settable in `railway.toml`
+(config-as-code only covers `build`/`deploy`). It lives on a separate
+Railway surface. Recommended ceiling: **8 GB** (rationale in
+`classifier/railway.toml`).
+
+**Manual dashboard path** (one-off click): Railway dashboard → project
+**Theta-Options** → **Classifier** service → **Settings** tab → **Deploy**
+section → **Replica Limits** → set **Memory** (slider/field) to **8 GB** →
+the change saves and applies on the next deploy. (Setting it too low
+crashes the service, so do not go below the observed open-burst peak.)
+
+**Reproducible alternative** (idempotent, preferred for re-runs):
+
+```bash
+RAILWAY_API_TOKEN=... \
+RAILWAY_CLASSIFIER_SERVICE_ID=... \
+RAILWAY_CLASSIFIER_ENVIRONMENT_ID=... \
+node scripts/set-classifier-memory-limit.mjs
+```
+
+It reads the current limit first and only mutates if different (exit 0 on
+no-op). The token comes from `RAILWAY_API_TOKEN` (or `RAILWAY_TOKEN`) —
+create one at <https://railway.com/account/tokens>; it is never printed.
+Service/environment IDs come from the dashboard URL
+(`project/<projectId>/service/<serviceId>?environmentId=<envId>`).
+Under the hood it calls the `serviceInstanceLimitsUpdate` GraphQL
+mutation with `{ serviceId, environmentId, memoryGB }` (Railway expresses
+the limit in **GB**, not bytes).
+
 ## Deploy
 
 Railway-only. Vercel does not host this service. The TypeScript caller

@@ -174,10 +174,14 @@ describe('withCronInstrumentation', () => {
     );
   });
 
-  it('intentional skip (200) sends ok check-in via direct HTTP when SCHEDULE_MAP has entry', async () => {
+  it('intentional skip (200) sends in_progress + ok PAIR via direct HTTP (satisfies the tick)', async () => {
     // Simulate cronGuard's outside-time-window path: it sets status 200
     // with `{ skipped: true, reason: 'Outside time window' }`, then
-    // returns null.
+    // returns null. The skip path now emits the SAME two-step lifecycle a
+    // live run does — in_progress (with monitor_config upsert) immediately
+    // followed by a terminal ok carrying that check-in's id + duration 0 —
+    // instead of a lone heartbeat ok. This unambiguously marks the
+    // served-but-skipped tick OK in Sentry (the 2026-06-08 Layer-1 fix).
     vi.mocked(cronGuard).mockImplementation((_req, res) => {
       res.status(200).json({ skipped: true, reason: 'Outside time window' });
       return null;
@@ -189,17 +193,25 @@ describe('withCronInstrumentation', () => {
 
     expect(handler).not.toHaveBeenCalled();
     const calls = getCheckInCalls();
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0]!.url).toBe(
       'https://o111111.ingest.us.sentry.io/api/4511060900642816/cron/monitored-job/abcdef0123456789/',
     );
+    // Step 1: in_progress carries the monitor_config upsert.
     expect(calls[0]!.body).toMatchObject({
       monitor_slug: 'monitored-job',
-      status: 'ok',
+      status: 'in_progress',
       monitor_config: {
         schedule: { type: 'crontab', value: '*/5 * * * *' },
         timezone: 'UTC',
       },
+    });
+    // Step 2: terminal ok pairs by check_in_id, duration 0 (no work).
+    expect(calls[1]!.body).toMatchObject({
+      monitor_slug: 'monitored-job',
+      status: 'ok',
+      check_in_id: calls[0]!.body.check_in_id,
+      duration: 0,
     });
   });
 
@@ -679,7 +691,7 @@ describe('withCronInstrumentation', () => {
     expect(waitUntil).toHaveBeenCalledTimes(1);
   });
 
-  it('intentional skip sends a single direct-HTTP ok check-in (no captureCheckIn / flush dance)', async () => {
+  it('intentional skip uses direct-HTTP in_progress+ok (no captureCheckIn / flush dance)', async () => {
     vi.mocked(cronGuard).mockImplementation((_req, res) => {
       res.status(200).json({ skipped: true, reason: 'Outside time window' });
       return null;
@@ -691,10 +703,12 @@ describe('withCronInstrumentation', () => {
 
     expect(handler).not.toHaveBeenCalled();
     const calls = getCheckInCalls();
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.body).toMatchObject({
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.body.status).toBe('in_progress');
+    expect(calls[1]!.body).toMatchObject({
       monitor_slug: 'monitored-job',
       status: 'ok',
+      duration: 0,
     });
     // The SDK queue/flush dance is irrelevant on the intentional-skip
     // path — no SDK-side events are emitted, so we don't expect a flush.

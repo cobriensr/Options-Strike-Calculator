@@ -121,19 +121,55 @@ interface SentryMonitorConfigPayload {
   max_runtime: number;
   failure_issue_threshold: number;
   recovery_threshold: number;
-  timezone: 'UTC';
+  /**
+   * IANA timezone the `schedule` crontab is evaluated in. Defaults to
+   * UTC (Vercel's cron timezone) so the schedule string matches
+   * vercel.json verbatim. Entries that carry an explicit `timezone`
+   * (e.g. `America/New_York`) supply an ET-LOCAL crontab instead — used
+   * for market-hours crons whose handler gate (`isMarketHours()`) is
+   * ET-anchored and therefore DST-shifts vs. the fixed-UTC vercel.json
+   * window. See SCHEDULE_MAP for the why.
+   */
+  timezone: string;
+}
+
+/**
+ * Validate that a `timezone` string is a real IANA zone before it ships
+ * to Sentry. A typo like `America/New_Yrok` would otherwise serialize
+ * silently into the monitor_config upsert; Sentry would either reject the
+ * whole config or fall back to UTC, silently re-opening the DST-tail
+ * `missed` flood the ET anchoring exists to prevent.
+ *
+ * `Intl.DateTimeFormat` throws a `RangeError` on an invalid `timeZone`
+ * option — that's the canonical runtime IANA-zone check in Node (no extra
+ * dependency, uses the same ICU database Sentry's crontab evaluator
+ * relies on). We surface it as a loud throw so a bad zone fails the build
+ * (the cross-check test calls this) rather than degrading in production.
+ */
+export function assertValidTimezone(tz: string): void {
+  try {
+    // The constructor validates `timeZone`; the formatted output is
+    // discarded. Throws RangeError for an unknown zone.
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+  } catch {
+    throw new Error(
+      `Invalid IANA timezone in CronMonitorConfig: ${JSON.stringify(tz)}`,
+    );
+  }
 }
 
 function toMonitorConfigPayload(
   c: CronMonitorConfig,
 ): SentryMonitorConfigPayload {
+  const timezone = c.timezone ?? 'UTC';
+  assertValidTimezone(timezone);
   return {
     schedule: { type: 'crontab', value: c.schedule },
     checkin_margin: c.checkinMargin,
     max_runtime: c.maxRuntime,
     failure_issue_threshold: c.failureIssueThreshold ?? 1,
     recovery_threshold: c.recoveryThreshold ?? 1,
-    timezone: 'UTC',
+    timezone,
   };
 }
 
@@ -296,25 +332,63 @@ function flushSentry(): void {
 }
 
 /**
- * Send a single `ok` check-in to Sentry for the given monitor. Used when
- * the cron is intentionally skipped (outside market hours, weekend,
- * holiday) so Sentry's missed-checkin signal stays accurate — without
- * this, every minute of the post-close window in vercel.json's
- * `* 13-21 * * 1-5` schedule alerts as a missed check-in even though
- * the skip is by design.
+ * Satisfy a scheduled tick for an intentionally-skipped cron (outside
+ * market hours, weekend, holiday) so Sentry's missed-checkin signal
+ * stays accurate. Without this, every fixed-UTC tick in the post-close
+ * tail of a market-hours schedule (e.g. `* 13-21 * * 1-5`) alerts as a
+ * "missed" check-in even though the skip is by design.
  *
- * Uses the direct HTTP bypass (see `sentryCheckInDirect`) so the
- * check-in actually leaves the function before Vercel kills the
- * runtime. No-op when the job has no SCHEDULE_MAP entry (new cron not
- * yet registered).
+ * IMPLEMENTATION NOTE — why an `in_progress` → `ok` PAIR, not a lone `ok`:
+ *
+ * Prior to 2026-06-08 this sent a single bare `ok` (no preceding
+ * `in_progress`, no `check_in_id`). The Sentry "heartbeat" docs say a
+ * lone `ok` is a valid way to mark a tick, BUT the production check-in
+ * history for the four market-hours monitors (detect-periscope-{put,
+ * call}-lottery, evaluate-round-trip, refresh-tracker-contracts) showed
+ * the EDT closed-market tail (20:10–21:55 UTC) expiring to `missed`
+ * EVERY DAY even though the skip-path `ok` was being POSTed. The live
+ * session's own check-ins are `in_progress`→`ok(duration)` PAIRS; mixing
+ * a lone unpaired heartbeat `ok` into a monitor that is otherwise driven
+ * by paired check-ins did not reliably credit the tick.
+ *
+ * The fix that closes the gap WITHOUT relying on heartbeat semantics is
+ * to make the skip path emit the SAME shape every live tick emits: an
+ * `in_progress` immediately followed by a terminal `ok` carrying that
+ * check-in's id and a zero duration. This is the canonical two-step
+ * Sentry crons lifecycle (verified against Sentry crons docs), so Sentry
+ * unambiguously marks the tick OK — there is no "did a bare heartbeat
+ * count?" ambiguity. The skip is a 0-second "run" from Sentry's view.
+ *
+ * Both POSTs go through the direct HTTP bypass (`sentryCheckInDirect`),
+ * which AWAITS the fetch — so both land before Vercel kills the runtime
+ * (no SDK queue / flush race). No-op when the job has no SCHEDULE_MAP
+ * entry (new cron not yet registered).
+ *
+ * This is an O(1) wrapper-level fix: EVERY market-hours monitor (all
+ * ~27, not just the four diagnosed) that hits the cronGuard market-closed
+ * skip path now satisfies its closed-tail ticks. The per-monitor ET
+ * `timezone` anchoring is kept as defense-in-depth (see DST_TAIL_NOTE in
+ * cron-schedules.ts) because the empirical EDT-tail `missed` flood was
+ * observed against the lone-`ok` shape and the ET-narrowed monitor
+ * windows are independently validated to expect ticks only during the
+ * live session.
  */
 async function sendIntentionalSkipCheckin(jobName: string): Promise<void> {
   const config = SCHEDULE_MAP[jobName];
   if (!config) return;
+  // Step 1: open the tick with an in_progress + monitor_config upsert.
+  const checkInId = await sentryCheckInDirect({
+    monitorSlug: jobName,
+    status: 'in_progress',
+    monitorConfig: config,
+  });
+  // Step 2: immediately close it OK. Zero duration — the skip did no
+  // work, but the tick is now satisfied exactly like a real run.
   await sentryCheckInDirect({
     monitorSlug: jobName,
     status: 'ok',
-    monitorConfig: config,
+    checkInId,
+    duration: 0,
   });
 }
 

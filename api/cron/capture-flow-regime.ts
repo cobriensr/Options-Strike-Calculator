@@ -35,17 +35,12 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import {
-  computeFlowMetrics,
   evaluateFlowRegime,
   slotForEtMinute,
   slotStartEtMinute,
 } from '../_lib/flow-regime.js';
 import { loadFlowRegimeBaseline } from '../_lib/flow-regime-baseline-live.js';
-import {
-  toFlowTradeRow,
-  type WsOptionTradeRow,
-} from '../_lib/flow-regime-rows.js';
-import type { FlowTradeRow } from '../_lib/flow-regime.js';
+import { aggregateFlowWindow } from '../_lib/flow-regime-rows.js';
 import {
   getETDateStr,
   getETTotalMinutes,
@@ -94,37 +89,23 @@ export default withCronInstrumentation(
     }
     const nowIso = now.toISOString();
 
-    // ws_option_trades is already restricted to the WS universe, so no
-    // ticker filter. canceled = FALSE matches the parquet/baseline
-    // convention. withDbRetry: Neon HTTP serverless can blip.
+    // Reduce the in-progress window to the five scalar component sums IN SQL
+    // (shared aggregation builder — byte-identical algebra to the daily cron).
+    // ws_option_trades is already restricted to the WS universe, but the
+    // aggregation re-applies the baseline universe/index filters (defence in
+    // depth + consistency rule) so the live metrics score against the SAME
+    // population the baseline was built on. Streaming raw rows here serialized
+    // past Neon's 64MB HTTP cap once the full ~50-ticker option_trades universe
+    // landed in the table (NeonDbError 507). n_trades counts every row in the
+    // window (NOT universe-restricted) to match the old `rows.length` floor.
+    // withDbRetry: Neon HTTP serverless can blip.
     const sql = getDb();
-    const rows = (await withDbRetry(
-      () => sql`
-        SELECT
-          ticker,
-          option_type,
-          expiry,
-          executed_at,
-          price,
-          size,
-          side,
-          delta
-        FROM ws_option_trades
-        WHERE canceled = FALSE
-          AND executed_at >= ${slotStartIso}::timestamptz
-          AND executed_at < ${nowIso}::timestamptz
-      `,
+    const sums = await withDbRetry(
+      () => aggregateFlowWindow(sql, slotStartIso, nowIso, date),
       2,
       10_000,
-    )) as WsOptionTradeRow[];
-
-    // Coerce NUMERIC-as-string + nullable columns to plain finite numbers
-    // BEFORE the metric math via the shared mapper (same coercion the daily
-    // accumulator cron uses, so both score the same population). delta null →
-    // 0; price null/invalid → 0 (excluded from the put-share ratio). expiry +
-    // tradeDateEt are ET-consistent calendar-date strings so the 0DTE
-    // `expiry === tradeDateEt` test compares like-for-like.
-    const tradeRows: FlowTradeRow[] = rows.map((r) => toFlowTradeRow(r, date));
+    );
+    const nTrades = sums.nTrades;
 
     // Self-maintaining baseline: compute percentile breakpoints ON READ from
     // the accumulating flow_regime_slot_daily table (per-slot, ≥15 days), with
@@ -143,11 +124,15 @@ export default withCronInstrumentation(
     // persisted) for transparency; the percentiles are NULL whenever
     // confidence is 'low' (thin bucket OR thin baseline), keeping the pill
     // color and the frontend detail copy from ever disagreeing.
-    const sums = computeFlowMetrics(tradeRows);
     const result = evaluateFlowRegime({
-      sums,
+      sums: {
+        ndNum: sums.ndNum,
+        ndDen: sums.ndDen,
+        idxPutPremium: sums.idxPutPremium,
+        totalPremium: sums.totalPremium,
+      },
       slot,
-      nTrades: tradeRows.length,
+      nTrades,
       baseline,
     });
 
@@ -170,7 +155,7 @@ export default withCronInstrumentation(
           ${date}::date, ${slot}, NOW(),
           ${result.ndTilt}, ${result.idx0dtePutShare},
           ${result.ndPercentile}, ${result.idxputPercentile},
-          ${result.regime}, ${result.color}, ${tradeRows.length},
+          ${result.regime}, ${result.color}, ${nTrades},
           ${baselineVersion}
         )
         ON CONFLICT (date, slot) DO UPDATE SET
@@ -192,7 +177,7 @@ export default withCronInstrumentation(
       {
         date,
         slot,
-        nTrades: tradeRows.length,
+        nTrades,
         regime: result.regime,
         color: result.color,
         hasBaseline: result.hasBaseline,
@@ -208,7 +193,7 @@ export default withCronInstrumentation(
       metadata: {
         date,
         slot,
-        nTrades: tradeRows.length,
+        nTrades,
         regime: result.regime,
         hasBaseline: result.hasBaseline,
         confidence: result.confidence,

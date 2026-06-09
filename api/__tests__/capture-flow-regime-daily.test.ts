@@ -19,14 +19,26 @@
 
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 
-// The daily cron uses the tagged-template `sql\`...\`` for the per-date SELECTs
-// and `bulkUpsert({ sql, ... })` which calls `sql.query(stmt, params)` for the
-// single batched UPSERT. The mock therefore needs BOTH surfaces.
+// The daily cron now reduces each date's window IN SQL: the per-date per-slot
+// aggregation runs via `sql.query(stmt, params)` (returning per-slot scalar-sum
+// rows), and `bulkUpsert({ sql, ... })` ALSO calls `sql.query(stmt, params)` for
+// the single batched INSERT. Both surface through `sql.query` now (the old raw
+// tagged-template `sql\`...\`` SELECTs are gone). We route the mock by statement
+// content: the aggregation contains `GROUP BY slot`, the INSERT contains
+// `INSERT INTO flow_regime_slot_daily`.
+//
+// `aggResults` is a FIFO queue of per-date aggregation results, one entry per
+// `accumulateDate` call (today, then each lookback date), set per test.
+let aggResults: Record<string, unknown>[][] = [];
 const mockQuery: ReturnType<
-  typeof vi.fn<
-    (stmt: string, params: unknown[]) => Promise<{ rows: unknown[] }>
-  >
-> = vi.fn(() => Promise.resolve({ rows: [] }));
+  typeof vi.fn<(stmt: string, params: unknown[]) => Promise<unknown>>
+> = vi.fn((stmt: string) => {
+  if (/GROUP BY slot/i.test(stmt)) {
+    return Promise.resolve(aggResults.shift() ?? []);
+  }
+  // bulkUpsert INSERT — return value is ignored by the helper.
+  return Promise.resolve({ rows: [] });
+});
 const mockSql = Object.assign(vi.fn(), { query: mockQuery });
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -56,17 +68,27 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/capture-flow-regime-daily.js';
-import { computeFlowMetrics } from '../_lib/flow-regime.js';
+import {
+  computeFlowMetrics,
+  type FlowMetricSums,
+  type FlowTradeRow,
+} from '../_lib/flow-regime.js';
 import { MIN_DAY_SLOT_TRADES } from '../_lib/flow-regime-baseline-live.js';
 import { mockRequest, mockResponse } from './helpers';
 
 const DATE = '2026-06-05';
 
 beforeEach(() => {
+  aggResults = [];
   mockSql.mockReset();
   mockSql.mockResolvedValue([]);
   mockQuery.mockReset();
-  mockQuery.mockResolvedValue({ rows: [] });
+  mockQuery.mockImplementation((stmt: string) => {
+    if (/GROUP BY slot/i.test(stmt)) {
+      return Promise.resolve(aggResults.shift() ?? []);
+    }
+    return Promise.resolve({ rows: [] });
+  });
   mockCronGuard.mockReset();
   mockCronGuard.mockReturnValue({ apiKey: '', today: DATE });
   vi.useRealTimers();
@@ -76,37 +98,55 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-/** Repeat a base trade row `n` times (to clear the per-day volume quorum). */
-function repeat(base: ReturnType<typeof tradeRow>, n: number) {
-  return Array.from({ length: n }, () => ({ ...base }));
-}
-
 const QUORUM = MIN_DAY_SLOT_TRADES; // 500
 
-/** One ws_option_trades row as Neon returns it (NUMERIC → string). */
-function tradeRow(
-  overrides: Partial<{
-    ticker: string;
-    option_type: string;
-    expiry: string;
-    executed_at: string;
-    price: string;
-    size: number;
-    side: string;
-    delta: string | null;
-  }> = {},
-) {
+/**
+ * Shape one per-slot aggregation row (as `aggregateFlowWindowBySlot`'s
+ * `sql.query` returns it) from a slot index, component sums, and an n_trades
+ * count. NUMERIC come back as strings from Neon, so we stringify the sums.
+ */
+function aggSlotRow(slot: number, sums: FlowMetricSums, nTrades: number) {
+  return {
+    slot,
+    n_trades: nTrades,
+    nd_num: String(sums.ndNum),
+    nd_den: String(sums.ndDen),
+    total_premium: String(sums.totalPremium),
+    idx_put_premium: String(sums.idxPutPremium),
+  };
+}
+
+/** A FlowTradeRow fixture (already coerced — the SQL does the coercion now). */
+function flowRow(overrides: Partial<FlowTradeRow> = {}): FlowTradeRow {
   return {
     ticker: 'SPY',
-    option_type: 'C',
-    expiry: '2026-06-05',
-    executed_at: '2026-06-05T14:00:00.000Z', // 10:00 ET → slot 1
-    price: '1.2500',
-    size: 100,
+    optionType: 'C',
+    expiry: DATE,
+    tradeDateEt: DATE,
     side: 'ask',
-    delta: '0.500000',
+    delta: 0.5,
+    size: 100,
+    price: 1.25,
     ...overrides,
   };
+}
+
+/** Build n identical FlowTradeRows and reduce them to sums via the real lib. */
+function sumsFor(
+  rowOverrides: Partial<FlowTradeRow>,
+  n: number,
+): FlowMetricSums {
+  const rows = Array.from({ length: n }, () => flowRow(rowOverrides));
+  return computeFlowMetrics(rows);
+}
+
+/** The bulkUpsert INSERT call's flat params array (the non-aggregation query). */
+function insertParams(): unknown[] {
+  const call = mockQuery.mock.calls.find(([stmt]) =>
+    /INSERT INTO/i.test(String(stmt)),
+  );
+  if (!call) throw new Error('no INSERT call recorded');
+  return call[1] as unknown[];
 }
 
 describe('capture-flow-regime-daily cron', () => {
@@ -118,6 +158,7 @@ describe('capture-flow-regime-daily cron', () => {
     await handler(req, res);
 
     expect(mockSql).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('aggregates a multi-slot day and batches one INSERT for all populated slots', async () => {
@@ -126,59 +167,36 @@ describe('capture-flow-regime-daily cron', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
 
-    // Two slots, each ABOVE the per-day quorum: slot 1 (10:00 ET = 14:00 UTC)
-    // and slot 3 (11:00 ET = 15:00 UTC). Each slot gets QUORUM rows so neither
-    // is dropped by the volume floor.
-    const slot1Base = tradeRow({
-      executed_at: '2026-06-05T14:00:00.000Z',
-      side: 'ask',
-    });
-    const slot3Base = tradeRow({
-      executed_at: '2026-06-05T15:00:00.000Z',
-      ticker: 'AAPL',
-      option_type: 'C',
-      side: 'ask',
-      delta: '0.600000',
-      price: '3.0000',
-      size: 200,
-    });
-    const slot1Rows = repeat(slot1Base, QUORUM);
-    const slot3Rows = repeat(slot3Base, QUORUM);
-    const todayRows = [...slot1Rows, ...slot3Rows];
+    // Two slots, each ABOVE the per-day quorum: slot 1 and slot 3. The SQL
+    // aggregation reduces+buckets in-DB; here we feed its result directly. Build
+    // expected sums via the real lib so the assertions match production algebra.
+    const expSlot1 = sumsFor({ side: 'ask' }, QUORUM);
+    const expSlot3 = sumsFor(
+      { ticker: 'AAPL', side: 'ask', delta: 0.6, price: 3.0, size: 200 },
+      QUORUM,
+    );
 
-    // SELECT for today returns the day; SELECT for the prior date is empty.
-    mockSql.mockReset();
-    mockSql.mockResolvedValueOnce(todayRows); // today SELECT
-    mockSql.mockResolvedValueOnce([]); // prior-date SELECT (lookback)
+    // today's aggregation → two populated slots; the prior-date aggregation is
+    // empty. (FIFO order: today first, then the 1-day lookback.)
+    aggResults = [
+      [aggSlotRow(1, expSlot1, QUORUM), aggSlotRow(3, expSlot3, QUORUM)],
+      [],
+    ];
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
-    // 2 SELECTs (today + 1 prior date), then ONE batched INSERT via sql.query.
-    expect(mockSql).toHaveBeenCalledTimes(2);
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    // 2 aggregation sql.query calls (today + 1 prior date), then ONE batched
+    // INSERT via sql.query → 3 sql.query calls total, 0 tagged-template calls.
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(3);
     expect(res._json).toMatchObject({ status: 'success', rows: 2 });
-
-    // Build the expected per-slot sums via the real lib (same coercion the cron
-    // applies: delta/price strings → numbers, expiry/tradeDate both '...-05').
-    const toFlow = (r: ReturnType<typeof tradeRow>) => ({
-      ticker: r.ticker,
-      optionType: r.option_type,
-      expiry: r.expiry,
-      tradeDateEt: DATE,
-      side: r.side,
-      delta: Number(r.delta),
-      size: r.size,
-      price: Number(r.price),
-    });
-    const expSlot1 = computeFlowMetrics(slot1Rows.map(toFlow));
-    const expSlot3 = computeFlowMetrics(slot3Rows.map(toFlow));
 
     // bulkUpsert flattens rows into a single params array, 8 cols per row:
     // [date, slot, nd_num, nd_den, idx_put_premium, total_premium, n_trades,
     //  computed_at]. Two rows → 16 params.
-    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    const params = insertParams();
     expect(params).toHaveLength(16);
     // Row 0 = slot 1.
     expect(params[0]).toBe(DATE);
@@ -199,20 +217,17 @@ describe('capture-flow-regime-daily cron', () => {
     vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
 
     // One slot well below the quorum (a holiday/partial straggler) → dropped.
-    const thinSlot = repeat(
-      tradeRow({ executed_at: '2026-06-05T14:00:00.000Z' }),
-      10,
-    );
-    mockSql.mockReset();
-    mockSql.mockResolvedValueOnce(thinSlot); // today SELECT
-    mockSql.mockResolvedValueOnce([]); // prior-date SELECT
+    aggResults = [[aggSlotRow(1, sumsFor({}, 10), 10)], []];
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
-    // No slot cleared the quorum → no INSERT, status skipped.
-    expect(mockQuery).not.toHaveBeenCalled();
+    // No slot cleared the quorum → no INSERT (only the 2 aggregation queries).
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(
+      mockQuery.mock.calls.some(([stmt]) => /INSERT INTO/i.test(String(stmt))),
+    ).toBe(false);
     expect(res._json).toMatchObject({ status: 'skipped' });
   });
 
@@ -221,66 +236,66 @@ describe('capture-flow-regime-daily cron', () => {
     vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
 
     // Today empty, but the prior date (2026-06-04) has a quorum-clearing slot 1.
-    // The prior-date rows are stamped executed_at on 2026-06-04 so they land in
-    // that date's RTH window.
-    const priorRows = repeat(
-      tradeRow({
-        executed_at: '2026-06-04T14:00:00.000Z',
-        expiry: '2026-06-04',
-      }),
-      QUORUM,
-    );
-    mockSql.mockReset();
-    mockSql.mockResolvedValueOnce([]); // today SELECT (empty)
-    mockSql.mockResolvedValueOnce(priorRows); // prior-date SELECT
+    // The prior-date aggregation is the 2nd FIFO entry; its rows are stamped the
+    // PRIOR ET date by the cron (accumulateDate is called with the prior date).
+    aggResults = [[], [aggSlotRow(1, sumsFor({}, QUORUM), QUORUM)]];
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
-    expect(mockSql).toHaveBeenCalledTimes(2);
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    // 2 aggregation queries + 1 INSERT.
+    expect(mockQuery).toHaveBeenCalledTimes(3);
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
     // The single upserted row is stamped the PRIOR ET date, not today.
-    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    const params = insertParams();
     expect(params[0]).toBe('2026-06-04');
     expect(params[1]).toBe(1); // slot 1
   });
 
   it('skips with no write when there are no RTH trades', async () => {
-    mockSql.mockReset();
-    mockSql.mockResolvedValueOnce([]); // today SELECT
-    mockSql.mockResolvedValueOnce([]); // prior-date SELECT
+    // Both dates aggregate to no populated slots (empty windows).
+    aggResults = [[], []];
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
-    // Only the SELECTs ran; no INSERT.
-    expect(mockQuery).not.toHaveBeenCalled();
+    // Only the 2 aggregation queries ran; no INSERT.
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(
+      mockQuery.mock.calls.some(([stmt]) => /INSERT INTO/i.test(String(stmt))),
+    ).toBe(false);
     expect(res._json).toMatchObject({ status: 'skipped' });
   });
 
-  it('coerces null delta / non-numeric price without crashing the metric math', async () => {
+  it('handles null-derived zero sums (SQL skips NULL delta/price) without crashing', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-05T21:55:00.000Z'));
-    mockSql.mockReset();
-    // QUORUM rows (clears the floor) with null delta + non-numeric price.
-    const badRows = repeat(
-      tradeRow({ delta: null, price: 'not-a-number', side: 'ask' }),
-      QUORUM,
-    );
-    mockSql.mockResolvedValueOnce(badRows); // today SELECT
-    mockSql.mockResolvedValueOnce([]); // prior-date SELECT
+
+    // The SQL aggregation skips NULL delta/price (SUM ignores NULLs), so a slot
+    // of only-null rows reports zero sums but a real count. COALESCE guards the
+    // empty-sum NULL → 0. n_trades clears the quorum → persisted.
+    aggResults = [
+      [
+        {
+          slot: 1,
+          n_trades: QUORUM,
+          nd_num: '0',
+          nd_den: '0',
+          total_premium: '0',
+          idx_put_premium: '0',
+        },
+      ],
+      [],
+    ];
 
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
 
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
-    const params = mockQuery.mock.calls[0]![1] as unknown[];
-    // delta null → 0 → nd_num/nd_den both finite (0). price NaN → 0 → excluded
-    // from premium → total_premium finite (0).
+    const params = insertParams();
     expect(Number.isFinite(params[2] as number)).toBe(true); // nd_num
     expect(Number.isFinite(params[3] as number)).toBe(true); // nd_den
     expect(Number.isFinite(params[5] as number)).toBe(true); // total_premium
