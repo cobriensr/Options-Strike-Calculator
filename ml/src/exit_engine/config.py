@@ -18,7 +18,7 @@ THETA_FORWARD_DEFAULT = 0.15
 # Mode-B multi-day holds reconstruct across this many calendar days max.
 MAX_HOLD_DAYS = 4
 
-PARQUET_DIR = Path.home() / "Desktop" / "Bot-Eod-parquet"
+PARQUET_DIR = Path.home() / "Desktop" / "Eod-Full-Tape-parquet"
 PARQUET_TRADES_PATTERN = "{date}-trades.parquet"
 PARQUET_FULLTAPE_PATTERN = "{date}-fulltape.parquet"
 
