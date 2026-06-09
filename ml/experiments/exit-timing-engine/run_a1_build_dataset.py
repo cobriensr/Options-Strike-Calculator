@@ -18,6 +18,9 @@ from pathlib import Path
 
 import pandas as pd
 import psycopg2
+import pyarrow as pa
+import pyarrow.parquet as pq
+from collections import Counter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -26,6 +29,7 @@ from exit_engine.dataset import build_fire_rows, select_session_dates
 from exit_engine.path_reconstruction import assemble_multiday_path
 
 TRADE_COLS = ["executed_at", "option_chain_id", "nbbo_bid", "nbbo_ask", "price", "canceled"]
+FLUSH_ROWS = 1_000_000
 
 
 def load_fires(conn) -> pd.DataFrame:
@@ -95,8 +99,6 @@ def main() -> int:
         available = available[-n:]
         print(f"SMOKE MODE: limited to last {n} sessions ({available[0]} .. {available[-1]})", flush=True)
 
-    # Plan: each fire's needed sessions, a date->fires index, and the session on
-    # which each fire becomes assemblable (its last needed session).
     fires_by_id = {int(f.id): f for f in fires.itertuples(index=False)}
     fire_dates: dict[int, list[str]] = {}
     date_to_fire_ids: dict[str, list[int]] = {}
@@ -115,10 +117,33 @@ def main() -> int:
     n_dates = len(ordered_dates)
     print(f"planning: {len(fire_dates):,} fires across {n_dates} sessions", flush=True)
 
-    frames: dict[int, list[pd.DataFrame]] = {fid: [] for fid in fire_dates}
-    all_rows: list[pd.DataFrame] = []
-    peak_checks: list[tuple[float, float]] = []
+    cfg.DATASET_PARQUET.parent.mkdir(parents=True, exist_ok=True)
+    writer: pq.ParquetWriter | None = None
+    schema: pa.Schema | None = None
+    buffer: list[pd.DataFrame] = []
+    buffer_rows = 0
+    n_fires = 0
+    n_rows = 0
+    mode_counts: Counter = Counter()
+    peak_within = 0
+    peak_total = 0
 
+    def flush_buffer() -> None:
+        nonlocal writer, schema, buffer, buffer_rows
+        if not buffer:
+            return
+        df = pd.concat(buffer, ignore_index=True)
+        buffer = []
+        buffer_rows = 0
+        if schema is None:
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            schema = table.schema
+            writer = pq.ParquetWriter(str(cfg.DATASET_PARQUET), schema)
+        else:
+            table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+        writer.write_table(table)
+
+    frames: dict[int, list[pd.DataFrame]] = {fid: [] for fid in fire_dates}
     for i, date_str in enumerate(ordered_dates, 1):
         base = _parquet_path(date_str)
         if base is not None:
@@ -136,7 +161,6 @@ def main() -> int:
                     if ch in by_chain:
                         frames[fid].append(by_chain[ch])
             del day
-        # assemble + free fires whose window ends on this session (memory bound)
         for fid in last_date_fire_ids.get(date_str, []):
             day_frames = frames.pop(fid, [])
             if not day_frames:
@@ -151,27 +175,33 @@ def main() -> int:
                 minutes_to_close=_minutes_to_close(path),
                 theta=cfg.THETA_FORWARD_DEFAULT,
             )
-            all_rows.append(rows)
+            buffer.append(rows)
+            buffer_rows += len(rows)
+            n_fires += 1
+            n_rows += len(rows)
+            mode_counts[fire.mode] += 1
             rebuilt_peak = (path["mid"].max() - fire.entry_price) / fire.entry_price * 100.0
-            peak_checks.append((float(fire.peak_ceiling_pct), float(rebuilt_peak)))
+            peak_total += 1
+            if abs(float(fire.peak_ceiling_pct) - float(rebuilt_peak)) <= 5.0:
+                peak_within += 1
+            if buffer_rows >= FLUSH_ROWS:
+                flush_buffer()
         if i % 5 == 0 or i == n_dates:
-            print(f"[{i}/{n_dates}] {date_str}  assembled={len(all_rows):,}  in-flight={len(frames):,}", flush=True)
+            print(f"[{i}/{n_dates}] {date_str}  fires={n_fires:,}  rows={n_rows:,}  in-flight={len(frames):,}", flush=True)
 
-    if not all_rows:
+    flush_buffer()
+    if writer is not None:
+        writer.close()
+    if n_fires == 0:
         print("No reconstructable paths.")
         return 1
-    dataset = pd.concat(all_rows, ignore_index=True)
-    cfg.DATASET_PARQUET.parent.mkdir(parents=True, exist_ok=True)
-    dataset.to_parquet(cfg.DATASET_PARQUET, index=False)
-
-    checks = pd.DataFrame(peak_checks, columns=["stored", "rebuilt"])
-    within = (abs(checks["stored"] - checks["rebuilt"]) <= 5.0).mean() * 100
+    within = (peak_within / peak_total * 100.0) if peak_total else 0.0
     print(f"fires planned:         {len(fire_dates):,}")
-    print(f"fires reconstructed:   {dataset['fire_id'].nunique():,}")
-    print(f"decision rows:         {len(dataset):,}")
+    print(f"fires reconstructed:   {n_fires:,}")
+    print(f"decision rows:         {n_rows:,}")
     print(f"sessions read:         {n_dates}")
-    print(f"by mode:\n{dataset.groupby('mode')['fire_id'].nunique()}")
-    print(f"peak rebuild within 5pp of stored: {within:.1f}%  (sanity check)")
+    print(f"by mode:               {dict(mode_counts)}")
+    print(f"peak rebuild within 5pp (mid vs stored trade-price basis, expect ~50%): {within:.1f}%")
     print(f"wrote {cfg.DATASET_PARQUET}")
     return 0
 
