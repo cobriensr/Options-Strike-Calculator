@@ -247,13 +247,43 @@ function LotteryFinderTickerGroupBase({
   const showStormBadge = storm;
   const showClusterBadge = clusterStrikes >= 3;
 
+  // In-place "converging" glow on the GROUP CONTAINER. When a ticker's
+  // alerts converge (≥3 fires, one direction, multi-strike, clustered
+  // ≤15 min = isHighConviction, computed upstream against the
+  // UNFILTERED set), the whole group glows where it already sits so the
+  // winner pops without a new panel or extra badge clutter. Two tiers:
+  // `strong` (the cheap + pre-PM ✦✦ cluster) gets a brighter ring than
+  // plain `high` (✦). strongConviction implies the high gate upstream,
+  // so it lights the glow on its own even if `conviction` wasn't passed.
+  // Purely decorative — matches the amber convergence palette the ✦/✦✦
+  // badges use; no data, sort, or grouping change.
+  const convergingTier: 'strong' | 'high' | null = strongConviction
+    ? 'strong'
+    : conviction
+      ? 'high'
+      : null;
+  const convergingGlowClass =
+    convergingTier === 'strong'
+      ? 'ring-1 ring-amber-300/80 shadow-[0_0_18px_-2px] shadow-amber-400/40 bg-amber-950/20'
+      : convergingTier === 'high'
+        ? 'ring-1 ring-amber-400/50 shadow-[0_0_12px_-3px] shadow-amber-500/30 bg-amber-950/10'
+        : '';
+
   const strikesWithSpread =
     agg.strikeRange != null && strikesSummary
       ? `${strikesSummary} (${agg.strikeRange.spreadPts}pt)`
       : strikesSummary;
 
   return (
-    <div className="overflow-hidden rounded border border-neutral-800 bg-neutral-950/40">
+    <div
+      className={`overflow-hidden rounded border border-neutral-800 bg-neutral-950/40 ${convergingGlowClass}`}
+      {...(convergingTier
+        ? {
+            'data-testid': 'lottery-group-converging',
+            'data-conviction': convergingTier,
+          }
+        : {})}
+    >
       <button
         {...triggerProps}
         onClick={handleToggle}
