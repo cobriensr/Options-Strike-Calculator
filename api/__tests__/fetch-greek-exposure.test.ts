@@ -217,6 +217,93 @@ describe('fetch-greek-exposure handler', () => {
     expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
+  it('includes a timestamp column in both INSERTs and shares one run timestamp', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([makeAggregateRow()], [makeExpiryRow()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // The first arg of a tagged-template call is the template strings array.
+    const insertCalls = mockSql.mock.calls.filter((call) => {
+      const strings = call[0] as readonly string[] | undefined;
+      return (
+        Array.isArray(strings) &&
+        strings.some((s) => s.includes('INSERT INTO greek_exposure'))
+      );
+    });
+    // One aggregate INSERT + one expiry INSERT
+    expect(insertCalls).toHaveLength(2);
+
+    for (const call of insertCalls) {
+      const strings = call[0] as readonly string[];
+      const sqlText = strings.join('');
+      // timestamp is in the column list and the conflict target
+      expect(sqlText).toContain('timestamp');
+      expect(sqlText).toContain(
+        'ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING',
+      );
+    }
+
+    // Both INSERTs share the SAME run timestamp. The interpolated values follow
+    // the template strings; exactly one ISO-8601 timestamp string is passed per
+    // INSERT, and they must be identical across the aggregate + expiry rows.
+    const tsValues = insertCalls.map((call) => {
+      const values = call.slice(1) as unknown[];
+      return values.find(
+        (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v),
+      ) as string | undefined;
+    });
+    expect(tsValues[0]).toBeDefined();
+    expect(tsValues[0]).toBe(tsValues[1]);
+  });
+
+  it('appends a distinct snapshot on a second run (does not overwrite)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([makeAggregateRow()], [makeExpiryRow()]);
+
+    // Run 1 at MARKET_TIME (set in beforeEach)
+    const req1 = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req1, mockResponse());
+
+    // Advance 5 minutes and run again — a new run timestamp, so the append
+    // model writes a fresh row rather than upserting in place.
+    vi.setSystemTime(new Date('2026-03-24T14:05:00.000Z'));
+    const req2 = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req2, mockResponse());
+
+    const insertTsValues = mockSql.mock.calls
+      .filter((call) => {
+        const strings = call[0] as readonly string[] | undefined;
+        return (
+          Array.isArray(strings) &&
+          strings.some((s) => s.includes('INSERT INTO greek_exposure'))
+        );
+      })
+      .map((call) => {
+        const values = call.slice(1) as unknown[];
+        return values.find(
+          (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v),
+        ) as string | undefined;
+      });
+
+    // 2 INSERTs per run × 2 runs = 4 timestamped INSERTs
+    expect(insertTsValues).toHaveLength(4);
+    const distinctTs = new Set(insertTsValues);
+    // The two runs use two distinct timestamps (append, not overwrite)
+    expect(distinctTs.size).toBe(2);
+  });
+
   it('handles empty aggregate with expiry rows', async () => {
     process.env.UW_API_KEY = 'uwkey';
     stubFetch([], [makeExpiryRow()]);

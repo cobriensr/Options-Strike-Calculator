@@ -163,6 +163,38 @@ describe('computeBuckets', () => {
 });
 
 describe('audit-takeit-calibration cron', () => {
+  it('disables the market-hours gate so the weekly pre-market run is not skipped', async () => {
+    // Regression guard for C1: the cron is scheduled `0 11 * * 1` = 07:00 ET
+    // Monday, BEFORE the 09:25 ET market-hours gate opens. With the default
+    // gate enabled, cronGuard returns the `{ skipped: true }` 200 every week
+    // and the calibration metrics never emit. The wrapper MUST forward
+    // `marketHours: false` to cronGuard. The handler reads only from the DB,
+    // so a pre-market run is safe.
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // The guard was consulted with the market-hours check disabled.
+    expect(mockCronGuard).toHaveBeenCalledWith(
+      req,
+      res,
+      expect.objectContaining({ marketHours: false }),
+    );
+    // And the handler actually ran (not skipped) — success body, not a skip.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success' });
+    expect(res._json).not.toMatchObject({ skipped: true });
+  });
+
   it('returns success with null metrics when both alert types have zero rows', async () => {
     // Each auditOne does 2 SQL calls: (1) calibration SELECT, (2) feature
     // coverage SELECT. Provide 4 responses total — calib lottery, coverage

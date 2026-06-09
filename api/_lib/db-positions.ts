@@ -4,7 +4,7 @@
  * Handles saving and querying live Schwab 0DTE SPX positions.
  */
 
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 
 // ============================================================
 // TYPES
@@ -55,7 +55,8 @@ export async function savePositions(
 ): Promise<number | null> {
   const sql = getDb();
 
-  const result = await sql`
+  const result = await withDbRetry(
+    () => sql`
     INSERT INTO positions (
       snapshot_id, date, fetch_time, account_hash, spx_price,
       summary, legs,
@@ -87,7 +88,10 @@ export async function savePositions(
       current_value = EXCLUDED.current_value,
       unrealized_pnl = EXCLUDED.unrealized_pnl
     RETURNING id
-  `;
+  `,
+    2,
+    10_000,
+  );
 
   return result.length > 0 ? ((result[0]?.id as number) ?? null) : null;
 }
@@ -110,7 +114,8 @@ export async function getLatestPositions(date: string): Promise<{
   };
 } | null> {
   const sql = getDb();
-  const rows = await sql`
+  const rows = await withDbRetry(
+    () => sql`
     SELECT summary, legs, fetch_time,
            total_spreads, call_spreads, put_spreads,
            net_delta, net_theta, unrealized_pnl
@@ -120,7 +125,10 @@ export async function getLatestPositions(date: string): Promise<{
       CASE WHEN total_spreads > 0 THEN 0 ELSE 1 END,
       created_at DESC
     LIMIT 1
-  `;
+  `,
+    2,
+    10_000,
+  );
 
   if (rows.length === 0) return null;
   const row = rows[0]!;

@@ -99,24 +99,54 @@ async function fetchByExpiry(date) {
   return body.data ?? [];
 }
 
+// ── Collision guard ─────────────────────────────────────────
+
+// The backfill stamps a synthetic '<date>T20:00:00Z' EOD timestamp. If a date
+// already has LIVE cron-written intraday rows, mixing the synthetic snapshot in
+// would make MAX(timestamp) readers non-deterministically blend synthetic + live
+// data. The backfill is only for historical dates with no live coverage, so skip
+// any date that already has ANY greek_exposure rows for SPX.
+async function hasExistingRows(date) {
+  const rows = await sql`
+    SELECT 1
+    FROM greek_exposure
+    WHERE date = ${date} AND ticker = 'SPX'
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
 // ── Store aggregate row (dte = -1) ──────────────────────────
+
+// Synthetic per-date EOD snapshot timestamp for backfilled rows.
+//
+// greek_exposure switched from an in-place upsert to an append-per-cron-run
+// model (migration #190), so the unique constraint is now
+// (date, ticker, expiry, dte, timestamp). Backfilled historical data has no
+// real intraday timestamp, so we stamp a single deterministic per-date value
+// (the date at 20:00:00Z, i.e. session close) that keeps exactly one row per
+// (date, ticker, expiry, dte). Re-running the backfill for a date is therefore
+// idempotent (same synthetic timestamp -> ON CONFLICT DO NOTHING/UPDATE).
+function eodTimestamp(date) {
+  return `${date}T20:00:00Z`;
+}
 
 async function storeAggregate(row, date) {
   try {
     const result = await sql`
       INSERT INTO greek_exposure (
-        date, ticker, expiry, dte,
+        date, ticker, expiry, dte, timestamp,
         call_gamma, put_gamma, call_charm, put_charm,
         call_delta, put_delta, call_vanna, put_vanna
       )
       VALUES (
-        ${date}, 'SPX', ${date}, -1,
+        ${date}, 'SPX', ${date}, -1, ${eodTimestamp(date)},
         ${row.call_gamma}, ${row.put_gamma},
         ${row.call_charm}, ${row.put_charm},
         ${row.call_delta}, ${row.put_delta},
         ${row.call_vanna}, ${row.put_vanna}
       )
-      ON CONFLICT (date, ticker, expiry, dte) DO UPDATE SET
+      ON CONFLICT (date, ticker, expiry, dte, timestamp) DO UPDATE SET
         call_gamma = EXCLUDED.call_gamma,
         put_gamma = EXCLUDED.put_gamma
       RETURNING id
@@ -137,18 +167,18 @@ async function storeExpiryRows(rows, date) {
     try {
       const result = await sql`
         INSERT INTO greek_exposure (
-          date, ticker, expiry, dte,
+          date, ticker, expiry, dte, timestamp,
           call_gamma, put_gamma, call_charm, put_charm,
           call_delta, put_delta, call_vanna, put_vanna
         )
         VALUES (
-          ${date}, 'SPX', ${row.expiry}, ${row.dte},
+          ${date}, 'SPX', ${row.expiry}, ${row.dte}, ${eodTimestamp(date)},
           ${row.call_gamma}, ${row.put_gamma},
           ${row.call_charm}, ${row.put_charm},
           ${row.call_delta}, ${row.put_delta},
           ${row.call_vanna}, ${row.put_vanna}
         )
-        ON CONFLICT (date, ticker, expiry, dte) DO NOTHING
+        ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING
         RETURNING id
       `;
       if (result.length > 0) stored++;
@@ -173,8 +203,18 @@ async function main() {
   let totalExpiries = 0;
   let totalStored = 0;
   let aggCount = 0;
+  let skipped = 0;
 
   for (const date of tradingDays) {
+    // Skip any date that already has rows (live cron data) — backfilling it
+    // would mix synthetic EOD timestamps with live intraday snapshots and break
+    // MAX(timestamp) readers.
+    if (await hasExistingRows(date)) {
+      skipped++;
+      console.log(`  ${date}: SKIP — greek_exposure already has SPX rows`);
+      continue;
+    }
+
     await new Promise((r) => setTimeout(r, 300));
 
     const [aggRow, expiryRows] = await Promise.all([
@@ -218,6 +258,7 @@ async function main() {
   console.log(`  Aggregate rows stored: ${aggCount}`);
   console.log(`  Expiry rows stored: ${totalStored}`);
   console.log(`  Total expiry rows processed: ${totalExpiries}`);
+  console.log(`  Dates skipped (already had rows): ${skipped}`);
 }
 
 try {

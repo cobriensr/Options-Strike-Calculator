@@ -32,7 +32,9 @@ import { generateEmbedding } from '../_lib/embeddings.js';
 import { fetchDaySummaryFromPostgres } from '../_lib/postgres-day-summary.js';
 import { metrics } from '../_lib/sentry.js';
 
-export const config = { maxDuration: 60 };
+// maxDuration is set authoritatively in vercel.json's `functions{}` block
+// (`"api/cron/embed-yesterday.ts": { "maxDuration": 60 }`). Raw Vercel
+// Functions (non-Next.js) do not honor a module-level `export const config`.
 
 /** Return YYYY-MM-DD for the most recent previous weekday relative to `today`. */
 function priorTradingDay(today: string): string {

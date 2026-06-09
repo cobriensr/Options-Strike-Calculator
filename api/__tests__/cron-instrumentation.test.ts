@@ -100,6 +100,7 @@ vi.mock('../_lib/logger.js', () => ({
 import {
   withCronInstrumentation,
   withCronCheckin,
+  deriveCronStatus,
   _resetDsnCacheForTest,
 } from '../_lib/cron-instrumentation.js';
 import { cronGuard } from '../_lib/api-helpers.js';
@@ -1041,5 +1042,37 @@ describe('isCronAuthenticated', () => {
       headers: { authorization: 'Bearer ' },
     });
     expect(isCronAuthenticated(req)).toBe(false);
+  });
+});
+
+describe('deriveCronStatus', () => {
+  it('returns success when there is no work to do (0 / 0)', () => {
+    expect(deriveCronStatus(0, 0)).toBe('success');
+  });
+
+  it('returns error when every attempted leg failed (2 / 2)', () => {
+    expect(deriveCronStatus(2, 2)).toBe('error');
+  });
+
+  it('returns partial when some legs failed (1 / 3)', () => {
+    expect(deriveCronStatus(1, 3)).toBe('partial');
+  });
+
+  it('returns success when no legs failed (0 / 3)', () => {
+    expect(deriveCronStatus(0, 3)).toBe('success');
+  });
+
+  it('returns error when failed exceeds total (guard against over-count)', () => {
+    expect(deriveCronStatus(4, 2)).toBe('error');
+  });
+
+  it('returns error for a single attempted leg that failed (1 / 1)', () => {
+    expect(deriveCronStatus(1, 1)).toBe('error');
+  });
+
+  it('treats failed > 0 with total 0 as success (no work overrides)', () => {
+    // total === 0 short-circuits first: an empty run is never a failure
+    // even if a caller passes a stray non-zero failure count.
+    expect(deriveCronStatus(3, 0)).toBe('success');
   });
 });

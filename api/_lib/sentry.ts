@@ -23,6 +23,18 @@ Sentry.init({
         }
       }
     }
+    // The Node SDK separately captures `request.cookies` as a parsed
+    // object — the `sc-owner` (= OWNER_SECRET) and `sc-guest` values land
+    // there even after the raw Cookie header is filtered above. Scrub by
+    // key so the owner secret / guest keys never reach Sentry.
+    const cookies = event.request?.cookies;
+    if (cookies && typeof cookies === 'object' && !Array.isArray(cookies)) {
+      for (const key of Object.keys(cookies)) {
+        if (/(owner|guest|session|auth|secret|token)/i.test(key)) {
+          (cookies as Record<string, unknown>)[key] = '[Filtered]';
+        }
+      }
+    }
     // Strip secret-named keys from extra / tags context
     const scrubObject = (obj: Record<string, unknown> | undefined) => {
       if (!obj) return;

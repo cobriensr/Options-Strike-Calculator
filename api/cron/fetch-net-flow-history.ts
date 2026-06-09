@@ -24,6 +24,7 @@ import {
 } from '../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -187,6 +188,14 @@ async function fetchAndStore(
       { err, ticker, date },
       'fetch-net-flow-history: UW fetch failed',
     );
+    // Surface to Sentry — the prior version only logger.warned and
+    // returned a zero-stored tuple, so a UW outage across ~50 tickers
+    // looked like a healthy zero-row run. This table feeds
+    // enrich-lottery-outcomes' realized_flow_inversion_pct; silent
+    // zeros corrupt the day's fires. Matches fetch-net-flow.ts.
+    Sentry.captureException(err, {
+      tags: { cron: 'fetch-net-flow-history', ticker },
+    });
     return { ticker, fetched: 0, stored: 0 };
   }
   const kept = raw

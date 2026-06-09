@@ -42,7 +42,9 @@ import {
   uwFetch,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
@@ -67,6 +69,33 @@ export default withCronInstrumentation(
     const { apiKey, today } = ctx;
     await cronJitter();
 
+    // Status keys off whether DATA ACTUALLY PERSISTED, not merely whether
+    // a fetch promise rejected (BE-CRON-H4). Each *persistable* scope
+    // (SPY/QQQ × all-DTE/per-expiry) is one "leg". A leg is counted only
+    // when it represents real work — its fetch was attempted and failed,
+    // or it fetched ticks that we then tried to write. Outcomes:
+    //
+    //   - fetch failed                              → failed leg
+    //   - fetch ok, 0 ticks                         → no-op, EXCLUDED
+    //   - fetch ok, ticks > 0, rows landed          → success leg
+    //   - fetch ok, ticks > 0, ZERO rows persisted  → failed leg (#2)
+    //
+    // The "ZERO rows persisted" case is the critical fix: upsertGreekFlowTicks
+    // swallows its own batched-INSERT error and RESOLVES with
+    // { inserted: 0, failed: N } instead of throwing, so a fulfilled upsert
+    // with inserted === 0 && failed > 0 is total data loss that previously
+    // reported 'success'. We now treat it as a failed leg AND surface it to
+    // Sentry (the store only logs + bumps a metric).
+    //
+    // The two expiry-breakdown calls are metadata (they don't persist data),
+    // so they are intentionally EXCLUDED from the status denominator — a
+    // breakdown miss still logs + captures to Sentry below, but it must not
+    // mask a total persistence failure as 'partial'. Previously a single
+    // rejected leg also aborted every sibling and 500'd the whole run; the
+    // per-leg try/catch + allSettled handling preserves that isolation.
+    let failedLegs = 0;
+    let totalLegs = 0;
+
     // Phase A: all-DTE flow + expiry breakdowns capped at the UW
     // 3-concurrent in-flight cap. A naked Promise.all over 4 calls
     // races against UW's per-account concurrency limit — the 4th
@@ -79,46 +108,80 @@ export default withCronInstrumentation(
     // contending for slots. `mapWithConcurrency` dispatches at most
     // 3 in flight upfront, eliminating both effects.
     //
+    // Each worker catches its own rejection and returns a tagged result
+    // so one ticker's 429 doesn't abort the batch via mapWithConcurrency's
+    // internal Promise.all (which propagates the first rejection).
+    //
     // Index order (SPY all-DTE, QQQ all-DTE, SPY expiry-breakdown,
     // QQQ expiry-breakdown) is load-bearing for tests that drive
     // mockUwFetch with mockResolvedValueOnce. Keep the order stable.
     type PhaseATask = { kind: 'all-dte' | 'expiry'; ticker: 'SPY' | 'QQQ' };
+    type PhaseAOutcome =
+      | { ok: true; data: unknown[] }
+      | { ok: false; reason: unknown };
     const phaseATasks: PhaseATask[] = [
       { kind: 'all-dte', ticker: 'SPY' },
       { kind: 'all-dte', ticker: 'QQQ' },
       { kind: 'expiry', ticker: 'SPY' },
       { kind: 'expiry', ticker: 'QQQ' },
     ];
-    const phaseAResults = await mapWithConcurrency(
+    const phaseAResults = await mapWithConcurrency<PhaseATask, PhaseAOutcome>(
       phaseATasks,
       3,
       async (task) => {
-        if (task.kind === 'all-dte') {
-          return withRetry(() =>
-            uwFetch<GreekFlowTick>(
+        try {
+          if (task.kind === 'all-dte') {
+            const data = await withRetry(() =>
+              uwFetch<GreekFlowTick>(
+                apiKey,
+                `/stock/${task.ticker}/greek-flow?date=${today}`,
+              ),
+            );
+            return { ok: true, data };
+          }
+          const data = await withRetry(() =>
+            uwFetch<ExpiryBreakdownEntry>(
               apiKey,
-              `/stock/${task.ticker}/greek-flow?date=${today}`,
+              `/stock/${task.ticker}/expiry-breakdown?date=${today}`,
             ),
           );
+          return { ok: true, data };
+        } catch (err) {
+          ctx.logger.warn(
+            { err, ...task },
+            'fetch-greek-flow-etf: Phase A leg failed',
+          );
+          Sentry.captureException(err);
+          return { ok: false, reason: err };
         }
-        return withRetry(() =>
-          uwFetch<ExpiryBreakdownEntry>(
-            apiKey,
-            `/stock/${task.ticker}/expiry-breakdown?date=${today}`,
-          ),
-        );
       },
     );
-    const spyAllTicks = phaseAResults[0] as GreekFlowTick[];
-    const qqqAllTicks = phaseAResults[1] as GreekFlowTick[];
-    const spyExpiries = phaseAResults[2] as ExpiryBreakdownEntry[];
-    const qqqExpiries = phaseAResults[3] as ExpiryBreakdownEntry[];
 
-    // Phase B: only fetch per-expiry data if today is an expiry day for the ticker.
+    // Pure extraction — leg accounting happens per persistable scope below
+    // (all-DTE fetch failures are folded into their Phase C scope; the
+    // expiry-breakdown legs are metadata and excluded from status).
+    const unwrapPhaseA = <T>(outcome: PhaseAOutcome): T[] =>
+      outcome.ok ? (outcome.data as T[]) : [];
+
+    const spyAllOutcome = phaseAResults[0]!;
+    const qqqAllOutcome = phaseAResults[1]!;
+    const spyAllTicks = unwrapPhaseA<GreekFlowTick>(spyAllOutcome);
+    const qqqAllTicks = unwrapPhaseA<GreekFlowTick>(qqqAllOutcome);
+    const spyExpiries = unwrapPhaseA<ExpiryBreakdownEntry>(phaseAResults[2]!);
+    const qqqExpiries = unwrapPhaseA<ExpiryBreakdownEntry>(phaseAResults[3]!);
+
+    // Whether the all-DTE fetch itself failed (vs. simply returned no
+    // ticks). A failed fetch is a failed persistable leg; an empty success
+    // is a no-op that's excluded from the status denominator.
+    const spyAllFetchFailed = !spyAllOutcome.ok;
+    const qqqAllFetchFailed = !qqqAllOutcome.ok;
+
+    // Phase B: only fetch per-expiry data if today is an expiry day for the
+    // ticker. allSettled so a per-expiry 503 for SPY doesn't drop QQQ's.
     const spyIsExpiry = spyExpiries.some((e) => e.expires === today);
     const qqqIsExpiry = qqqExpiries.some((e) => e.expires === today);
 
-    const [spy0dteTicks, qqq0dteTicks] = await Promise.all([
+    const [spy0dteSettled, qqq0dteSettled] = await Promise.allSettled([
       spyIsExpiry
         ? withRetry(() =>
             uwFetch<GreekFlowTick>(
@@ -137,14 +200,136 @@ export default withCronInstrumentation(
         : Promise.resolve<GreekFlowTick[]>([]),
     ]);
 
-    // Phase C: upsert all four scopes in parallel.
-    const [spyAllResult, qqqAllResult, spy0dteResult, qqq0dteResult] =
-      await Promise.all([
+    // Per-expiry fetch failures (only meaningful on an expiry day — a
+    // skipped non-expiry leg resolves to [] and is not real work). The
+    // flag folds into the per-expiry scope's leg accounting in Phase C.
+    const spy0dteFetchFailed =
+      spyIsExpiry && spy0dteSettled.status === 'rejected';
+    const qqq0dteFetchFailed =
+      qqqIsExpiry && qqq0dteSettled.status === 'rejected';
+    if (spy0dteFetchFailed) {
+      ctx.logger.warn(
+        { err: spy0dteSettled.reason },
+        'fetch-greek-flow-etf: SPY per-expiry fetch failed',
+      );
+      Sentry.captureException(spy0dteSettled.reason);
+    }
+    if (qqq0dteFetchFailed) {
+      ctx.logger.warn(
+        { err: qqq0dteSettled.reason },
+        'fetch-greek-flow-etf: QQQ per-expiry fetch failed',
+      );
+      Sentry.captureException(qqq0dteSettled.reason);
+    }
+
+    const spy0dteTicks =
+      spy0dteSettled.status === 'fulfilled' ? spy0dteSettled.value : [];
+    const qqq0dteTicks =
+      qqq0dteSettled.status === 'fulfilled' ? qqq0dteSettled.value : [];
+
+    // Phase C: upsert all four scopes independently. upsertGreekFlowTicks
+    // catches its own DB errors and returns { failed } rather than throwing,
+    // but allSettled guards against a connection-level rejection escaping
+    // and aborting the other three scopes' writes.
+    const [spyAllSettled, qqqAllSettled, spy0dteSettledC, qqq0dteSettledC] =
+      await Promise.allSettled([
         upsertGreekFlowTicks('SPY', spyAllTicks, today, null),
         upsertGreekFlowTicks('QQQ', qqqAllTicks, today, null),
         upsertGreekFlowTicks('SPY', spy0dteTicks, today, today),
         upsertGreekFlowTicks('QQQ', qqq0dteTicks, today, today),
       ]);
+
+    const ZERO_UPSERT = { inserted: 0, updated: 0, failed: 0 };
+    const unwrapUpsert = (
+      settled: PromiseSettledResult<{
+        inserted: number;
+        updated: number;
+        failed: number;
+      }>,
+      inputTicks: number,
+      fetchFailed: boolean,
+      scope: string,
+    ): { inserted: number; updated: number; failed: number } => {
+      // Classify this persistable scope as a status leg keyed on whether
+      // DATA LANDED — not on whether the upsert promise rejected.
+      //
+      //   - fetch failed                              → failed leg
+      //   - fetch ok, 0 input ticks                   → no-op, EXCLUDED
+      //   - fetch ok, ticks > 0, rows landed          → success leg
+      //   - fetch ok, ticks > 0, ZERO rows persisted  → failed leg (#2)
+      if (fetchFailed) {
+        // The fetch couldn't even produce data for this scope — already
+        // logged + captured to Sentry at the fetch site.
+        totalLegs += 1;
+        failedLegs += 1;
+        return ZERO_UPSERT;
+      }
+
+      // No ticks to write: upsertGreekFlowTicks returns zeroes without
+      // touching the DB. Genuine no-op — excluded from both numerator and
+      // denominator so a quiet scope can't drag status to 'error'.
+      if (inputTicks === 0) {
+        return settled.status === 'fulfilled' ? settled.value : ZERO_UPSERT;
+      }
+
+      totalLegs += 1;
+
+      if (settled.status === 'rejected') {
+        // Connection-level rejection escaped the store's own try/catch.
+        failedLegs += 1;
+        ctx.logger.warn(
+          { err: settled.reason, scope },
+          'fetch-greek-flow-etf: Phase C upsert rejected',
+        );
+        Sentry.captureException(settled.reason);
+        return ZERO_UPSERT;
+      }
+
+      const result = settled.value;
+      // The store swallows its batched-INSERT error and resolves with
+      // { inserted: 0, failed: N }. That is total write loss masquerading
+      // as a fulfilled promise — count it as a failed leg AND surface it to
+      // Sentry (the store only logs + bumps a metric, which the cron must
+      // escalate to satisfy the no-silent-data-loss goal, H4).
+      if (result.inserted === 0 && result.failed > 0) {
+        failedLegs += 1;
+        ctx.logger.error(
+          { scope, ...result, inputTicks },
+          'fetch-greek-flow-etf: Phase C upsert wrote ZERO rows (total loss)',
+        );
+        Sentry.captureException(
+          new Error(
+            `greek-flow-etf upsert wrote 0 of ${inputTicks} ${scope} ticks (failed=${result.failed})`,
+          ),
+        );
+      }
+      return result;
+    };
+
+    const spyAllResult = unwrapUpsert(
+      spyAllSettled,
+      spyAllTicks.length,
+      spyAllFetchFailed,
+      'SPY/all',
+    );
+    const qqqAllResult = unwrapUpsert(
+      qqqAllSettled,
+      qqqAllTicks.length,
+      qqqAllFetchFailed,
+      'QQQ/all',
+    );
+    const spy0dteResult = unwrapUpsert(
+      spy0dteSettledC,
+      spy0dteTicks.length,
+      spy0dteFetchFailed,
+      'SPY/0dte',
+    );
+    const qqq0dteResult = unwrapUpsert(
+      qqq0dteSettledC,
+      qqq0dteTicks.length,
+      qqq0dteFetchFailed,
+      'QQQ/0dte',
+    );
 
     const spyMeta = {
       all: { ticks: spyAllTicks.length, ...spyAllResult },
@@ -159,14 +344,39 @@ export default withCronInstrumentation(
         : null,
     };
 
+    // Persistence-based status: legs counted above are persistable scopes
+    // that did real work; the numerator is scopes where data failed to
+    // land (fetch failure, upsert rejection, or a swallowed total-write
+    // loss). deriveCronStatus collapses the three-way demotion:
+    //   every working leg failed → 'error', some failed → 'partial',
+    //   none failed (or no work at all) → 'success'.
+    let status = deriveCronStatus(failedLegs, totalLegs);
+
+    // #6a observability: totalLegs === 0 with no fetch failures means every
+    // UW fetch returned an empty 200 — a possible silent data outage. Keep
+    // status 'success' (genuinely quiet windows exist, no paging), but emit
+    // a distinct metric + warn so a total data gap is still visible.
+    const allEmptyInput =
+      totalLegs === 0 && !spyAllFetchFailed && !qqqAllFetchFailed;
+    if (allEmptyInput) {
+      metrics.increment('greek_flow_etf.all_empty');
+      ctx.logger.warn(
+        { spy: spyMeta, qqq: qqqMeta },
+        'fetch-greek-flow-etf: all UW fetches returned empty 200 (possible data gap)',
+      );
+      status = 'success';
+    }
+
     ctx.logger.info(
-      { spy: spyMeta, qqq: qqqMeta },
+      { spy: spyMeta, qqq: qqqMeta, failedLegs, totalLegs, status },
       'fetch-greek-flow-etf completed',
     );
 
     return {
-      status: 'success',
+      status,
       metadata: {
+        failureCount: failedLegs,
+        legCount: totalLegs,
         tickers: {
           SPY: spyMeta,
           QQQ: qqqMeta,

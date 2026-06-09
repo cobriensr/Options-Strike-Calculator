@@ -19,6 +19,7 @@ import {
   formatMarketInternalsForClaude,
   buildAnalysisContext,
 } from '../_lib/analyze-context.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // ── numOrUndef ─────────────────────────────────────────────
 
@@ -859,13 +860,77 @@ describe('buildAnalysisContext', () => {
     vi.mocked(getActiveLessons).mockRejectedValueOnce(
       new Error('lessons DB down'),
     );
+    vi.mocked(Sentry.captureException).mockClear();
 
     const result = await buildAnalysisContext([], {
       mode: 'entry',
       selectedDate: '2026-04-04',
     });
 
+    // Fallback preserved: lessons degrade to an empty block, no throw.
     expect(result.lessonsBlock).toBe('');
+    // The swallowed failure is now visible in Sentry.
+    expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+      expect.any(Error),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('captures to Sentry when the positions fetch fails (midday)', async () => {
+    const { getLatestPositions } = await import('../_lib/db.js');
+    vi.mocked(getLatestPositions).mockRejectedValueOnce(
+      new Error('positions DB down') as never,
+    );
+    vi.mocked(Sentry.captureException).mockClear();
+
+    const result = await buildAnalysisContext([], {
+      mode: 'midday',
+      selectedDate: '2026-04-04',
+      isBacktest: false,
+    });
+
+    // Fallback preserved: context still builds (no throw), and with no
+    // positions the affirmative FLAT block renders.
+    const flatBlock = result.content.find(
+      (b) =>
+        b.type === 'text' &&
+        b.text.includes('## Current Open Positions') &&
+        b.text.includes('NONE.'),
+    );
+    expect(flatBlock).toBeDefined();
+    // The swallowed failure is now visible in Sentry.
+    expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+      expect.any(Error),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('captures to Sentry when the periscope context build fails', async () => {
+    const { buildPeriscopeContextBlock } =
+      await import('../_lib/periscope-format.js');
+    vi.mocked(buildPeriscopeContextBlock).mockRejectedValueOnce(
+      new Error('periscope down'),
+    );
+    vi.mocked(Sentry.captureException).mockClear();
+
+    // spx must be set for the periscope branch to run at all.
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-04',
+      spx: 5700,
+    });
+
+    // Fallback preserved: periscope degrades to unavailable, no throw.
+    const unavailableBlock = result.content.find(
+      (b) =>
+        b.type === 'text' &&
+        b.text.includes('Periscope MM-attributed Exposure'),
+    );
+    expect(unavailableBlock).toBeDefined();
+    // The swallowed failure is now visible in Sentry.
+    expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+      expect.any(Error),
+    );
     vi.unstubAllGlobals();
   });
 

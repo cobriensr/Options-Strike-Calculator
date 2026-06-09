@@ -350,6 +350,88 @@ describe('fetch-vol-surface cron handler', () => {
     expect(res._json).toMatchObject({ realizedVol: true });
   });
 
+  // ── iv_rank null-clobber protection (BE-CRON #3) ──────
+  //
+  // The realized-vol upsert keys ON CONFLICT (date). iv_rank comes from a
+  // SEPARATE leg (the iv-rank fetch) than the realized-vol leg that gates the
+  // whole upsert. On a partial run where realized-vol lands but iv-rank fails,
+  // the incoming iv_rank is NULL. A plain `iv_rank = EXCLUDED.iv_rank` would
+  // overwrite a previously-stored good value with NULL. The fix wraps it in
+  // COALESCE(EXCLUDED.iv_rank, vol_realized.iv_rank) so a NULL incoming value
+  // preserves the existing column. We assert on the emitted SQL text.
+
+  function realizedVolSql(): string {
+    // The neon tagged-template mock receives the TemplateStringsArray as its
+    // first arg. Find the call whose static SQL is the vol_realized upsert.
+    const call = mockSql.mock.calls.find(
+      (c) =>
+        Array.isArray(c[0]) &&
+        (c[0] as readonly string[]).join('').includes('INTO vol_realized'),
+    );
+    expect(call, 'expected a vol_realized INSERT call').toBeDefined();
+    return (call![0] as readonly string[]).join('');
+  }
+
+  it('emits COALESCE on iv_rank so a null incoming value preserves the stored one', async () => {
+    mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
+
+    // realized-vol lands; iv-rank leg returns empty → ivRank null on this run.
+    vi.mocked(uwFetch)
+      .mockResolvedValueOnce([]) // term-structure
+      .mockResolvedValueOnce([makeRealizedVolRow()]) // realized-vol
+      .mockResolvedValueOnce([]); // iv-rank (empty)
+
+    mockSql.mockResolvedValueOnce([]); // realized-vol upsert
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    const sqlText = realizedVolSql();
+    // The protected column uses COALESCE against the existing row value.
+    expect(sqlText).toContain(
+      'COALESCE(EXCLUDED.iv_rank, vol_realized.iv_rank)',
+    );
+    // Sanity: the other columns are NOT coalesced — they derive from the
+    // realized-vol leg (guaranteed non-empty here), so a NULL is meaningful
+    // current-run state, not stale-vs-fresh.
+    expect(sqlText).toContain('iv_30d             = EXCLUDED.iv_30d');
+    expect(sqlText).not.toContain('COALESCE(EXCLUDED.iv_30d');
+  });
+
+  it('a non-null iv_rank still flows through EXCLUDED (COALESCE picks the incoming value)', async () => {
+    mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
+
+    // Both realized-vol and a populated iv-rank land → ivRank is non-null and
+    // is bound as a SQL parameter. COALESCE(EXCLUDED.iv_rank, ...) resolves to
+    // EXCLUDED.iv_rank when it is non-null, i.e. the new value wins.
+    vi.mocked(uwFetch)
+      .mockResolvedValueOnce([]) // term-structure
+      .mockResolvedValueOnce([makeRealizedVolRow()]) // realized-vol
+      .mockResolvedValueOnce([makeIvRankRow({ iv_rank_1y: '72.5' })]); // iv-rank
+
+    mockSql.mockResolvedValueOnce([]); // realized-vol upsert
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    const call = mockSql.mock.calls.find(
+      (c) =>
+        Array.isArray(c[0]) &&
+        (c[0] as readonly string[]).join('').includes('INTO vol_realized'),
+    );
+    expect(call).toBeDefined();
+    // The bound interpolation values follow the strings array. The non-null
+    // iv_rank (72.5) must be among the bound params, proving a real value is
+    // sent for EXCLUDED.iv_rank to resolve to.
+    expect(call!.slice(1)).toContain(72.5);
+    // And the update clause still uses COALESCE (the incoming non-null wins).
+    expect((call![0] as readonly string[]).join('')).toContain(
+      'COALESCE(EXCLUDED.iv_rank, vol_realized.iv_rank)',
+    );
+  });
+
   // ── All endpoints empty ───────────────────────────────
 
   it('handles all three endpoints returning empty arrays', async () => {
@@ -373,7 +455,7 @@ describe('fetch-vol-surface cron handler', () => {
 
   // ── Error handling ────────────────────────────────────
 
-  it('returns 500 and captures exception on API fetch error', async () => {
+  it('error: all three endpoints fail → status error, 500, each leg captured (BE-CRON-H4)', async () => {
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
     const err = new Error('UW API timeout');
     vi.mocked(uwFetch).mockRejectedValue(err);
@@ -381,11 +463,69 @@ describe('fetch-vol-surface cron handler', () => {
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
+    // All three fetches rejected → total failure. Returns 500 (so
+    // withCronCheckin fires an error check-in) with status: 'error' in
+    // the body. The legs are captured individually, not via the outer
+    // catch, so the run no longer reports a clean 'ok'.
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(res._json).toMatchObject({
+      job: 'fetch-vol-surface',
+      status: 'error',
+      failureCount: 3,
+    });
+    // Each rejected leg is captured (3 calls), not just one outer capture.
     expect(Sentry.captureException).toHaveBeenCalledWith(err);
-    expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'fetch-vol-surface');
-    expect(logger.error).toHaveBeenCalled();
+    expect(Sentry.captureException).toHaveBeenCalledTimes(3);
+  });
+
+  it('partial: iv-rank fails but term-structure + realized-vol still store', async () => {
+    mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
+
+    // term-structure + realized-vol succeed; iv-rank rejects.
+    vi.mocked(uwFetch)
+      .mockResolvedValueOnce([makeTermStructureRow()]) // term-structure
+      .mockResolvedValueOnce([makeRealizedVolRow()]) // realized-vol
+      .mockRejectedValueOnce(new Error('UW iv-rank 503')); // iv-rank
+
+    // Term-structure INSERT, then realized-vol INSERT.
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    // Partial failures stay 200 — the healthy legs' data landed.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 1,
+      // Healthy legs survived the iv-rank rejection.
+      termStructure: { stored: 1, skipped: 0 },
+      realizedVol: true,
+    });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('success: all three endpoints succeed → status success', async () => {
+    mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
+
+    vi.mocked(uwFetch)
+      .mockResolvedValueOnce([makeTermStructureRow()])
+      .mockResolvedValueOnce([makeRealizedVolRow()])
+      .mockResolvedValueOnce([makeIvRankRow()]);
+
+    mockSql.mockResolvedValueOnce([{ id: 1 }]); // term-structure INSERT
+    mockSql.mockResolvedValueOnce([]); // realized-vol INSERT
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'ok',
+      failureCount: 0,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it('returns 500 on DB write error during term structure insert', async () => {

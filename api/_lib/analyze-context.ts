@@ -37,7 +37,7 @@ import {
   formatSimilarAnalysesBlock,
 } from './embeddings.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
-import { metrics } from './sentry.js';
+import { metrics, Sentry } from './sentry.js';
 import type { ImageMediaType } from './analyze-prompts.js';
 import logger from './logger.js';
 
@@ -161,6 +161,7 @@ export async function buildAnalysisContext(
     } catch (error_) {
       logger.error({ err: error_ }, 'Failed to fetch positions for analysis');
       metrics.increment('analyze_context.positions_fetch_error');
+      Sentry.captureException(error_);
     }
   }
   if (mode === 'midday' || mode === 'review') {
@@ -169,6 +170,7 @@ export async function buildAnalysisContext(
     } catch (error_) {
       logger.error({ err: error_ }, 'Failed to fetch previous recommendation');
       metrics.increment('analyze_context.prev_recommendation_error');
+      Sentry.captureException(error_);
     }
   }
   const positionContext =
@@ -299,6 +301,7 @@ export async function buildAnalysisContext(
     } catch (err) {
       logger.error({ err }, 'Failed to build periscope context block');
       metrics.increment('analyze_context.periscope_fetch_error');
+      Sentry.captureException(err);
     }
   }
 
@@ -556,6 +559,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     lessonsBlock = formatLessonsBlock(lessons);
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch lessons for injection');
+    Sentry.captureException(error_);
   }
 
   try {
@@ -565,6 +569,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     }
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch historical win rate');
+    Sentry.captureException(error_);
   }
 
   // Retrieve similar past analyses by embedding similarity (entry mode only)
@@ -595,6 +600,7 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
       }
     } catch (error_) {
       logger.error({ err: error_ }, 'Failed to fetch similar analyses');
+      Sentry.captureException(error_);
     }
   }
 

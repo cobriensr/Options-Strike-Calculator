@@ -461,4 +461,102 @@ describe('bulkUpsert', () => {
   it('exposes BULK_UPSERT_DEFAULT_CHUNK_SIZE = 500', () => {
     expect(BULK_UPSERT_DEFAULT_CHUNK_SIZE).toBe(500);
   });
+
+  // ----------------------------------------------------------------
+  // Identifier allowlist (defense-in-depth against SQL injection via
+  // table / column / conflict-target identifiers, which are interpolated
+  // raw into the statement because identifiers are not parameterizable).
+  // ----------------------------------------------------------------
+  describe('identifier allowlist', () => {
+    const validRow = { date: '2026-05-02', ticker: 'SPX', price: 5800 };
+
+    it('throws on a malicious table name and never hits the DB', async () => {
+      await expect(
+        bulkUpsert<Row>({
+          sql,
+          table: 'users; DROP TABLE users; --',
+          columns: ['date', 'ticker', 'price'],
+          rows: [validRow],
+          conflictTarget: '(date, ticker)',
+        }),
+      ).rejects.toThrow(/unsafe table identifier/);
+      expect(queryMock).not.toHaveBeenCalled();
+    });
+
+    it('throws on a hyphenated table name (a-b)', async () => {
+      await expect(
+        bulkUpsert<Row>({
+          sql,
+          table: 'a-b',
+          columns: ['date', 'ticker', 'price'],
+          rows: [validRow],
+          conflictTarget: '(date, ticker)',
+        }),
+      ).rejects.toThrow(/unsafe table identifier/);
+    });
+
+    it('throws on a table name starting with a digit (1col)', async () => {
+      await expect(
+        bulkUpsert<Row>({
+          sql,
+          table: '1col',
+          columns: ['date', 'ticker', 'price'],
+          rows: [validRow],
+          conflictTarget: '(date, ticker)',
+        }),
+      ).rejects.toThrow(/unsafe table identifier/);
+    });
+
+    it('throws on a malicious column name', async () => {
+      await expect(
+        bulkUpsert<Row>({
+          sql,
+          table: 'demo',
+          columns: ['date', 'ticker', 'price) FROM x; --'],
+          rows: [validRow],
+          conflictTarget: '(date, ticker)',
+        }),
+      ).rejects.toThrow(/unsafe column identifier/);
+      expect(queryMock).not.toHaveBeenCalled();
+    });
+
+    it('throws on a malicious conflict-target column', async () => {
+      await expect(
+        bulkUpsert<Row>({
+          sql,
+          table: 'demo',
+          columns: ['date', 'ticker', 'price'],
+          rows: [validRow],
+          conflictTarget: '(date, ticker; DROP)',
+          conflictUpdateColumns: ['price'],
+        }),
+      ).rejects.toThrow(/unsafe conflict-target column identifier/);
+    });
+
+    it('throws on a malicious explicit update column', async () => {
+      await expect(
+        bulkUpsert<Row>({
+          sql,
+          table: 'demo',
+          columns: ['date', 'ticker', 'price'],
+          rows: [validRow],
+          conflictTarget: '(date, ticker)',
+          conflictUpdateColumns: ['price = 1; --'],
+        }),
+      ).rejects.toThrow(/unsafe update column identifier/);
+    });
+
+    it('accepts valid snake_case identifiers', async () => {
+      await expect(
+        bulkUpsert<Row & { snake_col: number }>({
+          sql,
+          table: 'gex_strike_0dte',
+          columns: ['date', 'ticker', 'price', 'snake_col'],
+          rows: [{ ...validRow, snake_col: 1 }],
+          conflictTarget: '(date, ticker)',
+        }),
+      ).resolves.toEqual({ rows: 1 });
+      expect(queryMock).toHaveBeenCalledTimes(1);
+    });
+  });
 });

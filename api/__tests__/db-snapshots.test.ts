@@ -24,9 +24,20 @@ interface RawRow {
   spx: string | null;
 }
 
+let lastTag: ReturnType<typeof vi.fn>;
+
 function mockSqlReturning(rows: RawRow[]) {
   const tag = vi.fn().mockResolvedValueOnce(rows);
+  lastTag = tag;
   vi.mocked(getDb).mockReturnValue(tag as unknown as ReturnType<typeof getDb>);
+}
+
+/** Reconstruct the raw SQL text the tagged template was invoked with. */
+function capturedSql(): string {
+  const strings = lastTag.mock.calls[0]?.[0] as
+    | TemplateStringsArray
+    | undefined;
+  return strings ? strings.join('?') : '';
 }
 
 describe('getRecentVixSnapshots', () => {
@@ -150,5 +161,42 @@ describe('getRecentVixSnapshots', () => {
     mockSqlReturning([]);
     const out = await getRecentVixSnapshots('2026-04-14');
     expect(out).toEqual([]);
+  });
+
+  it('orders by created_at DESC, not lexicographically by entry_time (M1)', async () => {
+    // Regression guard: entry_time is a TEXT clock string, so an
+    // `ORDER BY entry_time ASC LIMIT` sort mis-slices heavy days
+    // ('10:00 AM' < '9:35 AM' lexicographically). The query must order
+    // by the chronological created_at column instead.
+    mockSqlReturning([]);
+    await getRecentVixSnapshots('2026-04-14');
+    const sql = capturedSql();
+    expect(sql).toMatch(/ORDER BY\s+created_at DESC/i);
+    expect(sql).not.toMatch(/ORDER BY\s+entry_time/i);
+  });
+
+  it('keeps the most-recent rows in ascending display order on heavy days (M1)', async () => {
+    // The DB returns the most-recent N by created_at DESC. Here the
+    // driver hands back '10:00 AM' and '9:35 AM' (DESC by insertion).
+    // Both must survive and be re-sorted ascending by clock time —
+    // the lexicographic bug would have kept the wrong subset / order.
+    mockSqlReturning([
+      {
+        entry_time: '10:00 AM',
+        vix: '17.5',
+        vix1d: '11.0',
+        vix9d: '16.0',
+        spx: '6900',
+      },
+      {
+        entry_time: '9:35 AM',
+        vix: '17.2',
+        vix1d: '11.1',
+        vix9d: '16.1',
+        spx: '6890',
+      },
+    ]);
+    const out = await getRecentVixSnapshots('2026-04-14');
+    expect(out.map((r) => r.entryTime)).toEqual(['9:35 AM', '10:00 AM']);
   });
 });

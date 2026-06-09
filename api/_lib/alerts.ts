@@ -107,6 +107,9 @@ export async function sendTwilioSms(alert: AlertPayload): Promise<boolean> {
     return true;
   } catch (err) {
     logger.error({ err }, 'Twilio SMS error');
+    Sentry.captureException(err, {
+      tags: { alertType: alert.type },
+    });
     return false;
   }
 }

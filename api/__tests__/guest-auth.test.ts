@@ -49,8 +49,20 @@ describe('getConfiguredGuestKeys', () => {
   });
 
   it('splits, trims, and drops empty entries', () => {
-    process.env.GUEST_ACCESS_KEYS = ' alpha , bravo,, charlie ,';
-    expect(getConfiguredGuestKeys()).toEqual(['alpha', 'bravo', 'charlie']);
+    process.env.GUEST_ACCESS_KEYS = ' alpha-key , bravo-key,, charlie-key ,';
+    expect(getConfiguredGuestKeys()).toEqual([
+      'alpha-key',
+      'bravo-key',
+      'charlie-key',
+    ]);
+  });
+
+  it('drops keys whose byte-length is outside the guestKeySchema bounds', () => {
+    const tooShort = 'short'; // 5 bytes < 8
+    const tooLong = 'x'.repeat(129); // 129 bytes > 128
+    const valid = 'valid-guest-key-1234'; // 20 bytes, in bounds
+    process.env.GUEST_ACCESS_KEYS = `${tooShort},${valid},${tooLong}`;
+    expect(getConfiguredGuestKeys()).toEqual([valid]);
   });
 });
 
@@ -70,6 +82,49 @@ describe('isValidGuestKey', () => {
     expect(isValidGuestKey('charlie-key-9999')).toBe(false);
     expect(isValidGuestKey('alpha-key-12345')).toBe(false); // length differs
     expect(isValidGuestKey('')).toBe(false);
+  });
+
+  // L1 — constant-work comparison: correctness must be identical whether the
+  // wrong key matches the configured length or not. (Timing itself is not
+  // unit-testable here; we assert the boolean result is preserved.)
+  it('rejects a wrong key of the SAME length as a configured key', () => {
+    process.env.GUEST_ACCESS_KEYS = 'alpha-key-1234'; // 14 chars
+    expect(isValidGuestKey('alpha-key-9999')).toBe(false); // same length
+  });
+
+  it('rejects a wrong key of a DIFFERENT length than any configured key', () => {
+    process.env.GUEST_ACCESS_KEYS = 'alpha-key-1234'; // 14 chars
+    expect(isValidGuestKey('x')).toBe(false); // shorter
+    expect(isValidGuestKey('alpha-key-1234-and-much-longer-suffix')).toBe(
+      false,
+    ); // longer
+  });
+
+  it('still accepts the exact configured key after the constant-work change', () => {
+    process.env.GUEST_ACCESS_KEYS = 'alpha-key-1234,bravo-key-5678';
+    expect(isValidGuestKey('alpha-key-1234')).toBe(true);
+    expect(isValidGuestKey('bravo-key-5678')).toBe(true);
+  });
+
+  it('an over-128-byte CONFIGURED key is dropped and cannot authenticate', () => {
+    // A configured key longer than MAX_KEY_LEN (128) would otherwise be
+    // truncated into the fixed comparison buffer. getConfiguredGuestKeys drops
+    // it, so presenting the exact same over-long key still fails.
+    const overLongConfig = 'g'.repeat(200); // 200 bytes > 128
+    const validConfig = 'valid-guest-key-1234';
+    process.env.GUEST_ACCESS_KEYS = `${overLongConfig},${validConfig}`;
+    // The dropped over-long key cannot authenticate even when presented exactly.
+    expect(isValidGuestKey(overLongConfig)).toBe(false);
+    // The in-bounds key still works.
+    expect(isValidGuestKey(validConfig)).toBe(true);
+  });
+
+  it('rejects an over-long presented key that shares a configured prefix', () => {
+    // A presented key longer than MAX_KEY_LEN (128) truncates into the fixed
+    // buffer; the exact-length AND must still reject it.
+    process.env.GUEST_ACCESS_KEYS = 'short-config-key';
+    const overLong = 'short-config-key' + 'z'.repeat(200);
+    expect(isValidGuestKey(overLong)).toBe(false);
   });
 });
 

@@ -79,6 +79,26 @@ export interface BulkUpsertResult {
 // update columns. We compare lower-case strings against a tokenized form
 // of `conflictTarget` so `'(Date, Ticker)'` and `'(date, ticker)'` both
 // drop the right columns.
+/**
+ * Postgres unquoted-identifier shape: a leading letter or underscore
+ * followed by letters, digits, or underscores. `table`, column names, and
+ * conflict/update columns are interpolated directly into the SQL string
+ * (identifiers are not parameterizable), so we hard-reject anything that
+ * isn't a bare snake_case identifier. Defense-in-depth: all current callers
+ * pass trusted string literals, but this closes the latent injection
+ * foot-gun if a future caller ever threads user input through.
+ */
+const IDENTIFIER_RE = /^[a-z_][a-z0-9_]*$/;
+
+function assertSafeIdentifier(identifier: string, role: string): void {
+  if (!IDENTIFIER_RE.test(identifier)) {
+    throw new Error(
+      `bulkUpsert: unsafe ${role} identifier ${JSON.stringify(identifier)} ` +
+        `(must match ${IDENTIFIER_RE.source})`,
+    );
+  }
+}
+
 function parseConflictColumns(conflictTarget: string): Set<string> {
   // Strip parentheses and split on comma; tolerate extra whitespace and
   // optional `ON CONSTRAINT` syntax (which has no inline columns).
@@ -182,6 +202,14 @@ export async function bulkUpsert<T extends Record<string, unknown>>(
     throw new Error('bulkUpsert: columns must be a non-empty list');
   }
 
+  // Defense-in-depth: identifiers are interpolated raw (not parameterizable),
+  // so reject anything that isn't a bare Postgres identifier before it can
+  // reach the SQL string. Covers the table and every write column.
+  assertSafeIdentifier(opts.table, 'table');
+  for (const col of columns) {
+    assertSafeIdentifier(col, 'column');
+  }
+
   const chunkSize = chunkOverride ?? BULK_UPSERT_DEFAULT_CHUNK_SIZE;
   if (chunkSize <= 0) {
     throw new Error('bulkUpsert: chunkSize must be > 0');
@@ -191,6 +219,13 @@ export async function bulkUpsert<T extends Record<string, unknown>>(
   // filter callback below would be wasted work + the closure misled
   // reviewers about the cost.
   const conflictSet = parseConflictColumns(conflictTarget);
+  // Inline conflict-target columns (the `(a, b, c)` form) are interpolated
+  // verbatim via `conflictTarget`, so each parsed column must be a safe
+  // identifier too. The `ON CONSTRAINT <name>` form parses to an empty set
+  // and has nothing inline to validate here.
+  for (const col of conflictSet) {
+    assertSafeIdentifier(col, 'conflict-target column');
+  }
 
   // Resolve the conflict-update column list once. Default to "every
   // column not in the conflict target" so callers don't have to repeat
@@ -209,6 +244,13 @@ export async function bulkUpsert<T extends Record<string, unknown>>(
       );
     }
     updateColumns = columns.filter((c) => !conflictSet.has(c.toLowerCase()));
+  }
+
+  // Explicit conflictUpdateColumns are interpolated into the SET clause
+  // verbatim; the derived list is a subset of the already-validated columns,
+  // but re-checking here is cheap and keeps the guarantee local.
+  for (const col of updateColumns) {
+    assertSafeIdentifier(col, 'update column');
   }
 
   // Single-chunk fast path: one query, no transaction overhead.

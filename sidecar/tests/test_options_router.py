@@ -15,7 +15,7 @@ patches the source-level ``sentry_setup.capture_message`` and
 from __future__ import annotations
 
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 # Required env vars for config.py's pydantic-settings validation.
@@ -29,6 +29,7 @@ import pytest  # noqa: E402
 import sentry_setup  # noqa: E402
 from options_router import (  # noqa: E402
     DEFINITION_LAG_SUMMARY_INTERVAL_S,
+    DEFINITION_PRUNE_INTERVAL_S,
     STAT_TYPE_CLEARED_VOLUME,
     STAT_TYPE_DELTA,
     STAT_TYPE_IMPLIED_VOL,
@@ -576,3 +577,154 @@ class TestStatTypeToKwargTable:
         """Sanity guard on the throttle window. If this changes,
         the production-cadence Sentry alert thresholds need re-tuning."""
         assert DEFINITION_LAG_SUMMARY_INTERVAL_S == pytest.approx(60.0)
+
+
+# ---------------------------------------------------------------------------
+# M7 — option_definitions past-expiry pruning + throttle
+# ---------------------------------------------------------------------------
+
+# UTC "today" anchor used to build deterministic past/future expiries. The
+# prune compares against datetime.now(timezone.utc).date(), so deriving the
+# fixtures from the same clock keeps the test off real-time flakiness without
+# having to patch the prune's internal datetime import.
+_TODAY_UTC = datetime.now(timezone.utc).date()
+_YESTERDAY = _TODAY_UTC - timedelta(days=1)
+_LAST_WEEK = _TODAY_UTC - timedelta(days=7)
+_TOMORROW = _TODAY_UTC + timedelta(days=1)
+
+
+def _def_entry(strike: float, expiry: date, option_type: str = "C") -> dict:
+    return {"strike": strike, "option_type": option_type, "expiry": expiry}
+
+
+class TestPruneExpiredDefinitions:
+    def test_removes_past_keeps_future(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """Entries whose expiry is strictly before today are removed;
+        today's and future entries are retained."""
+        router, _ = router_setup
+        router.option_definitions = {
+            1: _def_entry(5800.0, _LAST_WEEK),
+            2: _def_entry(5810.0, _YESTERDAY),
+            3: _def_entry(5820.0, _TODAY_UTC),  # today is NOT past — keep
+            4: _def_entry(5830.0, _TOMORROW),
+        }
+
+        router._prune_expired_definitions()
+
+        assert set(router.option_definitions) == {3, 4}
+        assert router.option_definitions[3]["strike"] == pytest.approx(5820.0)
+        assert router.option_definitions[4]["strike"] == pytest.approx(5830.0)
+
+    def test_empty_dict_is_noop(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """Pruning an empty cache must not raise and leaves it empty."""
+        router, _ = router_setup
+        assert router.option_definitions == {}
+        router._prune_expired_definitions()
+        assert router.option_definitions == {}
+
+    def test_all_future_kept(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        router, _ = router_setup
+        router.option_definitions = {
+            1: _def_entry(5800.0, _TOMORROW),
+            2: _def_entry(5810.0, _TODAY_UTC),
+        }
+        router._prune_expired_definitions()
+        assert set(router.option_definitions) == {1, 2}
+
+    def test_throttle_skips_prune_on_rapid_calls(
+        self,
+        router_setup: tuple[OptionsRecordRouter, dict],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two rapid handle_definition calls must NOT both prune: the second
+        is inside DEFINITION_PRUNE_INTERVAL_S of the first, so the stale entry
+        seeded between them survives until the interval elapses.
+
+        Time is controlled deterministically via a mutable fake clock patched
+        onto options_router.time.time — no real wall-clock reads, so no
+        flakiness.
+        """
+        import options_router
+
+        clock = {"now": 1_000_000.0}
+        monkeypatch.setattr(options_router.time, "time", lambda: clock["now"])
+
+        # Trigger records carry a FUTURE expiry (30 days out) so the inserted
+        # iids are never themselves pruned — keeps the test focused on the
+        # seeded stale entry (iid 999) and the throttle gate.
+        future_dt = datetime.now(timezone.utc) + timedelta(days=30)
+        future_ns = int(future_dt.timestamp() * 1e9)
+
+        def _future_def(iid: int) -> MagicMock:
+            return _make_def_record(
+                instrument_class="C", iid=iid, expiration_ns=future_ns
+            )
+
+        router, _ = router_setup
+        # last_prune_ts starts at 0.0, so the FIRST call's throttle gate opens
+        # (now - 0 >= interval) and a prune runs (on the empty cache).
+        router.handle_definition(_future_def(1))
+        assert router.last_prune_ts == pytest.approx(clock["now"])
+        assert 1 in router.option_definitions
+
+        # Seed an already-expired entry that a prune WOULD remove.
+        router.option_definitions[999] = _def_entry(6000.0, _YESTERDAY)
+
+        # Advance the clock by less than the interval, then fire another
+        # definition. The throttle must short-circuit the prune, so the stale
+        # entry is still present afterward.
+        clock["now"] += DEFINITION_PRUNE_INTERVAL_S / 2.0
+        router.handle_definition(_future_def(2))
+        assert 999 in router.option_definitions, "throttle should skip prune"
+
+        # Cross the interval boundary; the next definition prunes the stale id.
+        clock["now"] += DEFINITION_PRUNE_INTERVAL_S
+        router.handle_definition(_future_def(3))
+        assert 999 not in router.option_definitions, "prune should run now"
+
+    def test_handle_trade_drives_throttled_prune(
+        self,
+        router_setup: tuple[OptionsRecordRouter, dict],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """During quiet periods with only Trade traffic (no Definition
+        messages), handle_trade must still drive the throttled prune so the
+        past-expiry cleanup keeps running. A trade fired after the interval
+        elapses prunes an expired entry.
+
+        Time is controlled via a mutable fake clock so the throttle gate is
+        deterministic (no real wall-clock reads).
+        """
+        import options_router
+
+        clock = {"now": 2_000_000.0}
+        monkeypatch.setattr(options_router.time, "time", lambda: clock["now"])
+
+        router, _ = router_setup
+        # Pin the prune throttle to "now" so the gate is initially closed —
+        # isolates the assertion to the post-interval trade firing the prune.
+        router.last_prune_ts = clock["now"]
+
+        # Seed a definition for the traded iid (in the ATM window) so the trade
+        # itself doesn't short-circuit on a missing definition, plus an
+        # already-expired entry that a prune WOULD remove.
+        router.option_definitions[99] = _def_entry(5025.0, _TOMORROW)
+        router.option_definitions[999] = _def_entry(6000.0, _YESTERDAY)
+        router.options_strikes.strikes = {5025.0}
+
+        # A trade inside the throttle interval must NOT prune yet.
+        clock["now"] += DEFINITION_PRUNE_INTERVAL_S / 2.0
+        router.handle_trade(_make_trade_record(iid=99))
+        assert 999 in router.option_definitions, "throttle should skip prune"
+
+        # Cross the interval boundary; the next trade prunes the stale id even
+        # though no Definition message arrived.
+        clock["now"] += DEFINITION_PRUNE_INTERVAL_S
+        router.handle_trade(_make_trade_record(iid=99))
+        assert 999 not in router.option_definitions, "trade should drive prune"

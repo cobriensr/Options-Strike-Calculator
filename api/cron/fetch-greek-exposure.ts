@@ -75,25 +75,26 @@ async function fetchByExpiry(apiKey: string): Promise<ExpiryRow[]> {
 
 // Store helpers
 
-async function storeAggregate(row: AggregateRow): Promise<boolean> {
+async function storeAggregate(
+  row: AggregateRow,
+  runTs: string,
+): Promise<boolean> {
   const sql = getDb();
   const result = await withDbRetry(
     () => sql`
       INSERT INTO greek_exposure (
-        date, ticker, expiry, dte,
+        date, ticker, expiry, dte, timestamp,
         call_gamma, put_gamma, call_charm, put_charm,
         call_delta, put_delta, call_vanna, put_vanna
       )
       VALUES (
-        ${row.date}, 'SPX', ${row.date}, -1,
+        ${row.date}, 'SPX', ${row.date}, -1, ${runTs},
         ${row.call_gamma}, ${row.put_gamma},
         ${row.call_charm}, ${row.put_charm},
         ${row.call_delta}, ${row.put_delta},
         ${row.call_vanna}, ${row.put_vanna}
       )
-      ON CONFLICT (date, ticker, expiry, dte) DO UPDATE SET
-        call_gamma = EXCLUDED.call_gamma,
-        put_gamma = EXCLUDED.put_gamma
+      ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING
       RETURNING id
     `,
     2,
@@ -104,6 +105,7 @@ async function storeAggregate(row: AggregateRow): Promise<boolean> {
 
 async function storeExpiryRows(
   rows: ExpiryRow[],
+  runTs: string,
   log: { warn: (obj: object, msg: string) => void },
 ): Promise<{ stored: number; skipped: number }> {
   if (rows.length === 0) return { stored: 0, skipped: 0 };
@@ -117,18 +119,18 @@ async function storeExpiryRows(
       const result = await withDbRetry(
         () => sql`
           INSERT INTO greek_exposure (
-            date, ticker, expiry, dte,
+            date, ticker, expiry, dte, timestamp,
             call_gamma, put_gamma, call_charm, put_charm,
             call_delta, put_delta, call_vanna, put_vanna
           )
           VALUES (
-            ${row.date}, 'SPX', ${row.expiry}, ${row.dte},
+            ${row.date}, 'SPX', ${row.expiry}, ${row.dte}, ${runTs},
             ${row.call_gamma}, ${row.put_gamma},
             ${row.call_charm}, ${row.put_charm},
             ${row.call_delta}, ${row.put_delta},
             ${row.call_vanna}, ${row.put_vanna}
           )
-          ON CONFLICT (date, ticker, expiry, dte) DO NOTHING
+          ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING
           RETURNING id
         `,
         2,
@@ -151,6 +153,11 @@ export default withCronInstrumentation(
   'fetch-greek-exposure',
   async (ctx): Promise<CronResult> => {
     const { apiKey, today, logger: log } = ctx;
+
+    // One run timestamp shared by every row written this invocation, so all
+    // snapshots from a single cron run land at the same instant (append model:
+    // we retain intraday history instead of overwriting in place).
+    const runTs = new Date().toISOString();
 
     // Fetch aggregate and by-expiry in parallel; tolerate partial failures
     const [aggFetch, expiryFetch] = await Promise.allSettled([
@@ -180,7 +187,7 @@ export default withCronInstrumentation(
     let aggStored = false;
     if (aggRows !== null && aggRows.length > 0) {
       const latest = aggRows.at(-1)!;
-      aggStored = await withRetry(() => storeAggregate(latest));
+      aggStored = await withRetry(() => storeAggregate(latest, runTs));
 
       const netGamma =
         Number.parseFloat(latest.call_gamma) +
@@ -197,7 +204,7 @@ export default withCronInstrumentation(
 
     const expiryResult =
       expiryRows !== null
-        ? await withRetry(() => storeExpiryRows(expiryRows, log))
+        ? await withRetry(() => storeExpiryRows(expiryRows, runTs, log))
         : { stored: 0, skipped: 0 };
 
     const partial =

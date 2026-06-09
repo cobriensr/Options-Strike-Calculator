@@ -26,6 +26,10 @@ vi.mock('../_lib/alert-thresholds.js', () => ({
   },
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn(), captureMessage: vi.fn() },
+}));
+
 import {
   writeAlertIfNew,
   sendTwilioSms,
@@ -33,6 +37,7 @@ import {
 } from '../_lib/alerts.js';
 import type { AlertPayload } from '../_lib/alerts.js';
 import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 
 const MARKET_TIME = new Date('2026-03-24T16:00:00Z');
 
@@ -260,10 +265,19 @@ describe('sendTwilioSms', () => {
 
     const result = await sendTwilioSms(makeAlert());
 
+    // Fallback preserved: a network throw still resolves to false, never
+    // propagates.
     expect(result).toBe(false);
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
       'Twilio SMS error',
+    );
+    // The swallowed network failure is now visible in Sentry.
+    expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: expect.objectContaining({ alertType: 'iv_spike' }),
+      }),
     );
   });
 });

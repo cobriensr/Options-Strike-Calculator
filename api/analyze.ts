@@ -59,6 +59,38 @@ import { runCachedAnthropicCall } from './_lib/anthropic-call.js';
 // Allow up to 13 minutes for Opus with adaptive thinking
 export const config = { maxDuration: 780 };
 
+// Independent timeout for the Sonnet pre-check (≤3 tool-use round-trips).
+// The Anthropic client's 720s per-request timeout is far too generous here —
+// a hung pre-check would eat the function's 780s budget before the main Opus
+// call even starts. 90s is ample for ≤3 fast Sonnet calls; on timeout we fall
+// back to the same no-op value (`null`) that runAnalysisPreCheck returns on
+// error, so the main call is completely unaffected.
+const PRECHECK_TIMEOUT_MS = 90_000;
+
+/**
+ * Race a promise against a timeout. On timeout, resolves to `fallback`
+ * (never rejects) and runs the supplied `onTimeout` side effect. The
+ * internal timer is always cleared once the race settles to avoid a
+ * dangling handle keeping the runtime alive.
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  fallback: T,
+  onTimeout: () => void,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      onTimeout();
+      resolve(fallback);
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 // Module-level singleton — reads ANTHROPIC_API_KEY from env on first API call.
 // Reused across requests for connection pooling.
 const anthropic = new Anthropic({
@@ -112,12 +144,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // Run lightweight pre-check with Sonnet to fetch any additional data Claude
   // needs. Uses ~500 tokens of input (vs 75K for the main call). Falls back to
-  // null on any error — the main call is completely unaffected.
-  const extraContext = await runAnalysisPreCheck(
-    anthropic,
-    context,
-    analysisDate,
-    asOf,
+  // null on any error — the main call is completely unaffected. Wrapped in an
+  // independent timeout so a hung pre-check can never eat the main analysis's
+  // time budget (see PRECHECK_TIMEOUT_MS). On timeout we also abort the
+  // in-flight Anthropic request so it doesn't keep burning tokens / holding a
+  // connection until the client's 720s timeout. The resulting AbortError is
+  // caught inside runAnalysisPreCheck and coalesced to null.
+  const precheckAbort = new AbortController();
+  const extraContext = await withTimeout(
+    runAnalysisPreCheck(
+      anthropic,
+      context,
+      analysisDate,
+      asOf,
+      precheckAbort.signal,
+    ),
+    PRECHECK_TIMEOUT_MS,
+    null,
+    () => {
+      precheckAbort.abort();
+      metrics.increment('analyze.precheck_timeout');
+      logger.warn(
+        { timeoutMs: PRECHECK_TIMEOUT_MS },
+        'analyze pre-check timed out — continuing without it',
+      );
+      Sentry.captureMessage('analyze pre-check timed out', {
+        level: 'warning',
+        tags: { context: 'analyze_precheck_timeout' },
+        extra: { timeoutMs: PRECHECK_TIMEOUT_MS },
+      });
+    },
   );
 
   // Stable system prompt (cached 1h) — lessons appended outside cache boundary
@@ -271,15 +327,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         'Analysis response JSON parse failed',
       );
     }
-    // Stream corruption: Claude said "end_turn" but the JSON is incomplete.
-    // This happens when SSE content chunks are lost over long-running streams
-    // (10+ min with adaptive thinking). Return 502 so the frontend retry
-    // loop fires automatically instead of showing broken output.
-    if (!analysis && text.length > 0) {
-      metrics.increment('analyze.stream_corruption');
+    // No usable analysis. Two distinct failure modes, both returning 502 so the
+    // frontend retry loop fires automatically instead of showing broken output:
+    //
+    //   1. Empty response (text.length === 0): Claude returned no text content
+    //      (empty content array, or all-thinking-no-text). Previously this fell
+    //      through to the success path and returned 200 with `analysis: null`,
+    //      so the user saw a blank result with no error and no Sentry signal.
+    //   2. Stream corruption (text.length > 0): text is present but unparseable.
+    //      Happens when SSE content chunks are lost over long-running streams
+    //      (10+ min with adaptive thinking).
+    if (!analysis) {
+      const isEmpty = text.length === 0;
+      const metric = isEmpty
+        ? 'analyze.empty_response'
+        : 'analyze.stream_corruption';
+      const errorMessage = isEmpty
+        ? 'Analysis returned an empty response. Retrying…'
+        : 'Analysis completed but the response was corrupted in transit. Retrying…';
+      metrics.increment(metric);
       logger.error(
         { stopReason: callResult.stopReason, textLen: text.length },
-        'Returning 502 — response text present but unparseable',
+        isEmpty
+          ? 'Returning 502 — Claude returned an empty response'
+          : 'Returning 502 — response text present but unparseable',
+      );
+      Sentry.captureMessage(
+        isEmpty ? 'analyze empty response' : 'analyze stream corruption',
+        {
+          level: 'error',
+          tags: { context: isEmpty ? 'analyze_empty' : 'analyze_corruption' },
+          extra: { stopReason: callResult.stopReason, textLen: text.length },
+        },
       );
       metrics.analyzeCall({
         model: usedModel,
@@ -288,12 +367,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         imageCount: images.length,
       });
       done({ status: 502 });
-      res.write(
-        JSON.stringify({
-          error:
-            'Analysis completed but the response was corrupted in transit. Retrying…',
-        }) + '\n',
-      );
+      res.write(JSON.stringify({ error: errorMessage }) + '\n');
       return res.end();
     }
     // Save to Postgres before responding (Vercel kills the function after res.json).

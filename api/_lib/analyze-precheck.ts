@@ -34,6 +34,10 @@ const PRECHECK_MODEL = 'claude-sonnet-4-6';
  * @param context - The raw analysis context object from the request
  * @param analysisDate - Trading date in YYYY-MM-DD format
  * @param asOf - ISO UTC ceiling timestamp (clamps DB queries to entryTime)
+ * @param signal - Optional AbortSignal; when the caller's timeout fires it
+ *   aborts the in-flight Anthropic request instead of letting it run to the
+ *   client's 720s timeout. The resulting AbortError is caught below and
+ *   coalesced to `null`, identical to any other pre-check failure.
  * @returns Formatted extra-context string, or null if no tools were called
  */
 export async function runAnalysisPreCheck(
@@ -41,6 +45,7 @@ export async function runAnalysisPreCheck(
   context: Record<string, unknown>,
   analysisDate: string,
   asOf?: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   try {
     const db = getDb();
@@ -74,14 +79,17 @@ export async function runAnalysisPreCheck(
     const toolResultTexts: string[] = [];
 
     for (let turn = 0; turn < MAX_PRECHECK_TURNS; turn++) {
-      const response = await anthropic.messages.create({
-        model: PRECHECK_MODEL,
-        max_tokens: 2048,
-        system: systemPrompt,
-        tools,
-        tool_choice: { type: 'auto' },
-        messages,
-      });
+      const response = await anthropic.messages.create(
+        {
+          model: PRECHECK_MODEL,
+          max_tokens: 2048,
+          system: systemPrompt,
+          tools,
+          tool_choice: { type: 'auto' },
+          messages,
+        },
+        { signal },
+      );
 
       if (response.stop_reason !== 'tool_use') {
         // Claude is done — no more tools to call

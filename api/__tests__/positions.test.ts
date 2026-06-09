@@ -15,13 +15,29 @@ vi.mock('../_lib/db.js', () => ({
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: { captureException: vi.fn() },
+  metrics: {
+    request: vi.fn(() => vi.fn()),
+    dbSave: vi.fn(),
+  },
+}));
+
+vi.mock('../_lib/csv-parser.js', () => ({
+  parseFullCSV: vi.fn(),
+  buildFullSummary: vi.fn(() => 'summary'),
+  parseTosExpiration: vi.fn(),
+}));
+
 import handler from '../positions.js';
+import { parseFullCSV } from '../_lib/csv-parser.js';
 import {
   guardOwnerEndpoint,
   rejectIfRateLimited,
   schwabTraderFetch,
 } from '../_lib/api-helpers.js';
 import { savePositions, getDb } from '../_lib/db.js';
+import { Sentry } from '../_lib/sentry.js';
 
 describe('GET /api/positions', () => {
   const mockSql = vi.fn();
@@ -33,6 +49,7 @@ describe('GET /api/positions', () => {
     vi.mocked(getDb).mockReturnValue(mockSql as never);
     mockSql.mockResolvedValue([]);
     vi.mocked(savePositions).mockResolvedValue(1);
+    vi.mocked(Sentry.captureException).mockClear();
     // Silence expected console.error from error-path tests
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -350,19 +367,27 @@ describe('GET /api/positions', () => {
     expect((res._json as { saved: boolean }).saved).toBe(false);
   });
 
-  it('returns 500 on unexpected error', async () => {
+  it('returns 500 with an OPAQUE message on unexpected error (no internal leak)', async () => {
     vi.mocked(schwabTraderFetch).mockRejectedValueOnce(
-      new Error('Network failure'),
+      new Error('Network failure: secret-host.internal:5432 refused'),
     );
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Network failure' });
+    // The internal error text must NOT leak to the client.
+    expect(res._json).toEqual({ error: 'Failed to fetch positions' });
+    expect(JSON.stringify(res._json)).not.toContain('secret-host.internal');
+    // ...but it IS captured server-side for debugging.
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Network failure: secret-host.internal:5432 refused',
+      }),
+    );
   });
 
-  it('returns generic error for non-Error throws', async () => {
+  it('returns the same opaque error for non-Error throws', async () => {
     vi.mocked(schwabTraderFetch).mockRejectedValueOnce('string error');
 
     const res = mockResponse();
@@ -370,6 +395,57 @@ describe('GET /api/positions', () => {
 
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Failed to fetch positions' });
+    expect(Sentry.captureException).toHaveBeenCalledWith('string error');
+  });
+
+  it('rejects a malformed ?date with 400 (no DB / Schwab call)', async () => {
+    vi.mocked(schwabTraderFetch).mockClear();
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: 'garbage' } }),
+      res,
+    );
+
+    expect(res._status).toBe(400);
+    expect(res._json).toEqual({ error: 'date must be YYYY-MM-DD' });
+    expect(schwabTraderFetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty ?date= with 400', async () => {
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { date: '' } }), res);
+
+    expect(res._status).toBe(400);
+    expect(res._json).toEqual({ error: 'date must be YYYY-MM-DD' });
+  });
+
+  it('accepts a valid ?date=2026-06-08', async () => {
+    vi.mocked(schwabTraderFetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        data: [{ accountNumber: '123', hashValue: 'hash1' }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          securitiesAccount: {
+            accountNumber: '123',
+            type: 'MARGIN',
+            positions: [],
+          },
+        },
+      });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-06-08' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(savePositions).toHaveBeenCalledWith(
+      expect.objectContaining({ date: '2026-06-08' }),
+    );
   });
 
   it('groups call credit spreads correctly', async () => {
@@ -585,5 +661,45 @@ describe('GET /api/positions', () => {
     };
     expect(json.positions.legs).toHaveLength(0);
     expect(json.positions.summary).toContain('No open SPX 0DTE positions');
+  });
+});
+
+describe('POST /api/positions — CSV parse error', () => {
+  const mockSql = vi.fn();
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+    vi.mocked(getDb).mockReturnValue(mockSql as never);
+    mockSql.mockResolvedValue([]);
+    vi.mocked(savePositions).mockResolvedValue(1);
+    vi.mocked(Sentry.captureException).mockClear();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  it('returns 500 with an OPAQUE message and captures the real error', async () => {
+    vi.mocked(parseFullCSV).mockImplementation(() => {
+      throw new Error('CSV row 5: unexpected token in /internal/path.ts:42');
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        body: 'Account Trade History\nSPX,...,...\n',
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Failed to parse CSV' });
+    // Internal parser detail must not leak.
+    expect(JSON.stringify(res._json)).not.toContain('/internal/path.ts');
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'CSV row 5: unexpected token in /internal/path.ts:42',
+      }),
+    );
   });
 });

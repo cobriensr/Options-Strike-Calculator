@@ -361,7 +361,8 @@
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
     "api/cron/rollup-ws-gex-strike-expiry.ts": { "maxDuration": 120 },
     "api/cron/fetch-gexbot-strikes.ts": { "maxDuration": 60 },
-    "api/cron/archive-gexbot.ts": { "maxDuration": 300 }
+    "api/cron/archive-gexbot.ts": { "maxDuration": 300 },
+    "api/cron/embed-yesterday.ts": { "maxDuration": 60 }
   },
   "installCommand": "npm install --loglevel=error --no-audit --no-fund",
   "devCommand": "npm run dev",

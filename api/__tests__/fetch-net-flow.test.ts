@@ -411,6 +411,87 @@ describe('fetch-net-flow handler', () => {
     expect(res._status).toBe(200);
   });
 
+  // ── Status demotion on partial / total failure (BE-CRON-H4) ─
+
+  it('partial: one source fails → status partial, healthy sources still stored', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    // SPX succeeds; SPY and QQQ fetches fail.
+    let callCount = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            ok: true,
+            json: async () => ({ data: [makeNetPremTick()] }),
+          };
+        }
+        return { ok: false, status: 500, text: async () => 'Server error' };
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      failureCount: 2,
+      // `stored` is true because at least one source landed.
+      stored: true,
+    });
+    const { results } = res._json as {
+      results: Record<string, { stored: number }>;
+    };
+    // The healthy SPX leg's data survived the SPY/QQQ rejections.
+    expect(results.spx_flow).toMatchObject({ stored: 1 });
+    expect(results.spy_flow).toMatchObject({ stored: 0 });
+    expect(results.qqq_flow).toMatchObject({ stored: 0 });
+  });
+
+  it('error: all sources fail → status error and stored:false (not unconditional success)', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetchWith([], false); // all 3 fetches return non-ok (429)
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      failureCount: 3,
+      stored: false,
+    });
+  });
+
+  it('success: all sources succeed → status success', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetchWith([makeNetPremTick()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      failureCount: 0,
+      stored: true,
+    });
+  });
+
   // ── Fetch URL verification ────────────────────────────────
 
   it('calls the correct UW API endpoints per ticker', async () => {

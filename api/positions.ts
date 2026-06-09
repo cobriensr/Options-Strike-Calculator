@@ -183,7 +183,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     done({ status: 429 });
     return;
   }
-  const today = (req.query.date as string) || getTodayET();
+  const rawDate = req.query.date;
+  if (rawDate !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(rawDate as string)) {
+    done({ status: 400 });
+    return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  }
+  const today = (rawDate as string) || getTodayET();
   const fetchTime = getNowCT();
   if (req.method === 'POST') {
     return handleCSVUpload(req, res, today, fetchTime);
@@ -289,9 +294,7 @@ async function handleCSVUpload(
   } catch (err) {
     Sentry.captureException(err);
     logger.error({ err }, 'CSV upload error');
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : 'Failed to parse CSV',
-    });
+    return res.status(500).json({ error: 'Failed to parse CSV' });
   }
 }
 
@@ -390,8 +393,6 @@ async function handleSchwabFetch(
   } catch (err) {
     Sentry.captureException(err);
     logger.error({ err }, 'Positions fetch error');
-    return res.status(500).json({
-      error: err instanceof Error ? err.message : 'Failed to fetch positions',
-    });
+    return res.status(500).json({ error: 'Failed to fetch positions' });
   }
 }

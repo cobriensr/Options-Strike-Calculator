@@ -23,6 +23,7 @@ import {
 } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
+  deriveCronStatus,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 
@@ -135,6 +136,12 @@ export default withCronInstrumentation(
       { stored: number; skipped: number; candles: number }
     > = {};
 
+    // Count per-ticker failures so the handler can demote its status when
+    // some (partial) or all (error) tickers fail. Without this the cron
+    // returned `success` unconditionally — a full UW outage looked like a
+    // healthy zero-row run and the Sentry monitor stayed green (BE-CRON-H4).
+    let failureCount = 0;
+
     await Promise.all(
       TICKERS.map(async ({ ticker, source }) => {
         try {
@@ -143,6 +150,7 @@ export default withCronInstrumentation(
           const result = await storeAllCandles(candles, source, today);
           results[source] = { ...result, candles: candles.length };
         } catch (err) {
+          failureCount += 1;
           logger.warn({ err, ticker, source }, 'Failed to fetch ETF Tide');
           metrics.increment('fetch_etf_tide.fetch_error');
           Sentry.captureException(err);
@@ -174,11 +182,16 @@ export default withCronInstrumentation(
       }
     }
 
-    logger.info({ results }, 'fetch-etf-tide completed');
+    // Status demotion via the shared helper: all tickers failed → 'error',
+    // some failed → 'partial', none → 'success'. totalLegs is derived from
+    // the ticker list so adding a ticker can never make 'error' unreachable.
+    const status = deriveCronStatus(failureCount, TICKERS.length);
+
+    logger.info({ results, failureCount, status }, 'fetch-etf-tide completed');
 
     return {
-      status: 'success',
-      metadata: { results },
+      status,
+      metadata: { results, failureCount },
     };
   },
 );

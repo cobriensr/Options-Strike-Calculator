@@ -29,8 +29,33 @@ export const GUEST_COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
 let guestKeysWarned = false;
 
 /**
+ * Fixed buffer width for the constant-time key comparison. Matches
+ * `guestKeySchema`'s max (128 chars) so any well-formed key fits. Keys
+ * longer than this can never match a schema-validated configured key, so
+ * truncation into the fixed buffer is safe — the exact-length AND below
+ * still rejects them.
+ */
+const MAX_KEY_LEN = 128;
+
+/**
+ * Min/max byte-length bounds for a configured key, mirroring
+ * `guestKeySchema` (min 8 / max 128) in api/_lib/validation/common.ts.
+ * A configured key longer than `MAX_KEY_LEN` would be silently truncated
+ * into the fixed 128-byte comparison buffer — two distinct over-long keys
+ * sharing their first 128 bytes AND total length would then compare equal
+ * (false-positive auth). Bounding the configured side here guarantees every
+ * key fits the buffer with no truncation.
+ */
+const MIN_KEY_LEN = 8;
+
+/**
  * Returns the comma-separated GUEST_ACCESS_KEYS as a clean array.
  * Empty array means the feature is disabled (env var unset).
+ *
+ * Keys outside the `guestKeySchema` byte-length bounds (min 8 / max 128)
+ * are dropped with a warning so a malformed env entry can never be
+ * truncated into the fixed comparison buffer. The key value is never
+ * logged.
  */
 export function getConfiguredGuestKeys(): string[] {
   const raw = process.env.GUEST_ACCESS_KEYS;
@@ -38,7 +63,18 @@ export function getConfiguredGuestKeys(): string[] {
   return raw
     .split(',')
     .map((k) => k.trim())
-    .filter((k) => k.length > 0);
+    .filter((k) => k.length > 0)
+    .filter((k) => {
+      const byteLen = Buffer.byteLength(k);
+      if (byteLen < MIN_KEY_LEN || byteLen > MAX_KEY_LEN) {
+        logger.warn(
+          { byteLen, minLen: MIN_KEY_LEN, maxLen: MAX_KEY_LEN },
+          'Dropping out-of-bounds GUEST_ACCESS_KEYS entry (length outside guestKeySchema bounds)',
+        );
+        return false;
+      }
+      return true;
+    });
 }
 
 /**
@@ -55,11 +91,23 @@ export function isValidGuestKey(presented: string): boolean {
     return false;
   }
 
-  const a = Buffer.from(presented);
+  // Constant-work comparison: copy both presented and candidate keys into
+  // fixed-size buffers and ALWAYS call timingSafeEqual on equal-length
+  // buffers, regardless of the real key lengths. A length mismatch must not
+  // take a measurably shorter path — that would leak the configured key
+  // length via timing. The byte-equality result is ANDed with an exact
+  // length check so differing-length keys still fail correctly.
+  const presentedBuf = Buffer.alloc(MAX_KEY_LEN);
+  presentedBuf.write(presented);
+  const presentedLen = Buffer.byteLength(presented);
+
+  const candidateBuf = Buffer.alloc(MAX_KEY_LEN);
   let matched = false;
   for (const key of keys) {
-    const b = Buffer.from(key);
-    if (a.length === b.length && timingSafeEqual(a, b)) {
+    candidateBuf.fill(0);
+    candidateBuf.write(key);
+    const bytesEqual = timingSafeEqual(presentedBuf, candidateBuf);
+    if (bytesEqual && presentedLen === Buffer.byteLength(key)) {
       matched = true;
     }
   }

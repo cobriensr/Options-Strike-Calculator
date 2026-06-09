@@ -340,6 +340,11 @@ async function auditHandler(): Promise<CronResult> {
 export default withCronInstrumentation(
   'audit-takeit-calibration',
   auditHandler,
+  // Scheduled `0 11 * * 1` = 07:00 ET Monday, BEFORE the market-hours
+  // gate opens (09:25 ET). The handler reads only from the DB (no live
+  // market data), so disable the gate or every weekly run skips and the
+  // calibration metrics never emit.
+  { marketHours: false },
 );
 
 // Exported for tests.
