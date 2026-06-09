@@ -37,8 +37,7 @@ import {
   getGreekHeatmapNetFlow,
   getGreekHeatmapSnapshot,
 } from './_lib/db-greek-heatmap.js';
-import logger from './_lib/logger.js';
-import { Sentry } from './_lib/sentry.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { greekHeatmapQuerySchema } from './_lib/validation.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -96,8 +95,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       netFlow,
     });
   } catch (err) {
-    logger.error({ err }, 'greek-heatmap endpoint failed');
-    Sentry.captureException(err);
-    res.status(500).json({ error: 'internal error' });
+    sendDbErrorResponse(res, err, {
+      label: 'greek_heatmap',
+      serverErrorBody: { error: 'internal error' },
+    });
   }
 }

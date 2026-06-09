@@ -5,15 +5,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-  // Identity passthrough — tests assert on the underlying SQL result,
-  // not retry/timeout behavior (that's covered in db.test.ts).
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    getDb: vi.fn(() => mockSql),
+    // Identity passthrough — tests assert on the underlying SQL result,
+    // not retry/timeout behavior (that's covered in db.test.ts).
+    withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    // Real classifier — drives sendDbErrorResponse's transient/500 split.
+    isRetryableDbError: actual.isRetryableDbError,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -32,6 +38,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../greek-heatmap.js';
 import { buildIntradayRange } from '../_lib/db-greek-heatmap.js';
+import { Sentry } from '../_lib/sentry.js';
 
 function gexRow(
   strike: number,
@@ -472,6 +479,35 @@ describe('greek-heatmap endpoint', () => {
     // topStrikes still independently sorts by |netGamma| DESC, top-5.
     expect(body.topStrikes).toHaveLength(5);
     expect(body.atmStrike).toBe(460);
+  });
+
+  it('degrades to 503 + Retry-After on a transient db timeout (no Sentry)', async () => {
+    mockSql.mockRejectedValue(new Error('db attempt timeout'));
+
+    const req = mockRequest({ method: 'GET', query: { ticker: 'SPY' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 + captures Sentry on a generic (non-transient) error', async () => {
+    mockSql.mockRejectedValue(new Error('boom'));
+
+    const req = mockRequest({ method: 'GET', query: { ticker: 'SPY' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'internal error' });
+    expect(res._headers['Retry-After']).toBeUndefined();
+    expect(Sentry.captureException).toHaveBeenCalled();
   });
 });
 

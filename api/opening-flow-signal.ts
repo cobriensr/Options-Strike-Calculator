@@ -28,8 +28,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
+import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
@@ -95,8 +94,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Don't surface raw exception messages to the client — they can
     // leak DB connection strings, internal query text, or driver
     // internals. Sentry + pino retain the full details server-side.
-    Sentry.captureException(err);
-    logger.error({ err }, 'opening-flow-signal error');
-    res.status(500).json({ error: 'Internal server error' });
+    // Transient Neon blips degrade to a soft 503 (auto-retried by the
+    // client) instead of a hard 500 + Sentry spam.
+    sendDbErrorResponse(res, err, {
+      label: 'opening_flow_signal',
+      serverErrorBody: { error: 'Internal server error' },
+    });
   }
 }

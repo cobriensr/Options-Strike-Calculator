@@ -149,6 +149,77 @@ describe('useGreekHeatmap', () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it('503 response flags transient and keeps last-good data', async () => {
+    // First fetch succeeds, then the server returns a transient 503
+    // (retryable Neon timeout). The grid must keep last-good data, mark
+    // stale, AND set transient so the UI can show a soft placeholder
+    // instead of the hard error card.
+    mockFetch.mockResolvedValueOnce(okResponse(HAPPY_RESPONSE));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data?.ticker).toBe('SPY');
+    expect(result.current.transient).toBe(false);
+
+    mockFetch.mockResolvedValueOnce(new Response('busy', { status: 503 }));
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => expect(result.current.error).toBe('HTTP 503'));
+    expect(result.current.transient).toBe(true);
+    // Last-good data preserved, not blanked.
+    expect(result.current.data?.ticker).toBe('SPY');
+    expect(result.current.stale).toBe(true);
+  });
+
+  it('503 first-load (no prior data) flags transient with null data', async () => {
+    mockFetch.mockResolvedValue(new Response('busy', { status: 503 }));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+    expect(result.current.error).toBe('HTTP 503');
+    expect(result.current.transient).toBe(true);
+    // stale is false because there is no last-good data to fall back on.
+    expect(result.current.stale).toBe(false);
+  });
+
+  it('500 response sets error with transient false', async () => {
+    mockFetch.mockResolvedValue(new Response('boom', { status: 500 }));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('HTTP 500');
+    expect(result.current.transient).toBe(false);
+  });
+
+  it('a successful fetch resets transient back to false', async () => {
+    // First fetch is a transient 503, then a refresh succeeds — transient
+    // must clear so the placeholder gives way to the real grid.
+    mockFetch.mockResolvedValueOnce(new Response('busy', { status: 503 }));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.transient).toBe(true));
+
+    mockFetch.mockResolvedValueOnce(okResponse(HAPPY_RESPONSE));
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => expect(result.current.data?.ticker).toBe('SPY'));
+    expect(result.current.transient).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
   it('malformed JSON (fails Zod) routes through error path without throwing', async () => {
     // First fetch returns a valid payload, second returns a shape that
     // fails validation (atmStrike is a string). The hook must not throw,
@@ -185,6 +256,8 @@ describe('useGreekHeatmap', () => {
     expect(result.current.data).toBeNull();
     expect(result.current.error).not.toBeNull();
     expect(result.current.stale).toBe(false);
+    // A schema failure is a genuine error, not a transient degrade.
+    expect(result.current.transient).toBe(false);
   });
 
   it('reports a Zod-failing response to Sentry exactly once', async () => {

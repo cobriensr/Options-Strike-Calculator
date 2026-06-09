@@ -238,6 +238,45 @@ describe('GreekHeatmapSection', () => {
     expect(mockRefresh).toHaveBeenCalledTimes(1);
   });
 
+  it('transient first-load failure shows the soft Reconnecting placeholder, NOT the rose banner', () => {
+    // HTTP 503 from the endpoint (retryable Neon timeout) with no
+    // last-good data: the UI must render a muted, auto-retrying
+    // placeholder instead of the alarming rose error card.
+    mockUseGreekHeatmap.mockReturnValue({
+      data: null,
+      loading: false,
+      error: 'HTTP 503',
+      stale: false,
+      transient: true,
+      refresh: mockRefresh,
+    });
+    render(<GreekHeatmapSection marketOpen={true} />);
+
+    expect(screen.getByText(/reconnecting/i)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/failed to load heatmap/i),
+    ).not.toBeInTheDocument();
+
+    // Retry still wires to refresh.
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    expect(mockRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-transient first-load failure shows the rose banner, NOT the Reconnecting placeholder', () => {
+    mockUseGreekHeatmap.mockReturnValue({
+      data: null,
+      loading: false,
+      error: 'HTTP 500',
+      stale: false,
+      transient: false,
+      refresh: mockRefresh,
+    });
+    render(<GreekHeatmapSection marketOpen={true} />);
+
+    expect(screen.getByText(/failed to load heatmap/i)).toBeInTheDocument();
+    expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+  });
+
   it('on a stale poll failure shows the stale badge + grid, NOT the error banner', () => {
     // Transient poll failure: error is set but last-good data is preserved
     // and `stale` is true. The grid must stay rendered and the alarming

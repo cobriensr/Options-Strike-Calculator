@@ -127,7 +127,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
     setScrubbedAt(null);
   }, [ticker, selectedDate]);
 
-  const { data, loading, error, stale, refresh } = useGreekHeatmap({
+  const { data, loading, error, stale, transient, refresh } = useGreekHeatmap({
     ticker,
     date: isViewingToday ? undefined : selectedDate,
     at: scrubbedAt ?? undefined,
@@ -266,12 +266,28 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
         </div>
       )}
 
-      {/* First-load failure (no last-good data to fall back on): show the
-          full error banner. A transient poll failure that left us with
-          stale-but-valid data renders the subtle stale badge below the
-          grid instead, so we never stack an alarming banner over a
-          still-readable heatmap. */}
-      {error !== null && data === null && (
+      {/* First-load failure (no last-good data to fall back on). A
+          transient server degrade (HTTP 503 — retryable Neon timeout)
+          shows a muted, auto-retrying "Reconnecting" placeholder so an
+          infra blip never surfaces as an alarming error card; the 30s
+          poll silently recovers. A genuine failure (network, 500, bad
+          shape) keeps the rose error banner. A transient poll failure
+          that left us with stale-but-valid data renders the subtle stale
+          badge below the grid instead. */}
+      {error !== null && data === null && transient && (
+        <div className="flex items-center justify-between rounded-md border border-neutral-800 bg-neutral-900/40 p-4 text-xs text-neutral-400">
+          <span className="text-neutral-500">Reconnecting… auto-retrying</span>
+          <button
+            type="button"
+            onClick={() => refresh()}
+            className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-400 hover:bg-neutral-800/60"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {error !== null && data === null && !transient && (
         <div className="flex items-center justify-between rounded-md border border-rose-800/70 bg-rose-950/30 p-3 text-xs text-rose-300">
           <span>Failed to load heatmap: {error}</span>
           <button

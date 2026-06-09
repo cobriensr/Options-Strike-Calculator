@@ -109,9 +109,22 @@ interface State {
   data: GreekHeatmapResponse | null;
   loading: boolean;
   error: string | null;
+  /**
+   * True when the most recent failure was a transient server degrade
+   * (HTTP 503 — `/api/greek-heatmap` returns this on a retryable Neon
+   * timeout). Lets the UI show a soft "Reconnecting" placeholder on
+   * first-load instead of the hard rose error card. Reset to false on
+   * success and on every non-503 failure (network, generic HTTP, Zod).
+   */
+  transient: boolean;
 }
 
-const INITIAL_STATE: State = { data: null, loading: true, error: null };
+const INITIAL_STATE: State = {
+  data: null,
+  loading: true,
+  error: null,
+  transient: false,
+};
 
 export function useGreekHeatmap({
   ticker,
@@ -125,6 +138,12 @@ export function useGreekHeatmap({
    * the grid as stale instead of blanking it during a transient outage.
    */
   stale: boolean;
+  /**
+   * True when the latest fetch failed with a transient server degrade
+   * (HTTP 503). The UI uses this to render a soft, auto-retrying
+   * placeholder on first-load instead of the hard error banner.
+   */
+  transient: boolean;
   refresh: () => void;
 } {
   const [state, setState] = useState<State>(INITIAL_STATE);
@@ -182,10 +201,16 @@ export function useGreekHeatmap({
           data: s.data,
           loading: false,
           error: 'invalid response shape',
+          transient: false,
         }));
         return;
       }
-      setState({ data: parsed.data, loading: false, error: null });
+      setState({
+        data: parsed.data,
+        loading: false,
+        error: null,
+        transient: false,
+      });
     } catch (err) {
       // AbortError on a still-mounted component means the parent
       // triggered a new fetch (rapid ticker/date switch); the new
@@ -200,11 +225,23 @@ export function useGreekHeatmap({
       if (ctrl.signal.aborted) return;
       if (!mountedRef.current) return;
       const msg = getErrorMessage(err);
+      // A 503 from `/api/greek-heatmap` signals a transient server degrade
+      // (retryable Neon timeout) — flag it so the UI shows a soft,
+      // auto-retrying placeholder on first-load instead of the hard error
+      // card. Every other failure (network, generic HTTP, abort-fallthrough)
+      // is non-transient. The Zod-failure path returns before reaching this
+      // catch, so it stays non-transient (handled above).
+      const transient = msg === 'HTTP 503';
       // Preserve last-good data on a transient error so one failed poll
       // doesn't blank the live grid (flicker-to-blank). Only set
       // `data: null` when there was no prior data to keep. Always
       // surface the error message.
-      setState((s) => ({ data: s.data, loading: false, error: msg }));
+      setState((s) => ({
+        data: s.data,
+        loading: false,
+        error: msg,
+        transient,
+      }));
     }
   }, [ticker, date, at]);
 
@@ -224,6 +261,7 @@ export function useGreekHeatmap({
     () => ({
       ...state,
       stale: state.error !== null && state.data !== null,
+      transient: state.transient,
       refresh: fetchOnce,
     }),
     [state, fetchOnce],

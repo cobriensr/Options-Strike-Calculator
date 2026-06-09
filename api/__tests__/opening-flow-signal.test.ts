@@ -4,13 +4,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    getDb: vi.fn(() => mockSql),
+    withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    // Real classifier — drives sendDbErrorResponse's transient/500 split.
+    isRetryableDbError: actual.isRetryableDbError,
+  };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -24,6 +30,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../opening-flow-signal.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   evaluateRule,
   evaluateSlice1,
@@ -536,5 +543,36 @@ describe('opening-flow-signal endpoint', () => {
     expect(body.error).toContain('invalid trading date');
     // No DB query — evaluator throws before any SQL runs.
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('degrades to 503 + Retry-After on a transient db timeout (no Sentry)', async () => {
+    // Historical date → first SQL call is the store SELECT; reject it
+    // with the per-attempt timeout signature.
+    mockSql.mockRejectedValue(new Error('db attempt timeout'));
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-13' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._headers['Retry-After']).toBe('5');
+    expect(res._json).toEqual({
+      error: 'temporarily unavailable',
+      transient: true,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 + captures Sentry on a generic (non-transient) error', async () => {
+    mockSql.mockRejectedValue(new Error('boom'));
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-13' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal server error' });
+    expect(res._headers['Retry-After']).toBeUndefined();
+    expect(Sentry.captureException).toHaveBeenCalled();
   });
 });
