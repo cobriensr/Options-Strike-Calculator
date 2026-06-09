@@ -4,8 +4,10 @@ in Phase 1.5 Task 4 (Findings 1.6 and 2.3).
 These cover four behaviours:
 
 1.  ``_classify_semaphore`` caps simultaneous in-flight matcher
-    invocations at ``_CLASSIFY_CONCURRENCY`` (default 4). Excess
-    requests queue rather than running.
+    invocations at ``_CLASSIFY_CONCURRENCY`` (default 1, lowered from
+    8→4→2→1 to bound open-burst memory). Excess requests queue rather
+    than running. These tests read the constant dynamically, so they
+    hold at any cap ≥ 1.
 2.  When the queue wait exceeds ``_QUEUE_WAIT_TIMEOUT_SEC``, the route
     returns 503 with ``retry_after_sec`` in the body. (Server-side
     Retry-After header plumbing lives in test_server.py.)

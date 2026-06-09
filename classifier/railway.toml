@@ -17,9 +17,9 @@ healthcheckPath = "/health"
 # than Railway's 300s default so a wedged/OOM-thrashing instance is
 # recycled within ~30s during the open burst rather than lingering for
 # five minutes. server.py uses ThreadingHTTPServer (thread-per-request) and
-# /health never acquires the classify BoundedSemaphore (cap = 2 in
-# multileg_routes.py), so the probe stays responsive even when both classify
-# slots are busy — 30s is comfortable headroom for its no-I/O handler.
+# /health never acquires the classify BoundedSemaphore (cap = 1 in
+# multileg_routes.py), so the probe stays responsive even when the classify
+# slot is busy — 30s is comfortable headroom for its no-I/O handler.
 healthcheckTimeout = 30
 
 # MEMORY CEILING — NOT settable in railway.toml.
@@ -34,18 +34,22 @@ healthcheckTimeout = 30
 # GraphQL mutation/input are documented in classifier/README.md
 # ("Memory limit" section). NOTE: the API takes `memoryGB` (GB), not bytes.
 #
-# Recommended ceiling: 8 GB.
-# Rationale: per-request peak memory ≈ concurrency × the 0DTE calls×puts
-# cross-join intermediate. The in-process guards already bound this:
-#   - _CLASSIFY_CONCURRENCY = 2        (multileg_routes.py)
-#   - _CROSS_JOIN_PAIR_CAP  = 500_000  (multileg_assembler.py)
+# Recommended ceiling: keep the 24 GB host limit — DO NOT set 8 GB.
+# An earlier revision recommended an 8 GB ceiling on the premise that
+# "concurrency 2 + 500K caps → ~8 GB peak." That premise was FALSIFIED on
+# 2026-06-09: live MEMORY_USAGE_GB peaked at 28.88 GB @ 17:29 UTC (per-minute
+# sample; sub-minute spikes higher) and the 24 GB box OOM-looped all day on
+# exactly those settings. An 8 GB ceiling would hard crash-loop the service
+# every busy window — strictly worse.
+# In-process bounds after the 2026-06-09 hotfix (lower = tighter memory):
+#   - _CLASSIFY_CONCURRENCY = 1        (multileg_routes.py)    [was 2]
+#   - _CROSS_JOIN_PAIR_CAP  = 250_000  (multileg_assembler.py) [was 500_000]
 #   - _MAX_CELL_ROWS_PER_CLASSIFY = 500_000 (per-ticker overload skip)
-# At concurrency 4 the box (24 GB) per-minute-sampled 16.74 GB with
-# sub-minute spikes past 24 GB; halving to concurrency 2 + the 500K caps
-# roughly halves the concurrent peak, so steady-state open-burst peak
-# should sit in the ~8 GB band. An 8 GB ceiling gives clear headroom over
-# that while making OOM DETERMINISTIC and OBSERVABLE (the instance is
-# killed at a known bound and the healthcheck recycles it) instead of
-# letting it climb until the 24 GB host OOMs unpredictably. Owner can
-# adjust up (e.g. 12 GB) in the dashboard if Railway metrics show the
-# open-burst peak creeping above ~6 GB after this lands.
+# Concurrency 2 → 1 means only ONE request's peak is ever live; cap
+# 500K → 250K halves the largest cross-join intermediate. Together they
+# should pull the open-window peak well under 24 GB. Leave the host 24 GB
+# limit for headroom and let the /health healthcheck recycle any residual
+# wedge. Only AFTER re-measuring the open-window peak on the new settings
+# should an explicit ceiling be considered — and never below that observed
+# peak. `scripts/set-classifier-memory-limit.mjs` exists to set one
+# reproducibly if/when that measurement justifies it.

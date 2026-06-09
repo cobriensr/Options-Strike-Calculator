@@ -189,7 +189,17 @@ _PER_BATCH_PRUNE_THRESHOLD: Final = 50_000
 # past 24 GB). Halving the cap halves the per-request intermediate; paired
 # with the concurrency 4 → 2 drop in multileg_routes.py this targets a
 # ~4x reduction in peak. Tunable — verify against the next open.
-_CROSS_JOIN_PAIR_CAP: Final = 500_000
+#
+# Lowered 500K → 250K (2026-06-09): the 06-06 fix was INSUFFICIENT. Live
+# Railway MEMORY_USAGE_GB peaked at 28.88 GB @ 17:29 UTC (12:29 CT) on
+# 2026-06-09 — past the 24 GB host ceiling → kernel OOM, all-day crash
+# loop. This is the per-minute sample; sub-minute peaks run higher. The
+# per-request cross-join intermediate is the single largest live frame, so
+# halving the cap again halves it. Paired with the concurrency 2 → 1 drop
+# in multileg_routes.py (which serializes requests so only ONE request's
+# peak is ever live), the two levers together target the concurrent peak
+# AND the single-request peak. Verify against the next open's metric.
+_CROSS_JOIN_PAIR_CAP: Final = 250_000
 
 
 # Butterfly skip threshold. A 3-leg butterfly body × low_wing × high_wing
