@@ -96,6 +96,12 @@ export const lotteryFinderQuerySchema = z.object({
   // the MIN_FIRE_COUNT chip group in the LotteryFinder toolbar
   // (all / >=3 / >=8 / >=16).
   minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+  // Burst CAP — chain-day fire_count <= N. Inverse of `minFireCount`:
+  // hides high-fire-count "spam" chains. Server-side so pagination and
+  // ticker-counts reflect the post-filter total. Free-text input in the
+  // toolbar (1-2 digit number); absent / 0 = no cap (default OFF). When
+  // both min and max are set, both guards apply (a range).
+  maxFireCount: z.coerce.number().int().min(1).max(1000).optional(),
   // TAKE-IT floor — calibrated XGBoost P(peak >= +20%). Default UI
   // value is 0.70, which strips a large share of each page (often 40+
   // of 50) when applied client-side and made pagination meaningless
@@ -409,6 +415,10 @@ export const lotteryFinderTickerCountsQuerySchema = z.object({
    *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
    *  stay aligned when the Burst chip is active. */
   minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+  /** Chain-day fire_count CAP. Mirrors `maxFireCount` on
+   *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
+   *  stay aligned when the burst cap is active. Absent = no cap. */
+  maxFireCount: z.coerce.number().int().min(1).max(1000).optional(),
   /** TAKE-IT calibrated P(peak >= +20%) floor. Mirrors `minTakeitProb`
    *  on `lotteryFinderQuerySchema` so chip counts and the filtered
    *  feed stay aligned. NULL takeit rows are excluded when active. */

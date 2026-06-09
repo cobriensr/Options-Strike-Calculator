@@ -51,6 +51,7 @@ interface LotteryFinderTickerCountsResponse {
     minScore: number | null;
     minPremium: number | null;
     minFireCount: number | null;
+    maxFireCount: number | null;
     minTakeitProb: number | null;
     showAll: boolean;
   };
@@ -95,6 +96,8 @@ export default async function handler(
     q.minPremium != null && q.minPremium > 0 ? q.minPremium : null;
   const minFireCount =
     q.minFireCount != null && q.minFireCount > 1 ? q.minFireCount : null;
+  const maxFireCount =
+    q.maxFireCount != null && q.maxFireCount >= 1 ? q.maxFireCount : null;
   const minTakeitProb =
     q.minTakeitProb != null && q.minTakeitProb > 0 ? q.minTakeitProb : null;
   const showAll = q.showAll ?? false;
@@ -184,6 +187,7 @@ export default async function handler(
         FROM ranked
         WHERE rn = 1
           AND (${minFireCount}::int IS NULL OR fc >= ${minFireCount ?? 0})
+          AND (${maxFireCount}::int IS NULL OR fc <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR chain_max_takeit >= ${minTakeitProb}::numeric)
       )
       SELECT
@@ -212,6 +216,7 @@ export default async function handler(
         minScore: q.minScore ?? null,
         minPremium,
         minFireCount,
+        maxFireCount,
         minTakeitProb,
         showAll,
       },

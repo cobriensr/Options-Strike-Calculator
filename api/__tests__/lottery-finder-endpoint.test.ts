@@ -672,6 +672,64 @@ describe('lottery-finder endpoint', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
+  it('honors maxFireCount=12 — burst cap gates rows + COUNT queries + echoes in filters', async () => {
+    // Inverse of minFireCount: hides high-fire-count "spam" chains
+    // (fire_count <= cap). Server-side so pagination + the COUNT query
+    // reflect the post-filter total. Cap must bind on BOTH the rows
+    // query (outer WHERE f.fire_count <= cap) AND the COUNT query
+    // (outer WHERE fc <= cap on the ranked CTE) so a chain in the feed
+    // is the same chain counted toward total.
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', maxFireCount: '12' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.maxFireCount).toBe(12);
+
+    // Rows + COUNT both bind the cap.
+    const rowsCall = mockSql.mock.calls[0] as unknown[];
+    const countCall = mockSql.mock.calls[1] as unknown[];
+    expect(rowsCall.slice(1)).toContain(12);
+    expect(countCall.slice(1)).toContain(12);
+
+    const rowsSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+      ' ',
+    );
+    const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+      ' ',
+    );
+    expect(rowsSql).toContain('f.fire_count <=');
+    expect(countSql).toContain('fc <=');
+  });
+
+  it('omits maxFireCount from filters echo when not provided', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: {} });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.maxFireCount).toBeNull();
+  });
+
+  it('rejects maxFireCount above 1000 with 400 (Zod max(1000))', async () => {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', maxFireCount: '1001' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(400);
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('omits minPremium from filters echo when not provided', async () => {
     mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 

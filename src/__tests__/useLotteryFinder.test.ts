@@ -135,6 +135,34 @@ describe('useLotteryFinder', () => {
     expect(url).toContain('minFireCount=16');
   });
 
+  it('omits maxFireCount when null (default OFF — no cap)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({
+        date: '2026-05-07',
+        marketOpen: false,
+        maxFireCount: null,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('maxFireCount=');
+  });
+
+  it('appends maxFireCount when >= 1 (server-side burst cap)', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({
+        date: '2026-05-07',
+        marketOpen: false,
+        maxFireCount: 12,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('maxFireCount=12');
+  });
+
   it('omits minTakeitProb when null or 0 (matches "all" preset)', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
     renderHook(() =>

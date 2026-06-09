@@ -179,6 +179,14 @@ const CONVICTION_TO_MIN_SCORE: Record<ConvictionFloor, number | null> = {
 
 const MIN_FIRE_COUNT_LS_KEY = 'lottery.minFireCount';
 
+// Burst CAP — inverse of the burst floor. A FREE-TEXT numeric input
+// (not preset chips): show only chains with AT MOST N fires, to hide
+// high-fire-count "spam" alerts. 0 = no cap (default OFF). Clamped to
+// the schema ceiling (1000) and floored at 1. Server-side filter so
+// pagination + ticker counts reflect the post-filter total.
+const MAX_FIRE_COUNT_LS_KEY = 'lottery.maxFireCount';
+const MAX_FIRE_COUNT_CEILING = 1000;
+
 type MinFireCountFloor = 'all' | 'gte3' | 'gte8' | 'gte16';
 
 const sortModePersistOpts: UsePersistedStateOptions<LotterySortMode> = {
@@ -365,6 +373,7 @@ interface LotteryFilterSigParams {
   minTakeitProb: number;
   minScore: number | null;
   minFireCount: number;
+  maxFireCount: number;
   mode: LotteryMode | null;
   optionType: OptionType | null;
   tod: TimeOfDay | null;
@@ -385,6 +394,7 @@ function buildLotteryFilterSig(p: LotteryFilterSigParams): string {
     `t${p.minTakeitProb}`,
     `s${p.minScore ?? 'x'}`,
     `f${p.minFireCount}`,
+    `F${p.maxFireCount}`,
     `m${p.mode ?? 'x'}`,
     `o${p.optionType ?? 'x'}`,
     `d${p.tod ?? 'x'}`,
@@ -492,6 +502,12 @@ export function LotteryFinderSection({
     'all',
     minFireCountPersistOpts,
   );
+  // Burst CAP (max fires) — free-text numeric. 0 = no cap (default OFF).
+  const [maxFireCount, setMaxFireCount] = usePersistedState<number>(
+    MAX_FIRE_COUNT_LS_KEY,
+    0,
+    intPersistOpts,
+  );
   const [hideLatePm, setHideLatePm] = usePersistedState<boolean>(
     HIDE_LATE_PM_LS_KEY,
     false,
@@ -562,6 +578,7 @@ export function LotteryFinderSection({
     moneynessMode,
     minPremiumK,
     minFireCount,
+    maxFireCount,
     showFilteredTickers,
   ]);
 
@@ -583,6 +600,7 @@ export function LotteryFinderSection({
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
+    maxFireCount,
     minTakeitProb: takeitFloor,
     showAll: showFilteredTickers,
     page,
@@ -620,6 +638,7 @@ export function LotteryFinderSection({
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
+    maxFireCount,
     minTakeitProb: takeitFloor,
     showAll: showFilteredTickers,
   });
@@ -665,6 +684,7 @@ export function LotteryFinderSection({
     minTakeitProb: takeitFloor,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
     minFireCount: minFireCountFloor,
+    maxFireCount,
     mode: modeFilter,
     optionType: optionTypeFilter,
     tod: todFilter,
@@ -1215,6 +1235,40 @@ export function LotteryFinderSection({
             aria-label="Minimum premium in thousands of dollars"
             data-testid="lottery-min-premium-input"
             className="w-20 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
+          />
+        </label>
+        {/* Burst CAP — free-text "max fires" input (inverse of the burst
+              floor chips). Hides high-fire-count "spam" chains. Empty /
+              0 / invalid = no cap (default OFF). Clamped to the schema
+              ceiling (1000), floored at 1. Server-side so pagination +
+              ticker counts reflect the post-filter total. */}
+        <label
+          className="flex items-center gap-1.5"
+          title="Maximum fires per chain — show only chains with AT MOST N fires, to hide high-fire-count spam. Empty / 0 = no cap. Server-side filter so pagination + ticker counts reflect the post-filter result."
+        >
+          <span className={SECTION_LABEL}>max fires</span>
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={2}
+            value={maxFireCount === 0 ? '' : maxFireCount}
+            placeholder="∞"
+            onChange={(e) => {
+              const raw = e.target.value.trim();
+              if (raw === '') {
+                setMaxFireCount(0);
+                return;
+              }
+              const n = Number.parseInt(raw, 10);
+              if (!Number.isFinite(n) || n <= 0) {
+                setMaxFireCount(0);
+                return;
+              }
+              setMaxFireCount(Math.min(n, MAX_FIRE_COUNT_CEILING));
+            }}
+            aria-label="Max fires"
+            data-testid="lottery-max-fires-input"
+            className="w-16 rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-center text-xs text-neutral-100 tabular-nums focus:border-blue-500 focus:outline-none"
           />
         </label>
       </div>

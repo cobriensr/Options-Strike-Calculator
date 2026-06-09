@@ -632,6 +632,39 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('#1 max-fires: applying the burst CAP (server filter) drops a previously-pinned now-excluded row', () => {
+    // Pin a row under the default (no cap) filter, then type a max-fires
+    // cap. maxFireCount is a SERVER-SIDE filter and MUST be in the
+    // filterSig — without it the stale pin would carry over into the same
+    // union slot and stay on screen forever (never-vanish correctness).
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+
+    // Apply a cap of 3 — the post-filter feed degrades to empty. With
+    // maxFireCount in the filterSig the union RESCOPES (new slot) so the
+    // stale pin does NOT carry over.
+    mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+    fireEvent.change(screen.getByTestId('lottery-max-fires-input'), {
+      target: { value: '3' },
+    });
+
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
   it('#1 control: a CLIENT-only filter change does NOT rescope the union (pin survives)', () => {
     // Moneyness is a CLIENT-side filter — it must NOT be in the filterSig,
     // so toggling it leaves the union intact. The pinned row survives a
@@ -1194,6 +1227,73 @@ describe('LotteryFinderSection: filter interactions', () => {
     render(<LotteryFinderSection marketOpen={false} />);
     const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
     expect(feedCall?.[0]).toMatchObject({ minFireCount: 8 });
+  });
+
+  // ── Max-fire-count CAP (free-text input, inverse of the burst floor) ──
+
+  it('renders a labeled free-text max-fires input (default empty / no cap)', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    const input = screen.getByTestId('lottery-max-fires-input');
+    expect(input).toBeInTheDocument();
+    // Accessible label is required.
+    expect(screen.getByLabelText(/max fires/i)).toBe(input);
+    // Default OFF → empty value, and the hook receives no cap.
+    expect((input as HTMLInputElement).value).toBe('');
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ maxFireCount: 0 });
+    const countsCall = mockUseLotteryFinderTickerCounts.mock.calls.at(-1);
+    expect(countsCall?.[0]).toMatchObject({ maxFireCount: 0 });
+  });
+
+  it('typing a number forwards maxFireCount to BOTH feed + ticker-counts hooks', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.change(screen.getByTestId('lottery-max-fires-input'), {
+      target: { value: '12' },
+    });
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ maxFireCount: 12 });
+    const countsCall = mockUseLotteryFinderTickerCounts.mock.calls.at(-1);
+    expect(countsCall?.[0]).toMatchObject({ maxFireCount: 12 });
+  });
+
+  it('clamps the max-fires input to the schema ceiling (1000)', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    // maxLength={2} blocks >2 digits at the DOM level, but defend the
+    // parse path anyway — a programmatic / paste value must clamp.
+    fireEvent.change(screen.getByTestId('lottery-max-fires-input'), {
+      target: { value: '5000' },
+    });
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ maxFireCount: 1000 });
+  });
+
+  it('empty / 0 / invalid input → no cap (maxFireCount 0)', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    const input = screen.getByTestId('lottery-max-fires-input');
+    fireEvent.change(input, { target: { value: '12' } });
+    fireEvent.change(input, { target: { value: '' } });
+    let feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ maxFireCount: 0 });
+
+    fireEvent.change(input, { target: { value: '0' } });
+    feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ maxFireCount: 0 });
+  });
+
+  it('persists the max-fires cap to localStorage and re-applies on remount', () => {
+    const { unmount } = render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.change(screen.getByTestId('lottery-max-fires-input'), {
+      target: { value: '5' },
+    });
+    expect(window.localStorage.getItem('lottery.maxFireCount')).toBe('5');
+    unmount();
+
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(
+      (screen.getByTestId('lottery-max-fires-input') as HTMLInputElement).value,
+    ).toBe('5');
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ maxFireCount: 5 });
   });
 });
 

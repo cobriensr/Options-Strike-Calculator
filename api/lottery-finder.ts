@@ -439,6 +439,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       sort,
       minScore,
       minFireCount,
+      maxFireCount,
       showAll,
     } = parsed.data;
 
@@ -666,6 +667,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
+          AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
@@ -765,6 +767,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
+          AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
@@ -863,6 +866,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
         WHERE f.rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
+          AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.trigger_time_ct DESC, f.id DESC
@@ -937,6 +941,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         LEFT JOIN lottery_ticker_stats s ON s.ticker = ranked.underlying_symbol
         WHERE rn = 1
           AND (${minFireCount ?? null}::int IS NULL OR fc >= ${minFireCount ?? 0})
+          AND (${maxFireCount ?? null}::int IS NULL OR fc <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR chain_max_takeit >= ${minTakeitProb}::numeric)
       `,
         2,
@@ -1820,6 +1825,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         minScore,
         minPremium: parsed.data.minPremium ?? null,
         minFireCount: minFireCount ?? null,
+        maxFireCount: maxFireCount ?? null,
         minTakeitProb: minTakeitProb ?? null,
       },
       // count = rows returned (≤ limit). total = total matching rows
