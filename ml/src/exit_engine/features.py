@@ -25,6 +25,25 @@ def build_features(
     out["slope_5m"] = _trailing_slope(mid, 5)
     out["slope_10m"] = _trailing_slope(mid, 10)
     out["realized_vol_5m"] = _trailing_vol(mid, 5)
+    if "implied_volatility" in path.columns:
+        iv = path["implied_volatility"].to_numpy(dtype="float64")
+        out["iv_level"] = iv
+        out["iv_change_5m"] = _trailing_slope(iv, 5)
+        out["iv_change_10m"] = _trailing_slope(iv, 10)
+        out["delta"] = path["delta"].to_numpy(dtype="float64")
+        out["gamma"] = path["gamma"].to_numpy(dtype="float64")
+        under = path["underlying_price"].to_numpy(dtype="float64")
+        strike = float(path["strike"].iloc[0])
+        is_call = str(path["option_type"].iloc[0]).lower().startswith("c")
+        if is_call:
+            otm = np.where(under > 0, (under - strike) / under * 100.0, 0.0)
+        else:
+            otm = np.where(under > 0, (strike - under) / under * 100.0, 0.0)
+        out["otm_distance_pct"] = otm
+        u0 = under[0]
+        out["underlying_ret_from_entry"] = (
+            np.where(under > 0, (under - u0) / u0 * 100.0, 0.0) if u0 > 0 else np.zeros_like(under)
+        )
     return out
 
 
