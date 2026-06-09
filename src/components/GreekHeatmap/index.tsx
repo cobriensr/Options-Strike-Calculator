@@ -31,6 +31,7 @@ import { useGreekHeatmap } from '../../hooks/useGreekHeatmap';
 import { getETDateStr } from '../../utils/timezone';
 import { SectionBox } from '../ui/SectionBox';
 
+import { DataAgeBadge } from './DataAgeBadge';
 import { GreekHeatmapTable } from './GreekHeatmapTable';
 import { MinuteScrubber } from './MinuteScrubber';
 import { NetFlowRow } from './NetFlowRow';
@@ -240,6 +241,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
             Historical
           </span>
         )}
+        <DataAgeBadge asOf={data?.asOf ?? null} />
       </div>
 
       {data !== null && (
