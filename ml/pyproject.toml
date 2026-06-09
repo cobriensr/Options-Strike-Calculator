@@ -67,6 +67,15 @@ omit = [
   "src/setups_backtest/evaluators/setup_0_smoke.py",
   "src/setups_backtest/evaluators/setup_1a_nq_ofi_extreme_daily.py",
   "src/takeit/generate_parity_fixture.py",
+  # `make visualize` plotting + `make pin` EDA scripts — all-matplotlib /
+  # sklearn-experiment / orchestration, never imported by production. The pure
+  # gamma/pin math in pin_analysis.py stays guarded by test_pin.py's 48 tests
+  # (those still run; omit only drops the file from the measured denominator).
+  "src/visualize.py",
+  "src/pin_analysis.py",
+  # Cloudflare-R2 upload glue — currently dead code (no active callers); thin
+  # boto3/duckdb wrappers with no logic worth mock-testing.
+  "src/utils/r2.py",
 ]
 
 [tool.coverage.report]
