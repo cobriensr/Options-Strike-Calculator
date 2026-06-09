@@ -17,7 +17,12 @@ import shap
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from exit_engine import config as cfg
-from exit_engine.backtest import benchmark_table, equal_weight_mean, realized_return_for_exit, stratify_lift
+from exit_engine.backtest import (
+    benchmark_table,
+    equal_weight_mean,
+    realized_return_for_exit,
+    stratify_lift,
+)
 from exit_engine.dataset import assign_walkforward_folds
 from exit_engine.model import feature_columns, greedy_stop_index, train_classifier
 

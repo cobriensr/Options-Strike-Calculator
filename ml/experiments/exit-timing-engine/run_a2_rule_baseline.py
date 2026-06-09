@@ -16,7 +16,11 @@ import psycopg2
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from exit_engine import config as cfg
-from exit_engine.backtest import benchmark_table, equal_weight_mean, realized_return_for_exit
+from exit_engine.backtest import (
+    benchmark_table,
+    equal_weight_mean,
+    realized_return_for_exit,
+)
 from exit_engine.dataset import assign_walkforward_folds
 from exit_engine.rule_family import decide_exit_index, grid
 
