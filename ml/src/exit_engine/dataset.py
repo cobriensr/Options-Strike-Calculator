@@ -42,7 +42,11 @@ def select_session_dates(
     entry_date inclusive, drawn in order from available_dates (the sorted set of
     dates that actually have a parquet file). Because available_dates contains only
     real trading sessions, weekends/holidays are skipped automatically — callers
-    must NOT stop at the first missing calendar day."""
+    must NOT stop at the first missing calendar day. Returns [] if the entry date
+    itself has no parquet, so the caller drops the fire rather than re-anchoring
+    it to a later session."""
+    if entry_date not in available_dates:
+        return []
     later = [d for d in available_dates if d >= entry_date]
     return later[:max_sessions]
 

@@ -21,6 +21,12 @@ def test_select_session_dates_skips_non_trading_days():
     assert ds.select_session_dates("2026-05-06", avail, 4) == ["2026-05-06"]
 
 
+def test_select_session_dates_drops_fire_with_missing_entry_day():
+    avail = ["2026-05-01", "2026-05-04", "2026-05-05"]
+    # entry day 2026-05-02 (Sat) has no parquet -> drop the fire entirely
+    assert ds.select_session_dates("2026-05-02", avail, 3) == []
+
+
 def test_build_fire_rows_tags_identity_columns():
     path = pd.DataFrame({
         "mid": [1.0, 2.0],
