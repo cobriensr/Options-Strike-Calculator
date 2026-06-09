@@ -24,7 +24,9 @@
  *       FILTER (WHERE ticker = ANY(universe) ...) SUM(...) COALESCE(..., 0)
  *       logic, including:
  *         - universe restriction on every SUM (rows outside excluded),
- *         - side_sign CASE map (ask→+1, bid→−1, else 0),
+ *         - side_sign CASE map derived from FLOW_REGIME_BASELINE.side_sign_map
+ *           (NOT re-hardcoded), so a baseline regen that changes the map can't
+ *           silently desync this replica from the SQL/JS reducer,
  *         - premium = price·size·100,
  *         - the 0DTE index-put FILTER (index_set AND option_type='P' AND
  *           expiry = trade date),
@@ -89,7 +91,9 @@ function sqlReplica(rows: readonly RawRow[]): FlowMetricSums & {
     // Every SUM is FILTERed on the universe.
     if (!universeSet.has(r.ticker)) continue;
 
-    // side_sign CASE map. Unknown side → 0.
+    // side_sign CASE map — derived from FLOW_REGIME_BASELINE.side_sign_map,
+    // NOT re-hardcoded, so this replica tracks a baseline regen in lockstep
+    // with `sideSign` in flow-regime.ts and the SQL builder's `sideSignCase`.
     const sign = sideSignMap[r.side] ?? 0;
 
     // SUM skips NULL delta (the multiplicative terms drop out → +0).
@@ -301,6 +305,12 @@ describe('flow-regime SQL ↔ JS metric parity', () => {
       row({ ticker: 'SPY', side: 'garbage', delta: 0.5 }), // unknown → 0
     ];
     expectParity(rows);
+
+    // Guard the concrete assertions below against a baseline regen silently
+    // changing the ask/bid signs (they're derived from the committed map, but
+    // the expected ndNum below assumes ask=+1, bid=−1).
+    expect(sideSignMap.ask).toBe(1);
+    expect(sideSignMap.bid).toBe(-1);
 
     const sql = sqlReplica(rows);
     // ask(+0.5·100) + bid(−0.5·100) + 0 + 0 + 0 = 0.

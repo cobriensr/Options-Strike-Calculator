@@ -24,12 +24,15 @@ healthcheckTimeout = 30
 
 # MEMORY CEILING — NOT settable in railway.toml.
 # Railway's config-as-code (railway.toml/json) only covers the `build`
-# and `deploy` sections; per-service memory/CPU limits live on a separate
-# API surface (`serviceInstanceLimits` / dashboard "Resource Limits"),
-# which is why sidecar/railway.toml carries only watchPatterns despite
-# running with a 24 GB dashboard limit. Set the classifier ceiling in the
-# Railway dashboard (Service → Settings → Resource Limits) or via the
-# GraphQL `serviceInstanceLimitsUpdate` mutation.
+# and `deploy` sections; per-replica memory/CPU limits live on a separate
+# API surface (`serviceInstanceLimits` read / `serviceInstanceLimitsUpdate`
+# write; dashboard "Replica Limits"), which is why sidecar/railway.toml
+# carries only watchPatterns despite running with a 24 GB dashboard limit.
+# Set the classifier ceiling in the Railway dashboard
+# (Service → Settings → Deploy → Replica Limits) or — reproducibly — via
+# `scripts/set-classifier-memory-limit.mjs`. Both paths and the exact
+# GraphQL mutation/input are documented in classifier/README.md
+# ("Memory limit" section). NOTE: the API takes `memoryGB` (GB), not bytes.
 #
 # Recommended ceiling: 8 GB.
 # Rationale: per-request peak memory ≈ concurrency × the 0DTE calls×puts
