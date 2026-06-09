@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import BacktestDiag from '../../components/BacktestDiag';
 import type {
@@ -69,12 +69,14 @@ function makeHistory(
   };
 }
 
-// Default time props for all tests
+// Default props shared by all tests. `onDismiss` defaults to a noop; the
+// dismiss-specific test overrides it with a spy.
 const timeProps = {
   timeHour: '9',
   timeMinute: '25',
   timeAmPm: 'AM',
   timezone: 'CT',
+  onDismiss: () => {},
 };
 
 // ---------------------------------------------------------------------------
@@ -294,24 +296,27 @@ describe('BacktestDiag', () => {
     expect(noDataCell).toHaveStyle({ color: 'var(--color-danger)' });
   });
 
-  it('dismisses the overlay when the × button is clicked', () => {
-    const { container } = render(
+  it('calls onDismiss when the × button is clicked', () => {
+    const onDismiss = vi.fn();
+    render(
       <BacktestDiag
         snapshot={makeSnapshot()}
         history={makeHistory()}
         {...timeProps}
+        onDismiss={onDismiss}
       />,
     );
 
     // Visible initially.
     expect(screen.getByText('Backtest Diagnostic')).toBeInTheDocument();
 
-    // Click the dismiss button → overlay unmounts entirely.
+    // Click the dismiss button → calls the onDismiss prop. The component no
+    // longer self-hides; App owns visibility, so the overlay stays rendered.
     fireEvent.click(
       screen.getByRole('button', { name: 'Dismiss diagnostics' }),
     );
-    expect(screen.queryByText('Backtest Diagnostic')).not.toBeInTheDocument();
-    expect(container.innerHTML).toBe('');
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Backtest Diagnostic')).toBeInTheDocument();
   });
 
   it('exposes only a dismiss control (no drag or collapse)', () => {

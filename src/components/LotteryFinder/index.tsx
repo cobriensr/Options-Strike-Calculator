@@ -20,6 +20,7 @@ import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
 import { ctSessionBounds } from './ct-window.js';
 import { isFireOtm } from './fire-spot.js';
+import { DEFAULT_TAKEIT_FLOOR } from '../../constants/takeit.js';
 import { LotteryDayBanner } from './LotteryDayBanner.js';
 import { LotteryTierBanner } from './LotteryTierBanner.js';
 import { LotteryFinderTickerGroup } from './LotteryFinderTickerGroup.js';
@@ -242,17 +243,6 @@ const MIN_FIRE_COUNT_TO_FLOOR: Record<MinFireCountFloor, number> = {
 // takeit-phase3-production-scoring-2026-05-16.md). Default ON at 0.70.
 
 const TAKEIT_FLOOR_LS_KEY = 'lottery.takeitFloor';
-
-/**
- * Default TAKE-IT floor. `usePersistedState` lets a previously-saved
- * localStorage value shadow this default, so one browser can show a
- * non-default floor (e.g. 0.60) while another shows 0.70 from the same
- * code. The saved-floor marker (rendered when the active floor differs
- * from this constant) makes that divergence visible with a one-click
- * reset. Reused for both the `usePersistedState` default and the marker
- * comparison so the two can never drift apart.
- */
-const DEFAULT_TAKEIT_FLOOR = 0.7;
 
 const TAKEIT_FLOOR_OPTIONS: Array<{
   value: number;
@@ -1343,9 +1333,9 @@ export function LotteryFinderSection({
               onClick={() => setMoneynessMode(m.value)}
               title={
                 m.value === 'otm'
-                  ? 'Show only out-of-the-money fires (calls: strike > fire-time spot, puts: strike < fire-time spot, using spotAtTrigger ?? spotAtFirst — same spot as the row badge). Client-side filter.'
+                  ? 'Show only out-of-the-money fires (calls: strike ≥ fire-time spot, puts: strike ≤ fire-time spot (ATM counts as OTM), using spotAtTrigger ?? spotAtFirst — same spot as the row badge). Client-side filter.'
                   : m.value === 'itm'
-                    ? 'Show only in-the-money fires (calls: strike ≤ fire-time spot, puts: strike ≥ fire-time spot, using spotAtTrigger ?? spotAtFirst — same spot as the row badge). Client-side filter.'
+                    ? 'Show only in-the-money fires (calls: strike < fire-time spot, puts: strike > fire-time spot, using spotAtTrigger ?? spotAtFirst — same spot as the row badge). Client-side filter.'
                     : 'Show fires regardless of moneyness.'
               }
               ariaPressed={active}

@@ -48,6 +48,8 @@ import {
   type FilterChipColor,
 } from '../ui/filter-toolbar-tokens.js';
 import { FilterChip } from '../ui/FilterChip.js';
+import { isOtm, usableSpot } from '../../utils/moneyness.js';
+import { DEFAULT_TAKEIT_FLOOR } from '../../constants/takeit.js';
 
 const PAGE_SIZE = 50;
 const SORT_LS_KEY = 'silentBoom.sortMode';
@@ -274,17 +276,6 @@ const BURST_FILTERS: Array<{
 // takeit-phase3-production-scoring-2026-05-16.md). Default ON at 0.70.
 
 const TAKEIT_FLOOR_LS_KEY = 'silentBoom.takeitFloor';
-
-/**
- * Default TAKE-IT floor. `usePersistedState` lets a previously-saved
- * localStorage value shadow this default, so one browser can show a
- * non-default floor (e.g. 0.60) while another shows 0.70 from the same
- * code. The saved-floor marker (rendered when the active floor differs
- * from this constant) makes that divergence visible with a one-click
- * reset. Reused for both the `usePersistedState` default and the marker
- * comparison so the two can never drift apart.
- */
-const DEFAULT_TAKEIT_FLOOR = 0.7;
 
 const TAKEIT_FLOOR_OPTIONS: Array<{
   value: number;
@@ -906,17 +897,14 @@ export function SilentBoomSection({
     }
     if (moneynessMode !== 'all') {
       out = out.filter((a) => {
-        const spot = a.underlyingPriceAtSpike;
-        // Guard must match the row badge's `otmPct` guard in
-        // SilentBoomRow.tsx (spot == null || !finite || <= 0) so an
-        // unclassifiable fire is bucketed the same way on both surfaces.
-        if (spot == null || !Number.isFinite(spot) || spot <= 0) return false;
-        // OTM boundary is INCLUSIVE (>= / <=) to match the badge's
-        // `otmPct >= 0` convention: an exactly-ATM fire (strike === spot)
-        // shows an OTM badge, so it must also surface under the OTM filter.
-        const isOtm =
-          a.optionType === 'C' ? a.strike >= spot : a.strike <= spot;
-        return moneynessMode === 'otm' ? isOtm : !isOtm;
+        // Shared moneyness module is the single source of truth for the
+        // spot guard + inclusive-ATM boundary, so the filter here, the
+        // row badge in SilentBoomRow.tsx, and the hidden-no-spot count
+        // below can never drift apart.
+        const spot = usableSpot(a.underlyingPriceAtSpike);
+        if (spot == null) return false;
+        const isOtmFire = isOtm(a.optionType, a.strike, spot);
+        return moneynessMode === 'otm' ? isOtmFire : !isOtmFire;
       });
     }
     // TAKE-IT floor is applied server-side via `minTakeitProb` on
@@ -964,7 +952,8 @@ export function SilentBoomSection({
   // page on backfill-pending dates.
   const hiddenNoSpotCount =
     bucketIso == null && moneynessMode !== 'all'
-      ? alerts.filter((a) => a.underlyingPriceAtSpike == null).length
+      ? alerts.filter((a) => usableSpot(a.underlyingPriceAtSpike) == null)
+          .length
       : 0;
   // All tickers with at least one alert today, from the dedicated counts
   // endpoint — independent of pagination so tickers that fired on later
@@ -1335,9 +1324,9 @@ export function SilentBoomSection({
               onClick={() => setMoneynessMode(m.value)}
               title={
                 m.value === 'otm'
-                  ? 'Show only out-of-the-money alerts (calls: strike > spot, puts: strike < spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
+                  ? 'Show only out-of-the-money alerts (calls: strike ≥ spot, puts: strike ≤ spot (ATM counts as OTM)). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
                   : m.value === 'itm'
-                    ? 'Show only in-the-money alerts (calls: strike ≤ spot, puts: strike ≥ spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
+                    ? 'Show only in-the-money alerts (calls: strike < spot, puts: strike > spot). Client-side filter using underlying_price_at_spike from migration #152. Rows without a spot snapshot are hidden — count shown as −N on the chip when active.'
                     : 'Show alerts regardless of moneyness.'
               }
               ariaPressed={active}
@@ -1435,7 +1424,7 @@ export function SilentBoomSection({
           activeColor="sky"
           testId="silent-boom-aggressive-premium-chip"
           onClick={() => setAggressivePremium(!aggressivePremium)}
-          title="Aggressive Premium: surface only alerts with premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg (multi_leg_share < 10%), and OTM (calls strike > spot, puts strike < spot). Mirrors the trader's UW filter. Server-side enforced via #152 underlying_price_at_spike — alerts with no spot snapshot are excluded from the OTM check."
+          title="Aggressive Premium: surface only alerts with premium ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg (multi_leg_share < 10%), and OTM (calls strike ≥ spot, puts strike ≤ spot). Mirrors the trader's UW filter. Server-side enforced via #152 underlying_price_at_spike — alerts with no spot snapshot are excluded from the OTM check."
           ariaPressed={aggressivePremium}
         >
           💎 aggressive premium

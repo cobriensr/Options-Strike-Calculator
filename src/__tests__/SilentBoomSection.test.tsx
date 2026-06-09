@@ -955,6 +955,56 @@ describe('SilentBoomSection: filter interactions', () => {
     ).toBeInTheDocument();
   });
 
+  it('hides AND counts alerts with an unusable spot (≤ 0 or NaN) under an OTM/ITM filter', () => {
+    // Filter drop condition and the "−N hidden (no spot)" count now both
+    // route through usableSpot(), so a non-finite/≤0 spot must be dropped
+    // by the filter AND tallied in the chip's hidden count — they agree.
+    const alerts = [
+      makeAlert({
+        id: 1,
+        optionChainId: 'AAPL-zero-spot',
+        optionType: 'C',
+        strike: 210,
+        underlyingPriceAtSpike: 0,
+      }),
+      makeAlert({
+        id: 2,
+        optionChainId: 'AAPL-nan-spot',
+        optionType: 'C',
+        strike: 210,
+        underlyingPriceAtSpike: Number.NaN,
+      }),
+      makeAlert({
+        id: 3,
+        optionChainId: 'AAPL-otm-with-spot',
+        optionType: 'C',
+        strike: 210,
+        underlyingPriceAtSpike: 200,
+      }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue(feedResult({ alerts, total: 3 }));
+
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('silent-boom-moneyness-otm-chip'));
+
+    // Both unusable-spot rows are dropped by the filter.
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL-zero-spot'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL-nan-spot'),
+    ).not.toBeInTheDocument();
+    // The genuinely-usable OTM row remains.
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL-otm-with-spot'),
+    ).toBeInTheDocument();
+    // And the active OTM chip's hidden-no-spot badge counts exactly the
+    // two rows the filter dropped for an unusable spot.
+    expect(
+      screen.getByTestId('silent-boom-moneyness-otm-chip'),
+    ).toHaveTextContent('−2');
+  });
+
   it('classifies an exactly-ATM call as OTM so the filter matches the badge', () => {
     // strike === underlyingPriceAtSpike: the row badge renders this as OTM
     // (otmPct === 0 → `otmPct >= 0`), so the inclusive filter boundary must

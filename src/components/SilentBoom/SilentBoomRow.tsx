@@ -25,6 +25,7 @@ import { computeExitNow } from '../../utils/exit-now.js';
 import { gexbotBadge } from '../../utils/gexbot-badge.js';
 import { CohortCountdown } from '../ui/CohortCountdown.js';
 import { computeCountdownRemaining } from '../ui/cohort-countdown-utils.js';
+import { signedOtmPct } from '../../utils/moneyness.js';
 import { useNowMinute } from '../../hooks/useNowMinute.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
@@ -511,16 +512,21 @@ export const SilentBoomRow = memo(function SilentBoomRow({
    * vs OTM at a glance. Frozen at fire time — uses the snapshotted
    * `underlyingPriceAtSpike` (migration #152, NUMERIC NOT NULL) rather
    * than live candles, so the moneyness shown is what it was when the
-   * spike fired. Call OTM: strike > spot → positive; Put OTM:
-   * strike < spot → positive. Sign flipped to negative for ITM. Null
-   * only when the snapshot is missing or zero (defensive guard).
+   * spike fired. Routed through the shared `signedOtmPct` helper so the
+   * badge, the index.tsx OTM/ITM filter, and the hidden-no-spot count
+   * all classify moneyness identically: > 0 OTM, < 0 ITM, 0 = ATM
+   * (counts as OTM); null only when the spot snapshot is unusable
+   * (missing, non-finite, or ≤ 0).
    */
-  const otmPct = useMemo<number | null>(() => {
-    const spot = alert.underlyingPriceAtSpike;
-    if (spot == null || !Number.isFinite(spot) || spot <= 0) return null;
-    const raw = (alert.strike - spot) / spot;
-    return alert.optionType === 'C' ? raw : -raw;
-  }, [alert.underlyingPriceAtSpike, alert.strike, alert.optionType]);
+  const otmPct = useMemo<number | null>(
+    () =>
+      signedOtmPct(
+        alert.optionType,
+        alert.strike,
+        alert.underlyingPriceAtSpike,
+      ),
+    [alert.underlyingPriceAtSpike, alert.strike, alert.optionType],
+  );
 
   const roundTripDeduct = alert.roundTripScoreDeduct ?? 0;
   const isRoundTripped = roundTripDeduct < 0;

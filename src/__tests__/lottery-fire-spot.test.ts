@@ -181,6 +181,27 @@ describe('fireSpot', () => {
     });
     expect(fireSpot(fire)).toBeNull();
   });
+
+  it('returns null when spotAtTrigger is null AND spotAtFirst is non-positive', () => {
+    // Regression for the fixed guard asymmetry: the old fireSpot guarded
+    // spotAtTrigger with `> 0` but only `Number.isFinite` for spotAtFirst,
+    // so a finite-but-non-positive spotAtFirst (e.g. 0) leaked through as a
+    // usable spot. Routing both branches through usableSpot rejects it.
+    const fire = makeFire({
+      optionType: 'C',
+      strike: 200,
+      entry: {
+        price: 0.85,
+        openInterest: 5000,
+        spotAtFirst: 0,
+        spotAtTrigger: null,
+        alertSeq: 7,
+        minutesSincePrevFire: 30,
+      },
+    });
+    expect(fireSpot(fire)).toBeNull();
+    expect(isFireOtm(fire)).toBe(false);
+  });
 });
 
 describe('isFireOtm', () => {

@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 import { EXIT_POLICY_LABELS, EXIT_POLICY_TOOLTIPS } from './types.js';
 import { fireSpot as resolveFireSpot } from './fire-spot.js';
+import { signedOtmPct } from '../../utils/moneyness.js';
 import { formatPremiumAmount } from '../../utils/ticker-rollup-aggregates.js';
 import {
   deltaFromAtFire,
@@ -493,19 +494,26 @@ export const LotteryRow = memo(function LotteryRow({
    * detail), so the moneyness shown is what it was when the alert
    * fired — not what it is right now.
    */
-  const fireSpot = useMemo<number | null>(() => resolveFireSpot(fire), [fire]);
+  const fireSpot = useMemo<number | null>(
+    () => resolveFireSpot(fire),
+    // resolveFireSpot reads ONLY these two primitive fields; depending on
+    // the whole `fire` would recompute every poll when unrelated fields
+    // churn. The exhaustive-deps rule can't see inside the helper.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [fire.entry.spotAtTrigger, fire.entry.spotAtFirst],
+  );
 
   /**
    * Distance-from-spot in percent, signed so the reader can tell ITM
-   * vs OTM at a glance. Call OTM: strike > spot → positive. Put OTM:
-   * strike < spot → positive. Sign flipped to negative for ITM.
-   * Result is null when spot is unavailable.
+   * vs OTM at a glance: > 0 = OTM, < 0 = ITM, 0 = exactly ATM (counts
+   * as OTM). Derived from the shared `signedOtmPct` so the badge's
+   * percentage AND its OTM/ITM label use the same inclusive boundary as
+   * the moneyness FILTER (`isFireOtm`). Null when spot is unavailable.
    */
-  const otmPct = useMemo<number | null>(() => {
-    if (fireSpot == null || fireSpot <= 0) return null;
-    const raw = (fire.strike - fireSpot) / fireSpot;
-    return fire.optionType === 'C' ? raw : -raw;
-  }, [fireSpot, fire.strike, fire.optionType]);
+  const otmPct = useMemo<number | null>(
+    () => signedOtmPct(fire.optionType, fire.strike, fireSpot),
+    [fireSpot, fire.strike, fire.optionType],
+  );
 
   /**
    * Total premium $ across the contract tape. Each contract represents

@@ -9,7 +9,6 @@
  *   <BacktestDiag snapshot={historySnapshot} history={historyData} />
  */
 
-import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import type {
   HistorySnapshot,
@@ -23,6 +22,7 @@ interface Props {
   timeMinute: string;
   timeAmPm: string;
   timezone: string;
+  onDismiss: () => void;
 }
 
 export default function BacktestDiag({
@@ -32,10 +32,9 @@ export default function BacktestDiag({
   timeMinute,
   timeAmPm,
   timezone,
+  onDismiss,
 }: Readonly<Props>) {
-  const [dismissed, setDismissed] = useState(false);
-
-  if (!snapshot || dismissed) return null;
+  if (!snapshot) return null;
 
   const displayTime = `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`;
 
@@ -122,7 +121,7 @@ export default function BacktestDiag({
           type="button"
           aria-label="Dismiss diagnostics"
           title="Dismiss"
-          onClick={() => setDismissed(true)}
+          onClick={onDismiss}
           style={{
             background: 'none',
             border: 'none',

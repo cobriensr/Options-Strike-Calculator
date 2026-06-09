@@ -495,6 +495,19 @@ export default function StrikeCalculator() {
     vix1dStatic,
   });
 
+  // BacktestDiag dismiss state lives here (not in the component) so it resets
+  // when the user scrubs to a new backtest date — otherwise dismissing once
+  // would hide the diagnostic for every subsequent date, defeating its purpose.
+  const [backtestDiagDismissed, setBacktestDiagDismissed] = useState(false);
+
+  // Re-show the diagnostic whenever the backtest date changes (and when leaving
+  // backtest mode, since selectedDate changes back to today). Keyed on the date
+  // string, not the snapshot object identity, so unrelated re-renders don't
+  // reset it.
+  useEffect(() => {
+    setBacktestDiagDismissed(false);
+  }, [vix.selectedDate]);
+
   // True whenever the selected date+time is in the past — drives BACKTEST
   // badge independently of whether candle data is available. This decouples
   // "are we viewing a historical moment?" (UI state) from "do we have price
@@ -1600,8 +1613,10 @@ export default function StrikeCalculator() {
         )}
       </div>
       {!isAlerts && <BackToTop />}
-      <UpdateAvailableBanner pushedUp={historySnapshot != null} />
-      {historySnapshot != null && (
+      <UpdateAvailableBanner
+        pushedUp={historySnapshot != null && !backtestDiagDismissed}
+      />
+      {historySnapshot != null && !backtestDiagDismissed && (
         <BacktestDiag
           snapshot={historySnapshot}
           history={historyData}
@@ -1609,6 +1624,7 @@ export default function StrikeCalculator() {
           timeMinute={timeMinute}
           timeAmPm={timeAmPm}
           timezone={timezone}
+          onDismiss={() => setBacktestDiagDismissed(true)}
         />
       )}
       <Analytics />
