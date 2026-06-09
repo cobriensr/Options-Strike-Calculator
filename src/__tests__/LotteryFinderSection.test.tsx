@@ -66,6 +66,23 @@ import { LotteryFinderSection } from '../components/LotteryFinder';
 
 // ── Fixtures ──────────────────────────────────────────────────────────
 
+/**
+ * Today's date in America/Chicago, computed exactly the way the component
+ * derives its default selected day (`todayCt()` in
+ * src/components/LotteryFinder/index.tsx). The feed response echoes the
+ * requested day in `data.date`, and the component now gates union
+ * ingestion on `data.date === date` (cross-day contamination guard). So
+ * the mocked feed must default its `date` to today's Central date or the
+ * guard would drop every fire from the live (engaged) view.
+ */
+const todayCt = (): string =>
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+
 function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
   return {
     id: 1,
@@ -170,6 +187,13 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
 
 interface DefaultHookResult {
   data: {
+    /**
+     * Requested trading day echoed by the server (`response.date =
+     * targetDate` in api/lottery-finder.ts). The component gates union
+     * ingestion on `data.date === date`, so this must default to today's
+     * Central date for fires to surface in the live view.
+     */
+    date: string;
     fires: LotteryFire[];
     reignitedFires: LotteryFire[];
     total: number;
@@ -185,6 +209,7 @@ interface DefaultHookResult {
 
 const defaultHookResult: DefaultHookResult = {
   data: {
+    date: todayCt(),
     fires: [],
     reignitedFires: [],
     total: 0,
@@ -209,13 +234,22 @@ function feedResult(
   overrides: Partial<DefaultHookResult['data']> &
     Partial<Omit<DefaultHookResult, 'data'>> = {},
 ): DefaultHookResult {
-  const { fires, reignitedFires, total, limit, offset, hasMore, ...rest } =
-    overrides;
+  const {
+    date,
+    fires,
+    reignitedFires,
+    total,
+    limit,
+    offset,
+    hasMore,
+    ...rest
+  } = overrides;
   return {
     ...defaultHookResult,
     ...rest,
     data: {
       ...defaultHookResult.data,
+      ...(date !== undefined && { date }),
       ...(fires !== undefined && { fires }),
       ...(reignitedFires !== undefined && { reignitedFires }),
       ...(total !== undefined && { total }),
@@ -588,6 +622,92 @@ describe('LotteryFinderSection: never-vanish accumulator', () => {
 });
 
 // ============================================================
+// CROSS-DAY UNION GUARD — stale prior-day response is not ingested
+// ============================================================
+//
+// `useFetchedData` is stale-while-revalidate, so across the Central-
+// midnight auto-roll (or any date change) the feed's `data` briefly holds
+// the PRIOR day's response while the new day's fetch is in flight. The
+// never-vanish union's storageKey has already flipped to the new day, so
+// ingesting those rows would pin them into the new day's union where
+// never-vanish keeps them all day (the "yesterday's fires under today's
+// date" bug — observed live on the sibling Silent Boom panel). The guard
+// only surfaces fires whose response `date` matches the requested day.
+
+describe('LotteryFinderSection: cross-day union guard', () => {
+  const AM = '2026-05-08T14:30:00Z';
+
+  it('does NOT ingest fires from a stale prior-day response into the live union', () => {
+    // The selected day defaults to today (Central). This mocked response
+    // echoes a CLEARLY different prior day in `data.date`, simulating the
+    // stale-while-revalidate window right after the auto-roll. None of its
+    // fires may render in the live engaged view.
+    const staleFire = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ date: '2020-01-02', fires: [staleFire], total: 1 }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('also drops stale prior-day reignited rows from the live union', () => {
+    const staleReignited = makeFire({
+      id: 1,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+      reignited: true,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        date: '2020-01-02',
+        fires: [],
+        reignitedFires: [staleReignited],
+        total: 0,
+      }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    expect(
+      screen.queryByTestId('lottery-row-TSLA260508C00250000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('ingests fires once the response `date` matches the selected day', () => {
+    // Control: with a matching (today) response `date` the same fire DOES
+    // render — proving the guard discriminates on `date`, not the fixture.
+    const liveFire = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ date: todayCt(), fires: [liveFire], total: 1 }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // NEVER-VANISH — code-review findings #1 / #2 / #3
 // ============================================================
 //
@@ -848,8 +968,16 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
       strike: 200,
       triggerTimeCt: '2026-05-08T14:30:00Z',
     });
+    // The response `date` matches the historical day this test navigates to
+    // (the server echoes the requested day) so the cross-day guard surfaces
+    // the slice in the disengaged view.
     mockUseLotteryFinder.mockReturnValue(
-      feedResult({ fires: [pinned], total: 60, hasMore: true }),
+      feedResult({
+        date: '2026-05-08',
+        fires: [pinned],
+        total: 60,
+        hasMore: true,
+      }),
     );
 
     render(<LotteryFinderSection marketOpen={true} />);
@@ -1687,6 +1815,9 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
     // into a historical day + minute pick before advancing the page.
     mockUseLotteryFinder.mockReturnValue(
       feedResult({
+        // Match the historical day this test navigates to so the cross-day
+        // guard surfaces the slice in the disengaged view.
+        date: '2026-05-08',
         fires: [makeFire({ id: 1, optionChainId: 'AAPL260508C00200000' })],
         total: 100,
         hasMore: true,
@@ -1918,10 +2049,18 @@ describe('LotteryFinderSection: pagination edge states', () => {
     // Differentiated mock: page 0 has fires + hasMore=true; any page > 0
     // returns empty (simulates the user navigating past the last page,
     // or the result set shrinking between fetches).
+    // The response `date` matches the historical day this test navigates to
+    // so the cross-day guard surfaces the slice in the disengaged view.
     mockUseLotteryFinder.mockImplementation(({ page }: { page: number }) =>
       page > 0
-        ? feedResult({ fires: [], total: 100, hasMore: false })
+        ? feedResult({
+            date: '2026-05-08',
+            fires: [],
+            total: 100,
+            hasMore: false,
+          })
         : feedResult({
+            date: '2026-05-08',
             fires: [makeFire({ id: 1, optionChainId: 'PAGE0-FIRE' })],
             total: 100,
             hasMore: true,

@@ -49,6 +49,17 @@ vi.mock('../components/SilentBoom/SilentBoomTickerGroup', () => ({
 
 import { SilentBoomSection } from '../components/SilentBoom';
 
+// Mirrors the component's own `todayCt()` (America/Chicago calendar date).
+// Used as the default mocked-response `date` so existing tests — which all
+// assume the selected day is today — keep matching the cross-day guard.
+const todayCt = (): string =>
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+
 // ── Fixture factory ───────────────────────────────────────────────────
 
 function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
@@ -108,6 +119,7 @@ function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
 
 interface DefaultHookResult {
   data: {
+    date: string;
     alerts: SilentBoomAlert[];
     total: number;
     limit: number;
@@ -122,6 +134,9 @@ interface DefaultHookResult {
 
 const defaultHookResult: DefaultHookResult = {
   data: {
+    // Default to TODAY (Central) so the component's cross-day guard
+    // (`data.date === date`) passes for the default selected day.
+    date: todayCt(),
     alerts: [],
     total: 0,
     limit: 50,
@@ -145,12 +160,13 @@ function feedResult(
   overrides: Partial<DefaultHookResult['data']> &
     Partial<Omit<DefaultHookResult, 'data'>> = {},
 ): DefaultHookResult {
-  const { alerts, total, limit, offset, hasMore, ...rest } = overrides;
+  const { date, alerts, total, limit, offset, hasMore, ...rest } = overrides;
   return {
     ...defaultHookResult,
     ...rest,
     data: {
       ...defaultHookResult.data,
+      ...(date !== undefined && { date }),
       ...(alerts !== undefined && { alerts }),
       ...(total !== undefined && { total }),
       ...(limit !== undefined && { limit }),
@@ -526,6 +542,63 @@ describe('SilentBoomSection: never-vanish accumulator', () => {
 });
 
 // ============================================================
+// CROSS-DAY UNION GUARD (Central-midnight auto-roll contamination)
+// ============================================================
+//
+// `useFetchedData` is stale-while-revalidate: when the selected day flips
+// (the Central-midnight auto-roll, or a manual date change) the feed `data`
+// briefly holds the PRIOR day's response while the new day's fetch is in
+// flight. The never-vanish union's storageKey has already flipped to the
+// new day, so ingesting those stale rows would pin them into today's union
+// where never-vanish keeps them all day — "yesterday's alerts under today's
+// date". The `fetchedAlerts` guard only surfaces alerts whose response
+// `date` matches the requested day, so a mismatched (stale) response yields
+// an empty array and never contaminates the union.
+
+describe('SilentBoomSection: cross-day union guard', () => {
+  it('does NOT ingest a stale prior-day response into the live (today) union', () => {
+    const staleAlert = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    // Selected day is today (default), but the in-flight response still
+    // echoes a PRIOR day's `date` while carrying non-empty alerts. The
+    // guard must drop them so none reach the union.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ date: '2020-01-02', alerts: [staleAlert], total: 1 }),
+    );
+
+    render(<SilentBoomSection marketOpen={true} />);
+
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('ingests a response whose date matches the selected (today) day', () => {
+    const liveAlert = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    // Response `date` equals today (the default selected day) → rows pass
+    // the guard and render. Proves the guard is not over-broad.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ date: todayCt(), alerts: [liveAlert], total: 1 }),
+    );
+
+    render(<SilentBoomSection marketOpen={true} />);
+
+    expect(
+      screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // NEVER-VANISH FINDINGS #1 / #3 (useNeverVanishFeed rewire)
 // ============================================================
 //
@@ -729,8 +802,15 @@ describe('SilentBoomSection: never-vanish findings #1/#3', () => {
       underlyingSymbol: 'AAPL',
       strike: 200,
     });
+    // Response echoes the historical day we switch to below so the
+    // cross-day guard surfaces the rows (the live refetch would do this).
     mockUseSilentBoomFeed.mockReturnValue(
-      feedResult({ alerts: [pinned], total: 60, hasMore: true }),
+      feedResult({
+        date: '2026-05-08',
+        alerts: [pinned],
+        total: 60,
+        hasMore: true,
+      }),
     );
     render(<SilentBoomSection marketOpen={true} />);
 
@@ -1423,6 +1503,9 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
     // switch to a past day before advancing the page.
     mockUseSilentBoomFeed.mockReturnValue(
       feedResult({
+        // Echo the historical day selected below so the cross-day guard
+        // surfaces the row and the pager renders.
+        date: '2026-05-08',
         alerts: [makeAlert({ id: 1, optionChainId: 'AAPL260508C00200000' })],
         total: 100,
         hasMore: true,
@@ -1634,10 +1717,18 @@ describe('SilentBoomSection: pagination edge states', () => {
     // Differentiated mock: page 0 has one alert + hasMore=true; any
     // page > 0 returns empty (simulates the user navigating past the
     // last page).
+    // Both branches echo the historical day selected below so the
+    // cross-day guard surfaces the page-0 row and the pager renders.
     mockUseSilentBoomFeed.mockImplementation(({ page }: { page: number }) =>
       page > 0
-        ? feedResult({ alerts: [], total: 100, hasMore: false })
+        ? feedResult({
+            date: '2026-05-08',
+            alerts: [],
+            total: 100,
+            hasMore: false,
+          })
         : feedResult({
+            date: '2026-05-08',
             alerts: [makeAlert({ id: 1, optionChainId: 'PAGE0-ALERT' })],
             total: 100,
             hasMore: true,
