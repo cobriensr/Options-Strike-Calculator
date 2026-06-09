@@ -243,6 +243,17 @@ const MIN_FIRE_COUNT_TO_FLOOR: Record<MinFireCountFloor, number> = {
 
 const TAKEIT_FLOOR_LS_KEY = 'lottery.takeitFloor';
 
+/**
+ * Default TAKE-IT floor. `usePersistedState` lets a previously-saved
+ * localStorage value shadow this default, so one browser can show a
+ * non-default floor (e.g. 0.60) while another shows 0.70 from the same
+ * code. The saved-floor marker (rendered when the active floor differs
+ * from this constant) makes that divergence visible with a one-click
+ * reset. Reused for both the `usePersistedState` default and the marker
+ * comparison so the two can never drift apart.
+ */
+const DEFAULT_TAKEIT_FLOOR = 0.7;
+
 const TAKEIT_FLOOR_OPTIONS: Array<{
   value: number;
   label: string;
@@ -527,7 +538,7 @@ export function LotteryFinderSection({
   // TAKE-IT floor — calibrated XGBoost P(peak ≥ +20%) floor. Default 0.70.
   const [takeitFloor, setTakeitFloor] = usePersistedState<number>(
     TAKEIT_FLOOR_LS_KEY,
-    0.7,
+    DEFAULT_TAKEIT_FLOOR,
     floatPersistOpts,
   );
   /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
@@ -1174,6 +1185,24 @@ export function LotteryFinderSection({
             </FilterChip>
           );
         })}
+        {takeitFloor !== DEFAULT_TAKEIT_FLOOR && (
+          <span
+            className="inline-flex items-center gap-1 text-[10px] text-neutral-400"
+            data-testid="lottery-takeit-floor-saved-marker"
+          >
+            <span>saved: {takeitFloor.toFixed(2)}</span>
+            <button
+              type="button"
+              onClick={() => setTakeitFloor(DEFAULT_TAKEIT_FLOOR)}
+              aria-label={`Reset take-it floor to ${DEFAULT_TAKEIT_FLOOR.toFixed(2)}`}
+              title={`Reset take-it floor to the ${DEFAULT_TAKEIT_FLOOR.toFixed(2)} default.`}
+              className="rounded border border-neutral-700 px-1 py-0.5 text-[10px] text-neutral-300 transition-colors hover:border-neutral-600 hover:text-neutral-100"
+              data-testid="lottery-takeit-floor-reset"
+            >
+              reset to {DEFAULT_TAKEIT_FLOOR.toFixed(2)}
+            </button>
+          </span>
+        )}
       </div>
 
       {/* Row 2b: numeric server-side filter — min premium $K. Mirrors

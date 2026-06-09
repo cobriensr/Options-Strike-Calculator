@@ -1573,6 +1573,53 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
     const callAfterFilter = mockUseLotteryFinder.mock.calls.at(-1);
     expect(callAfterFilter?.[0]).toMatchObject({ page: 0 });
   });
+
+  it('does NOT render the saved-floor marker when the active floor is the 0.70 default', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(
+      screen.queryByTestId('lottery-takeit-floor-saved-marker'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-takeit-floor-reset'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders the saved-floor marker + reset control when a non-default floor is persisted', () => {
+    // Seed a persisted non-default floor; usePersistedState hydrates it
+    // via floatPersistOpts (String round-trip), so the section boots into
+    // 0.60 without a UI click.
+    window.localStorage.setItem('lottery.takeitFloor', '0.6');
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    const marker = screen.getByTestId('lottery-takeit-floor-saved-marker');
+    expect(marker).toHaveTextContent('saved: 0.60');
+
+    const reset = screen.getByTestId('lottery-takeit-floor-reset');
+    expect(reset).toBeInTheDocument();
+    expect(reset).toHaveAccessibleName('Reset take-it floor to 0.70');
+  });
+
+  it('clicking reset restores the floor to 0.70 and hides the marker', () => {
+    window.localStorage.setItem('lottery.takeitFloor', '0.6');
+    render(<LotteryFinderSection marketOpen={false} />);
+
+    expect(
+      screen.getByTestId('lottery-takeit-floor-saved-marker'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('lottery-takeit-floor-reset'));
+
+    // Marker disappears (floor === default) and the persisted value is
+    // rewritten to the default.
+    expect(
+      screen.queryByTestId('lottery-takeit-floor-saved-marker'),
+    ).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('lottery.takeitFloor')).toBe('0.7');
+    expect(screen.getByTestId('takeit-floor-0.7')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
 });
 
 // ============================================================

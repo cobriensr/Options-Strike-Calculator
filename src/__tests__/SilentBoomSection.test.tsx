@@ -1317,6 +1317,48 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
     const callAfterFilter = mockUseSilentBoomFeed.mock.calls.at(-1);
     expect(callAfterFilter?.[0]).toMatchObject({ page: 0 });
   });
+
+  it('does NOT render the saved-floor marker when the active floor is the 0.70 default', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(
+      screen.queryByTestId('silentboom-takeit-floor-saved-marker'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silentboom-takeit-floor-reset'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('renders the saved-floor marker + reset control when a non-default floor is persisted', () => {
+    window.localStorage.setItem('silentBoom.takeitFloor', '0.6');
+    render(<SilentBoomSection marketOpen={false} />);
+
+    const marker = screen.getByTestId('silentboom-takeit-floor-saved-marker');
+    expect(marker).toHaveTextContent('saved: 0.60');
+
+    const reset = screen.getByTestId('silentboom-takeit-floor-reset');
+    expect(reset).toBeInTheDocument();
+    expect(reset).toHaveAccessibleName('Reset take-it floor to 0.70');
+  });
+
+  it('clicking reset restores the floor to 0.70 and hides the marker', () => {
+    window.localStorage.setItem('silentBoom.takeitFloor', '0.6');
+    render(<SilentBoomSection marketOpen={false} />);
+
+    expect(
+      screen.getByTestId('silentboom-takeit-floor-saved-marker'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('silentboom-takeit-floor-reset'));
+
+    expect(
+      screen.queryByTestId('silentboom-takeit-floor-saved-marker'),
+    ).not.toBeInTheDocument();
+    expect(window.localStorage.getItem('silentBoom.takeitFloor')).toBe('0.7');
+    expect(screen.getByTestId('takeit-floor-0.7')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
 });
 
 // ============================================================
