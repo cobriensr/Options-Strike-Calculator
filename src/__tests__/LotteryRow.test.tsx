@@ -1558,3 +1558,246 @@ describe('LotteryRow: round-tripped dim treatment', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+// ============================================================
+// FIRST-FIRE HEADER ANCHOR + REIGNITES EXPANDER
+// (lottery-feed-quickwins-2026-06-08)
+// ============================================================
+
+/**
+ * Mirror of the component's own America/Chicago HH:mm conversion, so the
+ * expected strings track the same TZ math the row renders with — no
+ * hardcoded offsets that drift with DST.
+ */
+const ctTime = (iso: string): string =>
+  new Date(iso).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'America/Chicago',
+  });
+
+describe('LotteryRow: first-fire header anchor + reignites expander', () => {
+  it('anchors the header timestamp on the FIRST fire, not the latest (multi-fire chain)', () => {
+    const firstFireTimeCt = '2026-05-08T14:00:00Z'; // 09:00 CT
+    const triggerTimeCt = '2026-05-08T16:45:00Z'; // 11:45 CT
+    render(
+      <LotteryRow
+        fire={makeFire({
+          fireCount: 3,
+          firstFireTimeCt,
+          triggerTimeCt,
+          historicalFires: [
+            {
+              triggerTimeCt: firstFireTimeCt,
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+            {
+              triggerTimeCt: '2026-05-08T15:10:00Z', // 10:10 CT
+              entryPrice: 0.8,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    // Header shows the FIRST fire (09:00), never the latest (11:45).
+    expect(
+      screen.getByText(`${ctTime(firstFireTimeCt)} CT`),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(`${ctTime(triggerTimeCt)} CT`),
+    ).not.toBeInTheDocument();
+  });
+
+  it('header timestamp carries a first/latest title on multi-fire chains', () => {
+    const firstFireTimeCt = '2026-05-08T14:00:00Z';
+    const triggerTimeCt = '2026-05-08T16:45:00Z';
+    render(
+      <LotteryRow
+        fire={makeFire({
+          fireCount: 2,
+          firstFireTimeCt,
+          triggerTimeCt,
+          historicalFires: [
+            {
+              triggerTimeCt: firstFireTimeCt,
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const header = screen.getByText(`${ctTime(firstFireTimeCt)} CT`);
+    expect(header.getAttribute('title')).toBe(
+      `First fire ${ctTime(firstFireTimeCt)} CT · latest ${ctTime(triggerTimeCt)} CT`,
+    );
+  });
+
+  it('renders a "+N reignites" toggle for a multi-fire chain (fireCount 4 → +3 reignites)', () => {
+    render(
+      <LotteryRow
+        fire={makeFire({
+          fireCount: 4,
+          firstFireTimeCt: '2026-05-08T14:00:00Z',
+          triggerTimeCt: '2026-05-08T16:45:00Z',
+          entry: {
+            price: 0.5,
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 4,
+            minutesSincePrevFire: 10,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+            {
+              triggerTimeCt: '2026-05-08T15:10:00Z',
+              entryPrice: 0.8,
+              spotAtTrigger: 200,
+            },
+            {
+              triggerTimeCt: '2026-05-08T15:55:00Z',
+              entryPrice: 0.6,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    const toggle = screen.getByTestId('lottery-reignites-toggle');
+    expect(toggle).toHaveTextContent('+3 reignites');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // List body is collapsed by default.
+    expect(
+      screen.queryByTestId('lottery-reignites-list'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('expanding reveals the LATER fires (historicalFires[1..] + latest) but NOT the first fire', () => {
+    const firstFireTimeCt = '2026-05-08T14:00:00Z'; // 09:00 CT
+    const secondFireTimeCt = '2026-05-08T15:10:00Z'; // 10:10 CT
+    const thirdFireTimeCt = '2026-05-08T15:55:00Z'; // 10:55 CT
+    const triggerTimeCt = '2026-05-08T16:45:00Z'; // 11:45 CT (latest)
+    render(
+      <LotteryRow
+        fire={makeFire({
+          fireCount: 4,
+          firstFireTimeCt,
+          triggerTimeCt,
+          entry: {
+            price: 0.5,
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 4,
+            minutesSincePrevFire: 10,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: firstFireTimeCt,
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+            {
+              triggerTimeCt: secondFireTimeCt,
+              entryPrice: 0.8,
+              spotAtTrigger: 200,
+            },
+            {
+              triggerTimeCt: thirdFireTimeCt,
+              entryPrice: 0.6,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('lottery-reignites-toggle'));
+    const list = screen.getByTestId('lottery-reignites-list');
+    expect(list).toBeInTheDocument();
+    // Later fires = slice(1) of historicalFires (10:10, 10:55) + latest (11:45).
+    expect(list).toHaveTextContent(`${ctTime(secondFireTimeCt)} CT`);
+    expect(list).toHaveTextContent(`${ctTime(thirdFireTimeCt)} CT`);
+    expect(list).toHaveTextContent(`${ctTime(triggerTimeCt)} CT`);
+    // First fire time is NOT a reignite — it's the header anchor.
+    expect(list).not.toHaveTextContent(`${ctTime(firstFireTimeCt)} CT`);
+    // aria-expanded flips true on the toggle.
+    expect(screen.getByTestId('lottery-reignites-toggle')).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+
+  it('single-fire chain: no reignites toggle, header is that fire time', () => {
+    const fire = makeFire(); // fireCount 1, first==latest
+    render(
+      <LotteryRow
+        fire={fire}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-reignites-toggle'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText(`${ctTime(fire.triggerTimeCt)} CT`),
+    ).toBeInTheDocument();
+  });
+
+  it('fireCount 2 with one historicalFires element → expander shows exactly the latest fire', () => {
+    const firstFireTimeCt = '2026-05-08T14:00:00Z'; // 09:00 CT
+    const triggerTimeCt = '2026-05-08T16:45:00Z'; // 11:45 CT
+    render(
+      <LotteryRow
+        fire={makeFire({
+          fireCount: 2,
+          firstFireTimeCt,
+          triggerTimeCt,
+          entry: {
+            price: 0.7,
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 200,
+            alertSeq: 2,
+            minutesSincePrevFire: 10,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: firstFireTimeCt,
+              entryPrice: 1.0,
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    // slice(1) of a one-element historicalFires is empty → only the latest fire.
+    expect(screen.getByTestId('lottery-reignites-toggle')).toHaveTextContent(
+      '+1 reignite',
+    );
+    fireEvent.click(screen.getByTestId('lottery-reignites-toggle'));
+    const list = screen.getByTestId('lottery-reignites-list');
+    expect(list).toHaveTextContent(`${ctTime(triggerTimeCt)} CT`);
+    expect(list).not.toHaveTextContent(`${ctTime(firstFireTimeCt)} CT`);
+    // Exactly one reignite row.
+    expect(list.querySelectorAll('li')).toHaveLength(1);
+  });
+});
