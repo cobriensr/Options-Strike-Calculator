@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 import exit_engine.path_reconstruction as pr
 
@@ -18,9 +19,9 @@ def test_minute_path_drops_canceled_and_computes_mid():
         ("2026-04-13T14:32:10Z", "X", 2.0, 2.4, 2.2, False),
     ])
     path = pr.build_minute_path(t, entry_ts=pd.Timestamp("2026-04-13T14:30:00Z"), entry_price=1.0)
-    assert list(path["mid"]) == [1.3, 2.2]           # 14:30 last mid, 14:32 mid; 14:31 canceled gone
-    assert list(path["minutes_since_entry"]) == [0.0, 2.0]
-    assert path["spread"].iloc[1] == 0.4
+    assert path["mid"].tolist() == pytest.approx([1.3, 2.2])  # 14:30 last mid, 14:32 mid; 14:31 canceled gone
+    assert path["minutes_since_entry"].tolist() == [0.0, 2.0]
+    assert path["spread"].iloc[1] == pytest.approx(0.4)
 
 
 def test_assemble_multiday_concats_sessions_in_order():
@@ -31,4 +32,4 @@ def test_assemble_multiday_concats_sessions_in_order():
     )
     assert len(path) == 2
     assert path["minutes_since_entry"].is_monotonic_increasing
-    assert path["mid"].iloc[-1] == 3.1
+    assert path["mid"].iloc[-1] == pytest.approx(3.1)

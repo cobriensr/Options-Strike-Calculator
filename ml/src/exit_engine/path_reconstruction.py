@@ -25,8 +25,8 @@ def build_minute_path(
     if df.empty:
         return pd.DataFrame()
     df["minute"] = df["executed_at"].dt.floor("min")
-    df["mid"] = ((df["nbbo_bid"] + df["nbbo_ask"]) / 2.0).round(10)
-    df["spread"] = (df["nbbo_ask"] - df["nbbo_bid"]).round(10)
+    df["mid"] = (df["nbbo_bid"] + df["nbbo_ask"]) / 2.0
+    df["spread"] = df["nbbo_ask"] - df["nbbo_bid"]
     grouped = (
         df.groupby("minute", observed=True)
         .agg(mid=("mid", "last"), spread=("spread", "last"),
