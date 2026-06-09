@@ -38,19 +38,16 @@ def build_fire_rows(
 def assign_walkforward_folds(
     dates: pd.Series, n_train_days: int, test_block_days: int
 ) -> pd.Series:
-    """Map each row's date to a test-fold id. Rows whose date falls in the
-    initial n_train_days (train-only warmup) get -1. Later dates are bucketed
-    into forward test blocks of test_block_days each (0, 1, 2, ...)."""
+    """Map each row's date to a test-fold id. The first n_train_days distinct
+    dates are train-only warmup (fold -1) -- n_train_days of history must be seen
+    before any testing. Later dates are bucketed into forward test blocks of
+    test_block_days each (0, 1, 2, ...)."""
     distinct = sorted(pd.to_datetime(dates).dt.normalize().unique())
-    # The first n_train_days-1 distinct dates are train-only warmup (fold -1).
-    # The n_train_days-th distinct date begins test fold 0, so that n_train_days
-    # rows of *data* (counting from 1) have been seen before the first test fold.
     fold_for_date: dict = {}
-    warmup = n_train_days - 1
     for i, d in enumerate(distinct):
-        if i < warmup:
+        if i < n_train_days:
             fold_for_date[d] = -1
         else:
-            fold_for_date[d] = (i - warmup) // test_block_days
+            fold_for_date[d] = (i - n_train_days) // test_block_days
     norm = pd.to_datetime(dates).dt.normalize()
     return norm.map(fold_for_date).astype("int64")

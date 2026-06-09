@@ -8,8 +8,9 @@ def test_assign_walkforward_folds_is_time_ordered():
         ["2026-04-13", "2026-04-13", "2026-04-14", "2026-04-15", "2026-04-16"]
     ))
     folds = ds.assign_walkforward_folds(dates, n_train_days=2, test_block_days=1)
-    # first 2 distinct dates are train-only (fold -1 = never tested)
-    assert folds.tolist() == [-1, -1, 0, 1, 2]
+    # 4 distinct dates; first 2 (04-13, 04-14) are train-only warmup (fold -1);
+    # testing starts on the 3rd distinct date (04-15 -> fold 0, 04-16 -> fold 1).
+    assert folds.tolist() == [-1, -1, -1, 0, 1]
 
 
 def test_build_fire_rows_tags_identity_columns():
