@@ -22,9 +22,17 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
+import { startChime, stopChime, stopAllChimes } from '../utils/alert-chime';
 import { getAccessMode } from '../utils/auth';
 import { playSweepAlarm } from '../utils/anomaly-sound';
 import { usePolling } from './usePolling';
+
+/**
+ * Chime namespace for this hook. Disjoint from useAlertPolling ("alert") so
+ * the two hooks can reuse the same numeric alert ids in the shared chime map
+ * without one ever stopping the other's chime.
+ */
+const CHIME_NAMESPACE = 'intervalBA';
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -73,38 +81,29 @@ const CHIME_INTERVAL_MS: Record<IntervalBAAlert['severity'], number> = {
   extreme: 5_000,
 };
 
-const activeChimes = new Map<number, ReturnType<typeof setInterval>>();
-
-function startChime(alert: IntervalBAAlert): void {
-  if (activeChimes.has(alert.id)) return;
-  playSweepAlarm(alert.severity);
-  const interval = setInterval(
-    () => playSweepAlarm(alert.severity),
-    CHIME_INTERVAL_MS[alert.severity],
-  );
-  activeChimes.set(alert.id, interval);
-}
-
-function stopChime(alertId: number): void {
-  const interval = activeChimes.get(alertId);
-  if (interval !== undefined) {
-    clearInterval(interval);
-    activeChimes.delete(alertId);
-  }
+/**
+ * Arm the repeating sweep-alarm chime for an alert via the shared chime
+ * manager. This hook owns only the tone (playSweepAlarm) and cadence
+ * (CHIME_INTERVAL_MS); the setInterval lifecycle + per-namespace dedupe
+ * live in alert-chime.ts.
+ */
+function armChime(alert: IntervalBAAlert): void {
+  startChime(alert.id, {
+    namespace: CHIME_NAMESPACE,
+    intervalMs: CHIME_INTERVAL_MS[alert.severity],
+    play: () => playSweepAlarm(alert.severity),
+  });
 }
 
 /**
- * Reset the module-level chime state. Test-only — production code
- * should never need this. Without it, a chime started in one test
- * leaks across to subsequent tests (the dedupe map is module-scope so
- * the in-app component can survive remounts without re-chiming).
+ * Reset the shared chime state. Test-only — production code should never
+ * need this. Re-exported from the shared module so existing tests that
+ * import it from this hook keep working. Without it, a chime started in
+ * one test leaks across to subsequent tests (the dedupe map is
+ * module-scope so the in-app component survives remounts without
+ * re-chiming).
  */
-export function __resetChimesForTests(): void {
-  for (const interval of activeChimes.values()) {
-    clearInterval(interval);
-  }
-  activeChimes.clear();
-}
+export { __resetChimesForTests } from '../utils/alert-chime';
 
 // ── Display helpers (exported for the banner component) ────
 
@@ -202,7 +201,7 @@ export function useIntervalBAAlerts(
     // an "extreme" alert that started a 5s repeating chime would keep
     // ringing for the whole interval after the user hit mute.
     if (muted) {
-      for (const alertId of seenIdsRef.current) stopChime(alertId);
+      stopAllChimes(CHIME_NAMESPACE, seenIdsRef.current);
     }
   }, [muted]);
 
@@ -248,7 +247,7 @@ export function useIntervalBAAlerts(
       if (!mutedRef.current) {
         for (const alert of fresh) {
           showBrowserNotification(alert);
-          startChime(alert);
+          armChime(alert);
         }
       }
 
@@ -265,14 +264,23 @@ export function useIntervalBAAlerts(
   // gate flips closed (marketOpen → false, session lost, unmount), any
   // chime this hook started must stop. Without this, a chime that fired
   // during market hours would keep ringing every 5–15s after 4:01 PM
-  // ET. stopChime is idempotent so iterating the full seen-IDs set is
+  // ET. stopAllChimes is idempotent so iterating the full seen-IDs set is
   // safe even for already-acknowledged alerts.
+  //
+  // The cleanup ALSO clears seenIdsRef. Without this, a still-active
+  // alert's id stays in the seen set across the gate flip, so when
+  // marketOpen flips back true (halt resume / extended-hours boundary) the
+  // reopened fetch filters it out of `fresh` → it never re-chimes and the
+  // user loses the audio cue. Clearing seen re-arms it on reopen; the
+  // server `acknowledged` flag (not the seen set) is what keeps dismissed
+  // alerts silent, so clearing seen never re-rings something acknowledged.
   useEffect(() => {
     if (!hasSession || !marketOpen) return;
     fetchAlerts();
     const seen = seenIdsRef.current;
     return () => {
-      for (const alertId of seen) stopChime(alertId);
+      stopAllChimes(CHIME_NAMESPACE, seen);
+      seen.clear();
     };
   }, [hasSession, marketOpen, fetchAlerts]);
 
@@ -280,7 +288,7 @@ export function useIntervalBAAlerts(
   usePolling(fetchAlerts, POLL_INTERVALS.ALERTS, [hasSession, marketOpen]);
 
   const acknowledge = useCallback(async (id: number) => {
-    stopChime(id);
+    stopChime(CHIME_NAMESPACE, id);
     try {
       const res = await fetch('/api/interval-ba-alerts-ack', {
         method: 'POST',

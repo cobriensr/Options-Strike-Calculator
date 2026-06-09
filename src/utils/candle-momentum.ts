@@ -87,7 +87,11 @@ export interface CandleMomentum {
 
 function safeClose(candles: SPXCandle[], fromEnd: number): number {
   const c = candles.at(-(fromEnd + 1));
-  return c?.close ?? candles.at(-1)?.close ?? 0;
+  // When the requested lookback exceeds available history, fall back to the
+  // OLDEST close — not the newest. The newest would make ROC = latest - latest
+  // = 0, masking a real early-session move; the oldest is the furthest-back
+  // reference we have, which is what every lookback caller actually wants.
+  return c?.close ?? candles[0]?.close ?? 0;
 }
 
 function candleRange(c: SPXCandle): number {

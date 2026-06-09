@@ -35,15 +35,63 @@ describe('computeMomentum', () => {
     const candles = [candle(100, 101), candle(101, 105)];
     const m = computeMomentum(candles);
     expect(m.roc1).toBe(4); // 105 - 101
-    // roc3/roc5: not enough history → safeClose falls back to latest close
-    expect(m.roc3).toBe(0);
-    expect(m.roc5).toBe(0);
+    // roc3/roc5: not enough history → safeClose falls back to the OLDEST
+    // available close (101), so they still reflect the move rather than 0.
+    expect(m.roc3).toBe(4); // 105 - 101 (oldest)
+    expect(m.roc5).toBe(4); // 105 - 101 (oldest)
+  });
+
+  describe('short-history ROC fallback', () => {
+    it('roc3 reflects an upward move when fewer than 4 candles exist', () => {
+      // Closes: [100, 105, 110] — a real +10 move over the available history.
+      // Lookback of 3 exceeds history, so the oldest close (100) is used.
+      const candles = [candle(99, 100), candle(100, 105), candle(105, 110)];
+      const m = computeMomentum(candles);
+      expect(m.roc3).toBe(10); // 110 (latest) - 100 (oldest), NOT 0
+    });
+
+    it('roc3 reflects a downward move when fewer than 4 candles exist', () => {
+      // Closes: [110, 105, 100] — a real -10 move.
+      const candles = [candle(111, 110), candle(110, 105), candle(105, 100)];
+      const m = computeMomentum(candles);
+      expect(m.roc3).toBe(-10); // 100 (latest) - 110 (oldest)
+    });
+
+    it('roc5 reflects an upward move when fewer than 6 candles exist', () => {
+      // Closes: [100, 102, 104, 108] — lookback of 5 exceeds the 4 candles,
+      // so the oldest close (100) anchors the ROC.
+      const candles = [
+        candle(99, 100),
+        candle(100, 102),
+        candle(102, 104),
+        candle(104, 108),
+      ];
+      const m = computeMomentum(candles);
+      expect(m.roc5).toBe(8); // 108 (latest) - 100 (oldest), NOT 0
+    });
   });
 
   it('computes negative ROC when price falls', () => {
     const candles = [candle(105, 104), candle(104, 100)];
     const m = computeMomentum(candles);
     expect(m.roc1).toBe(-4); // 100 - 104
+  });
+
+  it('roc3/roc5 use the exact lookback close when full history exists', () => {
+    // 6 candles, closes: [100, 101, 103, 106, 110, 115].
+    // With full history, roc3 = close[-1] - close[-4], roc5 = close[-1] - close[-6].
+    const candles = [
+      candle(99, 100), // close[-6]
+      candle(100, 101), // close[-5]
+      candle(101, 103), // close[-4]
+      candle(103, 106), // close[-3]
+      candle(106, 110), // close[-2]
+      candle(110, 115), // close[-1]
+    ];
+    const m = computeMomentum(candles);
+    expect(m.roc1).toBe(5); // 115 - 110
+    expect(m.roc3).toBe(12); // 115 - 103 (exact 4th-from-end, not oldest 100)
+    expect(m.roc5).toBe(15); // 115 - 100 (6th-from-end == oldest here)
   });
 
   describe('streak detection', () => {

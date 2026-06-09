@@ -126,10 +126,19 @@ describe('calcHedge', () => {
     expect(result.dailyCostDollars).toBeGreaterThanOrEqual(0);
   });
 
-  it('breakeven crash/rally points are positive', () => {
+  it('breakeven crash/rally points are non-null and positive', () => {
     const result = calcHedge(baseParams);
-    expect(result.breakEvenCrashPts).toBeGreaterThan(0);
-    expect(result.breakEvenRallyPts).toBeGreaterThan(0);
+    // Net hedge P&L is non-monotonic: it dips into a real loss band before
+    // recovering, so this fixture has a genuine breakeven where coverage first
+    // breaks. Both must be non-null positive crash/rally sizes in points — a
+    // null here would be the masked regression where a real loss band was
+    // reported as "fully covered".
+    expect(result.breakEvenCrashPts).not.toBeNull();
+    expect(result.breakEvenCrashPts!).toBeGreaterThan(0);
+    expect(result.breakEvenCrashPts!).toBeLessThan(baseParams.spot * 0.15);
+    expect(result.breakEvenRallyPts).not.toBeNull();
+    expect(result.breakEvenRallyPts!).toBeGreaterThan(0);
+    expect(result.breakEvenRallyPts!).toBeLessThan(baseParams.spot * 0.15);
   });
 
   it('scenario table has both crash and rally scenarios', () => {

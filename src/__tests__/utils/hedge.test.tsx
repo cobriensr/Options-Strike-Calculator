@@ -57,7 +57,13 @@ describe('calcHedge: basic structure', () => {
     expect(hedge.recommendedCalls).toBeGreaterThanOrEqual(1);
     expect(hedge.dailyCostPts).toBeGreaterThan(0);
     expect(hedge.dailyCostDollars).toBeGreaterThan(0);
+    // Net hedge P&L vs. move size is non-monotonic: the default fixture is
+    // net-positive at the IC loss threshold, dips into a real loss band, then
+    // recovers. There IS a breakeven (where coverage first breaks), so these
+    // must be non-null positive crash/rally sizes — never null for this fixture.
+    expect(hedge.breakEvenCrashPts).not.toBeNull();
     expect(hedge.breakEvenCrashPts).toBeGreaterThan(0);
+    expect(hedge.breakEvenRallyPts).not.toBeNull();
     expect(hedge.breakEvenRallyPts).toBeGreaterThan(0);
     expect(hedge.netCreditAfterHedge).toBeDefined();
     expect(hedge.scenarios.length).toBeGreaterThan(0);
@@ -543,10 +549,13 @@ describe('calcHedge: breakeven points', () => {
     });
 
     const distToShortPut = spot - ic.shortPut;
-    // Breakeven should be beyond the short put (where loss starts)
-    expect(hedge.breakEvenCrashPts).toBeGreaterThan(distToShortPut);
-    // But not absurdly far
-    expect(hedge.breakEvenCrashPts).toBeLessThan(spot * 0.15);
+    // The default fixture's net P&L is non-monotonic: positive at the search
+    // floor (distToShortPut), then it dips through a real loss band before
+    // recovering. The nearest-floor zero crossing is a genuine breakeven, so
+    // this must be non-null and sit between the short put and search ceiling.
+    expect(hedge.breakEvenCrashPts).not.toBeNull();
+    expect(hedge.breakEvenCrashPts!).toBeGreaterThan(distToShortPut);
+    expect(hedge.breakEvenCrashPts!).toBeLessThan(spot * 0.15);
   });
 
   it('breakeven rally is between IC max loss point and 2× that distance', () => {
@@ -567,8 +576,12 @@ describe('calcHedge: breakeven points', () => {
     });
 
     const distToShortCall = ic.shortCall - spot;
-    expect(hedge.breakEvenRallyPts).toBeGreaterThan(distToShortCall);
-    expect(hedge.breakEvenRallyPts).toBeLessThan(spot * 0.15);
+    // Same non-monotonic shape on the rally side: the nearest-floor crossing is
+    // a real breakeven, so this must be non-null and sit between the short call
+    // and the search ceiling — never null for the default fixture.
+    expect(hedge.breakEvenRallyPts).not.toBeNull();
+    expect(hedge.breakEvenRallyPts!).toBeGreaterThan(distToShortCall);
+    expect(hedge.breakEvenRallyPts!).toBeLessThan(spot * 0.15);
   });
 });
 

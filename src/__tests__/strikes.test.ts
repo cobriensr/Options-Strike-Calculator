@@ -212,6 +212,60 @@ describe('calcStrikes', () => {
     // Call skew reduces call sigma, so call strike moves closer to spot
     expect(withSkew.callStrike).toBeLessThan(noSkew.callStrike);
   });
+
+  // ── Defensive input guards (parity with black-scholes.ts) ──────
+  //
+  // calcStrikes uses Math.sqrt(T) and Math.exp(...) on the inputs. A
+  // non-positive T → Math.sqrt(T) = 0 (or NaN), and a non-positive
+  // sigma/spot produces NaN/0 strikes that silently propagate into the
+  // strike table. Every function in black-scholes.ts guards against the
+  // same `T <= 0 || sigma <= 0 || spot <= 0` trio; calcStrikes must too.
+  // Upstream validateMarketTime protects production, but this is an
+  // exported pure utility, so it must defend its own boundary.
+
+  it('returns an error for non-positive T (no NaN strikes)', () => {
+    for (const badT of [0, -1, -1 / 252]) {
+      const result = calcStrikes(spot, sigma, badT, 10);
+      expect(isStrikeError(result)).toBe(true);
+    }
+  });
+
+  it('returns an error for non-positive sigma (no NaN strikes)', () => {
+    for (const badSigma of [0, -0.1]) {
+      const result = calcStrikes(spot, badSigma, T, 10);
+      expect(isStrikeError(result)).toBe(true);
+    }
+  });
+
+  it('returns an error for non-positive spot (no NaN strikes)', () => {
+    for (const badSpot of [0, -5800]) {
+      const result = calcStrikes(badSpot, sigma, T, 10);
+      expect(isStrikeError(result)).toBe(true);
+    }
+  });
+
+  it('returns an error for NaN / Infinity inputs (routed through isValidBSInputs)', () => {
+    // calcStrikes now shares the Black-Scholes input-validity predicate, which
+    // rejects non-finite inputs in addition to non-positive ones. A NaN or
+    // ±Infinity spot/sigma/T would otherwise propagate NaN strikes silently.
+    const badValues = [NaN, Infinity, -Infinity];
+    for (const bad of badValues) {
+      expect(isStrikeError(calcStrikes(bad, sigma, T, 10))).toBe(true);
+      expect(isStrikeError(calcStrikes(spot, bad, T, 10))).toBe(true);
+      expect(isStrikeError(calcStrikes(spot, sigma, bad, 10))).toBe(true);
+    }
+  });
+
+  it('returns finite, non-NaN strikes for valid inputs (regression)', () => {
+    const result = calcStrikes(spot, sigma, T, 10);
+    expect(isStrikeError(result)).toBe(false);
+    if (!isStrikeError(result)) {
+      expect(Number.isFinite(result.putStrike)).toBe(true);
+      expect(Number.isFinite(result.callStrike)).toBe(true);
+      expect(result.putStrike).toBeLessThan(spot);
+      expect(result.callStrike).toBeGreaterThan(spot);
+    }
+  });
 });
 
 // ── isStrikeError ──────────────────────────────────────────────
@@ -296,6 +350,49 @@ describe('calcAllDeltas', () => {
       if ('error' in row) continue;
       expect(row.ivAccelMult).toBeGreaterThanOrEqual(1);
       expect(row.ivAccelMult).toBeLessThanOrEqual(DEFAULTS.IV_ACCEL_MAX);
+    }
+  });
+
+  // ── Defensive input guards (parity with black-scholes.ts) ──────
+  //
+  // calcAllDeltas delegates strike placement to calcStrikes, so a
+  // non-positive T/sigma/spot must surface as error rows rather than
+  // rows full of NaN strikes, premiums, and Greeks.
+
+  it('returns all error rows for non-positive T', () => {
+    for (const badT of [0, -1 / 252]) {
+      const rows = calcAllDeltas(spot, sigma, badT);
+      expect(rows).toHaveLength(DELTA_OPTIONS.length);
+      for (const row of rows) {
+        expect('error' in row).toBe(true);
+      }
+    }
+  });
+
+  it('returns all error rows for non-positive sigma', () => {
+    const rows = calcAllDeltas(spot, 0, T);
+    expect(rows).toHaveLength(DELTA_OPTIONS.length);
+    for (const row of rows) {
+      expect('error' in row).toBe(true);
+    }
+  });
+
+  it('returns all error rows for non-positive spot', () => {
+    const rows = calcAllDeltas(0, sigma, T);
+    expect(rows).toHaveLength(DELTA_OPTIONS.length);
+    for (const row of rows) {
+      expect('error' in row).toBe(true);
+    }
+  });
+
+  it('never produces NaN strikes for valid inputs (regression)', () => {
+    const rows = calcAllDeltas(spot, sigma, T);
+    for (const row of rows) {
+      if ('error' in row) continue;
+      expect(Number.isFinite(row.putStrike)).toBe(true);
+      expect(Number.isFinite(row.callStrike)).toBe(true);
+      expect(Number.isFinite(row.putPremium)).toBe(true);
+      expect(Number.isFinite(row.callPremium)).toBe(true);
     }
   });
 });

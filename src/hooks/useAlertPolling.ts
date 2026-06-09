@@ -13,8 +13,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { startChime, stopChime, stopAllChimes } from '../utils/alert-chime';
 import { checkIsOwner } from '../utils/auth';
 import { usePolling } from './usePolling';
+
+/**
+ * Chime namespace for this hook. Keeps the shared chime map's keys disjoint
+ * from useIntervalBAAlerts ("intervalBA") so the two hooks can reuse the same
+ * numeric alert ids without one ever stopping the other's chime.
+ */
+const CHIME_NAMESPACE = 'alert';
 
 // Sample rate for polling-failure capture. Without sampling, a sustained
 // outage would flood Sentry with one event per poll tick across every
@@ -91,27 +99,17 @@ const CHIME_INTERVAL: Record<MarketAlert['severity'], number> = {
   extreme: 5_000,
 };
 
-/** Active chime intervals keyed by alert ID. */
-const activeChimes = new Map<number, ReturnType<typeof setInterval>>();
-
-/** Start a repeating chime for an alert. Stops when stopChime is called. */
-function startChime(alert: MarketAlert): void {
-  if (activeChimes.has(alert.id)) return;
-  playChimeOnce(alert.severity);
-  const interval = setInterval(
-    () => playChimeOnce(alert.severity),
-    CHIME_INTERVAL[alert.severity],
-  );
-  activeChimes.set(alert.id, interval);
-}
-
-/** Stop the repeating chime for an alert. */
-function stopChime(alertId: number): void {
-  const interval = activeChimes.get(alertId);
-  if (interval) {
-    clearInterval(interval);
-    activeChimes.delete(alertId);
-  }
+/**
+ * Arm the repeating chime for an alert via the shared chime manager. This
+ * hook owns only the tone (playChimeOnce) and cadence (CHIME_INTERVAL);
+ * the setInterval lifecycle + per-namespace dedupe live in alert-chime.ts.
+ */
+function armChime(alert: MarketAlert): void {
+  startChime(alert.id, {
+    namespace: CHIME_NAMESPACE,
+    intervalMs: CHIME_INTERVAL[alert.severity],
+    play: () => playChimeOnce(alert.severity),
+  });
 }
 
 // ── Browser notification ───────────────────────────────────
@@ -191,7 +189,7 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
       // Fire notifications outside state updater (side-effect safe)
       for (const alert of fresh) {
         showBrowserNotification(alert);
-        startChime(alert);
+        armChime(alert);
       }
 
       if (fresh.length > 0) {
@@ -210,11 +208,32 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
     }
   }, []);
 
-  // Eager fetch on gate-open — usePolling only schedules, never fires
-  // immediately, so the initial fetch lives in its own effect.
+  // Eager fetch + chime-stop-on-gate-flip. usePolling only schedules the
+  // recurring poll, never fires immediately, so the initial fetch lives
+  // here. The cleanup contract is broader though: when the gate flips
+  // closed (marketOpen → false, owner session lost, unmount), any chime
+  // this hook started must stop. Without this, a chime that fired during
+  // market hours would keep ringing every 5–15s after 4:01 PM ET, after
+  // the tab is backgrounded, and across SPA teardown — and because the
+  // shared chime map is module-scoped, it would survive remounts.
+  // stopAllChimes is idempotent, so iterating the full seen-IDs set is safe
+  // even for already-acknowledged alerts.
+  //
+  // The cleanup ALSO clears seenIdsRef. Without this, a still-active
+  // critical alert's id stays in the seen set across the gate flip, so when
+  // marketOpen flips back true (halt resume / extended-hours boundary) the
+  // reopened fetch filters it out of `fresh` → it never re-chimes and the
+  // owner loses the audio cue. Clearing seen re-arms it on reopen; the
+  // server `acknowledged` flag (not the seen set) is what keeps dismissed
+  // alerts silent, so clearing seen never re-rings something acknowledged.
   useEffect(() => {
     if (!isOwner || !marketOpen) return;
     fetchAlerts();
+    const seen = seenIdsRef.current;
+    return () => {
+      stopAllChimes(CHIME_NAMESPACE, seen);
+      seen.clear();
+    };
   }, [isOwner, marketOpen, fetchAlerts]);
 
   // Recurring poll — gated identically to the eager fetch.
@@ -222,7 +241,7 @@ export function useAlertPolling(marketOpen: boolean): AlertPollingState {
 
   // Acknowledge an alert — stops the repeating chime
   const acknowledge = useCallback(async (id: number) => {
-    stopChime(id);
+    stopChime(CHIME_NAMESPACE, id);
     try {
       await fetch('/api/alerts-ack', {
         method: 'POST',

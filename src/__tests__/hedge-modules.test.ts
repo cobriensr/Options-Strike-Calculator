@@ -166,20 +166,47 @@ describe('computeScenarioPnL', () => {
 
 describe('findBreakEven', () => {
   it('finds the zero crossing of a monotonic increasing function', () => {
-    // f(x) = x - 50, zero at x=50
+    // f(x) = x - 50, zero at x=50 — genuine sign change inside [0, 100]
     const result = findBreakEven((x) => x - 50, 0, 100);
     expect(result).toBe(50);
   });
 
-  it('handles never-crossing-zero by returning searchMax', () => {
-    // f(x) = 1 (always positive) — bisection collapses to lo=searchMin
-    // and hi stays = searchMax since computeFn never returns < 0
-    const result = findBreakEven(() => 1, 0, 100);
-    // Bisection with always-positive f collapses hi → lo; the answer
-    // is searchMin in that limit. Just verify it's a finite number
-    // in-range and doesn't throw.
-    expect(result).toBeGreaterThanOrEqual(0);
-    expect(result).toBeLessThanOrEqual(100);
+  it('returns the root NEAREST searchMin on a non-monotonic trough (+ → − → +)', () => {
+    // Mirrors the real net-hedge-P&L shape: positive at searchMin, dips into a
+    // loss band, then recovers to positive. Two real roots exist (100 and 300);
+    // an endpoint-only sign check sees +/+ and wrongly returns null. We must
+    // return the FIRST crossing (nearest searchMin), where coverage breaks.
+    //   f(x) = (x - 100) * (x - 300)
+    //   f(0) = +30000, f(100) = 0, f(200) = -10000, f(300) = 0, f(400) = +30000
+    const f = (x: number) => (x - 100) * (x - 300);
+    const result = findBreakEven(f, 0, 400);
+    expect(result).not.toBeNull();
+    expect(result).toBeCloseTo(100, 0);
+    // Crucially NOT the far root and NOT null.
+    expect(result).toBeLessThan(300);
+  });
+
+  it('locates the interior root of a DECREASING bracket (+ at min, − at max)', () => {
+    // f(x) = 200 - x, positive at searchMin (100→+100), negative at searchMax
+    // (300→−100). The crossing is decreasing (+ → −); the old bisection assumed
+    // an increasing crossing and would mislocate it. Root is at x=200, which is
+    // strictly interior — NOT searchMin.
+    const result = findBreakEven((x) => 200 - x, 100, 300);
+    expect(result).toBe(200);
+    expect(result).not.toBe(100);
+  });
+
+  it('returns null when net P&L is positive across the entire range', () => {
+    // f(x) = +500 everywhere — no bracketed root. A well-sized hedge that
+    // stays net-positive across all crash sizes has no real breakeven.
+    const result = findBreakEven(() => 500, 100, 600);
+    expect(result).toBeNull();
+  });
+
+  it('returns null when net P&L is negative across the entire range', () => {
+    // f(x) = -500 everywhere — no bracketed root, so no real breakeven.
+    const result = findBreakEven(() => -500, 100, 600);
+    expect(result).toBeNull();
   });
 });
 
