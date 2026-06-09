@@ -707,25 +707,13 @@ export function LotteryFinderSection({
     pageSize: PAGE_SIZE,
   });
 
-  // Pagination-hole guard. The live page renders the WHOLE union, so a chain
-  // pinned on page 0 that later demotes past the PAGE_SIZE cut is also
-  // returned by the server on a later page — without a guard it renders on
-  // BOTH. On the live view's pages > 0 we drop any fetched row already pinned
-  // on page 0; the long tail the server only serves on later pages stays
-  // reachable.
-  const livePagedView = minute == null && page > 0;
-  const dedupedPagedFires = useMemo(
-    () => fetchedFires.filter((f) => !firesFeed.unionKeys.has(fireKey(f))),
-    [fetchedFires, firesFeed.unionKeys, fireKey],
-  );
-  // Downstream surfaces (banners, filters, grouping, counts) consume the
-  // unioned array on page 0, the de-duplicated server slice on later live
-  // pages, and the raw response on the minute-scrub view.
-  const fires = unionEngaged
-    ? firesFeed.rows
-    : livePagedView
-      ? dedupedPagedFires
-      : fetchedFires;
+  // The live (engaged) view is a single never-vanish union rendered on one
+  // page — the pager is suppressed in engaged mode (see the pagination render
+  // gate below), so `page` never leaves 0 while live and there is no
+  // engaged-mode paged slice to reconcile. Downstream surfaces consume the
+  // unioned array when engaged and the raw server slice on the minute-scrub
+  // (non-engaged) view, where pagination is server-anchored.
+  const fires = unionEngaged ? firesFeed.rows : fetchedFires;
   const rawReignitedFires = unionEngaged
     ? reignitedFeed.rows
     : fetchedReignitedFires;
@@ -1830,8 +1818,12 @@ export function LotteryFinderSection({
                   </span>
                 )}
               </span>
-              {/* Pagination — only render when there's more than one page. */}
-              {total > PAGE_SIZE && (
+              {/* Pagination — only in the non-engaged (minute-scrub) view,
+                  where the feed renders a raw, server-anchored slice. The
+                  engaged (live) view is a single never-vanish union on one
+                  page, so a literal pager there only produced phantom empty
+                  pages. */}
+              {!unionEngaged && totalPages > 1 && (
                 <span className="flex items-center gap-1.5">
                   <button
                     type="button"

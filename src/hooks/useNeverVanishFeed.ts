@@ -9,8 +9,8 @@
  *   - pinned-count `total` floor (the "N pinned" display)
  *   - per-ticker MAX-merge ticker counts (server count wins where reported,
  *     union backfills any ticker the server later dropped)
- *   - the pinned key set, exposed for caller-side page>0 dedup and (Lottery)
- *     the reignited-vs-ticker-group partition.
+ *   - the pinned key set, exposed for the (Lottery) reignited-vs-ticker-group
+ *     partition.
  *
  * Engaged vs. disengaged
  * ----------------------
@@ -97,7 +97,7 @@ export interface UseNeverVanishFeedResult<T> {
   hasMore: boolean;
   /** Per-ticker MAX(server, union); server order preserved, union appended. */
   tickerCounts: TickerCount[];
-  /** The pinned union key set, for caller-side page>0 dedup / partition. */
+  /** The pinned union key set, for the (Lottery) reignited-vs-ticker partition. */
   unionKeys: ReadonlySet<string>;
 }
 
@@ -126,10 +126,10 @@ export function useNeverVanishFeed<T>(
     ...(tombstones !== undefined && { tombstones }),
   });
 
-  // Pinned key set — exposed for the caller's page>0 dedup and (Lottery) the
-  // reignited-vs-ticker-group partition. Always reflects the persisted union,
-  // even on disengaged paged views (the hook rehydrates from localStorage),
-  // so a page-2 duplicate of a page-0-pinned row can be dropped.
+  // Pinned key set — exposed for the (Lottery) reignited-vs-ticker-group
+  // partition. Always reflects the persisted union, even on disengaged paged
+  // views (the hook rehydrates from localStorage), so the partition stays
+  // stable across the engaged/disengaged boundary.
   const unionKeys = useMemo(() => {
     const keys = new Set<string>();
     for (const u of union) keys.add(key(u));

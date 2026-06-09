@@ -488,53 +488,40 @@ describe('SilentBoomSection: never-vanish accumulator', () => {
     expect(screen.getByTitle(/Filter to AAPL only/i)).toHaveTextContent('1');
   });
 
-  it('does not duplicate a page-0-pinned alert on page > 0 when it demotes past PAGE_SIZE', () => {
-    // Pagination hole: page 0 renders the WHOLE union, so an alert pinned
-    // on page 0 that later demotes past the 50-row cut is also returned by
-    // the server on page 1. Without the dedup guard it shows on BOTH pages.
+  it('live mode renders the whole union on a single page with no pager (server total > PAGE_SIZE)', () => {
+    // The live (engaged) feed is a single never-vanish union that already
+    // renders everything on one page. Literal server pages never made sense
+    // there: page 0 rendered the whole union while pages ≥ 1 rendered a
+    // server slice the page-0 union deduped away → phantom empty pages. The
+    // fix removes the pager entirely in engaged mode, so a server total above
+    // PAGE_SIZE no longer surfaces a pager (and no phantom pages).
     const pinned = makeAlert({
       id: 1,
       optionChainId: 'AAPL260508C00200000',
       underlyingSymbol: 'AAPL',
       strike: 200,
     });
-    const tail = makeAlert({
-      id: 2,
-      optionChainId: 'TSLA260508C00250000',
-      underlyingSymbol: 'TSLA',
-      strike: 250,
-    });
-    // total > PAGE_SIZE so the Next button renders. Page 0 returns the
-    // pinned alert (→ union); page 1 returns the SAME pinned alert
-    // (demoted) plus a genuine tail alert the server only serves on p1.
-    mockUseSilentBoomFeed.mockImplementation(({ page }: { page: number }) =>
-      page > 0
-        ? feedResult({
-            alerts: [pinned, tail],
-            total: 100,
-            offset: 50,
-            hasMore: false,
-          })
-        : feedResult({ alerts: [pinned], total: 100, hasMore: true }),
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [pinned], total: 100, hasMore: true }),
     );
 
     render(<SilentBoomSection marketOpen={true} />);
-    // Page 0: pinned alert visible.
+    // The union row renders ...
     expect(
       screen.getByTestId('silent-boom-row-AAPL260508C00200000'),
     ).toBeInTheDocument();
-
-    // Navigate to page 1.
-    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
-
-    // The demoted pinned alert must NOT re-render on page 1 (already shown
-    // via the page-0 union), but the genuine tail alert must be reachable.
+    // ... but no pager: no Next/Prev buttons, no "page X / Y" label, and no
+    // phantom empty / past-last-page states.
     expect(
-      screen.queryByTestId('silent-boom-row-AAPL260508C00200000'),
+      screen.queryByRole('button', { name: /next page/i }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: /previous page/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/page \d+ \/ \d+/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('silent-boom-past-last-page'),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -667,14 +654,11 @@ describe('SilentBoomSection: never-vanish findings #1/#3', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('#3: union larger than serverTotal on the live page does not advertise an unreachable page', () => {
-    // Live page pins 2 alerts via the union but the server reports total=1
-    // (a degrade dropped one from the reachable set). totalPages is
-    // server-anchored = ceil(1 / 50) = 1, so NO pager renders even though
-    // the union floors the displayed `total` at 2. Without server-anchored
-    // pagination the old `ceil(total / PAGE_SIZE)` would still be 1 here, so
-    // to make this non-vacuous we drive serverTotal across the PAGE_SIZE
-    // boundary in the companion assertion below.
+  it('#3: union larger than serverTotal in live mode renders no pager', () => {
+    // Live page pins 2 alerts via the union but the server later degrades to
+    // total=1. The live view is a single never-vanish page, so the pager is
+    // suppressed entirely regardless of the server total — there is no Next
+    // button to offer a page the server cannot serve.
     const a1 = makeAlert({
       id: 1,
       optionChainId: 'AAPL260508C00200000',
@@ -694,9 +678,7 @@ describe('SilentBoomSection: never-vanish findings #1/#3', () => {
     const { rerender } = render(<SilentBoomSection marketOpen={true} />);
 
     // Poll 2: server degrades to a SINGLE reachable alert (total=1) but the
-    // union still pins both. serverTotal=1 → totalPages=1 → no pager, and
-    // crucially Next stays gated on the server `hasMore` (false), so no
-    // unreachable page can be navigated to.
+    // union still pins both.
     mockUseSilentBoomFeed.mockReturnValue(
       feedResult({ alerts: [a2], total: 1, hasMore: false }),
     );
@@ -709,19 +691,16 @@ describe('SilentBoomSection: never-vanish findings #1/#3', () => {
     expect(
       screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
     ).toBeInTheDocument();
-    // ... but the pager is suppressed: server-anchored totalPages keeps the
-    // Next button from offering a page the server cannot serve.
+    // ... but no pager in the engaged (live) view.
     expect(
       screen.queryByRole('button', { name: /next page/i }),
     ).not.toBeInTheDocument();
   });
 
-  it('#3 non-vacuous: server-anchored totalPages uses serverTotal, not the union-floored total', () => {
-    // serverTotal = 60 (> PAGE_SIZE 50) → server-anchored totalPages = 2.
-    // The union pins exactly 1 visible alert on the live page, so the
-    // union-floored `total` would be max(60, 1) = 60 either way here; the
-    // load-bearing distinction is that the DENOMINATOR is serverTotal. We
-    // assert the pager shows "/ 2" — the server's reachable page count.
+  it('#3: a large server total in live mode still renders no pager', () => {
+    // serverTotal = 60 (> PAGE_SIZE 50). Pre-fix this surfaced a "page 1 / 2"
+    // pager in the live view and a phantom near-empty page 2. The engaged
+    // view is now a single never-vanish page, so no pager renders.
     const pinned = makeAlert({
       id: 1,
       optionChainId: 'AAPL260508C00200000',
@@ -733,8 +712,39 @@ describe('SilentBoomSection: never-vanish findings #1/#3', () => {
     );
     render(<SilentBoomSection marketOpen={true} />);
 
-    // page 1 / 2 — ceil(60 / 50) = 2 reachable server pages.
+    expect(screen.queryByText(/page \d+ \/ \d+/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /next page/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('historical full-day view still paginates over the raw server slice', () => {
+    // On a past trading day the feed leaves the never-vanish union and
+    // renders the raw, server-paginated slice. There the pager is
+    // server-anchored and never buggy, so it must still appear when the
+    // server reports more than one page.
+    const pinned = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [pinned], total: 60, hasMore: true }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+
+    // Switch to a historical day (disengages the union). bucketIso stays null
+    // so this is the full-day historical view.
+    fireEvent.change(screen.getByLabelText(/select trading day/i), {
+      target: { value: '2026-05-08' },
+    });
+
+    // serverTotal(60) > PAGE_SIZE(50) → 2 reachable server pages.
     expect(screen.getByText(/page 1 \/ 2/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /next page/i }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -1408,7 +1418,9 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
   });
 
   it('toggling takeitFloor while on page 2 resets the page to 0', () => {
-    // Seed the hook with hasMore=true so the "next page" button renders.
+    // Seed the hook with hasMore=true so the "next page" button renders. The
+    // pager only exists in the non-engaged (historical full-day) view now, so
+    // switch to a past day before advancing the page.
     mockUseSilentBoomFeed.mockReturnValue(
       feedResult({
         alerts: [makeAlert({ id: 1, optionChainId: 'AAPL260508C00200000' })],
@@ -1418,6 +1430,11 @@ describe('SilentBoomSection: TAKE-IT floor filter chip', () => {
     );
 
     render(<SilentBoomSection marketOpen={false} />);
+
+    // Leave the live union by switching to a historical day.
+    fireEvent.change(screen.getByLabelText(/select trading day/i), {
+      target: { value: '2026-05-08' },
+    });
 
     // Advance to page 2 via the Next button.
     const nextBtn = screen.getByRole('button', { name: /next/i });
@@ -1628,6 +1645,12 @@ describe('SilentBoomSection: pagination edge states', () => {
     );
 
     render(<SilentBoomSection marketOpen={false} />);
+
+    // The pager only exists in the non-engaged (historical full-day) view —
+    // switch to a past day so the pager renders.
+    fireEvent.change(screen.getByLabelText(/select trading day/i), {
+      target: { value: '2026-05-08' },
+    });
 
     fireEvent.click(screen.getByRole('button', { name: /next page/i }));
 

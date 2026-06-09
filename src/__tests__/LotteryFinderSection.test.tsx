@@ -545,10 +545,13 @@ describe('LotteryFinderSection: never-vanish accumulator', () => {
     expect(screen.getByTitle(/Filter to AAPL only/i)).toHaveTextContent('1');
   });
 
-  it('does not duplicate a page-0-pinned chain on page > 0 when it demotes past PAGE_SIZE', () => {
-    // Pagination hole: page 0 renders the WHOLE union, so a chain pinned
-    // on page 0 that later demotes past the 50-row cut is also returned by
-    // the server on page 1. Without the dedup guard it shows on BOTH pages.
+  it('live mode renders the whole union on a single page with no pager (server total > PAGE_SIZE)', () => {
+    // The live (engaged) feed is a single never-vanish union that already
+    // renders everything on one page. Literal server pages never made sense
+    // there: page 0 rendered the whole union while pages ≥ 1 rendered a
+    // server slice that the page-0 union deduped away → phantom empty pages.
+    // The fix removes the pager entirely in engaged mode, so a server total
+    // above PAGE_SIZE no longer surfaces a pager (and no phantom pages).
     const pinned = makeFire({
       id: 1,
       optionChainId: 'AAPL260508C00200000',
@@ -556,44 +559,31 @@ describe('LotteryFinderSection: never-vanish accumulator', () => {
       strike: 200,
       triggerTimeCt: AM,
     });
-    const tail = makeFire({
-      id: 2,
-      optionChainId: 'TSLA260508C00250000',
-      underlyingSymbol: 'TSLA',
-      strike: 250,
-      triggerTimeCt: AM,
-    });
-    // total > PAGE_SIZE so the Next button renders. Page 0 returns the
-    // pinned chain (→ union); page 1 returns the SAME pinned chain
-    // (demoted) plus a genuine tail chain the server only serves on p1.
-    mockUseLotteryFinder.mockImplementation(({ page }: { page: number }) =>
-      page > 0
-        ? feedResult({
-            fires: [pinned, tail],
-            total: 100,
-            offset: 50,
-            hasMore: false,
-          })
-        : feedResult({ fires: [pinned], total: 100, hasMore: true }),
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 100, hasMore: true }),
     );
 
     render(<LotteryFinderSection marketOpen={true} />);
-    // Page 0: pinned chain visible.
+
+    // The union row renders ...
     expect(
       screen.getByTestId('lottery-row-AAPL260508C00200000'),
     ).toBeInTheDocument();
-
-    // Navigate to page 1.
-    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
-
-    // The demoted pinned chain must NOT re-render on page 1 (already shown
-    // via the page-0 union), but the genuine tail chain must be reachable.
+    // ... but no pager: no Next/Prev buttons, no "page X / Y" label, and no
+    // phantom empty / past-last-page states.
     expect(
-      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+      screen.queryByRole('button', { name: /next page/i }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByTestId('lottery-row-TSLA260508C00250000'),
-    ).toBeInTheDocument();
+      screen.queryByRole('button', { name: /previous page/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/page \d+ \/ \d+/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-all-filtered-empty'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('lottery-past-last-page'),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -782,11 +772,11 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
     ).toHaveLength(1);
   });
 
-  it('#3: union > serverTotal on the live page does not advertise an unreachable page', () => {
+  it('#3: union > serverTotal in live mode renders no pager at all', () => {
     // 60 distinct chains pinned in the union but the server reports total=10
-    // and hasMore=false. PAGE_SIZE is 50 → server reachable set is 1 page.
-    // The union renders all 60 on the live page (never-vanish) but the pager
-    // must read "page 1 / 1", NOT "/ 2" — totalPages is server-anchored.
+    // and hasMore=false. The live view is a single never-vanish page, so the
+    // pager is suppressed entirely — there is no "page X / Y" label and no
+    // Next button to advertise an (unreachable or otherwise) page.
     const fires = Array.from({ length: 60 }, (_, i) =>
       makeFire({
         id: i + 1,
@@ -802,13 +792,58 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
 
     render(<LotteryFinderSection marketOpen={true} />);
 
-    // total floors at the union length (60) for the "N fires" display, but
-    // the pager is server-anchored. With total(60) > PAGE_SIZE(50) the pager
-    // renders; it must read page 1 / 1 (ceil(10/50)=1), never 1 / 2.
-    expect(screen.getByText(/page 1 \/ 1/)).toBeInTheDocument();
-    expect(screen.queryByText(/page 1 \/ 2/)).not.toBeInTheDocument();
-    // The Next button is disabled because the server reports no more pages.
-    expect(screen.getByRole('button', { name: /next page/i })).toBeDisabled();
+    // Every pinned row renders (never-vanish) ...
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    // ... but no pager whatsoever in the engaged (live) view.
+    expect(screen.queryByText(/page \d+ \/ \d+/)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /next page/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('non-engaged (minute-scrub) view still paginates over the raw server slice', () => {
+    // Selecting a specific minute leaves the never-vanish union (the feed is
+    // not engaged) and renders the raw, server-paginated slice. There the
+    // pager is server-anchored and never buggy, so it must still appear when
+    // the server reports more than one page.
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: '2026-05-08T14:30:00Z',
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 60, hasMore: true }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    // Drive into a historical day so the full session of minute buckets is
+    // selectable regardless of wall-clock, then pick a minute. This flips
+    // `minute != null` → the feed disengages from the union.
+    fireEvent.change(screen.getByLabelText(/select trading day/i), {
+      target: { value: '2026-05-08' },
+    });
+    const minuteSelect = screen.getByLabelText(
+      /jump to a specific minute/i,
+    ) as HTMLSelectElement;
+    const firstMinute = Array.from(minuteSelect.options).find(
+      (o) => o.value !== '',
+    );
+    expect(firstMinute).toBeDefined();
+    fireEvent.change(minuteSelect, {
+      target: { value: firstMinute!.value },
+    });
+
+    // serverTotal(60) > PAGE_SIZE(50) → 2 reachable server pages, and the
+    // pager renders with a reachable Next.
+    expect(screen.getByText(/page 1 \/ 2/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /next page/i }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -1547,7 +1582,9 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
   });
 
   it('toggling takeitFloor while on page 2 resets the page to 0', () => {
-    // Seed the hook with hasMore=true so the "next page" button renders.
+    // Seed the hook with hasMore=true so the "next page" button renders. The
+    // pager only exists in the non-engaged (minute-scrub) view now, so drive
+    // into a historical day + minute pick before advancing the page.
     mockUseLotteryFinder.mockReturnValue(
       feedResult({
         fires: [makeFire({ id: 1, optionChainId: 'AAPL260508C00200000' })],
@@ -1557,6 +1594,19 @@ describe('LotteryFinderSection: TAKE-IT floor filter chip', () => {
     );
 
     render(<LotteryFinderSection marketOpen={false} />);
+
+    // Leave the live union: historical day, then pick a minute.
+    fireEvent.change(screen.getByLabelText(/select trading day/i), {
+      target: { value: '2026-05-08' },
+    });
+    const minuteSelect = screen.getByLabelText(
+      /jump to a specific minute/i,
+    ) as HTMLSelectElement;
+    const firstMinute = Array.from(minuteSelect.options).find(
+      (o) => o.value !== '',
+    );
+    expect(firstMinute).toBeDefined();
+    fireEvent.change(minuteSelect, { target: { value: firstMinute!.value } });
 
     // Advance to page 2 via the Next button.
     const nextBtn = screen.getByRole('button', { name: /next/i });
@@ -1779,6 +1829,20 @@ describe('LotteryFinderSection: pagination edge states', () => {
     );
 
     render(<LotteryFinderSection marketOpen={false} />);
+
+    // The pager only exists in the non-engaged (minute-scrub) view — drive
+    // into a historical day + minute pick so the pager renders.
+    fireEvent.change(screen.getByLabelText(/select trading day/i), {
+      target: { value: '2026-05-08' },
+    });
+    const minuteSelect = screen.getByLabelText(
+      /jump to a specific minute/i,
+    ) as HTMLSelectElement;
+    const firstMinute = Array.from(minuteSelect.options).find(
+      (o) => o.value !== '',
+    );
+    expect(firstMinute).toBeDefined();
+    fireEvent.change(minuteSelect, { target: { value: firstMinute!.value } });
 
     // Advance to page 2 via Next.
     fireEvent.click(screen.getByRole('button', { name: /next page/i }));
