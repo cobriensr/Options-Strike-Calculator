@@ -8,13 +8,16 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from exit_engine import config as cfg
-from exit_engine.carry_model import EOD_FEATURES, build_eod_decision_row, train_carry_model
+from exit_engine.carry_model import (
+    EOD_FEATURES,
+    build_eod_decision_row,
+    train_carry_model,
+)
 from exit_engine.dataset import assign_walkforward_folds
 
 N_TRAIN_DAYS = 20
@@ -42,7 +45,7 @@ def main() -> int:
                 fire_id=int(fid),
                 close_mid=float(close["mid"]),
                 next_session_forward_max=float(later["mid"].max()),
-                days_of_life_left=float(max(1, later["minutes_since_entry"].max() // SESSION_MIN)),
+                days_of_life_left=float(max(1, later["minute"].dt.tz_convert("America/Chicago").dt.normalize().nunique())),
                 close_vs_peak_pct=float(close["drawdown_from_peak_pct"]),
                 late_slope=float(close["slope_10m"]),
             ),

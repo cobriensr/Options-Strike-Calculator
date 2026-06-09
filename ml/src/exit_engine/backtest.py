@@ -2,7 +2,6 @@
 benchmark/leakage tables. Equal-weight per trade == real P&L at equal sizing."""
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from exit_engine.costs import apply_costs

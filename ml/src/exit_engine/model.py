@@ -1,7 +1,6 @@
 """XGBoost upside-remaining model + greedy stopping policy."""
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import xgboost as xgb
 
