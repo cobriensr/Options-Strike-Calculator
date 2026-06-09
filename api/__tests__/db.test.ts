@@ -32,6 +32,9 @@ import {
   formatSpotExposuresForClaude,
   getVixOhlcFromSnapshots,
   saveDarkPoolSnapshot,
+  withDbRetry,
+  isRetryableDbError,
+  TransientDbError,
 } from '../_lib/db.js';
 import type { GreekExposureRow, SpotExposureRow } from '../_lib/db.js';
 import { neon } from '@neondatabase/serverless';
@@ -2232,5 +2235,122 @@ describe('saveDarkPoolSnapshot', () => {
     });
 
     expect(id).toBeNull();
+  });
+
+  // ============================================================
+  // withDbRetry / isRetryableDbError / TransientDbError
+  // ============================================================
+  describe('isRetryableDbError', () => {
+    it('classifies a TransientDbError as retryable', () => {
+      const wrapped = new TransientDbError(new Error('db attempt timeout'));
+      expect(isRetryableDbError(wrapped)).toBe(true);
+    });
+
+    it('classifies a TransientDbError as retryable even with a benign message', () => {
+      // The wrapper preserves the cause message, which may not match the
+      // regex — the instanceof check must still win.
+      const wrapped = new TransientDbError(new Error('whatever'));
+      expect(isRetryableDbError(wrapped)).toBe(true);
+    });
+
+    it('matches a raw transient signature on a plain Error', () => {
+      expect(isRetryableDbError(new Error('fetch failed'))).toBe(true);
+      expect(isRetryableDbError(new Error('db attempt timeout'))).toBe(true);
+    });
+
+    it('does NOT match a genuine non-transient error', () => {
+      expect(isRetryableDbError(new Error('syntax error at or near'))).toBe(
+        false,
+      );
+    });
+
+    it('returns false for a non-Error value', () => {
+      expect(isRetryableDbError('nope')).toBe(false);
+      expect(isRetryableDbError(null)).toBe(false);
+    });
+  });
+
+  describe('TransientDbError', () => {
+    it('is an Error subclass that preserves the cause message', () => {
+      const cause = new Error('db attempt timeout');
+      const err = new TransientDbError(cause);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.name).toBe('TransientDbError');
+      expect(err.message).toBe('db attempt timeout');
+      expect(err.cause).toBe(cause);
+    });
+
+    it('stringifies a non-Error cause for its message', () => {
+      const err = new TransientDbError('raw string boom');
+      expect(err.message).toBe('raw string boom');
+    });
+  });
+
+  describe('withDbRetry', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /**
+     * Pump fake timers so the backoff sleeps resolve, while the rejection
+     * handler is already attached to the promise — otherwise the rejection
+     * surfaces as an unhandled rejection before `.rejects` can catch it.
+     */
+    async function pump<T>(p: Promise<T>): Promise<T> {
+      const settled = p.then(
+        (v) => ({ ok: true as const, v }),
+        (e: unknown) => ({ ok: false as const, e }),
+      );
+      await vi.runAllTimersAsync();
+      const r = await settled;
+      if (!r.ok) throw r.e;
+      return r.v;
+    }
+
+    it('returns the result on the first successful attempt', async () => {
+      const fn = vi.fn().mockResolvedValue('ok');
+      const result = await pump(withDbRetry(fn, 2));
+      expect(result).toBe('ok');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws TransientDbError after exhausting retries on a retryable error', async () => {
+      const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
+      await expect(pump(withDbRetry(fn, 2))).rejects.toBeInstanceOf(
+        TransientDbError,
+      );
+      // initial attempt + 2 retries = 3 calls
+      expect(fn).toHaveBeenCalledTimes(3);
+    });
+
+    it('preserves the original message on the thrown TransientDbError', async () => {
+      const fn = vi.fn().mockRejectedValue(new Error('db attempt timeout'));
+      await expect(pump(withDbRetry(fn, 1))).rejects.toMatchObject({
+        name: 'TransientDbError',
+        message: 'db attempt timeout',
+      });
+    });
+
+    it('throws the raw error (NOT wrapped) on a non-retryable error', async () => {
+      const raw = new Error('syntax error at or near "FOO"');
+      const fn = vi.fn().mockRejectedValue(raw);
+      await expect(pump(withDbRetry(fn, 2))).rejects.toBe(raw);
+      // Non-retryable bails immediately — no retries.
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('recovers on a later attempt without throwing', async () => {
+      const fn = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('fetch failed'))
+        .mockResolvedValueOnce('recovered');
+      const result = await pump(withDbRetry(fn, 2));
+      expect(result).toBe('recovered');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
   });
 });

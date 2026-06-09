@@ -26,6 +26,7 @@ export function mockResponse(): VercelResponse & {
   _body: string;
   _contentType: string;
   _chunks: string[];
+  headersSent: boolean;
 } {
   const res = {
     _status: 200,
@@ -36,6 +37,9 @@ export function mockResponse(): VercelResponse & {
     _body: '',
     _contentType: '',
     _chunks: [] as string[],
+    // Real Node responses flip this to true once the head has been
+    // flushed. Tests that exercise the double-write guard set it manually.
+    headersSent: false,
     // Real Vercel response sets `statusCode` when `status()` is called
     // (it's an Express-compatible setter). Mirror that so wrappers that
     // read `res.statusCode` directly behave the same in tests.

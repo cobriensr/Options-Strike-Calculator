@@ -14,7 +14,7 @@
 
 import type { VercelResponse } from '@vercel/node';
 
-import { isRetryableDbError } from './db.js';
+import { TransientDbError } from './db.js';
 import logger from './logger.js';
 import { Sentry, metrics } from './sentry.js';
 
@@ -41,15 +41,19 @@ export function sendDbErrorResponse(
 ): void {
   const { label, serverErrorBody } = opts;
 
-  if (isRetryableDbError(err)) {
-    res.setHeader('Retry-After', '5');
-    res.status(503).json({ error: 'temporarily unavailable', transient: true });
+  // Telemetry runs BEFORE any response write so it fires even when the
+  // response was already partially committed (headersSent guard below).
+  if (err instanceof TransientDbError) {
     logger.warn({ err }, `${label} transient db timeout`);
     metrics.increment(`${label}.db_timeout`);
+    if (!res.headersSent) {
+      res.setHeader('Retry-After', '5');
+      res.status(503).json({ error: 'temporarily unavailable', transient: true });
+    }
     return;
   }
 
   Sentry.captureException(err);
   logger.error({ err }, `${label} failed`);
-  res.status(500).json(serverErrorBody);
+  if (!res.headersSent) res.status(500).json(serverErrorBody);
 }

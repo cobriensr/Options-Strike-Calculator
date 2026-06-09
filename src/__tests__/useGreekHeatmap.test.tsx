@@ -22,8 +22,13 @@ import { useGreekHeatmap } from '../hooks/useGreekHeatmap';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 
 const mockFetch = vi.fn();
+const TRANSIENT_STATUSES = new Set([502, 503, 504]);
 vi.mock('../utils/fetchWithRetry', () => ({
   fetchWithRetry: (...args: unknown[]) => mockFetch(...args),
+  // The hook now derives its transient flag from this classifier; the real
+  // implementation (502/503/504) is trivial, so mirror it rather than
+  // importOriginal — keeps the mock self-contained.
+  isTransientHttpStatus: (status: number) => TRANSIENT_STATUSES.has(status),
 }));
 
 // Mock the Sentry helper so we can assert the hook reports backend
@@ -187,6 +192,94 @@ describe('useGreekHeatmap', () => {
     expect(result.current.transient).toBe(true);
     // stale is false because there is no last-good data to fall back on.
     expect(result.current.stale).toBe(false);
+  });
+
+  it('502 response (gateway hiccup) flags transient', async () => {
+    mockFetch.mockResolvedValue(new Response('bad gw', { status: 502 }));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('HTTP 502');
+    expect(result.current.transient).toBe(true);
+  });
+
+  it('504 response (gateway timeout) flags transient', async () => {
+    mockFetch.mockResolvedValue(new Response('gw timeout', { status: 504 }));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('HTTP 504');
+    expect(result.current.transient).toBe(true);
+  });
+
+  it('escalates to a hard error after >4 consecutive transient failures', async () => {
+    // Sustained outage: 5 consecutive 503 polls. The first four keep the
+    // soft transient flag; the fifth (count = 5 > MAX_TRANSIENT_RETRIES = 4)
+    // flips transient back to false so the UI shows the hard error card.
+    mockFetch.mockResolvedValue(new Response('busy', { status: 503 }));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    // Failure #1 (mount fetch).
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.transient).toBe(true);
+
+    // Failures #2, #3, #4 — still soft.
+    for (let i = 2; i <= 4; i++) {
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.transient).toBe(true);
+    }
+
+    // Failure #5 — count exceeds MAX_TRANSIENT_RETRIES → escalate (hard).
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() => expect(result.current.error).toBe('HTTP 503'));
+    expect(result.current.transient).toBe(false);
+  });
+
+  it('a success between transient failures resets the escalation counter', async () => {
+    // 4 transient failures, then a success (resets the counter), then 4
+    // more transient failures must STILL be soft — the counter restarted,
+    // so we have not exceeded MAX_TRANSIENT_RETRIES.
+    mockFetch.mockResolvedValue(new Response('busy', { status: 503 }));
+    const { result } = renderHook(() =>
+      useGreekHeatmap({ ticker: 'SPY', enabled: false }),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    for (let i = 2; i <= 4; i++) {
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(result.current.loading).toBe(false));
+    }
+    expect(result.current.transient).toBe(true);
+
+    // Success resets the counter.
+    mockFetch.mockResolvedValueOnce(okResponse(HAPPY_RESPONSE));
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() => expect(result.current.data?.ticker).toBe('SPY'));
+
+    // 4 more transient failures — counter restarted, so still soft.
+    mockFetch.mockResolvedValue(new Response('busy', { status: 503 }));
+    for (let i = 1; i <= 4; i++) {
+      await act(async () => {
+        result.current.refresh();
+      });
+      await waitFor(() => expect(result.current.error).toBe('HTTP 503'));
+    }
+    expect(result.current.transient).toBe(true);
   });
 
   it('500 response sets error with transient false', async () => {

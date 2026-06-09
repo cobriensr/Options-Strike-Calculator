@@ -12,7 +12,7 @@
  *
  * Phase 4 of docs/superpowers/specs/opening-flow-signal-historical-persistence-2026-05-19.md
  */
-import { getDb } from './db.js';
+import { getDb, withDbRetry } from './db.js';
 import { etWallClockToUtcIso } from '../../src/utils/timezone.js';
 import {
   InvalidTradingDateError,
@@ -87,20 +87,24 @@ export async function readOpeningFlowSnapshot(
   }
 
   const sql = getDb();
-  const rows = (await sql`
-    SELECT
-      date,
-      ticker,
-      window_status,
-      slice1,
-      slice2,
-      signal,
-      as_of_utc,
-      stop_pct,
-      exit_minutes_from_entry
-    FROM opening_flow_signals
-    WHERE date = ${date}::date
-  `) as OpeningFlowSignalRow[];
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT
+        date,
+        ticker,
+        window_status,
+        slice1,
+        slice2,
+        signal,
+        as_of_utc,
+        stop_pct,
+        exit_minutes_from_entry
+      FROM opening_flow_signals
+      WHERE date = ${date}::date
+    `,
+    2,
+    10000,
+  )) as OpeningFlowSignalRow[];
 
   if (rows.length === 0) return null;
 

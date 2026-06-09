@@ -8,8 +8,22 @@ vi.mock('../_lib/db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../_lib/db.js')>();
   return {
     getDb: vi.fn(() => mockSql),
-    withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-    // Real classifier — drives sendDbErrorResponse's transient/500 split.
+    // Faithful (no-backoff) stand-in for withDbRetry: skip the retry
+    // sleeps but still wrap an exhausted retryable failure in a real
+    // TransientDbError, exactly as production does — that wrapper is what
+    // sendDbErrorResponse classifies as transient (503).
+    withDbRetry: async <T>(fn: () => Promise<T>): Promise<T> => {
+      try {
+        return await fn();
+      } catch (err) {
+        if (actual.isRetryableDbError(err)) {
+          throw new actual.TransientDbError(err);
+        }
+        throw err;
+      }
+    },
+    // Real class + classifier — drive the transient/500 split.
+    TransientDbError: actual.TransientDbError,
     isRetryableDbError: actual.isRetryableDbError,
   };
 });

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchWithRetry } from '../../utils/fetchWithRetry';
+import {
+  fetchWithRetry,
+  isTransientHttpStatus,
+} from '../../utils/fetchWithRetry';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -72,19 +75,16 @@ describe('fetchWithRetry', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
-  it('retries on 503 and succeeds on third attempt', async () => {
-    mockFetch
-      .mockResolvedValueOnce(mockResponse(503))
-      .mockResolvedValueOnce(mockResponse(503))
-      .mockResolvedValueOnce(mockResponse(200, { ok: true }));
+  it('does NOT retry on 503 (deliberate soft-degrade signal) — returns immediately', async () => {
+    // 503 from our API means "the server already retried via withDbRetry;
+    // back off". The client must not hammer it — the caller's own poll
+    // cadence is the retry. So the 503 returns on the first attempt.
+    mockFetch.mockResolvedValue(mockResponse(503));
 
-    const promise = fetchWithRetry('/api/test', { maxRetries: 2 });
-    await vi.advanceTimersByTimeAsync(1500); // 1st retry after 1s
-    await vi.advanceTimersByTimeAsync(2500); // 2nd retry after 2s
-    const res = await promise;
+    const res = await fetchWithRetry('/api/test', { maxRetries: 2 });
 
-    expect(res.status).toBe(200);
-    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect(res.status).toBe(503);
+    expect(mockFetch).toHaveBeenCalledOnce();
   });
 
   it('returns last error response after exhausting retries', async () => {
@@ -171,14 +171,30 @@ describe('fetchWithRetry', () => {
   });
 
   it('defaults to maxRetries=2 when not specified', async () => {
-    mockFetch.mockResolvedValue(mockResponse(503));
+    // Use 502 (a still-retryable status) to exercise the default retry
+    // count — 503 is no longer retried.
+    mockFetch.mockResolvedValue(mockResponse(502));
 
     const promise = fetchWithRetry('/api/test');
     await vi.advanceTimersByTimeAsync(1500);
     await vi.advanceTimersByTimeAsync(2500);
     const res = await promise;
 
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(502);
     expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('isTransientHttpStatus', () => {
+  it('classifies 502, 503, 504 as transient', () => {
+    expect(isTransientHttpStatus(502)).toBe(true);
+    expect(isTransientHttpStatus(503)).toBe(true);
+    expect(isTransientHttpStatus(504)).toBe(true);
+  });
+
+  it('classifies non-transient statuses as false', () => {
+    for (const status of [200, 400, 401, 429, 500, 501]) {
+      expect(isTransientHttpStatus(status)).toBe(false);
+    }
   });
 });

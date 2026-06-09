@@ -118,7 +118,26 @@ export async function safeDbVoid(op: () => Promise<void>): Promise<void> {
 const DB_RETRYABLE_RX =
   /timeout|ECONNREFUSED|ECONNRESET|ENETUNREACH|ENOTFOUND|fetch failed|socket hang up|TLS connection|EAI_AGAIN|recovery_mode|server_login_retry|Too many connections|connection closed|server conn crashed/i;
 
+/**
+ * Thrown by withDbRetry when it exhausts retries on a transient (retryable)
+ * DB error. A typed marker so HTTP handlers can distinguish a real Neon blip
+ * from a genuine bug whose message happens to contain a transient token.
+ */
+export class TransientDbError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = 'TransientDbError';
+    this.cause = cause;
+  }
+}
+
 export function isRetryableDbError(err: unknown): boolean {
+  // A TransientDbError is, by construction, a retry-exhausted transient
+  // failure. Classify it as retryable so nested withDbRetry layers and
+  // lottery-finder's degradeOnTimeout still treat a re-thrown wrapper as
+  // transient. Must precede the `instanceof Error` check below since the
+  // wrapper preserves the original message (which may or may not match the rx).
+  if (err instanceof TransientDbError) return true;
   if (!(err instanceof Error)) return false;
   // NeonDbError wraps the underlying network failure on `sourceError`.
   // Inspect both layers so a `TypeError: fetch failed` cause matches
@@ -153,7 +172,8 @@ export async function withDbRetry<T>(
         ),
       ]);
     } catch (err) {
-      if (attempt === retries || !isRetryableDbError(err)) throw err;
+      if (!isRetryableDbError(err)) throw err; // genuine error → raw
+      if (attempt === retries) throw new TransientDbError(err); // exhausted transient
       await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
     }
   }

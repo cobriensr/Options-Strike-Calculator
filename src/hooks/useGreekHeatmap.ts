@@ -19,10 +19,34 @@ import { z } from 'zod';
 
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
-import { fetchWithRetry } from '../utils/fetchWithRetry';
+import {
+  fetchWithRetry,
+  isTransientHttpStatus,
+} from '../utils/fetchWithRetry';
 import { usePolling } from './usePolling';
 
 const POLL_INTERVAL_MS = 30_000;
+
+/**
+ * Carries the HTTP status from the not-ok branch to the catch so we can
+ * derive the transient flag from the actual status (robust to message
+ * reformat, and covers 502/504 as well as 503) instead of string-matching
+ * the error message.
+ */
+class HttpError extends Error {
+  constructor(public status: number) {
+    super(`HTTP ${status}`);
+    this.name = 'HttpError';
+  }
+}
+
+/**
+ * After this many CONSECUTIVE transient failures (~2 min at the 30s poll),
+ * stop reporting the soft "Reconnecting" state and let the UI escalate to
+ * the hard error card — a sustained outage is no longer a blip. Reset to 0
+ * on any success or non-transient outcome.
+ */
+const MAX_TRANSIENT_RETRIES = 4;
 
 // Single source of truth for the dealer-gamma regime literals: the Zod
 // enum below derives from this, and so (via `z.infer`) does the exported
@@ -110,11 +134,15 @@ interface State {
   loading: boolean;
   error: string | null;
   /**
-   * True when the most recent failure was a transient server degrade
-   * (HTTP 503 — `/api/greek-heatmap` returns this on a retryable Neon
-   * timeout). Lets the UI show a soft "Reconnecting" placeholder on
-   * first-load instead of the hard rose error card. Reset to false on
-   * success and on every non-503 failure (network, generic HTTP, Zod).
+   * True when the most recent failure was a transient server state
+   * (HTTP 502/503/504 — `/api/greek-heatmap` returns 503 on a retryable
+   * Neon timeout; 502/504 are gateway hiccups). Lets the UI show a soft
+   * "Reconnecting" placeholder on first-load instead of the hard rose
+   * error card. Derived from the response status (not the error message)
+   * AND gated by a consecutive-transient counter: once more than
+   * MAX_TRANSIENT_RETRIES failures stack up, this flips back to false so a
+   * sustained outage escalates to the hard error card. Reset to false on
+   * success and on every non-transient failure (network, generic HTTP, Zod).
    */
   transient: boolean;
 }
@@ -149,6 +177,10 @@ export function useGreekHeatmap({
   const [state, setState] = useState<State>(INITIAL_STATE);
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
+  // Count of consecutive transient (502/503/504) failures. Incremented on
+  // each transient failure, reset to 0 on success or any non-transient
+  // outcome. Drives the MAX_TRANSIENT_RETRIES escalation gate below.
+  const transientCountRef = useRef(0);
 
   // Track unmount so the catch block can distinguish "aborted because
   // the component is gone" (silent return is correct) from "aborted
@@ -175,7 +207,7 @@ export function useGreekHeatmap({
         signal: ctrl.signal,
         maxRetries: 2,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new HttpError(res.status);
       const json: unknown = await res.json();
       if (ctrl.signal.aborted) return;
       const parsed = greekHeatmapResponseSchema.safeParse(json);
@@ -197,6 +229,9 @@ export function useGreekHeatmap({
             },
           },
         );
+        // A schema failure is a genuine (non-transient) outcome — reset the
+        // consecutive-transient counter so a later real blip starts fresh.
+        transientCountRef.current = 0;
         setState((s) => ({
           data: s.data,
           loading: false,
@@ -205,6 +240,8 @@ export function useGreekHeatmap({
         }));
         return;
       }
+      // Success — clear the consecutive-transient counter.
+      transientCountRef.current = 0;
       setState({
         data: parsed.data,
         loading: false,
@@ -225,13 +262,29 @@ export function useGreekHeatmap({
       if (ctrl.signal.aborted) return;
       if (!mountedRef.current) return;
       const msg = getErrorMessage(err);
-      // A 503 from `/api/greek-heatmap` signals a transient server degrade
-      // (retryable Neon timeout) — flag it so the UI shows a soft,
-      // auto-retrying placeholder on first-load instead of the hard error
-      // card. Every other failure (network, generic HTTP, abort-fallthrough)
-      // is non-transient. The Zod-failure path returns before reaching this
-      // catch, so it stays non-transient (handled above).
-      const transient = msg === 'HTTP 503';
+      // Derive transient from the HTTP status carried on HttpError (502/503/
+      // 504 — 503 is the endpoint's retryable-Neon-timeout soft degrade,
+      // 502/504 are gateway hiccups). Status-derived rather than message-
+      // matched, so it's robust to message reformat and covers all three
+      // codes. Network errors and abort-fallthrough are non-transient; the
+      // Zod-failure path returns before reaching this catch (handled above).
+      const statusTransient =
+        err instanceof HttpError && isTransientHttpStatus(err.status);
+      // Maintain the consecutive-transient counter. Increment BEFORE
+      // computing the stored flag so the escalation gate sees this failure;
+      // reset on any non-transient failure so a sustained-outage count can't
+      // be inflated by interleaved network errors.
+      if (statusTransient) {
+        transientCountRef.current += 1;
+      } else {
+        transientCountRef.current = 0;
+      }
+      // Escalation gate: after more than MAX_TRANSIENT_RETRIES consecutive
+      // transient failures (~2 min at the 30s poll), report transient=false
+      // so the UI swaps the soft "Reconnecting" placeholder for the hard
+      // error card — a sustained outage is no longer a blip.
+      const transient =
+        statusTransient && transientCountRef.current <= MAX_TRANSIENT_RETRIES;
       // Preserve last-good data on a transient error so one failed poll
       // doesn't blank the live grid (flicker-to-blank). Only set
       // `data: null` when there was no prior data to keep. Always

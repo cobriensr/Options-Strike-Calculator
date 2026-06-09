@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { withDbRetry, isRetryableDbError } from '../_lib/db.js';
+import { withDbRetry, isRetryableDbError, TransientDbError } from '../_lib/db.js';
 import { DB_RETRY_ATTEMPTS } from '../_lib/constants.js';
 
 beforeEach(() => {
@@ -152,7 +152,7 @@ describe('withDbRetry', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves the original error when retries are exhausted', async () => {
+  it('wraps the exhausted transient error in TransientDbError, preserving the cause', async () => {
     const original = transientError();
     const fn = vi.fn(async () => {
       throw original;
@@ -165,8 +165,12 @@ describe('withDbRetry', () => {
     await vi.advanceTimersByTimeAsync(1100);
     await promise;
 
-    // Same error instance bubbles up — caller's try/catch sees the
-    // root cause, not a wrapper.
-    expect(caught).toBe(original);
+    // A retryable error that exhausts its retries is now rethrown as a
+    // typed TransientDbError so HTTP handlers can distinguish a real Neon
+    // blip from a genuine bug. The original error is preserved on `.cause`
+    // and its message is forwarded, so caller logging/triage is unchanged.
+    expect(caught).toBeInstanceOf(TransientDbError);
+    expect((caught as TransientDbError).cause).toBe(original);
+    expect((caught as Error).message).toBe(original.message);
   });
 });
