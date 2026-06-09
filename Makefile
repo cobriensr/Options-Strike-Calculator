@@ -63,7 +63,7 @@ DATE        ?= $(lastword $(PENDING_DATES))
 
 CSV_PATH    := $(INPUT_DIR)/bot-eod-report-$(DATE).csv
 
-.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback takeit-drift takeit-backfill
+.PHONY: help nightly nightly-one nightly-resume analyze ingest plots backfill-flow enrich refit update tune check dry-run clean download-fulltape ingest-fulltape version takeit-rollback takeit-drift takeit-backfill py-test-cov
 
 help:
 	@echo "EOD options-flow pipeline targets:"
@@ -94,6 +94,8 @@ help:
 	@echo "                                not nightly — same dataset every night doesn't move the answer."
 	@echo "  make dry-run                  Run analyze + ingest --dry-run + plots"
 	@echo "  make check                    Sanity-check date detection and env"
+	@echo "  make py-test-cov              Run all 4 Python suites with coverage,"
+	@echo "                                fail-fast (ml, sidecar, classifier, uw-stream)"
 	@echo ""
 	@echo "Detected:"
 	@echo "  DATE       = $(DATE)"
@@ -556,3 +558,39 @@ takeit-backfill:
 	@set -a && source $(ENV_FILE) && set +a && \
 		FEED=$(FEED) SINCE=$(SINCE) LIMIT=$(LIMIT) \
 		npx tsx scripts/backfill-takeit-scores.mjs
+
+# Python test coverage — fan out across all four Python projects (fail-fast).
+# The `npm run test:coverage` analogue for the Python side. Each project has its
+# own .venv and its own pytest config, so this cd's into each and uses that
+# project's interpreter. Because Make 3.81 ignores .ONESHELL, every recipe line
+# runs in its own `-eu -o pipefail` shell — so the FIRST project whose tests or
+# coverage gate fail aborts the whole target (fail-fast, no extra plumbing).
+#
+#   ml / sidecar  delegate to each project's own `test-cov` target so the
+#                 coverage flags stay single-sourced in the sub-Makefile.
+#   classifier    bare pytest — --cov=src --cov-fail-under=95 --cov-branch is
+#                 baked into [tool.pytest.ini_options] addopts in pyproject.toml.
+#   uw-stream     no Makefile and no cov in addopts, so the flags are passed here.
+py-test-cov:
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  PY-TEST-COV 1/4 — ml"
+	@echo "════════════════════════════════════════════════════════════════"
+	$(MAKE) --no-print-directory -C ml test-cov
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  PY-TEST-COV 2/4 — sidecar"
+	@echo "════════════════════════════════════════════════════════════════"
+	$(MAKE) --no-print-directory -C sidecar test-cov
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  PY-TEST-COV 3/4 — classifier  (--cov-fail-under=95 gate via pyproject)"
+	@echo "════════════════════════════════════════════════════════════════"
+	cd classifier && .venv/bin/python -m pytest
+	@echo ""
+	@echo "════════════════════════════════════════════════════════════════"
+	@echo "  PY-TEST-COV 4/4 — uw-stream"
+	@echo "════════════════════════════════════════════════════════════════"
+	cd uw-stream && .venv/bin/python -m pytest tests/ --cov=src --cov-report=term-missing
+	@echo ""
+	@echo "  ✅ all four Python suites passed with coverage"
