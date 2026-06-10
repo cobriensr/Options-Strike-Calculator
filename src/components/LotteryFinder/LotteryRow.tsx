@@ -985,7 +985,7 @@ export const LotteryRow = memo(function LotteryRow({
             latest fire is within the last 10 minutes. Polling refresh
             (~30s) keeps this honest without per-row timers. */}
         {marketOpen &&
-          Date.now() - new Date(fire.triggerTimeCt).getTime() < 10 * 60_000 && (
+          nowMs - new Date(fire.triggerTimeCt).getTime() < 10 * 60_000 && (
             <span
               className="inline-flex items-center gap-1 rounded border border-red-500/50 bg-red-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200"
               title="Latest fire on this chain was within the last 10 minutes — chain is still hot."
@@ -1115,7 +1115,7 @@ export const LotteryRow = memo(function LotteryRow({
         <span title="Underlying spot at the moment this fire triggered (frozen snapshot — does not track intraday drift).">
           spot{' '}
           <span className="font-mono text-neutral-300">
-            {(fireSpot ?? fire.entry.spotAtFirst).toFixed(2)}
+            {fireSpot != null ? fireSpot.toFixed(2) : '—'}
           </span>
         </span>
         {otmPct != null && (

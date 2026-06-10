@@ -909,6 +909,15 @@ export function SilentBoomSection({
     hideCounterFlow,
     moneynessMode,
   ]);
+  // Rows on the current server page that client-only filters (bucket
+  // scrub, ghosts, gated, counter-flow, moneyness) hid. This is exactly
+  // the amount the "showing N of M" denominator was over-counting: the
+  // server `total` includes rows the active client filter removes, so
+  // without subtracting this the header claims to be "showing" fewer
+  // than the denominator implies are present. Surfaced as a separate
+  // "(K hidden by filters)" note so the denominator stays the honest
+  // day total while the gap is explained.
+  const clientHiddenCount = alerts.length - displayedAlerts.length;
   // Per-filter hidden counts — computed against the unfiltered set
   // so each chip's "−N" count reflects what THAT filter is hiding,
   // independent of any other active filter. (hideLatePm moved
@@ -1757,7 +1766,15 @@ export function SilentBoomSection({
                     {total} alert{total === 1 ? '' : 's'} for {date}
                     {total > 0 && (
                       <span className="ml-2 text-neutral-600">
-                        showing {displayedAlerts.length} of {total}
+                        showing {displayedAlerts.length} of {total} for the day
+                      </span>
+                    )}
+                    {clientHiddenCount > 0 && (
+                      <span
+                        className="ml-2 text-neutral-600"
+                        title="Rows on the current page removed by client-side filter chips (bucket scrub, hide-ghosts, hide-gated, hide-counter-flow, moneyness). They still count toward the day total above."
+                      >
+                        ({clientHiddenCount} hidden by filters)
                       </span>
                     )}
                   </>
@@ -1878,7 +1895,7 @@ export function SilentBoomSection({
                 {bucketIso != null
                   ? `No alerts in this 5-min bucket. Step to a different bucket or click All day.`
                   : `All ${alerts.length} alert${alerts.length === 1 ? '' : 's'} on this page were hidden by active filter chips. ${
-                      hasMore
+                      isHistorical && hasMore
                         ? 'Try Next to skip to the next server page, or'
                         : 'Try'
                     } relaxing a filter (TAKE-IT floor, hide-* toggles, moneyness, etc.).`}

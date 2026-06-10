@@ -210,6 +210,35 @@ describe('useNeverVanishFeed', () => {
     expect(result.current.rows.map((r) => r.id)).toEqual(['a']);
   });
 
+  it('FIX 4: exposes pinnedCount (all-day "seen today") stable across the engaged boundary', () => {
+    const a: Row = { id: 'a', sym: 'AAPL', pct: 1 };
+    const b: Row = { id: 'b', sym: 'TSLA', pct: 2 };
+    const { result, rerender } = renderHook(
+      ({ engaged, fetched, serverTotal }) =>
+        useNeverVanishFeed<Row>({
+          fetched,
+          engaged,
+          storageKey: 'feed-union:t:2026-06-07:sig',
+          key: keyFn,
+          getSymbol: symFn,
+          serverTotal,
+          hasMore: false,
+          pageSize: PAGE_SIZE,
+        }),
+      { initialProps: { engaged: true, fetched: [a, b], serverTotal: 2 } },
+    );
+    // Engaged: both pinned → pinnedCount 2, and total floors at it.
+    expect(result.current.pinnedCount).toBe(2);
+    expect(result.current.total).toBe(2);
+
+    // Disengaged paged view: server reports only 1 reachable row; `total`
+    // collapses to serverTotal but `pinnedCount` stays at the all-day union
+    // size so the UI can still label "2 seen today".
+    rerender({ engaged: false, fetched: [a], serverTotal: 1 });
+    expect(result.current.total).toBe(1);
+    expect(result.current.pinnedCount).toBe(2);
+  });
+
   it('exposes unionKeys for caller-side dedup', () => {
     const { result } = renderHook(() =>
       useNeverVanishFeed<Row>({

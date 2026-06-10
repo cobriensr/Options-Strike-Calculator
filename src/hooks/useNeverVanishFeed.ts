@@ -91,6 +91,21 @@ export interface UseNeverVanishFeedResult<T> {
   rows: T[];
   /** Engaged → max(serverTotal, union length); disengaged → serverTotal. */
   total: number;
+  /**
+   * FIX 4 — the never-vanish union size ("seen today"), exposed separately so
+   * the UI can label the engaged count distinctly from the paginated
+   * `serverTotal`. The engaged `total` floors at this value, so on the
+   * engaged→disengaged transition the headline number can visibly collapse
+   * from `pinnedCount` (rows pinned across the day, including ones the server
+   * has since dropped) down to `serverTotal` (what paging can reproduce).
+   * That collapse is BY DESIGN — disengaged views are point-in-time / offset
+   * slices that can't reconstruct the all-day pinned set. Surfacing
+   * `pinnedCount` lets the caller label the engaged figure "N seen today"
+   * rather than presenting it as a paginable total and confusing the user
+   * when it shrinks. Always the union length, regardless of `engaged`, so the
+   * label stays stable across the boundary; `0` when no rows are pinned.
+   */
+  pinnedCount: number;
   /** SERVER-anchored: ceil(serverTotal / pageSize). Never inflated by union. */
   totalPages: number;
   /** Server's reachable-more flag, surfaced for the Next gate. */
@@ -176,5 +191,18 @@ export function useNeverVanishFeed<T>(
     }));
   }, [engaged, union, getSymbol, serverTickerCounts]);
 
-  return { rows, total, totalPages, hasMore, tickerCounts, unionKeys };
+  // The all-day pinned set size — stable across the engaged/disengaged
+  // boundary (always the persisted union length), so the caller can label it
+  // "N seen today" rather than conflating it with the paginable `serverTotal`.
+  const pinnedCount = union.length;
+
+  return {
+    rows,
+    total,
+    pinnedCount,
+    totalPages,
+    hasMore,
+    tickerCounts,
+    unionKeys,
+  };
 }

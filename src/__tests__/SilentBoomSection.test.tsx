@@ -1597,6 +1597,55 @@ describe('SilentBoomSection: pagination edge states', () => {
     expect(screen.queryAllByTestId(/^silent-boom-row-/)).toHaveLength(0);
   });
 
+  it('does NOT suggest "Try Next" in the live (engaged) view even when hasMore is true (no pager there)', () => {
+    // Live view: today's date, page 0 → the pager is suppressed (it only
+    // renders in the historical full-day view). hasMore=true must NOT
+    // produce "Try Next" copy pointing at a non-existent Next button.
+    const alerts = Array.from({ length: 4 }, (_, i) =>
+      makeAlert({
+        id: i + 1,
+        optionChainId: `LIVE-HIDDEN-${i}`,
+        baselineVolume: 10,
+        spikeRatio: 200,
+      }),
+    );
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts, total: 4, hasMore: true }),
+    );
+
+    render(<SilentBoomSection marketOpen />);
+    fireEvent.click(screen.getByText(/hide ghosts/i));
+
+    const empty = screen.getByTestId('silent-boom-all-filtered-empty');
+    expect(empty).toBeInTheDocument();
+    expect(empty).not.toHaveTextContent(/Try Next/);
+    expect(empty).toHaveTextContent(/relaxing a filter/);
+  });
+
+  it('DOES suggest "Try Next" in the historical view when hasMore is true (pager exists)', () => {
+    const alerts = Array.from({ length: 4 }, (_, i) =>
+      makeAlert({
+        id: i + 1,
+        optionChainId: `HIST-HIDDEN-${i}`,
+        baselineVolume: 10,
+        spikeRatio: 200,
+      }),
+    );
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts, total: 100, hasMore: true }),
+    );
+
+    render(<SilentBoomSection marketOpen={false} />);
+    // Switch to a past day so the historical pager path is active.
+    fireEvent.change(screen.getByLabelText(/select trading day/i), {
+      target: { value: '2026-05-08' },
+    });
+    fireEvent.click(screen.getByText(/hide ghosts/i));
+
+    const empty = screen.getByTestId('silent-boom-all-filtered-empty');
+    expect(empty).toHaveTextContent(/Try Next/);
+  });
+
   it('renders "showing N of M" with the post-client-filter visible count, not the server slice size', () => {
     // 3 server alerts; 2 are ghost prints (stripped by hideGhosts when
     // active), 1 has a healthy baseline. Visible count should be 1 of 3.
@@ -1627,7 +1676,30 @@ describe('SilentBoomSection: pagination edge states', () => {
     render(<SilentBoomSection marketOpen={false} />);
     fireEvent.click(screen.getByText(/hide ghosts/i));
 
-    expect(screen.getByText(/showing 1 of 3/)).toBeInTheDocument();
+    // Numerator = post-client-filter visible (1). Denominator stays the
+    // honest day total (3) and is now labeled "for the day".
+    expect(screen.getByText(/showing 1 of 3 for the day/)).toBeInTheDocument();
+    // The 2 rows the client filter hid are reconciled in a separate note
+    // so the denominator no longer silently over-counts.
+    expect(screen.getByText(/\(2 hidden by filters\)/)).toBeInTheDocument();
+  });
+
+  it('omits the "hidden by filters" note when no client filter is hiding rows (denominator is coherent)', () => {
+    // 3 healthy alerts, no client filter active → visible == server slice
+    // == 3, and no reconciliation note is shown.
+    const alerts = [
+      makeAlert({ id: 1, optionChainId: 'H1', baselineVolume: 500 }),
+      makeAlert({ id: 2, optionChainId: 'H2', baselineVolume: 500 }),
+      makeAlert({ id: 3, optionChainId: 'H3', baselineVolume: 500 }),
+    ];
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts, total: 3, hasMore: false }),
+    );
+
+    render(<SilentBoomSection marketOpen={false} />);
+
+    expect(screen.getByText(/showing 3 of 3 for the day/)).toBeInTheDocument();
+    expect(screen.queryByText(/hidden by filters/)).not.toBeInTheDocument();
   });
 
   it('shows the past-last-page recovery when server returns 0 alerts on page > 0 and clicking back returns to the previous page', () => {

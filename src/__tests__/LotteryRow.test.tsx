@@ -17,12 +17,17 @@ import type {
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
-const { mockUseContractTape, mockUseNetFlowHistory, mockUseTickerCandles } =
-  vi.hoisted(() => ({
-    mockUseContractTape: vi.fn(),
-    mockUseNetFlowHistory: vi.fn(),
-    mockUseTickerCandles: vi.fn(),
-  }));
+const {
+  mockUseContractTape,
+  mockUseNetFlowHistory,
+  mockUseTickerCandles,
+  mockUseNowMinute,
+} = vi.hoisted(() => ({
+  mockUseContractTape: vi.fn(),
+  mockUseNetFlowHistory: vi.fn(),
+  mockUseTickerCandles: vi.fn(),
+  mockUseNowMinute: vi.fn(),
+}));
 
 vi.mock('../hooks/useContractTape', () => ({
   useContractTape: mockUseContractTape,
@@ -32,6 +37,12 @@ vi.mock('../hooks/useNetFlowHistory', () => ({
 }));
 vi.mock('../hooks/useTickerCandles', () => ({
   useTickerCandles: mockUseTickerCandles,
+}));
+// Mock the per-minute clock so `nowMs` is deterministic. The "still hot"
+// badge must derive from this value (NOT an inline Date.now() read), so a
+// controlled `nowMs` is what decides whether the badge shows.
+vi.mock('../hooks/useNowMinute', () => ({
+  useNowMinute: mockUseNowMinute,
 }));
 
 // Stub the heavy chart components so the row's expand-state branch
@@ -195,6 +206,11 @@ beforeEach(() => {
     fetchedAt: null,
     refresh: vi.fn(),
   });
+  // Default `nowMs`: delegate to the real clock so tests that drive time
+  // via vi.setSystemTime (EXIT badge countdown) keep working exactly as
+  // before — the production hook also reads Date.now(). Hot-badge tests
+  // override this with an explicit mockReturnValue to pin `nowMs`.
+  mockUseNowMinute.mockImplementation(() => Date.now());
 });
 
 // ============================================================
@@ -286,6 +302,33 @@ describe('LotteryRow: smoke', () => {
     ).toHaveTextContent('%OTM 0.5%');
   });
 
+  it('renders "—" for spot when neither snapshot is usable (resolveFireSpot null)', () => {
+    // Both spot snapshots are non-positive, so resolveFireSpot returns null
+    // (usableSpot rejects <= 0). The footer must render the em-dash, never
+    // call .toFixed on the already-rejected fallback (which would print a
+    // misleading "0.00"/negative).
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 1.2,
+            openInterest: 5000,
+            spotAtFirst: 0,
+            spotAtTrigger: 0,
+            alertSeq: 1,
+            minutesSincePrevFire: 30,
+          },
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    // Em-dash placeholder is shown.
+    expect(screen.getByText('—')).toBeInTheDocument();
+    // The misleading "0.00" fallback must NOT appear.
+    expect(screen.queryByText('0.00')).not.toBeInTheDocument();
+  });
+
   it('renders the cheap-call-PM badge when the tag is set', () => {
     render(
       <LotteryRow
@@ -305,6 +348,54 @@ describe('LotteryRow: smoke', () => {
       />,
     );
     expect(screen.getByText('cheap-call-PM')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// "STILL HOT" badge — derives from useNowMinute (nowMs), not Date.now()
+// ============================================================
+
+describe('LotteryRow: still-hot badge', () => {
+  // Fixture trigger is 2026-05-08T14:30:00Z.
+  const TRIGGER_MS = new Date('2026-05-08T14:30:00Z').getTime();
+
+  it('shows the hot badge when nowMs is within 10 min of the trigger and market is open', () => {
+    // nowMs = trigger + 5 min → inside the 10-minute window. This proves
+    // the badge reads the mocked `nowMs`: the real clock (2026-06) is far
+    // outside the window, so a Date.now() read would hide the badge.
+    mockUseNowMinute.mockReturnValue(TRIGGER_MS + 5 * 60_000);
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={true}
+      />,
+    );
+    expect(screen.getByText('hot')).toBeInTheDocument();
+  });
+
+  it('hides the hot badge when nowMs is more than 10 min past the trigger', () => {
+    mockUseNowMinute.mockReturnValue(TRIGGER_MS + 20 * 60_000);
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={true}
+      />,
+    );
+    expect(screen.queryByText('hot')).not.toBeInTheDocument();
+  });
+
+  it('hides the hot badge when the market is closed even within the window', () => {
+    mockUseNowMinute.mockReturnValue(TRIGGER_MS + 5 * 60_000);
+    render(
+      <LotteryRow
+        fire={makeFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText('hot')).not.toBeInTheDocument();
   });
 });
 

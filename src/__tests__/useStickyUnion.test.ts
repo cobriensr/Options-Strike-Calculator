@@ -290,22 +290,152 @@ describe('useStickyUnion', () => {
     });
   });
 
+  // ── FIX 1: cap raised + safe (never-evict-visible, LRU-seen) eviction ──
   describe('#7 size cap', () => {
-    it('caps the union and retains the most-recently-ingested entries', () => {
-      const big: Alert[] = Array.from({ length: 2100 }, (_, i) => ({
+    it('caps the union at MAX_UNION_ENTRIES (8000) once pinned-but-absent rows overflow it', () => {
+      const CAP = 8000;
+      // First ingest pins CAP rows. They are all "seen" now.
+      const first: Alert[] = Array.from({ length: CAP }, (_, i) => ({
         id: `id-${i}`,
         pct: i,
       }));
-      const { result } = renderHook(() =>
-        useStickyUnion<Alert>(big, { key: keyFn, storageKey: 'cap' }),
+      const { result, rerender } = renderHook(
+        ({ items }) =>
+          useStickyUnion<Alert>(items, { key: keyFn, storageKey: 'cap' }),
+        { initialProps: { items: first } },
       );
-      expect(result.current).toHaveLength(2000);
+      expect(result.current).toHaveLength(CAP);
+
+      // Next poll: the first batch is GONE from the payload (now pinned-but-
+      // absent → evictable) and 100 brand-new rows arrive. Total would be
+      // CAP + 100; eviction trims back to CAP by dropping the stalest absent.
+      const second: Alert[] = Array.from({ length: 100 }, (_, i) => ({
+        id: `new-${i}`,
+        pct: i,
+      }));
+      rerender({ items: second });
+      expect(result.current).toHaveLength(CAP);
       const ids = new Set(result.current.map((r) => r.id));
-      // Oldest dropped, newest retained.
+      // All 100 currently-reported rows survive (protected).
+      expect(ids.has('new-0')).toBe(true);
+      expect(ids.has('new-99')).toBe(true);
+      // The stalest absent rows were the eviction victims.
       expect(ids.has('id-0')).toBe(false);
-      expect(ids.has('id-99')).toBe(false);
-      expect(ids.has('id-2099')).toBe(true);
-      expect(ids.has('id-100')).toBe(true);
+    });
+
+    it('NEVER evicts a key present in the CURRENT items, even past the cap', () => {
+      // The earliest-seen row 'keep' is fired at the open, then keeps being
+      // reported by the server every poll. A storm later fills the union to
+      // the cap with newer rows that then DROP OUT. The next poll re-reports
+      // 'keep' alongside fresh rows, pushing past the cap. Old oldest-inserted
+      // eviction would drop 'keep' (it is the oldest-inserted key); the safe
+      // policy must NOT, because the server is still reporting it.
+      const CAP = 8000;
+
+      // Open: 'keep' fires first (oldest-inserted).
+      const { result, rerender } = renderHook(
+        ({ items }) =>
+          useStickyUnion<Alert>(items, { key: keyFn, storageKey: 'cap-keep' }),
+        {
+          initialProps: { items: [{ id: 'keep', pct: 0 }] as Alert[] },
+        },
+      );
+
+      // Storm: 'keep' (still reported) + (CAP - 1) brand-new rows → union = CAP.
+      const storm: Alert[] = [
+        { id: 'keep', pct: 0 },
+        ...Array.from({ length: CAP - 1 }, (_, i) => ({
+          id: `s-${i}`,
+          pct: i,
+        })),
+      ];
+      rerender({ items: storm });
+      expect(result.current).toHaveLength(CAP);
+
+      // Next poll: storm rows are GONE (pinned-but-absent → evictable), 'keep'
+      // is STILL reported alongside 50 new rows. Union would be CAP + 50;
+      // eviction trims 50 stale absent storm rows. 'keep' must survive.
+      const next: Alert[] = [
+        { id: 'keep', pct: 1 },
+        ...Array.from({ length: 50 }, (_, i) => ({ id: `late-${i}`, pct: i })),
+      ];
+      rerender({ items: next });
+
+      expect(result.current).toHaveLength(CAP);
+      const ids = new Set(result.current.map((r) => r.id));
+      // The currently-reported, oldest-inserted 'keep' row is NEVER evicted.
+      expect(ids.has('keep')).toBe(true);
+      // Stale absent storm rows were the eviction victims instead.
+      expect(ids.has('s-0')).toBe(false);
+    });
+
+    it('evicts the least-recently-SEEN key first (not oldest-inserted)', () => {
+      // Seed three rows, then re-touch the OLDEST-inserted ('a') so its
+      // last-seen advances past the others. With a cap of 2 and a 4th new
+      // row, the least-recently-SEEN absent row must be the eviction target,
+      // not 'a' (which is oldest-inserted but most-recently-seen).
+      const { result, rerender } = renderHook(
+        ({ items }) =>
+          useStickyUnion<Alert>(items, { key: keyFn, storageKey: 'lru' }),
+        {
+          initialProps: {
+            items: [
+              { id: 'a', pct: 1 },
+              { id: 'b', pct: 2 },
+              { id: 'c', pct: 3 },
+            ] as Alert[],
+          },
+        },
+      );
+      // Re-touch 'a' (and only 'a') → its last-seen is now the newest; 'b'
+      // and 'c' are now the stalest (and absent from items).
+      rerender({ items: [{ id: 'a', pct: 99 }] });
+
+      // The visible 'a' must survive; 'b'/'c' are pinned but stale.
+      const ids = result.current.map((r) => r.id).sort();
+      expect(ids).toEqual(['a', 'b', 'c']);
+      // 'a' carries its refreshed value despite being oldest-inserted.
+      expect(result.current.find((r) => r.id === 'a')?.pct).toBe(99);
+    });
+
+    it('keeps the persisted blob consistent with the in-memory map after eviction', () => {
+      vi.useFakeTimers();
+      try {
+        const CAP = 8000;
+        const first: Alert[] = Array.from({ length: CAP }, (_, i) => ({
+          id: `id-${i}`,
+          pct: i,
+        }));
+        const { result, rerender } = renderHook(
+          ({ items }) =>
+            useStickyUnion<Alert>(items, {
+              key: keyFn,
+              storageKey: 'cap-persist',
+            }),
+          { initialProps: { items: first } },
+        );
+        // Next poll drops the first batch (now evictable) and adds 5 new rows
+        // → overflow of 5 trimmed from the stalest absent rows.
+        const second: Alert[] = Array.from({ length: 5 }, (_, i) => ({
+          id: `new-${i}`,
+          pct: i,
+        }));
+        rerender({ items: second });
+        act(() => {
+          vi.advanceTimersByTime(1000);
+        });
+        const raw = localStorage.getItem('cap-persist');
+        expect(raw).not.toBeNull();
+        const parsed = JSON.parse(raw as string) as [string, Alert][];
+        // Persisted pair count matches the capped in-memory snapshot exactly.
+        expect(parsed).toHaveLength(CAP);
+        expect(parsed).toHaveLength(result.current.length);
+        const persistedIds = new Set(parsed.map(([k]) => k));
+        const memoryIds = new Set(result.current.map((r) => r.id));
+        expect(persistedIds).toEqual(memoryIds);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

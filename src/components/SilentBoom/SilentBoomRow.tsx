@@ -59,7 +59,9 @@ const formatTimeCT = (iso: string): string => {
 
 const formatPct = (n: number | null): string => {
   if (n == null) return '—';
-  const sign = n >= 0 ? '+' : '';
+  // A genuinely flat 0.0% gets no leading '+' so it doesn't read as a
+  // small win — it's neutral, mirrored by the neutral color in pctClass.
+  const sign = n > 0 ? '+' : '';
   return `${sign}${n.toFixed(1)}%`;
 };
 
@@ -101,7 +103,11 @@ const formatVol = (n: number): string => {
 const pctClass = (n: number | null): string => {
   if (n == null) return 'text-neutral-500';
   if (n >= 50) return 'text-green-300';
-  if (n >= 0) return 'text-green-400';
+  // A genuinely flat 0.0% is neutral, not a (small) win — only strictly
+  // positive realized/peak % paints green so a flat outcome can't be
+  // mistaken for a winner.
+  if (n > 0) return 'text-green-400';
+  if (n === 0) return 'text-neutral-300';
   if (n >= -25) return 'text-amber-300';
   return 'text-red-300';
 };
@@ -370,6 +376,19 @@ const spikeBadge = (
 function areRowsEqual(prev: SilentBoomRowProps, next: SilentBoomRowProps) {
   if (prev.marketOpen !== next.marketOpen) return false;
   if (prev.exitPolicy !== next.exitPolicy) return false;
+  // Live ticker net flow drives the Flow Match / Flow Inverted / EXIT
+  // badges. The batch poller (~60s) hands us a fresh snapshot object
+  // identity on every tick, but only `cumNcp` / `cumNpp` change the
+  // rendered badges — compare exactly those so a flow inversion lights
+  // the EXIT badge even when no `alert` field moved. Without this the
+  // memo bails on the new snapshot and the strongest exit signal goes
+  // stale until some other field changes.
+  if (prev.liveFlowSnapshot?.cumNcp !== next.liveFlowSnapshot?.cumNcp) {
+    return false;
+  }
+  if (prev.liveFlowSnapshot?.cumNpp !== next.liveFlowSnapshot?.cumNpp) {
+    return false;
+  }
   const a = prev.alert;
   const b = next.alert;
   if (a.id !== b.id) return false;

@@ -23,9 +23,15 @@
  * - Items whose `key(item)` is falsy/empty or carries a literal
  *   `undefined`/`null` key segment are SKIPPED, never upserted — a
  *   degenerate key would otherwise clobber a distinct row.
- * - The union is capped at `MAX_UNION_ENTRIES`; if exceeded, the OLDEST
- *   entries (Map insertion order) are evicted. A day's distinct chains
- *   are far below the cap, so this only guards pathological growth/quota.
+ * - The union is capped at `MAX_UNION_ENTRIES`; if exceeded, eviction is
+ *   SAFE: a key present in the CURRENT `items` (the latest server payload)
+ *   is NEVER evicted, and among the rest the LEAST-RECENTLY-SEEN keys go
+ *   first (tracked by a per-key monotonic seen-counter). The earlier policy
+ *   evicted by Map insertion order, which the caller's score/peak re-sort
+ *   made unsafe — an early-morning conviction fire is oldest-inserted yet
+ *   often still on-screen, so insertion-order eviction could drop a row the
+ *   server was still reporting. A day's distinct chains are far below the
+ *   raised cap, so this only guards pathological growth / storage quota.
  *
  * Persistence
  * -----------
@@ -71,8 +77,21 @@ export interface UseStickyUnionOptions<T> {
   tombstones?: ReadonlySet<string>;
 }
 
-/** Defensive cap on union size; oldest entries evicted past this. */
-const MAX_UNION_ENTRIES = 2000;
+/**
+ * Defensive cap on union size; least-recently-SEEN non-visible entries are
+ * evicted past this.
+ *
+ * Sizing: the union key is a distinct option-chain id (`optionChainId`), not
+ * a per-fire id, so growth is bounded by DISTINCT contracts touched in a day
+ * across the ~50-ticker Lottery Finder / Silent Boom universe. A heavy storm
+ * day realistically touches low-thousands of distinct strikes; 8000 sits
+ * comfortably (~4×) above any observed daily distinct-chain count while still
+ * bounding the localStorage blob (each entry is a small trimmed JSON object;
+ * 8000 stays well under the ~5 MB per-origin quota). The previous 2000 cap
+ * was reachable on a true storm day, which — combined with the old oldest-
+ * inserted eviction — could silently drop a still-visible early fire.
+ */
+const MAX_UNION_ENTRIES = 8000;
 /** Trailing-debounce window for the durable localStorage write. */
 const PERSIST_DEBOUNCE_MS = 1000;
 /** Prefix all day-scoped feed slots share, used by the stale-key sweep. */
@@ -205,15 +224,41 @@ function sweepStaleKeys(storageKey: string): void {
   }
 }
 
-/** Evict oldest entries (Map insertion order) until at most cap remain. */
-function enforceCap<T>(union: Map<string, T>): void {
+/**
+ * Evict down to the cap WITHOUT ever dropping a key the server is still
+ * reporting.
+ *
+ * - `protectedKeys` are the keys in the CURRENT `items` payload (on-screen,
+ *   live) — these are never eviction candidates.
+ * - Among the remaining (pinned-but-absent) keys, the LEAST-RECENTLY-SEEN go
+ *   first, ranked by their `seen` counter (lower = staler).
+ * - `seen` entries for evicted keys are pruned to keep the two maps in sync.
+ *
+ * If protected keys alone exceed the cap (pathological: a single payload
+ * larger than the cap) we keep them all rather than violate the never-vanish
+ * guarantee — the cap is a soft guard, correctness wins.
+ */
+function enforceCap<T>(
+  union: Map<string, T>,
+  seen: Map<string, number>,
+  protectedKeys: ReadonlySet<string>,
+): void {
   if (union.size <= MAX_UNION_ENTRIES) return;
   const overflow = union.size - MAX_UNION_ENTRIES;
-  const iter = union.keys();
-  for (let i = 0; i < overflow; i++) {
-    const oldest = iter.next().value;
-    if (oldest === undefined) break;
-    union.delete(oldest);
+
+  // Candidates = pinned-but-not-currently-reported keys, staler first.
+  const candidates: string[] = [];
+  for (const k of union.keys()) {
+    if (!protectedKeys.has(k)) candidates.push(k);
+  }
+  candidates.sort((a, b) => (seen.get(a) ?? 0) - (seen.get(b) ?? 0));
+
+  const evictCount = Math.min(overflow, candidates.length);
+  for (let i = 0; i < evictCount; i++) {
+    const victim = candidates[i];
+    if (victim === undefined) break;
+    union.delete(victim);
+    seen.delete(victim);
   }
 }
 
@@ -225,6 +270,11 @@ export function useStickyUnion<T>(
 
   // The accumulator. Insertion order is the Map's own iteration order.
   const unionRef = useRef<Map<string, T>>(new Map());
+  // Per-key monotonic "last seen" counter, parallel to `unionRef`. Higher =
+  // more recently reported by the server; drives least-recently-SEEN eviction.
+  // Reset + reseeded on every storageKey change alongside the union.
+  const seenRef = useRef<Map<string, number>>(new Map());
+  const seenClockRef = useRef(0);
   // Latest key fn without re-triggering the ingest effect on identity change.
   const keyFnRef = useRef(key);
   keyFnRef.current = key;
@@ -289,6 +339,15 @@ export function useStickyUnion<T>(
     flushPersist();
     const union = readUnion<T>(storageKey);
     unionRef.current = union;
+    // Reseed the seen-counter from scratch for the new slot: hydrated keys get
+    // ascending counters in their persisted (insertion) order, so the oldest
+    // hydrated entry is the stalest until the server re-reports it. The clock
+    // continues from the hydrated count so subsequent live ingests rank above.
+    const seen = new Map<string, number>();
+    let clock = 0;
+    for (const k of union.keys()) seen.set(k, ++clock);
+    seenRef.current = seen;
+    seenClockRef.current = clock;
     setSnapshot([...union.values()]);
   }, [storageKey]);
 
@@ -307,6 +366,7 @@ export function useStickyUnion<T>(
   // loop while still refreshing live fields the instant any value changes.
   useEffect(() => {
     const union = unionRef.current;
+    const seen = seenRef.current;
     const keyFn = keyFnRef.current;
     const tombs = tombstonesRef.current;
 
@@ -315,14 +375,27 @@ export function useStickyUnion<T>(
     // Evict any tombstoned keys already present (the only deletion path).
     if (tombs != null && tombs.size > 0) {
       for (const t of tombs) {
-        if (union.delete(t)) dirty = true;
+        if (union.delete(t)) {
+          seen.delete(t);
+          dirty = true;
+        }
       }
     }
+
+    // Keys reported by the server THIS ingest — protected from cap eviction
+    // (a row the server is still reporting must never vanish), regardless of
+    // whether its value changed (dirty) this tick.
+    const protectedKeys = new Set<string>();
 
     for (const item of items) {
       const k = keyFn(item);
       if (isDegenerateKey(k)) continue; // #9: never clobber a distinct row
       if (tombs?.has(k)) continue; // #6: retracted — do not re-ingest
+
+      protectedKeys.add(k);
+      // Bump last-seen for every currently-reported key (even unchanged ones)
+      // so re-sorted-but-still-live early fires stay "recently seen".
+      seen.set(k, ++seenClockRef.current);
 
       const prev = union.get(k);
       // Per-item dirty check: new key, or value changed. Cheap stringify of
@@ -335,7 +408,9 @@ export function useStickyUnion<T>(
 
     if (!dirty) return; // no-op ingest: skip state update + persist
 
-    enforceCap(union); // #7: bound pathological growth (post-mutation)
+    // #7: bound pathological growth (post-mutation). Never evicts a key in
+    // `protectedKeys`; among the rest, least-recently-SEEN go first.
+    enforceCap(union, seen, protectedKeys);
 
     schedulePersist(storageKey, JSON.stringify([...union]));
     setSnapshot([...union.values()]);

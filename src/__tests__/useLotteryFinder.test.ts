@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useLotteryFinder } from '../hooks/useLotteryFinder';
 import { POLL_INTERVALS } from '../constants';
+import { getCTDateStr } from '../utils/timezone';
 import type { LotteryFinderResponse } from '../components/LotteryFinder/types';
 
 const fetchMock = vi.fn();
@@ -309,9 +310,15 @@ describe('useLotteryFinder', () => {
 
   it('polls every OTM_FLOW when marketOpen and no minute, page 0', async () => {
     vi.useFakeTimers();
-    fetchMock.mockResolvedValue(jsonResponse(emptyFinder()));
+    // Pin wall-clock to a fixed instant so the hook's `historical` gate
+    // (`date !== getCTDateStr(new Date())`) sees `date` AS today. Fake timers
+    // mock Date, so without this the hook would read 1970 and gate historical.
+    vi.setSystemTime(new Date('2026-06-09T18:00:00Z'));
+    const today = getCTDateStr(new Date());
+    fetchMock.mockResolvedValue(jsonResponse(emptyFinder({ date: today })));
     renderHook(() =>
-      useLotteryFinder({ date: '2026-05-07', marketOpen: true }),
+      // TODAY in CT — otherwise FIX 2 gates this to historical (no poll).
+      useLotteryFinder({ date: today, marketOpen: true }),
     );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
@@ -356,6 +363,28 @@ describe('useLotteryFinder', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(POLL_INTERVALS.OTM_FLOW * 3);
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not poll a HISTORICAL (past) date even on page 0 with no minute', async () => {
+    // FIX 2: a past trading day is an immutable snapshot. `historical` must
+    // include the `date !== todayCt()` term, so browsing a past date (page 0,
+    // no minute) single-fetches instead of polling an unchanging snapshot.
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValue(
+      jsonResponse(emptyFinder({ date: '2020-01-02' })),
+    );
+    renderHook(() =>
+      useLotteryFinder({ date: '2020-01-02', marketOpen: true }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVALS.OTM_FLOW * 3);
+    });
+    // Still a single fetch — no polling of an immutable past snapshot.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -412,11 +441,14 @@ describe('useLotteryFinder', () => {
     // is surfaced in `result.current.data` BEFORE the revalidating
     // fetch resolves — proving the cache is the source for the
     // pending render.
+    // Each page echoes its requested `offset` (page * 50) — the cache's
+    // ownership guard (FIX 3) attributes a payload to a url only when its
+    // `offset` matches the requested offset.
     fetchMock.mockResolvedValueOnce(
-      jsonResponse(emptyFinder({ total: 100, count: 1 })),
+      jsonResponse(emptyFinder({ total: 100, count: 1, offset: 0 })),
     );
     fetchMock.mockResolvedValueOnce(
-      jsonResponse(emptyFinder({ total: 100, count: 2 })),
+      jsonResponse(emptyFinder({ total: 100, count: 2, offset: 50 })),
     );
 
     const { result, rerender } = renderHook(
@@ -450,7 +482,82 @@ describe('useLotteryFinder', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
 
     // Cleanup — resolve the held fetch so other tests don't inherit it.
-    resolveRevalidate(jsonResponse(emptyFinder({ total: 100, count: 1 })));
+    resolveRevalidate(
+      jsonResponse(emptyFinder({ total: 100, count: 1, offset: 0 })),
+    );
+  });
+
+  it('FIX 3: back-nav after a page-0 poll returns the CACHED page, not the just-polled page-0 data', async () => {
+    // Per-URL freshness. With a single GLOBAL lastSavedFetchedAt the memo,
+    // when the URL flips back to a cached page in the SAME commit that a
+    // page-0 poll resolved, sees `fetched.fetchedAt` (the fresh page-0 tick) >
+    // global lastSaved and returns page-0's payload under the page-2 URL for
+    // one frame — the exact stale flash the cache exists to prevent. Freshness
+    // must be tracked PER URL.
+    //
+    // count is the page marker: page 0 → 10/11; page 2 → 22. Each page echoes
+    // its requested offset (page 0 → 0, page 2 → 100) so the cache's ownership
+    // guard attributes each payload to the right url.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(emptyFinder({ total: 200, count: 10, offset: 0 })),
+    ); // page 0 initial
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(emptyFinder({ total: 200, count: 22, offset: 100 })),
+    ); // page 2 initial
+
+    const { result, rerender } = renderHook(
+      ({ page }: { page: number }) =>
+        useLotteryFinder({ date: '2026-05-07', marketOpen: false, page }),
+      { initialProps: { page: 0 } },
+    );
+
+    // Page 0 loads → cache[url0] = {count:10}, global lastSaved advances to t0.
+    await waitFor(() => expect(result.current.data?.count).toBe(10));
+
+    // Forward to page 2 → cache[url2] = {count:22}, global lastSaved → t2.
+    rerender({ page: 2 });
+    await waitFor(() => expect(result.current.data?.count).toBe(22));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Back on page 0. Its revalidate resolves with a FRESH payload (count 11)
+    // — its `fetchedAt` becomes the newest. CRUCIALLY, in the SAME act flush
+    // we also flip the URL back to page 2 right after the resolve, before the
+    // save effect for that fresh page-0 payload advances the global lastSaved.
+    // At the page-2 render the memo sees `fetched.fetchedAt` (page-0 t3) >
+    // global lastSaved (still t2) and a GLOBAL check returns the page-0 (11)
+    // payload under url2 — the one-frame stale flash. Per-URL freshness must
+    // return the page-2 cache (22).
+    let resolvePage0: (v: unknown) => void = () => {};
+    fetchMock.mockReturnValueOnce(
+      new Promise((res) => {
+        resolvePage0 = res;
+      }),
+    );
+    // page-2 revalidate (held open) for the final flip back.
+    fetchMock.mockReturnValueOnce(
+      new Promise(() => {
+        // never resolves during the assertion window
+      }),
+    );
+
+    rerender({ page: 0 });
+    // Cache hit renders page 0's stored {count:10} immediately.
+    await waitFor(() => expect(result.current.data?.count).toBe(10));
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    await act(async () => {
+      // Resolve the fresh page-0 payload (offset 0), then flip to page 2 in
+      // the SAME flush so the save effect hasn't advanced freshness yet.
+      resolvePage0(
+        jsonResponse(emptyFinder({ total: 200, count: 11, offset: 0 })),
+      );
+      rerender({ page: 2 });
+    });
+
+    // The cached page-2 payload (22), NOT the fresher page-0 payload, must
+    // render. A global lastSavedFetchedAt yields 11 here; per-URL + the
+    // offset-ownership guard keep the page-2 cache.
+    expect(result.current.data?.count).toBe(22);
   });
 
   it('cancels prior in-flight fetch when filters change', async () => {

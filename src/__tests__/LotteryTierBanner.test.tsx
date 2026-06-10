@@ -129,7 +129,7 @@ describe('LotteryTierBanner: empty state', () => {
 
   it('does not render the headline when no fires', () => {
     render(<LotteryTierBanner fires={[]} total={0} />);
-    expect(screen.queryByText(/Day so far/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/This page/)).not.toBeInTheDocument();
   });
 });
 
@@ -138,17 +138,18 @@ describe('LotteryTierBanner: empty state', () => {
 // ============================================================
 
 describe('LotteryTierBanner: singular vs plural', () => {
-  it('renders "1 fire" (no s) when total === 1', () => {
+  it('renders "1 fire" (no s) when the page holds one fire', () => {
     render(
       <LotteryTierBanner
         fires={[makeFire({ scoreTier: 'tier1', score: 20 })]}
         total={1}
       />,
     );
-    expect(screen.getByText(/Day so far · 1 fire$/)).toBeInTheDocument();
+    // Headline pluralizes off the PAGE count (fires.length), not `total`.
+    expect(screen.getByText(/This page · 1 fire$/)).toBeInTheDocument();
   });
 
-  it('renders "N fires" (with s) when total > 1', () => {
+  it('renders "N fires" (with s) when the page holds multiple fires', () => {
     render(
       <LotteryTierBanner
         fires={[
@@ -158,19 +159,66 @@ describe('LotteryTierBanner: singular vs plural', () => {
         total={2}
       />,
     );
-    expect(screen.getByText(/Day so far · 2 fires/)).toBeInTheDocument();
+    expect(screen.getByText(/This page · 2 fires/)).toBeInTheDocument();
   });
 
-  it('formats large totals with toLocaleString', () => {
-    // 1234 → "1,234 fires" (locale-dependent — toLocaleString in jsdom
-    // defaults to en-US which uses comma group separators).
-    render(
-      <LotteryTierBanner
-        fires={[makeFire({ scoreTier: 'tier3', score: 8 })]}
-        total={1234}
-      />,
+  it('formats large page counts with toLocaleString', () => {
+    // 1234 page rows → "1,234 fires" (locale-dependent — toLocaleString in
+    // jsdom defaults to en-US which uses comma group separators). Build a
+    // page array of that length so the headline reflects the page count.
+    const fires = Array.from({ length: 1234 }, (_, i) =>
+      makeFire({ id: i + 1, scoreTier: 'tier3', score: 8 }),
     );
-    expect(screen.getByText(/Day so far · 1,234 fires/)).toBeInTheDocument();
+    render(<LotteryTierBanner fires={fires} total={1234} />);
+    expect(screen.getByText(/This page · 1,234 fires/)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// DENOMINATOR COHERENCE (Fix 5)
+// ============================================================
+
+describe('LotteryTierBanner: denominator coherence', () => {
+  it('headline page count equals the tier sum (t1 + t2 + t3)', () => {
+    // 5 fires on the page: 2 tier1, 1 tier2, 2 tier3 → sum 5 === page count.
+    const fires: LotteryFire[] = [
+      makeFire({ id: 1, scoreTier: 'tier1', score: 20 }),
+      makeFire({ id: 2, scoreTier: 'tier1', score: 19 }),
+      makeFire({ id: 3, scoreTier: 'tier2', score: 14 }),
+      makeFire({ id: 4, scoreTier: 'tier3', score: 6 }),
+      makeFire({ id: 5, scoreTier: 'tier3', score: 5 }),
+    ];
+    // Full-day total is much larger (paginated view).
+    render(<LotteryTierBanner fires={fires} total={372} />);
+
+    // Headline number is the PAGE count, which equals 2 + 1 + 2 = 5.
+    expect(screen.getByText(/This page · 5 fires/)).toBeInTheDocument();
+    expect(screen.getByText('🔥🔥🔥 2')).toBeInTheDocument();
+    expect(screen.getByText('🔥🔥 1')).toBeInTheDocument();
+    expect(screen.getByText('🔥 2')).toBeInTheDocument();
+  });
+
+  it('surfaces the full-day total separately when it exceeds the page', () => {
+    const fires: LotteryFire[] = [
+      makeFire({ id: 1, scoreTier: 'tier1', score: 20 }),
+      makeFire({ id: 2, scoreTier: 'tier2', score: 14 }),
+    ];
+    render(<LotteryTierBanner fires={fires} total={372} />);
+
+    expect(screen.getByText(/This page · 2 fires/)).toBeInTheDocument();
+    // Full-day total appears in a distinct, clearly labelled clause.
+    expect(screen.getByText(/of 372 today/)).toBeInTheDocument();
+  });
+
+  it('omits the "of N today" clause when the page holds the whole day', () => {
+    const fires: LotteryFire[] = [
+      makeFire({ id: 1, scoreTier: 'tier1', score: 20 }),
+      makeFire({ id: 2, scoreTier: 'tier2', score: 14 }),
+    ];
+    render(<LotteryTierBanner fires={fires} total={2} />);
+
+    expect(screen.getByText(/This page · 2 fires/)).toBeInTheDocument();
+    expect(screen.queryByText(/today/)).not.toBeInTheDocument();
   });
 });
 

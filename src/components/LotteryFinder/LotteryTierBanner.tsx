@@ -4,7 +4,9 @@ import type { LotteryFire } from './types.js';
 interface LotteryTierBannerProps {
   fires: LotteryFire[];
   /** Total fires on the day (server count, may exceed fires.length on
-   *  a paginated view). Headline reflects the full day, not the page. */
+   *  a paginated view). Surfaced as a separate "of N today" clause; the
+   *  headline number itself is the page count so it agrees with the tier
+   *  sum (t1 + t2 + t3 === fires.length). */
   total: number;
 }
 
@@ -13,8 +15,10 @@ interface LotteryTierBannerProps {
  * dominant ticker + loudest single fire by score. Mirrors the
  * SilentBoomDayBanner shape so both panels carry the same
  * at-a-glance regime strip. Tier counts reflect the current page
- * because the API response includes scoreTier on every row;
- * disclaimer at the right end notes this for the user.
+ * because the API response includes scoreTier on every row; the
+ * headline number is the page count (so it agrees with the tier sum)
+ * and the full-day total is shown separately as "of N today". The
+ * "counts on current page" caption at the right end reinforces this.
  */
 export function LotteryTierBanner({ fires, total }: LotteryTierBannerProps) {
   const summary = useMemo(() => {
@@ -52,11 +56,38 @@ export function LotteryTierBanner({ fires, total }: LotteryTierBannerProps) {
 
   const { t1, t2, t3, dominantTicker, topFire } = summary;
 
+  // Tier counts (t1/t2/t3), dominant ticker, and topFire are computed over
+  // the rendered `fires` page only, so the headline number the tiers sit
+  // next to must be that same page count (t1 + t2 + t3 === fires.length) —
+  // otherwise the full-day server `total` reads as a tier denominator it
+  // doesn't match. The full-day total is surfaced separately, clearly
+  // labelled, only when it exceeds the page so the day-vs-page distinction
+  // stays explicit.
+  const pageCount = fires.length;
+  const hasMoreToday = total > pageCount;
+
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950 p-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px]">
-        <span className="font-semibold text-neutral-300">
-          Day so far · {total.toLocaleString()} fire{total === 1 ? '' : 's'}
+        <span
+          className="font-semibold text-neutral-300"
+          title={
+            hasMoreToday
+              ? `Tier breakdown below covers the ${pageCount.toLocaleString()} fire${
+                  pageCount === 1 ? '' : 's'
+                } on this page; ${total.toLocaleString()} fired across the full day.`
+              : `All ${pageCount.toLocaleString()} fire${
+                  pageCount === 1 ? '' : 's'
+                } today are shown on this page.`
+          }
+        >
+          This page · {pageCount.toLocaleString()} fire
+          {pageCount === 1 ? '' : 's'}
+          {hasMoreToday && (
+            <span className="ml-1 font-normal text-neutral-500">
+              of {total.toLocaleString()} today
+            </span>
+          )}
         </span>
 
         <span

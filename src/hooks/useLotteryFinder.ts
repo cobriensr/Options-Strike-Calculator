@@ -20,6 +20,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
+import { getCTDateStr } from '../utils/timezone.js';
 import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 import type {
   LotteryFinderResponse,
@@ -151,16 +152,24 @@ export function useLotteryFinder({
   // `!minute` and `page === 0` gates into the historical flag so the
   // minute-scrub view and paginated views single-fetch instead of polling.
   //
+  // FIX 2: also fold in `date !== today` — a PAST trading day is an immutable
+  // snapshot, so polling it every 30s just re-fetches identical data (and, in
+  // concert with the component's engaged gate, would re-ingest historical rows
+  // into the live never-vanish union). `todayCt` here is computed exactly like
+  // the component's `todayCt()`: `getCTDateStr(new Date())` uses the same
+  // `Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', ... })`.
+  //
   // The cross-day staleness gate lives in the primitive via `requestKey`/
   // `responseKey`: a prior-day response is nulled at the data layer BEFORE
   // the page cache reads `fetched.data`, so the cache never stores cross-day
   // data (the `if (fetched.data == null) return` guard in the save effect
   // skips a gated-null response) and every derived value stays coherent.
+  const todayCt = getCTDateStr(new Date());
   const fetched = useFetchedData<LotteryFinderResponse>({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
-    historical: minute != null || page !== 0,
+    historical: minute != null || page !== 0 || date !== todayCt,
     requestKey: date,
     responseKey: (d) => d.date?.slice(0, 10),
   });
@@ -177,43 +186,69 @@ export function useLotteryFinder({
   // (no 1-frame stale flash), and `useFetchedData` revalidates in the
   // background.
   //
-  // Freshness rule: when `fetched.fetchedAt` is newer than the
-  // `lastSavedFetchedAt` value, the freshest data is sitting in
-  // `fetched.data` waiting for the save effect to write it to cache
-  // (effects run after render). In that window we MUST prefer
-  // `fetched.data` over the cache; otherwise a poll-tick resolution
-  // would render the stale prior tick for one frame, then the new
-  // tick on the save-effect-triggered re-render (the visible
-  // "flicker"). The save effect writes cache + advances
-  // `lastSavedFetchedAtRef` without bumping any state, so it does NOT
-  // cause an extra render.
-  const cacheRef = useRef<Map<string, LotteryFinderResponse>>(new Map());
-  const lastSavedFetchedAtRef = useRef<number | null>(null);
+  // FIX 3 — PER-URL freshness (was a single global `lastSavedFetchedAt`):
+  // each url's cache entry stores `{ data, fetchedAt }`. The freshness check
+  // compares the CURRENT url's saved `fetchedAt`, never a global one. The old
+  // global check had a one-frame bug: on a page-0 poll the global lastSaved
+  // advanced to that tick's time; a back-nav to a cached page then saw
+  // `fetched.fetchedAt` (the page-0 tick) > global lastSaved (briefly, before
+  // the save effect caught up) and returned page-0's rows under the other
+  // page's url for one frame — the exact stale flash the cache exists to kill.
+  //
+  // Ownership guard: `fetched.data` may carry a payload that belongs to a
+  // DIFFERENT url (stale-while-revalidate carryover after a navigation). We
+  // only treat it as "for the current url" when its echoed `offset` matches
+  // the requested `offset` for this page. That keeps the no-flicker poll-tick
+  // behavior (same url → offset matches → prefer the fresh tick) while
+  // preventing a just-resolved other-page payload from being mis-served — or
+  // mis-saved into this url's cache slot.
+  // Offset the current url requests; the response echoes it. The ownership
+  // guard below treats `fetched.data` as "for this url" only when its echoed
+  // `offset` matches — distinguishing a same-url poll tick (offset matches →
+  // prefer the fresh payload, no flicker) from a stale-while-revalidate
+  // carryover of another page's payload after a navigation (offset differs →
+  // never preferred, never cached under this url).
+  const requestedOffset = page * pageSize;
+
+  interface CacheEntry {
+    data: LotteryFinderResponse;
+    fetchedAt: number;
+  }
+  const cacheRef = useRef<Map<string, CacheEntry>>(new Map());
 
   useEffect(() => {
     if (fetched.data == null) return;
     if (fetched.fetchedAt == null) return;
-    if (fetched.fetchedAt === lastSavedFetchedAtRef.current) return;
-    lastSavedFetchedAtRef.current = fetched.fetchedAt;
+    // Only attribute this payload to the current url when it actually belongs
+    // to it (offset echo matches). A carried-over other-page payload must not
+    // poison this url's cache slot.
+    if (fetched.data.offset !== requestedOffset) return;
     const cache = cacheRef.current;
-    cache.set(url, fetched.data);
+    const prev = cache.get(url);
+    if (prev != null && prev.fetchedAt === fetched.fetchedAt) return;
+    cache.set(url, { data: fetched.data, fetchedAt: fetched.fetchedAt });
     while (cache.size > PAGE_CACHE_MAX) {
       const oldest = cache.keys().next().value;
       if (oldest == null) break;
       cache.delete(oldest);
     }
-  }, [fetched.data, fetched.fetchedAt, url]);
+  }, [fetched.data, fetched.fetchedAt, url, requestedOffset]);
 
   return useMemo(() => {
-    // If `fetched.fetchedAt` is newer than what we last persisted, the
-    // freshest payload is in `fetched.data` (save effect hasn't run
-    // yet); prefer it. Otherwise the cache holds the latest value for
-    // this URL — use it (back-nav hit) or fall back to the stale
-    // prev-URL data `useFetchedData` is still surfacing.
-    const lastSaved = lastSavedFetchedAtRef.current ?? 0;
+    // Per-url freshness: prefer `fetched.data` only when it BELONGS to this
+    // url (offset echo matches) AND is newer than this url's saved entry (the
+    // save effect hasn't written it yet — that one-frame window after a
+    // same-url poll tick resolves). Otherwise the cache holds the latest value
+    // for this url — use it (back-nav hit) or fall back to whatever
+    // `useFetchedData` is still surfacing.
+    const cachedEntry = cacheRef.current.get(url) ?? null;
+    const savedFetchedAt = cachedEntry?.fetchedAt ?? 0;
     const fetchedIsFresher =
-      fetched.fetchedAt != null && fetched.fetchedAt > lastSaved;
-    const cached = cacheRef.current.get(url) ?? null;
+      fetched.fetchedAt != null &&
+      fetched.fetchedAt > savedFetchedAt &&
+      fetched.data != null &&
+      fetched.data.offset === requestedOffset;
+    const cached = cachedEntry?.data ?? null;
     const data = fetchedIsFresher ? fetched.data : (cached ?? fetched.data);
     return {
       data,
@@ -222,5 +257,5 @@ export function useLotteryFinder({
       refresh: fetched.refresh,
       fetchedAt: fetched.fetchedAt,
     };
-  }, [fetched, url]);
+  }, [fetched, url, requestedOffset]);
 }

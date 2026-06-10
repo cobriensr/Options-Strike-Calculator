@@ -967,6 +967,172 @@ describe('SilentBoomRow: EXIT badge', () => {
   });
 });
 
+// ============================================================
+// FIX 1 — liveFlowSnapshot drives a re-render (memo must not bail)
+//
+// The row is wrapped in React.memo with a custom comparator. Before
+// the fix the comparator omitted liveFlowSnapshot, so a fresh snapshot
+// from the ~60s batch poller was dropped and the Flow Inverted / EXIT
+// badge never lit until some other alert field changed. These tests
+// re-render the SAME row with only the snapshot changed and assert the
+// badges update — i.e. the comparator returned false on the flow change.
+// ============================================================
+
+describe('SilentBoomRow: live flow snapshot re-render (memo comparator)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const renderRowEl = (
+    alert: SilentBoomAlert,
+    snapshot: TickerNetFlowSnapshot | null,
+  ) => (
+    <SilentBoomRow
+      alert={alert}
+      marketOpen
+      exitPolicy="realized60mPct"
+      liveFlowSnapshot={snapshot}
+    />
+  );
+
+  it('lights the Flow Inverted badge when only liveFlowSnapshot changes from match → mismatch', () => {
+    // Call alert that had a NCP tailwind at fire time.
+    const alert = makeAlert({
+      optionType: 'C',
+      tickerCumNcpAtFire: 10_000_000,
+      tickerCumNppAtFire: 1_000_000,
+    });
+    // First poll: flow still agrees (NCP > NPP) → no inversion.
+    const { rerender } = render(
+      renderRowEl(alert, {
+        cumNcp: 20_000_000,
+        cumNpp: 5_000_000,
+        asOfTs: '2026-05-15T14:00:00.000Z',
+      }),
+    );
+    expect(
+      screen.queryByTestId('silent-boom-flow-inverted-badge'),
+    ).not.toBeInTheDocument();
+
+    // Next poll: SAME alert identity, only the snapshot inverts
+    // (NPP now dominates). The memo must re-render and surface the badge.
+    rerender(
+      renderRowEl(alert, {
+        cumNcp: 2_000_000,
+        cumNpp: 15_000_000,
+        asOfTs: '2026-05-15T14:01:00.000Z',
+      }),
+    );
+    expect(
+      screen.getByTestId('silent-boom-flow-inverted-badge'),
+    ).toHaveTextContent('Flow Inverted');
+  });
+
+  it('lights the EXIT badge when a later poll inverts the flow (hold not yet expired)', () => {
+    const bucket = '2026-05-15T13:30:00.000Z';
+    // 30m past the bucket — cohort hold (197m) has NOT expired, so the
+    // only path to EXIT is flow inversion. Proves the snapshot drove it.
+    vi.setSystemTime(new Date(Date.parse(bucket) + 30 * 60_000));
+    const alert = makeAlert({
+      optionType: 'C',
+      bucketCt: bucket,
+      tickerCumNcpAtFire: 10_000_000,
+      tickerCumNppAtFire: 1_000_000,
+    });
+    const { rerender } = render(
+      renderRowEl(alert, {
+        cumNcp: 20_000_000,
+        cumNpp: 5_000_000,
+        asOfTs: '2026-05-15T14:00:00.000Z',
+      }),
+    );
+    expect(
+      screen.queryByTestId('silent-boom-exit-now-badge'),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      renderRowEl(alert, {
+        cumNcp: 1_000_000,
+        cumNpp: 20_000_000,
+        asOfTs: '2026-05-15T14:01:00.000Z',
+      }),
+    );
+    expect(screen.getByTestId('silent-boom-exit-now-badge')).toHaveAttribute(
+      'title',
+      expect.stringContaining('Ticker net flow inverted'),
+    );
+  });
+});
+
+// ============================================================
+// FIX 3 — realized exactly 0.0% is neutral, not green
+//
+// pctClass/formatPct previously colored n >= 0 green and prefixed '+',
+// so a genuinely flat 0.0% looked like a small win. After the fix a
+// strict 0 renders neutral with no leading '+'.
+// ============================================================
+
+describe('SilentBoomRow: flat 0.0% realized is neutral, not green', () => {
+  const zeroEodAlert = (extra: Partial<SilentBoomAlert['outcomes']> = {}) =>
+    makeAlert({
+      outcomes: {
+        peakCeilingPct: 47,
+        minutesToPeak: 12,
+        realized30mPct: null,
+        realized60mPct: 0,
+        realized120mPct: null,
+        realizedEodPct: 0,
+        realizedTrail3010Pct: null,
+        enrichedAt: '2026-05-08T20:00:00Z',
+        ...extra,
+      },
+    });
+
+  it('renders "0.0%" without a leading "+" for a flat eod outcome', () => {
+    renderRow(zeroEodAlert());
+    const eod = screen.getByText(/eod 0\.0%/);
+    expect(eod).toBeInTheDocument();
+    expect(eod).not.toHaveTextContent('+0.0%');
+  });
+
+  it('paints the flat eod 0.0% neutral (not green)', () => {
+    renderRow(zeroEodAlert());
+    const eod = screen.getByText(/eod 0\.0%/);
+    expect(eod.className).toMatch(/text-neutral-300/);
+    expect(eod.className).not.toMatch(/text-green/);
+  });
+
+  it('paints a flat 0.0% primary value neutral (not green)', () => {
+    // 60m primary is the default exitPolicy; set it to a flat 0.
+    renderRow(zeroEodAlert());
+    const primary = screen.getByText('0.0%');
+    expect(primary.className).toMatch(/text-neutral-300/);
+    expect(primary.className).not.toMatch(/text-green/);
+  });
+
+  it('still paints a genuine small win (>0) green', () => {
+    renderRow(
+      makeAlert({
+        outcomes: {
+          peakCeilingPct: 47,
+          minutesToPeak: 12,
+          realized30mPct: null,
+          realized60mPct: 0.5,
+          realized120mPct: null,
+          realizedEodPct: null,
+          realizedTrail3010Pct: null,
+          enrichedAt: '2026-05-08T20:00:00Z',
+        },
+      }),
+    );
+    const primary = screen.getByText('+0.5%');
+    expect(primary.className).toMatch(/text-green/);
+  });
+});
+
 describe('SilentBoomRow: round-tripped dim treatment', () => {
   it('dims the container and renders the round-tripped pill when deduct < 0', () => {
     const { container } = renderRow(makeAlert({ roundTripScoreDeduct: -2 }));

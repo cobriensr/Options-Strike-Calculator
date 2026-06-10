@@ -1,6 +1,20 @@
 import { useMemo } from 'react';
 import type { SilentBoomAlert } from './types.js';
 
+/**
+ * Display floor for the spike-ratio baseline — must match
+ * SPIKE_BASELINE_DISPLAY_FLOOR in SilentBoomRow.tsx. The row badge shows
+ * `spikeVolume / max(baselineVolume, 100)` (the gate-consistent ratio),
+ * not the raw stored `spikeRatio` (`spikeVolume / max(baselineVolume, 1)`).
+ * The banner's "loudest" must rank + render with the same floored ratio
+ * or it will name an alert / number that no visible row badge shows.
+ */
+const SPIKE_BASELINE_DISPLAY_FLOOR = 100;
+
+/** The floored spike ratio the row badge displays (×N burst). */
+const flooredSpikeRatio = (a: SilentBoomAlert): number =>
+  a.spikeVolume / Math.max(a.baselineVolume, SPIKE_BASELINE_DISPLAY_FLOOR);
+
 interface SilentBoomDayBannerProps {
   alerts: SilentBoomAlert[];
   /** Total alerts on the day (server count, may exceed alerts.length on
@@ -39,7 +53,13 @@ export function SilentBoomDayBanner({
         a.underlyingSymbol,
         (tickerCounts.get(a.underlyingSymbol) ?? 0) + 1,
       );
-      if (topAlert == null || a.spikeRatio > topAlert.spikeRatio) {
+      // Rank by the FLOORED ratio the row badge shows, not the raw
+      // stored spikeRatio — otherwise the banner's "loudest" can name a
+      // different alert (or a ×8500 number) that no visible row matches.
+      if (
+        topAlert == null ||
+        flooredSpikeRatio(a) > flooredSpikeRatio(topAlert)
+      ) {
         topAlert = a;
       }
     }
@@ -113,14 +133,14 @@ export function SilentBoomDayBanner({
         {topAlert != null && (
           <span
             className="text-neutral-500"
-            title={`Largest spike ratio in the current view: ${topAlert.underlyingSymbol} ${topAlert.strike}${topAlert.optionType} at ${topAlert.spikeRatio.toFixed(0)}× baseline.`}
+            title={`Largest spike ratio in the current view: ${topAlert.underlyingSymbol} ${topAlert.strike}${topAlert.optionType} at ${flooredSpikeRatio(topAlert).toFixed(0)}× baseline (floored at 100 to match the row badge).`}
           >
             loudest:{' '}
             <span className="font-mono text-neutral-200">
               {topAlert.underlyingSymbol}
             </span>{' '}
             <span className="font-mono text-neutral-400">
-              ×{topAlert.spikeRatio.toFixed(0)}
+              ×{flooredSpikeRatio(topAlert).toFixed(0)}
             </span>
           </span>
         )}

@@ -687,7 +687,7 @@ export function LotteryFinderSection({
   // the trader. Minute-scrub buckets and paged slices pass through the raw
   // server response; the union persists in localStorage across the detour and
   // resumes on return.
-  const unionEngaged = minute == null && page === 0;
+  const unionEngaged = minute == null && page === 0 && date === todayCt();
   const filterSig = buildLotteryFilterSig({
     minTakeitProb: takeitFloor,
     minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
@@ -1258,7 +1258,7 @@ export function LotteryFinderSection({
           <input
             type="text"
             inputMode="numeric"
-            maxLength={2}
+            maxLength={4}
             value={maxFireCount === 0 ? '' : maxFireCount}
             placeholder="∞"
             onChange={(e) => {

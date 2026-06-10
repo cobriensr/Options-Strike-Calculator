@@ -881,6 +881,82 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
 });
 
 // ============================================================
+// Fix 1 — union does NOT engage on a historical replay
+// ============================================================
+//
+// `unionEngaged` must include a `date === todayCt()` guard (matching the
+// SilentBoom panel shape `!isHistorical && bucketIso == null && page === 0`).
+// On a PAST date at page 0 with no minute selected the union must stay
+// disengaged: rows pass straight through the server slice, no historical
+// pin lands in a `feed-union:lottery:<pastDate>` slot, and the server-
+// anchored pager remains reachable for a >50-fire historical day. Before
+// the fix, page-0 + no-minute alone engaged the union and suppressed the
+// pager on history.
+
+describe('LotteryFinderSection: union disengaged on historical replay', () => {
+  const PAST = '2026-05-08';
+  const PAST_AM = '2026-05-08T14:30:00Z';
+
+  function driveToHistorical() {
+    fireEvent.change(screen.getByLabelText(/select trading day/i), {
+      target: { value: PAST },
+    });
+  }
+
+  it('keeps the server pager reachable on a historical >1-page day (union disengaged)', () => {
+    // Page 0, no minute, but a PAST date. With the date guard the union is
+    // disengaged, so a server result reporting 2 pages must still show the
+    // pager — exactly like the minute-scrub (disengaged) path.
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: PAST_AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 60, hasMore: true }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+    driveToHistorical();
+
+    // Disengaged historical view → server-anchored pager is present and
+    // advertises the reachable second page.
+    expect(screen.getByText(/page 1 \/ 2/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /next page/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('does not pin historical rows into a feed-union:lottery:<pastDate> slot', () => {
+    const pinned = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: PAST_AM,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [pinned], total: 1 }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+    driveToHistorical();
+
+    // The row still renders (straight from the server slice) ...
+    expect(
+      screen.getByTestId('lottery-row-AAPL260508C00200000'),
+    ).toBeInTheDocument();
+    // ... but no never-vanish union slot is written for the past date.
+    const pastSlots = Object.keys(window.localStorage).filter((k) =>
+      k.startsWith(`feed-union:lottery:${PAST}`),
+    );
+    expect(pastSlots).toEqual([]);
+  });
+});
+
+// ============================================================
 // KEY INTERACTION — filter toggles
 // ============================================================
 
@@ -1286,13 +1362,38 @@ describe('LotteryFinderSection: filter interactions', () => {
 
   it('clamps the max-fires input to the schema ceiling (1000)', () => {
     render(<LotteryFinderSection marketOpen={false} />);
-    // maxLength={2} blocks >2 digits at the DOM level, but defend the
-    // parse path anyway — a programmatic / paste value must clamp.
+    // maxLength={4} bounds the field at the DOM level (the ceiling 1000 is
+    // 4 digits), but defend the parse path anyway — a value above the
+    // ceiling must clamp.
     fireEvent.change(screen.getByTestId('lottery-max-fires-input'), {
       target: { value: '5000' },
     });
     const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
     expect(feedCall?.[0]).toMatchObject({ maxFireCount: 1000 });
+  });
+
+  it('allows up to 4 digits so the full cap range (≤1000) is typeable', () => {
+    // Regression (Fix 4): maxLength was 2, so only "99" could be typed and
+    // the Math.min(n, 1000) clamp was dead. The DOM cap must be 4 digits.
+    render(<LotteryFinderSection marketOpen={false} />);
+    const input = screen.getByTestId(
+      'lottery-max-fires-input',
+    ) as HTMLInputElement;
+    expect(input.maxLength).toBe(4);
+
+    // A 3-digit value inside the range forwards unchanged (not clamped to
+    // 99, and below the 1000 ceiling so no Math.min kicks in).
+    fireEvent.change(input, { target: { value: '250' } });
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ maxFireCount: 250 });
+    const countsCall = mockUseLotteryFinderTickerCounts.mock.calls.at(-1);
+    expect(countsCall?.[0]).toMatchObject({ maxFireCount: 250 });
+
+    // A 4-digit value at the ceiling forwards as 1000.
+    fireEvent.change(input, { target: { value: '1000' } });
+    expect(mockUseLotteryFinder.mock.calls.at(-1)?.[0]).toMatchObject({
+      maxFireCount: 1000,
+    });
   });
 
   it('empty / 0 / invalid input → no cap (maxFireCount 0)', () => {

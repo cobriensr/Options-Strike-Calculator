@@ -181,28 +181,113 @@ describe('SilentBoomDayBanner: dominant ticker', () => {
 // ============================================================
 
 describe('SilentBoomDayBanner: loudest alert', () => {
-  it('selects the alert with the highest spikeRatio as loudest', () => {
+  // The "×N" label splits the multiplication sign and the number into
+  // two adjacent text nodes inside one span, so getByText('×N') (single
+  // text node) won't match. Match on the span's full textContent instead.
+  const ratioMatcher = (label: string) => (_: string, el: Element | null) =>
+    el?.tagName === 'SPAN' &&
+    el.children.length === 0 &&
+    el.textContent === label;
+
+  it('selects the alert with the highest (floored) ratio as loudest', () => {
+    // Loudest now ranks by the FLOORED row-badge ratio
+    // (spikeVolume / max(baseline, 100)), not the raw stored spikeRatio.
+    // Drive the volumes so the floored ratios are 4 / 25 / 14.
     const alerts = [
-      makeAlert({ id: 1, underlyingSymbol: 'AAPL', spikeRatio: 4 }),
-      makeAlert({ id: 2, underlyingSymbol: 'TSLA', spikeRatio: 25 }),
-      makeAlert({ id: 3, underlyingSymbol: 'NVDA', spikeRatio: 14 }),
+      makeAlert({
+        id: 1,
+        underlyingSymbol: 'AAPL',
+        spikeVolume: 400,
+        baselineVolume: 100,
+      }),
+      makeAlert({
+        id: 2,
+        underlyingSymbol: 'TSLA',
+        spikeVolume: 2500,
+        baselineVolume: 100,
+      }),
+      makeAlert({
+        id: 3,
+        underlyingSymbol: 'NVDA',
+        spikeVolume: 1400,
+        baselineVolume: 100,
+      }),
     ];
     render(<SilentBoomDayBanner alerts={alerts} total={3} />);
 
-    // Loudest should be TSLA at ×25.
-    expect(screen.getByText('×25')).toBeInTheDocument();
+    // Loudest should be TSLA at ×25 (floored).
+    expect(screen.getByText(ratioMatcher('×25'))).toBeInTheDocument();
     const tslaSpans = screen.getAllByText('TSLA');
     expect(tslaSpans.length).toBeGreaterThan(0);
   });
 
-  it('rounds spikeRatio to nearest integer with toFixed(0)', () => {
+  it('rounds the floored ratio to nearest integer with toFixed(0)', () => {
+    // 1770 / max(100, 100) = 17.7 → "18" via toFixed(0).
     const alerts = [
-      makeAlert({ id: 1, underlyingSymbol: 'AAPL', spikeRatio: 17.7 }),
+      makeAlert({
+        id: 1,
+        underlyingSymbol: 'AAPL',
+        spikeVolume: 1770,
+        baselineVolume: 100,
+      }),
     ];
     render(<SilentBoomDayBanner alerts={alerts} total={1} />);
 
-    // 17.7 → "18" via toFixed(0)
-    expect(screen.getByText('×18')).toBeInTheDocument();
+    expect(screen.getByText(ratioMatcher('×18'))).toBeInTheDocument();
+  });
+
+  // ── Fix 4 — banner "loudest" must match the FLOORED ratio the row
+  //    badge displays (spikeVolume / max(baseline, 100)), NOT the raw
+  //    stored spikeRatio (spikeVolume / max(baseline, 1)). Otherwise a
+  //    tiny-baseline alert wins "loudest" with a ×8500 that no visible
+  //    row badge shows.
+
+  it('renders the loudest ratio floored at the 100-contract baseline (matches row badge)', () => {
+    // baseline=2 → raw stored spikeRatio is 8500, but the row badge
+    // floors to 17000 / max(2, 100) = 170×. Banner must show ×170.
+    const alerts = [
+      makeAlert({
+        id: 1,
+        underlyingSymbol: 'SNDK',
+        spikeRatio: 8500,
+        spikeVolume: 17_000,
+        baselineVolume: 2,
+      }),
+    ];
+    render(<SilentBoomDayBanner alerts={alerts} total={1} />);
+
+    expect(screen.getByText(ratioMatcher('×170'))).toBeInTheDocument();
+    // The raw, un-floored number must NOT appear.
+    expect(screen.queryByText(ratioMatcher('×8500'))).not.toBeInTheDocument();
+  });
+
+  it('ranks loudest by floored ratio, not raw spikeRatio', () => {
+    const alerts = [
+      // Tiny-baseline ghost: huge raw ratio (8500) but floored = 170×.
+      makeAlert({
+        id: 1,
+        underlyingSymbol: 'SNDK',
+        spikeRatio: 8500,
+        spikeVolume: 17_000,
+        baselineVolume: 2,
+      }),
+      // Real baseline: raw 300, floored = 60000 / 200 = 300×. This is
+      // the genuinely loudest by the displayed metric.
+      makeAlert({
+        id: 2,
+        underlyingSymbol: 'NVDA',
+        spikeRatio: 300,
+        spikeVolume: 60_000,
+        baselineVolume: 200,
+      }),
+    ];
+    render(<SilentBoomDayBanner alerts={alerts} total={2} />);
+
+    // NVDA wins (300× floored > 170× floored), not SNDK (raw 8500).
+    expect(screen.getByText(ratioMatcher('×300'))).toBeInTheDocument();
+    expect(screen.queryByText(ratioMatcher('×170'))).not.toBeInTheDocument();
+    const nvdaSpans = screen.getAllByText('NVDA');
+    expect(nvdaSpans.length).toBeGreaterThan(0);
   });
 });
 
