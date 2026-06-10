@@ -285,8 +285,7 @@ describe('detectSilentBoomFires — spike-multiplier floor boundary', () => {
 // median() even-length arms — exercised through the detector's
 // baselineVolume output (the function is private). The baseline window is
 // always 4 buckets (even length), so the (sorted[mid-1] + sorted[mid]) / 2
-// branch is the one in play. A 2-element even-length window is exercised by
-// the cooldown's second baseline below.
+// branch is the one in play.
 // ============================================================
 
 describe('detectSilentBoomFires — median (even-length baseline) output', () => {

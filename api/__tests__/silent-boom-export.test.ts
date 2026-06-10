@@ -304,6 +304,40 @@ async function captureExportSql(
   return { sqlText, binds: call.slice(1) };
 }
 
+// Positional bind index map for the export SELECT (api/silent-boom-export.ts
+// :152-173). The neon tagged-template pushes ONE positional bind per `${}`
+// interpolation, in source order. Several predicates interpolate their value
+// twice (an `IS NULL` short-circuit guard + the comparison), so the indices
+// are NOT one-per-logical-filter — they are verified against the actual SQL:
+//
+//   0  targetDate
+//   1  tickerUpper (guard)        2  tickerUpper (eq)
+//   3  optionType (guard)         4  optionType (eq)
+//   5  minVolOi
+//   6  minSpikeRatio
+//   7  minScore (guard)           8  minScore (cmp)
+//   9  todLo (guard)             10  todLo (>=)
+//  11  todHi (guard)             12  todHi (<)
+//  13  dteLo (guard)             14  dteLo (BETWEEN lo)   15  dteHiBound (BETWEEN hi)
+//  16  burstLo (guard)           17  burstLo (>=)         18  burstHiBound (<)
+//  19  askPctLo (guard)          20  askPctLo (>=)        21  askPctHiBound (<)
+//  22  minTakeitProb (guard)     23  minTakeitProb (>=)
+//
+// Asserting by POSITION (not set-membership) is load-bearing: the zero-valued
+// bucket bounds (dte=0 → lo=0/hi=0, burst=grey → lo=0) collide with the
+// default minVolOi/minSpikeRatio = 0 binds, so `binds.toContain(0)` would pass
+// even if dteLo/burstLo had drifted. Positional pinning catches that drift.
+const BIND_IDX = {
+  todLo: 9,
+  todHi: 11,
+  dteLo: 13,
+  dteHiBound: 15,
+  burstLo: 16,
+  burstHiBound: 18,
+  askPctLo: 19,
+  askPctHiBound: 21,
+} as const;
+
 describe('silent-boom-export ↔ feed filter-bucket parity', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -325,10 +359,10 @@ describe('silent-boom-export ↔ feed filter-bucket parity', () => {
         tod,
       });
       expect(sqlText).toContain("AT TIME ZONE 'America/Chicago'");
-      // Both lo and hi are threaded as int binds; the predicate is
-      // `(${lo} IS NULL OR minuteOfDay >= ${lo}) AND (${hi} IS NULL OR ... < ${hi})`.
-      expect(binds).toContain(lo);
-      expect(binds).toContain(hi);
+      // Positional: todLo at index 9, todHi at index 11 (each value is also
+      // re-bound in its comparison, but the guard position uniquely pins it).
+      expect(binds[BIND_IDX.todLo]).toBe(lo);
+      expect(binds[BIND_IDX.todHi]).toBe(hi);
     });
   }
 
@@ -347,8 +381,11 @@ describe('silent-boom-export ↔ feed filter-bucket parity', () => {
         dte,
       });
       expect(sqlText).toContain('dte BETWEEN');
-      expect(binds).toContain(lo);
-      expect(binds).toContain(hi);
+      // Positional: dteLo guard at 13, dteHiBound (BETWEEN upper) at 15. The
+      // zero-valued dte=0 arm (lo=0,hi=0) would pass a set-membership check
+      // against the default minVolOi/minSpikeRatio=0 binds; pin by position.
+      expect(binds[BIND_IDX.dteLo]).toBe(lo);
+      expect(binds[BIND_IDX.dteHiBound]).toBe(hi);
     });
   }
 
@@ -366,8 +403,11 @@ describe('silent-boom-export ↔ feed filter-bucket parity', () => {
         burst,
       });
       expect(sqlText).toContain('spike_ratio >=');
-      expect(binds).toContain(lo);
-      expect(binds).toContain(hi);
+      // Positional: burstLo guard at 16, burstHiBound at 18. The burst=grey
+      // arm (lo=0) collides with the default minVolOi/minSpikeRatio=0 binds
+      // under set-membership; pin by position so a drift can't hide.
+      expect(binds[BIND_IDX.burstLo]).toBe(lo);
+      expect(binds[BIND_IDX.burstHiBound]).toBe(hi);
     });
   }
 
@@ -388,8 +428,9 @@ describe('silent-boom-export ↔ feed filter-bucket parity', () => {
         askPctBand,
       });
       expect(sqlText).toContain('ask_pct >=');
-      expect(binds).toContain(lo);
-      expect(binds).toContain(hi);
+      // Positional: askPctLo guard at 19, askPctHiBound at 21.
+      expect(binds[BIND_IDX.askPctLo]).toBe(lo);
+      expect(binds[BIND_IDX.askPctHiBound]).toBe(hi);
     });
   }
 
