@@ -57,6 +57,8 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import aiohttp
+
 from logger_setup import log
 from sentry_setup import capture_message
 
@@ -198,15 +200,29 @@ class WsLease:
 
         Raises ``WsLeaseError`` on a non-2xx HTTP status so a transport fault
         surfaces instead of being swallowed as a contended/lost result.
+
+        ALSO normalizes connection-level failures: aiohttp wraps OS/DNS/socket
+        errors in ``ClientError`` (e.g. ``ClientConnectorError``) and surfaces a
+        ``ClientTimeout`` as ``asyncio.TimeoutError``. Neither is a
+        ``WsLeaseError``, so without this they would escape ``run_renewal``
+        (which only catches ``WsLeaseError``) and silently kill the renewal
+        task. Wrapping them as ``WsLeaseError`` lets the loop's consecutive-
+        faults tolerance engage on real network blips and recover in-process.
+        We deliberately do NOT catch bare ``OSError`` — aiohttp already wraps
+        connection/DNS errors in ``ClientError``; catching ``OSError`` risks
+        masking unrelated bugs.
         """
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(
-            self._base_url, json=command, headers=headers
-        ) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                raise WsLeaseError(f"HTTP {resp.status}: {body[:300]}")
-            return await resp.json()
+        try:
+            async with self._session.post(
+                self._base_url, json=command, headers=headers
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise WsLeaseError(f"HTTP {resp.status}: {body[:300]}")
+                return await resp.json()
+        except (TimeoutError, aiohttp.ClientError) as exc:
+            raise WsLeaseError(f"transport: {exc!r}") from exc
 
     # ------------------------------------------------------------------
     # Public API.
@@ -377,6 +393,22 @@ class WsLease:
                     "uw-stream ws lease renewal unreachable",
                     on_lost,
                     reason="upstash_unreachable",
+                )
+                return
+            except Exception as exc:  # defense in depth
+                # An UNEXPECTED non-transport error (not WsLeaseError) must
+                # never propagate out of the renewal task: main's shutdown
+                # gather(return_exceptions=True) would swallow it silently → a
+                # clean exit 0 → Railway never restarts (the exact 2026-06-09
+                # failure mode, but via a different escape path). Fence it so it
+                # is Sentry-captured by ``_fence`` and routes into the same
+                # graceful-shutdown-then-restart path, then stop. CancelledError
+                # is a BaseException, so a graceful-shutdown cancel is NOT caught
+                # here and still propagates cleanly.
+                await self._fence(
+                    f"uw-stream ws lease renewal error: {exc!r}",
+                    on_lost,
+                    reason="renewal_error",
                 )
                 return
             consecutive_faults = 0

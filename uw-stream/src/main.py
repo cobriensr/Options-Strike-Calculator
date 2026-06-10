@@ -250,6 +250,14 @@ async def _run() -> None:
 
         # Install signal handlers for clean Railway shutdown. SIGTERM is
         # what Railway sends on deploy / restart; SIGINT is for local Ctrl-C.
+        #
+        # ``lease_lost`` distinguishes the two shutdown triggers: a confirmed
+        # lease loss (set below via on_lost) must exit NON-ZERO so Railway's
+        # ON_FAILURE policy restarts the container and it re-acquires the lease;
+        # a normal SIGTERM (deploy supersession) leaves ``lease_lost`` unset →
+        # clean exit 0 (no restart loop on every deploy). Created before
+        # ``stop`` so the on_lost callback can set both.
+        lease_lost = asyncio.Event()
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -261,13 +269,19 @@ async def _run() -> None:
         # Renew the lease for the process lifetime. A confirmed loss of
         # ownership (CAS sees another gen's id, or Upstash is unreachable
         # across the full TTL) routes into the SAME graceful-shutdown path as
-        # a SIGTERM via on_lost=stop.set — the daemon closes its sockets and
-        # exits, so Railway restarts it and it re-acquires when the slot frees.
-        # Added after `stop` exists so on_lost can point at stop.set.
+        # a SIGTERM — the daemon closes its sockets and drains — but ALSO marks
+        # ``lease_lost`` so _run exits NON-ZERO afterward, letting Railway
+        # restart it to re-acquire when the slot frees. Added after `stop` +
+        # `lease_lost` exist so on_lost can set both.
+        def _on_lease_lost() -> None:
+            lease_lost.set()
+            stop.set()
+
         if lease is not None:
             background_tasks.append(
                 asyncio.create_task(
-                    lease.run_renewal(on_lost=stop.set), name="ws_lease_renewal"
+                    lease.run_renewal(on_lost=_on_lease_lost),
+                    name="ws_lease_renewal",
                 ),
             )
 
@@ -289,6 +303,14 @@ async def _run() -> None:
             lease_session=lease_session,
         )
         log.info("uw-stream stopped")
+        # A confirmed lease loss drained gracefully above; now exit non-zero so
+        # Railway's ON_FAILURE restart policy relaunches the container (it will
+        # re-acquire the lease once the slot frees). A normal SIGTERM leaves
+        # ``lease_lost`` unset → falls through to a clean exit 0 (no restart
+        # loop on deploys). The SystemExit propagates AFTER the finally below
+        # runs its idempotent best-effort cleanup, which is correct.
+        if lease_lost.is_set():
+            raise SystemExit(1)
     finally:
         # Best-effort cleanup for ANY exit path that bypassed _shutdown
         # (acquire raised/timed out, or a mid-boot crash). Idempotent with the

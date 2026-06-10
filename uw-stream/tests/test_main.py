@@ -196,11 +196,13 @@ async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_wires_renewal_task_with_stop_as_on_lost(monkeypatch):
-    """_run must start the lease renewal task and bind ``on_lost`` to the
-    stop Event's ``.set`` — so a confirmed lease loss routes into the SAME
-    graceful-shutdown path as a SIGTERM. Also confirms the lease is released
-    on shutdown.
+async def test_run_wires_renewal_task_with_lease_lost_callback(monkeypatch):
+    """_run must start the lease renewal task and pass an ``on_lost`` callback
+    that sets BOTH the lease_lost flag and the stop Event — so a confirmed
+    lease loss routes into the SAME graceful-shutdown path as a SIGTERM AND
+    marks the run for a non-zero exit. Also confirms the lease is released on
+    shutdown, and that a confirmed loss surfaces as SystemExit(1) so Railway
+    restarts the container.
     """
     monkeypatch.setattr(main, "init_sentry", lambda: None)
 
@@ -263,15 +265,91 @@ async def test_run_wires_renewal_task_with_stop_as_on_lost(monkeypatch):
 
     monkeypatch.setattr(main, "WsLease", _FakeLease)
 
-    await main._run()
+    # A confirmed lease loss (run_renewal fires on_lost) must drain gracefully
+    # AND exit non-zero so Railway's ON_FAILURE policy restarts the container.
+    with pytest.raises(SystemExit) as exc_info:
+        await main._run()
+    assert exc_info.value.code == 1
 
     on_lost = captured.get("on_lost")
     assert on_lost is not None, "renewal task was never started"
-    # on_lost must be the stop Event's bound .set — the wiring under test.
-    assert getattr(on_lost, "__name__", None) == "set"
-    assert isinstance(getattr(on_lost, "__self__", None), asyncio.Event)
-    # And the lease was released during shutdown.
+    # on_lost must set BOTH the lease_lost flag (drives the non-zero exit) and
+    # the stop Event (routes into the same graceful drain as a SIGTERM).
+    assert callable(on_lost)
+    # And the lease was released during shutdown (graceful drain still ran).
     assert captured["lease"].released is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_run_exits_zero_on_normal_sigterm(monkeypatch):
+    """A normal SIGTERM (deploy supersession) must leave ``lease_lost`` UNSET,
+    so _run returns cleanly (exit 0) — NOT SystemExit(1). Otherwise Railway's
+    ON_FAILURE policy would restart-loop on every deploy.
+    """
+    monkeypatch.setattr(main, "init_sentry", lambda: None)
+
+    async def _noop_pool() -> None:
+        return None
+
+    monkeypatch.setattr(main, "init_pool", _noop_pool)
+    monkeypatch.setattr(main, "close_pool", _noop_pool)
+
+    # Lease disabled (kill switch off) so there's no renewal task — the only
+    # way _run wakes is the stop Event we set below (simulating SIGTERM).
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", False, raising=False)
+    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
+
+    class _ForeverConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs.get("name", "conn")
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    class _ForeverRouter:
+        def __init__(self, *_a, **_k) -> None: ...
+
+        async def run(self, _q) -> None:
+            await asyncio.sleep(3600)
+
+    async def _forever_bg() -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "Connector", _ForeverConnector)
+    monkeypatch.setattr(main, "Router", _ForeverRouter)
+    monkeypatch.setattr(main, "run_server", _forever_bg)
+    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
+
+    # Capture every asyncio.Event _run constructs so we can fire the ``stop``
+    # Event directly (a deterministic SIGTERM stand-in — real signal delivery
+    # isn't reliable under pytest). _run builds two Events: lease_lost (first)
+    # then stop. With the lease disabled the lease_lost Event stays unset, so a
+    # stop-only trigger is exactly the normal-SIGTERM path → exit 0.
+    created_events: list[asyncio.Event] = []
+    real_event = asyncio.Event
+
+    def _tracking_event() -> asyncio.Event:
+        ev = real_event()
+        created_events.append(ev)
+        return ev
+
+    monkeypatch.setattr(main.asyncio, "Event", _tracking_event)
+
+    real_wait = asyncio.wait
+
+    async def _wait_then_sigterm(tasks, **kwargs):
+        # _run has now created lease_lost + stop and is awaiting them. Fire
+        # ``stop`` (the LAST event created) to drive a clean graceful shutdown
+        # WITHOUT touching lease_lost — the normal SIGTERM path.
+        created_events[-1].set()
+        return await real_wait(tasks, **kwargs)
+
+    monkeypatch.setattr(main.asyncio, "wait", _wait_then_sigterm)
+
+    # No SystemExit — clean return → exit 0 (lease_lost was never set).
+    await main._run()
+    # The stop event was the last created; lease_lost (first) stayed unset.
+    assert created_events[0].is_set() is False
 
 
 @pytest.mark.asyncio

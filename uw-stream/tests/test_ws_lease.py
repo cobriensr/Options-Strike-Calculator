@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import aiohttp
 import pytest
 
 from ws_lease import (
@@ -492,3 +493,118 @@ async def test_http_error_status_raises_ws_lease_error() -> None:
 
     with pytest.raises(WsLeaseError, match="HTTP 401"):
         await lease.acquire(timeout_s=5)
+
+
+class _RaisingSession:
+    """Session whose ``post`` raises a connection-level exception.
+
+    A real connection-level failure (dropped socket, DNS, timeout) raises
+    aiohttp's own exception from inside ``self._session.post(...)`` — NOT an
+    HTTP-status body. ``exceptions`` is consumed FIFO; ``None`` entries replay
+    the corresponding ``ok_payloads`` entry instead so a test can interleave a
+    transport fault with a recovered renew.
+    """
+
+    def __init__(
+        self,
+        exceptions: list[BaseException | None],
+        ok_payloads: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self._exceptions = list(exceptions)
+        self._ok_payloads = list(ok_payloads or [])
+        self.sent: list[list[Any]] = []
+
+    def post(self, url: str, *, json: list[Any], headers: dict[str, str]) -> _FakeResponse:
+        self.sent.append(json)
+        exc = self._exceptions.pop(0)
+        if exc is not None:
+            raise exc
+        return _FakeResponse(self._ok_payloads.pop(0))
+
+
+@pytest.mark.asyncio
+async def test_command_wraps_aiohttp_client_error_as_ws_lease_error() -> None:
+    # A connection-level aiohttp failure (e.g. ClientConnectorError ⊂
+    # ClientError) raised from session.post must surface as WsLeaseError so the
+    # renewal loop's existing transient tolerance can engage — not escape
+    # uncaught and kill the renewal task.
+    session = _RaisingSession([aiohttp.ClientError("connection reset")])
+    lease = _make_lease(session)
+
+    with pytest.raises(WsLeaseError, match="transport:"):
+        await lease.renew()
+
+
+@pytest.mark.asyncio
+async def test_command_wraps_asyncio_timeout_as_ws_lease_error() -> None:
+    # aiohttp's ClientTimeout surfaces as asyncio.TimeoutError; it too must be
+    # normalized to WsLeaseError rather than escaping the renewal loop.
+    session = _RaisingSession([TimeoutError("timed out")])
+    lease = _make_lease(session)
+
+    with pytest.raises(WsLeaseError, match="transport:"):
+        await lease.renew()
+
+
+@pytest.mark.asyncio
+async def test_run_renewal_tolerates_connection_level_transport_error_then_recovers(
+    monkeypatch,
+) -> None:
+    # Direct regression for the 2026-06-09 incident: a connection-level
+    # transport error (aiohttp.ClientError) on one renew must be tolerated
+    # identically to a 503 — the loop logs + retries and recovers on the next
+    # ok renew, with NO fence. Sequence: ok, ClientError, ok, lost.
+    session = _RaisingSession(
+        exceptions=[None, aiohttp.ClientError("reset"), None, None],
+        ok_payloads=[{"result": 1}, {"result": 1}, {"result": 0}],
+    )
+    lease = _make_lease(session, renew_ms=10)
+
+    async def _no_sleep(_d: float) -> None:
+        return None
+
+    monkeypatch.setattr("ws_lease.asyncio.sleep", _no_sleep)
+
+    calls = {"n": 0}
+
+    def _on_lost() -> None:
+        calls["n"] += 1
+
+    await lease.run_renewal(_on_lost)
+
+    # Fenced exactly once, only on the final confirmed-loss renew (result 0) —
+    # the transport blip mid-loop did NOT fence.
+    assert calls["n"] == 1
+    # All four renewal POSTs were issued (the ClientError did not abort the loop).
+    assert len(session.sent) == 4
+
+
+@pytest.mark.asyncio
+async def test_run_renewal_fences_on_unexpected_exception(monkeypatch) -> None:
+    # Defense in depth: an UNEXPECTED non-transport error from renew() (e.g. a
+    # ValueError from a future refactor) must NOT propagate out of the renewal
+    # task (where the shutdown gather would swallow it silently). The final
+    # except-Exception net fences via _fence(reason="renewal_error") — Sentry
+    # captured — then returns.
+    session = FakeSession([{"result": 1}] * 5)
+    lease = _make_lease(session, renew_ms=10)
+
+    async def _no_sleep(_d: float) -> None:
+        return None
+
+    monkeypatch.setattr("ws_lease.asyncio.sleep", _no_sleep)
+
+    async def _boom() -> bool:
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(lease, "renew", _boom)
+
+    fired = {"n": 0}
+
+    def _on_lost() -> None:
+        fired["n"] += 1
+
+    # Must NOT raise — the unexpected error is fenced, not propagated.
+    await lease.run_renewal(_on_lost)
+
+    assert fired["n"] == 1

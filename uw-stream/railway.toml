@@ -1,5 +1,11 @@
 [deploy]
 watchPatterns = ["uw-stream/**"]
+# Restart on a NON-ZERO exit only — a confirmed lease loss / acquire timeout
+# exits 1 so Railway relaunches and re-acquires; a clean SIGTERM (deploy
+# supersession) exits 0 and is NOT restarted. Capped at Railway's default 10
+# retries: a sustained acquire timeout means a wedged peer that needs eyes.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
 # NOTE: healthcheckPath is intentionally UNSET. /healthz reports
 # "ok_market_closed" overnight and on weekends (the UW channels are
 # legitimately silent then), but it does NOT model market holidays — on a
