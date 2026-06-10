@@ -164,6 +164,47 @@ describe('useNeverVanishFeed', () => {
     expect(counts.map((c) => c.ticker)).toEqual(['AAPL', 'TSLA', 'NVDA']);
   });
 
+  it('ticker counts: multiple union-only tickers append AFTER server order, sorted by merged count desc', () => {
+    // Server reports one ticker (SPY=7); the union holds THREE tickers the
+    // server never reported, with differing union counts. The union-only
+    // extras must come AFTER the server ticker and be ordered by merged
+    // count descending (TSLA 3 > NVDA 2 > AMD 1), exercising the `.sort()`
+    // branch that a single union-only ticker can't.
+    const fires: Row[] = [
+      { id: 's1', sym: 'SPY', pct: 1 },
+      { id: 'a1', sym: 'AMD', pct: 2 },
+      { id: 'n1', sym: 'NVDA', pct: 3 },
+      { id: 'n2', sym: 'NVDA', pct: 4 },
+      { id: 't1', sym: 'TSLA', pct: 5 },
+      { id: 't2', sym: 'TSLA', pct: 6 },
+      { id: 't3', sym: 'TSLA', pct: 7 },
+    ];
+    const { result } = renderHook(() =>
+      useNeverVanishFeed<Row>({
+        fetched: fires,
+        engaged: true,
+        storageKey: 'feed-union:t:2026-06-07:sig',
+        key: keyFn,
+        getSymbol: symFn,
+        serverTotal: fires.length,
+        hasMore: false,
+        pageSize: PAGE_SIZE,
+        // Server reports ONLY SPY — the three other tickers are union-only.
+        serverTickerCounts: [{ ticker: 'SPY', count: 7 }],
+      }),
+    );
+    const order = result.current.tickerCounts.map((c) => c.ticker);
+    // SPY first (server order), then union-only extras by merged count desc.
+    expect(order).toEqual(['SPY', 'TSLA', 'NVDA', 'AMD']);
+    const map = new Map(
+      result.current.tickerCounts.map((c) => [c.ticker, c.count]),
+    );
+    expect(map.get('SPY')).toBe(7);
+    expect(map.get('TSLA')).toBe(3);
+    expect(map.get('NVDA')).toBe(2);
+    expect(map.get('AMD')).toBe(1);
+  });
+
   it('disengaged: ticker counts pass through the raw server counts', () => {
     const { result } = renderHook(() =>
       useNeverVanishFeed<Row>({
