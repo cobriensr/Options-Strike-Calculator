@@ -53,12 +53,23 @@ vi.mock('../_lib/lottery-suppression.js', () => ({
 // predicate text inlined) and the values include showAll + keptTickers.
 const mockSql = vi.fn();
 
+// Raw-SQL marker produced by `db.unsafe(...)` (mirrors the neon driver's
+// UnsafeRawSql). The flattener inlines the marker's text directly into the
+// strings array (no bound param) — exactly like neon splices raw SQL — so the
+// inlined inversion-bonus CASE text is visible to SQL-text assertions.
+interface RawSqlFragment {
+  __rawSql: string;
+}
+const isRawSqlFragment = (v: unknown): v is RawSqlFragment =>
+  typeof v === 'object' && v !== null && '__rawSql' in v;
+
 // The `db` handle the handler uses. A tagged-template wrapper that flattens
-// any SuppressionFragment in the interpolated values into raw predicate text
-// + its two params before delegating to mockSql. Non-fragment template calls
-// pass straight through unchanged (so existing tests are unaffected).
+// any SuppressionFragment + RawSqlFragment in the interpolated values into raw
+// predicate / expression text (plus the suppression bound params) before
+// delegating to mockSql. Non-fragment template calls pass straight through
+// unchanged (so existing tests are unaffected).
 function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
-  if (!values.some(isSuppressionFragment)) {
+  if (!values.some(isSuppressionFragment) && !values.some(isRawSqlFragment)) {
     return mockSql(strings, ...values);
   }
   const outStrings: string[] = [strings[0]!];
@@ -77,6 +88,9 @@ function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
       );
       outValues.push(v.kept);
       outStrings.push('::text[]))' + strings[i + 1]!);
+    } else if (isRawSqlFragment(v)) {
+      // Inline raw text into the surrounding strings (no bound param).
+      outStrings[outStrings.length - 1] += v.__rawSql + strings[i + 1]!;
     } else {
       outValues.push(v);
       outStrings.push(strings[i + 1]!);
@@ -84,6 +98,10 @@ function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
   }
   return mockSql(outStrings as unknown as TemplateStringsArray, ...outValues);
 }
+// `db.unsafe(raw)` → raw-SQL marker (mirrors neon's UnsafeRawSql).
+(dbTag as unknown as { unsafe: (raw: string) => RawSqlFragment }).unsafe = (
+  raw: string,
+) => ({ __rawSql: raw });
 
 vi.mock('../_lib/db.js', async () => {
   const actual =
@@ -440,6 +458,47 @@ describe('lottery-finder-ticker-counts handler', () => {
 
     const body = res._json as { filters: { showAll: boolean } };
     expect(body.filters.showAll).toBe(false);
+  });
+
+  it('FIX D: minScore gates the chip on the DISPLAYED qas (GREATEST(0,score+rt+fc)+inversion CASE), not raw score', async () => {
+    // Chip totals must mirror the qas-filtered feed (post-Fix-C). The chip
+    // query carries score/rt/fc through ranked → chain_day and gates minScore
+    // on the qas expression in the final WHERE (where the lottery_ticker_stats
+    // LEFT JOIN exposes inversion_quintile). This test fails loudly if the
+    // chip reverts to raw `score >= minScore`.
+    mockSql.mockResolvedValueOnce([
+      {
+        ticker: 'SNDK',
+        count: 1,
+        peak_best_pct: '50.0',
+        latest_trigger_time_ct: '2026-05-14T15:00:00Z',
+      },
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', minScore: '13' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Normalize whitespace so the assertion is robust to SQL formatting.
+    const sql = (mockSql.mock.calls[0]![0] as TemplateStringsArray)
+      .join('?')
+      .replace(/\s+/g, ' ');
+    // qas expression spliced into the chip query (cd.* score components +
+    // the shared inversion-bonus CASE).
+    expect(sql).toContain('COALESCE(cd.score, 0)');
+    expect(sql).toContain('COALESCE(cd.round_trip_score_deduct, 0)');
+    expect(sql).toContain('COALESCE(cd.fire_count_score_adjustment, 0)');
+    expect(sql).toContain(
+      'CASE s.inversion_quintile WHEN 1 THEN -5 WHEN 2 THEN -2 WHEN 3 THEN 0 WHEN 4 THEN 3 WHEN 5 THEN 5 ELSE 0 END',
+    );
+    // OLD raw-score predicate is gone.
+    expect(sql).not.toContain('OR score >= ?');
+    // Floor value still binds.
+    expect((mockSql.mock.calls[0] as unknown[]).slice(1)).toContain(13);
   });
 
   it('passes showAll=true through to the SQL bind and the filter echo', async () => {

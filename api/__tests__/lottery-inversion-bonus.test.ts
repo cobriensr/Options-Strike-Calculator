@@ -3,6 +3,7 @@ import {
   inversionQualityBonus,
   qualityAdjustedScore,
   INVERSION_BONUS_BY_QUINTILE,
+  INVERSION_BONUS_CASE_SQL,
 } from '../_lib/lottery-inversion-bonus.js';
 
 describe('inversionQualityBonus', () => {
@@ -49,5 +50,27 @@ describe('INVERSION_BONUS_BY_QUINTILE', () => {
       4: 3,
       5: 5,
     });
+  });
+});
+
+describe('INVERSION_BONUS_CASE_SQL (bonus-sql-parity)', () => {
+  // The qas SQL filter in /api/lottery-finder + /api/lottery-finder-ticker-counts
+  // gates on the SAME displayed score the row badge derives via
+  // qualityAdjustedScore. The in-SQL bonus is a raw CASE string that MUST mirror
+  // INVERSION_BONUS_BY_QUINTILE exactly. This test fails loudly if the JS map
+  // and the SQL CASE ever drift.
+  it('is the exact CASE on s.inversion_quintile mirroring the JS map (NULL → 0)', () => {
+    expect(INVERSION_BONUS_CASE_SQL).toBe(
+      'CASE s.inversion_quintile WHEN 1 THEN -5 WHEN 2 THEN -2 ' +
+        'WHEN 3 THEN 0 WHEN 4 THEN 3 WHEN 5 THEN 5 ELSE 0 END',
+    );
+  });
+
+  it('every quintile branch + the ELSE encodes the same integer as the JS map', () => {
+    for (const [q, bonus] of Object.entries(INVERSION_BONUS_BY_QUINTILE)) {
+      expect(INVERSION_BONUS_CASE_SQL).toContain(`WHEN ${q} THEN ${bonus} `);
+    }
+    // NULL / out-of-range quintile → ELSE 0 (matches inversionQualityBonus).
+    expect(INVERSION_BONUS_CASE_SQL).toContain('ELSE 0 END');
   });
 });

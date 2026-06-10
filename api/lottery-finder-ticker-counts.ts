@@ -25,6 +25,7 @@ import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { lotteryFinderTickerCountsQuerySchema } from './_lib/validation.js';
 import { readKeptTickers } from './_lib/kept-tickers.js';
 import { keptSuppressionSql } from './_lib/lottery-suppression.js';
+import { INVERSION_BONUS_CASE_SQL } from './_lib/lottery-inversion-bonus.js';
 import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -145,6 +146,11 @@ export default async function handler(
           option_type,
           expiry,
           takeit_prob,
+          -- Score components carried through so the final SELECT (where the
+          -- lottery_ticker_stats LEFT JOIN exposes inversion_quintile) can
+          -- gate minScore on the DISPLAYED qas, mirroring /api/lottery-finder
+          -- exactly so chip totals never diverge from the feed (Fix C/D).
+          score, round_trip_score_deduct, fire_count_score_adjustment,
           MAX(takeit_prob) OVER (
             PARTITION BY underlying_symbol, strike, option_type, expiry
           ) AS chain_max_takeit,
@@ -169,7 +175,6 @@ export default async function handler(
           AND (${q.mode ?? null}::text IS NULL OR mode = ${q.mode ?? ''})
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? ''})
           AND (${q.tod ?? null}::text IS NULL OR tod = ${q.tod ?? ''})
-          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? 0})
           AND (
             ${minPremium}::numeric IS NULL
             OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric
@@ -182,7 +187,8 @@ export default async function handler(
           option_type,
           expiry,
           chain_peak_pct,
-          chain_latest_trigger
+          chain_latest_trigger,
+          score, round_trip_score_deduct, fire_count_score_adjustment
         FROM ranked
         WHERE rn = 1
           AND (${minFireCount}::int IS NULL OR fc >= ${minFireCount ?? 0})
@@ -197,6 +203,20 @@ export default async function handler(
       FROM chain_day cd
       LEFT JOIN lottery_ticker_stats s ON s.ticker = cd.underlying_symbol
       WHERE ${keptSuppressionSql(db, 'cd', showAll, keptTickers)}
+        -- Fix C/D: minScore gates on the DISPLAYED qas (= GREATEST(0, score +
+        -- rt + fc) + inversion bonus; NO gamma, post-Fix-B), not raw score, so
+        -- the chip count matches the qas-filtered feed.
+        AND (
+          ${q.minScore ?? null}::int IS NULL
+          OR (
+            GREATEST(
+              0,
+              COALESCE(cd.score, 0)
+              + COALESCE(cd.round_trip_score_deduct, 0)
+              + COALESCE(cd.fire_count_score_adjustment, 0)
+            ) + ${db.unsafe(INVERSION_BONUS_CASE_SQL)}
+          ) >= ${q.minScore ?? 0}
+        )
       GROUP BY cd.underlying_symbol
       ORDER BY count DESC, latest_trigger_time_ct DESC, underlying_symbol ASC
     `,

@@ -911,6 +911,34 @@ describe('LotteryFinderSection: filter interactions', () => {
     );
   });
 
+  it('Tier 1 conviction chip forwards minScore=13 (matches TIER_CUTOFFS_V2.tier1MinScore)', () => {
+    // Now that the server filters `qas >= minScore`, the chip must send the
+    // SAME cutoff the tier badge derives via tierFromQualityScore. TIER1 →
+    // 13 (api/_lib/lottery-tier.ts TIER_CUTOFFS_V2). The stale 18 would have
+    // hidden every fire whose qas fell in [13, 18).
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Tier 1/ }));
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minScore: 13 });
+  });
+
+  it('Tier 2+ conviction chip forwards minScore=10 (matches TIER_CUTOFFS_V2.tier2MinScore)', () => {
+    // TIER2 → 10 (the stale 12 would have hidden qas ∈ [10, 12) fires the
+    // tier2 badge now shows).
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Tier 2/ }));
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minScore: 10 });
+  });
+
+  it('"all" conviction floor (default) forwards no minScore (null)', () => {
+    // Default boot state is the "all" floor → CONVICTION_TO_MIN_SCORE.all is
+    // null so the server applies no qas floor.
+    render(<LotteryFinderSection marketOpen={false} />);
+    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
+    expect(feedCall?.[0]).toMatchObject({ minScore: null });
+  });
+
   it('persists the sort mode to localStorage when changed', () => {
     render(<LotteryFinderSection marketOpen={false} />);
     // Sort mode "score" — exact-match on the chip label.

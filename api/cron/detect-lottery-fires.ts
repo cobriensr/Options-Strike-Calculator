@@ -31,7 +31,7 @@ import {
   LOTTERY_TIER_THRESHOLDS_V2,
 } from '../_lib/lottery-score-weights-v2.js';
 import { tierFromQualityScore } from '../_lib/lottery-tier.js';
-import { qualityAdjustedScore } from '../_lib/lottery-inversion-bonus.js';
+import { INVERSION_BONUS_CASE_SQL } from '../_lib/lottery-inversion-bonus.js';
 import {
   computeRangePos,
   fetchStockCandles1m,
@@ -879,23 +879,42 @@ export default withCronInstrumentation(
     // Feed-tier monitor (Phase 6 + lottery-feed-tier-recalibration-2026-06-03).
     // Count today's fires through the EXACT feed tier logic so the
     // "zero tier1 for N consecutive days" Sentry alert (keyed on feedTier1:0)
-    // shares fate with what the user actually sees. We reuse the feed's own
-    // functions — qualityAdjustedScore (api/_lib/lottery-inversion-bonus.ts) +
-    // tierFromQualityScore (api/_lib/lottery-tier.ts), the same ones
-    // api/lottery-finder.ts uses — so there are NO duplicated cutoffs/bonus
-    // here and the monitor cannot silently diverge from the feed again (the
-    // 24/22-vs-V2-scale bug that hid for weeks). Mirrors the default feed
-    // view (per-row demotion below: null score / direction_gated / Q1-Q2
-    // suppression → tier3, else tier on qas). Best-effort: a failure here
-    // logs but never aborts the cron (inserts already succeeded).
+    // shares fate with what the user actually sees. We compute the SAME
+    // quality-adjusted score (qas) the feed gates + badges on
+    // (api/lottery-finder.ts qasExprText):
+    //   qas = GREATEST(0, score + round_trip_score_deduct
+    //                       + fire_count_score_adjustment)
+    //         + INVERSION_BONUS_CASE(s.inversion_quintile)
+    // and classify it with tierFromQualityScore (api/_lib/lottery-tier.ts) —
+    // the same cutoffs the feed uses — so the monitor cannot silently diverge
+    // from the feed again (the 24/22-vs-V2-scale bug that hid for weeks).
+    //
+    // We DELIBERATELY do NOT read the `combined_score` GENERATED column here:
+    // it still folds in a +1 gamma CASE term (migration #168) that the feed
+    // DROPPED post-Fix-B (gamma is already credited via the V2 gamma-quintile
+    // weight baked into the stored `score`). Reading combined_score would make
+    // the monitor over-count by up to +1 on high-gamma rows near a tier
+    // boundary. `combined_score` is now VESTIGIAL — unused by both feed and
+    // monitor; left in place (gamma-inclusive legacy column) to avoid a
+    // migration. The bonus is computed in SQL via INVERSION_BONUS_CASE_SQL (the
+    // single source of truth the feed splices) so the qas is byte-identical.
+    //
+    // Mirrors the DEFAULT feed view (per-row demotion below: null score /
+    // direction_gated / Q1-Q2 suppression → tier3, else tier on qas).
+    // Best-effort: a failure here logs but never aborts the cron (inserts
+    // already succeeded).
     let feedTier1 = 0;
     let feedTier2 = 0;
     let feedTier3 = 0;
     try {
       const todays = (await withDbRetry(
         () => db`
-          SELECT f.score, f.combined_score, f.direction_gated,
-                 s.inversion_quintile
+          SELECT f.score, f.direction_gated,
+                 s.inversion_quintile,
+                 (GREATEST(0, COALESCE(f.score, 0)
+                             + COALESCE(f.round_trip_score_deduct, 0)
+                             + COALESCE(f.fire_count_score_adjustment, 0))
+                  + ${db.unsafe(INVERSION_BONUS_CASE_SQL)}) AS qas
           FROM lottery_finder_fires f
           LEFT JOIN lottery_ticker_stats s
             ON s.ticker = f.underlying_symbol
@@ -905,26 +924,22 @@ export default withCronInstrumentation(
         10_000,
       )) as {
         score: number | null;
-        combined_score: number | null;
         direction_gated: boolean | null;
         inversion_quintile: number | null;
+        qas: number | null;
       }[];
       for (const f of todays ?? []) {
         // Mirror the DEFAULT feed view: null score / direction_gated / the
         // quintile-1-2 suppression (lottery-finder.ts: `showAll OR
         // inversion_quintile IS NULL OR inversion_quintile > 2`) all render
-        // as tier3, else tier on qas = combined_score + inversion bonus.
+        // as tier3, else tier on the qas computed in SQL above (identical
+        // expression to the feed's qasExprText('f.')).
         const suppressed =
           f.inversion_quintile === 1 || f.inversion_quintile === 2;
         const tier =
           f.score == null || f.direction_gated === true || suppressed
             ? 'tier3'
-            : tierFromQualityScore(
-                qualityAdjustedScore(
-                  f.combined_score ?? 0,
-                  f.inversion_quintile,
-                ),
-              );
+            : tierFromQualityScore(f.qas == null ? null : Number(f.qas));
         if (tier === 'tier1') feedTier1 += 1;
         else if (tier === 'tier2') feedTier2 += 1;
         else feedTier3 += 1;
@@ -972,7 +987,8 @@ export default withCronInstrumentation(
     // MUST be (re)configured in the Sentry UI to query
     // `message:"detect-lottery-fires completed" feedTier1:0` — the feedTier*
     // counts are computed above through the exact feed tier logic (today's
-    // fires, qas = combined_score + inversion bonus), so a cutoff/scale
+    // fires, qas = GREATEST(0, score + rt + fc) + inversion bonus — no gamma,
+    // matching the feed's qasExprText), so a cutoff/scale
     // mismatch that zeroes the feed's tier1 (the 2026-06-03 bug) also zeroes
     // feedTier1 and trips the alert. NOTE: the legacy alert keyed on
     // `insertedTier1` (per-insert bare-score 9/7) is now stale — that field

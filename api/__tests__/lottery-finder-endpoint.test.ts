@@ -48,12 +48,23 @@ vi.mock('../_lib/lottery-suppression.js', () => ({
 // predicate text inlined) and the values include showAll + keptTickers.
 const mockSql = vi.fn();
 
+// Raw-SQL marker produced by `db.unsafe(...)` (mirrors the neon driver's
+// UnsafeRawSql). The flattener inlines the marker's text directly into the
+// strings array (no bound param) — exactly like neon splices raw SQL — so
+// SQL-text assertions can match the qas expression text spliced by qasExprText.
+interface RawSqlFragment {
+  __rawSql: string;
+}
+const isRawSqlFragment = (v: unknown): v is RawSqlFragment =>
+  typeof v === 'object' && v !== null && '__rawSql' in v;
+
 // The `db` handle the handler uses. A tagged-template wrapper that flattens
-// any SuppressionFragment in the interpolated values into raw predicate text
-// + its two params before delegating to mockSql. Non-fragment template calls
-// pass straight through unchanged (so existing tests are unaffected).
+// any SuppressionFragment + RawSqlFragment in the interpolated values into raw
+// predicate / expression text (plus the suppression bound params) before
+// delegating to mockSql. Non-fragment template calls pass straight through
+// unchanged (so existing tests are unaffected).
 function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
-  if (!values.some(isSuppressionFragment)) {
+  if (!values.some(isSuppressionFragment) && !values.some(isRawSqlFragment)) {
     return mockSql(strings, ...values);
   }
   const outStrings: string[] = [strings[0]!];
@@ -72,6 +83,9 @@ function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
       );
       outValues.push(v.kept);
       outStrings.push('::text[]))' + strings[i + 1]!);
+    } else if (isRawSqlFragment(v)) {
+      // Inline raw text into the surrounding strings (no bound param).
+      outStrings[outStrings.length - 1] += v.__rawSql + strings[i + 1]!;
     } else {
       outValues.push(v);
       outStrings.push(strings[i + 1]!);
@@ -79,6 +93,10 @@ function dbTag(strings: TemplateStringsArray, ...values: unknown[]) {
   }
   return mockSql(outStrings as unknown as TemplateStringsArray, ...outValues);
 }
+// `db.unsafe(raw)` → raw-SQL marker (mirrors neon's UnsafeRawSql).
+(dbTag as unknown as { unsafe: (raw: string) => RawSqlFragment }).unsafe = (
+  raw: string,
+) => ({ __rawSql: raw });
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => dbTag),
@@ -566,6 +584,108 @@ describe('lottery-finder endpoint', () => {
     expect(countCall.slice(1)).toContain(18);
   });
 
+  // ============================================================
+  // FIX C — minScore gates on the DISPLAYED qas, not raw `score`
+  // ============================================================
+  //
+  // The badge's tier comes from qualityAdjustedScore = GREATEST(0, score + rt
+  // + fc) + inversion bonus (NO gamma, post-Fix-B). The minScore filter must
+  // gate on THAT qas value, not the raw `score` column, so the conviction chip
+  // hides exactly the rows whose badge is below the floor. The qas is computed
+  // IN SQL (identical expression in rows + count queries) so pagination/total
+  // stay coherent.
+  it('FIX C: minScore gates on the qas SQL expression (GREATEST(0, score+rt+fc) + inversion CASE), not raw f.score', async () => {
+    mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-01', minScore: '13' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const rowsSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+      '?',
+    );
+    const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+      '?',
+    );
+    // The qas expression text is spliced (via db.unsafe) into BOTH queries.
+    // Rows query uses the `f.`-prefixed columns; count query uses `ranked.`.
+    expect(rowsSql).toContain(
+      'GREATEST(0, COALESCE(f.score, 0) + COALESCE(f.round_trip_score_deduct, 0) + COALESCE(f.fire_count_score_adjustment, 0))',
+    );
+    expect(rowsSql).toContain(
+      'CASE s.inversion_quintile WHEN 1 THEN -5 WHEN 2 THEN -2 WHEN 3 THEN 0 WHEN 4 THEN 3 WHEN 5 THEN 5 ELSE 0 END',
+    );
+    expect(countSql).toContain(
+      'GREATEST(0, COALESCE(ranked.score, 0) + COALESCE(ranked.round_trip_score_deduct, 0) + COALESCE(ranked.fire_count_score_adjustment, 0))',
+    );
+    // The OLD raw-score predicate must be GONE from both queries.
+    expect(rowsSql).not.toContain('f.score >= ?');
+    expect(countSql).not.toContain('OR score >= ?');
+    // The floor value still binds on both so pagination stays accurate.
+    expect((mockSql.mock.calls[0] as unknown[]).slice(1)).toContain(13);
+    expect((mockSql.mock.calls[1] as unknown[]).slice(1)).toContain(13);
+  });
+
+  it('FIX C: a row that passes raw-score but whose qas is below the floor is excluded (qas < score for Q1)', async () => {
+    // Q1 ticker: bonus = -5. ROW raw score = 20 → qas = 20 - 5 = 15. With
+    // minScore=18 the row PASSES on raw score (20 >= 18) but FAILS on qas
+    // (15 < 18). The SQL (not the mock) does the dropping; here we prove the
+    // tier the handler derives reflects the qas, and that the displayed qas
+    // is what a minScore=18 gate would compare against. tierFromQualityScore
+    // gives tier1 at qas>=13, so qas=15 is still tier1 — but the POINT is the
+    // qas (15) is what the floor compares to, NOT raw 20.
+    const ROW_Q1 = { ...ROW, score: 20, ticker_inversion_quintile: 1 };
+    mockSql
+      .mockResolvedValueOnce([ROW_Q1])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{
+        score: number;
+        qualityAdjustedScore: number;
+        inversionQuintile: number | null;
+      }>;
+    };
+    // Displayed qas = score(20) + Q1 bonus(-5) = 15 — the value the minScore
+    // gate now compares against (vs the raw 20 it used pre-Fix-C).
+    expect(body.fires[0]).toMatchObject({
+      score: 20,
+      qualityAdjustedScore: 15,
+      inversionQuintile: 1,
+    });
+  });
+
+  it('FIX C: a row below raw-score but whose qas clears the floor would be admitted (qas > score for Q5)', async () => {
+    // Q5 ticker: bonus = +5. score = 9 → qas = 9 + 5 = 14. Pre-Fix-C a
+    // minScore=12 gate on raw score (9 < 12) would have DROPPED this row;
+    // post-Fix-C the gate sees qas = 14 >= 12 and ADMITS it. We assert the
+    // emitted qas the gate compares against.
+    const ROW_Q5_LOW_RAW = { ...ROW, score: 9, ticker_inversion_quintile: 5 };
+    mockSql
+      .mockResolvedValueOnce([ROW_Q5_LOW_RAW])
+      .mockResolvedValueOnce([{ total: 1 }]);
+
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      fires: Array<{ score: number; qualityAdjustedScore: number }>;
+    };
+    expect(body.fires[0]).toMatchObject({
+      score: 9,
+      qualityAdjustedScore: 14,
+    });
+  });
+
   it('honors minPremium=100000 — $-floor gates rows + COUNT queries + echoes in filters', async () => {
     // Mirrors the SilentBoom minPremium chip: server-side filter on
     // entry_price * trigger_window_size * 100 (lottery's analog of
@@ -646,8 +766,11 @@ describe('lottery-finder endpoint', () => {
     );
     expect(rowsSql).toContain('f.fire_count >=');
     expect(countSql).toContain('WITH ranked');
-    expect(countSql).toContain('WHERE rn = 1');
-    expect(countSql).toContain('fc >=');
+    // Fix A restructure: the count query now reps via an `eligible` CTE
+    // (WHERE ranked.rn = 1) and gates the burst floor inside the
+    // passes_user_filters expression.
+    expect(countSql).toContain('WHERE ranked.rn = 1');
+    expect(countSql).toContain('ranked.fc >=');
   });
 
   it('omits minFireCount from filters echo when not provided', async () => {
@@ -1758,7 +1881,13 @@ describe('lottery-finder endpoint', () => {
     expect(body.fires[0]!.dualFlag).toBe(false);
   });
 
-  it('applies +1 gamma bonus when gamma_at_trigger >= 0.025 AND ticker not in {SPY,USO}', async () => {
+  it('Fix B: gamma is NO LONGER folded into score even when gamma_at_trigger >= 0.025 (chip still emits +1)', async () => {
+    // Fix B (read-time gamma double-count removed): under V2 scoring gamma
+    // is already credited via the V2 gamma-quintile weight baked into the
+    // stored `score`. The feed used to ALSO add the V1-era flat +1 here,
+    // double-counting. Now `score` does NOT include gammaAdj. The
+    // `gammaScoreAdjustment` field is STILL emitted as +1 so the HIGH-Γ
+    // display chip (gamma-sign indicator) keeps rendering.
     const ROW_HIGH_GAMMA = {
       ...ROW,
       underlying_symbol: 'TSLA',
@@ -1779,13 +1908,16 @@ describe('lottery-finder endpoint', () => {
         gammaScoreAdjustment?: number;
       }>;
     };
-    // rawScore=20 + fireCountAdj=0 + gammaAdj=+1 = 21 → tier1
+    // rawScore=20 + fireCountAdj=0 (gamma NOT added) = 20.
     expect(body.fires[0]!.gammaAtTrigger).toBe(0.05);
+    // Chip indicator still surfaces +1 (drives the HIGH-Γ badge in LotteryRow).
     expect(body.fires[0]!.gammaScoreAdjustment).toBe(1);
-    expect(body.fires[0]!.score).toBe(21);
+    // Displayed score no longer includes the gamma bonus — dropped by 1 vs
+    // the pre-Fix-B value (was 21).
+    expect(body.fires[0]!.score).toBe(20);
   });
 
-  it('does NOT apply gamma bonus when ticker is SPY (signal reverses on SPY)', async () => {
+  it('does NOT emit a gamma chip indicator when ticker is SPY (signal reverses on SPY)', async () => {
     const ROW_SPY = {
       ...ROW,
       underlying_symbol: 'SPY',
@@ -1808,7 +1940,7 @@ describe('lottery-finder endpoint', () => {
     };
     expect(body.fires[0]!.gammaAtTrigger).toBe(0.1);
     expect(body.fires[0]!.gammaScoreAdjustment).toBe(0);
-    // No bonus → score stays at rawScore + fireCountAdj = 20
+    // score stays at rawScore + fireCountAdj = 20 (gamma never applied).
     expect(body.fires[0]!.score).toBe(20);
   });
 
@@ -2148,6 +2280,68 @@ describe('lottery-finder endpoint', () => {
       const [, addTickers] = mockAddKeptTickers.mock.calls[0]!;
       // ZZZ is accumulated even though it is NOT in the rendered `rows`.
       expect(addTickers).toEqual(['ZZZ']);
+    });
+
+    // ============================================================
+    // FIX A — ever_qualifying kept-set is filter-INDEPENDENT
+    // ============================================================
+    //
+    // The never-vanish kept-set must accumulate over the STRUCTURAL day set
+    // (rn=1 + the system entry-price floor), NOT the active request's
+    // burst/takeit/minScore filters. Otherwise a ticker that qualifies
+    // (quintile > 2) but whose chains fall under those user filters is never
+    // recorded → it can later flip Q1/Q2 and VANISH (the exact bug the
+    // kept-set exists to prevent).
+    //
+    // The mock can't enforce SQL WHERE semantics, so we lock the invariant at
+    // the SQL-shape level: the ever_qualifying array_agg must NOT inherit the
+    // minFireCount / maxFireCount / minTakeitProb / qas-minScore predicates —
+    // those live in `passes_user_filters`, which only the total/suppressed
+    // COUNTs FILTER on. The array_agg FILTERs on inversion_quintile > 2 ONLY.
+    it('FIX A: ever_qualifying array_agg is decoupled from burst/takeit/minScore (only quintile>2 filters it)', async () => {
+      mockReadKeptTickers.mockResolvedValueOnce([]);
+      mockSql
+        .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 3)])
+        .mockResolvedValueOnce([
+          { total: 1, suppressed: 0, ever_qualifying: ['AAA'] },
+        ]);
+
+      const req = mockRequest({
+        method: 'GET',
+        // All three user filters ACTIVE — they must NOT scope the kept-set.
+        query: {
+          date: '2026-05-01',
+          minFireCount: '8',
+          minTakeitProb: '0.7',
+          minScore: '12',
+        },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+        '?',
+      );
+      // The user-filter gate is collected into a SEPARATE passes_user_filters
+      // boolean that only total/suppressed consume.
+      expect(countSql).toContain('passes_user_filters');
+      expect(countSql).toContain(
+        'COUNT(*) FILTER (WHERE passes_user_filters AND kept)',
+      );
+      expect(countSql).toContain(
+        'COUNT(*) FILTER (WHERE passes_user_filters AND NOT kept)',
+      );
+      // ever_qualifying aggregates the FULL structural rep set, FILTERed ONLY
+      // by quintile > 2 — never by the burst/takeit/minScore predicates.
+      expect(countSql).toContain('array_agg(DISTINCT underlying_symbol)');
+      expect(countSql).toContain('FILTER (WHERE inversion_quintile > 2)');
+      // The array_agg FILTER must NOT carry the user-filter predicates.
+      const aggSegment = countSql.slice(
+        countSql.indexOf('array_agg(DISTINCT underlying_symbol)'),
+      );
+      expect(aggSegment).not.toContain('passes_user_filters');
+      expect(aggSegment).not.toContain('ranked.fc >=');
+      expect(aggSegment).not.toContain('chain_max_takeit >=');
     });
 
     it('?showAll=true → suppression bypassed, kept-set never read or written', async () => {

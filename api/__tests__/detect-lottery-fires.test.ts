@@ -6,6 +6,14 @@ import { expectAllGexBindsNull, extractInsertBinds } from './insert-binds';
 
 const mockSql = vi.fn();
 
+// `db.unsafe(raw)` → raw-SQL marker (mirrors neon's UnsafeRawSql; the feed-
+// tier monitor splices INVERSION_BONUS_CASE_SQL via db.unsafe). The mockSql
+// tagged template ignores its actual SQL (returns canned rows), so this just
+// needs to be a non-throwing passthrough.
+(mockSql as unknown as { unsafe: (raw: string) => { raw: string } }).unsafe = (
+  raw: string,
+) => ({ raw });
+
 // detect-lottery-fires batches the ticks SELECT into 3 hash-partitioned
 // parallel queries (Promise.all) to stay under Neon's 64MB HTTP cap.
 // Tests stage the ticks data via this helper — batch 0 returns `rows`,
@@ -327,18 +335,29 @@ describe('detect-lottery-fires handler', () => {
     });
   });
 
-  it('feed-tier monitor counts today fires via qas (combined_score + inversion bonus), demoting null/gated to tier3', async () => {
+  it('feed-tier monitor counts today fires via the no-gamma qas (SQL-computed), matching the feed exactly', async () => {
     // After the insert loop, the cron queries today's fires and tiers them
-    // through the EXACT feed logic (qualityAdjustedScore + tierFromQualityScore,
-    // cutoffs 13/10). This is the post-loop query (the last mockSql call).
+    // through the EXACT feed logic. The monitor now reads the qas the SQL
+    // computes — GREATEST(0, score + round_trip_score_deduct +
+    // fire_count_score_adjustment) + inversion bonus — IDENTICAL to the feed's
+    // qasExprText('f.'). It DELIBERATELY no longer reads combined_score (which
+    // still folds in a +1 gamma CASE term the feed dropped), so the mock row
+    // returns `qas` directly. tierFromQualityScore cutoffs are 13/10.
+    //
     // Rows chosen to exercise every branch:
-    //   combined 13, q3(+0) -> qas 13 -> tier1
-    //   combined  8, q5(+5) -> qas 13 -> tier1  (bonus inclusion)
-    //   combined 10, q3(+0) -> qas 10 -> tier2
-    //   combined  5, q3(+0) -> qas  5 -> tier3
-    //   gated (direction_gated=true)        -> tier3
+    //   qas 13 -> tier1
+    //   qas 13 -> tier1  (bonus already folded into the SQL qas)
+    //   qas 10 -> tier2
+    //   qas  5 -> tier3
+    //   gated (direction_gated=true)        -> tier3 (regardless of qas)
     //   null score                          -> tier3
-    // => feedTier1=2, feedTier2=1, feedTier3=3
+    //   qas 12, HIGH-GAMMA boundary row     -> tier2  (NOT tier1)
+    // The last row is the key regression guard: a high-gamma fire whose
+    // combined_score would be 13 (qas-no-gamma 12 + the +1 gamma term) is
+    // counted as tier2 — exactly what the feed displays now that gamma is
+    // dropped. Under the old combined_score-reading monitor it would have
+    // tipped to tier1 and diverged from the feed.
+    // => feedTier1=2, feedTier2=2, feedTier3=3
     mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
       .mockResolvedValueOnce([]) // flow_data
@@ -346,42 +365,15 @@ describe('detect-lottery-fires handler', () => {
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]) // insert
       .mockResolvedValueOnce([
-        {
-          score: 5,
-          combined_score: 13,
-          direction_gated: false,
-          inversion_quintile: 3,
-        },
-        {
-          score: 5,
-          combined_score: 8,
-          direction_gated: false,
-          inversion_quintile: 5,
-        },
-        {
-          score: 5,
-          combined_score: 10,
-          direction_gated: false,
-          inversion_quintile: 3,
-        },
-        {
-          score: 5,
-          combined_score: 5,
-          direction_gated: false,
-          inversion_quintile: 3,
-        },
-        {
-          score: 5,
-          combined_score: 20,
-          direction_gated: true,
-          inversion_quintile: 3,
-        },
-        {
-          score: null,
-          combined_score: 8,
-          direction_gated: false,
-          inversion_quintile: 5,
-        },
+        { score: 5, qas: 13, direction_gated: false, inversion_quintile: 3 },
+        { score: 5, qas: 13, direction_gated: false, inversion_quintile: 5 },
+        { score: 5, qas: 10, direction_gated: false, inversion_quintile: 3 },
+        { score: 5, qas: 5, direction_gated: false, inversion_quintile: 3 },
+        { score: 5, qas: 20, direction_gated: true, inversion_quintile: 3 },
+        { score: null, qas: 8, direction_gated: false, inversion_quintile: 5 },
+        // HIGH-GAMMA boundary: no-gamma qas 12 (feed shows tier2). If the
+        // monitor still read combined_score it would see 13 -> tier1.
+        { score: 11, qas: 12, direction_gated: false, inversion_quintile: 3 },
       ]); // post-loop feed-tier monitor query
 
     const req = mockRequest({
@@ -394,7 +386,7 @@ describe('detect-lottery-fires handler', () => {
     expect(res._json).toMatchObject({
       status: 'success',
       feedTier1: 2,
-      feedTier2: 1,
+      feedTier2: 2,
       feedTier3: 3,
     });
   });

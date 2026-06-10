@@ -27,7 +27,10 @@ import {
   gammaScoreAdjustment,
   type LotteryScoreTier,
 } from './_lib/lottery-score-weights.js';
-import { qualityAdjustedScore } from './_lib/lottery-inversion-bonus.js';
+import {
+  qualityAdjustedScore,
+  INVERSION_BONUS_CASE_SQL,
+} from './_lib/lottery-inversion-bonus.js';
 import { tierFromQualityScore } from './_lib/lottery-tier.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import {
@@ -286,6 +289,43 @@ const toIso = (v: DbTimestamp): string =>
 
 const num = (v: DbNullableNumeric): number | null =>
   v == null ? null : Number(v);
+
+/**
+ * Build the DISPLAYED quality-adjusted score (qas) SQL EXPRESSION TEXT that
+ * the row badge derives via {@link qualityAdjustedScore} + tierFromQualityScore.
+ *
+ *   qas = GREATEST(0, <p>score + <p>round_trip_score_deduct + <p>fire_count_score_adjustment)
+ *         + INVERSION_BONUS_CASE(s.inversion_quintile)
+ *
+ * This is the EFFECTIVE pre-inversion score POST-Fix-B (read-time gamma
+ * double-count removed — gamma is already credited via the V2 gamma-quintile
+ * weight baked into the stored score) PLUS the inversion bonus. The
+ * pre-inversion term equals GREATEST(0, score + round_trip_score_deduct +
+ * fire_count_score_adjustment); note this is the combined_score GENERATED
+ * column MINUS its gamma CASE term (the read-time gamma was dropped here but
+ * the stored column still carries it — see the Fix-B note in toLotteryFire).
+ *
+ * `fireAlias` is the raw column prefix (`f.`, `ranked.`, or `''` for the count
+ * CTE), whitelisted + spliced as a raw identifier prefix (never free
+ * interpolation). The CASE hardcodes the `s.` lottery_ticker_stats alias via
+ * {@link INVERSION_BONUS_CASE_SQL}. Returned as a raw string spliced via
+ * `db.unsafe` at the call site — it contains NO bound params, so injection is
+ * impossible (every component is a constant or a whitelisted identifier).
+ */
+const QAS_FIRE_ALIAS_WHITELIST = ['f.', 'ranked.', ''] as const;
+type QasFireAlias = (typeof QAS_FIRE_ALIAS_WHITELIST)[number];
+
+function qasExprText(fireAlias: QasFireAlias): string {
+  if (!(QAS_FIRE_ALIAS_WHITELIST as readonly string[]).includes(fireAlias)) {
+    throw new Error(`qasExprText: invalid fire alias "${fireAlias}"`);
+  }
+  return (
+    `(GREATEST(0, COALESCE(${fireAlias}score, 0) ` +
+    `+ COALESCE(${fireAlias}round_trip_score_deduct, 0) ` +
+    `+ COALESCE(${fireAlias}fire_count_score_adjustment, 0)) ` +
+    `+ ${INVERSION_BONUS_CASE_SQL})`
+  );
+}
 
 // Last-good cache TTL. 6h covers a full trading day; the target date is
 // baked into every cache key so there is no cross-day leak (a stale prior
@@ -616,7 +656,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
             AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-            AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
             AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
             AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
         )
@@ -669,6 +708,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
+          -- Fix C: minScore gates on the DISPLAYED qas (the value the tier
+          -- badge uses), not the raw score. qas = GREATEST(0, score + rt +
+          -- fc) + inversion bonus (NO gamma, post-Fix-B). Applied at the rep
+          -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
+          -- so it reads s.inversion_quintile; identical expression in the
+          -- count query so pagination/total stay coherent.
+          AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minScore ?? 0})
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
@@ -716,7 +762,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
             AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-            AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
             AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
             AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
         )
@@ -769,6 +814,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
+          -- Fix C: minScore gates on the DISPLAYED qas (the value the tier
+          -- badge uses), not the raw score. qas = GREATEST(0, score + rt +
+          -- fc) + inversion bonus (NO gamma, post-Fix-B). Applied at the rep
+          -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
+          -- so it reads s.inversion_quintile; identical expression in the
+          -- count query so pagination/total stay coherent.
+          AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minScore ?? 0})
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
@@ -815,7 +867,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
             AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-            AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
             AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
             AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
         )
@@ -868,6 +919,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
+          -- Fix C: minScore gates on the DISPLAYED qas (the value the tier
+          -- badge uses), not the raw score. qas = GREATEST(0, score + rt +
+          -- fc) + inversion bonus (NO gamma, post-Fix-B). Applied at the rep
+          -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
+          -- so it reads s.inversion_quintile; identical expression in the
+          -- count query so pagination/total stay coherent.
+          AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minScore ?? 0})
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY f.trigger_time_ct DESC, f.id DESC
         LIMIT ${limit}
@@ -885,6 +943,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           SELECT
             underlying_symbol, strike, option_type, expiry,
             takeit_prob,
+            score, round_trip_score_deduct, fire_count_score_adjustment,
             ROW_NUMBER() OVER (
               PARTITION BY underlying_symbol, strike, option_type, expiry
               ORDER BY trigger_time_ct DESC, id DESC
@@ -905,44 +964,53 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             AND (${mode ?? null}::text IS NULL OR mode = ${mode ?? ''})
             AND (${optionType ?? null}::text IS NULL OR option_type = ${optionType ?? ''})
             AND (${tod ?? null}::text IS NULL OR tod = ${tod ?? ''})
-            AND (${minScore ?? null}::int IS NULL OR score >= ${minScore ?? 0})
             AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
             AND (${minPremium}::numeric IS NULL OR entry_price * trigger_window_size * 100 >= ${minPremium}::numeric)
+        ),
+        -- rep rows (rn=1) for the STRUCTURAL day set: date + ticker/type/
+        -- mode/tod/reload+cheapCallPm tags + entry-price floor + minPremium
+        -- ONLY (no burst/takeit/minScore). LEFT JOIN s so qas + the quintile
+        -- predicate are available here. passes_user_filters carries the
+        -- minFireCount/maxFireCount/minTakeitProb/qas-minScore gate per rep
+        -- so total/suppressed FILTER on it while ever_qualifying does NOT —
+        -- decoupling the accumulation from those user filters (Fix A).
+        eligible AS (
+          SELECT
+            ranked.underlying_symbol,
+            s.inversion_quintile,
+            ${keptSuppressionSql(db, 'ranked', showAll, keptTickers)} AS kept,
+            (
+              (${minFireCount ?? null}::int IS NULL OR ranked.fc >= ${minFireCount ?? 0})
+              AND (${maxFireCount ?? null}::int IS NULL OR ranked.fc <= ${maxFireCount ?? 0})
+              AND (${minTakeitProb}::numeric IS NULL OR ranked.chain_max_takeit >= ${minTakeitProb}::numeric)
+              -- Fix C: qas-based minScore (identical expression to the row
+              -- queries). qas = GREATEST(0, score + rt + fc) + inversion bonus.
+              AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('ranked.'))} >= ${minScore ?? 0})
+            ) AS passes_user_filters
+          FROM ranked
+          LEFT JOIN lottery_ticker_stats s ON s.ticker = ranked.underlying_symbol
+          WHERE ranked.rn = 1
         )
-        -- Count chains (rn=1) whose CHAIN-MAX TAKE-IT passes the floor
-        -- (chain_max_takeit, not the rep row takeit_prob) so the count
-        -- mirrors the row queries monotonic gating exactly. The Q1/Q2
-        -- inversion-quality suppression is applied here too (same LEFT
-        -- JOIN + quintile predicate as the row queries) so total is the
-        -- REACHABLE chain count, not an overcount. suppressed carries
-        -- how many otherwise-matching chains the quality filter hid, for
-        -- the UI hidden-by-quality-filter hint.
+        -- total = REACHABLE chains: pass the user filters AND survive Q1/Q2
+        -- suppression (chain-max TAKE-IT gating already folded into
+        -- passes_user_filters). suppressed = matched-but-quality-hidden, for
+        -- the UI hint. ever_qualifying = PAGE- AND USER-FILTER-INDEPENDENT
+        -- accumulation source (Fix A): every currently-qualifying ticker
+        -- (inversion_quintile > 2) over the full structural day set, WITHOUT
+        -- inheriting minFireCount/maxFireCount/minTakeitProb/minScore — so a
+        -- ticker that qualifies (quintile > 2) but whose chains fall under the
+        -- active burst/takeit/score filters is still recorded into the kept-set
+        -- and can never later flip Q1/Q2 and vanish. NULL quintile excluded by
+        -- > 2 (mirrors the old quintile != null AND > 2).
         SELECT
-          COUNT(*) FILTER (
-            WHERE ${keptSuppressionSql(db, 'ranked', showAll, keptTickers)}
-          )::int AS total,
-          COUNT(*) FILTER (
-            WHERE NOT (${keptSuppressionSql(db, 'ranked', showAll, keptTickers)})
-          )::int AS suppressed,
-          -- PAGE-INDEPENDENT ever-shown accumulation source (#1). The ranked
-          -- CTE scans EVERY chain for the day (no LIMIT/OFFSET), so this
-          -- captures every currently-qualifying ticker -- not just the page-0
-          -- slice -- closing the gap where a ticker flipping Q1/Q2 past row 50
-          -- was never recorded and still vanished. The predicate matches the
-          -- prior page-scoped derivation EXACTLY: inversion_quintile > 2 (NULL
-          -- excluded by > 2, mirroring the old quintile != null AND > 2).
-          -- This rides the existing COUNT round-trip (no extra query, #6).
+          COUNT(*) FILTER (WHERE passes_user_filters AND kept)::int AS total,
+          COUNT(*) FILTER (WHERE passes_user_filters AND NOT kept)::int AS suppressed,
           COALESCE(
-            array_agg(DISTINCT ranked.underlying_symbol)
-              FILTER (WHERE s.inversion_quintile > 2),
+            array_agg(DISTINCT underlying_symbol)
+              FILTER (WHERE inversion_quintile > 2),
             '{}'::text[]
           ) AS ever_qualifying
-        FROM ranked
-        LEFT JOIN lottery_ticker_stats s ON s.ticker = ranked.underlying_symbol
-        WHERE rn = 1
-          AND (${minFireCount ?? null}::int IS NULL OR fc >= ${minFireCount ?? 0})
-          AND (${maxFireCount ?? null}::int IS NULL OR fc <= ${maxFireCount ?? 0})
-          AND (${minTakeitProb}::numeric IS NULL OR chain_max_takeit >= ${minTakeitProb}::numeric)
+        FROM eligible
       `,
         2,
         10000,
@@ -1513,10 +1581,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Deducted/adjusted fires render dimmed in-place via LotteryRow's
       // round-tripped pill rather than reshuffling in the feed.
       const fireCountAdj = Number(r.fire_count_score_adjustment ?? 0);
-      // Gamma at trigger time + the derived bonus. Mirrors the SQL
-      // CASE expression that the `combined_score` GENERATED column
-      // uses internally, but applied here at read time because the
-      // feed sort no longer reads `combined_score` (see note above).
+      // Gamma at trigger time + the derived V1-era flat +1 bonus.
+      // Surfaced ONLY for the HIGH-Γ display chip (gamma-sign indicator)
+      // — NOT folded into `score` anymore.
+      //
+      // Fix B (read-time gamma double-count removed, owner decision):
+      // under V2 scoring gamma is already credited via the V2
+      // gamma-quintile weight baked into the stored `score`
+      // (computeLotteryScoreV2 → GAMMA_QUINTILE_WEIGHTS). The old code
+      // ALSO added this V1-era flat +1 here at read time, double-counting
+      // gamma. We now count gamma ONCE (in `score`) and drop gammaAdj from
+      // the effective-score composition. The effective pre-inversion score
+      // is therefore GREATEST(0, score + round_trip_score_deduct +
+      // fire_count_score_adjustment) — the SAME expression the qas SQL
+      // filter (qasSql) gates minScore on, so the feed's displayed score,
+      // its qas filter, and the SQL all agree.
+      //
+      // ⚠️ This is NOT equal to the stored `combined_score` GENERATED column
+      // (migration #168), which STILL carries a +1 gamma CASE term. The
+      // "zero tier-1" monitor in detect-lottery-fires.ts reads
+      // combined_score, so post-Fix-B the feed (no gamma) and the monitor
+      // (combined_score WITH gamma) can differ by up to +1 on a high-gamma
+      // non-SPY/USO row near a tier boundary. See the report for the
+      // recommended monitor/combined_score follow-up. Do NOT re-add gammaAdj
+      // here to "fix" the monitor — that re-introduces the double count.
       const gammaAtTrigger =
         r.gamma_at_trigger != null ? Number(r.gamma_at_trigger) : null;
       const gammaAdj = gammaScoreAdjustment(
@@ -1526,7 +1614,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const score =
         rawScore == null
           ? null
-          : Math.max(0, rawScore + rtDeduct + fireCountAdj + gammaAdj);
+          : Math.max(0, rawScore + rtDeduct + fireCountAdj);
       const roundTripNetPct =
         r.round_trip_net_pct == null ? null : Number(r.round_trip_net_pct);
       // Phase 4 direction-gate override (spec:
@@ -1608,10 +1696,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         // the DB, recomputed every request. Surfaced so the UI can
         // render a "+N burst" tooltip on the score badge.
         fireCountScoreAdjustment: fireCountAdj,
-        // Gamma at trigger time (migration #168) + the per-row +1
-        // bonus when gamma >= 0.025 AND ticker ∉ {'SPY','USO'}. The
-        // bonus is included in `score` above; the raw value is
-        // surfaced for the UI HIGH-Γ chip + tooltip.
+        // Gamma at trigger time (migration #168) + the V1-era per-row +1
+        // indicator when gamma >= 0.025 AND ticker ∉ {'SPY','USO'}. Fix B:
+        // this is NO LONGER folded into `score` (gamma is counted once via
+        // the V2 gamma-quintile weight in the stored `score`). It is kept
+        // ONLY to drive the UI HIGH-Γ chip + tooltip (a gamma-sign
+        // indicator, gated on gammaScoreAdjustment > 0 in LotteryRow).
         gammaAtTrigger,
         gammaScoreAdjustment: gammaAdj,
         takeitProb: r.takeit_prob == null ? null : Number(r.takeit_prob),

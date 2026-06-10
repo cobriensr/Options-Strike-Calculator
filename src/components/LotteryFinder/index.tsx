@@ -82,9 +82,16 @@ const LATE_PM_CUTOFF_MIN_OF_DAY = 14 * 60 + 30;
  * then ignored — the new key supersedes it.
  */
 const LEGACY_HIGH_CONVICTION_LS_KEY = 'lottery.highConvictionOnly';
-/** Tier floors — match LOTTERY_TIER_THRESHOLDS on the API. */
-const TIER1_MIN_SCORE = 18;
-const TIER2_MIN_SCORE = 12;
+/**
+ * Tier floors — MUST match TIER_CUTOFFS_V2 in api/_lib/lottery-tier.ts
+ * (tier1MinScore: 13, tier2MinScore: 10). Hardcoded (not imported) to keep
+ * the api/_lib server module out of the browser bundle. Now that the server
+ * filters `qas >= minScore` (lottery-finder.ts qasExprText), the chip must
+ * send the SAME cutoff the tier badge derives via tierFromQualityScore, so
+ * these track TIER_CUTOFFS_V2 exactly — update both together.
+ */
+const TIER1_MIN_SCORE = 13;
+const TIER2_MIN_SCORE = 10;
 
 /**
  * Aggressive Premium chip — lottery-native port of the SB chip. Surfaces
