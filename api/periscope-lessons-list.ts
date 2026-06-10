@@ -42,8 +42,7 @@ import {
 } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
-import { metrics } from './_lib/sentry.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
+import { withDbReader } from './_lib/request-scope.js';
 import { toIsoTimestamp } from './_lib/periscope-db.js';
 import type { PeriscopeLessonStatus } from './_lib/periscope-lessons.js';
 
@@ -87,28 +86,23 @@ function parseRow(r: Record<string, unknown>): PeriscopeLessonListRow {
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/periscope-lessons-list');
+export default withDbReader(
+  '/api/periscope-lessons-list',
+  'periscope_lessons_list',
+  async (req: VercelRequest, res: VercelResponse, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-  if (req.method !== 'GET') {
-    done({ status: 405 });
-    return res.status(405).json({ error: 'GET only' });
-  }
+    const rateLimited = await rejectIfRateLimited(
+      req,
+      res,
+      'periscope-lessons-list',
+      60,
+    );
+    if (rateLimited) {
+      done({ status: 429 });
+      return;
+    }
 
-  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
-  const rateLimited = await rejectIfRateLimited(
-    req,
-    res,
-    'periscope-lessons-list',
-    60,
-  );
-  if (rateLimited) {
-    done({ status: 429 });
-    return;
-  }
-
-  try {
     const sql = getDb();
     setCacheHeaders(res, 30, 60);
 
@@ -137,13 +131,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const lessons = rows.map(parseRow);
     done({ status: 200 });
-    return res.status(200).json({ lessons });
-  } catch (err) {
-    sendDbErrorResponse(res, err, {
-      label: 'periscope_lessons_list',
-      serverErrorBody: { error: 'Internal error' },
-      done,
-    });
-    return;
-  }
-}
+    res.status(200).json({ lessons });
+  },
+);

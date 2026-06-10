@@ -15,6 +15,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { metrics, Sentry } from './sentry.js';
+import { sendDbErrorResponse } from './transient-db-response.js';
 
 /**
  * Tracking handle returned by `metrics.request` for status/duration
@@ -78,4 +79,71 @@ export function withRequestScope(
       await handler(req, res, done);
     });
   };
+}
+
+/**
+ * Wrap a GET reader endpoint with the full standard envelope: the
+ * `withRequestScope` preamble (Sentry isolation scope + transaction name
+ * + `metrics.request`→`done` + 405 method check) PLUS the soft-degrade
+ * catch that every Neon-reading endpoint would otherwise hand-roll.
+ *
+ * This is the one place the transient-vs-genuine error policy lives, so
+ * reader endpoints stop copy-pasting `try/catch → sendDbErrorResponse`:
+ *
+ *   - A transient Neon blip (`TransientDbError` — `db attempt timeout`,
+ *     `fetch failed`, `recovery_mode`, …) degrades to a soft `503` with a
+ *     `Retry-After: 5` header and body `{ error: 'temporarily
+ *     unavailable', transient: true }`. It is logged at `warn`, increments
+ *     `<label>.db_timeout`, and is NOT sent to Sentry (infra noise).
+ *   - Any genuine error degrades to `500` with `opts.serverErrorBody`
+ *     (default `{ error: 'Internal error' }`), logged at `error` and
+ *     captured in Sentry.
+ *   - Both paths record the real status through `done` so the request
+ *     metric matches the response (`503` / `500`, never a guessed status).
+ *
+ * The wrapper owns ONLY the method gate, instrumentation, and the
+ * error-to-response mapping. The inner handler keeps full ownership of
+ * its own concerns — auth guard (`guardOwnerOrGuestEndpoint` /
+ * `guardOwnerEndpoint`), rate limiting, Zod 400s, 404 early returns — and
+ * is responsible for calling `done({ status: 200 })` on the success path
+ * before writing its JSON. The wrapper never touches auth or validation.
+ *
+ * Usage:
+ * ```ts
+ * export default withDbReader('/api/zero-gamma', 'zero_gamma',
+ *   async (req, res, done) => {
+ *     const guard = await guardOwnerOrGuestEndpoint(req, res, done);
+ *     if (guard) return;          // handler owns its own early returns
+ *     // ...zod 400s, 404s, query...
+ *     done({ status: 200 });
+ *     res.status(200).json(payload);
+ *   },
+ * );
+ * ```
+ *
+ * @param path  Route path, e.g. `/api/zero-gamma` — used for the Sentry
+ *   transaction name and the `metrics.request` key.
+ * @param label Telemetry label, e.g. `zero_gamma` — used in the log
+ *   message and the `<label>.db_timeout` counter on a transient blip.
+ * @param handler The inner endpoint logic. Receives `(req, res, done)`.
+ * @param opts.serverErrorBody Body returned on a genuine 500. Defaults to
+ *   `{ error: 'Internal error' }`.
+ */
+export function withDbReader(
+  path: string,
+  label: string,
+  handler: ScopedHandler,
+  opts: { serverErrorBody?: Record<string, unknown> } = {},
+): (req: VercelRequest, res: VercelResponse) => Promise<void> {
+  return withRequestScope('GET', path, async (req, res, done) => {
+    try {
+      await handler(req, res, done);
+    } catch (err) {
+      sendDbErrorResponse(res, err, {
+        label,
+        serverErrorBody: opts.serverErrorBody,
+        done,
+      });
+    }
+  });
 }

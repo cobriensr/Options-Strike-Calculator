@@ -21,8 +21,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry, metrics } from './_lib/sentry.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
+import { withDbReader } from './_lib/request-scope.js';
 import {
   guardOwnerOrGuestEndpoint,
   setCacheHeaders,
@@ -84,33 +83,27 @@ function parseSide(value: string): 'call' | 'put' {
 
 // ── Handler ──────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTag('endpoint', '/api/strike-trade-volume');
-    const done = metrics.request('/api/strike-trade-volume');
-
-    if (req.method !== 'GET') {
-      done({ status: 405 });
-      return res.status(405).json({ error: 'GET only' });
-    }
-
+export default withDbReader(
+  '/api/strike-trade-volume',
+  'strike_trade_volume',
+  async (req: VercelRequest, res: VercelResponse, done) => {
     if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const parseResult = strikeTradeVolumeQuerySchema.safeParse(req.query);
     if (!parseResult.success) {
       done({ status: 400 });
-      return res
+      res
         .status(400)
         .json({ error: 'Invalid query', issues: parseResult.error.issues });
+      return;
     }
     const q = parseResult.data;
 
-    try {
-      const sql = getDb();
-      const rows = (
-        q.strike != null && q.side != null
-          ? await withDbRetry(
-              () => sql`
+    const sql = getDb();
+    const rows = (
+      q.strike != null && q.side != null
+        ? await withDbRetry(
+            () => sql`
             SELECT ticker, strike, side, ts,
                    bid_side_vol, ask_side_vol, mid_vol, total_vol
             FROM strike_trade_volume
@@ -120,11 +113,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND ts >= ${q.since}
             ORDER BY ts ASC
           `,
-              2,
-              10_000,
-            )
-          : await withDbRetry(
-              () => sql`
+            2,
+            10_000,
+          )
+        : await withDbRetry(
+            () => sql`
             SELECT ticker, strike, side, ts,
                    bid_side_vol, ask_side_vol, mid_vol, total_vol
             FROM strike_trade_volume
@@ -132,50 +125,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND ts >= ${q.since}
             ORDER BY strike ASC, side ASC, ts ASC
           `,
-              2,
-              10_000,
-            )
-      ) as RawVolumeRow[];
+            2,
+            10_000,
+          )
+    ) as RawVolumeRow[];
 
-      // Group by (strike, side) → series
-      const byKey = new Map<string, StrikeTradeVolumeSeries>();
-      for (const r of rows) {
-        const strike = parseNum(r.strike);
-        const side = parseSide(r.side);
-        const key = `${strike}:${side}`;
-        let series = byKey.get(key);
-        if (!series) {
-          series = {
-            ticker: q.ticker,
-            strike,
-            side,
-            data: [],
-          };
-          byKey.set(key, series);
-        }
-        series.data.push({
-          ts: toIso(r.ts),
-          bidSideVol: parseNum(r.bid_side_vol),
-          askSideVol: parseNum(r.ask_side_vol),
-          midVol: parseNum(r.mid_vol),
-          totalVol: parseNum(r.total_vol),
-        });
+    // Group by (strike, side) → series
+    const byKey = new Map<string, StrikeTradeVolumeSeries>();
+    for (const r of rows) {
+      const strike = parseNum(r.strike);
+      const side = parseSide(r.side);
+      const key = `${strike}:${side}`;
+      let series = byKey.get(key);
+      if (!series) {
+        series = {
+          ticker: q.ticker,
+          strike,
+          side,
+          data: [],
+        };
+        byKey.set(key, series);
       }
-
-      const response: StrikeTradeVolumeResponse = {
-        series: [...byKey.values()],
-      };
-
-      setCacheHeaders(res, 30);
-      done({ status: 200 });
-      return res.status(200).json(response);
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'strike_trade_volume',
-        serverErrorBody: { error: 'Internal error' },
-        done,
+      series.data.push({
+        ts: toIso(r.ts),
+        bidSideVol: parseNum(r.bid_side_vol),
+        askSideVol: parseNum(r.ask_side_vol),
+        midVol: parseNum(r.mid_vol),
+        totalVol: parseNum(r.total_vol),
       });
-      return;
     }
-  });
-}
+
+    const response: StrikeTradeVolumeResponse = {
+      series: [...byKey.values()],
+    };
+
+    setCacheHeaders(res, 30);
+    done({ status: 200 });
+    res.status(200).json(response);
+  },
+);

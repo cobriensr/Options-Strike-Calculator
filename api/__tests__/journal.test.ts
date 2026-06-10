@@ -9,7 +9,10 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn() },
+  Sentry: {
+    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    captureException: vi.fn(),
+  },
   metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
 }));
 

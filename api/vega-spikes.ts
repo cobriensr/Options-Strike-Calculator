@@ -21,11 +21,9 @@
  *   `Cache-Control: no-store` so the UI's poll loop always hits fresh DB.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
-import { Sentry, metrics } from './_lib/sentry.js';
+import { withDbReader } from './_lib/request-scope.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -64,38 +62,27 @@ function toNullableNumber(v: NullableNumeric): number | null {
   return toNumber(v);
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/vega-spikes');
-    const done = metrics.request('/api/vega-spikes');
+export default withDbReader(
+  '/api/vega-spikes',
+  'vega_spikes',
+  async (req, res, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-    try {
-      if (req.method !== 'GET') {
-        done({ status: 405 });
-        return res.status(405).json({ error: 'GET only' });
-      }
+    const rangeParam = (req.query.range as string | undefined) ?? 'today';
+    if (rangeParam !== 'today' && rangeParam !== '7d' && rangeParam !== '30d') {
+      done({ status: 400 });
+      return res.status(400).json({ error: 'invalid range' });
+    }
+    const range: Range = rangeParam;
 
-      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    const sql = getDb();
 
-      const rangeParam = (req.query.range as string | undefined) ?? 'today';
-      if (
-        rangeParam !== 'today' &&
-        rangeParam !== '7d' &&
-        rangeParam !== '30d'
-      ) {
-        done({ status: 400 });
-        return res.status(400).json({ error: 'invalid range' });
-      }
-      const range: Range = rangeParam;
+    const today = getETDateStr(new Date());
 
-      const sql = getDb();
-
-      const today = getETDateStr(new Date());
-
-      let rows: VegaSpikeRow[];
-      if (range === 'today') {
-        rows = (await withDbRetry(
-          () => sql`
+    let rows: VegaSpikeRow[];
+    if (range === 'today') {
+      rows = (await withDbRetry(
+        () => sql`
           SELECT
             id, ticker, date, timestamp,
             dir_vega_flow, z_score, vs_prior_max,
@@ -108,12 +95,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ORDER BY timestamp DESC
           LIMIT 100
         `,
-          DB_RETRY_ATTEMPTS,
-          DB_RETRY_TIMEOUT_MS,
-        )) as VegaSpikeRow[];
-      } else if (range === '7d') {
-        rows = (await withDbRetry(
-          () => sql`
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      )) as VegaSpikeRow[];
+    } else if (range === '7d') {
+      rows = (await withDbRetry(
+        () => sql`
           SELECT
             id, ticker, date, timestamp,
             dir_vega_flow, z_score, vs_prior_max,
@@ -126,12 +113,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ORDER BY timestamp DESC
           LIMIT 100
         `,
-          DB_RETRY_ATTEMPTS,
-          DB_RETRY_TIMEOUT_MS,
-        )) as VegaSpikeRow[];
-      } else {
-        rows = (await withDbRetry(
-          () => sql`
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      )) as VegaSpikeRow[];
+    } else {
+      rows = (await withDbRetry(
+        () => sql`
           SELECT
             id, ticker, date, timestamp,
             dir_vega_flow, z_score, vs_prior_max,
@@ -144,40 +131,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ORDER BY timestamp DESC
           LIMIT 100
         `,
-          DB_RETRY_ATTEMPTS,
-          DB_RETRY_TIMEOUT_MS,
-        )) as VegaSpikeRow[];
-      }
-
-      const spikes = rows.map((row) => ({
-        id: toNumber(row.id),
-        ticker: row.ticker,
-        date: row.date,
-        timestamp: row.timestamp,
-        dirVegaFlow: toNumber(row.dir_vega_flow),
-        zScore: toNumber(row.z_score),
-        vsPriorMax: toNumber(row.vs_prior_max),
-        priorMax: toNumber(row.prior_max),
-        baselineMad: toNumber(row.baseline_mad),
-        barsElapsed: toNumber(row.bars_elapsed),
-        confluence: row.confluence,
-        fwdReturn5m: toNullableNumber(row.fwd_return_5m),
-        fwdReturn15m: toNullableNumber(row.fwd_return_15m),
-        fwdReturn30m: toNullableNumber(row.fwd_return_30m),
-        fwdReturnEoD: toNullableNumber(row.fwd_return_eod),
-        insertedAt: row.inserted_at,
-      }));
-
-      res.setHeader('Cache-Control', 'no-store');
-      done({ status: 200 });
-      return res.status(200).json({ spikes, range });
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'vega_spikes',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-      return;
+        DB_RETRY_ATTEMPTS,
+        DB_RETRY_TIMEOUT_MS,
+      )) as VegaSpikeRow[];
     }
-  });
-}
+
+    const spikes = rows.map((row) => ({
+      id: toNumber(row.id),
+      ticker: row.ticker,
+      date: row.date,
+      timestamp: row.timestamp,
+      dirVegaFlow: toNumber(row.dir_vega_flow),
+      zScore: toNumber(row.z_score),
+      vsPriorMax: toNumber(row.vs_prior_max),
+      priorMax: toNumber(row.prior_max),
+      baselineMad: toNumber(row.baseline_mad),
+      barsElapsed: toNumber(row.bars_elapsed),
+      confluence: row.confluence,
+      fwdReturn5m: toNullableNumber(row.fwd_return_5m),
+      fwdReturn15m: toNullableNumber(row.fwd_return_15m),
+      fwdReturn30m: toNullableNumber(row.fwd_return_30m),
+      fwdReturnEoD: toNullableNumber(row.fwd_return_eod),
+      insertedAt: row.inserted_at,
+    }));
+
+    res.setHeader('Cache-Control', 'no-store');
+    done({ status: 200 });
+    return res.status(200).json({ spikes, range });
+  },
+);

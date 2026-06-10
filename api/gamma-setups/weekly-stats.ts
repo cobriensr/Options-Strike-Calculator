@@ -17,12 +17,9 @@
  * Spec: docs/superpowers/specs/gamma-node-composite-detector-2026-05-21.md
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-
 import { getDb } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
-import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { withDbReader } from '../_lib/request-scope.js';
 import {
   aggregateFireStats,
   loadFireStatsRows,
@@ -45,42 +42,28 @@ function daysAgoEtDateStr(days: number): string {
   return getETDateStr(past);
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/gamma-setups/weekly-stats');
-    const done = metrics.request('/api/gamma-setups/weekly-stats');
+export default withDbReader(
+  '/api/gamma-setups/weekly-stats',
+  'gamma_setups_weekly_stats',
+  async (req, res, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-    try {
-      if (req.method !== 'GET') {
-        done({ status: 405 });
-        res.status(405).json({ error: 'GET only' });
-        return;
-      }
-      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    const days = parseDaysParam(req.query.days);
+    const today = getETDateStr(new Date());
+    const from = daysAgoEtDateStr(days);
 
-      const days = parseDaysParam(req.query.days);
-      const today = getETDateStr(new Date());
-      const from = daysAgoEtDateStr(days);
+    const sql = getDb();
+    // loadFireStatsRows already wraps its query in withDbRetry, so we
+    // must NOT wrap it again — a double wrap multiplies the attempt count
+    // (~9 attempts on a blip) since TransientDbError is itself retryable.
+    const rows = await loadFireStatsRows(sql, from, today);
+    const stats: AggregateStats = aggregateFireStats(rows, from, today);
 
-      const sql = getDb();
-      // loadFireStatsRows already wraps its query in withDbRetry, so we
-      // must NOT wrap it again — a double wrap multiplies the attempt count
-      // (~9 attempts on a blip) since TransientDbError is itself retryable.
-      const rows = await loadFireStatsRows(sql, from, today);
-      const stats: AggregateStats = aggregateFireStats(rows, from, today);
-
-      done({ status: 200 });
-      // Browsers + tile poll every minute; a 30s edge-cache cuts ~95% of
-      // DB hits during heavy intraday refresh without making the bar feel
-      // stale relative to the underlying minute-cadence fires.
-      res.setHeader('Cache-Control', 'private, max-age=30');
-      res.status(200).json(stats);
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'gamma_setups_weekly_stats',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-    }
-  });
-}
+    done({ status: 200 });
+    // Browsers + tile poll every minute; a 30s edge-cache cuts ~95% of
+    // DB hits during heavy intraday refresh without making the bar feel
+    // stale relative to the underlying minute-cadence fires.
+    res.setHeader('Cache-Control', 'private, max-age=30');
+    res.status(200).json(stats);
+  },
+);

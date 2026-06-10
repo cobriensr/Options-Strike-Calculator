@@ -13,32 +13,25 @@
  * Environment: DATABASE_URL, OWNER_SECRET
  */
 
-import { metrics } from '../_lib/sentry.js';
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
-import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
+import { withDbReader } from '../_lib/request-scope.js';
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/ml/prediction');
+export default withDbReader(
+  '/api/ml/prediction',
+  'ml_prediction',
+  async (req, res, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-  if (req.method !== 'GET') {
-    done({ status: 405 });
-    return res.status(405).json({ error: 'GET only' });
-  }
+    const dateParam = req.query.date as string | undefined;
+    if (dateParam && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+      done({ status: 400 });
+      return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+    }
 
-  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    const sql = getDb();
 
-  const dateParam = req.query.date as string | undefined;
-  if (dateParam && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-    done({ status: 400 });
-    return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
-  }
-
-  const sql = getDb();
-
-  try {
     let rows;
     if (dateParam) {
       rows = await withDbRetry(
@@ -96,12 +89,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     done({ status: 200 });
     return res.status(200).json({ prediction });
-  } catch (err) {
-    sendDbErrorResponse(res, err, {
-      label: 'ml_prediction',
-      serverErrorBody: { error: 'Failed to fetch prediction' },
-      done,
-    });
-    return;
-  }
-}
+  },
+  { serverErrorBody: { error: 'Failed to fetch prediction' } },
+);

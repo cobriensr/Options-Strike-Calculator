@@ -22,8 +22,7 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { metrics } from './_lib/sentry.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
+import { withDbReader } from './_lib/request-scope.js';
 import { periscopeChatDetailQuerySchema } from './_lib/validation.js';
 import { toIsoDate, toIsoTimestamp } from './_lib/periscope-db.js';
 import type {
@@ -182,32 +181,27 @@ function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/periscope-chat-detail');
+export default withDbReader(
+  '/api/periscope-chat-detail',
+  'periscope_chat_detail',
+  async (req: VercelRequest, res: VercelResponse, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-  if (req.method !== 'GET') {
-    done({ status: 405 });
-    return res.status(405).json({ error: 'GET only' });
-  }
+    const rateLimited = await rejectIfRateLimited(
+      req,
+      res,
+      'periscope-chat-detail',
+      120,
+    );
+    if (rateLimited) {
+      done({ status: 429 });
+      return;
+    }
 
-  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    const parsed = periscopeChatDetailQuerySchema.safeParse(req.query);
+    if (respondIfInvalid(parsed, res, done)) return;
+    const { id } = parsed.data;
 
-  const rateLimited = await rejectIfRateLimited(
-    req,
-    res,
-    'periscope-chat-detail',
-    120,
-  );
-  if (rateLimited) {
-    done({ status: 429 });
-    return;
-  }
-
-  const parsed = periscopeChatDetailQuerySchema.safeParse(req.query);
-  if (respondIfInvalid(parsed, res, done)) return;
-  const { id } = parsed.data;
-
-  try {
     const sql = getDb();
     setCacheHeaders(res, 60, 120);
 
@@ -233,17 +227,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (rows.length === 0) {
       done({ status: 404 });
-      return res.status(404).json({ error: 'Read not found' });
+      res.status(404).json({ error: 'Read not found' });
+      return;
     }
 
     done({ status: 200 });
-    return res.status(200).json(parseDetailRow(rows[0]!));
-  } catch (err) {
-    sendDbErrorResponse(res, err, {
-      label: 'periscope_chat_detail',
-      serverErrorBody: { error: 'Internal error' },
-      done,
-    });
-    return;
-  }
-}
+    res.status(200).json(parseDetailRow(rows[0]!));
+  },
+);

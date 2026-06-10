@@ -12,11 +12,9 @@
  * Owner-or-guest — Greek exposure derives from UW API (OPRA compliance).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
+import { withDbReader } from './_lib/request-scope.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -63,35 +61,28 @@ function parseNum(val: unknown): number | null {
 
 // ── Handler ─────────────────────────────────────────────────
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/greek-exposure-strike');
-    const done = metrics.request('/api/greek-exposure-strike');
+export default withDbReader(
+  '/api/greek-exposure-strike',
+  'greek_exposure_strike',
+  async (req, res, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-    try {
-      if (req.method !== 'GET') {
-        done({ status: 405 });
-        return res.status(405).json({ error: 'GET only' });
-      }
+    const sql = getDb();
 
-      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    const dateParam = req.query.date as string | undefined;
+    const date =
+      dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
+        ? dateParam
+        : getTodayET();
 
-      const sql = getDb();
+    const expiryParam = req.query.expiry as string | undefined;
+    const expiry =
+      expiryParam && /^\d{4}-\d{2}-\d{2}$/.test(expiryParam)
+        ? expiryParam
+        : date;
 
-      const dateParam = req.query.date as string | undefined;
-      const date =
-        dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam)
-          ? dateParam
-          : getTodayET();
-
-      const expiryParam = req.query.expiry as string | undefined;
-      const expiry =
-        expiryParam && /^\d{4}-\d{2}-\d{2}$/.test(expiryParam)
-          ? expiryParam
-          : date;
-
-      const rows = await withDbRetry(
-        () => sql`
+    const rows = await withDbRetry(
+      () => sql`
         SELECT
           strike, dte,
           call_gex, put_gex,
@@ -104,41 +95,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE date = ${date} AND expiry = ${expiry}
         ORDER BY strike ASC
       `,
-        2,
-        10_000,
-      );
+      2,
+      10_000,
+    );
 
-      const strikes: StrikeGreekExposure[] = rows.map((r) => ({
-        strike: Number(r.strike),
-        dte: Number(r.dte),
-        callGex: parseNum(r.call_gex),
-        putGex: parseNum(r.put_gex),
-        callDelta: parseNum(r.call_delta),
-        putDelta: parseNum(r.put_delta),
-        callCharm: parseNum(r.call_charm),
-        putCharm: parseNum(r.put_charm),
-        callVanna: parseNum(r.call_vanna),
-        putVanna: parseNum(r.put_vanna),
-        netGex: parseNum(r.net_gex),
-        netDelta: parseNum(r.net_delta),
-        netCharm: parseNum(r.net_charm),
-        netVanna: parseNum(r.net_vanna),
-        absGex: parseNum(r.abs_gex),
-        callGexFraction: parseNum(r.call_gex_fraction),
-      }));
+    const strikes: StrikeGreekExposure[] = rows.map((r) => ({
+      strike: Number(r.strike),
+      dte: Number(r.dte),
+      callGex: parseNum(r.call_gex),
+      putGex: parseNum(r.put_gex),
+      callDelta: parseNum(r.call_delta),
+      putDelta: parseNum(r.put_delta),
+      callCharm: parseNum(r.call_charm),
+      putCharm: parseNum(r.put_charm),
+      callVanna: parseNum(r.call_vanna),
+      putVanna: parseNum(r.put_vanna),
+      netGex: parseNum(r.net_gex),
+      netDelta: parseNum(r.net_delta),
+      netCharm: parseNum(r.net_charm),
+      netVanna: parseNum(r.net_vanna),
+      absGex: parseNum(r.abs_gex),
+      callGexFraction: parseNum(r.call_gex_fraction),
+    }));
 
-      const response: GreekExposureStrikeResponse = { date, expiry, strikes };
+    const response: GreekExposureStrikeResponse = { date, expiry, strikes };
 
-      res.setHeader('Cache-Control', 'no-store');
-      done({ status: 200 });
-      return res.status(200).json(response);
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'greek_exposure_strike',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-      return;
-    }
-  });
-}
+    res.setHeader('Cache-Control', 'no-store');
+    done({ status: 200 });
+    res.status(200).json(response);
+  },
+);

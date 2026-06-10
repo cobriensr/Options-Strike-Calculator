@@ -13,33 +13,23 @@
  * surface real-time.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-
 import { guardOwnerOrGuestEndpoint } from '../../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../../_lib/db.js';
 import {
   DB_RETRY_ATTEMPTS,
   DB_RETRY_TIMEOUT_MS,
 } from '../../_lib/constants.js';
-import { Sentry, metrics } from '../../_lib/sentry.js';
-import { sendDbErrorResponse } from '../../_lib/transient-db-response.js';
+import { withDbReader } from '../../_lib/request-scope.js';
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/tracker/alerts/unread');
-    const done = metrics.request('/api/tracker/alerts/unread');
-
-    if (req.method !== 'GET') {
-      done({ status: 405 });
-      return res.status(405).json({ error: 'GET only' });
-    }
-
+export default withDbReader(
+  '/api/tracker/alerts/unread',
+  'tracker_alerts_unread',
+  async (req, res, done) => {
     if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-    try {
-      const sql = getDb();
-      const rows = await withDbRetry(
-        () => sql`
+    const sql = getDb();
+    const rows = await withDbRetry(
+      () => sql`
         SELECT
           a.id              AS id,
           a.contract_id     AS contract_id,
@@ -63,19 +53,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE a.acknowledged = FALSE
         ORDER BY a.fired_at DESC, a.id DESC
       `,
-        DB_RETRY_ATTEMPTS,
-        DB_RETRY_TIMEOUT_MS,
-      );
-      res.setHeader('Cache-Control', 'no-store');
-      done({ status: 200 });
-      return res.status(200).json({ alerts: rows, count: rows.length });
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'tracker_alerts_unread',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-      return;
-    }
-  });
-}
+      DB_RETRY_ATTEMPTS,
+      DB_RETRY_TIMEOUT_MS,
+    );
+    res.setHeader('Cache-Control', 'no-store');
+    done({ status: 200 });
+    return res.status(200).json({ alerts: rows, count: rows.length });
+  },
+);

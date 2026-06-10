@@ -56,14 +56,14 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-import { Sentry, metrics } from './_lib/sentry.js';
+import { Sentry } from './_lib/sentry.js';
 import {
   setCacheHeaders,
   isMarketOpen,
   guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
+import { withDbReader } from './_lib/request-scope.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 import logger from './_lib/logger.js';
 import type {
@@ -261,83 +261,71 @@ async function hasLaterInProgress(
   }
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/periscope-playbook');
-    const done = metrics.request('/api/periscope-playbook');
-    try {
-      if (req.method !== 'GET') {
-        done({ status: 405 });
-        return res.status(405).json({ error: 'GET only' });
-      }
+export default withDbReader(
+  '/api/periscope-playbook',
+  'periscope_playbook',
+  async (req: VercelRequest, res: VercelResponse, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    const dateParam = (req.query.date as string | undefined) ?? '';
+    const slotParam = (req.query.slot as string | undefined) ?? '';
+    const isHistoricalRead = dateParam !== '' || slotParam !== '';
+    const noCache = (req.query.nocache as string | undefined) ?? '';
 
-      const dateParam = (req.query.date as string | undefined) ?? '';
-      const slotParam = (req.query.slot as string | undefined) ?? '';
-      const isHistoricalRead = dateParam !== '' || slotParam !== '';
-      const noCache = (req.query.nocache as string | undefined) ?? '';
-
-      let date: string;
-      if (dateParam === '') {
-        date = getETDateStr(new Date());
-      } else if (DATE_RE.test(dateParam)) {
-        date = dateParam;
-      } else {
-        done({ status: 400, error: 'bad_date' });
-        return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
-      }
-
-      if (slotParam !== '' && !ISO_RE.test(slotParam)) {
-        done({ status: 400, error: 'bad_slot' });
-        return res.status(400).json({ error: 'slot must be ISO-8601' });
-      }
-      const slotCapturedAt: string | null = slotParam !== '' ? slotParam : null;
-
-      const marketOpen = isMarketOpen();
-
-      // Cache policy:
-      //   - Manual rerun (?nocache=...): force no-store so a re-run is
-      //     immediately visible to the panel client.
-      //   - Historical (date param): immutable past day, cache aggressively.
-      //   - Live (no date): short window during RTH, longer after hours.
-      if (noCache !== '') {
-        res.setHeader('Cache-Control', 'no-store');
-      } else if (isHistoricalRead) {
-        setCacheHeaders(res, 600, 60);
-      } else {
-        // 60s SWR in both regimes; only the edge TTL flexes RTH-vs-after-hours.
-        setCacheHeaders(res, marketOpen ? 60 : 600, 60);
-      }
-
-      const data = await fetchComplete(date, slotCapturedAt);
-      const latestInProgress = await hasLaterInProgress(
-        date,
-        data?.slotCapturedAt ?? null,
-      );
-
-      done({ status: 200 });
-      const body: {
-        marketOpen: boolean;
-        asOf: string;
-        data: PlaybookResponseRow | null;
-        latestInProgress: boolean;
-        reason?: string;
-      } = {
-        marketOpen,
-        asOf: new Date().toISOString(),
-        data,
-        latestInProgress,
-      };
-      if (data == null) body.reason = 'no_playbook';
-      return res.status(200).json(body);
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'periscope_playbook',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
+    let date: string;
+    if (dateParam === '') {
+      date = getETDateStr(new Date());
+    } else if (DATE_RE.test(dateParam)) {
+      date = dateParam;
+    } else {
+      done({ status: 400, error: 'bad_date' });
+      res.status(400).json({ error: 'date must be YYYY-MM-DD' });
       return;
     }
-  });
-}
+
+    if (slotParam !== '' && !ISO_RE.test(slotParam)) {
+      done({ status: 400, error: 'bad_slot' });
+      res.status(400).json({ error: 'slot must be ISO-8601' });
+      return;
+    }
+    const slotCapturedAt: string | null = slotParam !== '' ? slotParam : null;
+
+    const marketOpen = isMarketOpen();
+
+    // Cache policy:
+    //   - Manual rerun (?nocache=...): force no-store so a re-run is
+    //     immediately visible to the panel client.
+    //   - Historical (date param): immutable past day, cache aggressively.
+    //   - Live (no date): short window during RTH, longer after hours.
+    if (noCache !== '') {
+      res.setHeader('Cache-Control', 'no-store');
+    } else if (isHistoricalRead) {
+      setCacheHeaders(res, 600, 60);
+    } else {
+      // 60s SWR in both regimes; only the edge TTL flexes RTH-vs-after-hours.
+      setCacheHeaders(res, marketOpen ? 60 : 600, 60);
+    }
+
+    const data = await fetchComplete(date, slotCapturedAt);
+    const latestInProgress = await hasLaterInProgress(
+      date,
+      data?.slotCapturedAt ?? null,
+    );
+
+    done({ status: 200 });
+    const body: {
+      marketOpen: boolean;
+      asOf: string;
+      data: PlaybookResponseRow | null;
+      latestInProgress: boolean;
+      reason?: string;
+    } = {
+      marketOpen,
+      asOf: new Date().toISOString(),
+      data,
+      latestInProgress,
+    };
+    if (data == null) body.reason = 'no_playbook';
+    res.status(200).json(body);
+  },
+);

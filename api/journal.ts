@@ -15,29 +15,22 @@
  * Response: { analyses: [...], count: N }
  */
 
-import { metrics } from './_lib/sentry.js';
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
+import { withDbReader } from './_lib/request-scope.js';
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/journal');
+export default withDbReader(
+  '/api/journal',
+  'journal',
+  async (req, res, done) => {
+    if (await guardOwnerEndpoint(req, res, done)) return;
 
-  if (req.method !== 'GET') {
-    done({ status: 405 });
-    return res.status(405).json({ error: 'GET only' });
-  }
+    const rateLimited = await rejectIfRateLimited(req, res, 'journal', 20);
+    if (rateLimited) {
+      done({ status: 429 });
+      return;
+    }
 
-  if (await guardOwnerEndpoint(req, res, done)) return;
-
-  const rateLimited = await rejectIfRateLimited(req, res, 'journal', 20);
-  if (rateLimited) {
-    done({ status: 429 });
-    return;
-  }
-
-  try {
     const sql = getDb();
     const { date, from, to, structure, confidence, mode, limit } = req.query;
     const lim = Math.min(Number(limit) || 50, 200);
@@ -146,12 +139,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     done({ status: 200 });
     return res.status(200).json({ analyses: rows, count: rows.length });
-  } catch (err) {
-    sendDbErrorResponse(res, err, {
-      label: 'journal',
-      serverErrorBody: { error: 'Query failed' },
-      done,
-    });
-    return;
-  }
-}
+  },
+  { serverErrorBody: { error: 'Query failed' } },
+);

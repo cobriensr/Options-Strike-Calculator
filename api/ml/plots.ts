@@ -17,11 +17,9 @@
  *        (data only changes once nightly)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
-import { metrics } from '../_lib/sentry.js';
-import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
+import { withDbReader } from '../_lib/request-scope.js';
 
 interface PlotAnalysis {
   what_it_means: string;
@@ -38,15 +36,10 @@ interface PlotRow {
   updated_at: Date | string;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/ml/plots');
-
-  if (req.method !== 'GET') {
-    done({ status: 405 });
-    return res.status(405).json({ error: 'GET only' });
-  }
-
-  try {
+export default withDbReader(
+  '/api/ml/plots',
+  'ml_plots',
+  async (_req, res, done) => {
     const sql = getDb();
 
     // Fetch plot analyses and findings in parallel. Each query gets its
@@ -113,12 +106,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       findings,
       pipelineDate,
     });
-  } catch (err) {
-    sendDbErrorResponse(res, err, {
-      label: 'ml_plots',
-      serverErrorBody: { error: 'Failed to fetch plot data' },
-      done,
-    });
-    return;
-  }
-}
+  },
+  { serverErrorBody: { error: 'Failed to fetch plot data' } },
+);

@@ -19,10 +19,8 @@
  *   }
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry, metrics } from './_lib/sentry.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
+import { withDbReader } from './_lib/request-scope.js';
 import {
   guardOwnerOrGuestEndpoint,
   isMarketOpen,
@@ -89,16 +87,10 @@ function mapRow(r: RawRow): ZeroGammaRow {
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/zero-gamma');
-    const done = metrics.request('/api/zero-gamma');
-
-    if (req.method !== 'GET') {
-      done({ status: 405 });
-      return res.status(405).json({ error: 'GET only' });
-    }
-
+export default withDbReader(
+  '/api/zero-gamma',
+  'zero_gamma',
+  async (req, res, done) => {
     if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const parsed = zeroGammaQuerySchema.safeParse(req.query);
@@ -113,19 +105,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const ticker = parsed.data.ticker ?? DEFAULT_TICKER;
     const date = parsed.data.date ?? null;
 
-    try {
-      const sql = getDb();
+    const sql = getDb();
 
-      // When `date` is provided, return all snapshots for that ET calendar
-      // day. `ts` is TIMESTAMPTZ (UTC) and the live cron writes NOW() which
-      // is UTC — but the UI sources the date from `getETToday()` (ET), so
-      // we have to convert per-row to ET before comparing. Without the
-      // AT TIME ZONE conversion, late-session writes whose UTC date rolls
-      // over (e.g. 21:00 ET = 01:00 UTC next day) would silently land on
-      // the wrong calendar bucket.
-      const rows = date
-        ? ((await withDbRetry(
-            () => sql`
+    // When `date` is provided, return all snapshots for that ET calendar
+    // day. `ts` is TIMESTAMPTZ (UTC) and the live cron writes NOW() which
+    // is UTC — but the UI sources the date from `getETToday()` (ET), so
+    // we have to convert per-row to ET before comparing. Without the
+    // AT TIME ZONE conversion, late-session writes whose UTC date rolls
+    // over (e.g. 21:00 ET = 01:00 UTC next day) would silently land on
+    // the wrong calendar bucket.
+    const rows = date
+      ? ((await withDbRetry(
+          () => sql`
             SELECT ticker, spot, zero_gamma, confidence,
                    net_gamma_at_spot, gamma_curve, ts
             FROM zero_gamma_levels
@@ -134,11 +125,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ORDER BY ts ASC
             LIMIT ${HISTORY_LIMIT}
           `,
-            2,
-            10_000,
-          )) as RawRow[])
-        : ((await withDbRetry(
-            () => sql`
+          2,
+          10_000,
+        )) as RawRow[])
+      : ((await withDbRetry(
+          () => sql`
             SELECT ticker, spot, zero_gamma, confidence,
                    net_gamma_at_spot, gamma_curve, ts
             FROM zero_gamma_levels
@@ -146,31 +137,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ORDER BY ts DESC
             LIMIT ${HISTORY_LIMIT}
           `,
-            2,
-            10_000,
-          )) as RawRow[]);
+          2,
+          10_000,
+        )) as RawRow[]);
 
-      const history = rows.map(mapRow);
-      // For the date query (ASC order) `latest` is the last row of the day;
-      // for the no-date query (DESC order) it's the most recent overall.
-      const latest = date ? (history.at(-1) ?? null) : (history[0] ?? null);
+    const history = rows.map(mapRow);
+    // For the date query (ASC order) `latest` is the last row of the day;
+    // for the no-date query (DESC order) it's the most recent overall.
+    const latest = date ? (history.at(-1) ?? null) : (history[0] ?? null);
 
-      const response: ZeroGammaResponse = { latest, history };
+    const response: ZeroGammaResponse = { latest, history };
 
-      // Short edge cache during market hours (cron writes every 5 min,
-      // matched to fetch-strike-exposure). Longer cache off-hours to reduce
-      // load. setCacheHeaders adds Vary: Cookie so owner vs anon caches
-      // don't collide.
-      setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
-      done({ status: 200 });
-      return res.status(200).json(response);
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'zero_gamma',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-      return;
-    }
-  });
-}
+    // Short edge cache during market hours (cron writes every 5 min,
+    // matched to fetch-strike-exposure). Longer cache off-hours to reduce
+    // load. setCacheHeaders adds Vary: Cookie so owner vs anon caches
+    // don't collide.
+    setCacheHeaders(res, isMarketOpen() ? 30 : 300, 60);
+    done({ status: 200 });
+    return res.status(200).json(response);
+  },
+);

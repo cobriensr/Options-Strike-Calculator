@@ -71,7 +71,15 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    // periscope-chat-detail now routes through withDbReader → withRequestScope,
+    // which wraps the handler in Sentry.withIsolationScope. The mock must invoke
+    // the callback (with a scope stub) or the handler body never runs.
+    withIsolationScope: vi.fn((cb: (scope: unknown) => unknown) =>
+      cb({ setTransactionName: vi.fn(), setTag: vi.fn() }),
+    ),
+  },
   metrics: {
     request: vi.fn(() => vi.fn()),
     increment: vi.fn(),

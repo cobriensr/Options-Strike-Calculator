@@ -37,11 +37,9 @@
  * Schema: api/_lib/db-migrations.ts migration #144 + #147.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry, metrics } from './_lib/sentry.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
+import { withDbReader } from './_lib/request-scope.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type Severity = 'extreme' | 'critical' | 'warning';
@@ -170,37 +168,30 @@ function shapeRow(r: RawRow): IntervalBAAlertRow {
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/interval-ba-alerts');
-    const done = metrics.request('/api/interval-ba-alerts');
+export default withDbReader(
+  '/api/interval-ba-alerts',
+  'interval_ba_alerts',
+  async (req, res, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-    try {
-      if (req.method !== 'GET') {
-        done({ status: 405 });
-        return res.status(405).json({ error: 'GET only' });
-      }
+    const sql = getDb();
+    const since = req.query.since as string | undefined;
+    const today = getETDateStr(new Date());
 
-      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
-      const sql = getDb();
-      const since = req.query.since as string | undefined;
-      const today = getETDateStr(new Date());
-
-      // Neon's serverless `sql` tag returns `Record<string, any>[]`;
-      // the SELECT list matches RawRow exactly so a cast is safe.
-      //
-      // SPXW underlying_price fallback: UW does not emit a spot on
-      // SPXW ticks (SPXW is the index option chain, not a tradable
-      // underlying), so the daemon writes NULL. We LEFT JOIN LATERAL
-      // the nearest-prior 1m SPX candle (symbol='SPX', date=expiry,
-      // timestamp ≤ fired_at) and COALESCE so SPXW rows render their
-      // ITM/OTM pill consistently with SPY/QQQ rows. The lateral
-      // subquery short-circuits on non-SPXW tickers via the inner
-      // `a.ticker = 'SPXW'` guard, so SPY/QQQ rows pay no JOIN cost.
-      const rawRows = since
-        ? await withDbRetry(
-            () => sql`
+    // Neon's serverless `sql` tag returns `Record<string, any>[]`;
+    // the SELECT list matches RawRow exactly so a cast is safe.
+    //
+    // SPXW underlying_price fallback: UW does not emit a spot on
+    // SPXW ticks (SPXW is the index option chain, not a tradable
+    // underlying), so the daemon writes NULL. We LEFT JOIN LATERAL
+    // the nearest-prior 1m SPX candle (symbol='SPX', date=expiry,
+    // timestamp ≤ fired_at) and COALESCE so SPXW rows render their
+    // ITM/OTM pill consistently with SPY/QQQ rows. The lateral
+    // subquery short-circuits on non-SPXW tickers via the inner
+    // `a.ticker = 'SPXW'` guard, so SPY/QQQ rows pay no JOIN cost.
+    const rawRows = since
+      ? await withDbRetry(
+          () => sql`
             SELECT a.id, a.option_chain, a.ticker, a.option_type, a.strike,
                    a.expiry, a.bucket_start, a.bucket_end, a.fired_at,
                    a.ratio_pct, a.ask_premium, a.total_premium, a.trade_count,
@@ -224,11 +215,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ORDER BY a.fired_at DESC
             LIMIT 20
           `,
-            2,
-            10_000,
-          )
-        : await withDbRetry(
-            () => sql`
+          2,
+          10_000,
+        )
+      : await withDbRetry(
+          () => sql`
             SELECT a.id, a.option_chain, a.ticker, a.option_type, a.strike,
                    a.expiry, a.bucket_start, a.bucket_end, a.fired_at,
                    a.ratio_pct, a.ask_premium, a.total_premium, a.trade_count,
@@ -252,26 +243,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ORDER BY a.fired_at DESC
             LIMIT 20
           `,
-            2,
-            10_000,
-          );
-      const rows = rawRows as unknown as RawRow[];
+          2,
+          10_000,
+        );
+    const rows = rawRows as unknown as RawRow[];
 
-      const alerts = rows.map(shapeRow);
+    const alerts = rows.map(shapeRow);
 
-      res.setHeader('Cache-Control', 'no-store');
-      done({ status: 200 });
-      return res.status(200).json({ alerts });
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'interval_ba_alerts',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-      return;
-    }
-  });
-}
+    res.setHeader('Cache-Control', 'no-store');
+    done({ status: 200 });
+    res.status(200).json({ alerts });
+  },
+);
 
 // Exported for unit tests.
 export const _internal = { deriveSeverity, shapeRow };

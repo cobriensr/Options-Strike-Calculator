@@ -12,34 +12,22 @@
  *   (default: all unacknowledged alerts for today)
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
-import { Sentry, metrics } from './_lib/sentry.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
+import { withDbReader } from './_lib/request-scope.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/alerts');
-    const done = metrics.request('/api/alerts');
+export default withDbReader('/api/alerts', 'alerts', async (req, res, done) => {
+  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-    try {
-      if (req.method !== 'GET') {
-        done({ status: 405 });
-        return res.status(405).json({ error: 'GET only' });
-      }
+  const sql = getDb();
+  const since = req.query.since as string | undefined;
 
-      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+  const today = getETDateStr(new Date());
 
-      const sql = getDb();
-      const since = req.query.since as string | undefined;
-
-      const today = getETDateStr(new Date());
-
-      const alerts = since
-        ? await withDbRetry(
-            () => sql`
+  const alerts = since
+    ? await withDbRetry(
+        () => sql`
             SELECT id, date, timestamp, type, severity, direction,
                    title, body, current_values, delta_values,
                    acknowledged, created_at
@@ -48,11 +36,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ORDER BY created_at DESC
             LIMIT 20
           `,
-            2,
-            10_000,
-          )
-        : await withDbRetry(
-            () => sql`
+        2,
+        10_000,
+      )
+    : await withDbRetry(
+        () => sql`
             SELECT id, date, timestamp, type, severity, direction,
                    title, body, current_values, delta_values,
                    acknowledged, created_at
@@ -61,20 +49,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             ORDER BY created_at DESC
             LIMIT 20
           `,
-            2,
-            10_000,
-          );
+        2,
+        10_000,
+      );
 
-      res.setHeader('Cache-Control', 'no-store');
-      done({ status: 200 });
-      return res.status(200).json({ alerts });
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'alerts',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-      return;
-    }
-  });
-}
+  res.setHeader('Cache-Control', 'no-store');
+  done({ status: 200 });
+  res.status(200).json({ alerts });
+});

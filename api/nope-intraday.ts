@@ -12,11 +12,9 @@
  * tradeable underlying — the NOPE denominator would be undefined).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { Sentry, metrics } from './_lib/sentry.js';
+import { withDbReader } from './_lib/request-scope.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
-import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 
 const TICKER = 'SPY';
 
@@ -49,16 +47,10 @@ function toDateString(value: unknown): string | null {
   return null;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/nope-intraday');
-    const done = metrics.request('/api/nope-intraday');
-
-    if (req.method !== 'GET') {
-      done({ status: 405 });
-      return res.status(405).json({ error: 'GET only' });
-    }
-
+export default withDbReader(
+  '/api/nope-intraday',
+  'nope_intraday',
+  async (req, res, done) => {
     if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
     const dateParam = req.query.date as string | undefined;
@@ -68,84 +60,75 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Invalid date' });
     }
 
-    try {
-      const sql = getDb();
+    const sql = getDb();
 
-      // Distinct ET dates that have any rows. Drives both date resolution
-      // and a small client-side date picker if you ever add one.
-      const dateRows = (await withDbRetry(
-        () => sql`
+    // Distinct ET dates that have any rows. Drives both date resolution
+    // and a small client-side date picker if you ever add one.
+    const dateRows = (await withDbRetry(
+      () => sql`
         SELECT DISTINCT (timestamp AT TIME ZONE 'America/New_York')::date AS d
         FROM nope_ticks
         WHERE ticker = ${TICKER}
         ORDER BY d ASC
       `,
-        2,
-        10_000,
-      )) as Array<{ d: string | Date }>;
+      2,
+      10_000,
+    )) as Array<{ d: string | Date }>;
 
-      const availableDates = dateRows
-        .map((r) => toDateString(r.d))
-        .filter((d): d is string => d != null);
+    const availableDates = dateRows
+      .map((r) => toDateString(r.d))
+      .filter((d): d is string => d != null);
 
-      if (availableDates.length === 0) {
-        const empty: NopeIntradayResponse = {
-          ticker: TICKER,
-          date: null,
-          availableDates: [],
-          points: [],
-        };
-        res.setHeader('Cache-Control', 'no-store');
-        done({ status: 200 });
-        return res.status(200).json(empty);
-      }
+    if (availableDates.length === 0) {
+      const empty: NopeIntradayResponse = {
+        ticker: TICKER,
+        date: null,
+        availableDates: [],
+        points: [],
+      };
+      res.setHeader('Cache-Control', 'no-store');
+      done({ status: 200 });
+      return res.status(200).json(empty);
+    }
 
-      const date = dateParam ?? availableDates.at(-1)!;
+    const date = dateParam ?? availableDates.at(-1)!;
 
-      const pointRows = (await withDbRetry(
-        () => sql`
+    const pointRows = (await withDbRetry(
+      () => sql`
         SELECT timestamp, nope, nope_fill
         FROM nope_ticks
         WHERE ticker = ${TICKER}
           AND (timestamp AT TIME ZONE 'America/New_York')::date = ${date}
         ORDER BY timestamp ASC
       `,
-        2,
-        10_000,
-      )) as Array<{
-        timestamp: string | Date;
-        nope: string | number;
-        nope_fill: string | number;
-      }>;
+      2,
+      10_000,
+    )) as Array<{
+      timestamp: string | Date;
+      nope: string | number;
+      nope_fill: string | number;
+    }>;
 
-      const points: NopePoint[] = pointRows
-        .map((r) => {
-          const ts = toIso(r.timestamp);
-          if (ts == null) return null;
-          return {
-            timestamp: ts,
-            nope: Number(r.nope),
-            nope_fill: Number(r.nope_fill),
-          };
-        })
-        .filter((p): p is NopePoint => p != null);
+    const points: NopePoint[] = pointRows
+      .map((r) => {
+        const ts = toIso(r.timestamp);
+        if (ts == null) return null;
+        return {
+          timestamp: ts,
+          nope: Number(r.nope),
+          nope_fill: Number(r.nope_fill),
+        };
+      })
+      .filter((p): p is NopePoint => p != null);
 
-      const response: NopeIntradayResponse = {
-        ticker: TICKER,
-        date,
-        availableDates,
-        points,
-      };
-      res.setHeader('Cache-Control', 'no-store');
-      done({ status: 200 });
-      return res.status(200).json(response);
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'nope_intraday',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-      return;
-    }
-  });
-}
+    const response: NopeIntradayResponse = {
+      ticker: TICKER,
+      date,
+      availableDates,
+      points,
+    };
+    res.setHeader('Cache-Control', 'no-store');
+    done({ status: 200 });
+    return res.status(200).json(response);
+  },
+);

@@ -16,12 +16,9 @@
  * Spec: docs/superpowers/specs/gamma-node-composite-detector-2026-05-21.md
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
-import { sendDbErrorResponse } from '../_lib/transient-db-response.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { withDbReader } from '../_lib/request-scope.js';
 import {
   findNearestCeilingAbove,
   findNearestFloorBelow,
@@ -146,30 +143,23 @@ function shapeFire(r: FireRow): GammaSetupFire {
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return Sentry.withIsolationScope(async (scope) => {
-    scope.setTransactionName('GET /api/gamma-setups/active');
-    const done = metrics.request('/api/gamma-setups/active');
+export default withDbReader(
+  '/api/gamma-setups/active',
+  'gamma_setups_active',
+  async (req, res, done) => {
+    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
 
-    try {
-      if (req.method !== 'GET') {
-        done({ status: 405 });
-        res.status(405).json({ error: 'GET only' });
-        return;
-      }
-      if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+    const sql = getDb();
+    const now = new Date();
+    const today = getETDateStr(now);
+    const dowLabel = getDowLabel(now);
 
-      const sql = getDb();
-      const now = new Date();
-      const today = getETDateStr(now);
-      const dowLabel = getDowLabel(now);
-
-      // Day context + nodes + fires in parallel — independent reads.
-      const [dayCtx, nodes, fireRows] = await Promise.all([
-        loadDayContext(sql, now),
-        loadPositiveGammaNodes(sql, today),
-        withDbRetry(
-          () => sql`
+    // Day context + nodes + fires in parallel — independent reads.
+    const [dayCtx, nodes, fireRows] = await Promise.all([
+      loadDayContext(sql, now),
+      loadPositiveGammaNodes(sql, today),
+      withDbRetry(
+        () => sql`
             SELECT
               id, fired_at, signal_type, dow_label, confidence_tier,
               spot_at_fire, node_strike, node_gex,
@@ -183,59 +173,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             )
             ORDER BY fired_at ASC
           `,
-          2,
-          10_000,
-        ),
-      ]);
-      const rawFires = fireRows as FireRow[];
+        2,
+        10_000,
+      ),
+    ]);
+    const rawFires = fireRows as FireRow[];
 
-      // Spot from the latest 1-min bar is more accurate than the last
-      // fire's spot, since spot moves continuously between fires.
-      const recentBars = await loadRecentBars(sql, today, 1);
-      const spotNow = recentBars.at(-1)?.close ?? null;
+    // Spot from the latest 1-min bar is more accurate than the last
+    // fire's spot, since spot moves continuously between fires.
+    const recentBars = await loadRecentBars(sql, today, 1);
+    const spotNow = recentBars.at(-1)?.close ?? null;
 
-      const nearestFloor =
-        spotNow != null ? findNearestFloorBelow(nodes, spotNow) : null;
-      const nearestCeiling =
-        spotNow != null ? findNearestCeilingAbove(nodes, spotNow) : null;
+    const nearestFloor =
+      spotNow != null ? findNearestFloorBelow(nodes, spotNow) : null;
+    const nearestCeiling =
+      spotNow != null ? findNearestCeilingAbove(nodes, spotNow) : null;
 
-      const confidenceTier =
-        dowLabel != null
-          ? getConfidenceTier(dowLabel, dayCtx.pre_day_filter_fires)
-          : null;
+    const confidenceTier =
+      dowLabel != null
+        ? getConfidenceTier(dowLabel, dayCtx.pre_day_filter_fires)
+        : null;
 
-      const response: GammaSetupsActiveResponse = {
-        today,
-        dow_label: dowLabel,
-        confidence_tier: confidenceTier,
-        pre_day_filter_fires: dayCtx.pre_day_filter_fires,
-        prior_5d_ret: dayCtx.prior_5d_ret,
-        prior_iv_rank: dayCtx.prior_iv_rank,
-        open_gap_pct: dayCtx.open_gap_pct,
-        anti_filters: {
-          is_fomc_day: dayCtx.is_fomc_day,
-          is_dom_1_5: dayCtx.is_dom_1_5,
-          is_dom_16_20: dayCtx.is_dom_16_20,
-        },
-        nearest_floor:
-          nearestFloor != null
-            ? { strike: nearestFloor.strike, gex: nearestFloor.value }
-            : null,
-        nearest_ceiling:
-          nearestCeiling != null
-            ? { strike: nearestCeiling.strike, gex: nearestCeiling.value }
-            : null,
-        fires: rawFires.map(shapeFire),
-      };
+    const response: GammaSetupsActiveResponse = {
+      today,
+      dow_label: dowLabel,
+      confidence_tier: confidenceTier,
+      pre_day_filter_fires: dayCtx.pre_day_filter_fires,
+      prior_5d_ret: dayCtx.prior_5d_ret,
+      prior_iv_rank: dayCtx.prior_iv_rank,
+      open_gap_pct: dayCtx.open_gap_pct,
+      anti_filters: {
+        is_fomc_day: dayCtx.is_fomc_day,
+        is_dom_1_5: dayCtx.is_dom_1_5,
+        is_dom_16_20: dayCtx.is_dom_16_20,
+      },
+      nearest_floor:
+        nearestFloor != null
+          ? { strike: nearestFloor.strike, gex: nearestFloor.value }
+          : null,
+      nearest_ceiling:
+        nearestCeiling != null
+          ? { strike: nearestCeiling.strike, gex: nearestCeiling.value }
+          : null,
+      fires: rawFires.map(shapeFire),
+    };
 
-      done({ status: 200 });
-      res.status(200).json(response);
-    } catch (err) {
-      sendDbErrorResponse(res, err, {
-        label: 'gamma_setups_active',
-        serverErrorBody: { error: 'Internal error' },
-        done,
-      });
-    }
-  });
-}
+    done({ status: 200 });
+    res.status(200).json(response);
+  },
+);

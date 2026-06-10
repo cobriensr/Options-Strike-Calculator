@@ -34,8 +34,12 @@ vi.mock('../_lib/db.js', () => ({
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     withIsolationScope: vi.fn(
-      (cb: (s: { setTag: (k: string, v: string) => void }) => unknown) =>
-        cb({ setTag: vi.fn() }),
+      (
+        cb: (s: {
+          setTransactionName: (n: string) => void;
+          setTag: (k: string, v: string) => void;
+        }) => unknown,
+      ) => cb({ setTransactionName: vi.fn(), setTag: vi.fn() }),
     ),
     captureException: vi.fn(),
   },
