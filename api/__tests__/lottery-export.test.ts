@@ -195,6 +195,55 @@ describe('GET /api/lottery-export', () => {
     expect(res._body).toContain('"has ""quote"""');
   });
 
+  it('CSV quotes a field containing an embedded newline (RFC 4180)', async () => {
+    // A `\n` inside a field must trigger quoting so the newline is read as
+    // in-field data, not a row terminator. The quoted field stays intact and
+    // a downstream parser sees ONE data row, not two.
+    mockSql.mockResolvedValueOnce([
+      { id: 1, note: 'line one\nline two', plain: 'ok' },
+    ]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-05-04' } }),
+      res,
+    );
+    // Header row + exactly one data row (the embedded \n does NOT split it
+    // because the field is quoted). Splitting on the unquoted row terminator:
+    expect(res._body).toContain('"line one\nline two"');
+    // The plain neighbour field is NOT quoted.
+    expect(res._body).toContain(',ok');
+  });
+
+  it('CSV quotes a field containing comma, quote AND newline together', async () => {
+    mockSql.mockResolvedValueOnce([{ id: 1, messy: 'a,b "c"\nd' }]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-05-04' } }),
+      res,
+    );
+    // Inner quotes doubled, whole field wrapped in quotes; comma + newline
+    // preserved verbatim inside the quoted region.
+    expect(res._body).toContain('"a,b ""c""\nd"');
+  });
+
+  it('defaults to today (ET) when no date query param is supplied', async () => {
+    // The `date ?? getETDateStr(new Date())` fallback: with no `date` the
+    // handler still produces a 200 CSV whose filename carries an ISO date.
+    mockSql.mockResolvedValueOnce([ROW]);
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: {} }), res);
+    expect(res._status).toBe(200);
+    expect(res._headers['Content-Type']).toBe('text/csv');
+    // Filename ends in an ISO YYYY-MM-DD date (from getETDateStr).
+    expect(res._headers['Content-Disposition']).toMatch(
+      /attachment; filename="lottery-fires-\d{4}-\d{2}-\d{2}\.csv"/,
+    );
+    // The SQL was bound with that same default date (1st binding after the
+    // strings array is the targetDate used in `WHERE f.date = ${targetDate}`).
+    const bindings = (mockSql.mock.calls[0] as unknown[]).slice(1);
+    expect(bindings[0]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
   it('returns 500 on DB error', async () => {
     mockSql.mockRejectedValueOnce(new Error('boom'));
     const res = mockResponse();

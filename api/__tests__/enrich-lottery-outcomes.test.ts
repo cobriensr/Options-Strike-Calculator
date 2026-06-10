@@ -374,6 +374,116 @@ describe('enrich-lottery-outcomes', () => {
     expect(mockMetricsIncrement).toHaveBeenCalledWith('lottery.kept_prune');
   });
 
+  it('soft-degrades when simulateFlowInversion throws: still UPDATEs other realized fields with flowInversion null', async () => {
+    // The flow-inversion step is wrapped in try/catch (enrich-lottery-outcomes.ts
+    // :268-297). A throw there must NOT abort the fire's enrichment — the
+    // realized_* and peak columns still land, only realized_flow_inversion_pct
+    // stays NULL. Verify the UPDATE bind shape: index 4 (flowInversion) is null,
+    // the other realized binds + peak are real numbers, enriched_at stamped.
+    mockSql.mockResolvedValueOnce([{ ...baseFire, entryPrice: 1.0 }]); // SELECT fires
+    mockSql.mockResolvedValueOnce([
+      { executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.5 },
+      { executedAt: new Date('2026-05-02T14:33:00Z'), price: 2.0 },
+      { executedAt: new Date('2026-05-02T14:40:00Z'), price: 1.7 },
+    ]); // SELECT ticks
+    mockSql.mockResolvedValueOnce([
+      {
+        ts: new Date('2026-05-02T14:35:00Z'),
+        netCallPrem: '100',
+        netPutPrem: '0',
+      },
+    ]); // loadMatchedFlow SELECT (minutes.length>0 enters the inversion path)
+
+    let updateValues: unknown[] = [];
+    mockSql.mockImplementationOnce((...args: unknown[]) => {
+      updateValues = args.slice(1);
+      return Promise.resolve([]);
+    }); // UPDATE
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+    // Intraday returns minutes (so the inversion path is entered), then the
+    // simulator throws — the catch swallows it and the column stays null.
+    mockFetchIntraday.mockResolvedValueOnce([
+      { ts: new Date('2026-05-02T14:31:00Z'), mid: 1.55 },
+    ]);
+    mockSimulateInversion.mockImplementationOnce(() => {
+      throw new Error('flow-inversion: matched-flow alignment failed');
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Enrichment still landed (1 enriched), flow_inversion populated 0.
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: expect.stringContaining('flow_inversion populated 0'),
+    });
+    expect(mockSimulateInversion).toHaveBeenCalled();
+
+    // UPDATE bind order:
+    //   trail30_10, hard30m, tier50, eod, flowInversion,
+    //   peak_ceiling_pct, minutes_to_peak, id
+    // flowInversion (index 4) MUST be null — the throw degraded only it.
+    expect(updateValues[4]).toBeNull();
+    // The other realized fields + peak are real numbers (enrichment landed).
+    // peak (index 5): max tick 2.0 from entry 1.0 → +100%.
+    expect(updateValues[5]).toBeCloseTo(100, 5);
+    // minutes_to_peak (index 6): the 2.0 tick is 3 min after the 14:30 entry.
+    expect(updateValues[6]).toBeCloseTo(3, 5);
+    // id (index 7) is the fire id from the WHERE clause.
+    expect(updateValues[7]).toBe(baseFire.id);
+  });
+
+  // ── dateToIso parity: Date object vs YYYY-MM-DD string ────────────────────
+  // Neon returns DATE columns as a Date when the SELECT has no explicit cast;
+  // a backfill or test fixture might pass a 'YYYY-MM-DD' string. dateToIso
+  // (enrich-lottery-outcomes.ts:74) must normalize BOTH to the same ISO date,
+  // since the result is fed to fetchAndCacheOptionIntraday. dateToIso is
+  // private, so we observe it through the mocked fetchAndCacheOptionIntraday
+  // call's 3rd arg.
+  it('dateToIso normalizes a Date column input to the same ISO as a string input', async () => {
+    async function captureDateStrFor(dateCol: Date | string): Promise<string> {
+      mockSql.mockResolvedValueOnce([{ ...baseFire, date: dateCol }]); // SELECT fires
+      mockSql.mockResolvedValueOnce([
+        { executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.6 },
+      ]); // SELECT ticks
+      mockSql.mockResolvedValueOnce([]); // UPDATE
+      mockSql.mockResolvedValueOnce([]); // prune DELETE
+      mockFetchIntraday.mockResolvedValueOnce([]); // no minutes → inversion skipped
+
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      expect(res._status).toBe(200);
+      const [, , dateStr] = mockFetchIntraday.mock.calls.at(-1) as [
+        string,
+        string,
+        string,
+      ];
+      return dateStr;
+    }
+
+    // Neon-returns-DATE-as-Date: UTC midnight Date for 2026-05-02.
+    const fromDate = await captureDateStrFor(new Date('2026-05-02T00:00:00Z'));
+    vi.clearAllMocks();
+    mockCronGuard.mockReturnValue(GUARD);
+    // Backfill / fixture string path.
+    const fromString = await captureDateStrFor('2026-05-02');
+
+    expect(fromDate).toBe('2026-05-02');
+    expect(fromString).toBe('2026-05-02');
+    expect(fromDate).toBe(fromString);
+  });
+
   it('does NOT emit the heartbeat when the prune DELETE throws', async () => {
     mockSql.mockResolvedValueOnce([]); // SELECT fires (empty) → prune path
     mockSql.mockRejectedValueOnce(new Error('neon: connection reset'));

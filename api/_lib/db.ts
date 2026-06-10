@@ -148,6 +148,38 @@ export function isRetryableDbError(err: unknown): boolean {
   return DB_RETRYABLE_RX.test(`${err.message} ${sourceMsg}`);
 }
 
+/** Classification of a settled, degradable promise: no failure, a
+ *  transient (retryable) DB error, or a genuine (non-retryable) error. */
+export type SettleFailure = null | 'transient' | 'genuine';
+
+export interface SettledDegradable<T> {
+  value: T;
+  failure: SettleFailure;
+  reason?: unknown;
+}
+
+/**
+ * Collapse one `Promise.allSettled` result into a value + failure kind for
+ * fail-open fan-outs. A fulfilled result keeps its value with `failure:null`;
+ * a rejected result falls open to `fallback` and is classified `'transient'`
+ * (retryable per {@link isRetryableDbError} — a Neon blip / re-thrown
+ * `TransientDbError`) or `'genuine'` (a real bug whose message does not match
+ * the retryable rx, e.g. a renamed column). Callers decide the blast radius:
+ * transient → degrade quietly (warning); genuine → page (error). Never throws.
+ */
+export function settleDegradable<T>(
+  result: PromiseSettledResult<T>,
+  fallback: T,
+): SettledDegradable<T> {
+  if (result.status === 'fulfilled')
+    return { value: result.value, failure: null };
+  return {
+    value: fallback,
+    failure: isRetryableDbError(result.reason) ? 'transient' : 'genuine',
+    reason: result.reason,
+  };
+}
+
 export async function withDbRetry<T>(
   fn: () => Promise<T>,
   retries: number = DB_RETRY_ATTEMPTS,
@@ -162,15 +194,26 @@ export async function withDbRetry<T>(
       // prevent any retry. Throwing a retryable error here lets the
       // loop fall through to the next attempt — the retry classifier
       // matches `timeout` in the message via DB_RETRYABLE_RX above.
-      return await Promise.race([
-        fn(),
-        new Promise<T>((_, reject) =>
-          setTimeout(
-            () => reject(new Error('db attempt timeout')),
-            perAttemptTimeoutMs,
-          ),
-        ),
-      ]);
+      //
+      // Capture the timer handle so it can be cleared once the race
+      // settles. Without this, a query that resolves before the timeout
+      // leaves a live 10s timer armed — it never rejects anything (the
+      // race is already settled) but keeps the event loop / function
+      // alive and, in tests, leaks a pending fake timer.
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          fn(),
+          new Promise<T>((_, reject) => {
+            timeoutHandle = setTimeout(
+              () => reject(new Error('db attempt timeout')),
+              perAttemptTimeoutMs,
+            );
+          }),
+        ]);
+      } finally {
+        if (timeoutHandle != null) clearTimeout(timeoutHandle);
+      }
     } catch (err) {
       if (!isRetryableDbError(err)) throw err; // genuine error → raw
       if (attempt === retries) throw new TransientDbError(err); // exhausted transient

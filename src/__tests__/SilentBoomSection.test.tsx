@@ -282,6 +282,72 @@ describe('SilentBoomSection: populated rendering', () => {
 });
 
 // ============================================================
+// ACTIVE-FILTER CHIP LABELS (header)
+// ============================================================
+//
+// Silent Boom has NO server-side `suppressedCount` (it's immune to the
+// chain-collapse the Lottery feed suffers — see the `clientHiddenCount`
+// note in index.tsx). It DOES carry the same active-filter chip labels
+// in its header as the Lottery section: a convictionFloor label and a
+// TAKE-IT floor label. Mirrors the Lottery suite's chip-label coverage.
+
+describe('SilentBoomSection: active-filter chip labels', () => {
+  function makeBasicAlert(): SilentBoomAlert {
+    return makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+  }
+
+  it('chip label: "(Tier 1 only)" renders when convictionFloor = tier1', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [makeBasicAlert()], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Tier 1/ }));
+    expect(screen.getByText('(Tier 1 only)')).toBeInTheDocument();
+  });
+
+  it('chip label: "(Tier 2+)" renders when convictionFloor = tier2', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [makeBasicAlert()], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Tier 2/ }));
+    expect(screen.getByText('(Tier 2+)')).toBeInTheDocument();
+  });
+
+  it('chip label: no conviction label when floor is "all" (default)', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [makeBasicAlert()], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(screen.queryByText('(Tier 1 only)')).not.toBeInTheDocument();
+    expect(screen.queryByText('(Tier 2+)')).not.toBeInTheDocument();
+  });
+
+  it('chip label: "(TAKE-IT ≥ 0.70)" renders for the default floor when alerts present', () => {
+    // Default takeitFloor is 0.70 (> 0) → the header carries the floor label.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [makeBasicAlert()], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={false} />);
+    expect(screen.getByText('(TAKE-IT ≥ 0.70)')).toBeInTheDocument();
+  });
+
+  it('chip label: "(TAKE-IT ≥ ...)" omitted once the "all" preset (floor 0) is selected', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [makeBasicAlert()], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByTestId('takeit-floor-0'));
+    expect(screen.queryByText(/TAKE-IT ≥/)).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
 // NEVER-VANISH — useStickyUnion accumulator (live view)
 // ============================================================
 //

@@ -665,6 +665,40 @@ describe('LotteryRow: RELOAD delta badge', () => {
     expect(badge).toHaveTextContent('RELOAD opt −40%');
     expect(badge.textContent).not.toMatch(/spx/);
   });
+
+  it('suppresses the badge when the first fire entryPrice is non-positive (divide-by-zero guard)', () => {
+    // reloadDelta bails when historicalFires[0].entryPrice <= 0 (or NaN) —
+    // a zero/garbage first-fire price would make the option-delta % a
+    // divide-by-zero. alertSeq > 1 AND a historicalFires entry are present,
+    // so this exercises the entryPrice guard specifically (not the
+    // alertSeq<=1 or missing-firstFire early returns).
+    render(
+      <LotteryRow
+        fire={makeFire({
+          entry: {
+            price: 0.6,
+            openInterest: 5000,
+            spotAtFirst: 200,
+            spotAtTrigger: 201,
+            alertSeq: 3,
+            minutesSincePrevFire: 15,
+          },
+          historicalFires: [
+            {
+              triggerTimeCt: '2026-05-08T14:00:00Z',
+              entryPrice: 0, // non-positive → guarded
+              spotAtTrigger: 200,
+            },
+          ],
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(
+      screen.queryByTestId('lottery-row-reload-delta'),
+    ).not.toBeInTheDocument();
+  });
 });
 
 // ============================================================
@@ -801,6 +835,35 @@ describe('LotteryRow: tier + reliability badges', () => {
       />,
     );
     expect(screen.getByText('✓')).toBeInTheDocument();
+  });
+
+  it('renders the uncertain ⚠️ indicator when ticker stats tier is "uncertain"', () => {
+    // CI >15pp → the small-sample / noisy-estimate warning branch of
+    // ciIndicator (the sibling of the "reliable" ✓ path).
+    render(
+      <LotteryRow
+        fire={makeFire({
+          tickerStats: makeStats({ tier: 'uncertain', ciWidth: 22 }),
+        })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.getByText('⚠️')).toBeInTheDocument();
+  });
+
+  it('renders NO ci indicator for the middle band (tier neither reliable nor uncertain)', () => {
+    // Default makeStats tier is '' (10<CI<15 dead band) → ciIndicator returns
+    // null, so neither ✓ nor ⚠️ is shown.
+    render(
+      <LotteryRow
+        fire={makeFire({ tickerStats: makeStats({ tier: '', ciWidth: 12 }) })}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={false}
+      />,
+    );
+    expect(screen.queryByText('✓')).not.toBeInTheDocument();
+    expect(screen.queryByText('⚠️')).not.toBeInTheDocument();
   });
 });
 

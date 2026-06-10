@@ -298,9 +298,49 @@ describe('SilentBoomRow: badges', () => {
     expect(screen.getByText('🔥🔥🔥')).toBeInTheDocument();
   });
 
+  it('renders the Tier 2 double-flame badge (amber) for tier2 alerts', () => {
+    renderRow(makeAlert({ scoreTier: 'tier2', score: 12 }));
+    const badge = screen.getByText('🔥🔥');
+    expect(badge).toBeInTheDocument();
+    // tier2 uses the amber bucket, never the tier1 rose or tier3 neutral.
+    expect(badge.className).toMatch(/amber/);
+  });
+
   it('renders the Tier 3 single-flame badge for tier3 alerts', () => {
     renderRow(makeAlert({ scoreTier: 'tier3', score: 5 }));
     expect(screen.getByText('🔥')).toBeInTheDocument();
+  });
+
+  it('paints the 50-100× spike bucket rose (score-neutral extreme outlier)', () => {
+    // effectiveRatio = spikeVolume / max(baselineVolume, 100). 7500 / 100 =
+    // 75× → the [50, 100) bucket → rose styling (NOT the muted ≥100 bucket).
+    renderRow(
+      makeAlert({ spikeRatio: 75, spikeVolume: 7500, baselineVolume: 100 }),
+    );
+    const label = screen.getByText(/×75/);
+    const badge = label.closest('span');
+    expect(badge?.className).toMatch(/text-rose-200/);
+    expect(badge?.className).not.toMatch(/text-neutral-400/);
+  });
+
+  it('paints the 25-50× spike bucket amber', () => {
+    // 3000 / 100 = 30× → the [25, 50) bucket → amber styling.
+    renderRow(
+      makeAlert({ spikeRatio: 30, spikeVolume: 3000, baselineVolume: 100 }),
+    );
+    const label = screen.getByText(/×30/);
+    const badge = label.closest('span');
+    expect(badge?.className).toMatch(/text-amber-200/);
+  });
+
+  it('paints the 5-25× spike bucket neutral (strongest-signal bucket)', () => {
+    // 1500 / 100 = 15× → the default (< 25) bucket → neutral-300 styling.
+    renderRow(
+      makeAlert({ spikeRatio: 15, spikeVolume: 1500, baselineVolume: 100 }),
+    );
+    const label = screen.getByText(/×15 burst/);
+    const badge = label.closest('span');
+    expect(badge?.className).toMatch(/text-neutral-300/);
   });
 
   it('renders the spike-ratio "burst" badge with an integer multiplier', () => {

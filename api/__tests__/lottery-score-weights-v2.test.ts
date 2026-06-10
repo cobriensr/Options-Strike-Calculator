@@ -526,6 +526,106 @@ describe('computeLotteryScoreV2 — composite bonuses/penalties', () => {
     }
   });
 
+  it('exercises the vol_oi_q and ask_pct_q match branches (not just gamma_q)', () => {
+    // The marginal-effect tests above pivot on each composite's FIRST quintile
+    // key, which for every winning composite is `gamma_q` — so the
+    // `m.vol_oi_q`/`m.ask_pct_q` comparison branches in the loop (score fn
+    // lines 437-444) never execute. Drive a composite of EACH non-gamma key
+    // type directly so those `=== undefined` / label-compare branches run.
+    const byKey = (k: 'vol_oi_q' | 'ask_pct_q') =>
+      COMPOSITE_BONUSES_V2.find((e) => e.match[k] !== undefined);
+
+    for (const key of ['vol_oi_q', 'ask_pct_q'] as const) {
+      const entry = byKey(key);
+      // Only assert if a composite of this key exists in the live table.
+      if (!entry) continue;
+      const { args, pivotKey } = argsForComposite(entry);
+      expect(pivotKey).toBe(key);
+      const firedQ = Number.parseInt(entry.match[key]!, 10);
+      const offQ = otherQuintile(firedQ);
+      const offField = FEATURE_FIELD_BY_KEY[key];
+      const weights = QUINTILE_WEIGHTS_BY_KEY[key];
+
+      const scoreWhenFires = computeLotteryScoreV2(args);
+      const scoreWhenOff = computeLotteryScoreV2({
+        ...args,
+        [offField]: valueForQuintile(QUINTILE_BOUNDARIES_BY_KEY[key], offQ),
+      });
+      expect(scoreWhenFires).not.toBeNull();
+      expect(scoreWhenOff).not.toBeNull();
+      const quintileWeightDelta = (weights[firedQ] ?? 0) - (weights[offQ] ?? 0);
+      // The composite's bonus appears only on the firing side.
+      expect(scoreWhenFires! - scoreWhenOff! - quintileWeightDelta).toBe(
+        entry.bonus,
+      );
+    }
+  });
+
+  it('takes the null-label arm for a vol_oi_q / ask_pct_q composite (=== null ? "null")', () => {
+    // Score-fn lines 438/439 + 442/443 compute the label as
+    // `q === null ? 'null' : String(q)`. The null arm only runs when the
+    // composite's pivot feature is NULL. Drive a vol_oi_q / ask_pct_q
+    // composite with its pivot raw value null → label 'null' !== '4'/'0' →
+    // continue (no bonus). Holding everything else constant, the score equals
+    // a definitely-non-matching numeric-quintile fire minus that quintile's
+    // own weight (null contributes 0 to its quintile component).
+    for (const key of ['vol_oi_q', 'ask_pct_q'] as const) {
+      const entry = COMPOSITE_BONUSES_V2.find(
+        (e) => e.match[key] !== undefined,
+      );
+      if (!entry) continue;
+      const { args } = argsForComposite(entry);
+      const offField = FEATURE_FIELD_BY_KEY[key];
+      const weights = QUINTILE_WEIGHTS_BY_KEY[key];
+      const firedQ = Number.parseInt(entry.match[key]!, 10);
+      const offQ = otherQuintile(firedQ);
+
+      const nullPivot = computeLotteryScoreV2({ ...args, [offField]: null });
+      const numericNonMatch = computeLotteryScoreV2({
+        ...args,
+        [offField]: valueForQuintile(QUINTILE_BOUNDARIES_BY_KEY[key], offQ),
+      });
+      expect(nullPivot).not.toBeNull();
+      expect(numericNonMatch).not.toBeNull();
+      // Neither fires the composite; numeric side adds its quintile weight,
+      // null side adds 0.
+      expect(numericNonMatch! - nullPivot!).toBe(weights[offQ] ?? 0);
+    }
+  });
+
+  it('takes the tod-mismatch continue branch (m.tod !== args.tod)', () => {
+    // Score-fn line 432: a composite that specifies a `tod` must NOT fire when
+    // the fire's tod differs. Pick a composite that carries a tod constraint,
+    // satisfy every other match key, but pass a DIFFERENT tod → the loop hits
+    // `continue` at line 432 and the bonus is not applied. Compare against the
+    // same fire at the composite's actual tod (fires): the delta is exactly
+    // the bonus, isolating the tod gate.
+    const entry = COMPOSITE_BONUSES_V2.find((e) => e.match.tod !== undefined);
+    expect(entry).toBeDefined();
+    if (!entry) return;
+    const { args, pivotKey } = argsForComposite(entry);
+    if (!pivotKey) return;
+
+    const allTods = ['AM_open', 'MID', 'LUNCH', 'PM'] as const;
+    const wrongTod = allTods.find((t) => t !== entry.match.tod)!;
+
+    const firesAtRightTod = computeLotteryScoreV2(args); // args.tod === entry tod
+    const blockedByWrongTod = computeLotteryScoreV2({
+      ...args,
+      tod: wrongTod,
+    });
+    expect(firesAtRightTod).not.toBeNull();
+    expect(blockedByWrongTod).not.toBeNull();
+    // Same ticker/dte/option-type/quintiles; only tod moved. The score delta
+    // is (composite bonus) + (tod-weight difference between the two tods).
+    const todWeightDelta =
+      TOD_WEIGHTS_V2[entry.match.tod as keyof typeof TOD_WEIGHTS_V2] -
+      TOD_WEIGHTS_V2[wrongTod];
+    expect(firesAtRightTod! - blockedByWrongTod! - todWeightDelta).toBe(
+      entry.bonus,
+    );
+  });
+
   it('null quintile feature does not spuriously match a string-keyed composite', () => {
     // The composite requires its pivot quintile == a numeric label (e.g. "0").
     // A null raw value gets the label "null", which a string-keyed composite

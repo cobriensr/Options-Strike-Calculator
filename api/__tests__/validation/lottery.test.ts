@@ -18,6 +18,134 @@ import {
   silentBoomTickerCountsQuerySchema,
 } from '../../_lib/validation/lottery.js';
 
+// ── bool-coercion arms (table) ───────────────────────────────
+//
+// Every optional boolean query param across the lottery + silent-boom
+// schemas uses the enum-transform (`'true'`/`'false'` literals), NOT
+// `z.coerce.boolean()` (which makes ANY non-empty string — including
+// `'false'` — truthy). This table pins, for each bool param:
+//   - `'false'` → boolean false (NOT truthy)
+//   - missing   → undefined (NOT truthy, NOT false)
+//   - `'true'`  → boolean true
+// A regression to `z.coerce.boolean()` flips the `'false'` case to true
+// and silently turns a filter ON, so these are load-bearing.
+
+type AnySchema = {
+  safeParse: (v: unknown) => { success: boolean; data?: unknown };
+};
+
+const BOOL_PARAM_CASES: ReadonlyArray<{
+  schemaName: string;
+  schema: AnySchema;
+  field: string;
+}> = [
+  {
+    schemaName: 'lotteryFinderQuerySchema',
+    schema: lotteryFinderQuerySchema,
+    field: 'reload',
+  },
+  {
+    schemaName: 'lotteryFinderQuerySchema',
+    schema: lotteryFinderQuerySchema,
+    field: 'cheapCallPm',
+  },
+  {
+    schemaName: 'lotteryExportQuerySchema',
+    schema: lotteryExportQuerySchema,
+    field: 'reload',
+  },
+  {
+    schemaName: 'lotteryExportQuerySchema',
+    schema: lotteryExportQuerySchema,
+    field: 'cheapCallPm',
+  },
+  {
+    schemaName: 'lotteryFinderTickerCountsQuerySchema',
+    schema: lotteryFinderTickerCountsQuerySchema,
+    field: 'reload',
+  },
+  {
+    schemaName: 'lotteryFinderTickerCountsQuerySchema',
+    schema: lotteryFinderTickerCountsQuerySchema,
+    field: 'cheapCallPm',
+  },
+  {
+    schemaName: 'silentBoomFeedQuerySchema',
+    schema: silentBoomFeedQuerySchema,
+    field: 'hideLatePm',
+  },
+  {
+    schemaName: 'silentBoomFeedQuerySchema',
+    schema: silentBoomFeedQuerySchema,
+    field: 'aggressivePremium',
+  },
+  {
+    schemaName: 'silentBoomTickerCountsQuerySchema',
+    schema: silentBoomTickerCountsQuerySchema,
+    field: 'hideLatePm',
+  },
+  {
+    schemaName: 'silentBoomTickerCountsQuerySchema',
+    schema: silentBoomTickerCountsQuerySchema,
+    field: 'aggressivePremium',
+  },
+];
+
+describe('bool query-param coercion (enum-transform, not z.coerce.boolean)', () => {
+  for (const { schemaName, schema, field } of BOOL_PARAM_CASES) {
+    describe(`${schemaName}.${field}`, () => {
+      it("maps 'false' to boolean false (NOT truthy)", () => {
+        const result = schema.safeParse({ [field]: 'false' });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect((result.data as Record<string, unknown>)[field]).toBe(false);
+        }
+      });
+
+      it('maps missing to undefined (NOT truthy, NOT false)', () => {
+        const result = schema.safeParse({});
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect(
+            (result.data as Record<string, unknown>)[field],
+          ).toBeUndefined();
+        }
+      });
+
+      it("maps 'true' to boolean true", () => {
+        const result = schema.safeParse({ [field]: 'true' });
+        expect(result.success).toBe(true);
+        if (result.success) {
+          expect((result.data as Record<string, unknown>)[field]).toBe(true);
+        }
+      });
+    });
+  }
+});
+
+// `showAll` uses a one-sided transform (`v === 'true'`), so its semantics
+// differ from the strict enum-transform above: missing → false (not
+// undefined). Pin that explicitly so it isn't mistaken for the table shape.
+describe('showAll one-sided transform (missing → false)', () => {
+  it("lotteryFinderQuerySchema: 'true' → true, 'false'/missing → false", () => {
+    const t = lotteryFinderQuerySchema.safeParse({ showAll: 'true' });
+    const f = lotteryFinderQuerySchema.safeParse({ showAll: 'false' });
+    const m = lotteryFinderQuerySchema.safeParse({});
+    expect(t.success && t.data.showAll).toBe(true);
+    expect(f.success && f.data.showAll).toBe(false);
+    expect(m.success && m.data.showAll).toBe(false);
+  });
+
+  it("lotteryFinderTickerCountsQuerySchema: 'true' → true, missing → false", () => {
+    const t = lotteryFinderTickerCountsQuerySchema.safeParse({
+      showAll: 'true',
+    });
+    const m = lotteryFinderTickerCountsQuerySchema.safeParse({});
+    expect(t.success && t.data.showAll).toBe(true);
+    expect(m.success && m.data.showAll).toBe(false);
+  });
+});
+
 // ── lotteryFinderQuerySchema ─────────────────────────────────
 
 describe('lotteryFinderQuerySchema', () => {

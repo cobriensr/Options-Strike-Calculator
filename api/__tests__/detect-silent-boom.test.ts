@@ -10,10 +10,26 @@ import {
 
 const mockSql = vi.fn();
 
-vi.mock('../_lib/db.js', () => ({
-  getDb: vi.fn(() => mockSql),
-  withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
-}));
+// withDbRetry is stubbed to call the thunk ONCE (no retry/backoff in
+// tests) and let its rejection propagate raw. The REAL isRetryableDbError
+// + TransientDbError are imported so the handler's per-query macro
+// fail-open classifier (transient → fall open, genuine → throw) is
+// exercised against the actual DB_RETRYABLE_RX, not a stub. This is the
+// regression guard for the "genuine macro error must propagate" contract.
+vi.mock('../_lib/db.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+  return {
+    getDb: vi.fn(() => mockSql),
+    withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+    isRetryableDbError: actual.isRetryableDbError,
+    TransientDbError: actual.TransientDbError,
+    // The handler classifies macro failures via the real settleDegradable
+    // (transient vs genuine) against the actual DB_RETRYABLE_RX — keep the
+    // real impl so the fail-open contract is exercised, not stubbed.
+    settleDegradable: actual.settleDegradable,
+  };
+});
 
 const mockSentryCaptureMessage = vi.hoisted(() => vi.fn());
 vi.mock('../_lib/sentry.js', () => ({
@@ -1304,5 +1320,491 @@ describe('detect-silent-boom handler', () => {
     expect(binds.get('date')).toBe('2026-05-07');
     // dte computed from the fire-day date, not ctx.today.
     expect(binds.get('dte')).toBe(2);
+  });
+
+  it('snapshots macro at EACH fire’s own bucket_ct, not a single cron-tick wall-clock', async () => {
+    // The recent per-fire as-of fix: the macro lookups (tideDiffAt etc.)
+    // binary-search the batch-fetched tick series against THIS fire's
+    // f.bucketTs.getTime() — NOT a shared cron-tick timestamp. Two chains
+    // spike in the SAME cron tick at DIFFERENT buckets (chain A @ 13:20,
+    // chain B @ 14:00, 40 min apart). A single market_tide tick at 13:18
+    // is within the 30-min staleness window for A's 13:20 bucket but
+    // 42 min stale for B's 14:00 bucket. If the as-of were a shared
+    // wall-clock both fires would resolve identically; the per-fire
+    // bucket as-of gives A the diff and B null.
+    const chainA = 'SNDK260507C01175000';
+    const chainB = 'SNDK260507C01180000';
+    const exp = '2026-05-07';
+    const mk = (chain: string, strike: number, spikeIso: string) => {
+      const rows: ReturnType<typeof bucketRow>[] = [];
+      // 4 silent baseline buckets ending just before the spike, then the
+      // spike bucket. Baselines are placed 5-min apart immediately before
+      // the spike so the detector's baseline window is satisfied.
+      const spikeMs = Date.parse(spikeIso);
+      for (let b = 4; b >= 1; b -= 1) {
+        const iso = new Date(spikeMs - b * 5 * 60_000).toISOString();
+        rows.push(
+          bucketRow(chain, 'SNDK', 'C', strike, exp, iso, { size: 100 }),
+        );
+      }
+      rows.push(
+        bucketRow(chain, 'SNDK', 'C', strike, exp, spikeIso, { size: 2000 }),
+      );
+      return rows;
+    };
+    const aStream = mk(chainA, 1175, '2026-05-07T13:20:00Z');
+    const bStream = mk(chainB, 1180, '2026-05-07T14:00:00Z');
+    const tideTickMs = Date.parse('2026-05-07T13:18:00Z');
+
+    mockSql
+      .mockResolvedValueOnce([...aStream, ...bStream]) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        // Single tide tick at 13:18 — in-window for A (13:20), stale for B (14:00).
+        { ts_ms: String(tideTickMs), ncp: '9000', npp: '3000' }, // diff +6000
+      ]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      // Fire A (bucket 13:20): pre_trade_count + ticker_flow_snapshot
+      // (cache miss, first SNDK fire) + INSERT.
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count A
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (once, shared per ticker+date)
+      .mockResolvedValueOnce([{ id: 1 }]) // INSERT A
+      // Fire B (bucket 14:00): pre_trade_count + INSERT (flow snapshot cached).
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count B
+      .mockResolvedValueOnce([{ id: 2 }]); // INSERT B
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      totalFires: 2,
+      inserted: 2,
+    });
+
+    const allBinds = extractAllInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(allBinds).toHaveLength(2);
+    // Fires are processed in Map-insertion order — chain A first, chain B
+    // second. A's 13:20 bucket is within 30 min of the 13:18 tick → diff
+    // +6000. B's 14:00 bucket is 42 min past the tick → out of window → null.
+    const aBind = allBinds.find((b) => b.get('strike') === 1175);
+    const bBind = allBinds.find((b) => b.get('strike') === 1180);
+    expect(aBind?.get('mkt_tide_diff')).toBe(6000);
+    expect(bBind?.get('mkt_tide_diff')).toBeNull();
+  });
+
+  it('fails open on a TRANSIENT macro-series fetch failure — tick still inserts with NULL macro and the run reports status:partial', async () => {
+    // Parity with detect-lottery-fires: macro (tide / tide_otm / zero_dte /
+    // spx_gamma) is display-only per the spec, so a TRANSIENT
+    // flow_data/spot_exposures outage MUST NOT drop the whole tick. The four
+    // macro series are fetched in parallel (Promise.allSettled); a transient
+    // rejection (matches DB_RETRYABLE_RX — here 'fetch failed') falls open to
+    // [] for THAT query, sets macroDegraded, and is logged + Sentry-captured
+    // at level 'warning' (tags cron 'detect-silent-boom', stage
+    // 'macro_fetch'). Empty arrays make every per-fire as-of yield NULL macro
+    // — identical to "no ticks in window" — so detection + INSERT proceed,
+    // and the handler returns status:'partial' (observably degraded, NOT a
+    // silent green 'success').
+    //
+    // allSettled drains all four macro SELECTs even when one rejects, so all
+    // four macro mocks must be provided (no sequential short-circuit).
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockRejectedValueOnce(new Error('fetch failed')) // tide ticks REJECTS (transient)
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 99 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // The tick is NOT dropped: the fire still inserted, but the run is
+    // reported as 'partial' with macroDegraded surfaced in the metadata.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      inserted: 1,
+      macroDegraded: true,
+      macroSeriesFailed: 1,
+      macroGenuineFailures: 0,
+    });
+
+    // INSERT landed with all four macro fields NULL (empty tick arrays →
+    // every as-of lookup returns null).
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBeNull();
+    expect(binds.get('mkt_tide_otm_diff')).toBeNull();
+    expect(binds.get('zero_dte_diff')).toBeNull();
+    expect(binds.get('spx_spot_gamma_oi')).toBeNull();
+
+    // Sentry warning captured with the lottery-style tags.
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          cron: 'detect-silent-boom',
+          stage: 'macro_fetch',
+        }),
+      }),
+    );
+  });
+
+  it('fails open on a TransientDbError (the wrapper production emits) — status:partial + warning', async () => {
+    // FIX #6: production does not reject with a raw 'fetch failed' string —
+    // withDbRetry re-throws a `TransientDbError` after exhausting retries.
+    // This exercises isRetryableDbError's `instanceof TransientDbError`
+    // short-circuit (which does NOT depend on the message matching
+    // DB_RETRYABLE_RX). settleDegradable must classify it 'transient' so the
+    // series falls open to [], the alert lands with NULL macro, and the run
+    // reports status:'partial' with a warning-level capture.
+    const { TransientDbError } = await import('../_lib/db.js');
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      // The production transient wrapper — message is arbitrary, the
+      // instanceof check classifies it transient regardless.
+      .mockRejectedValueOnce(new TransientDbError(new Error('whatever'))) // tide
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 99 }]); // insert STILL lands
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      inserted: 1,
+      macroDegraded: true,
+      macroSeriesFailed: 1,
+      macroGenuineFailures: 0,
+    });
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBeNull();
+    // Warning-level (transient), not error-level.
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(TransientDbError),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          cron: 'detect-silent-boom',
+          stage: 'macro_fetch',
+        }),
+      }),
+    );
+  });
+
+  it('stays status:success when a TRANSIENT macro failure hits a 0-fire tick (zero blast radius — do NOT escalate to partial)', async () => {
+    // FIX #9: a transient blip is only 'partial' when fires actually
+    // landed. On a quiet tick with no fires, the macro degradation touched
+    // nothing — escalating to 'partial' would page on a non-event. The
+    // shortStream is below the 5-bucket detector minimum so no fire/insert
+    // happens; the transient tide rejection must keep status:'success'.
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
+    const shortStream = fireableSilentBoomStream().slice(0, 3); // too short
+    mockSql
+      .mockResolvedValueOnce(shortStream) // ticks
+      .mockRejectedValueOnce(new Error('fetch failed')) // tide REJECTS (transient)
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]); // spx_gamma ticks
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success', // NOT 'partial' — no fires, zero blast radius
+      inserted: 0,
+      skippedShort: 1,
+      macroDegraded: true,
+      macroSeriesFailed: 1,
+      macroGenuineFailures: 0,
+    });
+    // Still observable: a warning capture fires even with no blast radius.
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({ stage: 'macro_fetch' }),
+      }),
+    );
+  });
+
+  it('LANDS the alert but reports status:error on a GENUINE (non-transient) macro error — loud, no dropped alerts', async () => {
+    // New contract (FIX #1/#9): the macro fetch NEVER drops alerts — it
+    // ALWAYS fails open (null macro). A GENUINE error — e.g. a renamed/
+    // missing column that does NOT match DB_RETRYABLE_RX → settleDegradable
+    // classifies 'genuine' — must NOT be swallowed as a warning (that would
+    // turn a permanent breakage into indefinite silent macro degradation).
+    // Instead the alert STILL inserts with NULL macro, an ERROR-level Sentry
+    // capture fires (tag stage:'macro_fetch'), and the handler returns
+    // status:'error' (HTTP 200, NOT 500) so the cron monitor goes red while
+    // no alert is dropped.
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      // GENUINE error: 'column "ncp" does not exist' does NOT match
+      // DB_RETRYABLE_RX → isRetryableDbError false → classified 'genuine'.
+      .mockRejectedValueOnce(new Error('column "ncp" does not exist')) // tide
+      .mockResolvedValueOnce([]) // tide_otm ticks (allSettled drains all four)
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 99 }]); // insert STILL lands
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Loud but no drop: 200 with status:'error', alert inserted.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      inserted: 1,
+      macroDegraded: true,
+      macroSeriesFailed: 1,
+      macroGenuineFailures: 1,
+    });
+    // The alert landed with NULL macro for the broken series.
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBeNull();
+    expect(extractAllInsertBinds(mockSql, 'silent_boom_alerts')).toHaveLength(
+      1,
+    );
+    // ERROR-level macro_fetch capture (this is the page).
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        level: 'error',
+        tags: expect.objectContaining({
+          cron: 'detect-silent-boom',
+          stage: 'macro_fetch',
+        }),
+        extra: expect.objectContaining({ genuineFailures: 1 }),
+      }),
+    );
+    // A returned status:'error' makes the cron-monitor check-in 'error'
+    // (FIX #2 in cron-instrumentation maps it). Asserted here at the
+    // result level — the wrapper mapping is covered in its own suite.
+    expect((res._json as { status: string }).status).toBe('error');
+  });
+
+  it('retains PARTIAL macro data — one series fails transiently while the others succeed (per-query fail-open)', async () => {
+    // Finding #5: per-query (not whole-block) fail-open means a transient
+    // failure on ONE series does not discard the three already-fetched
+    // series. Here spx_gamma fails transiently but market_tide succeeds, so
+    // mkt_tide_diff is still populated on the fire while spx_spot_gamma_oi is
+    // NULL — and macroDegraded is true. This also proves the direction gate
+    // (which needs only market_tide) survives a non-tide outage.
+    // Default fireable stream spikes at 13:20:00Z; a tide tick at 13:18 is
+    // within the 30-min as-of window.
+    const tideTickMs = Date.parse('2026-05-07T13:18:00Z');
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { ts_ms: String(tideTickMs), ncp: '9000', npp: '3000' }, // tide diff +6000
+      ]) // tide ticks SUCCEED
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockRejectedValueOnce(new Error('fetch failed')) // spx_gamma REJECTS (transient)
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 7 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      inserted: 1,
+      macroDegraded: true,
+      macroSeriesFailed: 1,
+    });
+
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    // market_tide survived → diff bound; spx_gamma fell open → NULL.
+    expect(binds.get('mkt_tide_diff')).toBe(6000);
+    expect(binds.get('spx_spot_gamma_oi')).toBeNull();
+  });
+
+  it('direction gate demotes a counter-trend fire under healthy macro, but CANNOT demote when the tide series fails open', async () => {
+    // Finding #8: the direction gate keys on mkt_tide_diff (all-in
+    // NCP-NPP) at fire time, strict > +DIRECTION_GATE_T (100M) for a PUT.
+    // A put fired with tide diff +200M is counter-trend → direction_gated
+    // true. The REAL consequence of a tide outage: with the tide series
+    // failed open (NULL macro), the gate's `mktTideDiff == null` short-
+    // circuit returns false — the gate cannot demote during a tide outage.
+    const tideTickMs = Date.parse('2026-05-07T13:18:00Z');
+    // Default fireable stream spikes at 13:20:00Z; remap to a PUT chain.
+    const putStream = fireableSilentBoomStream().map((b) => ({
+      ...b,
+      option_type: 'P' as const,
+      option_chain: 'SNDK260507P01175000',
+    }));
+
+    // (a) Healthy macro: tide diff +200M (>100M) → PUT counter-trend → gated.
+    mockSql
+      .mockResolvedValueOnce(putStream) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        // ncp - npp = 200_000_000 > DIRECTION_GATE_T (100M)
+        { ts_ms: String(tideTickMs), ncp: '200000000', npp: '0' },
+      ]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    let req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    let res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    let binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('direction_gated')).toBe(true);
+
+    // (b) Same counter-trend put, but the tide series fails open (transient).
+    // mktTideDiff is null → the gate short-circuits to false: it cannot
+    // demote during a tide outage.
+    mockSql.mockReset();
+    mockSql.mockResolvedValue([]);
+    mockSql
+      .mockResolvedValueOnce(putStream) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockRejectedValueOnce(new Error('fetch failed')) // tide REJECTS (transient)
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 2 }]); // insert
+
+    req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'partial', macroDegraded: true });
+    binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('direction_gated')).toBe(false);
+    expect(binds.get('mkt_tide_diff')).toBeNull();
+  });
+
+  it('lookupAt staleness boundary is exact: a tick at exactly 30:00 is still valid; one at 30:01 is out of window', async () => {
+    // Finding #9: the as-of staleness guard is `targetMs - tickMs > 30min`
+    // (STRICT >). A tick placed EXACTLY at the 30-min boundary
+    // (diff == 30*60*1000) is NOT greater-than the limit → still VALID. A
+    // tick one minute older (diff == 31 min) IS greater → out of window →
+    // null. Two single-tick runs pin the off-by-one on either side.
+    // Default fireable stream spikes at 13:20:00Z — that bucket time is the
+    // fire's as-of target.
+    const spikeMs = Date.parse('2026-05-07T13:20:00Z');
+    const exactlyAtBoundaryMs = spikeMs - 30 * 60 * 1000; // diff == 30:00
+    const justPastBoundaryMs = spikeMs - 31 * 60 * 1000; // diff == 31:00
+
+    // (a) Tick EXACTLY at the 30-min boundary → still valid (diff bound).
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { ts_ms: String(exactlyAtBoundaryMs), ncp: '5000', npp: '1000' }, // diff +4000
+      ]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm
+      .mockResolvedValueOnce([]) // zero_dte
+      .mockResolvedValueOnce([]) // spx_gamma
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 1 }]); // insert
+
+    let req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    let res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    let binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBe(4000);
+
+    // (b) Tick one minute OLDER (diff 31:00) → out of window → null.
+    mockSql.mockReset();
+    mockSql.mockResolvedValue([]);
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        { ts_ms: String(justPastBoundaryMs), ncp: '5000', npp: '1000' },
+      ]) // tide ticks (too stale)
+      .mockResolvedValueOnce([]) // tide_otm
+      .mockResolvedValueOnce([]) // zero_dte
+      .mockResolvedValueOnce([]) // spx_gamma
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 2 }]); // insert
+
+    req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBeNull();
   });
 });

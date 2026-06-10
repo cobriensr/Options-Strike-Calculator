@@ -1457,6 +1457,104 @@ describe('detect-lottery-fires handler', () => {
     expectAllGexBindsNull(extractInsertBinds(mockSql, 'lottery_finder_fires'));
   });
 
+  it('increments gexMisses (not gexHits) when the snapshot lookup THROWS — fail-open counter coherence', async () => {
+    // Characterization of the gex counter accounting on the throw path:
+    // the catch swallows the error (Sentry-captured, asserted above) and
+    // leaves gexSnapshot === null, so the `if (gexSnapshot == null)
+    // gexMisses += 1` branch runs — a thrown lookup is bucketed as a MISS,
+    // not a hit. gexOutOfUniverse stays 0 because mapToGexbotTicker returns
+    // a non-null ticker (default pass-through mock) so the lookup is
+    // attempted. The fire still inserts (fail-open).
+    mockGetLatestGexbotSnapshotAt.mockRejectedValue(new Error('neon timeout'));
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert proceeds
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      inserted: 1,
+      // Thrown lookup is counted as a miss, never a hit.
+      gexHits: 0,
+      gexMisses: 1,
+      // Ticker is in-universe (pass-through mapping) so the lookup WAS
+      // attempted — not an out-of-universe skip.
+      gexOutOfUniverse: 0,
+    });
+  });
+
+  it('ON CONFLICT idempotency: re-running the same scan window inserts 0 new rows on the second pass', async () => {
+    // The unique index (option_chain_id, trigger_time_ct) + ON CONFLICT DO
+    // NOTHING make a re-scan of the SAME tick window idempotent. The mock
+    // can't enforce the real unique constraint, so we simulate the DB's
+    // behavior across two back-to-back handler invocations on the identical
+    // fixture: run 1's INSERT RETURNS a row (first write wins); run 2's
+    // INSERT RETURNS [] (the conflicting row already exists → DO NOTHING).
+    // The handler counts `inserted` off the RETURNING length, so run 2
+    // reports inserted: 0 even though the same fire was detected again.
+    const ticks = fireableSndkStream();
+
+    // ── Run 1: fire detected, row written ──
+    mockTicks(ticks)
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // INSERT → first write wins
+
+    const res1 = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res1,
+    );
+    expect(res1._status).toBe(200);
+    expect(res1._json).toMatchObject({
+      status: 'success',
+      totalFires: 1,
+      inserted: 1,
+    });
+
+    // ── Run 2: same window, same fire detected, but the row already
+    //          exists so ON CONFLICT DO NOTHING returns no RETURNING rows ──
+    mockTicks(ticks)
+      .mockResolvedValueOnce([]) // prior fires (cooldown not seeded in mock)
+      .mockResolvedValueOnce([]) // flow_data
+      .mockResolvedValueOnce([]) // spot_exposures
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([]); // INSERT → ON CONFLICT, 0 rows returned
+
+    const res2 = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res2,
+    );
+    expect(res2._status).toBe(200);
+    // Fire is still DETECTED (the scan window is unchanged), but the
+    // INSERT is a no-op — second run adds 0 new rows.
+    expect(res2._json).toMatchObject({
+      status: 'success',
+      totalFires: 1,
+      inserted: 0,
+    });
+  });
+
   // ──────────────────────────────────────────────────────────────────────
   // Fix 1 — macro / direction-gate snapshot must use EACH fire's own
   // trigger time, not the chain's first-tick executedAt. A 2nd fire on a

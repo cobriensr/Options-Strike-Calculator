@@ -188,6 +188,8 @@ interface DefaultHookResult {
     limit: number;
     offset: number;
     hasMore: boolean;
+    /** Q1/Q2 inversion-quality chains hidden by default (server-supplied). */
+    suppressedCount?: number;
   };
   loading: boolean;
   error: string | null;
@@ -221,8 +223,16 @@ function feedResult(
   overrides: Partial<DefaultHookResult['data']> &
     Partial<Omit<DefaultHookResult, 'data'>> = {},
 ): DefaultHookResult {
-  const { fires, reignitedFires, total, limit, offset, hasMore, ...rest } =
-    overrides;
+  const {
+    fires,
+    reignitedFires,
+    total,
+    limit,
+    offset,
+    hasMore,
+    suppressedCount,
+    ...rest
+  } = overrides;
   return {
     ...defaultHookResult,
     ...rest,
@@ -234,6 +244,7 @@ function feedResult(
       ...(limit !== undefined && { limit }),
       ...(offset !== undefined && { offset }),
       ...(hasMore !== undefined && { hasMore }),
+      ...(suppressedCount !== undefined && { suppressedCount }),
     },
   };
 }
@@ -339,6 +350,168 @@ describe('LotteryFinderSection: populated rendering', () => {
     ).toBeInTheDocument();
     expect(
       screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// SUPPRESSED-COUNT HINT + ACTIVE-FILTER CHIPS
+// ============================================================
+//
+// The server returns `suppressedCount` for Q1/Q2 inversion-quality
+// chains hidden by default. The section surfaces it two ways:
+//   (a) an EMPTY-state sentence when no fires render but suppressed > 0
+//   (b) a header HINT footer "(N hidden by quality filter)" when fires
+//       DO render and the "Show filtered tickers" toggle is off.
+// Both forms vary singular/plural on the count. The header also carries
+// active-filter chip labels per convictionFloor and takeitFloor.
+
+describe('LotteryFinderSection: suppressed-count hint + filter chips', () => {
+  function makeBasicFire(): LotteryFire {
+    return makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+  }
+
+  it('empty state: PLURAL "chains ... were hidden" sentence when suppressedCount > 1 and toggle off', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [], total: 0, suppressedCount: 3 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    // Plural: "3 chains ... were hidden ... to view them."
+    expect(
+      screen.getByText(
+        /3 chains .* were hidden by the inversion-quality filter/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/to view them\./)).toBeInTheDocument();
+  });
+
+  it('empty state: SINGULAR "chain ... was hidden" sentence when suppressedCount === 1', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [], total: 0, suppressedCount: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    // Singular: "1 chain ... was hidden ... to view it."
+    expect(
+      screen.getByText(/1 chain .* was hidden by the inversion-quality filter/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/to view it\./)).toBeInTheDocument();
+  });
+
+  it('header hint: "(N hidden by quality filter)" renders when fires present and toggle off', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [makeBasicFire()], total: 1, suppressedCount: 4 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(
+      screen.getByText('(4 hidden by quality filter)'),
+    ).toBeInTheDocument();
+  });
+
+  it('header hint: omitted when suppressedCount is 0', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [makeBasicFire()], total: 1, suppressedCount: 0 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(
+      screen.queryByText(/hidden by quality filter/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('header hint: omitted once "Show filtered tickers" is toggled on', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [makeBasicFire()], total: 1, suppressedCount: 4 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(
+      screen.getByText('(4 hidden by quality filter)'),
+    ).toBeInTheDocument();
+    // Toggle "Show filtered tickers" — the hint disappears (showAll path).
+    fireEvent.click(screen.getByTestId('lottery-show-filtered-toggle'));
+    expect(
+      screen.queryByText(/hidden by quality filter/),
+    ).not.toBeInTheDocument();
+  });
+
+  it('chip label: "(Tier 1 only)" renders when convictionFloor = tier1', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [makeBasicFire()], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Tier 1/ }));
+    expect(screen.getByText('(Tier 1 only)')).toBeInTheDocument();
+  });
+
+  it('chip label: "(Tier 2+)" renders when convictionFloor = tier2', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [makeBasicFire()], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    fireEvent.click(screen.getByRole('button', { name: /Tier 2/ }));
+    expect(screen.getByText('(Tier 2+)')).toBeInTheDocument();
+  });
+
+  it('chip label: no conviction label when floor is "all" (default)', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [makeBasicFire()], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(screen.queryByText('(Tier 1 only)')).not.toBeInTheDocument();
+    expect(screen.queryByText('(Tier 2+)')).not.toBeInTheDocument();
+  });
+
+  it('chip label: "(TAKE-IT ≥ 0.70)" renders for the default floor when fires present', () => {
+    // Default takeitFloor is 0.70 (> 0) → the header carries the floor label.
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [makeBasicFire()], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(screen.getByText('(TAKE-IT ≥ 0.70)')).toBeInTheDocument();
+  });
+
+  it('chip label: "(TAKE-IT ≥ ...)" omitted once the "all" preset (floor 0) is selected', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [makeBasicFire()], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    // Select the "all" TAKE-IT preset (floor 0) → label drops.
+    fireEvent.click(screen.getByTestId('takeit-floor-0'));
+    expect(screen.queryByText(/TAKE-IT ≥/)).not.toBeInTheDocument();
+  });
+
+  // HRN floor-blind guard (finding: "don't re-add a quality gate to
+  // reignitedRows"). A sub-floor reignited row renders in Hot Right Now
+  // EVEN WHILE the server reports suppressedCount > 0 for the main list —
+  // the two surfaces are independent: the HRN lane is floor-blind, the
+  // suppressed hint reflects the server's main-list Q1/Q2 suppression.
+  it('HRN floor-blind: a reignited row shows in Hot Right Now while the suppressed hint also renders', () => {
+    const reignited = makeFire({
+      id: 99,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      reignited: true,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [],
+        reignitedFires: [reignited],
+        total: 0,
+        suppressedCount: 2,
+      }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    // The sub-floor / suppressed-context reignited row still renders in HRN.
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+    // ...and the main-list suppressed hint is surfaced independently.
+    expect(
+      screen.getByText('(2 hidden by quality filter)'),
     ).toBeInTheDocument();
   });
 });

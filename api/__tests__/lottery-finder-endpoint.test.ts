@@ -2070,6 +2070,99 @@ describe('lottery-finder endpoint', () => {
       expect(body.suppressedCount).toBe(2);
     });
 
+    it('combined filters (minPremium AND minScore AND Q1 suppression): count/total/suppressedCount/hasMore stay coherent and all three clauses hit BOTH queries', async () => {
+      // The reachable-set invariant under three simultaneously-active
+      // filters: minPremium ($-floor), minScore (qas floor), and the
+      // default Q1/Q2 inversion suppression. The count query and the rows
+      // query MUST gate on the IDENTICAL predicate set so `total` (reachable
+      // chains) agrees with the displayed page (`count` == fires.length) and
+      // `suppressedCount` accounts for the quality-hidden remainder. The mock
+      // can't enforce a WHERE, so we (a) stage the count query's authoritative
+      // tuple, (b) stage a page that the SQL would have returned, and (c)
+      // assert all three filter literals reached BOTH the rows and count SQL.
+      //
+      // Scenario: 3 chains pass the structural day filter; minPremium +
+      // minScore admit 2 reachable + the count reports 1 quality-suppressed
+      // (a Q1 ticker that otherwise matched). The returned page carries the 2
+      // reachable rows.
+      const reachableRows = [
+        rowWithQuintile(1, 'AAA', 5), // Q5, high qas → reachable
+        rowWithQuintile(2, 'BBB', 4), // Q4 → reachable
+      ];
+      mockSql
+        .mockResolvedValueOnce(reachableRows) // rows (page)
+        .mockResolvedValueOnce([
+          { total: 2, suppressed: 1, ever_qualifying: ['AAA', 'BBB'] },
+        ]); // count
+
+      const req = mockRequest({
+        method: 'GET',
+        query: {
+          date: '2026-05-01',
+          minPremium: '100000',
+          minScore: '13',
+          // showAll omitted → Q1/Q2 suppression active.
+        },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(res._status).toBe(200);
+
+      // ── Response-level coherence ──
+      const body = res._json as {
+        count: number;
+        total: number;
+        suppressedCount: number;
+        limit: number;
+        offset: number;
+        hasMore: boolean;
+        fires: Array<{ underlyingSymbol: string }>;
+      };
+      // total (reachable) == returned page length == count: the page IS the
+      // reachable set (2 rows), nothing silently dropped/added.
+      expect(body.total).toBe(2);
+      expect(body.count).toBe(2);
+      expect(body.fires).toHaveLength(2);
+      expect(body.fires.map((f) => f.underlyingSymbol).sort()).toEqual([
+        'AAA',
+        'BBB',
+      ]);
+      // suppressedCount is the matched-but-quality-hidden remainder from the
+      // SAME count query — coherent with total (2 reachable + 1 hidden).
+      expect(body.suppressedCount).toBe(1);
+      // offset(0) + page length(2) == total(2) → no further pages.
+      expect(body.hasMore).toBe(false);
+
+      // ── SQL-level coherence: all three filter clauses must reach BOTH the
+      //    rows query (call 0) and the count query (call 1) so the displayed
+      //    page and `total` can't diverge. ──
+      const rowsSql = (mockSql.mock.calls[0]![0] as TemplateStringsArray).join(
+        '?',
+      );
+      const countSql = (mockSql.mock.calls[1]![0] as TemplateStringsArray).join(
+        '?',
+      );
+      for (const sql of [rowsSql, countSql]) {
+        // minPremium $-floor (entry_price * window * 100 >= floor).
+        expect(sql).toContain('* 100 >=');
+        // minScore gates on the qas expression (NOT raw f.score) in both.
+        expect(sql).toContain(
+          'CASE s.inversion_quintile WHEN 1 THEN -5 WHEN 2 THEN -2 WHEN 3 THEN 0 WHEN 4 THEN 3 WHEN 5 THEN 5 ELSE 0 END',
+        );
+        // Q1/Q2 suppression predicate present in both.
+        expect(sql).toContain('inversion_quintile > 2');
+      }
+      // minPremium $-floor value reached the params of both queries.
+      const rowsParams = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      const countParams = (mockSql.mock.calls[1] as unknown[]).slice(1);
+      expect(rowsParams).toContain(100000);
+      expect(countParams).toContain(100000);
+      // minScore floor value reached both.
+      expect(rowsParams).toContain(13);
+      expect(countParams).toContain(13);
+    });
+
     it('?showAll=true passes the bypass boolean into the SQL', async () => {
       mockSql
         .mockResolvedValueOnce([rowWithQuintile(1, 'AAA', 1)])

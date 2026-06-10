@@ -6,6 +6,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useSilentBoomFeed } from '../hooks/useSilentBoomFeed';
+import { POLL_INTERVALS } from '../constants';
+import { getCTDateStr } from '../utils/timezone';
 import type { SilentBoomFeedResponse } from '../components/SilentBoom/types';
 
 const fetchMock = vi.fn();
@@ -419,5 +421,101 @@ describe('useSilentBoomFeed', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toBeNull();
+  });
+
+  // ── Shared-machinery parity with useLotteryFinder.test.ts ───────────
+  //
+  // Both feed hooks are thin wrappers over the same `useFetchedData`
+  // primitive (polling, AbortController, refresh). The sibling Lottery
+  // suite exercises these; ported here so the SB feed has the same
+  // guarantees. NOTE: the Lottery page-cache tests are deliberately NOT
+  // ported — that `cacheRef` lives only in useLotteryFinder, not the SB
+  // hook, so there is no SB behavior to characterize.
+
+  it('polls every OTM_FLOW when marketOpen + today + page 0', async () => {
+    vi.useFakeTimers();
+    // Pin wall-clock so the hook's `historical` gate (page !== 0 only for
+    // SB — date isn't part of the SB gate, but pin anyway for stability).
+    vi.setSystemTime(new Date('2026-06-09T18:00:00Z'));
+    const today = getCTDateStr(new Date());
+    fetchMock.mockResolvedValue(jsonResponse(emptyFeed({ date: today })));
+    renderHook(() =>
+      useSilentBoomFeed({
+        date: today,
+        marketOpen: true,
+        historical: false,
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVALS.OTM_FLOW);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVALS.OTM_FLOW);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('refresh() triggers a fresh fetch', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(emptyFeed()));
+    const { result } = renderHook(() =>
+      useSilentBoomFeed({ date: '2026-05-07', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('aborts in-flight fetch on unmount (data stays null)', async () => {
+    let resolveFetch: (v: unknown) => void = () => {};
+    const pending = new Promise<unknown>((res) => {
+      resolveFetch = res;
+    });
+    fetchMock.mockReturnValueOnce(pending);
+
+    const { result, unmount } = renderHook(() =>
+      useSilentBoomFeed({ date: '2026-05-07', marketOpen: false }),
+    );
+    unmount();
+    // Resolve AFTER unmount — the AbortController in useFetchedData must
+    // have fired, so the resolved payload never reaches state.
+    resolveFetch(jsonResponse(emptyFeed({ total: 99 })));
+    await act(async () => {});
+    expect(result.current.data).toBeNull();
+  });
+
+  it('cancels a prior in-flight fetch when filters change (no clobber)', async () => {
+    // First request is held open; the rerender (ticker change) supersedes
+    // it. When the now-stale first request resolves it must NOT overwrite
+    // the second request's state.
+    let resolveFirst: (v: unknown) => void = () => {};
+    const pendingFirst = new Promise<unknown>((res) => {
+      resolveFirst = res;
+    });
+    fetchMock.mockReturnValueOnce(pendingFirst);
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(emptyFeed({ total: 5, count: 0 })),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ ticker }: { ticker: string | null }) =>
+        useSilentBoomFeed({ date: '2026-05-07', marketOpen: false, ticker }),
+      { initialProps: { ticker: null as string | null } },
+    );
+
+    rerender({ ticker: 'SPY' });
+    // Resolve the now-stale first request — should not clobber state.
+    resolveFirst(jsonResponse(emptyFeed({ total: 9999, count: 0 })));
+
+    await waitFor(() => expect(result.current.data?.total).toBe(5));
+    expect(result.current.data?.total).not.toBe(9999);
   });
 });

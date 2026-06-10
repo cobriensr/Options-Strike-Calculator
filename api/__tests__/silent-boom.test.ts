@@ -229,3 +229,95 @@ describe('detectSilentBoomFires — cooldown', () => {
     expect(detectSilentBoomFires(seq, priorMs)).toHaveLength(0);
   });
 });
+
+// ============================================================
+// detectSilentBoomFires — spike-multiplier floor boundary.
+//
+// The spike gate is `cur.size < spikeMultiplier * Math.max(baseline, 100)`.
+// With spikeMultiplier=5 and a silent baseline whose median is < 100, the
+// effective floor is `5 * 100 = 500`. The absolute MIN_SPIKE_VOL=1000 floor
+// runs FIRST, so to isolate the multiplier boundary we raise the baseline so
+// `5 * max(baseline,100)` exceeds 1000, making the multiplier the binding
+// constraint. baseline median 300 → floor = 5*300 = 1500.
+// ============================================================
+
+describe('detectSilentBoomFires — spike-multiplier floor boundary', () => {
+  /** Baseline median 300 (silent: 300 <= 500), so the multiplier floor is
+   *  5 * max(300,100) = 1500. MIN_SPIKE_VOL (1000) is below 1500, so the
+   *  multiplier is the binding gate. */
+  function baselineMedian300(spikeSize: number): ChainBucket[] {
+    return [
+      makeBucket(0, { size: 300 }),
+      makeBucket(1, { size: 300 }),
+      makeBucket(2, { size: 300 }),
+      makeBucket(3, { size: 300 }),
+      // Ask-heavy + high enough OI default (maxOi 5000 → vol/OI ok at 1500).
+      makeBucket(4, {
+        size: spikeSize,
+        askSize: Math.round(spikeSize * 0.85),
+        bidSize: Math.round(spikeSize * 0.15),
+      }),
+    ];
+  }
+
+  it('rejects a spike exactly 1 below the multiplier floor (5×baseline)', () => {
+    const { spikeMultiplier } = SILENT_BOOM_SPEC_V1;
+    const baseline = 300;
+    const floor = spikeMultiplier * Math.max(baseline, 100); // 1500
+    // Just below the floor → `cur.size < floor` is TRUE → reject.
+    expect(detectSilentBoomFires(baselineMedian300(floor - 1))).toHaveLength(0);
+  });
+
+  it('accepts a spike exactly AT the multiplier floor (5×baseline)', () => {
+    const { spikeMultiplier } = SILENT_BOOM_SPEC_V1;
+    const baseline = 300;
+    const floor = spikeMultiplier * Math.max(baseline, 100); // 1500
+    // At the floor → `cur.size < floor` is FALSE → the gate passes.
+    const fires = detectSilentBoomFires(baselineMedian300(floor));
+    expect(fires).toHaveLength(1);
+    expect(fires[0]!.spikeVolume).toBe(floor);
+    // spikeRatio = size / max(baseline, 1) = 1500 / 300 = 5.
+    expect(fires[0]!.spikeRatio).toBeCloseTo(5, 6);
+  });
+});
+
+// ============================================================
+// median() even-length arms — exercised through the detector's
+// baselineVolume output (the function is private). The baseline window is
+// always 4 buckets (even length), so the (sorted[mid-1] + sorted[mid]) / 2
+// branch is the one in play.
+// ============================================================
+
+describe('detectSilentBoomFires — median (even-length baseline) output', () => {
+  it('reports the 4-element even-length median as the average of the two middle values', () => {
+    // Baseline sizes [10, 20, 30, 40] → sorted middle pair (20, 30) → 25.
+    const seq = [
+      makeBucket(0, { size: 10 }),
+      makeBucket(1, { size: 40 }),
+      makeBucket(2, { size: 20 }),
+      makeBucket(3, { size: 30 }),
+      makeBucket(4, { size: 2_000, askSize: 1_700, bidSize: 300 }),
+    ];
+    const fires = detectSilentBoomFires(seq);
+    expect(fires).toHaveLength(1);
+    // median([10,40,20,30]) = (20 + 30) / 2 = 25.
+    expect(fires[0]!.baselineVolume).toBeCloseTo(25, 6);
+    // spikeRatio = 2000 / max(25, 1) = 80.
+    expect(fires[0]!.spikeRatio).toBeCloseTo(80, 6);
+  });
+
+  it('reports a tie-pair even-length median (both middle values equal)', () => {
+    // [50, 50, 60, 70] → sorted middle pair (50, 60) → 55. Distinct from a
+    // simple "both middle equal" so the (a+b)/2 averaging is unambiguous.
+    const seq = [
+      makeBucket(0, { size: 50 }),
+      makeBucket(1, { size: 70 }),
+      makeBucket(2, { size: 50 }),
+      makeBucket(3, { size: 60 }),
+      makeBucket(4, { size: 1_500, askSize: 1_300, bidSize: 200 }),
+    ];
+    const fires = detectSilentBoomFires(seq);
+    expect(fires).toHaveLength(1);
+    expect(fires[0]!.baselineVolume).toBeCloseTo(55, 6);
+  });
+});

@@ -131,6 +131,86 @@ describe('useStickyUnion', () => {
     expect(result.current).toEqual([]);
   });
 
+  // ── localStorage WRITE degrade (quota / private mode) ────────────────
+  describe('persist write degrade (setItem throws)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it('DEGRADE-NOT-CRASH: a throwing setItem (quota/private-mode) does not throw and the union still returns rows', () => {
+      vi.useFakeTimers();
+      // Simulate a full quota / Safari private mode: every durable write
+      // rejects. The hook's persistUnion try/catch must swallow it and keep
+      // the in-memory union authoritative.
+      const setSpy = vi
+        .spyOn(Storage.prototype, 'setItem')
+        .mockImplementation(() => {
+          throw new DOMException('QuotaExceededError');
+        });
+
+      const items: Alert[] = [
+        { id: 'a', pct: 10 },
+        { id: 'b', pct: 20 },
+      ];
+      let result: { current: Alert[] } | undefined;
+      // Mount + ingest must not throw despite the failing write.
+      expect(() => {
+        result = renderHook(() =>
+          useStickyUnion<Alert>(items, {
+            key: keyFn,
+            storageKey: 'quota-throw',
+          }),
+        ).result;
+      }).not.toThrow();
+
+      // Snapshot still reflects the ingest (in-memory union is intact).
+      expect(result!.current.map((r) => r.id).sort()).toEqual(['a', 'b']);
+
+      // Force the debounced write to fire — it throws inside persistUnion but
+      // is swallowed; advancing the timer must not surface the throw.
+      expect(() => {
+        act(() => {
+          vi.advanceTimersByTime(1000);
+        });
+      }).not.toThrow();
+
+      // The union is still usable after the failed persist.
+      expect(result!.current.map((r) => r.id).sort()).toEqual(['a', 'b']);
+      setSpy.mockRestore();
+    });
+
+    it('keeps pinning new rows across rerenders even when every write throws', () => {
+      vi.useFakeTimers();
+      const setSpy = vi
+        .spyOn(Storage.prototype, 'setItem')
+        .mockImplementation(() => {
+          throw new DOMException('QuotaExceededError');
+        });
+
+      const { result, rerender } = renderHook(
+        ({ items }) =>
+          useStickyUnion<Alert>(items, {
+            key: keyFn,
+            storageKey: 'quota-throw-2',
+          }),
+        { initialProps: { items: [{ id: 'a', pct: 1 }] as Alert[] } },
+      );
+      expect(result.current.map((r) => r.id)).toEqual(['a']);
+
+      // A later poll adds 'b' and drops 'a' from the payload — never-vanish
+      // must still pin 'a' in memory even though the write keeps failing.
+      expect(() => {
+        rerender({ items: [{ id: 'b', pct: 2 }] });
+        act(() => {
+          vi.advanceTimersByTime(1000);
+        });
+      }).not.toThrow();
+      expect(result.current.map((r) => r.id).sort()).toEqual(['a', 'b']);
+      setSpy.mockRestore();
+    });
+  });
+
   it('isolates keys: changing storageKey does not destroy the old key’s LS entry', () => {
     const { rerender } = renderHook(
       ({ items, storageKey }) =>
