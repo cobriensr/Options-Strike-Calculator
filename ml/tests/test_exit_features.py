@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -72,3 +73,30 @@ def test_greek_features_are_causal():
                                entry_price=1.0, minutes_to_close=[390, 389, 388])
     cols = ["iv_level", "iv_change_5m", "delta", "gamma", "otm_distance_pct", "underlying_ret_from_entry"]
     pd.testing.assert_frame_equal(short[cols], long[cols].iloc[:2].reset_index(drop=True))
+
+
+def test_trailing_helpers_match_reference_loops():
+    def slope_loop(mid, window):
+        out = np.zeros_like(mid)
+        for t in range(len(mid)):
+            j = t - window
+            if j >= 0 and mid[j] > 0:
+                out[t] = (mid[t] - mid[j]) / mid[j]
+        return out
+
+    def vol_loop(mid, window):
+        rets = np.zeros_like(mid)
+        rets[1:] = np.where(mid[:-1] > 0, np.diff(mid) / mid[:-1], 0.0)
+        out = np.zeros_like(mid)
+        for t in range(len(mid)):
+            lo = max(0, t - window + 1)
+            out[t] = np.std(rets[lo : t + 1]) if t > lo else 0.0
+        return out
+
+    rng = np.random.default_rng(3)
+    for _ in range(200):
+        n = int(rng.integers(1, 80))
+        mid = np.abs(rng.normal(2.0, 1.0, n)) + 0.01
+        for w in (3, 5, 10):
+            assert np.array_equal(feat._trailing_slope(mid, w), slope_loop(mid, w)), f"slope w={w} n={n}"
+            assert np.allclose(feat._trailing_vol(mid, w), vol_loop(mid, w), atol=1e-9, rtol=1e-9), f"vol w={w} n={n}"

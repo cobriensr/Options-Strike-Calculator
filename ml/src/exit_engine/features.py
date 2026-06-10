@@ -48,20 +48,39 @@ def build_features(
 
 
 def _trailing_slope(mid: np.ndarray, window: int) -> np.ndarray:
-    """(mid[t] - mid[t-window]) / mid[t-window]; 0 before enough history."""
+    """(mid[t] - mid[t-window]) / mid[t-window]; 0 before enough history or non-positive base."""
     out = np.zeros_like(mid)
-    for t in range(len(mid)):
-        j = t - window
-        if j >= 0 and mid[j] > 0:
-            out[t] = (mid[t] - mid[j]) / mid[j]
+    if mid.shape[0] > window:
+        prev = mid[:-window]
+        cur = mid[window:]
+        ok = prev > 0
+        res = np.zeros_like(cur)
+        res[ok] = (cur[ok] - prev[ok]) / prev[ok]
+        out[window:] = res
     return out
 
 
 def _trailing_vol(mid: np.ndarray, window: int) -> np.ndarray:
+    """Population std (ddof=0) of per-minute returns over a trailing window; 0 for
+    windows of size <= 1. Vectorized via cumulative sums (matches the np.std loop)."""
     rets = np.zeros_like(mid)
-    rets[1:] = np.where(mid[:-1] > 0, np.diff(mid) / mid[:-1], 0.0)
+    if mid.shape[0] > 1:
+        prev = mid[:-1]
+        rets[1:] = np.where(prev > 0, np.diff(mid) / prev, 0.0)
+    n = rets.shape[0]
     out = np.zeros_like(mid)
-    for t in range(len(mid)):
-        lo = max(0, t - window + 1)
-        out[t] = np.std(rets[lo : t + 1]) if t > lo else 0.0
+    if n == 0:
+        return out
+    csum = np.concatenate(([0.0], np.cumsum(rets)))
+    csq = np.concatenate(([0.0], np.cumsum(rets * rets)))
+    idx = np.arange(n)
+    lo = np.maximum(0, idx - window + 1)
+    cnt = (idx - lo + 1).astype("float64")
+    s = csum[idx + 1] - csum[lo]
+    sq = csq[idx + 1] - csq[lo]
+    mean = s / cnt
+    var = np.maximum(sq / cnt - mean * mean, 0.0)
+    vol = np.sqrt(var)
+    vol[cnt <= 1] = 0.0
+    out[:] = vol
     return out
