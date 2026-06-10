@@ -286,11 +286,16 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
           }
         >
           {transient ? (
-            <span className="text-neutral-500">Reconnecting… auto-retrying</span>
+            <span className="text-neutral-500">
+              Reconnecting… auto-retrying
+            </span>
           ) : (
             <span>Failed to load heatmap: {error}</span>
           )}
-          <RetryButton onClick={() => refresh()} tone={transient ? 'neutral' : 'rose'} />
+          <RetryButton
+            onClick={() => refresh()}
+            tone={transient ? 'neutral' : 'rose'}
+          />
         </div>
       )}
 

@@ -19,10 +19,7 @@ import { z } from 'zod';
 
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
-import {
-  fetchWithRetry,
-  isTransientHttpStatus,
-} from '../utils/fetchWithRetry';
+import { fetchWithRetry, isTransientHttpStatus } from '../utils/fetchWithRetry';
 import { usePolling } from './usePolling';
 
 const POLL_INTERVAL_MS = 30_000;
