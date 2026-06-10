@@ -5,7 +5,18 @@
  * Provides mock factories for VercelRequest / VercelResponse.
  */
 
+import { vi } from 'vitest';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+
+/**
+ * Stub for the Sentry isolation scope handed to `Sentry.withIsolationScope`
+ * callbacks (see api/_lib/request-scope.ts). Returns a fresh object per call
+ * so spy assertions don't bleed across tests. Mirrors the real scope surface
+ * the wrapper touches: `setTransactionName` + `setTag`.
+ */
+export function isolationScopeStub() {
+  return { setTransactionName: vi.fn(), setTag: vi.fn() };
+}
 
 export function mockRequest(
   overrides: Partial<VercelRequest> = {},

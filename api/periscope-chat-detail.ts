@@ -14,9 +14,7 @@
  * practical hit rate is much lower.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
-  guardOwnerOrGuestEndpoint,
   rejectIfRateLimited,
   respondIfInvalid,
   setCacheHeaders,
@@ -184,9 +182,8 @@ function parseDetailRow(r: Record<string, unknown>): PeriscopeChatDetailRow {
 export default withDbReader(
   '/api/periscope-chat-detail',
   'periscope_chat_detail',
-  async (req: VercelRequest, res: VercelResponse, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
+  'owner-or-guest',
+  async (req, res, done) => {
     const rateLimited = await rejectIfRateLimited(
       req,
       res,

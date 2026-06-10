@@ -54,14 +54,8 @@
  * Auth: owner OR guest (matches the actual posture of /api/periscope-exposure).
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-
 import { Sentry } from './_lib/sentry.js';
-import {
-  setCacheHeaders,
-  isMarketOpen,
-  guardOwnerOrGuestEndpoint,
-} from './_lib/api-helpers.js';
+import { setCacheHeaders, isMarketOpen } from './_lib/api-helpers.js';
 import { getDb } from './_lib/db.js';
 import { withDbReader } from './_lib/request-scope.js';
 import { getETDateStr } from '../src/utils/timezone.js';
@@ -264,9 +258,8 @@ async function hasLaterInProgress(
 export default withDbReader(
   '/api/periscope-playbook',
   'periscope_playbook',
-  async (req: VercelRequest, res: VercelResponse, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
+  'owner-or-guest',
+  async (req, res, done) => {
     const dateParam = (req.query.date as string | undefined) ?? '';
     const slotParam = (req.query.slot as string | undefined) ?? '';
     const isHistoricalRead = dateParam !== '' || slotParam !== '';

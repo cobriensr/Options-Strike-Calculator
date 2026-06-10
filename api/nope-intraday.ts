@@ -14,7 +14,6 @@
 
 import { getDb, withDbRetry } from './_lib/db.js';
 import { withDbReader } from './_lib/request-scope.js';
-import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 
 const TICKER = 'SPY';
 
@@ -50,9 +49,8 @@ function toDateString(value: unknown): string | null {
 export default withDbReader(
   '/api/nope-intraday',
   'nope_intraday',
+  'owner-or-guest',
   async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
     const dateParam = req.query.date as string | undefined;
     if (dateParam !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
       res.setHeader('Cache-Control', 'no-store');

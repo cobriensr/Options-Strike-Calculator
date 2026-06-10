@@ -34,12 +34,7 @@
  * top of the proposed tab where the user is doing triage work.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  guardOwnerOrGuestEndpoint,
-  rejectIfRateLimited,
-  setCacheHeaders,
-} from './_lib/api-helpers.js';
+import { rejectIfRateLimited, setCacheHeaders } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import { withDbReader } from './_lib/request-scope.js';
@@ -89,9 +84,8 @@ function parseRow(r: Record<string, unknown>): PeriscopeLessonListRow {
 export default withDbReader(
   '/api/periscope-lessons-list',
   'periscope_lessons_list',
-  async (req: VercelRequest, res: VercelResponse, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
+  'owner-or-guest',
+  async (req, res, done) => {
     const rateLimited = await rejectIfRateLimited(
       req,
       res,

@@ -30,8 +30,15 @@ vi.mock('../_lib/db.js', () => ({
   TransientDbError,
 }));
 
-vi.mock('../_lib/api-helpers.js', () => ({
+// The wrapper (request-scope.ts) runs the owner-or-guest guard itself,
+// importing guardOwnerOrGuestEndpoint from guest-auth.js — so the guard
+// mock must intercept THAT module. The handler still imports
+// rejectIfRateLimited / respondIfInvalid / setCacheHeaders from api-helpers.
+vi.mock('../_lib/guest-auth.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+}));
+
+vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(),
   respondIfInvalid: vi

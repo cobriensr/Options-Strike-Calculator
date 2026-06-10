@@ -15,16 +15,15 @@
  * Response: { analyses: [...], count: N }
  */
 
-import { guardOwnerEndpoint, rejectIfRateLimited } from './_lib/api-helpers.js';
+import { rejectIfRateLimited } from './_lib/api-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { withDbReader } from './_lib/request-scope.js';
 
 export default withDbReader(
   '/api/journal',
   'journal',
+  'owner',
   async (req, res, done) => {
-    if (await guardOwnerEndpoint(req, res, done)) return;
-
     const rateLimited = await rejectIfRateLimited(req, res, 'journal', 20);
     if (rateLimited) {
       done({ status: 429 });

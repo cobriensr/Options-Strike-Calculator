@@ -28,9 +28,15 @@ vi.mock('../_lib/db.js', () => ({
   TransientDbError,
 }));
 
-vi.mock('../_lib/api-helpers.js', () => ({
-  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+// The wrapper (request-scope.ts) runs the owner-or-guest guard itself,
+// importing guardOwnerOrGuestEndpoint from guest-auth.js — so the
+// owner-reject case must mock THAT module. The handler still imports
+// rejectIfRateLimited / setCacheHeaders from api-helpers.
+vi.mock('../_lib/guest-auth.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+}));
+
+vi.mock('../_lib/api-helpers.js', () => ({
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(),
 }));
@@ -54,7 +60,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import listHandler from '../periscope-lessons-list.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
 
 beforeEach(() => {
   mockSql.mockReset();

@@ -1,12 +1,20 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mockRequest, mockResponse } from './helpers';
+import { mockRequest, mockResponse, isolationScopeStub } from './helpers';
 
 // ── Mocks ─────────────────────────────────────────────────────
-vi.mock('../_lib/api-helpers.js', () => ({
+// One shared guard spy backs BOTH module specifiers: the GET handler's
+// guard now runs inside withDbReader (which imports from
+// `../_lib/guest-auth.js`), while the POST ack handler — not migrated in
+// this phase — still calls the guard inline via the `../_lib/api-helpers.js`
+// re-export. Pointing both mocks at the same fn keeps per-test overrides in
+// sync across the two handlers exercised in this file.
+const { guardOwnerOrGuestEndpoint } = vi.hoisted(() => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
+vi.mock('../_lib/guest-auth.js', () => ({ guardOwnerOrGuestEndpoint }));
+vi.mock('../_lib/api-helpers.js', () => ({ guardOwnerOrGuestEndpoint }));
 
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
@@ -23,7 +31,7 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) => cb(isolationScopeStub())),
     captureException: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
@@ -35,7 +43,6 @@ vi.mock('../_lib/logger.js', () => ({
 
 import getHandler, { _internal } from '../interval-ba-alerts.js';
 import ackHandler from '../interval-ba-alerts-ack.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 

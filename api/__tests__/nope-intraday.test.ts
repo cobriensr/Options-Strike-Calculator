@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mockRequest, mockResponse } from './helpers';
+import { mockRequest, mockResponse, isolationScopeStub } from './helpers';
 
 const mockSql = vi.fn();
 
@@ -20,8 +20,8 @@ vi.mock('../_lib/db.js', () => ({
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     withIsolationScope: vi.fn(
-      (fn: (s: { setTransactionName: () => void }) => unknown) =>
-        fn({ setTransactionName: vi.fn() }),
+      (fn: (s: ReturnType<typeof isolationScopeStub>) => unknown) =>
+        fn(isolationScopeStub()),
     ),
     captureException: vi.fn(),
   },
@@ -36,7 +36,10 @@ const { mockGuardOwnerOrGuest } = vi.hoisted(() => ({
   mockGuardOwnerOrGuest: vi.fn(),
 }));
 
-vi.mock('../_lib/api-helpers.js', () => ({
+// The wrapper (request-scope.ts) runs the owner-or-guest guard itself,
+// importing guardOwnerOrGuestEndpoint from guest-auth.js — so the guard
+// mock must intercept THAT module.
+vi.mock('../_lib/guest-auth.js', () => ({
   guardOwnerOrGuestEndpoint: mockGuardOwnerOrGuest,
 }));
 

@@ -13,7 +13,6 @@
  * surface real-time.
  */
 
-import { guardOwnerOrGuestEndpoint } from '../../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../../_lib/db.js';
 import {
   DB_RETRY_ATTEMPTS,
@@ -24,9 +23,8 @@ import { withDbReader } from '../../_lib/request-scope.js';
 export default withDbReader(
   '/api/tracker/alerts/unread',
   'tracker_alerts_unread',
-  async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
+  'owner-or-guest',
+  async (_req, res, done) => {
     const sql = getDb();
     const rows = await withDbRetry(
       () => sql`

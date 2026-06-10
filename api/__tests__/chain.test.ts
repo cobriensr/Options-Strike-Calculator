@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mockRequest, mockResponse } from './helpers';
+import { mockRequest, mockResponse, isolationScopeStub } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
@@ -12,7 +12,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) => cb(isolationScopeStub())),
     captureException: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()) },

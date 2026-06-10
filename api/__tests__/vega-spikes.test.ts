@@ -4,7 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 // ── Mocks ─────────────────────────────────────────────────────
-vi.mock('../_lib/api-helpers.js', () => ({
+// The withDbReader wrapper imports the guard from guest-auth.js directly, so
+// the guard mock must live there for the wrapper's call to be intercepted.
+vi.mock('../_lib/guest-auth.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
@@ -27,7 +29,9 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) =>
+      cb({ setTransactionName: vi.fn(), setTag: vi.fn() }),
+    ),
     captureException: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
@@ -38,7 +42,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../vega-spikes.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 

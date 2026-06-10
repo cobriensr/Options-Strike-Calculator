@@ -13,7 +13,6 @@
  */
 
 import { getDb, withDbRetry } from './_lib/db.js';
-import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { withDbReader } from './_lib/request-scope.js';
 
 // ── Types ───────────────────────────────────────────────────
@@ -64,9 +63,8 @@ function parseNum(val: unknown): number | null {
 export default withDbReader(
   '/api/greek-exposure-strike',
   'greek_exposure_strike',
+  'owner-or-guest',
   async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
     const sql = getDb();
 
     const dateParam = req.query.date as string | undefined;

@@ -24,7 +24,6 @@
 import { getDb, withDbRetry } from './_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import { withDbReader } from './_lib/request-scope.js';
-import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type Range = 'today' | '7d' | '30d';
@@ -65,9 +64,8 @@ function toNullableNumber(v: NullableNumeric): number | null {
 export default withDbReader(
   '/api/vega-spikes',
   'vega_spikes',
+  'owner-or-guest',
   async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
     const rangeParam = (req.query.range as string | undefined) ?? 'today';
     if (rangeParam !== 'today' && rangeParam !== '7d' && rangeParam !== '30d') {
       done({ status: 400 });

@@ -36,7 +36,9 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) =>
+      cb({ setTransactionName: vi.fn(), setTag: vi.fn() }),
+    ),
     captureException: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },

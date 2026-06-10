@@ -46,17 +46,26 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  guardOwnerOrGuestEndpoint: mockGuard,
   setCacheHeaders: mockSetCacheHeaders,
   isMarketOpen: mockIsMarketOpen,
+}));
+
+// The withDbReader wrapper imports guardOwnerOrGuestEndpoint directly from
+// guest-auth.js, so the guard must be mocked there (not via api-helpers.js)
+// for the wrapper's call to be intercepted.
+vi.mock('../_lib/guest-auth.js', () => ({
+  guardOwnerOrGuestEndpoint: mockGuard,
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     captureException: vi.fn(),
     withIsolationScope: (
-      fn: (s: { setTransactionName: (n: string) => void }) => unknown,
-    ) => fn({ setTransactionName: () => undefined }),
+      fn: (s: {
+        setTransactionName: (n: string) => void;
+        setTag: (k: string, v: string) => void;
+      }) => unknown,
+    ) => fn({ setTransactionName: () => undefined, setTag: () => undefined }),
   },
   metrics: { request: () => () => undefined },
 }));
@@ -238,10 +247,21 @@ describe('GET /api/periscope-playbook — input contract', () => {
   });
 
   it('rejects when guardOwnerOrGuestEndpoint returns true', async () => {
-    mockGuard.mockResolvedValueOnce(true);
+    // The wrapper does `if (await guard(...)) return`, so the guard itself
+    // owns the 401/403 response. Mirror that here.
+    mockGuard.mockImplementationOnce(
+      async (
+        _req: unknown,
+        res: { status: (c: number) => { json: (p: unknown) => unknown } },
+      ) => {
+        res.status(401).json({ error: 'Not authenticated' });
+        return true;
+      },
+    );
     const { req, res } = makeReqRes();
     await handler(req, res as never);
-    // Guard wrote its own response; handler should not have written one.
+    // Guard wrote its own response; handler should not have read the DB.
+    expect(res.statusCode).toBe(401);
     expect(mockSql).not.toHaveBeenCalled();
   });
 });

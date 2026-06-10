@@ -47,6 +47,15 @@ vi.mock('../_lib/db.js', () => ({
   TransientDbError,
 }));
 
+// periscope-chat-detail is migrated to withDbReader, whose 'owner-or-guest'
+// guard call resolves `guardOwnerOrGuestEndpoint` from guest-auth.js (not
+// api-helpers.js). Mock that module so the wrapper-run guard is intercepted.
+// periscope-chat-list still calls the api-helpers.js export inline, so both
+// mocks coexist.
+vi.mock('../_lib/guest-auth.js', () => ({
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
@@ -97,11 +106,16 @@ import {
   guardOwnerEndpoint,
   guardOwnerOrGuestEndpoint,
 } from '../_lib/api-helpers.js';
+// The migrated detail handler runs its owner-or-guest guard through
+// withDbReader, which imports guardOwnerOrGuestEndpoint from guest-auth.js.
+// (list + image are not migrated and still use the api-helpers.js export.)
+import { guardOwnerOrGuestEndpoint as guardOwnerOrGuestWrapped } from '../_lib/guest-auth.js';
 
 beforeEach(() => {
   mockSql.mockReset();
   vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
   vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+  vi.mocked(guardOwnerOrGuestWrapped).mockResolvedValue(false);
 });
 
 // ============================================================
@@ -276,7 +290,8 @@ describe('GET /api/periscope-chat-detail', () => {
   });
 
   it('returns 401 when not owner', async () => {
-    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
+    // detail is migrated → the wrapper's guard comes from guest-auth.js.
+    vi.mocked(guardOwnerOrGuestWrapped).mockImplementation(
       async (_req, res) => {
         res.status(401).json({ error: 'Not authenticated' });
         return true;

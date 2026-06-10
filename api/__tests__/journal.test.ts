@@ -1,16 +1,23 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mockRequest, mockResponse } from './helpers';
+import { mockRequest, mockResponse, isolationScopeStub } from './helpers';
+
+// The wrapper (request-scope.ts) runs the owner guard itself, importing
+// guardOwnerEndpoint from auth-helpers.js — so the owner-reject case must
+// mock THAT module, not api-helpers.js. The handler only imports
+// rejectIfRateLimited from api-helpers.js now.
+vi.mock('../_lib/auth-helpers.js', () => ({
+  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
+}));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  guardOwnerEndpoint: vi.fn().mockResolvedValue(false),
   rejectIfRateLimited: vi.fn(),
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) => cb(isolationScopeStub())),
     captureException: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
@@ -39,10 +46,8 @@ vi.mock('../_lib/db.js', async (importOriginal) => {
 });
 
 import handler from '../journal.js';
-import {
-  guardOwnerEndpoint,
-  rejectIfRateLimited,
-} from '../_lib/api-helpers.js';
+import { guardOwnerEndpoint } from '../_lib/auth-helpers.js';
+import { rejectIfRateLimited } from '../_lib/api-helpers.js';
 import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 

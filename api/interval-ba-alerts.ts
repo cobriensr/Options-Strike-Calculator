@@ -38,7 +38,6 @@
  */
 
 import { getDb, withDbRetry } from './_lib/db.js';
-import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { withDbReader } from './_lib/request-scope.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -171,9 +170,8 @@ function shapeRow(r: RawRow): IntervalBAAlertRow {
 export default withDbReader(
   '/api/interval-ba-alerts',
   'interval_ba_alerts',
+  'owner-or-guest',
   async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
     const sql = getDb();
     const since = req.query.since as string | undefined;
     const today = getETDateStr(new Date());

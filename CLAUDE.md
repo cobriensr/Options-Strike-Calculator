@@ -167,6 +167,7 @@ Everything else gets the full loop.
 - **Bot protection** — `botid` checks on production endpoints, skipped in local dev. **When adding a new endpoint that calls `checkBot(req)`, also add its path to the `protect` array in `src/main.tsx`'s `initBotId()` call.**
 - **Logging** — `pino` logger in `api/_lib/logger.ts`.
 - **Sentry** — error tracking + metrics via `@sentry/node`.
+- **Reader endpoints use `withDbReader`** — a new GET data-reader endpoint (single-JSON response, 405-gated) should wrap its handler in `withDbReader(path, label, auth, handler, opts?)` from `api/_lib/request-scope.ts` instead of hand-rolling the envelope. The wrapper owns the Sentry isolation scope + transaction name + `endpoint` tag, `metrics.request`/`done`, the 405 method check, the auth guard (`auth` is required: `'owner'` | `'owner-or-guest'` | `'public'` — so it can't be forgotten), and the `try/catch → sendDbErrorResponse` soft-degrade (transient Neon blip → 503, genuine → 500 + Sentry). The handler body is just rate-limit/zod-validation/logic + `done({ status: 200 })` + `res.json`. Do NOT adopt it for mixed GET+write handlers, CSV/binary responses, or no-method-gate readers (those keep their own `sendDbErrorResponse` call).
 
 #### Backend Modules (`api/_lib/`)
 

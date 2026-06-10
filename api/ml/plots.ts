@@ -39,6 +39,7 @@ interface PlotRow {
 export default withDbReader(
   '/api/ml/plots',
   'ml_plots',
+  'public',
   async (_req, res, done) => {
     const sql = getDb();
 

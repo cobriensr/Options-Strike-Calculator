@@ -13,8 +13,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
+// One shared guard mock fronts BOTH module specifiers: the unread handler is
+// now a withDbReader endpoint whose wrapper imports the guard from
+// guest-auth.js, while the sibling ack POST handler still imports it from
+// api-helpers.js inline. Routing both to the same vi.fn keeps the existing
+// per-test mockImplementation overrides working for both handlers.
+const { mockGuard } = vi.hoisted(() => ({
+  mockGuard: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock('../_lib/api-helpers.js', () => ({
-  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
+  guardOwnerOrGuestEndpoint: mockGuard,
+}));
+
+vi.mock('../_lib/guest-auth.js', () => ({
+  guardOwnerOrGuestEndpoint: mockGuard,
 }));
 
 const mockSql = vi.fn();
@@ -36,7 +49,9 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) =>
+      cb({ setTransactionName: vi.fn(), setTag: vi.fn() }),
+    ),
     captureException: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
@@ -48,12 +63,11 @@ vi.mock('../_lib/logger.js', () => ({
 
 import unreadHandler from '../tracker/alerts/unread.js';
 import ackHandler from '../tracker/alerts/[id]/ack.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+  mockGuard.mockResolvedValue(false);
   mockSql.mockReset();
 });
 
@@ -69,12 +83,10 @@ describe('GET /api/tracker/alerts/unread', () => {
   });
 
   it('returns 401 when guest auth rejects', async () => {
-    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
-      async (_req, res) => {
-        res.status(401).json({ error: 'Not authenticated' });
-        return true;
-      },
-    );
+    mockGuard.mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
     const res = mockResponse();
     await unreadHandler(mockRequest({ method: 'GET' }), res);
     expect(res._status).toBe(401);
@@ -157,12 +169,10 @@ describe('POST /api/tracker/alerts/[id]/ack', () => {
   });
 
   it('returns 401 when guest auth rejects', async () => {
-    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(
-      async (_req, res) => {
-        res.status(401).json({ error: 'Not authenticated' });
-        return true;
-      },
-    );
+    mockGuard.mockImplementation(async (_req, res) => {
+      res.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
     const res = mockResponse();
     await ackHandler(mockRequest({ method: 'POST', query: { id: '1' } }), res);
     expect(res._status).toBe(401);

@@ -9,13 +9,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(
     (res: { setHeader: (k: string, v: string) => unknown }) => {
       res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
       res.setHeader('Vary', 'Cookie');
     },
   ),
+}));
+
+// The withDbReader wrapper imports the guard from guest-auth.js directly, so
+// the guard mock must live there for the wrapper's call to be intercepted.
+vi.mock('../_lib/guest-auth.js', () => ({
+  guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
 const mockSql = vi.fn();
@@ -51,7 +56,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 import handler from '../strike-trade-volume.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
 import { TransientDbError } from '../_lib/db.js';
 
 function makeRow(over: Record<string, unknown> = {}): Record<string, unknown> {

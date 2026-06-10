@@ -12,11 +12,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mockRequest, mockResponse } from './helpers';
+import { mockRequest, mockResponse, isolationScopeStub } from './helpers';
 
 // ── Mocks ────────────────────────────────────────────────
 
-vi.mock('../_lib/api-helpers.js', () => ({
+// The guard now runs inside withDbReader, which imports it directly from
+// `../_lib/guest-auth.js`. Mock THAT module so the wrapper's guard call is
+// intercepted (mocking the `api-helpers.js` re-export barrel would not).
+vi.mock('../_lib/guest-auth.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
@@ -39,7 +42,7 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
+    withIsolationScope: vi.fn((cb) => cb(isolationScopeStub())),
     captureException: vi.fn(),
   },
   metrics: { request: vi.fn(() => vi.fn()), increment: vi.fn() },
@@ -59,7 +62,7 @@ vi.mock('../../src/utils/timezone.js', () => ({
 }));
 
 import handler from '../gamma-setups/weekly-stats.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
+import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
 import { Sentry } from '../_lib/sentry.js';
 import { aggregateFireStats, loadFireStatsRows } from '../_lib/gamma-stats.js';
 

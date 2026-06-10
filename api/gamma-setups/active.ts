@@ -17,7 +17,6 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { withDbReader } from '../_lib/request-scope.js';
 import {
   findNearestCeilingAbove,
@@ -146,9 +145,8 @@ function shapeFire(r: FireRow): GammaSetupFire {
 export default withDbReader(
   '/api/gamma-setups/active',
   'gamma_setups_active',
-  async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
+  'owner-or-guest',
+  async (_req, res, done) => {
     const sql = getDb();
     const now = new Date();
     const today = getETDateStr(now);

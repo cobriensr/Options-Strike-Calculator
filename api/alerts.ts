@@ -13,21 +13,22 @@
  */
 
 import { getDb, withDbRetry } from './_lib/db.js';
-import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { withDbReader } from './_lib/request-scope.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
-export default withDbReader('/api/alerts', 'alerts', async (req, res, done) => {
-  if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
+export default withDbReader(
+  '/api/alerts',
+  'alerts',
+  'owner-or-guest',
+  async (req, res, done) => {
+    const sql = getDb();
+    const since = req.query.since as string | undefined;
 
-  const sql = getDb();
-  const since = req.query.since as string | undefined;
+    const today = getETDateStr(new Date());
 
-  const today = getETDateStr(new Date());
-
-  const alerts = since
-    ? await withDbRetry(
-        () => sql`
+    const alerts = since
+      ? await withDbRetry(
+          () => sql`
             SELECT id, date, timestamp, type, severity, direction,
                    title, body, current_values, delta_values,
                    acknowledged, created_at
@@ -36,11 +37,11 @@ export default withDbReader('/api/alerts', 'alerts', async (req, res, done) => {
             ORDER BY created_at DESC
             LIMIT 20
           `,
-        2,
-        10_000,
-      )
-    : await withDbRetry(
-        () => sql`
+          2,
+          10_000,
+        )
+      : await withDbRetry(
+          () => sql`
             SELECT id, date, timestamp, type, severity, direction,
                    title, body, current_values, delta_values,
                    acknowledged, created_at
@@ -49,11 +50,12 @@ export default withDbReader('/api/alerts', 'alerts', async (req, res, done) => {
             ORDER BY created_at DESC
             LIMIT 20
           `,
-        2,
-        10_000,
-      );
+          2,
+          10_000,
+        );
 
-  res.setHeader('Cache-Control', 'no-store');
-  done({ status: 200 });
-  res.status(200).json({ alerts });
-});
+    res.setHeader('Cache-Control', 'no-store');
+    done({ status: 200 });
+    res.status(200).json({ alerts });
+  },
+);

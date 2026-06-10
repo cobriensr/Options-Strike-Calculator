@@ -13,7 +13,6 @@
  * Environment: DATABASE_URL, OWNER_SECRET
  */
 
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from '../_lib/constants.js';
 import { withDbReader } from '../_lib/request-scope.js';
@@ -21,9 +20,8 @@ import { withDbReader } from '../_lib/request-scope.js';
 export default withDbReader(
   '/api/ml/prediction',
   'ml_prediction',
+  'owner-or-guest',
   async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
     const dateParam = req.query.date as string | undefined;
     if (dateParam && !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
       done({ status: 400 });

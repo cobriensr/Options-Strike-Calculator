@@ -19,13 +19,9 @@
  * filter parameter.
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { withDbReader } from './_lib/request-scope.js';
-import {
-  guardOwnerOrGuestEndpoint,
-  setCacheHeaders,
-} from './_lib/api-helpers.js';
+import { setCacheHeaders } from './_lib/api-helpers.js';
 import { strikeTradeVolumeQuerySchema } from './_lib/validation.js';
 import type { StrikeIVTicker } from './_lib/constants.js';
 
@@ -86,9 +82,8 @@ function parseSide(value: string): 'call' | 'put' {
 export default withDbReader(
   '/api/strike-trade-volume',
   'strike_trade_volume',
-  async (req: VercelRequest, res: VercelResponse, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
+  'owner-or-guest',
+  async (req, res, done) => {
     const parseResult = strikeTradeVolumeQuerySchema.safeParse(req.query);
     if (!parseResult.success) {
       done({ status: 400 });

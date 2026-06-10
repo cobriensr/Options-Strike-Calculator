@@ -21,11 +21,7 @@
 
 import { getDb, withDbRetry } from './_lib/db.js';
 import { withDbReader } from './_lib/request-scope.js';
-import {
-  guardOwnerOrGuestEndpoint,
-  isMarketOpen,
-  setCacheHeaders,
-} from './_lib/api-helpers.js';
+import { isMarketOpen, setCacheHeaders } from './_lib/api-helpers.js';
 import { zeroGammaQuerySchema } from './_lib/validation.js';
 
 const DEFAULT_TICKER = 'SPX';
@@ -90,9 +86,8 @@ function mapRow(r: RawRow): ZeroGammaRow {
 export default withDbReader(
   '/api/zero-gamma',
   'zero_gamma',
+  'owner-or-guest',
   async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
     const parsed = zeroGammaQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       res.setHeader('Cache-Control', 'no-store');

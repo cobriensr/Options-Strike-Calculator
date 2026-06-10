@@ -49,7 +49,6 @@
 
 import { getDb, withDbRetry } from './_lib/db.js';
 import { withDbReader } from './_lib/request-scope.js';
-import { guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
 import { ctWallClockToUtcIso } from '../src/utils/timezone.js';
 
 type Severity = 'extreme' | 'critical' | 'warning';
@@ -206,9 +205,8 @@ function buildSummary(alerts: FeedAlert[]): FeedSummary {
 export default withDbReader(
   '/api/interval-ba-feed',
   'interval_ba_feed',
+  'owner-or-guest',
   async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
     const dateStr = req.query.date as string | undefined;
     if (!dateStr || !DATE_RE.test(dateStr)) {
       done({ status: 400 });

@@ -18,7 +18,6 @@
  */
 
 import { getDb } from '../_lib/db.js';
-import { guardOwnerOrGuestEndpoint } from '../_lib/api-helpers.js';
 import { withDbReader } from '../_lib/request-scope.js';
 import {
   aggregateFireStats,
@@ -45,9 +44,8 @@ function daysAgoEtDateStr(days: number): string {
 export default withDbReader(
   '/api/gamma-setups/weekly-stats',
   'gamma_setups_weekly_stats',
+  'owner-or-guest',
   async (req, res, done) => {
-    if (await guardOwnerOrGuestEndpoint(req, res, done)) return;
-
     const days = parseDaysParam(req.query.days);
     const today = getETDateStr(new Date());
     const from = daysAgoEtDateStr(days);

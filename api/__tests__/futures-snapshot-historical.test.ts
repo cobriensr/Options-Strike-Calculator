@@ -20,8 +20,8 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     captureException: vi.fn(),
     withIsolationScope: vi.fn(
-      (fn: (scope: { setTransactionName: () => void }) => unknown) =>
-        fn({ setTransactionName: vi.fn() }),
+      (fn: (scope: { setTransactionName: () => void; setTag: () => void }) => unknown) =>
+        fn({ setTransactionName: vi.fn(), setTag: vi.fn() }),
     ),
   },
   metrics: { request: vi.fn(() => vi.fn()) },
