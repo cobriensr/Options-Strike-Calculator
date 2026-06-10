@@ -1,11 +1,11 @@
 {
   "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-06-08T22:41:03.667018+00:00",
+  "trained_at": "2026-06-09T21:18:31.231374+00:00",
   "training_sample": {
-    "n": 150072,
+    "n": 148413,
     "date_range": [
-      "2026-03-10 00:00:00",
-      "2026-06-08 00:00:00"
+      "2026-03-11 00:00:00",
+      "2026-06-09 00:00:00"
     ],
     "filters_applied": [
       "last 90 days",
@@ -33,41 +33,41 @@
     "dte_weights": {
       "0": -2,
       "1": 4,
-      "2": -1,
+      "2": -2,
       "3": 0
     },
     "vol_oi_quintile_weights": [
       1,
-      0,
+      -1,
       2,
       0,
       -3
     ],
     "vol_oi_quintile_boundaries": [
-      0.0599721059972106,
-      0.0966800991174921,
-      0.15451692581794618,
-      0.37671056351221
+      0.06003373324421703,
+      0.09693813735625582,
+      0.15481171548117154,
+      0.3783783783783784
     ],
     "gamma_quintile_weights": [
       3,
       -2,
-      -2,
+      -1,
       -2,
       -1
     ],
     "gamma_quintile_boundaries": [
-      0.012244930299708225,
-      0.025463785396704724,
-      0.04242341339086596,
-      0.0692692934252652
+      0.01222928888888889,
+      0.025491016115481734,
+      0.042309433715925396,
+      0.06904836487060584
     ],
     "ask_pct_quintile_weights": [
-      0,
       1,
       1,
-      2,
-      -4
+      1,
+      1,
+      -5
     ],
     "ask_pct_quintile_boundaries": [
       0.5333333333333333,
@@ -140,7 +140,7 @@
       "SLV": -1,
       "SMCI": 1,
       "SMH": 0,
-      "SNDK": 2,
+      "SNDK": 1,
       "SNOW": 0,
       "SOFI": -1,
       "SOUN": 5,
@@ -249,13 +249,14 @@
     "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift."
   },
   "validation": {
-    "tier1_count": 9569,
-    "tier2_count": 19403,
-    "tier3_count": 121100,
-    "tier1_mean_outcome_pct": 37.13701062520605,
-    "tier2_mean_outcome_pct": 28.438526000560916,
-    "tier3_mean_outcome_pct": 4.558525978959379,
-    "spearman_score_outcome": 0.17031786354612047,
+    "tier1_count": 8414,
+    "tier2_count": 17043,
+    "tier3_count": 122956,
+    "tier1_mean_outcome_pct": 38.66739629655201,
+    "tier2_mean_outcome_pct": 28.695146737680133,
+    "tier3_mean_outcome_pct": 5.840814927893838,
+    "spearman_score_outcome": 0.15602225808589498,
     "spearman_p_value": 0.0
-  }
+  },
+  "ticker_weights_update_note": "ticker_weights is updated nightly by scripts/online_ticker_update.py via exponential smoothing (alpha=0.05, ±1 cap/night). All other features remain from the last full training run."
 }
