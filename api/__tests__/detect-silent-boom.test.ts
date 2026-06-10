@@ -1251,4 +1251,58 @@ describe('detect-silent-boom handler', () => {
     expect(allBinds[0]!.get('adj_cofire')).toBe(true);
     expect(allBinds[1]!.get('adj_cofire')).toBe(true);
   });
+
+  it('stamps date + dte from the fire bucket timestamp, not the cron run clock', async () => {
+    // Late / retried run: the cron wall-clock ET date (ctx.today) has
+    // rolled to 2026-05-08, but the spike bucket fired on the prior
+    // session (09:20 ET on 2026-05-07). The row must be filed under the
+    // fire's OWN ET session day (2026-05-07) and dte computed from THAT
+    // day — otherwise the alert lands on the wrong day and dte is off by
+    // one relative to what the read endpoints (which filter date::date)
+    // expect. Expiry 2026-05-09:
+    //   bucket-day dte (correct): daysBetween('2026-05-07','2026-05-09') = 2
+    //   run-clock  dte (buggy):   daysBetween('2026-05-08','2026-05-09') = 1
+    mockCronGuard.mockReturnValue({ apiKey: '', today: '2026-05-08' });
+
+    // Rebuild the fireable stream on a custom expiry (2026-05-09) while
+    // keeping the 2026-05-07 bucket timestamps.
+    const chain = 'SNDK260507C01175000';
+    const exp = '2026-05-09';
+    const rows: ReturnType<typeof bucketRow>[] = [];
+    for (let b = 0; b < 4; b += 1) {
+      const minute = b * 5;
+      const iso = `2026-05-07T13:${String(minute).padStart(2, '0')}:00Z`;
+      rows.push(bucketRow(chain, 'SNDK', 'C', 1175, exp, iso, { size: 100 }));
+    }
+    rows.push(
+      bucketRow(chain, 'SNDK', 'C', 1175, exp, '2026-05-07T13:20:00Z', {
+        size: 2000,
+      }),
+    );
+
+    mockSql
+      .mockResolvedValueOnce(rows)
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    // Filed under the fire's own ET session day, NOT the run clock.
+    expect(binds.get('date')).toBe('2026-05-07');
+    // dte computed from the fire-day date, not ctx.today.
+    expect(binds.get('dte')).toBe(2);
+  });
 });

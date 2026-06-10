@@ -42,6 +42,7 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { isPastCashOpen } from '../_lib/cron-helpers.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 import {
   loadTakeitDetectContext,
   scoreLottery,
@@ -480,14 +481,31 @@ export default withCronInstrumentation(
     // POST /takeit/multileg-classify (commit ced5ff10).
     const multilegCache: MultilegClassifyCache = new Map();
 
-    // V2.2 Phase C.4 cluster bonus: running list of tier1 fires processed
-    // so far in this cron invocation. Used by computeClusterSize() below
-    // to count co-firing tickers without a DB round-trip. Includes ALL
-    // fires processed (scored, even those that hit ON CONFLICT); the
-    // cluster bonus is computed BEFORE the INSERT, so idempotent re-runs
-    // see the same bonus on retry.
-    const committedFires: CommittedFireEntry[] = [];
+    // Per-(ticker, date) candle cache — promoted to handler scope so
+    // both passes (and fires across chains of the same ticker) share one
+    // UW lookup. Cleared when the handler returns.
+    const candleCache = new Map<string, UWStockCandle[]>();
 
+    // V2.2 Phase C.4 cluster bonus is computed in a SYMMETRIC PRE-PASS
+    // (Fix 3, 2026-06-09): the prior form computed the bonus inline while
+    // iterating groups, so the first-iterated chain saw an empty
+    // committedFires list (clusterSize 1, bonus 0) while a later chain saw
+    // the full set — two simultaneous fires got DIFFERENT bonuses purely
+    // by Map iteration order. We now score EVERY in-universe fire first
+    // (Pass 1), build the full co-fire membership over all this-tick fires
+    // (pre-pass), then do the heavy per-fire work + INSERT (Pass 2) so
+    // every member sees the same symmetric ±5-min window. Silent Boom
+    // already uses this pre-pass shape (cofireKeyset).
+    interface PreparedFire {
+      rec: LotteryFireRecord;
+      score: number | null;
+      isAligned: boolean;
+      cumNcpAtFire: number | null;
+      cumNppAtFire: number | null;
+    }
+    const preparedFires: PreparedFire[] = [];
+
+    // ── Pass 1: detect + score every in-universe fire ──────────────────
     for (const g of groups.values()) {
       if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
         skippedShort += 1;
@@ -498,11 +516,24 @@ export default withCronInstrumentation(
         continue;
       }
 
-      // DTE is computed in ET. ctx.today is ET YYYY-MM-DD from cronGuard;
-      // g.expiry is the raw YYYY-MM-DD string from `expiry::text` so no
-      // driver-side TZ round-trip can shift the date.
+      // Session day + DTE are derived from the fire's OWN timestamp in ET,
+      // NOT ctx.today (the cron-RUN wall-clock ET date). On a late or
+      // retried run — or any tick firing after the ET date rolls relative
+      // to the trade window — ctx.today would file the fire under the wrong
+      // day and skew dte by one. The read endpoints filter `date = ...::date`
+      // off the same per-fire timestamp, so deriving the stamp from the
+      // tick keeps insert and read aligned. The group-level value seeds
+      // detection (detectChainFires + classifyMode gate on dte); it's taken
+      // from the chain's first tick. Each fire's own date/dte is re-derived
+      // per-fire below (rare cross-midnight chains). g.expiry is the raw
+      // YYYY-MM-DD string from `expiry::text` so no driver-side TZ round-trip
+      // can shift the date.
+      //
+      // NOTE: ctx.today stays the run-scoped key for cooldown/dedup seeding
+      // and the PIT win-rate + feed-tier monitor queries — only the PER-FIRE
+      // stamped date/dte move to the fire timestamp.
       const firstTick = g.ticks[0]!;
-      const tradeDateStr = ctx.today;
+      const tradeDateStr = getETDateStr(firstTick.executedAt);
       const expiryStr = g.expiry;
       const dte = daysBetween(tradeDateStr, expiryStr);
 
@@ -510,11 +541,6 @@ export default withCronInstrumentation(
       const fires = detectChainFires(g.ticks, g.oi, dte, priorMs);
       if (fires.length === 0) continue;
       totalFires += fires.length;
-
-      // Per-(ticker, date) candle cache — multiple fires on the same
-      // chain within one cron run share session-range candles, so
-      // memoize the UW lookup. Cleared at end of handler scope.
-      const candleCache = new Map<string, UWStockCandle[]>();
 
       const records = enrichFires(fires, {
         date: tradeDateStr,
@@ -532,13 +558,102 @@ export default withCronInstrumentation(
       if (inUniverse.length === 0) continue;
 
       for (const rec of inUniverse) {
+        // Re-derive THIS fire's session day + dte from its OWN trigger
+        // timestamp in ET (not the chain-level firstTick day, and never
+        // ctx.today). For the overwhelmingly common case where all of a
+        // chain's fires share one ET day this is a no-op vs the group
+        // value; it only diverges for a chain that straddles the ET
+        // midnight boundary. Mutating rec here keeps every downstream
+        // consumer (INSERT date/dte binds, takeit row, cache keys) on the
+        // per-fire stamp.
+        rec.date = getETDateStr(rec.triggerTimeCt);
+        rec.dte = daysBetween(rec.date, expiryStr);
+
+        // Snapshot the ticker cumulative net call/put premium at fire
+        // time. Cached per (ticker, date) so multiple fires reuse one SQL
+        // fetch + binary-search. Needed here in Pass 1 because the V2
+        // score depends on isAligned; Pass 2 reuses the same cache.
+        const flowCacheKey = `${rec.underlyingSymbol}_${rec.date}`;
+        let flowSeries = tickerFlowCache.get(flowCacheKey);
+        if (flowSeries == null) {
+          flowSeries = await fetchTickerFlowSeries(
+            db,
+            rec.underlyingSymbol,
+            rec.date,
+          );
+          tickerFlowCache.set(flowCacheKey, flowSeries);
+        }
+        const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
+          flowSeries,
+          rec.triggerTimeCt,
+        );
+
+        // V2 score — null for misaligned fires or DTE > 3.
+        // applyEmpiricalBonuses is NOT called: V2's quintile weights for
+        // vol/OI already encode the same population signal; calling
+        // applyEmpiricalBonuses on top would double-count the vol/OI
+        // bonus and inflate scores systematically.
+        const isAligned =
+          cumNcpAtFire != null &&
+          cumNppAtFire != null &&
+          ((rec.optionType === 'C' && cumNcpAtFire > cumNppAtFire) ||
+            (rec.optionType === 'P' && cumNppAtFire > cumNcpAtFire));
+        const score = computeLotteryScoreV2({
+          ticker: rec.underlyingSymbol,
+          tod: rec.tod,
+          dte: rec.dte,
+          volOiWindow: rec.triggerVolToOiWindow ?? null,
+          gammaAtTrigger: rec.triggerGamma ?? null,
+          triggerAskPct: rec.triggerAskPct ?? null,
+          optionType: rec.optionType,
+          isAligned,
+          dayOfWeek: new Date(`${rec.date}T12:00:00Z`).toLocaleDateString(
+            'en-US',
+            { weekday: 'long' },
+          ),
+          // NOTE: Phase D context features (spxSpotCharmOi, spxSpotVannaOi,
+          // mktTideNcp, mktTideNpp, mktTideDiff, mktTideOtmDiff,
+          // spxSpotGammaOi) removed 2026-05-23 — walk-forward found them
+          // systematically overfit (+0.099 OOS Sharpe gain from removal).
+        });
+
+        preparedFires.push({
+          rec,
+          score,
+          isAligned,
+          cumNcpAtFire,
+          cumNppAtFire,
+        });
+      }
+    }
+
+    // ── Pre-pass: symmetric co-fire membership over ALL this-tick fires ─
+    // Includes ALL scored fires (even those that will hit ON CONFLICT) so
+    // an idempotent re-run sees the same cluster window. Every fire is
+    // scored against the identical ±5-min set — no iteration-order skew.
+    const allCofireEntries: CommittedFireEntry[] = preparedFires.map((p) => ({
+      ticker: p.rec.underlyingSymbol,
+      triggerTimeMs: p.rec.triggerTimeCt.getTime(),
+      score: p.score,
+    }));
+
+    // ── Pass 2: macro / multileg / gexbot / takeit + INSERT ────────────
+    for (const prepared of preparedFires) {
+      const { rec, score, cumNcpAtFire, cumNppAtFire } = prepared;
+      {
         // A transient flow_data / spot_exposures issue must not drop
         // the fire — macro is display-only (per spec Appendix A), so
         // fall back to EMPTY_MACRO and continue. The fire itself is
         // the load-bearing record.
         let macro: MacroSnapshot;
         try {
-          macro = await fetchMacroSnapshot(db, rec, firstTick.executedAt);
+          // As-of MUST be THIS fire's own trigger time — not the chain's
+          // first-tick executedAt. A 2nd fire on the chain (or any fire
+          // after the window's first tick) would otherwise snapshot macro
+          // (market-tide diff, SPX gamma, strike GEX) AND the
+          // direction_gated (Market-Tide-OTM) decision at a stale time.
+          // Silent Boom already does this per-fire (tideDiffAt(bucketTs)).
+          macro = await fetchMacroSnapshot(db, rec, rec.triggerTimeCt);
         } catch (macroErr) {
           ctx.logger.warn(
             { err: macroErr, optionChain: rec.optionChainId },
@@ -558,20 +673,9 @@ export default withCronInstrumentation(
           });
           macro = EMPTY_MACRO;
         }
-        // Score is computed from the same fields persisted on the row
-        // so the column is fully derivable for backfills via UPDATE;
-        // storing it avoids a JOIN on every read and lets `?sort=score`
-        // use the (date, score DESC) index from migration #126.
-        //
-        // Phase 3 (2026-05-22): switched from computeLotteryScore (V1)
-        // to computeLotteryScoreV2. isAligned is derived from the
-        // cumulative net call/put premium already fetched above.
-        // V2 returns null for misaligned or out-of-universe fires (DTE
-        // outside 0-3); null score is stored as-is — the DB column is
-        // nullable and the UI treats null as tier3 via lotteryScoreTierV2.
 
         // Range position — fetch 1-min stock candles for the underlying
-        // × fire date (cached across fires on the same chain) and compute
+        // × fire date (cached across fires on the same ticker) and compute
         // spot position in the session range up to trigger time. Written
         // to the row for the display-only "NEW HIGH" badge; not used in
         // V2 scoring. On UW failure or insufficient data, range_pos stays
@@ -590,24 +694,6 @@ export default withCronInstrumentation(
           candles,
           rec.triggerTimeCt,
           rec.spotAtFirst,
-        );
-        // Snapshot the ticker cumulative net call/put premium at fire
-        // time. Replaces the per-row LATERAL the feed used to run
-        // (caused ~30s page loads). Cached per (ticker, date) so
-        // multiple fires reuse one SQL fetch + binary-search.
-        const flowCacheKey = `${rec.underlyingSymbol}_${rec.date}`;
-        let flowSeries = tickerFlowCache.get(flowCacheKey);
-        if (flowSeries == null) {
-          flowSeries = await fetchTickerFlowSeries(
-            db,
-            rec.underlyingSymbol,
-            rec.date,
-          );
-          tickerFlowCache.set(flowCacheKey, flowSeries);
-        }
-        const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
-          flowSeries,
-          rec.triggerTimeCt,
         );
 
         // Phase 2 multileg classification (spec: migration #160; sidecar
@@ -638,57 +724,18 @@ export default withCronInstrumentation(
         const matchConfidence = multilegResult?.matchConfidence ?? null;
         const patternGroupId = multilegResult?.patternGroupId ?? null;
 
-        // V2 score — null for misaligned fires or DTE > 3.
-        // applyEmpiricalBonuses is NOT called: V2's quintile weights for
-        // vol/OI already encode the same population signal; calling
-        // applyEmpiricalBonuses on top would double-count the vol/OI
-        // bonus and inflate scores systematically.
-        const isAligned =
-          cumNcpAtFire != null &&
-          cumNppAtFire != null &&
-          ((rec.optionType === 'C' && cumNcpAtFire > cumNppAtFire) ||
-            (rec.optionType === 'P' && cumNppAtFire > cumNcpAtFire));
-        const score = computeLotteryScoreV2({
-          ticker: rec.underlyingSymbol,
-          tod: rec.tod,
-          dte: rec.dte,
-          volOiWindow: rec.triggerVolToOiWindow ?? null,
-          gammaAtTrigger: rec.triggerGamma ?? null,
-          triggerAskPct: rec.triggerAskPct ?? null,
-          optionType: rec.optionType,
-          isAligned,
-          dayOfWeek: new Date(`${rec.date}T12:00:00Z`).toLocaleDateString(
-            'en-US',
-            { weekday: 'long' },
-          ),
-          // NOTE: Phase D context features (spxSpotCharmOi, spxSpotVannaOi,
-          // mktTideNcp, mktTideNpp, mktTideDiff, mktTideOtmDiff,
-          // spxSpotGammaOi) removed 2026-05-23 — walk-forward found them
-          // systematically overfit (+0.099 OOS Sharpe gain from removal).
-          // The `macro` object is still fetched for other uses (logging,
-          // future re-evaluation); removing these params does not break it.
-        });
         // V2.2 Phase C.4 cluster bonus: count distinct other tier1 tickers
-        // that fired within ±5 min of this fire in the current cron batch,
-        // then apply the tiered bonus. The bonus is stored separately from
-        // `score` so audits can attribute the delta to clustering.
-        // Note: cluster bonus applies even to fires that may hit ON CONFLICT
-        // later — the idempotent re-run will see the same cluster window.
+        // that fired within ±5 min of this fire across the WHOLE cron tick
+        // (symmetric pre-pass set), then apply the tiered bonus. The bonus
+        // is stored separately from `score` so audits can attribute the
+        // delta to clustering. Applies even to fires that hit ON CONFLICT
+        // — the idempotent re-run sees the same cluster window.
         const clusterSize = computeClusterSize(
-          committedFires,
+          allCofireEntries,
           rec.underlyingSymbol,
           rec.triggerTimeCt.getTime(),
         );
         const clusterBonus = applyClusterBonus(clusterSize);
-        // Register this fire in the in-cron list so subsequent fires can
-        // see it as a cluster peer. Registered before the INSERT so that
-        // two fires from the same cron run on different chains of the same
-        // ticker are correctly deduplicated by the Set inside computeClusterSize.
-        committedFires.push({
-          ticker: rec.underlyingSymbol,
-          triggerTimeMs: rec.triggerTimeCt.getTime(),
-          score,
-        });
 
         // Phase 4 direction gate (spec:
         // docs/superpowers/specs/silent-boom-direction-gate-and-trail-ui-2026-05-14.md).

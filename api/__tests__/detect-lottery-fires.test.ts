@@ -2,7 +2,11 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
-import { expectAllGexBindsNull, extractInsertBinds } from './insert-binds';
+import {
+  expectAllGexBindsNull,
+  extractAllInsertBinds,
+  extractInsertBinds,
+} from './insert-binds';
 
 const mockSql = vi.fn();
 
@@ -101,6 +105,35 @@ vi.mock('../_lib/gexbot-queries.js', () => ({
   getLatestGexbotSnapshotAt: mockGetLatestGexbotSnapshotAt,
   mapToGexbotTicker: mockMapToGexbotTicker,
 }));
+
+// V2 score override hook. `mockComputeLotteryScoreV2` defaults to null,
+// in which case the wrapper delegates to the REAL computeLotteryScoreV2
+// (preserving live-weight behavior for every existing test). The
+// cluster-bonus symmetry test sets a fixed numeric return so the bonus
+// path is exercised without pinning the test to a specific weights
+// retrain. LOTTERY_TIER_THRESHOLDS_V2 is passed through unchanged so the
+// cluster t1 gate + feed-tier monitor keep their real cutoffs. The real
+// fn is captured inside the factory (not re-imported) to avoid recursing
+// back into this same mocked binding.
+const mockComputeLotteryScoreV2 = vi.hoisted(() => ({
+  override: null as number | null,
+}));
+vi.mock('../_lib/lottery-score-weights-v2.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../_lib/lottery-score-weights-v2.js')
+    >();
+  const real = actual.computeLotteryScoreV2;
+  return {
+    ...actual,
+    computeLotteryScoreV2: (
+      args: Parameters<typeof actual.computeLotteryScoreV2>[0],
+    ) =>
+      mockComputeLotteryScoreV2.override !== null
+        ? mockComputeLotteryScoreV2.override
+        : real(args),
+  };
+});
 
 import handler from '../cron/detect-lottery-fires.js';
 
@@ -226,6 +259,10 @@ describe('detect-lottery-fires handler', () => {
     // resolve to NULL. Tests that exercise the populated path override.
     mockMapToGexbotTicker.mockImplementation((t: string) => t);
     mockGetLatestGexbotSnapshotAt.mockResolvedValue(null);
+    // Default: no override → delegate to the real V2 score so every
+    // existing test keeps its live-weight behavior. The cluster-bonus
+    // test sets a numeric override.
+    mockComputeLotteryScoreV2.override = null;
     process.env.CRON_SECRET = 'test-secret';
   });
 
@@ -457,16 +494,19 @@ describe('detect-lottery-fires handler', () => {
     // real integer sum of weights. We don't pin the exact integer (model
     // retrains shift weights and that test would constantly break) —
     // type + non-null is enough to lock the wiring.
+    // Query order (two-pass, Fix 3): prior-fires → [Pass 1]
+    // ticker_flow_snapshot (drives the score) → [Pass 2] flow_data,
+    // spot_exposures → INSERT.
     const flowTs = '2026-05-01T13:29:30Z';
     mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
-      .mockResolvedValueOnce([]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
       .mockResolvedValueOnce([
         // CALL fire + cum_ncp > cum_npp → isAligned=true → V2 returns
         // a real integer score instead of short-circuiting to null.
         { ts: flowTs, cum_ncp: '5000000', cum_npp: '1000000' },
-      ]) // ticker_flow_snapshot
+      ]) // ticker_flow_snapshot (Pass 1)
+      .mockResolvedValueOnce([]) // flow_data (Pass 2)
+      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -580,13 +620,15 @@ describe('detect-lottery-fires handler', () => {
     // form computed otm.otmNcp - otm.otmNpp and produced NULL on every
     // historical lottery fire (verified 0/96,781 coverage). This test
     // pins the correct read so the bug cannot reappear silently.
+    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
+    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
     mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
       .mockResolvedValueOnce([
         { source: 'market_tide_otm', ncp: '4000', npp: '1000' },
-      ]) // flow_data
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      ]) // flow_data (Pass 2)
+      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -611,13 +653,15 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('binds null mkt_tide_otm_diff when no market_tide_otm row is in the macro window', async () => {
+    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
+    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
     mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
       .mockResolvedValueOnce([
         { source: 'market_tide', ncp: '500', npp: '300' },
-      ]) // flow_data — only all-in tide, no OTM
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      ]) // flow_data — only all-in tide, no OTM (Pass 2)
+      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
     const req = mockRequest({
@@ -722,19 +766,20 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('continues with EMPTY_MACRO when the macro snapshot lookup throws', async () => {
-    // Mock sequence: tick SELECT → prior-fires SELECT → flow_data
-    // REJECTS → insert still happens because the cron catches macro
-    // errors. The other two parallel macro queries are scheduled but
-    // the .then chain on flow_data rejects first inside Promise.all,
-    // so we only need one mocked query to drive the failure path.
+    // Mock sequence (two-pass, Fix 3): tick SELECT → prior-fires →
+    // [Pass 1] ticker_flow_snapshot → [Pass 2] flow_data REJECTS → insert
+    // still happens because the cron catches macro errors. The other two
+    // parallel macro queries are scheduled but the .then chain on
+    // flow_data rejects first inside Promise.all, so we only need one
+    // mocked query to drive the failure path.
     mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
-      .mockRejectedValueOnce(new Error('flow_data ECONNRESET'))
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
+      .mockRejectedValueOnce(new Error('flow_data ECONNRESET')) // flow_data (Pass 2)
       // Promise.all evaluates all three macro queries in parallel; the
-      // remaining two are still consumed even though Promise.all
-      // already short-circuited via the rejection.
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      // remaining one (spot_exposures) is still consumed even though
+      // Promise.all already short-circuited via the rejection.
+      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
       .mockResolvedValueOnce([{ id: 99 }]); // insert proceeds with EMPTY_MACRO
 
     const req = mockRequest({
@@ -833,13 +878,15 @@ describe('detect-lottery-fires handler', () => {
       option_chain: 'SNDK260501P01175000',
       delta: -0.18, // puts have negative delta
     }));
+    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
+    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
     mockTicks(putStream)
       .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
       .mockResolvedValueOnce([
         { source: 'market_tide_otm', ncp: '300000000', npp: '100000000' },
-      ]) // flow_data → otm_diff +200_000_000
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      ]) // flow_data → otm_diff +200_000_000 (Pass 2)
+      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
     const req = mockRequest({
@@ -870,13 +917,15 @@ describe('detect-lottery-fires handler', () => {
     // correctly demotes them. This test drives a CALL fire with
     // otm_diff = -200M (below the -150M threshold).
     // flow_data mock: ncp=100M, npp=300M → otm_diff = -200_000_000.
+    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
+    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
     mockTicks(fireableSndkStream())
       .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
       .mockResolvedValueOnce([
         { source: 'market_tide_otm', ncp: '100000000', npp: '300000000' },
-      ]) // flow_data → otm_diff -200_000_000
-      .mockResolvedValueOnce([]) // spot_exposures
-      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      ]) // flow_data → otm_diff -200_000_000 (Pass 2)
+      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
     const req = mockRequest({
@@ -1406,5 +1455,233 @@ describe('detect-lottery-fires handler', () => {
     );
 
     expectAllGexBindsNull(extractInsertBinds(mockSql, 'lottery_finder_fires'));
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Fix 1 — macro / direction-gate snapshot must use EACH fire's own
+  // trigger time, not the chain's first-tick executedAt. A 2nd fire on a
+  // chain (>5 min after the first, past the cooldown) gets a DIFFERENT
+  // macro as-of than the first.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Two firing bursts on ONE chain, spaced > 5 min apart so the detector
+   * emits two fires (the 5-min cooldown gate clears between them). Burst
+   * 1 triggers at 13:31:00Z; burst 2 triggers at 13:36:50Z. Both bursts
+   * share the chain's first tick at 13:30:00Z.
+   */
+  function twoFireSndkStream() {
+    const mk = (iso: string, size: number) =>
+      tick('SNDK260501C01175000', 'SNDK', 'C', 1175, '2026-05-01', iso, {
+        size,
+      });
+    return [
+      // Burst 1 → fires at the 5th tick (13:31:00Z).
+      mk('2026-05-01T13:30:00Z', 50),
+      mk('2026-05-01T13:30:15Z', 20),
+      mk('2026-05-01T13:30:30Z', 20),
+      mk('2026-05-01T13:30:45Z', 20),
+      mk('2026-05-01T13:31:00Z', 20),
+      // Burst 2 → fires at the 5th tick (13:36:50Z), 5m50s after burst 1.
+      mk('2026-05-01T13:36:10Z', 50),
+      mk('2026-05-01T13:36:20Z', 20),
+      mk('2026-05-01T13:36:30Z', 20),
+      mk('2026-05-01T13:36:40Z', 20),
+      mk('2026-05-01T13:36:50Z', 20),
+    ];
+  }
+
+  /** Pull the `asOf` ISO bound into each `FROM flow_data` macro query, in
+   *  call order. fetchMacroSnapshot binds asOf.toISOString() as the first
+   *  interpolation of the flow_data SELECT. */
+  function flowDataAsOfs(): string[] {
+    return mockSql.mock.calls
+      .filter((c) => {
+        const strings = c[0] as readonly string[] | undefined;
+        return Boolean(strings?.[0]?.includes('FROM flow_data'));
+      })
+      .map((c) => c[1] as string);
+  }
+
+  it('snapshots macro at each fire’s own trigger time (Fix 1: 2nd fire ≠ first-tick as-of)', async () => {
+    // Query order (two-pass, Fix 3): prior-fires → [Pass 1]
+    // ticker_flow_snapshot (once, cached per ticker+date) → [Pass 2]
+    // per fire: flow_data, spot_exposures, INSERT.
+    mockTicks(twoFireSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1, once for SNDK)
+      // Fire 1 (Pass 2): flow_data, spot_exposures, INSERT
+      .mockResolvedValueOnce([]) // flow_data (fire 1)
+      .mockResolvedValueOnce([]) // spot_exposures (fire 1)
+      .mockResolvedValueOnce([{ id: 1 }]) // INSERT (fire 1)
+      // Fire 2 (Pass 2): flow_data, spot_exposures, INSERT
+      .mockResolvedValueOnce([]) // flow_data (fire 2)
+      .mockResolvedValueOnce([]) // spot_exposures (fire 2)
+      .mockResolvedValueOnce([{ id: 2 }]); // INSERT (fire 2)
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 2,
+      totalFires: 2,
+      inserted: 2,
+    });
+
+    const asOfs = flowDataAsOfs();
+    expect(asOfs).toHaveLength(2);
+    // Each fire's macro as-of is its OWN trigger time — NOT both pinned
+    // to the chain's first tick (13:30:00Z). Pre-fix both would be
+    // 13:30:00.000Z; post-fix they are the two distinct trigger times.
+    expect(asOfs[0]).toBe('2026-05-01T13:31:00.000Z');
+    expect(asOfs[1]).toBe('2026-05-01T13:36:50.000Z');
+    // Neither may equal the chain's first-tick executedAt (the bug value).
+    expect(asOfs).not.toContain('2026-05-01T13:30:00.000Z');
+  });
+
+  it('direction-gates each fire on ITS OWN trigger-time OTM tide (Fix 1)', async () => {
+    // The OTM market_tide tick at -200M only exists in the window at/before
+    // 13:36:50 (fire 2), not at 13:31:00 (fire 1). With the per-fire as-of
+    // fix, fire 1 sees no qualifying OTM tick (ungated) while fire 2 sees
+    // the -200M tide and is gated. Under the first-tick bug BOTH fires
+    // would share fire-1's as-of and neither (or both) would gate
+    // identically — the per-fire decision would be impossible.
+    const otmTickAtFire2 = {
+      source: 'market_tide_otm',
+      ncp: '100000000',
+      npp: '300000000', // diff = -200M, below the -150M call gate
+    };
+    // Query order (two-pass, Fix 3): prior-fires → [Pass 1]
+    // ticker_flow_snapshot (once) → [Pass 2] per fire: flow_data,
+    // spot_exposures, INSERT. Fires are processed in trigger-time order
+    // (fire 1 then fire 2).
+    mockTicks(twoFireSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1, once for SNDK)
+      // Fire 1 (13:31:00Z): flow_data returns NO otm tick → ungated.
+      .mockResolvedValueOnce([]) // flow_data (fire 1)
+      .mockResolvedValueOnce([]) // spot_exposures (fire 1)
+      .mockResolvedValueOnce([{ id: 1 }]) // INSERT (fire 1)
+      // Fire 2 (13:36:50Z): flow_data returns the -200M otm tick → gated.
+      .mockResolvedValueOnce([otmTickAtFire2]) // flow_data (fire 2)
+      .mockResolvedValueOnce([]) // spot_exposures (fire 2)
+      .mockResolvedValueOnce([{ id: 2 }]); // INSERT (fire 2)
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const allBinds = extractAllInsertBinds(mockSql, 'lottery_finder_fires');
+    expect(allBinds).toHaveLength(2);
+    // Fire 1: no OTM tick at its as-of → ungated.
+    expect(allBinds[0]!.get('direction_gated')).toBe(false);
+    expect(allBinds[0]!.get('mkt_tide_otm_diff')).toBeNull();
+    // Fire 2: -200M OTM tide at its as-of → CALL gate fires.
+    expect(allBinds[1]!.get('direction_gated')).toBe(true);
+    expect(allBinds[1]!.get('mkt_tide_otm_diff')).toBe(-200_000_000);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Fix 2 — date + dte stamped from the fire's OWN ET timestamp, not the
+  // cron run clock (ctx.today). A fire whose trigger time falls on a
+  // different ET session day than the run clock is filed under the fire's
+  // day, and dte is computed from that day.
+  // ──────────────────────────────────────────────────────────────────────
+
+  it('stamps date + dte from the fire trigger timestamp, not the cron run clock (Fix 2)', async () => {
+    // Late / retried run: ctx.today has rolled forward to 2026-05-02, but
+    // the SNDK 0DTE fire triggered on the prior session (09:31 ET on
+    // 2026-05-01, expiry same day). The row must be filed under 2026-05-01
+    // with dte computed from THAT day:
+    //   fire-day:  date=2026-05-01, dte=daysBetween('2026-05-01','2026-05-01')=0
+    //   run-clock: date=2026-05-02, dte=daysBetween('2026-05-02','2026-05-01')=-1
+    // (The -1 buggy dte would also fail the Mode-A dte===0 gate and
+    // suppress the fire entirely — deriving from the fire timestamp fixes
+    // both the stamp and the detection.) The fireable SNDK fixture already
+    // uses 2026-05-01 ticks + expiry, so we only roll the run clock.
+    mockCronGuard.mockReturnValue({ apiKey: '', today: '2026-05-02' });
+    // Query order (two-pass, Fix 3): prior-fires → ticker_flow_snapshot
+    // (Pass 1) → flow_data, spot_exposures (Pass 2) → INSERT.
+    mockTicks(fireableSndkStream())
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1)
+      .mockResolvedValueOnce([]) // flow_data (Pass 2)
+      .mockResolvedValueOnce([]) // spot_exposures (Pass 2)
+      .mockResolvedValueOnce([{ id: 42 }]); // insert
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+    // Filed under the fire's own ET session day (2026-05-01), NOT the run
+    // clock (2026-05-02).
+    expect(binds.get('date')).toBe('2026-05-01');
+    // dte from the fire-day date: 2026-05-01 − 2026-05-01 = 0 (0DTE).
+    expect(binds.get('dte')).toBe(0);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Fix 3 — cluster bonus is symmetric: when two different tier1 tickers
+  // fire within ±5 min in the same cron tick, BOTH get the same pair
+  // bonus regardless of iteration order. Pre-fix the first-processed
+  // chain saw an empty committedFires list (cluster_size=1, bonus 0)
+  // while the second saw the first (bonus 1).
+  // ──────────────────────────────────────────────────────────────────────
+
+  it('gives both co-firing tier1 tickers the SAME (symmetric) cluster bonus (Fix 3)', async () => {
+    // Two chains on DIFFERENT V3 tickers (SNDK + RKLB) fire in the same
+    // cron tick at the same trigger time. The V2 score is forced to a
+    // fixed tier1 value (>= t1=9) so the bonus path is exercised without
+    // pinning the test to a live weights retrain. The pre-pass cofire
+    // membership must give BOTH fires the pair bonus (clusterSize=2 → 1),
+    // not 0 for the first-iterated chain and 1 for the second (the
+    // order-dependence bug, where the first chain sees an empty
+    // committedFires list).
+    mockComputeLotteryScoreV2.override = 12; // tier1 (>= t1=9)
+    const sndk = fireableSndkStream();
+    const rklb = fireableSndkStream().map((t) => ({
+      ...t,
+      ticker: 'RKLB',
+      option_chain: 'RKLB260501C01175000',
+    }));
+    // Every DB call defaults to [] (mockSql.mockResolvedValue([]) in
+    // beforeEach), which is fine here: the assertions read the INSERT
+    // binds via SQL-text parsing (extractAllInsertBinds), not the INSERT
+    // return value, so we don't need to stage per-call `[{id}]` rows. Only
+    // the ticks batches need staging so the two chains are present.
+    mockTicks([...sndk, ...rklb]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const allBinds = extractAllInsertBinds(mockSql, 'lottery_finder_fires');
+    expect(allBinds).toHaveLength(2);
+    // Both fires scored tier1 (forced 12).
+    expect(allBinds[0]!.get('score')).toBe(12);
+    expect(allBinds[1]!.get('score')).toBe(12);
+    // SYMMETRY: both co-firing tier1 tickers get the SAME pair bonus (1),
+    // independent of Map iteration order.
+    expect(allBinds[0]!.get('cluster_bonus')).toBe(1);
+    expect(allBinds[1]!.get('cluster_bonus')).toBe(1);
   });
 });

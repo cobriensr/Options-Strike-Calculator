@@ -35,6 +35,7 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { isPastCashOpen } from '../_lib/cron-helpers.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 import {
   loadTakeitDetectContext,
   scoreSilentBoom,
@@ -631,6 +632,13 @@ export default withCronInstrumentation(
     type FireRecord = {
       g: ChainGroupBuilder;
       f: ReturnType<typeof detectSilentBoomFires>[number];
+      // Session day (ET YYYY-MM-DD) derived from THIS fire's bucket
+      // timestamp — NOT ctx.today. On a late or retried run the cron-run
+      // wall-clock ET date can differ from the bucket's ET day, which
+      // would file the alert under the wrong day and skew dte by one
+      // relative to what the read endpoints (which filter `date::date`)
+      // expect. dte is computed from the same per-fire date.
+      date: string;
       dte: number;
     };
     const allFires: FireRecord[] = [];
@@ -649,8 +657,10 @@ export default withCronInstrumentation(
       if (fires.length === 0) continue;
       totalFires += fires.length;
 
-      const dte = daysBetween(ctx.today, g.expiry);
-      for (const f of fires) allFires.push({ g, f, dte });
+      for (const f of fires) {
+        const date = getETDateStr(f.bucketTs);
+        allFires.push({ g, f, date, dte: daysBetween(date, g.expiry) });
+      }
     }
 
     // Build the cofire keyset from ALL fires in this tick. Key
@@ -666,7 +676,7 @@ export default withCronInstrumentation(
       cofireKeyset.add(k);
     }
 
-    for (const { g, f, dte } of allFires) {
+    for (const { g, f, date, dte } of allFires) {
       // Score is deterministic from the fire payload + day context.
       // Computed inline so the row lands fully scored (no lazy
       // backfill / re-pass).
@@ -703,7 +713,7 @@ export default withCronInstrumentation(
                AND canceled = FALSE
                AND price > 0
                AND executed_at >= (
-                 (${ctx.today}::date + INTERVAL '8 hours 30 minutes')
+                 (${date}::date + INTERVAL '8 hours 30 minutes')
                    AT TIME ZONE 'America/Chicago'
                )
                AND executed_at < ${f.bucketTs.toISOString()}::timestamptz
@@ -721,7 +731,7 @@ export default withCronInstrumentation(
         askPct: f.askPct,
         tod,
         optionType: g.optionType,
-        tradingDay: ctx.today,
+        tradingDay: date,
         preTradeCount,
         adjCofire,
         firstMinShare: f.firstMinShareAtSpike,
@@ -738,10 +748,10 @@ export default withCronInstrumentation(
       // Snapshot ticker cumulative net call/put premium at spike-bucket
       // time. Replaces the per-row LATERAL the feed used to run
       // (caused ~30s page loads). Cached per (ticker, date).
-      const flowCacheKey = `${g.ticker}_${ctx.today}`;
+      const flowCacheKey = `${g.ticker}_${date}`;
       let flowSeries = tickerFlowCache.get(flowCacheKey);
       if (flowSeries == null) {
-        flowSeries = await fetchTickerFlowSeries(db, g.ticker, ctx.today);
+        flowSeries = await fetchTickerFlowSeries(db, g.ticker, date);
         tickerFlowCache.set(flowCacheKey, flowSeries);
       }
       const { cumNcp: cumNcpAtFire, cumNpp: cumNppAtFire } = flowAtFireTime(
@@ -806,7 +816,7 @@ export default withCronInstrumentation(
       // Take-It probability (Phase 3c). Mirrors the lottery cron pattern.
       const takeitRow: SilentBoomAlertRow = {
         fire_time: f.bucketTs,
-        date: new Date(`${ctx.today}T00:00:00Z`),
+        date: new Date(`${date}T00:00:00Z`),
         option_chain_id: g.optionChain,
         underlying_symbol: g.ticker,
         option_type: g.optionType,
@@ -899,7 +909,7 @@ export default withCronInstrumentation(
               gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow,
               gex_zcvr, gex_zero_gamma, gex_spot, gex_captured_at
             ) VALUES (
-              ${ctx.today}::date, ${f.bucketTs.toISOString()},
+              ${date}::date, ${f.bucketTs.toISOString()},
               ${g.optionChain}, ${g.ticker},
               ${g.optionType}, ${g.strike}, ${g.expiry}::date, ${dte},
               ${f.spikeVolume}, ${f.baselineVolume}, ${f.spikeRatio},
