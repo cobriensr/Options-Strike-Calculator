@@ -211,10 +211,11 @@ describe('useSilentBoomTickerCounts', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
-  it('nulls a cross-day response whose echoed date != the requested date', async () => {
-    // Cross-day staleness gate: a response echoing a different day than
-    // the one requested must surface as "not loaded" (data === null), so
-    // stale ticker counts never render under today's date.
+  it('wires the cross-day gate: a response echoing a different day is nulled', async () => {
+    // Proves the hook passes `requestKey: date` + `responseKey` so the
+    // primitive gate fires: a prior-day response surfaces as "not loaded"
+    // (data === null) so stale ticker counts never render under today's
+    // date. (The matching-date passthrough is covered by the success test.)
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         date: '2026-05-13', // prior day, != requested 2026-05-14
@@ -236,29 +237,5 @@ describe('useSilentBoomTickerCounts', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toBeNull();
-  });
-
-  it('keeps a matching-date response (gate control)', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({
-        date: '2026-05-14',
-        tickers: [
-          {
-            ticker: 'SNDK',
-            count: 9,
-            peakBestPct: 50,
-            latestBucketCt: '15:55',
-          },
-        ],
-      }),
-    );
-    const { result } = renderHook(() =>
-      useSilentBoomTickerCounts({
-        date: '2026-05-14',
-        marketOpen: false,
-      }),
-    );
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.data?.tickers).toHaveLength(1);
   });
 });

@@ -269,10 +269,11 @@ describe('useLotteryFinderTickerCounts', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
-  it('nulls a cross-day response whose echoed date != the requested date', async () => {
-    // Cross-day staleness gate: a prior-day response must surface as
-    // "not loaded" (data === null) so stale chip counts never render
-    // under today's date.
+  it('wires the cross-day gate: a prior-day response is nulled', async () => {
+    // Proves the hook passes `requestKey: date` + `responseKey` so the
+    // primitive gate fires: a prior-day response surfaces as "not loaded"
+    // (data === null) so stale chip counts never render under today's date.
+    // (The matching-date passthrough is covered by the success test.)
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         date: '2026-05-13', // prior day, != requested 2026-05-14
@@ -294,29 +295,5 @@ describe('useLotteryFinderTickerCounts', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toBeNull();
-  });
-
-  it('keeps a matching-date response (gate control)', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse({
-        date: '2026-05-14',
-        tickers: [
-          {
-            ticker: 'SPY',
-            count: 4,
-            peakBestPct: 18.2,
-            latestTriggerTimeCt: '10:42',
-          },
-        ],
-      }),
-    );
-    const { result } = renderHook(() =>
-      useLotteryFinderTickerCounts({
-        date: '2026-05-14',
-        marketOpen: false,
-      }),
-    );
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.data?.tickers).toHaveLength(1);
   });
 });

@@ -52,5 +52,9 @@ export function useTickerCandles({
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
     historical: date !== todayCt(),
+    // Cross-day staleness gate — matches the feed hooks: a prior-day
+    // response is nulled until its echoed date matches the request.
+    requestKey: date,
+    responseKey: (d) => d.date?.slice(0, 10),
   });
 }

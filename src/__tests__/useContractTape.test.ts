@@ -254,6 +254,43 @@ describe('useContractTape', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
+  it('nulls data when the response date != the requested date (cross-day gate)', async () => {
+    // Request 2026-05-07 but the server echoes a prior day (2026-05-06):
+    // the cross-day staleness gate must null the data so a stale prior-day
+    // payload never renders. Matches the feed hooks' requestKey/responseKey.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        emptyTape({
+          date: '2026-05-06',
+          count: 1,
+          series: [
+            {
+              ts: '2026-05-06T13:30:00Z',
+              askVol: 100,
+              bidVol: 50,
+              midVol: 10,
+              noSideVol: 0,
+              totalVol: 160,
+              avgPrice: 1.25,
+              highPrice: 1.5,
+              lowPrice: 1.0,
+            },
+          ],
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useContractTape({
+        chain: 'SPY260507C00500000',
+        date: '2026-05-07',
+        enabled: true,
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+  });
+
   it('aborts in-flight fetch on unmount without setting state', async () => {
     let resolveFetch: (v: unknown) => void = () => {};
     const pending = new Promise<unknown>((res) => {

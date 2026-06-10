@@ -20,11 +20,7 @@
 
 import { useEffect, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
-import {
-  gateResponseToDate,
-  useFetchedData,
-  type UseFetchedDataResult,
-} from './useFetchedData.js';
+import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 import type {
   LotteryFinderResponse,
   LotteryMode,
@@ -154,16 +150,20 @@ export function useLotteryFinder({
   // Original gates were `[marketOpen, !minute, page === 0]` — fold the
   // `!minute` and `page === 0` gates into the historical flag so the
   // minute-scrub view and paginated views single-fetch instead of polling.
-  const fetchedRaw = useFetchedData<LotteryFinderResponse>({
+  //
+  // The cross-day staleness gate lives in the primitive via `requestKey`/
+  // `responseKey`: a prior-day response is nulled at the data layer BEFORE
+  // the page cache reads `fetched.data`, so the cache never stores cross-day
+  // data (the `if (fetched.data == null) return` guard in the save effect
+  // skips a gated-null response) and every derived value stays coherent.
+  const fetched = useFetchedData<LotteryFinderResponse>({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
     historical: minute != null || page !== 0,
+    requestKey: date,
+    responseKey: (d) => d.date?.slice(0, 10),
   });
-  // Gate cross-day responses at the data layer BEFORE the page cache
-  // reads them — a stale prior-day response is nulled here, so the cache
-  // never stores cross-day data and every derived value stays coherent.
-  const fetched = gateResponseToDate(fetchedRaw, date);
 
   // Per-URL response cache. `useFetchedData` keeps the previous URL's
   // `data` while the next URL's fetch is in flight (stale-while-

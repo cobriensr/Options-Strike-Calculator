@@ -9,11 +9,7 @@
  */
 
 import { POLL_INTERVALS } from '../constants/index.js';
-import {
-  gateResponseToDate,
-  useFetchedData,
-  type UseFetchedDataResult,
-} from './useFetchedData.js';
+import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 import type {
   OptionType,
   SilentBoomAskPctBand,
@@ -116,12 +112,14 @@ export function useSilentBoomFeed({
 
   // Original gates were `[marketOpen, page === 0, !historical]` — fold
   // the `page === 0` gate into the historical flag so paginated views
-  // single-fetch instead of polling.
-  const result = useFetchedData<SilentBoomFeedResponse>({
+  // single-fetch instead of polling. The cross-day staleness gate lives
+  // in the primitive via `requestKey`/`responseKey`.
+  return useFetchedData<SilentBoomFeedResponse>({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
     historical: historical || page !== 0,
+    requestKey: date,
+    responseKey: (d) => d.date?.slice(0, 10),
   });
-  return gateResponseToDate(result, date);
 }

@@ -282,8 +282,8 @@ describe('SilentBoomSection: populated rendering', () => {
 // seen), day-scoped by storageKey. These tests drive the guarantee by
 // rerendering with the mocked feed dropping a row.
 //
-// The default `date` is today (todayCt()), `bucketIso` is null, and
-// `page` is 0 — exactly the live view where the union engages.
+// The default `date` is today, `bucketIso` is null, and `page` is 0 —
+// exactly the live view where the union engages.
 
 describe('SilentBoomSection: never-vanish accumulator', () => {
   it('keeps an alert pinned after a later poll omits it (server degrade [])', () => {

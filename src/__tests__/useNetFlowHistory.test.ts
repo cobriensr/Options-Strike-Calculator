@@ -253,6 +253,43 @@ describe('useNetFlowHistory', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
+  it('nulls data when the response date != the requested date (cross-day gate)', async () => {
+    // Request 2026-05-07 but the server echoes a prior day (2026-05-06):
+    // the cross-day staleness gate must null the data so a stale prior-day
+    // payload never renders. Matches the feed hooks' requestKey/responseKey.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        emptyHistory({
+          date: '2026-05-06',
+          count: 1,
+          series: [
+            {
+              ts: '2026-05-06T13:30:00Z',
+              ncp: 1000,
+              ncv: 50,
+              npp: -200,
+              npv: 10,
+              cumNcp: 1000,
+              cumNcv: 50,
+              cumNpp: -200,
+              cumNpv: 10,
+            },
+          ],
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useNetFlowHistory({
+        ticker: 'SPY',
+        date: '2026-05-07',
+        enabled: true,
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+  });
+
   it('aborts in-flight fetch on unmount without setting state', async () => {
     let resolveFetch: (v: unknown) => void = () => {};
     const pending = new Promise<unknown>((res) => {

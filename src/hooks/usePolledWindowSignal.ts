@@ -122,6 +122,12 @@ function clearCache(storageKey: string): void {
 /**
  * Load the cached payload only if it belongs to today. A prior-day cache is
  * dropped (and evicted from storage) so it can never render as live data.
+ *
+ * See also: network feeds built on `useFetchedData` use the
+ * `requestKey`/`responseKey` cross-day gate instead. The two mechanisms are
+ * intentionally distinct — this one guards a localStorage last-good cache by
+ * comparing against today's date; the feed gate nulls a held network response
+ * whose echoed date doesn't match the requested date.
  */
 function loadFreshCache<T extends DatedPayload>(
   storageKey: string,

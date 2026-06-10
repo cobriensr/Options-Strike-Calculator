@@ -255,6 +255,41 @@ describe('useTickerCandles', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
+  it('nulls data when the response date != the requested date (cross-day gate)', async () => {
+    // Request 2026-05-07 but the server echoes a prior day (2026-05-06):
+    // the cross-day staleness gate must null the data so a stale prior-day
+    // payload never renders. Matches the feed hooks' requestKey/responseKey.
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        emptyCandles({
+          date: '2026-05-06',
+          previousClose: 499.5,
+          count: 1,
+          candles: [
+            {
+              ts: '2026-05-06T13:30:00Z',
+              open: 500,
+              high: 501,
+              low: 499,
+              close: 500.5,
+              volume: 100000,
+            },
+          ],
+        }),
+      ),
+    );
+    const { result } = renderHook(() =>
+      useTickerCandles({
+        ticker: 'SPY',
+        date: '2026-05-07',
+        enabled: true,
+        marketOpen: false,
+      }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data).toBeNull();
+  });
+
   it('aborts in-flight fetch on unmount', async () => {
     let resolveFetch: (v: unknown) => void = () => {};
     const pending = new Promise<unknown>((res) => {

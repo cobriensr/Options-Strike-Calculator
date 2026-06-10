@@ -404,10 +404,13 @@ describe('useSilentBoomFeed', () => {
     expect(url).toContain('minTakeitProb=0.7');
   });
 
-  it('nulls a cross-day response whose echoed date != the requested date', async () => {
-    // Cross-day staleness gate (data layer): a response echoing a
-    // different day must surface as "not loaded" so a never-vanish union
-    // never ingests yesterday's alerts under today's date.
+  it('wires the cross-day gate: a response echoing a different day is nulled', async () => {
+    // Proves the hook passes `requestKey: date` + `responseKey` so the
+    // primitive gate fires: a prior-day response surfaces as "not loaded"
+    // so a never-vanish union never ingests yesterday's alerts under
+    // today's date. (The matching-date passthrough is already exercised by
+    // the success/loading tests above, whose fixtures echo the requested
+    // date.)
     fetchMock.mockResolvedValueOnce(
       jsonResponse(emptyFeed({ date: '2026-05-06', total: 1, count: 1 })),
     );
@@ -416,16 +419,5 @@ describe('useSilentBoomFeed', () => {
     );
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toBeNull();
-  });
-
-  it('keeps a matching-date response (gate control)', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse(emptyFeed({ date: '2026-05-07', total: 1, count: 1 })),
-    );
-    const { result } = renderHook(() =>
-      useSilentBoomFeed({ date: '2026-05-07', marketOpen: false }),
-    );
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.data?.total).toBe(1);
   });
 });

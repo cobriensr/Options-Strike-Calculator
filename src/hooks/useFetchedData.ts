@@ -50,6 +50,26 @@ export interface UseFetchedDataOptions<T> {
    * Default: identity cast (`raw as T`).
    */
   parse?: (raw: unknown) => T;
+  /**
+   * Cross-request staleness gate (generic; the primitive stays date-agnostic).
+   * When BOTH are provided, the returned `data` is nulled while the currently
+   * held response's key does not match the in-flight request key. This drops a
+   * stale-while-revalidate response retained from a PRIOR request key (e.g. a
+   * prior trading day) so consumers never see yesterday's data under today's
+   * key — and a never-vanish union never ingests cross-day rows.
+   *
+   * Passthrough-safe: if `responseKey(data)` returns null/undefined (e.g. the
+   * server dropped the field) the data is NOT nulled — it degrades to the
+   * pre-gate behavior rather than permanently blanking. Dated feeds pass
+   * `requestKey: date` and `responseKey: (d) => d.date?.slice(0, 10)`, so an
+   * ISO-formatted echo (YYYY-MM-DDT..) still matches the YYYY-MM-DD request.
+   *
+   * NOTE: a separate localStorage last-good cross-day guard exists in
+   * usePolledWindowSignal (different storage semantics); the two are
+   * intentionally distinct.
+   */
+  requestKey?: string;
+  responseKey?: (data: T) => string | null | undefined;
 }
 
 export interface UseFetchedDataResult<T> {
@@ -96,6 +116,8 @@ export function useFetchedData<T>({
   pollIntervalMs,
   historical = false,
   parse = defaultParse,
+  requestKey,
+  responseKey,
 }: UseFetchedDataOptions<T>): UseFetchedDataResult<T> {
   const [state, setState] = useState<State<T>>(INITIAL as State<T>);
   const abortRef = useRef<AbortController | null>(null);
@@ -105,6 +127,11 @@ export function useFetchedData<T>({
   // latest parser via ref.
   const parseRef = useRef(parse);
   parseRef.current = parse;
+
+  // Stash the staleness-key extractor in a ref so an inline closure
+  // doesn't churn the gated-data memo deps (mirror of `parseRef`).
+  const responseKeyRef = useRef(responseKey);
+  responseKeyRef.current = responseKey;
 
   const fetchOnce = useCallback(async () => {
     if (url == null) return;
@@ -164,36 +191,30 @@ export function useFetchedData<T>({
   // Unmount cancel.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // Cross-request staleness gate. When `requestKey`/`responseKey` are both
+  // provided, null the held data while its key doesn't match the in-flight
+  // request key (stale-while-revalidate window after a key flip). When the
+  // response key is null/undefined (server dropped the field) we pass the
+  // data through — degrade, never permanently blank. On the match / no-gate
+  // path `gatedData === state.data`, so referential stability is preserved
+  // for the common case.
+  const gatedData = useMemo(() => {
+    const d = state.data;
+    if (d == null) return null;
+    const rk = responseKeyRef.current;
+    if (requestKey == null || rk == null) return d;
+    const k = rk(d);
+    return k != null && k !== requestKey ? null : d;
+  }, [state.data, requestKey]);
+
   return useMemo(
     () => ({
-      data: state.data,
+      data: gatedData,
       loading: state.loading,
       error: state.error,
       refresh: fetchOnce,
       fetchedAt: state.fetchedAt,
     }),
-    [state, fetchOnce],
+    [gatedData, state.loading, state.error, state.fetchedAt, fetchOnce],
   );
-}
-
-/**
- * Drop a stale cross-day response. `useFetchedData` is stale-while-
- * revalidate: when the requested `date` changes (e.g. the Central-midnight
- * auto-roll, or a manual date pick) it retains the PRIOR day's response
- * until the new fetch resolves. Every feed/ticker-count response echoes the
- * requested day in `data.date`; this nulls `data` when that echo doesn't
- * match `requestedDate`, so the brief window surfaces as "not yet loaded"
- * (spinner/empty) instead of yesterday's rows/counts/totals under today's
- * date. Resolving it here — once, at the data layer — keeps every derived
- * value (rows, total, hasMore, offset, ticker counts) coherent and prevents
- * a never-vanish union from ingesting cross-day rows.
- */
-export function gateResponseToDate<T extends { date: string }>(
-  result: UseFetchedDataResult<T>,
-  requestedDate: string,
-): UseFetchedDataResult<T> {
-  if (result.data != null && result.data.date !== requestedDate) {
-    return { ...result, data: null };
-  }
-  return result;
 }
