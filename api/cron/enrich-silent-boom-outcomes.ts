@@ -87,7 +87,8 @@ export default withCronInstrumentation(
           id,
           option_chain_id AS "optionChainId",
           bucket_ct AS "bucketCt",
-          entry_price AS "entryPrice"
+          -- NUMERIC → float8 so entryPrice is a real number, not a string.
+          entry_price::float8 AS "entryPrice"
         FROM silent_boom_alerts
         WHERE enriched_at IS NULL
         ORDER BY inserted_at ASC
@@ -113,7 +114,10 @@ export default withCronInstrumentation(
         () => db`
           SELECT
             executed_at AS "executedAt",
-            price
+            -- price is Postgres NUMERIC; the Neon serverless driver returns
+            -- NUMERIC as a STRING. Cast to float8 so downstream comparisons
+            -- (peakCeiling/minutesToPeak) are numeric, not lexicographic.
+            price::float8 AS price
           FROM ws_option_trades
           WHERE option_chain = ${alert.optionChainId}
             AND executed_at >= ${alert.bucketCt}
@@ -126,6 +130,22 @@ export default withCronInstrumentation(
       )) as TradeTick[];
 
       if (ticks.length === 0) {
+        // No post-entry ticks → nothing to compute. Stamp a TERMINAL marker
+        // so this alert leaves the candidate set (enriched_at IS NULL).
+        // Without it the row is re-selected every run forever, and once
+        // ws_option_trades purges (2-day retention) it becomes permanently
+        // un-enrichable while still accumulating in the scan. Realized/peak
+        // columns stay NULL so a no-tick alert is distinguishable from a real
+        // outcome (no bogus 0).
+        await withDbRetry(
+          () => db`
+            UPDATE silent_boom_alerts
+            SET enriched_at = NOW()
+            WHERE id = ${alert.id}
+          `,
+          2,
+          10_000,
+        );
         skipped++;
         continue;
       }

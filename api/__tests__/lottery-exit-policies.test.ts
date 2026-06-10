@@ -152,6 +152,24 @@ describe('peakCeiling', () => {
     // Entry $0.05, peak $0.55 → +1000%
     expect(peakCeiling([0.05, 0.1, 0.55, 0.4], 0.05)).toBeCloseTo(1000, 6);
   });
+
+  // Regression: ws_option_trades.price is Postgres NUMERIC, which the Neon
+  // serverless driver returns as a STRING at runtime when the SELECT has no
+  // ::float8 cast. A bare `px > max` then does a LEXICOGRAPHIC compare, where
+  // "9.50" > "10.50" is true — silently picking the wrong (smaller) tick and
+  // understating any peak that crossed $10. peakCeiling must coerce.
+  it('compares string prices numerically, not lexicographically', () => {
+    // Numeric max is 10.50 (+950% off a 1.00 entry). Lexicographic max would
+    // be "9.50" (+850%), so a string-compare bug returns 850 here.
+    const r = peakCeiling(['9.50', '10.50', '8.00'], 1.0);
+    expect(r).toBeCloseTo(950, 6);
+  });
+
+  it('handles a string entry alongside string prices', () => {
+    // Entry "2.00", peak 10.50 → +425%.
+    const r = peakCeiling(['9.50', '10.50', '8.00'], '2.00');
+    expect(r).toBeCloseTo(425, 6);
+  });
 });
 
 describe('minutesToPeak', () => {
@@ -161,5 +179,11 @@ describe('minutesToPeak', () => {
 
   it('returns 0 on empty', () => {
     expect(minutesToPeak([], [])).toBe(0);
+  });
+
+  // Regression: same NUMERIC-as-string bug as peakCeiling. The true peak is
+  // 10.50 at index 1; a lexicographic compare would pick "9.50" at index 0.
+  it('finds the numeric-max index when prices are strings', () => {
+    expect(minutesToPeak(['9.50', '10.50', '8.00'], minutes(3))).toBe(1);
   });
 });

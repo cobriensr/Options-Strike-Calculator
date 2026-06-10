@@ -183,7 +183,8 @@ export default withCronInstrumentation(
           date,
           trigger_time_ct AS "triggerTimeCt",
           entry_time_ct AS "entryTimeCt",
-          entry_price AS "entryPrice",
+          -- NUMERIC → float8 so entryPrice is a real number, not a string.
+          entry_price::float8 AS "entryPrice",
           expiry
         FROM lottery_finder_fires
         WHERE enriched_at IS NULL
@@ -209,7 +210,10 @@ export default withCronInstrumentation(
         () => db`
           SELECT
             executed_at AS "executedAt",
-            price
+            -- price is Postgres NUMERIC; the Neon serverless driver returns
+            -- NUMERIC as a STRING. Cast to float8 so downstream comparisons
+            -- (peakCeiling/minutesToPeak) are numeric, not lexicographic.
+            price::float8 AS price
           FROM ws_option_trades
           WHERE option_chain = ${fire.optionChainId}
             AND executed_at >= ${fire.entryTimeCt}
@@ -222,6 +226,21 @@ export default withCronInstrumentation(
       )) as TradeTick[];
 
       if (ticks.length === 0) {
+        // No post-entry ticks → nothing to compute. Stamp a TERMINAL marker
+        // so this fire leaves the candidate set (enriched_at IS NULL). Without
+        // it the row is re-selected every run forever, and once ws_option_trades
+        // purges (2-day retention) it becomes permanently un-enrichable while
+        // still accumulating in the scan. Realized/peak columns stay NULL so a
+        // no-tick fire is distinguishable from a real outcome (no bogus 0).
+        await withDbRetry(
+          () => db`
+            UPDATE lottery_finder_fires
+            SET enriched_at = NOW()
+            WHERE id = ${fire.id}
+          `,
+          2,
+          10_000,
+        );
         skipped++;
         continue;
       }

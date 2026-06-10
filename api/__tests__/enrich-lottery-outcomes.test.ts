@@ -190,7 +190,7 @@ describe('enrich-lottery-outcomes', () => {
     expect(calls.indexOf(pruneCall!)).toBe(calls.length - 1);
   });
 
-  it('skips fires with no post-entry ticks', async () => {
+  it('stamps a terminal enriched_at (NULL outcomes) on a no-tick fire so it exits the candidate set', async () => {
     mockSql.mockResolvedValueOnce([
       {
         ...baseFire,
@@ -202,6 +202,13 @@ describe('enrich-lottery-outcomes', () => {
       },
     ]);
     mockSql.mockResolvedValueOnce([]); // ticks empty
+
+    // Capture the no-tick terminal UPDATE bind shape.
+    let noTickUpdate: { text: string; values: unknown[] } | null = null;
+    mockSql.mockImplementationOnce((...args: unknown[]) => {
+      noTickUpdate = { text: queryText(args), values: args.slice(1) };
+      return Promise.resolve([]);
+    }); // terminal UPDATE
     mockSql.mockResolvedValueOnce([]); // prune DELETE
 
     const req = mockRequest({
@@ -217,10 +224,61 @@ describe('enrich-lottery-outcomes', () => {
       status: 'success',
       message: expect.stringContaining('skipped 1'),
     });
-    // SELECT fires + SELECT ticks + retention-prune DELETE.
-    expect(mockSql).toHaveBeenCalledTimes(3);
+    // SELECT fires + SELECT ticks + terminal UPDATE + retention-prune DELETE.
+    expect(mockSql).toHaveBeenCalledTimes(4);
+
+    // The terminal UPDATE stamps enriched_at = NOW() and touches NO realized
+    // or peak columns (they stay NULL — a no-tick fire is NOT a 0% outcome).
+    expect(noTickUpdate).not.toBeNull();
+    const update = noTickUpdate!;
+    expect(update.text).toContain('UPDATE lottery_finder_fires');
+    expect(update.text).toContain('enriched_at = NOW()');
+    expect(update.text).not.toContain('realized_');
+    expect(update.text).not.toContain('peak_ceiling_pct');
+    expect(update.text).not.toContain('minutes_to_peak');
+    // Only the fire id is bound (the WHERE clause); no outcome values.
+    expect(update.values).toEqual([2]);
+
     expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
     expect(mockFetchIntraday).not.toHaveBeenCalled();
+  });
+
+  it('coerces string prices (un-cast NUMERIC) to a numerically correct peak', async () => {
+    // Belt-and-suspenders for the SQL ::float8 cast: even if a future SELECT
+    // drops the cast and Neon hands back NUMERIC-as-string, the function-level
+    // Number() guard in peakCeiling/minutesToPeak must still pick the numeric
+    // max. Tape: "9.50","10.50","8.00" — lexicographic max is "9.50"; the
+    // numeric max is 10.50. Entry 1.0 → peak +950%, NOT +850%.
+    mockSql.mockResolvedValueOnce([{ ...baseFire, entryPrice: 1.0 }]); // SELECT fires
+    mockSql.mockResolvedValueOnce([
+      { executedAt: new Date('2026-05-02T14:31:00Z'), price: '9.50' },
+      { executedAt: new Date('2026-05-02T14:32:00Z'), price: '10.50' },
+      { executedAt: new Date('2026-05-02T14:33:00Z'), price: '8.00' },
+    ]); // SELECT ticks (strings, as un-cast Neon returns)
+
+    let updateValues: unknown[] = [];
+    mockSql.mockImplementationOnce((...args: unknown[]) => {
+      updateValues = args.slice(1);
+      return Promise.resolve([]);
+    }); // UPDATE
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // UPDATE bind order:
+    //   trail30_10, hard30m, tier50, eod, flowInversion,
+    //   peak_ceiling_pct, minutes_to_peak, id
+    // peak_ceiling_pct is the 6th bind (index 5): numeric max 10.50 → +950%.
+    expect(updateValues[5]).toBeCloseTo(950, 5);
+    // minutes_to_peak (index 6): the 10.50 tick is 2 min after the 14:30 entry.
+    expect(updateValues[6]).toBeCloseTo(2, 5);
   });
 
   it('returns early when no unenriched fires exist, but still prunes', async () => {

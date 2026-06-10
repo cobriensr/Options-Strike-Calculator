@@ -97,14 +97,26 @@ export function realizedTier50HoldEod(prices: number[], entry: number): number {
  * for the dashboard so users can see how much upside the realized
  * policies left on the table.
  */
-export function peakCeiling(prices: number[], entry: number): number {
-  if (entry <= 0 || prices.length === 0) return 0;
-  let max = prices[0]!;
+export function peakCeiling(
+  prices: ReadonlyArray<number | string>,
+  entry: number | string,
+): number {
+  const entryNum = Number(entry);
+  // Reject non-positive AND NaN entries (a non-numeric string Number()s to
+  // NaN; `NaN <= 0` is false, so test it explicitly).
+  if (entryNum <= 0 || Number.isNaN(entryNum) || prices.length === 0) return 0;
+  // Coerce every tick before comparing. ws_option_trades.price is Postgres
+  // NUMERIC, which the Neon serverless driver returns as a STRING when the
+  // SELECT omits a ::float8 cast. A bare `px > max` on strings is a
+  // LEXICOGRAPHIC compare ("9.50" > "10.50" === true), which silently picks
+  // the wrong tick and understates any peak that crossed $10. Number()
+  // here closes the bug permanently even if a future SELECT forgets the cast.
+  let max = Number(prices[0]);
   for (let i = 1; i < prices.length; i++) {
-    const px = prices[i]!;
+    const px = Number(prices[i]);
     if (px > max) max = px;
   }
-  return ((max - entry) / entry) * 100;
+  return ((max - entryNum) / entryNum) * 100;
 }
 
 /**
@@ -113,14 +125,17 @@ export function peakCeiling(prices: number[], entry: number): number {
  * entry". Returns the offset of the first occurrence of the maximum.
  */
 export function minutesToPeak(
-  prices: number[],
+  prices: ReadonlyArray<number | string>,
   minutesSinceEntry: number[],
 ): number {
   if (prices.length === 0) return 0;
   let maxIdx = 0;
-  let maxPx = prices[0]!;
+  // Coerce before comparing — same NUMERIC-as-string hazard as peakCeiling.
+  // A lexicographic `px > maxPx` would pick the wrong index (e.g. "9.50"
+  // over "10.50"), reporting minutes-to-peak for the wrong tick.
+  let maxPx = Number(prices[0]);
   for (let i = 1; i < prices.length; i++) {
-    const px = prices[i]!;
+    const px = Number(prices[i]);
     if (px > maxPx) {
       maxPx = px;
       maxIdx = i;
