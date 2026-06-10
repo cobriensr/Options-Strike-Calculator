@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-06-08T22:41:03.667018+00:00
+ * Trained at    : 2026-06-09T21:18:31.231374+00:00
  *
  * computeLotteryScoreV2() is wired into detect-lottery-fires.ts (feeds the
  * quality-adjusted score / qas; see lottery-tier.ts).
@@ -78,7 +78,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   SLV: -1,
   SMCI: 1,
   SMH: 0,
-  SNDK: 2,
+  SNDK: 1,
   SNOW: 0,
   SOFI: -1,
   SOUN: 5,
@@ -150,7 +150,7 @@ export const TOD_WEIGHTS_DOW_OVERRIDES_V2: Readonly<
 export const DTE_WEIGHTS_V2: Readonly<Record<string, number>> = {
   '0': -2,
   '1': 4,
-  '2': -1,
+  '2': -2,
   '3': 0,
 };
 
@@ -159,16 +159,18 @@ export const DTE_WEIGHTS_V2: Readonly<Record<string, number>> = {
 // ---------------------------------------------------------------------------
 
 /** Per-quintile score uplift for vol_to_oi_window (length 5, index = quintile 0-4). */
-export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 0, 2, 0, -3];
+export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, -1, 2, 0, -3];
 
 /**
  * Boundaries that define the vol/OI quintiles (length 4).
- * Quintile 0 : value < boundaries[0]
- * Quintile k : boundaries[k-1] <= value < boundaries[k]
- * Quintile 4 : value >= boundaries[3]
+ * Right-closed to match pandas `pd.cut(..., right=True)` in training:
+ * Quintile 0 : value <= boundaries[0]
+ * Quintile k : boundaries[k-1] < value <= boundaries[k]
+ * Quintile 4 : value > boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.0599721059972106, 0.0966800991174921, 0.15451692581794618, 0.37671056351221,
+  0.06003373324421703, 0.09693813735625582, 0.15481171548117154,
+  0.3783783783783784,
 ];
 
 // ---------------------------------------------------------------------------
@@ -176,18 +178,18 @@ export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
 // ---------------------------------------------------------------------------
 
 export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  3, -2, -2, -2, -1,
+  3, -2, -1, -2, -1,
 ];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.012244930299708225, 0.025463785396704724, 0.04242341339086596,
-  0.0692692934252652,
+  0.01222928888888889, 0.025491016115481734, 0.042309433715925396,
+  0.06904836487060584,
 ];
 
 // ---------------------------------------------------------------------------
 // Ask-pct quintile weights + boundaries
 // ---------------------------------------------------------------------------
 
-export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [0, 1, 1, 2, -4];
+export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [1, 1, 1, 1, -5];
 export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
   0.5333333333333333, 0.5714285714285714, 0.625, 0.75,
 ];
@@ -298,12 +300,21 @@ export const LOTTERY_TIER_THRESHOLDS_V2 = {
 /**
  * Map a continuous `value` to a quintile index (0–4) using `boundaries`.
  *
- * Assignment rules (mirrors the Python training logic):
- *   - value < boundaries[0]  → quintile 0
- *   - value < boundaries[1]  → quintile 1
- *   - value < boundaries[2]  → quintile 2
- *   - value < boundaries[3]  → quintile 3
- *   - value >= boundaries[3] → quintile 4
+ * RIGHT-CLOSED to mirror the Python training logic exactly. Training uses
+ * `pd.cut(series, bins=[-inf, b0, b1, b2, b3, inf], right=True)`, so each
+ * bucket is the half-open interval `(b_{k-1}, b_k]` — a value EXACTLY ON a
+ * boundary falls in the LOWER bucket. Using `value < bound` (left-closed)
+ * here would skew the quintile by one for any value that lands precisely on
+ * a boundary (e.g. ask_pct = ask/(ask+bid) hits exact rationals like 0.625,
+ * 0.75, 0.5714…), producing a train/serve mismatch. `value <= bound` keeps
+ * serve and train in lockstep.
+ *
+ * Assignment rules:
+ *   - value <= boundaries[0] → quintile 0
+ *   - value <= boundaries[1] → quintile 1
+ *   - value <= boundaries[2] → quintile 2
+ *   - value <= boundaries[3] → quintile 3
+ *   - value >  boundaries[3] → quintile 4
  *
  * @param value      The raw feature value (e.g. vol_to_oi_window).
  * @param boundaries Four-element sorted array of bucket thresholds.
@@ -315,7 +326,7 @@ export function assignQuintile(
 ): number {
   for (let i = 0; i < boundaries.length; i++) {
     const bound = boundaries[i];
-    if (bound !== undefined && value < bound) return i;
+    if (bound !== undefined && value <= bound) return i;
   }
   return 4;
 }

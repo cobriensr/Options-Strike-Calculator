@@ -17,8 +17,31 @@ export const INVERSION_BONUS_BY_QUINTILE: Readonly<Record<number, number>> = {
 };
 
 export function inversionQualityBonus(quintile: number | null): number {
+  // Legit cold-start: a ticker with no inversion history has a NULL
+  // quintile and gets a 0 bonus (never penalized). This path is expected.
   if (quintile == null) return 0;
-  return INVERSION_BONUS_BY_QUINTILE[quintile] ?? 0;
+
+  const bonus = INVERSION_BONUS_BY_QUINTILE[quintile];
+  if (bonus !== undefined) return bonus;
+
+  // Out-of-range / non-integer quintile (e.g. 0, 6, 2.5). The `?? 0` below
+  // would silently collapse this to 0 — indistinguishable from the legit
+  // NULL cold-start above — so an upstream bug that emits a bad quintile
+  // (off-by-one quintile labeling, a schema drift in lottery_ticker_stats)
+  // would never surface. Capture it so we can tell "no history yet" apart
+  // from "history exists but the quintile is malformed". Lazy import keeps
+  // this function synchronous + dependency-free for the hot scoring loop;
+  // the report is fire-and-forget (never blocks scoring).
+  const report = import('./sentry.js').then(({ Sentry }) => {
+    Sentry.captureMessage(
+      `inversionQualityBonus: out-of-range quintile ${quintile} (expected 1..5 or null)`,
+      'warning',
+    );
+  });
+  report.catch(() => {
+    /* Sentry unavailable — never let observability break scoring. */
+  });
+  return 0;
 }
 
 export function qualityAdjustedScore(

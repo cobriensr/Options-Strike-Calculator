@@ -67,6 +67,7 @@ interface AlertFixture {
   multi_leg_share: string | null;
   round_trip_net_pct: string | null;
   round_trip_score_deduct: number | null;
+  takeit_prob?: string | null;
   inserted_at: string;
   fire_time_cum_ncp?: string | null;
   fire_time_cum_npp?: string | null;
@@ -108,6 +109,7 @@ function makeAlert(overrides: Partial<AlertFixture> = {}): AlertFixture {
     multi_leg_share: '0.05',
     round_trip_net_pct: null,
     round_trip_score_deduct: 0,
+    takeit_prob: null,
     inserted_at: '2026-05-07T13:30:30Z',
     // Ticker-level cum flow at bucket_ct (LATERAL on
     // ws_net_flow_per_ticker + history). Defaults set for the
@@ -456,10 +458,14 @@ describe('silent-boom-feed handler', () => {
     // include the minScore filter literal so a regression that only
     // filters the count fails this test. The 3rd call is the cluster
     // candidate query which does not carry the minScore filter by design.
+    // Fix 3: the predicate gates on the DISPLAYED effective score, so the
+    // literal is the GREATEST(...) form, not the raw `score >=`.
     for (const call of mockSql.mock.calls.slice(0, 2)) {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
-      expect(sqlText).toContain('score >=');
+      expect(sqlText).toContain(
+        'GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >=',
+      );
     }
   });
 
@@ -1108,6 +1114,197 @@ describe('silent-boom-feed handler', () => {
     await handler(req, res);
     const body = res._json as { filters: { minTakeitProb: number | null } };
     expect(body.filters.minTakeitProb).toBeNull();
+  });
+
+  // ------------------------------------------------------------------
+  // Fix 3 — minScore gates on the DISPLAYED effective score.
+  // ------------------------------------------------------------------
+
+  it('minScore predicate gates on effectiveScore (GREATEST(0, score + deduct)) in count + all sort branches', async () => {
+    // The displayed tier derives from effectiveScore = GREATEST(0, score +
+    // round_trip_score_deduct). The minScore filter must gate on that same
+    // value so total/rows agree with the rendered tier. Verify the count
+    // query AND every sort-branch row query carry the byte-identical
+    // effective-score predicate.
+    for (const sort of ['newest', 'spike_ratio', 'vol_oi', 'peak'] as const) {
+      mockSql
+        .mockResolvedValueOnce([{ n: 1 }]) // count
+        .mockResolvedValueOnce([makeAlert({ score: 25 })]) // rows
+        .mockResolvedValueOnce([]); // cluster
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-07', minScore: '21', sort },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      expect(res._status).toBe(200);
+
+      // Count (call 0) + rows (call 1) must both carry the effective-score
+      // predicate. The cluster query (call 2) must NOT.
+      for (const call of mockSql.mock.calls.slice(0, 2)) {
+        const sqlText = (
+          (call[0] as TemplateStringsArray | undefined) ?? []
+        ).join(' ');
+        expect(sqlText).toContain(
+          'GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >=',
+        );
+        // The raw-score predicate must be gone (drift = total/rows mismatch).
+        expect(sqlText).not.toContain('OR score >=');
+      }
+      vi.clearAllMocks();
+    }
+  });
+
+  it('excludes a row that raw-passes minScore but is effective-below-floor, and the displayed tier matches', async () => {
+    // score=23 raw passes minScore=21, but a -3 round-trip deduct drops
+    // the effective score to 20 → tier2. The SQL gate (which the DB
+    // applies) would exclude it from a real query; here we assert the
+    // read-time effective score + tier the handler computes for such a
+    // row so the displayed value matches the gated predicate.
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 23,
+          score_tier: 'tier1',
+          round_trip_score_deduct: -3,
+          round_trip_net_pct: '-0.6',
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', minScore: '21' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { score: number | null; scoreTier: string | null }[];
+    };
+    // Effective = GREATEST(0, 23 + (-3)) = 20 → tier2 (below the 21 floor).
+    expect(body.alerts[0]?.score).toBe(20);
+    expect(body.alerts[0]?.scoreTier).toBe('tier2');
+  });
+
+  // ------------------------------------------------------------------
+  // Fix 4 — direction-gate TAKE-IT exemption in the displayed tier.
+  // ------------------------------------------------------------------
+
+  it('gated row with takeit_prob >= 0.70 displays its pre-gate (score-derived) tier', async () => {
+    // The detector stored a PRE-gate tier for gated-but-exempt rows. The
+    // feed must honor that: gated + takeit_prob >= TAKEIT_GATE_EXEMPT_MIN_PROB
+    // → score-derived tier, NOT a forced tier3. score=24 → tier1.
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 24,
+          score_tier: 'tier1',
+          direction_gated: true,
+          takeit_prob: '0.72',
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { scoreTier: string | null; directionGated: boolean }[];
+    };
+    // Exempt: pre-gate tier1 displayed.
+    expect(body.alerts[0]?.scoreTier).toBe('tier1');
+    // The "Gated" pill (direction_gated) is unchanged.
+    expect(body.alerts[0]?.directionGated).toBe(true);
+  });
+
+  it('gated row with takeit_prob below 0.70 is forced to tier3', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 24,
+          score_tier: 'tier1',
+          direction_gated: true,
+          takeit_prob: '0.55',
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { scoreTier: string | null; directionGated: boolean }[];
+    };
+    // Not exempt → forced tier3, pill still on.
+    expect(body.alerts[0]?.scoreTier).toBe('tier3');
+    expect(body.alerts[0]?.directionGated).toBe(true);
+  });
+
+  it('gated row with NULL takeit_prob is forced to tier3 (no exemption)', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 24,
+          score_tier: 'tier1',
+          direction_gated: true,
+          takeit_prob: null,
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { alerts: { scoreTier: string | null }[] };
+    expect(body.alerts[0]?.scoreTier).toBe('tier3');
+  });
+
+  it('exactly 0.70 takeit_prob on a gated row is exempt (>= threshold, boundary)', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 10,
+          score_tier: 'tier2',
+          direction_gated: true,
+          takeit_prob: '0.70',
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { alerts: { scoreTier: string | null }[] };
+    // score=10 → tier2; exempt at the 0.70 boundary so the pre-gate tier shows.
+    expect(body.alerts[0]?.scoreTier).toBe('tier2');
+  });
+
+  it('non-gated row ignores takeit_prob and uses the score-derived tier', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 24,
+          score_tier: 'tier1',
+          direction_gated: false,
+          takeit_prob: '0.10',
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { scoreTier: string | null; directionGated: boolean }[];
+    };
+    expect(body.alerts[0]?.scoreTier).toBe('tier1');
+    expect(body.alerts[0]?.directionGated).toBe(false);
   });
 
   // ------------------------------------------------------------------

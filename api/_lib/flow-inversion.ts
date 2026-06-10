@@ -189,7 +189,13 @@ export function simulateFlowInversion(
   const max = Math.max(...cum);
   const min = Math.min(...cum);
   const rng = max - min;
-  if (rng <= 0) {
+  // `Number.isFinite(rng)` guards against NaN poisoning: a single non-finite
+  // flow `value` (NaN / ±Infinity) propagates through the cumsum into
+  // max/min/rng, leaving `rng` NaN. `NaN <= 0` is false, so the bare
+  // `rng <= 0` check would skip this safe flat-exit and let the function
+  // return a meaningless peak/inversion result downstream. Treating a
+  // non-finite range as "no usable peak" takes the defined safe exit.
+  if (!Number.isFinite(rng) || rng <= 0) {
     return { exitPct: null, exitTs: null, status: 'flat_flow_no_peak' };
   }
 

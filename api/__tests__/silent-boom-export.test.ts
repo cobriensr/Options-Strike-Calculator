@@ -157,6 +157,55 @@ describe('silent-boom-export handler', () => {
     expect(sqlText).toContain("AT TIME ZONE 'America/Chicago'");
   });
 
+  it('applies minTakeitProb in the export SQL and binds the floor value (Fix 1)', async () => {
+    // The export previously accepted minTakeitProb in its schema but
+    // never applied it — the CSV was the full firehose while the
+    // on-screen feed was TAKE-IT-floored. The predicate must mirror
+    // the feed exactly.
+    mockSql.mockResolvedValueOnce([makeRow()]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', minTakeitProb: '0.7' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    const call = mockSql.mock.calls[0] as unknown[];
+    const sqlText = (call[0] as TemplateStringsArray).join(' ');
+    // Exact predicate mirrors api/silent-boom-feed.ts.
+    expect(sqlText).toContain('takeit_prob >=');
+    // The floor value is threaded as a bind param.
+    expect(call.slice(1)).toContain(0.7);
+  });
+
+  it('does NOT apply a takeit floor when minTakeitProb is absent (binds null)', async () => {
+    mockSql.mockResolvedValueOnce([makeRow()]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const call = mockSql.mock.calls[0] as unknown[];
+    // No 0.7 bind; the predicate short-circuits on a NULL bind.
+    expect(call.slice(1)).not.toContain(0.7);
+    expect(call.slice(1)).toContain(null);
+  });
+
+  it('echoes minTakeitProb in the JSON filters block (Fix 1 parity)', async () => {
+    mockSql.mockResolvedValueOnce([makeRow()]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', format: 'json', minTakeitProb: '0.7' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as { filters: { minTakeitProb: number | null } };
+    expect(body.filters.minTakeitProb).toBe(0.7);
+  });
+
   it('rejects invalid query params with 400', async () => {
     const req = mockRequest({
       method: 'GET',

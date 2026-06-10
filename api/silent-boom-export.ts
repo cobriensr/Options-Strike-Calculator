@@ -78,6 +78,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       dte,
       burst,
       askPctBand,
+      minTakeitProb: minTakeitProbRaw,
       format,
     } = parsed.data;
 
@@ -132,6 +133,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const askPctLo = askPctRange?.lo ?? null;
     const askPctHiBound = askPctRange?.hi ?? 1.001;
 
+    // TAKE-IT calibrated P(peak >= +20%) floor. 0 / null = no floor.
+    // Mirrors the exact predicate in api/silent-boom-feed.ts so an
+    // export taken with the chip on matches the on-screen feed (the
+    // feed is TAKE-IT-floored but the export previously ignored this
+    // param, dumping the full firehose). NULL takeit rows (not yet
+    // enriched) are excluded when the floor is on — same as the feed.
+    const minTakeitProb =
+      minTakeitProbRaw != null && minTakeitProbRaw > 0
+        ? minTakeitProbRaw
+        : null;
+
     const db = getDb();
 
     // No LIMIT — export the full firehose. Order chronologically
@@ -157,6 +169,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
+        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
       ORDER BY bucket_ct ASC, id ASC
     `,
       DB_RETRY_ATTEMPTS,
@@ -180,6 +193,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           dte: dte ?? null,
           burst: burst ?? null,
           askPctBand: askPctBand ?? null,
+          minTakeitProb,
         },
         rows: normalized,
       });

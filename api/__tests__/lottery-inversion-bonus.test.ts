@@ -1,4 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// Mock the lazily-imported Sentry module so the out-of-range guard's
+// fire-and-forget captureMessage is observable without a real Sentry client.
+const captureMessage = vi.fn();
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    captureMessage: (...args: unknown[]) => captureMessage(...args),
+  },
+}));
+
 import {
   inversionQualityBonus,
   qualityAdjustedScore,
@@ -6,7 +16,17 @@ import {
   INVERSION_BONUS_CASE_SQL,
 } from '../_lib/lottery-inversion-bonus.js';
 
+/** Flush the microtask queue so the dynamic `import().then()` resolves. */
+const flushMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 describe('inversionQualityBonus', () => {
+  beforeEach(() => {
+    captureMessage.mockClear();
+  });
+  afterEach(() => {
+    captureMessage.mockClear();
+  });
+
   it('returns -5 for quintile 1', () => {
     expect(inversionQualityBonus(1)).toBe(-5);
   });
@@ -22,14 +42,47 @@ describe('inversionQualityBonus', () => {
   it('returns 5 for quintile 5', () => {
     expect(inversionQualityBonus(5)).toBe(5);
   });
-  it('returns 0 for null', () => {
+
+  it('returns 0 for null (legit cold-start) WITHOUT a Sentry capture', async () => {
     expect(inversionQualityBonus(null)).toBe(0);
+    await flushMicrotasks();
+    expect(captureMessage).not.toHaveBeenCalled();
   });
-  it('returns 0 for out-of-range 0', () => {
+
+  it('does not capture Sentry for any valid in-range quintile', async () => {
+    for (const q of [1, 2, 3, 4, 5]) inversionQualityBonus(q);
+    await flushMicrotasks();
+    expect(captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('returns 0 for out-of-range 0 AND captures a Sentry warning', async () => {
     expect(inversionQualityBonus(0)).toBe(0);
+    await flushMicrotasks();
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('out-of-range quintile 0'),
+      'warning',
+    );
   });
-  it('returns 0 for out-of-range 6', () => {
+
+  it('returns 0 for out-of-range 6 AND captures a Sentry warning', async () => {
     expect(inversionQualityBonus(6)).toBe(0);
+    await flushMicrotasks();
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('out-of-range quintile 6'),
+      'warning',
+    );
+  });
+
+  it('returns 0 for a non-integer quintile AND captures Sentry', async () => {
+    expect(inversionQualityBonus(2.5)).toBe(0);
+    await flushMicrotasks();
+    expect(captureMessage).toHaveBeenCalledTimes(1);
+    expect(captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('out-of-range quintile 2.5'),
+      'warning',
+    );
   });
 });
 

@@ -161,6 +161,31 @@ describe('simulateFlowInversion', () => {
     expect(result.exitTs).toBeNull();
   });
 
+  it('takes the safe flat-exit (not a bogus peak) when a flow value is NaN', () => {
+    // Regression: a single NaN flow value poisons the cumsum, so
+    // Math.max/min/rng all become NaN. `NaN <= 0` is false, so without the
+    // `Number.isFinite(rng)` guard the function would skip the safe exit and
+    // hunt for a peak over a NaN-tainted series — returning a meaningless
+    // "result". The guard must route this to the defined flat-exit.
+    const minutes = buildMinutes(postStart, 30, () => 1.1);
+    const flow = buildFlow(postStart, 10, (i) => (i === 3 ? Number.NaN : 100));
+    const result = simulateFlowInversion(minutes, flow, entryPrice, trigger);
+    expect(result.status).toBe('flat_flow_no_peak');
+    expect(result.exitPct).toBeNull();
+    expect(result.exitTs).toBeNull();
+  });
+
+  it('takes the safe flat-exit when a flow value is +Infinity', () => {
+    const minutes = buildMinutes(postStart, 30, () => 1.1);
+    const flow = buildFlow(postStart, 10, (i) =>
+      i === 5 ? Number.POSITIVE_INFINITY : 100,
+    );
+    const result = simulateFlowInversion(minutes, flow, entryPrice, trigger);
+    expect(result.status).toBe('flat_flow_no_peak');
+    expect(result.exitPct).toBeNull();
+    expect(result.exitTs).toBeNull();
+  });
+
   it('selects the more-prominent of two peaks for the inversion search', () => {
     // Cumsum forms two peaks that BOTH clear the prominence floor: peak A at
     // idx 5 (prominence ~500) and peak B at idx 23 (prominence ~840). Because

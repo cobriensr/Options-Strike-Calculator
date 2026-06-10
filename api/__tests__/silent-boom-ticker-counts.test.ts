@@ -288,6 +288,62 @@ describe('silent-boom-ticker-counts handler', () => {
     }
   });
 
+  it('applies the entry-price floor (MIN_ALERT_ENTRY_PRICE) for feed parity (Fix 2)', async () => {
+    // The feed floors out sub-$0.10 algo prints via
+    // `entry_price >= MIN_ALERT_ENTRY_PRICE`; the chip counts omitted
+    // this, so counts exceeded the feed. The floor (0.1) must now be
+    // bound into the aggregate query.
+    mockSql.mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const call = mockSql.mock.calls[0] as unknown[];
+    const sqlText = (call[0] as TemplateStringsArray).join(' ');
+    expect(sqlText).toContain('entry_price >=');
+    // 0.1 is bound as a parameter.
+    expect(call.slice(1)).toContain(0.1);
+  });
+
+  it('mirrors the feed aggressivePremium composite and echoes it (Fix 2)', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-14', aggressivePremium: 'true' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const call = mockSql.mock.calls[0] as unknown[];
+    const sqlText = (call[0] as TemplateStringsArray).join(' ');
+    // The composite mirrors silent-boom-feed.ts exactly.
+    expect(sqlText).toContain('IS NOT TRUE');
+    expect(sqlText).toContain('entry_price * spike_volume * 100 >= 100000');
+    expect(sqlText).toContain('COALESCE(multi_leg_share, 0) < 0.10');
+    expect(sqlText).toContain('underlying_price_at_spike IS NOT NULL');
+    // The true boolean is bound so the OR-gated clause is active.
+    expect(call.slice(1)).toContain(true);
+
+    const body = res._json as { filters: { aggressivePremium: boolean } };
+    expect(body.filters.aggressivePremium).toBe(true);
+  });
+
+  it('defaults aggressivePremium=false and binds false into the query (Fix 2)', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-14' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { filters: { aggressivePremium: boolean } };
+    expect(body.filters.aggressivePremium).toBe(false);
+    const call = mockSql.mock.calls[0] as unknown[];
+    // false bind → IS NOT TRUE branch matches every row (no-op).
+    expect(call.slice(1)).toContain(false);
+  });
+
   it('returns 500 and reports to Sentry when the DB query throws', async () => {
     mockSql.mockRejectedValueOnce(new Error('neon timeout'));
 

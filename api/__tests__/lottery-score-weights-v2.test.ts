@@ -110,13 +110,45 @@ describe('assignQuintile', () => {
     expect(assignQuintile(0.001, VOL_OI_QUINTILE_BOUNDARIES)).toBe(0);
   });
 
-  it('returns 4 for values at or above the last boundary', () => {
-    const lastBoundary =
-      VOL_OI_QUINTILE_BOUNDARIES[VOL_OI_QUINTILE_BOUNDARIES.length - 1] ?? 0;
-    expect(assignQuintile(lastBoundary, VOL_OI_QUINTILE_BOUNDARIES)).toBe(4);
+  it('returns 4 only for values STRICTLY above the last boundary', () => {
+    const lastBoundary = VOL_OI_QUINTILE_BOUNDARIES.at(-1) ?? 0;
+    // Right-closed: a value EXACTLY on the last boundary belongs to the
+    // lower bucket (3), not 4 (matches pandas pd.cut right=True).
+    expect(assignQuintile(lastBoundary, VOL_OI_QUINTILE_BOUNDARIES)).toBe(3);
     expect(assignQuintile(lastBoundary * 10, VOL_OI_QUINTILE_BOUNDARIES)).toBe(
       4,
     );
+    expect(
+      assignQuintile(lastBoundary + 1e-9, VOL_OI_QUINTILE_BOUNDARIES),
+    ).toBe(4);
+  });
+
+  // Train/serve parity: training uses pd.cut(bins=[-inf,...boundaries,inf],
+  // right=True), so each bucket is (b_{k-1}, b_k] — a value EXACTLY on a
+  // boundary lands in the LOWER bucket. assignQuintile must match exactly
+  // (it uses `value <= bound`). ask_pct = ask/(ask+bid) hits the exact
+  // rational boundaries (0.5714…, 0.625, 0.75) precisely, so this skew was
+  // observable in production, not theoretical.
+  it('puts a value EXACTLY on a boundary into the lower bucket (right=True)', () => {
+    VOL_OI_QUINTILE_BOUNDARIES.forEach((bound, i) => {
+      // value === boundaries[i] → quintile i (the lower of the two buckets
+      // the boundary separates).
+      expect(assignQuintile(bound, VOL_OI_QUINTILE_BOUNDARIES)).toBe(i);
+      // A hair above the boundary moves to the next bucket up.
+      expect(assignQuintile(bound + 1e-9, VOL_OI_QUINTILE_BOUNDARIES)).toBe(
+        i + 1,
+      );
+    });
+  });
+
+  it('matches the ask_pct exact-rational boundaries (0.5714…, 0.625, 0.75)', () => {
+    // ASK_PCT_QUINTILE_BOUNDARIES = [0.5333…, 0.5714…, 0.625, 0.75].
+    // Each exact boundary value belongs to its own (lower) bucket.
+    ASK_PCT_QUINTILE_BOUNDARIES.forEach((bound, i) => {
+      expect(assignQuintile(bound, ASK_PCT_QUINTILE_BOUNDARIES)).toBe(i);
+    });
+    // 0.75 (== boundaries[3]) → quintile 3 under right-closed, NOT 4.
+    expect(assignQuintile(0.75, ASK_PCT_QUINTILE_BOUNDARIES)).toBe(3);
   });
 
   it('returns a quintile between 0 and 4 for any input', () => {

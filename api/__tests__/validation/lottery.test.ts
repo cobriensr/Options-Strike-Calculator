@@ -15,6 +15,7 @@ import {
   lotteryExportQuerySchema,
   lotteryContractTapeQuerySchema,
   lotteryFinderTickerCountsQuerySchema,
+  silentBoomTickerCountsQuerySchema,
 } from '../../_lib/validation/lottery.js';
 
 // ── lotteryFinderQuerySchema ─────────────────────────────────
@@ -171,6 +172,103 @@ describe('silentBoomFeedQuerySchema', () => {
   it('rejects minVolOi > 100 (boundary)', () => {
     const result = silentBoomFeedQuerySchema.safeParse({ minVolOi: 101 });
     expect(result.success).toBe(false);
+  });
+
+  // Regression: `z.coerce.boolean()` made ANY non-empty string truthy, so
+  // `?hideLatePm=false` / `?aggressivePremium=false` flipped the filter ON.
+  // The enum-transform must honor the literal string.
+  describe('hideLatePm boolean parsing (enum-transform, not coerce)', () => {
+    it("parses 'false' to boolean false (NOT truthy)", () => {
+      const result = silentBoomFeedQuerySchema.safeParse({
+        hideLatePm: 'false',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.hideLatePm).toBe(false);
+    });
+
+    it("parses 'true' to boolean true", () => {
+      const result = silentBoomFeedQuerySchema.safeParse({
+        hideLatePm: 'true',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.hideLatePm).toBe(true);
+    });
+
+    it('leaves hideLatePm undefined when absent (default off)', () => {
+      const result = silentBoomFeedQuerySchema.safeParse({});
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.hideLatePm).toBeUndefined();
+    });
+
+    it("rejects ambiguous '0' / '1' rather than silently coercing", () => {
+      expect(
+        silentBoomFeedQuerySchema.safeParse({ hideLatePm: '0' }).success,
+      ).toBe(false);
+      expect(
+        silentBoomFeedQuerySchema.safeParse({ hideLatePm: '1' }).success,
+      ).toBe(false);
+    });
+  });
+
+  describe('aggressivePremium boolean parsing (enum-transform, not coerce)', () => {
+    it("parses 'false' to boolean false (NOT truthy)", () => {
+      const result = silentBoomFeedQuerySchema.safeParse({
+        aggressivePremium: 'false',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.aggressivePremium).toBe(false);
+    });
+
+    it("parses 'true' to boolean true", () => {
+      const result = silentBoomFeedQuerySchema.safeParse({
+        aggressivePremium: 'true',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.aggressivePremium).toBe(true);
+    });
+
+    it('leaves aggressivePremium undefined when absent (default off)', () => {
+      const result = silentBoomFeedQuerySchema.safeParse({});
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data.aggressivePremium).toBeUndefined();
+    });
+  });
+});
+
+// ── silentBoomTickerCountsQuerySchema ────────────────────────
+
+describe('silentBoomTickerCountsQuerySchema boolean parsing', () => {
+  it("parses hideLatePm='false' to false (NOT truthy)", () => {
+    const result = silentBoomTickerCountsQuerySchema.safeParse({
+      hideLatePm: 'false',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.hideLatePm).toBe(false);
+  });
+
+  it("parses aggressivePremium='false' to false (NOT truthy)", () => {
+    const result = silentBoomTickerCountsQuerySchema.safeParse({
+      aggressivePremium: 'false',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.aggressivePremium).toBe(false);
+  });
+
+  it("parses hideLatePm='true' to true", () => {
+    const result = silentBoomTickerCountsQuerySchema.safeParse({
+      hideLatePm: 'true',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.hideLatePm).toBe(true);
+  });
+
+  it('leaves both undefined when absent', () => {
+    const result = silentBoomTickerCountsQuerySchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.hideLatePm).toBeUndefined();
+      expect(result.data.aggressivePremium).toBeUndefined();
+    }
   });
 });
 

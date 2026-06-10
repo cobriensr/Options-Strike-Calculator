@@ -288,9 +288,10 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = {vow};
 
 /**
  * Boundaries that define the vol/OI quintiles (length 4).
- * Quintile 0 : value < boundaries[0]
- * Quintile k : boundaries[k-1] <= value < boundaries[k]
- * Quintile 4 : value >= boundaries[3]
+ * Right-closed to match pandas `pd.cut(..., right=True)` in training:
+ * Quintile 0 : value <= boundaries[0]
+ * Quintile k : boundaries[k-1] < value <= boundaries[k]
+ * Quintile 4 : value > boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = {vob};
 
@@ -366,12 +367,21 @@ export const LOTTERY_TIER_THRESHOLDS_V2 = {{
 /**
  * Map a continuous `value` to a quintile index (0–4) using `boundaries`.
  *
- * Assignment rules (mirrors the Python training logic):
- *   - value < boundaries[0]  → quintile 0
- *   - value < boundaries[1]  → quintile 1
- *   - value < boundaries[2]  → quintile 2
- *   - value < boundaries[3]  → quintile 3
- *   - value >= boundaries[3] → quintile 4
+ * RIGHT-CLOSED to mirror the Python training logic exactly. Training uses
+ * `pd.cut(series, bins=[-inf, b0, b1, b2, b3, inf], right=True)`, so each
+ * bucket is the half-open interval `(b_{{k-1}}, b_k]` — a value EXACTLY ON a
+ * boundary falls in the LOWER bucket. Using `value < bound` (left-closed)
+ * here would skew the quintile by one for any value that lands precisely on
+ * a boundary (e.g. ask_pct = ask/(ask+bid) hits exact rationals like 0.625,
+ * 0.75, 0.5714…), producing a train/serve mismatch. `value <= bound` keeps
+ * serve and train in lockstep.
+ *
+ * Assignment rules:
+ *   - value <= boundaries[0] → quintile 0
+ *   - value <= boundaries[1] → quintile 1
+ *   - value <= boundaries[2] → quintile 2
+ *   - value <= boundaries[3] → quintile 3
+ *   - value >  boundaries[3] → quintile 4
  *
  * @param value      The raw feature value (e.g. vol_to_oi_window).
  * @param boundaries Four-element sorted array of bucket thresholds.
@@ -383,7 +393,7 @@ export function assignQuintile(
 ): number {{
   for (let i = 0; i < boundaries.length; i++) {{
     const bound = boundaries[i];
-    if (bound !== undefined && value < bound) return i;
+    if (bound !== undefined && value <= bound) return i;
   }}
   return 4;
 }}
@@ -530,8 +540,12 @@ export function lotteryScoreTierV2(
 
 
 def assign_quintile(value: float, boundaries: list[float]) -> int:
+    # RIGHT-CLOSED (value <= b) to mirror the TS runtime + pandas
+    # pd.cut(..., right=True). A value exactly on a boundary lands in the
+    # lower bucket. Must stay identical to assignQuintile() in the emitted
+    # TS template above and lottery-score-weights-v2.ts.
     for i, b in enumerate(boundaries):
-        if value < b:
+        if value <= b:
             return i
     return 4
 

@@ -6,6 +6,30 @@
 
 import { z } from 'zod';
 
+/**
+ * Optional boolean query param parsed from the literal strings `'true'` /
+ * `'false'`.
+ *
+ * Do NOT use `z.coerce.boolean()` for query-string booleans: it follows
+ * JS truthiness, so ANY non-empty string (including `'false'` and `'0'`)
+ * coerces to `true`. A user passing `?hideLatePm=false` would silently get
+ * the filter turned ON. This enum-transform honors the literal string:
+ *   - `'true'`  → `true`
+ *   - `'false'` → `false`
+ *   - missing   → `undefined` (caller treats as "off", identical to the
+ *                 prior `.optional()` default semantics)
+ *
+ * Any other string (e.g. `'1'`, `'yes'`) is rejected by the enum, surfacing
+ * a 400 rather than being silently coerced.
+ */
+const optionalBoolEnum = () =>
+  z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) =>
+      v === 'true' ? true : v === 'false' ? false : undefined,
+    );
+
 // ============================================================
 // /api/lottery-finder
 // ============================================================
@@ -176,7 +200,7 @@ export const silentBoomFeedQuerySchema = z.object({
   // version emptied pages when every alert on the current page fell
   // after the cutoff). 14:30 cutoff matches the trader's discretionary
   // exit window — moves can't develop in <30 min before close.
-  hideLatePm: z.coerce.boolean().optional(),
+  hideLatePm: optionalBoolEnum(),
   // Burst color category — matches the spike-ratio badge in
   // SilentBoomRow: 'red' = ≥50×, 'yellow' = 20-50×, 'grey' = <20×.
   // Visual-intensity ordering (NOT empirical-lift ordering — see
@@ -195,7 +219,7 @@ export const silentBoomFeedQuerySchema = z.object({
   // filters on this schema. Rows without underlying_price_at_spike
   // (#152) are excluded from the OTM check. See spec
   // docs/superpowers/specs/aggressive-premium-chip-2026-05-15.md.
-  aggressivePremium: z.coerce.boolean().optional(),
+  aggressivePremium: optionalBoolEnum(),
   // TAKE-IT floor — calibrated XGBoost P(peak >= +20%). 0 / null =
   // no floor. Server-side so pagination + ticker counts reflect the
   // post-filter total. Mirrors `minTakeitProb` on the lottery feed —
@@ -356,9 +380,14 @@ export const silentBoomTickerCountsQuerySchema = z.object({
   dte: z.enum(['0', '1-3', '4+']).optional(),
   minDte: z.coerce.number().int().min(0).max(10_000).optional(),
   minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
-  hideLatePm: z.coerce.boolean().optional(),
+  hideLatePm: optionalBoolEnum(),
   burst: z.enum(['red', 'yellow', 'grey']).optional(),
   askPctBand: z.enum(['70-80', '80-90', '90-95', '95-99', '100']).optional(),
+  /** Aggressive Premium toggle — mirrors `silentBoomFeedQuerySchema`
+   *  so the chip strip counts track the filtered feed exactly (premium
+   *  ≥ $100K, DTE ≤ 8, vol/OI > 1, single-leg, OTM). Without it the
+   *  chip counts were a looser superset of the feed. */
+  aggressivePremium: optionalBoolEnum(),
   /** TAKE-IT calibrated probability floor. Mirrors `minTakeitProb` on
    *  `silentBoomFeedQuerySchema` so chip counts and the filtered feed
    *  stay aligned. NULL takeit rows are excluded when active. */

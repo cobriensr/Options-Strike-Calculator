@@ -15,7 +15,11 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from './_lib/db.js';
-import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
+import {
+  DB_RETRY_ATTEMPTS,
+  DB_RETRY_TIMEOUT_MS,
+  MIN_ALERT_ENTRY_PRICE,
+} from './_lib/constants.js';
 import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import {
   guardOwnerOrGuestEndpoint,
@@ -46,6 +50,7 @@ interface SilentBoomTickerCountsResponse {
     dte: '0' | '1-3' | '4+' | null;
     burst: 'red' | 'yellow' | 'grey' | null;
     askPctBand: '70-80' | '80-90' | '90-95' | '95-99' | '100' | null;
+    aggressivePremium: boolean;
     minTakeitProb: number | null;
   };
   tickers: {
@@ -136,6 +141,11 @@ export default async function handler(
   const askPctLo = askPctRange?.lo ?? null;
   const askPctHiBound = askPctRange?.hi ?? 1.001;
 
+  // Aggressive Premium composite — mirrors silent-boom-feed.ts exactly
+  // so the chip strip counts track the filtered feed. When false the
+  // IS NOT TRUE branch matches every row (no-op).
+  const aggressivePremium = q.aggressivePremium === true;
+
   try {
     const db = getDb();
 
@@ -163,6 +173,7 @@ export default async function handler(
         AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
         AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
         AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
+        AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
         AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
         AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
         AND (
@@ -171,6 +182,20 @@ export default async function handler(
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
           ) < 870
+        )
+        AND (
+          ${aggressivePremium}::boolean IS NOT TRUE
+          OR (
+            entry_price * spike_volume * 100 >= 100000
+            AND dte <= 8
+            AND vol_oi > 1.0
+            AND COALESCE(multi_leg_share, 0) < 0.10
+            AND underlying_price_at_spike IS NOT NULL
+            AND (
+              (option_type = 'C' AND strike > underlying_price_at_spike)
+              OR (option_type = 'P' AND strike < underlying_price_at_spike)
+            )
+          )
         )
       GROUP BY underlying_symbol
       ORDER BY count DESC, latest_bucket_ct DESC, underlying_symbol ASC
@@ -190,6 +215,7 @@ export default async function handler(
         dte: q.dte ?? null,
         burst: q.burst ?? null,
         askPctBand: q.askPctBand ?? null,
+        aggressivePremium,
         minTakeitProb,
       },
       tickers: rows.map((r) => ({

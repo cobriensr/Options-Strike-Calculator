@@ -22,6 +22,7 @@ import {
 import { silentBoomFeedQuerySchema } from './_lib/validation.js';
 import { avgHoldMinutesFor } from './_lib/silent-boom-hold.js';
 import { silentBoomScoreTier } from './_lib/silent-boom-score.js';
+import { TAKEIT_GATE_EXEMPT_MIN_PROB } from './_lib/takeit-score.js';
 import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 import {
@@ -436,7 +437,7 @@ export default async function handler(
         AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
         AND vol_oi >= ${q.minVolOi}::numeric
         AND spike_ratio >= ${q.minSpikeRatio}::numeric
-        AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+        AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
         AND (${todLo}::int IS NULL OR (
           EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
           EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
@@ -495,7 +496,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
-          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
           AND (${todLo}::int IS NULL OR (
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
@@ -550,7 +551,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
-          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
           AND (${todLo}::int IS NULL OR (
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
@@ -605,7 +606,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
-          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
           AND (${todLo}::int IS NULL OR (
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
@@ -661,7 +662,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
-          AND (${q.minScore ?? null}::int IS NULL OR score >= ${q.minScore ?? null}::int)
+          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
           AND (${todLo}::int IS NULL OR (
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
@@ -750,9 +751,23 @@ export default async function handler(
         rawScore == null ? null : Math.max(0, rawScore + rtDeduct);
       const directionGated = r.direction_gated === true;
       const tierFromScore = silentBoomScoreTier(effectiveScore);
-      const effectiveTier: SilentBoomTierOrNull = directionGated
-        ? 'tier3'
-        : (tierFromScore as SilentBoomTierOrNull);
+      // Honor the detector's TAKE-IT-conditioned gate exemption (spec:
+      // 2026-05-27-takeit-conditioned-gate-fix-design.md). The detector
+      // stored a PRE-gate tier for gated rows whose takeit_prob is at or
+      // above the exemption threshold — above that level the gate is pure
+      // downside per the calibration. Mirror that here so the displayed
+      // tier agrees with the stored score_tier and the CSV export: force
+      // tier3 only when gated AND NOT exempt. The "Gated" pill (driven by
+      // direction_gated, not the tier) is unchanged.
+      const takeitProbNum = toNumOrNull(r.takeit_prob);
+      const gateExempt =
+        directionGated &&
+        takeitProbNum != null &&
+        takeitProbNum >= TAKEIT_GATE_EXEMPT_MIN_PROB;
+      const effectiveTier: SilentBoomTierOrNull =
+        directionGated && !gateExempt
+          ? 'tier3'
+          : (tierFromScore as SilentBoomTierOrNull);
       const ck = clusterKey(r.underlying_symbol, r.option_type);
       return {
         id: Number(r.id),
@@ -775,7 +790,7 @@ export default async function handler(
         rawScore,
         roundTripNetPct: toNumOrNull(r.round_trip_net_pct),
         roundTripScoreDeduct: rtDeduct,
-        takeitProb: toNumOrNull(r.takeit_prob),
+        takeitProb: takeitProbNum,
         takeitTopFeatures:
           r.takeit_top_features == null
             ? null
