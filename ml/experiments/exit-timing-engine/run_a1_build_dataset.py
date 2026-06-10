@@ -90,7 +90,7 @@ def _build_one_month(month_fids, fires_by_id, available, out_part) -> dict:
     if not date_to_fire_ids:
         return tally
 
-    tmp = out_part.parent / (out_part.name + ".tmp")
+    tmp = out_part.parent / (out_part.name + f".{os.getpid()}.tmp")
     writer = None
     schema = None
     buf: list[pd.DataFrame] = []
@@ -190,10 +190,15 @@ def main() -> int:
         months.setdefault(fire.date_str[:7], []).append(fid)
 
     cfg.DATASET_DIR.mkdir(parents=True, exist_ok=True)
-    for t in cfg.DATASET_DIR.glob("*.tmp"):
-        t.unlink()  # clear stray temp from a prior interrupted run
+    # NOTE: no global *.tmp cleanup here — temp files are per-process (pid-suffixed)
+    # so parallel single-month builds don't delete each other's in-progress writes.
+    # Orphaned tmps from a crash are ignored (skip-check + readers match part-*.parquet).
 
     ordered = sorted(months)
+    only = os.environ.get("A1_ONLY_MONTH")
+    if only:
+        ordered = [m for m in ordered if m == only]
+        print(f"ONLY-MONTH MODE: building {only} only", flush=True)
     run = {"fires": 0, "rows": 0, "modes": Counter(), "within": 0, "total": 0}
     for i, month in enumerate(ordered, 1):
         out_part = cfg.DATASET_DIR / f"part-{month}.parquet"
