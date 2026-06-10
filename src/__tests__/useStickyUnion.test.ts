@@ -688,4 +688,140 @@ describe('useStickyUnion', () => {
       expect(result.current.map((r) => r.id).sort()).toEqual(['a', 'b']);
     });
   });
+
+  // The hard-floor / cross-day guard: `retain(item) === false` drops a row at
+  // BOTH hydrate and ingest, the never-vanish equivalent of a value-derived
+  // floor (e.g. premium ≥ active floor, same trading day). Modeled here with
+  // `pct >= floor` so the predicate is a pure function of the stored value.
+  describe('retain guard', () => {
+    const atLeast =
+      (floor: number) =>
+      (a: Alert): boolean =>
+        a.pct >= floor;
+
+    it('HYDRATE: drops persisted rows failing retain and persists the cleaned blob', () => {
+      // Seed a slot (written while the floor was off) holding a sub-floor row.
+      localStorage.setItem(
+        'retain-hydrate',
+        JSON.stringify([
+          ['a', { id: 'a', pct: 10 }],
+          ['b', { id: 'b', pct: 30 }],
+        ]),
+      );
+
+      // Mount with the floor now at 20 and an EMPTY server response: only the
+      // qualifying row ('b', pct 30) should hydrate; 'a' (pct 10) is dropped.
+      const { result } = renderHook(() =>
+        useStickyUnion<Alert>([], {
+          key: keyFn,
+          storageKey: 'retain-hydrate',
+          retain: atLeast(20),
+        }),
+      );
+      expect(result.current.map((r) => r.id)).toEqual(['b']);
+
+      // The cleaned blob is persisted immediately so a reload can't re-read the
+      // poisoned 'a' slot — the localStorage value no longer contains it.
+      const persisted = JSON.parse(
+        localStorage.getItem('retain-hydrate') ?? '[]',
+      ) as Array<[string, Alert]>;
+      expect(persisted.map(([k]) => k)).toEqual(['b']);
+    });
+
+    it('INGEST: never pins an incoming row failing retain', () => {
+      const { result } = renderHook(() =>
+        useStickyUnion<Alert>(
+          [
+            { id: 'a', pct: 10 }, // sub-floor — must be skipped
+            { id: 'b', pct: 30 }, // qualifies
+          ],
+          { key: keyFn, storageKey: 'retain-ingest', retain: atLeast(20) },
+        ),
+      );
+      expect(result.current.map((r) => r.id)).toEqual(['b']);
+    });
+
+    it('INGEST: purges an already-pinned row that newly fails retain (tightened floor)', () => {
+      const { result, rerender } = renderHook(
+        ({ items, floor }) =>
+          useStickyUnion<Alert>(items, {
+            key: keyFn,
+            storageKey: 'retain-purge',
+            retain: atLeast(floor),
+          }),
+        {
+          initialProps: {
+            items: [
+              { id: 'a', pct: 15 },
+              { id: 'b', pct: 30 },
+            ] as Alert[],
+            floor: 10,
+          },
+        },
+      );
+      // Floor 10: both pinned.
+      expect(result.current.map((r) => r.id).sort()).toEqual(['a', 'b']);
+
+      // Floor tightens to 20 and the server no longer reports 'a' (it isn't on
+      // this page). The stale pin must be purged, not rendered indefinitely.
+      rerender({ items: [{ id: 'b', pct: 30 }], floor: 20 });
+      expect(result.current.map((r) => r.id)).toEqual(['b']);
+    });
+
+    it('preserves never-vanish for rows that pass retain across a transient omission', () => {
+      const { result, rerender } = renderHook(
+        ({ items }) =>
+          useStickyUnion<Alert>(items, {
+            key: keyFn,
+            storageKey: 'retain-pin',
+            retain: atLeast(20),
+          }),
+        {
+          initialProps: {
+            items: [
+              { id: 'a', pct: 25 },
+              { id: 'b', pct: 30 },
+            ] as Alert[],
+          },
+        },
+      );
+      expect(result.current.map((r) => r.id).sort()).toEqual(['a', 'b']);
+
+      // Server transiently drops 'b' (still qualifies) — it must stay pinned.
+      rerender({ items: [{ id: 'a', pct: 25 }] });
+      expect(result.current.map((r) => r.id).sort()).toEqual(['a', 'b']);
+    });
+
+    it('tombstones still take precedence (deletion wins over a passing retain)', () => {
+      const { result, rerender } = renderHook(
+        ({ items, tombstones }) =>
+          useStickyUnion<Alert>(items, {
+            key: keyFn,
+            storageKey: 'retain-tomb',
+            retain: atLeast(20),
+            tombstones,
+          }),
+        {
+          initialProps: {
+            items: [
+              { id: 'a', pct: 25 },
+              { id: 'b', pct: 30 },
+            ] as Alert[],
+            tombstones: undefined as ReadonlySet<string> | undefined,
+          },
+        },
+      );
+      expect(result.current.map((r) => r.id).sort()).toEqual(['a', 'b']);
+
+      // 'b' passes retain (pct 30 ≥ 20) but is tombstoned → still removed.
+      rerender({
+        items: [
+          { id: 'a', pct: 25 },
+          { id: 'b', pct: 30 },
+        ],
+        tombstones: new Set(['b']),
+      });
+      expect(result.current.map((r) => r.id)).toEqual(['a']);
+    });
+  });
 });

@@ -258,6 +258,28 @@ describe('useNeverVanishFeed', () => {
     expect([...result.current.unionKeys].sort()).toEqual(['a', 'b']);
   });
 
+  it('forwards retain to the union: a sub-floor row is never pinned', () => {
+    // pct >= 20 retain: 'a' (pct 10) fails the floor and must not pin even
+    // though the server reports it; 'b' (pct 30) qualifies.
+    const a: Row = { id: 'a', sym: 'AAPL', pct: 10 };
+    const b: Row = { id: 'b', sym: 'TSLA', pct: 30 };
+    const { result } = renderHook(() =>
+      useNeverVanishFeed<Row>({
+        fetched: [a, b],
+        engaged: true,
+        storageKey: 'feed-union:t:2026-06-07:sig',
+        key: keyFn,
+        getSymbol: symFn,
+        serverTotal: 2,
+        hasMore: false,
+        pageSize: PAGE_SIZE,
+        retain: (r) => r.pct >= 20,
+      }),
+    );
+    expect(result.current.rows.map((r) => r.id)).toEqual(['b']);
+    expect([...result.current.unionKeys]).toEqual(['b']);
+  });
+
   it('disengaged: unionKeys still reflects the persisted union (for page>0 dedup)', () => {
     // Engaged mount pins 'a'; on a paged (disengaged) view the union keys
     // must still be exposed so the caller can drop a page>0 duplicate.

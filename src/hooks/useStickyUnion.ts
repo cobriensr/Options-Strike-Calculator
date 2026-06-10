@@ -75,6 +75,17 @@ export interface UseStickyUnionOptions<T> {
    * is the ONLY deletion path — absent keys still pin forever.
    */
   tombstones?: ReadonlySet<string>;
+  /**
+   * Intrinsic per-row validity check against the active view (trading day,
+   * hard user floors). Drop any item for which `retain(item) === false` at
+   * BOTH hydrate and ingest — incoming failing rows are never upserted, and
+   * already-pinned rows that newly fail (e.g. after a premium floor tightens)
+   * are purged. Distinct from `tombstones` (explicit per-key retraction): this
+   * is a value-derived predicate the never-vanish guarantee must respect, so a
+   * sticky row can never render below the user's active hard floor. Tombstones
+   * still take precedence; `retain` is additive.
+   */
+  retain?: (item: T) => boolean;
 }
 
 /**
@@ -266,7 +277,7 @@ export function useStickyUnion<T>(
   items: T[],
   opts: UseStickyUnionOptions<T>,
 ): T[] {
-  const { key, storageKey, tombstones } = opts;
+  const { key, storageKey, tombstones, retain } = opts;
 
   // The accumulator. Insertion order is the Map's own iteration order.
   const unionRef = useRef<Map<string, T>>(new Map());
@@ -282,6 +293,14 @@ export function useStickyUnion<T>(
   // effect already re-runs on `items`, which is what carries new retractions.
   const tombstonesRef = useRef<ReadonlySet<string> | undefined>(tombstones);
   tombstonesRef.current = tombstones;
+  // Latest retain predicate without re-triggering the ingest effect on
+  // identity change — callers pass inline closures over live filter state
+  // (date, premium floor) that get a fresh reference every render; reffing it
+  // (like `keyFn`) keeps the ingest effect deps stable while still applying
+  // the current predicate. The effect already re-runs on `items`, which is
+  // what delivers rows to re-check against the active floor.
+  const retainRef = useRef<((item: T) => boolean) | undefined>(retain);
+  retainRef.current = retain;
 
   // Pending debounced-persist timer + the storageKey/payload it will write.
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -338,6 +357,27 @@ export function useStickyUnion<T>(
   useEffect(() => {
     flushPersist();
     const union = readUnion<T>(storageKey);
+    // Hard-floor / cross-day self-heal: a slot persisted while the filter was
+    // looser can hold rows the active `retain` now rejects (a sub-floor pin,
+    // a stale prior-day row). Drop them on hydrate and — if anything dropped —
+    // persist the cleaned blob so the poisoned slot heals durably, not just for
+    // this session. Runs before the seen-counter reseed so the counters track
+    // only surviving keys. Skipped when no predicate is supplied.
+    const retainFn = retainRef.current;
+    if (retainFn != null) {
+      let dropped = false;
+      for (const [k, v] of union) {
+        if (!retainFn(v)) {
+          union.delete(k);
+          dropped = true;
+        }
+      }
+      if (dropped) {
+        // Direct write (not the debounced scheduler): a hydrate self-heal must
+        // land immediately so a reload can't re-read the poisoned blob.
+        persistUnion(storageKey, JSON.stringify([...union]));
+      }
+    }
     unionRef.current = union;
     // Reseed the seen-counter from scratch for the new slot: hydrated keys get
     // ascending counters in their persisted (insertion) order, so the oldest
@@ -369,6 +409,7 @@ export function useStickyUnion<T>(
     const seen = seenRef.current;
     const keyFn = keyFnRef.current;
     const tombs = tombstonesRef.current;
+    const retainFn = retainRef.current;
 
     let dirty = false;
 
@@ -377,6 +418,21 @@ export function useStickyUnion<T>(
       for (const t of tombs) {
         if (union.delete(t)) {
           seen.delete(t);
+          dirty = true;
+        }
+      }
+    }
+
+    // Purge already-pinned rows that newly fail `retain` (e.g. the premium
+    // floor tightened, or the row is cross-day). This is what makes a sticky
+    // sub-floor pin drop instead of rendering indefinitely — the qualifying
+    // rep re-populates on a later poll that delivers it. Runs BEFORE the
+    // upsert loop so failing incoming rows are also never re-added below.
+    if (retainFn != null) {
+      for (const [k, v] of union) {
+        if (!retainFn(v)) {
+          union.delete(k);
+          seen.delete(k);
           dirty = true;
         }
       }
@@ -391,6 +447,7 @@ export function useStickyUnion<T>(
       const k = keyFn(item);
       if (isDegenerateKey(k)) continue; // #9: never clobber a distinct row
       if (tombs?.has(k)) continue; // #6: retracted — do not re-ingest
+      if (retainFn != null && !retainFn(item)) continue; // sub-floor / cross-day — never pin
 
       protectedKeys.add(k);
       // Bump last-seen for every currently-reported key (even unchanged ones)

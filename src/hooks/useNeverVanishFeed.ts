@@ -84,6 +84,14 @@ export interface UseNeverVanishFeedArgs<T> {
   serverTickerCounts?: ReadonlyArray<TickerCount>;
   /** Genuinely-retracted keys — passed through to the union's only delete path. */
   tombstones?: ReadonlySet<string>;
+  /**
+   * Intrinsic per-row validity predicate forwarded to the union. Rows for
+   * which `retain(row) === false` are never pinned and are purged if already
+   * pinned (at hydrate and ingest) — the hard-floor / cross-day guard that
+   * keeps a never-vanish row from rendering below the active filter. See
+   * `useStickyUnion`'s `retain`.
+   */
+  retain?: (t: T) => boolean;
 }
 
 export interface UseNeverVanishFeedResult<T> {
@@ -130,6 +138,7 @@ export function useNeverVanishFeed<T>(
     getSymbol,
     serverTickerCounts,
     tombstones,
+    retain,
   } = args;
 
   // The never-vanish accumulator. The caller already gates ingest via
@@ -139,6 +148,7 @@ export function useNeverVanishFeed<T>(
     key,
     storageKey,
     ...(tombstones !== undefined && { tombstones }),
+    ...(retain !== undefined && { retain }),
   });
 
   // Pinned key set — exposed for the (Lottery) reignited-vs-ticker-group

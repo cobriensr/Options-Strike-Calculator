@@ -707,6 +707,25 @@ export function LotteryFinderSection({
   const fireKey = useCallback((f: LotteryFire) => f.optionChainId, []);
   const fireSymbol = useCallback((f: LotteryFire) => f.underlyingSymbol, []);
 
+  // Hard-floor + cross-day retain guard for the never-vanish union: a row
+  // pinned while the premium floor was off/lower can survive a tightening and
+  // render sub-floor indefinitely (the qualifying rep isn't always on page 0
+  // to upsert over it). The retain predicate drops such pins; the qualifying
+  // rep re-populates on a later poll. Main fires: same-day AND premium ≥ the
+  // active floor (premium = entry.price × windowSize × 100, floor = K × 1000).
+  const firesRetain = useCallback(
+    (f: LotteryFire) =>
+      String(f.date).slice(0, 10) === date &&
+      f.entry.price * f.trigger.windowSize * 100 >= minPremiumK * 1000,
+    [date, minPremiumK],
+  );
+  // Hot Right Now stays floor-blind by owner decision (cheap re-igniting
+  // movers — the SNDK +1974% rationale): DATE ONLY, no premium clause.
+  const reignitedRetain = useCallback(
+    (f: LotteryFire) => String(f.date).slice(0, 10) === date,
+    [date],
+  );
+
   const serverTotal = lotteryFinder.data?.total ?? 0;
   const serverHasMore = lotteryFinder.data?.hasMore ?? false;
 
@@ -720,6 +739,7 @@ export function LotteryFinderSection({
     hasMore: serverHasMore,
     pageSize: PAGE_SIZE,
     serverTickerCounts: tickerCountsData,
+    retain: firesRetain,
   });
   const reignitedFeed = useNeverVanishFeed<LotteryFire>({
     fetched: fetchedReignitedFires,
@@ -733,6 +753,7 @@ export function LotteryFinderSection({
     serverTotal,
     hasMore: serverHasMore,
     pageSize: PAGE_SIZE,
+    retain: reignitedRetain,
   });
 
   // The live (engaged) view is a single never-vanish union rendered on one

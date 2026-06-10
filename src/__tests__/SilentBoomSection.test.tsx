@@ -51,10 +51,23 @@ import { SilentBoomSection } from '../components/SilentBoom';
 
 // ── Fixture factory ───────────────────────────────────────────────────
 
+// The never-vanish union is only ENGAGED on the live day, and its hard-floor
+// / cross-day `retain` guard purges any pinned alert whose `a.date` is not the
+// engaged day. Engaged-path fixtures must therefore be dated to TODAY (CT) or
+// the guard correctly drops them. Computed identically to the component's
+// `todayCt()`. `bucketCt` is only a union-key segment + TOD-display source, so
+// it is left at a fixed value (retain keys off `date`, not `bucketCt`).
+const TODAY_CT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Chicago',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date());
+
 function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
   return {
     id: 1,
-    date: '2026-05-08',
+    date: TODAY_CT,
     bucketCt: '2026-05-08T14:30:00Z',
     optionChainId: 'AAPL260508C00200000',
     underlyingSymbol: 'AAPL',
@@ -286,6 +299,44 @@ describe('SilentBoomSection: populated rendering', () => {
 // exactly the live view where the union engages.
 
 describe('SilentBoomSection: never-vanish accumulator', () => {
+  it('hard-floor retain: a sub-floor alert is never pinned even though the server reports it', () => {
+    // Pre-set the premium floor to $1K so the union engages with the floor
+    // active. Sub-floor alert premium = entryPrice(0.05) × spikeVolume(100) ×
+    // 100 = $500 — below the $1000 floor; a qualifying alert clears it.
+    window.localStorage.setItem('silentBoom.minPremiumK', '1');
+
+    const subFloor = makeAlert({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      entryPrice: 0.05,
+      spikeVolume: 100,
+    });
+    const qualifying = makeAlert({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      entryPrice: 1.5,
+      spikeVolume: 1500, // premium $225K ≥ floor
+    });
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [subFloor, qualifying], total: 2 }),
+    );
+
+    render(<SilentBoomSection marketOpen={true} />);
+
+    // The hard-floor retain guard drops the sub-floor alert from the union ...
+    expect(
+      screen.queryByTestId('silent-boom-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+    // ... while the qualifying alert renders normally.
+    expect(
+      screen.getByTestId('silent-boom-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
+
   it('keeps an alert pinned after a later poll omits it (server degrade [])', () => {
     const alertX = makeAlert({
       id: 1,

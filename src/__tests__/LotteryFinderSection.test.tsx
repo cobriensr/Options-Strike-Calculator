@@ -66,10 +66,22 @@ import { LotteryFinderSection } from '../components/LotteryFinder';
 
 // ── Fixtures ──────────────────────────────────────────────────────────
 
+// The component's never-vanish union is only ENGAGED on the live day
+// (`date === todayCt()`), and its hard-floor/cross-day `retain` guard purges
+// any pinned row whose `f.date` is not the engaged day. Engaged-path fixtures
+// must therefore be dated to TODAY (CT) or the guard correctly drops them.
+// Computed identically to the component's `todayCt()` so the two agree.
+const TODAY_CT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Chicago',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date());
+
 function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
   return {
     id: 1,
-    date: '2026-05-08',
+    date: TODAY_CT,
     triggerTimeCt: '2026-05-08T19:30:00Z',
     entryTimeCt: '2026-05-08T19:31:00Z',
     optionChainId: 'AAPL260508C00200000',
@@ -474,6 +486,49 @@ describe('LotteryFinderSection: never-vanish accumulator', () => {
     );
     rerender(<LotteryFinderSection marketOpen={true} />);
 
+    expect(
+      screen.getByTestId('lottery-row-TSLA260508C00250000'),
+    ).toBeInTheDocument();
+  });
+
+  it('hard-floor retain: a sub-floor main fire is never pinned, but a sub-floor reignited (HRN) row IS shown (floor-blind)', () => {
+    // Pre-set the premium floor to $1K ($1000) so the union engages with the
+    // floor active. Default makeFire premium = entry.price(0.85) ×
+    // windowSize(5) × 100 = $425 — below the $1000 floor.
+    window.localStorage.setItem('lotteryFinder.minPremiumK', '1');
+
+    const subFloorMain = makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+      triggerTimeCt: AM,
+    });
+    const subFloorReignited = makeFire({
+      id: 2,
+      optionChainId: 'TSLA260508C00250000',
+      underlyingSymbol: 'TSLA',
+      strike: 250,
+      triggerTimeCt: AM,
+      reignited: true,
+    });
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [subFloorMain],
+        reignitedFires: [subFloorReignited],
+        total: 1,
+      }),
+    );
+
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    // Main fires union enforces the hard floor → the sub-floor main fire is
+    // dropped (never pinned, never rendered in a ticker group).
+    expect(
+      screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+    ).not.toBeInTheDocument();
+    // Hot Right Now is floor-blind by owner decision → the sub-floor reignited
+    // row still renders.
     expect(
       screen.getByTestId('lottery-row-TSLA260508C00250000'),
     ).toBeInTheDocument();

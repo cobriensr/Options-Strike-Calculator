@@ -785,6 +785,18 @@ export function SilentBoomSection({
     (a: SilentBoomAlert) => a.underlyingSymbol,
     [],
   );
+  // Hard-floor + cross-day retain guard for the never-vanish union: an alert
+  // pinned while the premium floor was off/lower can survive a tightening and
+  // render sub-floor indefinitely. The retain predicate drops such pins; the
+  // qualifying rep re-populates on a later poll. Same-day AND premium ≥ the
+  // active floor (premium = entryPrice × spikeVolume × 100, floor = K × 1000).
+  // Silent Boom has no reignited/HRN union, so this is the only retain here.
+  const alertRetain = useCallback(
+    (a: SilentBoomAlert) =>
+      String(a.date).slice(0, 10) === date &&
+      a.entryPrice * a.spikeVolume * 100 >= minPremiumK * 1000,
+    [date, minPremiumK],
+  );
 
   const alertsFeed = useNeverVanishFeed<SilentBoomAlert>({
     fetched: fetchedAlerts,
@@ -796,6 +808,7 @@ export function SilentBoomSection({
     hasMore,
     pageSize: PAGE_SIZE,
     serverTickerCounts: tickerCountsData,
+    retain: alertRetain,
   });
 
   // The live (engaged) view is a single never-vanish union rendered on one
