@@ -18,7 +18,7 @@
  * Spec: docs/superpowers/specs/silent-boom-detector-2026-05-08.md
  */
 
-import { getDb, withDbRetry } from '../_lib/db.js';
+import { getDb, withDbRetry, isRetryableDbError } from '../_lib/db.js';
 import {
   detectSilentBoomFires,
   SILENT_BOOM_SPEC_V1,
@@ -477,25 +477,54 @@ export default withCronInstrumentation(
     // tick at or before the bucket time within 30 min — same window
     // lottery uses. Single round-trip per source vs. a per-fire LATERAL.
     //
-    // Fail-open, mirroring detect-lottery-fires' EMPTY_MACRO fallback:
-    // macro is display-only (per the spec), so a transient
-    // flow_data/spot_exposures rejection MUST NOT drop the whole tick.
-    // withDbRetry retries each query FIRST; if a query still rejects we
-    // log + Sentry-capture a warning and fall back to empty tick arrays.
-    // Empty arrays make every per-fire as-of lookup (tideDiffAt etc.)
-    // return null — identical to "no ticks in window" — so detection +
-    // INSERT proceed with NULL macro rather than 500-ing. A single
-    // try/catch around the group is intentional: the whole macro block is
-    // best-effort, and the first rejection short-circuits the rest.
-    let tideTicks: { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[] = [];
-    let tideOtmTicks: { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[] =
-      [];
-    let zeroDteTicks: { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[] =
-      [];
-    let spxGammaTicks: { ts_ms: DbNumeric; gamma_oi: DbNumeric }[] = [];
-    try {
-      tideTicks = (await withDbRetry(
-        () => db`
+    // The four series are INDEPENDENT, so fetch them in PARALLEL
+    // (Promise.allSettled) rather than serially — worst case was ~4×10s.
+    //
+    // Fail-open is PER-QUERY and ONLY for transient errors:
+    //   - A genuine, non-transient rejection (real SQL/schema bug — e.g.
+    //     a renamed column) is THROWN so the cron fails loudly via
+    //     withCronInstrumentation. Swallowing it as a warning would turn a
+    //     permanent breakage into silent, indefinite macro degradation.
+    //   - A transient rejection (Neon blip; withDbRetry already retried and
+    //     re-threw a TransientDbError) falls open to [] for THAT query
+    //     only — the other successful series are retained. Empty arrays
+    //     make that source's per-fire as-of (tideDiffAt etc.) return null,
+    //     identical to "no ticks in window", so detection + INSERT proceed
+    //     with NULL macro for the degraded source rather than 500-ing.
+    //
+    // Per-query (not whole-block) fail-open means the direction gate —
+    // which needs only market_tide — survives a spot_exposures/zero_dte
+    // outage, and vice versa. (Lottery's analogous fallback is per-FIRE,
+    // a deliberately different granularity — do NOT extract a shared util.)
+    //
+    // When any series degrades transiently we set macroDegraded, emit ONE
+    // Sentry warning + structured log, and the handler returns
+    // status:'partial' so a macro outage is observably DEGRADED, not
+    // silently green. We do NOT escalate to 'error': alerts still landed.
+    type TideTick = { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric };
+    type GammaTick = { ts_ms: DbNumeric; gamma_oi: DbNumeric };
+    let macroDegraded = false;
+    let macroSeriesFailed = 0;
+    let lastTransientReason: unknown = null;
+    // Settle helper: fulfilled → value; transient rejection → fall open to
+    // the supplied empty array + record degradation; genuine rejection →
+    // re-throw so the whole cron errors loudly.
+    const settleMacro = <T>(
+      result: PromiseSettledResult<T[]>,
+      fallback: T[],
+    ): T[] => {
+      if (result.status === 'fulfilled') return result.value;
+      if (!isRetryableDbError(result.reason)) throw result.reason;
+      macroDegraded = true;
+      macroSeriesFailed += 1;
+      lastTransientReason = result.reason;
+      return fallback;
+    };
+
+    const [tideSettled, tideOtmSettled, zeroDteSettled, spxGammaSettled] =
+      await Promise.allSettled([
+        withDbRetry(
+          () => db`
           SELECT
             EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
             ncp, npp
@@ -506,15 +535,15 @@ export default withCronInstrumentation(
             )
           ORDER BY timestamp ASC
         `,
-        2,
-        10_000,
-      )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-      // OTM variant of market_tide. Per the spec, the OTM data for
-      // source='market_tide_otm' lives in the regular ncp/npp columns;
-      // the otm_ncp/otm_npp columns on flow_data are vestigial and NULL
-      // for this source. Same lookup window (30 min) as the all-in tide.
-      tideOtmTicks = (await withDbRetry(
-        () => db`
+          2,
+          10_000,
+        ) as Promise<TideTick[]>,
+        // OTM variant of market_tide. Per the spec, the OTM data for
+        // source='market_tide_otm' lives in the regular ncp/npp columns;
+        // the otm_ncp/otm_npp columns on flow_data are vestigial and NULL
+        // for this source. Same lookup window (30 min) as the all-in tide.
+        withDbRetry(
+          () => db`
           SELECT
             EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
             ncp, npp
@@ -525,11 +554,11 @@ export default withCronInstrumentation(
             )
           ORDER BY timestamp ASC
         `,
-        2,
-        10_000,
-      )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-      zeroDteTicks = (await withDbRetry(
-        () => db`
+          2,
+          10_000,
+        ) as Promise<TideTick[]>,
+        withDbRetry(
+          () => db`
           SELECT
             EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
             ncp, npp
@@ -540,11 +569,11 @@ export default withCronInstrumentation(
             )
           ORDER BY timestamp ASC
         `,
-        2,
-        10_000,
-      )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-      spxGammaTicks = (await withDbRetry(
-        () => db`
+          2,
+          10_000,
+        ) as Promise<TideTick[]>,
+        withDbRetry(
+          () => db`
           SELECT
             EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
             gamma_oi
@@ -555,30 +584,35 @@ export default withCronInstrumentation(
             )
           ORDER BY timestamp ASC
         `,
-        2,
-        10_000,
-      )) as { ts_ms: DbNumeric; gamma_oi: DbNumeric }[];
-    } catch (macroErr) {
-      // Best-effort macro fetch failed even after withDbRetry. Surface to
-      // Sentry at 'warning' (a sustained outage degrades every fire's
-      // macro/badge fields to null and should be observable) and fall
-      // open: tick arrays stay empty, every as-of yields null macro, and
-      // the tick's alerts still detect + insert.
+          2,
+          10_000,
+        ) as Promise<GammaTick[]>,
+      ]);
+
+    // settleMacro re-throws on a genuine error → propagate out of the
+    // handler (cron fails loudly). Transient failures fall open per-query.
+    const tideTicks: TideTick[] = settleMacro(tideSettled, []);
+    const tideOtmTicks: TideTick[] = settleMacro(tideOtmSettled, []);
+    const zeroDteTicks: TideTick[] = settleMacro(zeroDteSettled, []);
+    const spxGammaTicks: GammaTick[] = settleMacro(spxGammaSettled, []);
+
+    if (macroDegraded) {
+      // ONE warning per tick (a sustained outage degrades every fire's
+      // macro/badge fields to null and should be observable) — but the
+      // alerts still detect + insert, and the handler returns 'partial'.
       ctx.logger.warn(
-        { err: macroErr },
-        'detect-silent-boom macro-series fetch failed; using empty tick arrays (null macro for every fire)',
+        { err: lastTransientReason, macroSeriesFailed },
+        'detect-silent-boom macro-series fetch degraded (transient); ' +
+          'affected series use empty tick arrays (null macro for those fires)',
       );
-      Sentry.captureException(macroErr, {
+      Sentry.captureException(lastTransientReason, {
         level: 'warning',
         tags: {
           cron: 'detect-silent-boom',
           stage: 'macro_fetch',
         },
+        extra: { macroSeriesFailed },
       });
-      tideTicks = [];
-      tideOtmTicks = [];
-      zeroDteTicks = [];
-      spxGammaTicks = [];
     }
 
     /** Generic "latest tick at or before targetMs within 30min" lookup.
@@ -1025,12 +1059,17 @@ export default withCronInstrumentation(
         gexOutOfUniverse,
         multilegHits,
         multilegMisses,
+        macroDegraded,
+        macroSeriesFailed,
       },
       'detect-silent-boom completed',
     );
 
+    // A transient macro outage degraded at least one series to NULL on
+    // every affected fire. Report 'partial' (not 'success') so the run is
+    // observably DEGRADED — never escalate to 'error': alerts still landed.
     return {
-      status: 'success',
+      status: macroDegraded ? 'partial' : 'success',
       rows: inserted,
       metadata: {
         bucketRows: bucketRows.length,
@@ -1045,6 +1084,8 @@ export default withCronInstrumentation(
         gexOutOfUniverse,
         multilegHits,
         multilegMisses,
+        macroDegraded,
+        macroSeriesFailed,
       },
     };
   },

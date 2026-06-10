@@ -71,11 +71,23 @@ test.describe('Options Alerts responsive layout', () => {
     expect(second).not.toBeNull();
     if (!first || !second) return;
 
+    // Both panes must actually have height — guards against a regression
+    // where the top pane collapses to ~0px (which would still satisfy the
+    // "second below first" check below and pass vacuously).
+    expect(first.height).toBeGreaterThan(0);
+    expect(second.height).toBeGreaterThan(0);
     // Stacked: Silent Boom begins at (or below) the bottom of Lottery. Allow a
     // small tolerance for sub-pixel border rounding.
     expect(second.y).toBeGreaterThanOrEqual(first.y + first.height - 2);
     // And they share the same x / left edge in the column layout.
     expect(Math.abs(second.x - first.x)).toBeLessThan(2);
+    // Each pane is flex-1 of the same column → roughly a 50/50 height split.
+    // Within ~15% of each other catches a lopsided collapse the bottom-edge
+    // check alone would miss.
+    const maxHeight = Math.max(first.height, second.height);
+    expect(Math.abs(first.height - second.height)).toBeLessThanOrEqual(
+      maxHeight * 0.15,
+    );
   });
 
   test('panes sit side-by-side at the xl breakpoint (1440px)', async ({
@@ -90,10 +102,21 @@ test.describe('Options Alerts responsive layout', () => {
     expect(second).not.toBeNull();
     if (!first || !second) return;
 
+    // Both panes must actually have width — guards against a regression
+    // where one pane collapses to ~0px (which would still satisfy the
+    // shared-top + "second to the right" checks vacuously).
+    expect(first.width).toBeGreaterThan(0);
+    expect(second.width).toBeGreaterThan(0);
     // Side-by-side: both panes share the same top edge, and Silent Boom is to
     // the right of Lottery.
     expect(Math.abs(second.y - first.y)).toBeLessThan(2);
     expect(second.x).toBeGreaterThan(first.x);
+    // The two columns split the row ~50/50 → widths within ~15% of each
+    // other. Catches a collapsed/over-wide pane the x-ordering check misses.
+    const maxWidth = Math.max(first.width, second.width);
+    expect(Math.abs(first.width - second.width)).toBeLessThanOrEqual(
+      maxWidth * 0.15,
+    );
   });
 
   // Axe scans run on Chromium only — Firefox/WebKit report false positives due
