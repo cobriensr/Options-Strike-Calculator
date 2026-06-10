@@ -476,70 +476,110 @@ export default withCronInstrumentation(
     // mkt_tide_diff / zero_dte_diff / spx_spot_gamma_oi is the latest
     // tick at or before the bucket time within 30 min — same window
     // lottery uses. Single round-trip per source vs. a per-fire LATERAL.
-    const tideTicks = (await withDbRetry(
-      () => db`
-        SELECT
-          EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
-          ncp, npp
-        FROM flow_data
-        WHERE source = 'market_tide'
-          AND timestamp >= NOW() - (
-            (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
-          )
-        ORDER BY timestamp ASC
-      `,
-      2,
-      10_000,
-    )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-    // OTM variant of market_tide. Per the spec, the OTM data for
-    // source='market_tide_otm' lives in the regular ncp/npp columns;
-    // the otm_ncp/otm_npp columns on flow_data are vestigial and NULL
-    // for this source. Same lookup window (30 min) as the all-in tide.
-    const tideOtmTicks = (await withDbRetry(
-      () => db`
-        SELECT
-          EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
-          ncp, npp
-        FROM flow_data
-        WHERE source = 'market_tide_otm'
-          AND timestamp >= NOW() - (
-            (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
-          )
-        ORDER BY timestamp ASC
-      `,
-      2,
-      10_000,
-    )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-    const zeroDteTicks = (await withDbRetry(
-      () => db`
-        SELECT
-          EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
-          ncp, npp
-        FROM flow_data
-        WHERE source = 'zero_dte_greek_flow'
-          AND timestamp >= NOW() - (
-            (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
-          )
-        ORDER BY timestamp ASC
-      `,
-      2,
-      10_000,
-    )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
-    const spxGammaTicks = (await withDbRetry(
-      () => db`
-        SELECT
-          EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
-          gamma_oi
-        FROM spot_exposures
-        WHERE ticker = 'SPX'
-          AND timestamp >= NOW() - (
-            (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
-          )
-        ORDER BY timestamp ASC
-      `,
-      2,
-      10_000,
-    )) as { ts_ms: DbNumeric; gamma_oi: DbNumeric }[];
+    //
+    // Fail-open, mirroring detect-lottery-fires' EMPTY_MACRO fallback:
+    // macro is display-only (per the spec), so a transient
+    // flow_data/spot_exposures rejection MUST NOT drop the whole tick.
+    // withDbRetry retries each query FIRST; if a query still rejects we
+    // log + Sentry-capture a warning and fall back to empty tick arrays.
+    // Empty arrays make every per-fire as-of lookup (tideDiffAt etc.)
+    // return null — identical to "no ticks in window" — so detection +
+    // INSERT proceed with NULL macro rather than 500-ing. A single
+    // try/catch around the group is intentional: the whole macro block is
+    // best-effort, and the first rejection short-circuits the rest.
+    let tideTicks: { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[] = [];
+    let tideOtmTicks: { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[] =
+      [];
+    let zeroDteTicks: { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[] =
+      [];
+    let spxGammaTicks: { ts_ms: DbNumeric; gamma_oi: DbNumeric }[] = [];
+    try {
+      tideTicks = (await withDbRetry(
+        () => db`
+          SELECT
+            EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+            ncp, npp
+          FROM flow_data
+          WHERE source = 'market_tide'
+            AND timestamp >= NOW() - (
+              (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+            )
+          ORDER BY timestamp ASC
+        `,
+        2,
+        10_000,
+      )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+      // OTM variant of market_tide. Per the spec, the OTM data for
+      // source='market_tide_otm' lives in the regular ncp/npp columns;
+      // the otm_ncp/otm_npp columns on flow_data are vestigial and NULL
+      // for this source. Same lookup window (30 min) as the all-in tide.
+      tideOtmTicks = (await withDbRetry(
+        () => db`
+          SELECT
+            EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+            ncp, npp
+          FROM flow_data
+          WHERE source = 'market_tide_otm'
+            AND timestamp >= NOW() - (
+              (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+            )
+          ORDER BY timestamp ASC
+        `,
+        2,
+        10_000,
+      )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+      zeroDteTicks = (await withDbRetry(
+        () => db`
+          SELECT
+            EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+            ncp, npp
+          FROM flow_data
+          WHERE source = 'zero_dte_greek_flow'
+            AND timestamp >= NOW() - (
+              (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+            )
+          ORDER BY timestamp ASC
+        `,
+        2,
+        10_000,
+      )) as { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric }[];
+      spxGammaTicks = (await withDbRetry(
+        () => db`
+          SELECT
+            EXTRACT(EPOCH FROM timestamp) * 1000 AS ts_ms,
+            gamma_oi
+          FROM spot_exposures
+          WHERE ticker = 'SPX'
+            AND timestamp >= NOW() - (
+              (${SCAN_WINDOW_MIN}::int + 30) * INTERVAL '1 minute'
+            )
+          ORDER BY timestamp ASC
+        `,
+        2,
+        10_000,
+      )) as { ts_ms: DbNumeric; gamma_oi: DbNumeric }[];
+    } catch (macroErr) {
+      // Best-effort macro fetch failed even after withDbRetry. Surface to
+      // Sentry at 'warning' (a sustained outage degrades every fire's
+      // macro/badge fields to null and should be observable) and fall
+      // open: tick arrays stay empty, every as-of yields null macro, and
+      // the tick's alerts still detect + insert.
+      ctx.logger.warn(
+        { err: macroErr },
+        'detect-silent-boom macro-series fetch failed; using empty tick arrays (null macro for every fire)',
+      );
+      Sentry.captureException(macroErr, {
+        level: 'warning',
+        tags: {
+          cron: 'detect-silent-boom',
+          stage: 'macro_fetch',
+        },
+      });
+      tideTicks = [];
+      tideOtmTicks = [];
+      zeroDteTicks = [];
+      spxGammaTicks = [];
+    }
 
     /** Generic "latest tick at or before targetMs within 30min" lookup.
      *  Sorted ascending; binary-search for the rightmost element with

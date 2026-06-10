@@ -1384,26 +1384,29 @@ describe('detect-silent-boom handler', () => {
     expect(bBind?.get('mkt_tide_diff')).toBeNull();
   });
 
-  it('CHARACTERIZATION: a macro-series fetch failure is NOT fail-open — the cron errors (no EMPTY_MACRO fallback, unlike lottery)', async () => {
-    // Unlike detect-lottery-fires (which wraps fetchMacroSnapshot in a
-    // try/catch and falls back to EMPTY_MACRO so the fire still lands),
-    // detect-silent-boom pulls its macro tick series (tide / tide_otm /
-    // zero_dte / spx_gamma) up front under withDbRetry with NO surrounding
-    // try/catch. A rejection from any of those four queries therefore
-    // propagates out of the handler; withCronInstrumentation catches it and
-    // returns a 500 error envelope — the alert does NOT land.
+  it('fails open on a macro-series fetch failure — the tick still detects + inserts with NULL macro (mirrors lottery EMPTY_MACRO)', async () => {
+    // Parity with detect-lottery-fires: macro (tide / tide_otm / zero_dte /
+    // spx_gamma) is display-only per the spec, so a transient
+    // flow_data/spot_exposures outage MUST NOT drop the whole tick. The four
+    // macro-series fetches are wrapped in a single try/catch: a rejection is
+    // logged + Sentry-captured at level 'warning' (tags cron
+    // 'detect-silent-boom', stage 'macro_fetch') and the tick arrays fall
+    // back to empty — identical to "no ticks in window", so every per-fire
+    // as-of yields NULL macro. Detection + INSERT proceed unchanged.
     //
-    // This documents CURRENT behavior. It is a deliberate DIVERGENCE from
-    // lottery's display-only fail-open macro handling: a transient
-    // flow_data/spot_exposures outage drops the whole silent-boom tick
-    // rather than inserting with null macro. See the report for the gap.
+    // Because the catch fires the instant the FIRST macro query rejects, the
+    // remaining three macro SELECTs are short-circuited (not drained) — the
+    // next real SQL calls are pre_trade_count, ticker_flow_snapshot, INSERT.
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
     mockSql
       .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
       .mockResolvedValueOnce([]) // prior fires
-      .mockRejectedValueOnce(new Error('flow_data boom')) // tide ticks REJECTS
-      .mockResolvedValueOnce([]) // tide_otm ticks (Promise.all-style sequence drains)
-      .mockResolvedValueOnce([]) // zero_dte ticks
-      .mockResolvedValueOnce([]); // spx_gamma ticks
+      .mockRejectedValueOnce(new Error('flow_data boom')) // tide ticks REJECTS → catch
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 99 }]); // insert
 
     const req = mockRequest({
       method: 'GET',
@@ -1412,8 +1415,28 @@ describe('detect-silent-boom handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // No EMPTY_MACRO fallback — the cron surfaces the failure as a 500.
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    // The tick is NOT dropped: success envelope, the fire still inserted.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', inserted: 1 });
+
+    // INSERT landed with all four macro fields NULL (empty tick arrays →
+    // every as-of lookup returns null).
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBeNull();
+    expect(binds.get('mkt_tide_otm_diff')).toBeNull();
+    expect(binds.get('zero_dte_diff')).toBeNull();
+    expect(binds.get('spx_spot_gamma_oi')).toBeNull();
+
+    // Sentry warning captured with the lottery-style tags.
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          cron: 'detect-silent-boom',
+          stage: 'macro_fetch',
+        }),
+      }),
+    );
   });
 });
