@@ -1305,4 +1305,115 @@ describe('detect-silent-boom handler', () => {
     // dte computed from the fire-day date, not ctx.today.
     expect(binds.get('dte')).toBe(2);
   });
+
+  it('snapshots macro at EACH fire’s own bucket_ct, not a single cron-tick wall-clock', async () => {
+    // The recent per-fire as-of fix: the macro lookups (tideDiffAt etc.)
+    // binary-search the batch-fetched tick series against THIS fire's
+    // f.bucketTs.getTime() — NOT a shared cron-tick timestamp. Two chains
+    // spike in the SAME cron tick at DIFFERENT buckets (chain A @ 13:20,
+    // chain B @ 14:00, 40 min apart). A single market_tide tick at 13:18
+    // is within the 30-min staleness window for A's 13:20 bucket but
+    // 42 min stale for B's 14:00 bucket. If the as-of were a shared
+    // wall-clock both fires would resolve identically; the per-fire
+    // bucket as-of gives A the diff and B null.
+    const chainA = 'SNDK260507C01175000';
+    const chainB = 'SNDK260507C01180000';
+    const exp = '2026-05-07';
+    const mk = (chain: string, strike: number, spikeIso: string) => {
+      const rows: ReturnType<typeof bucketRow>[] = [];
+      // 4 silent baseline buckets ending just before the spike, then the
+      // spike bucket. Baselines are placed 5-min apart immediately before
+      // the spike so the detector's baseline window is satisfied.
+      const spikeMs = Date.parse(spikeIso);
+      for (let b = 4; b >= 1; b -= 1) {
+        const iso = new Date(spikeMs - b * 5 * 60_000).toISOString();
+        rows.push(
+          bucketRow(chain, 'SNDK', 'C', strike, exp, iso, { size: 100 }),
+        );
+      }
+      rows.push(
+        bucketRow(chain, 'SNDK', 'C', strike, exp, spikeIso, { size: 2000 }),
+      );
+      return rows;
+    };
+    const aStream = mk(chainA, 1175, '2026-05-07T13:20:00Z');
+    const bStream = mk(chainB, 1180, '2026-05-07T14:00:00Z');
+    const tideTickMs = Date.parse('2026-05-07T13:18:00Z');
+
+    mockSql
+      .mockResolvedValueOnce([...aStream, ...bStream]) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockResolvedValueOnce([
+        // Single tide tick at 13:18 — in-window for A (13:20), stale for B (14:00).
+        { ts_ms: String(tideTickMs), ncp: '9000', npp: '3000' }, // diff +6000
+      ]) // tide ticks
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      // Fire A (bucket 13:20): pre_trade_count + ticker_flow_snapshot
+      // (cache miss, first SNDK fire) + INSERT.
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count A
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot (once, shared per ticker+date)
+      .mockResolvedValueOnce([{ id: 1 }]) // INSERT A
+      // Fire B (bucket 14:00): pre_trade_count + INSERT (flow snapshot cached).
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count B
+      .mockResolvedValueOnce([{ id: 2 }]); // INSERT B
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      totalFires: 2,
+      inserted: 2,
+    });
+
+    const allBinds = extractAllInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(allBinds).toHaveLength(2);
+    // Fires are processed in Map-insertion order — chain A first, chain B
+    // second. A's 13:20 bucket is within 30 min of the 13:18 tick → diff
+    // +6000. B's 14:00 bucket is 42 min past the tick → out of window → null.
+    const aBind = allBinds.find((b) => b.get('strike') === 1175);
+    const bBind = allBinds.find((b) => b.get('strike') === 1180);
+    expect(aBind?.get('mkt_tide_diff')).toBe(6000);
+    expect(bBind?.get('mkt_tide_diff')).toBeNull();
+  });
+
+  it('CHARACTERIZATION: a macro-series fetch failure is NOT fail-open — the cron errors (no EMPTY_MACRO fallback, unlike lottery)', async () => {
+    // Unlike detect-lottery-fires (which wraps fetchMacroSnapshot in a
+    // try/catch and falls back to EMPTY_MACRO so the fire still lands),
+    // detect-silent-boom pulls its macro tick series (tide / tide_otm /
+    // zero_dte / spx_gamma) up front under withDbRetry with NO surrounding
+    // try/catch. A rejection from any of those four queries therefore
+    // propagates out of the handler; withCronInstrumentation catches it and
+    // returns a 500 error envelope — the alert does NOT land.
+    //
+    // This documents CURRENT behavior. It is a deliberate DIVERGENCE from
+    // lottery's display-only fail-open macro handling: a transient
+    // flow_data/spot_exposures outage drops the whole silent-boom tick
+    // rather than inserting with null macro. See the report for the gap.
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      .mockRejectedValueOnce(new Error('flow_data boom')) // tide ticks REJECTS
+      .mockResolvedValueOnce([]) // tide_otm ticks (Promise.all-style sequence drains)
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]); // spx_gamma ticks
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // No EMPTY_MACRO fallback — the cron surfaces the failure as a 500.
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+  });
 });

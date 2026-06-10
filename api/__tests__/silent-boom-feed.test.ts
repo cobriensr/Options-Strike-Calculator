@@ -489,6 +489,80 @@ describe('silent-boom-feed handler', () => {
     expect(body.alerts).toEqual([]);
   });
 
+  it('pagination coherence: total > limit → page length == limit, hasMore true, offset echoed', async () => {
+    // total (count query) reports the full reachable set; the list query
+    // returns at most `limit` rows. The handler derives hasMore as
+    // `offset + alerts.length < total`. With total=50, limit=10, offset=0:
+    // page length == 10, hasMore true. Pin the count/limit/offset/hasMore
+    // coherence so a regression that decouples them (e.g. hasMore off the
+    // page length alone) fails.
+    const page = Array.from({ length: 10 }, (_, i) =>
+      makeAlert({ id: i + 1, option_chain_id: `SNDK260507C0117500${i}` }),
+    );
+    mockSql
+      .mockResolvedValueOnce([{ n: 50 }]) // count → total 50
+      .mockResolvedValueOnce(page) // list → exactly `limit` rows
+      .mockResolvedValueOnce([]); // cluster-candidate query
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', limit: '10', offset: '0' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      count: number;
+      total: number;
+      limit: number;
+      offset: number;
+      hasMore: boolean;
+      alerts: unknown[];
+    };
+    expect(body.total).toBe(50);
+    expect(body.limit).toBe(10);
+    expect(body.offset).toBe(0);
+    // count + returned page length both equal the limit.
+    expect(body.count).toBe(10);
+    expect(body.alerts).toHaveLength(10);
+    // 0 + 10 < 50 → more pages remain.
+    expect(body.hasMore).toBe(true);
+  });
+
+  it('pagination coherence: last page (offset + page length == total) → hasMore false', async () => {
+    // Final slice: offset=40, limit=10, total=50, page returns the last 10.
+    // 40 + 10 == 50 → NOT < total → hasMore false. Boundary guard so the
+    // "next" control disables exactly when the user reaches the end.
+    const page = Array.from({ length: 10 }, (_, i) =>
+      makeAlert({ id: 40 + i + 1, option_chain_id: `SNDK260507C0118000${i}` }),
+    );
+    mockSql
+      .mockResolvedValueOnce([{ n: 50 }]) // count → total 50
+      .mockResolvedValueOnce(page) // list → last 10 rows
+      .mockResolvedValueOnce([]); // cluster-candidate query
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-05-07', limit: '10', offset: '40' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      count: number;
+      total: number;
+      offset: number;
+      hasMore: boolean;
+    };
+    expect(body.total).toBe(50);
+    expect(body.offset).toBe(40);
+    expect(body.count).toBe(10);
+    // 40 + 10 == 50 (not <) → no further pages.
+    expect(body.hasMore).toBe(false);
+  });
+
   it('maps direction_gated + realized_trail30_10_pct into the response (Phase 4)', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
