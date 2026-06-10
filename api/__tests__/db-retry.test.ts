@@ -20,6 +20,7 @@ import {
   withDbRetry,
   isRetryableDbError,
   TransientDbError,
+  settleDegradable,
 } from '../_lib/db.js';
 import { DB_RETRY_ATTEMPTS } from '../_lib/constants.js';
 
@@ -176,5 +177,60 @@ describe('withDbRetry', () => {
     expect(caught).toBeInstanceOf(TransientDbError);
     expect((caught as TransientDbError).cause).toBe(original);
     expect((caught as Error).message).toBe(original.message);
+  });
+
+  it('clears the per-attempt timeout timer once a fast fn resolves (no leaked 10s timer)', async () => {
+    // FIX #4: the Promise.race timeout timer must be cleared when fn() wins
+    // the race. Otherwise a resolved query leaves a live timer armed for the
+    // full perAttemptTimeoutMs. Use fake timers WITHOUT shouldAdvanceTime so
+    // the timer count is observable, and assert no attempt timer survives the
+    // resolved call.
+    vi.useRealTimers();
+    vi.useFakeTimers(); // no shouldAdvanceTime → manual control
+    const before = vi.getTimerCount();
+    const fn = vi.fn().mockResolvedValue('ok');
+
+    await expect(withDbRetry(fn, 2, 10_000)).resolves.toBe('ok');
+
+    // The timeout timer was cleared in the finally block → no net pending
+    // timer left behind from the resolved attempt.
+    expect(vi.getTimerCount()).toBe(before);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('settleDegradable', () => {
+  it('fulfilled → value with null failure', async () => {
+    const result = await Promise.allSettled([Promise.resolve([1, 2, 3])]);
+    const settled = settleDegradable(result[0]!, [] as number[]);
+    expect(settled.failure).toBeNull();
+    expect(settled.value).toEqual([1, 2, 3]);
+    expect(settled.reason).toBeUndefined();
+  });
+
+  it('rejected transient ("fetch failed") → transient + fallback', async () => {
+    const reason = new Error('Error connecting to database: fetch failed');
+    const result = await Promise.allSettled([Promise.reject(reason)]);
+    const settled = settleDegradable(result[0]!, [] as number[]);
+    expect(settled.failure).toBe('transient');
+    expect(settled.value).toEqual([]);
+    expect(settled.reason).toBe(reason);
+  });
+
+  it('rejected with a TransientDbError → transient (instanceof short-circuit)', async () => {
+    const reason = new TransientDbError(new Error('whatever'));
+    const result = await Promise.allSettled([Promise.reject(reason)]);
+    const settled = settleDegradable(result[0]!, [] as number[]);
+    expect(settled.failure).toBe('transient');
+    expect(settled.value).toEqual([]);
+  });
+
+  it('rejected genuine ("column does not exist") → genuine + fallback', async () => {
+    const reason = new Error('column "ncp" does not exist');
+    const result = await Promise.allSettled([Promise.reject(reason)]);
+    const settled = settleDegradable(result[0]!, [] as number[]);
+    expect(settled.failure).toBe('genuine');
+    expect(settled.value).toEqual([]);
+    expect(settled.reason).toBe(reason);
   });
 });

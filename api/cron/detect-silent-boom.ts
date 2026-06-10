@@ -18,7 +18,7 @@
  * Spec: docs/superpowers/specs/silent-boom-detector-2026-05-08.md
  */
 
-import { getDb, withDbRetry, isRetryableDbError } from '../_lib/db.js';
+import { getDb, withDbRetry, settleDegradable } from '../_lib/db.js';
 import {
   detectSilentBoomFires,
   SILENT_BOOM_SPEC_V1,
@@ -480,46 +480,30 @@ export default withCronInstrumentation(
     // The four series are INDEPENDENT, so fetch them in PARALLEL
     // (Promise.allSettled) rather than serially — worst case was ~4×10s.
     //
-    // Fail-open is PER-QUERY and ONLY for transient errors:
-    //   - A genuine, non-transient rejection (real SQL/schema bug — e.g.
-    //     a renamed column) is THROWN so the cron fails loudly via
-    //     withCronInstrumentation. Swallowing it as a warning would turn a
-    //     permanent breakage into silent, indefinite macro degradation.
+    // Fail-open is PER-QUERY and ALWAYS open: the macro fetch NEVER drops
+    // alerts. Detection + INSERT proceed even when every series fails — the
+    // affected series fall open to [] so their per-fire as-of (tideDiffAt
+    // etc.) returns null, identical to "no ticks in window", and the row
+    // lands with NULL macro for that source. What differs is HOW the failure
+    // is signalled (classified per-query via `settleDegradable`):
     //   - A transient rejection (Neon blip; withDbRetry already retried and
-    //     re-threw a TransientDbError) falls open to [] for THAT query
-    //     only — the other successful series are retained. Empty arrays
-    //     make that source's per-fire as-of (tideDiffAt etc.) return null,
-    //     identical to "no ticks in window", so detection + INSERT proceed
-    //     with NULL macro for the degraded source rather than 500-ing.
+    //     re-threw a TransientDbError) → degrade quietly: warning-level Sentry
+    //     + a warn log. The handler returns 'partial' only when fires landed
+    //     (a transient blip on a 0-fire tick has zero blast radius → stays
+    //     'success').
+    //   - A genuine, non-transient rejection (real SQL/schema bug — e.g. a
+    //     renamed column) → page: error-level Sentry + an error log, and the
+    //     handler returns 'error' REGARDLESS of inserted count. The alerts
+    //     still land (no drop), but a permanent breakage must go red on the
+    //     cron monitor (FIX #2 maps a returned 'error' → 'error' check-in)
+    //     rather than degrading silently and indefinitely.
     //
     // Per-query (not whole-block) fail-open means the direction gate —
     // which needs only market_tide — survives a spot_exposures/zero_dte
     // outage, and vice versa. (Lottery's analogous fallback is per-FIRE,
     // a deliberately different granularity — do NOT extract a shared util.)
-    //
-    // When any series degrades transiently we set macroDegraded, emit ONE
-    // Sentry warning + structured log, and the handler returns
-    // status:'partial' so a macro outage is observably DEGRADED, not
-    // silently green. We do NOT escalate to 'error': alerts still landed.
     type TideTick = { ts_ms: DbNumeric; ncp: DbNumeric; npp: DbNumeric };
     type GammaTick = { ts_ms: DbNumeric; gamma_oi: DbNumeric };
-    let macroDegraded = false;
-    let macroSeriesFailed = 0;
-    let lastTransientReason: unknown = null;
-    // Settle helper: fulfilled → value; transient rejection → fall open to
-    // the supplied empty array + record degradation; genuine rejection →
-    // re-throw so the whole cron errors loudly.
-    const settleMacro = <T>(
-      result: PromiseSettledResult<T[]>,
-      fallback: T[],
-    ): T[] => {
-      if (result.status === 'fulfilled') return result.value;
-      if (!isRetryableDbError(result.reason)) throw result.reason;
-      macroDegraded = true;
-      macroSeriesFailed += 1;
-      lastTransientReason = result.reason;
-      return fallback;
-    };
 
     const [tideSettled, tideOtmSettled, zeroDteSettled, spxGammaSettled] =
       await Promise.allSettled([
@@ -589,29 +573,84 @@ export default withCronInstrumentation(
         ) as Promise<GammaTick[]>,
       ]);
 
-    // settleMacro re-throws on a genuine error → propagate out of the
-    // handler (cron fails loudly). Transient failures fall open per-query.
-    const tideTicks: TideTick[] = settleMacro(tideSettled, []);
-    const tideOtmTicks: TideTick[] = settleMacro(tideOtmSettled, []);
-    const zeroDteTicks: TideTick[] = settleMacro(zeroDteSettled, []);
-    const spxGammaTicks: GammaTick[] = settleMacro(spxGammaSettled, []);
+    // Classify each settled series via the shared `settleDegradable` helper:
+    // fulfilled → value; rejected → fall open to [] + a failure kind
+    // ('transient' | 'genuine'). Nothing throws — the four series always
+    // resolve to usable arrays so detection + INSERT proceed.
+    const tideRes = settleDegradable(tideSettled, [] as TideTick[]);
+    const tideOtmRes = settleDegradable(tideOtmSettled, [] as TideTick[]);
+    const zeroDteRes = settleDegradable(zeroDteSettled, [] as TideTick[]);
+    const spxGammaRes = settleDegradable(spxGammaSettled, [] as GammaTick[]);
 
-    if (macroDegraded) {
-      // ONE warning per tick (a sustained outage degrades every fire's
-      // macro/badge fields to null and should be observable) — but the
-      // alerts still detect + insert, and the handler returns 'partial'.
+    const tideTicks: TideTick[] = tideRes.value;
+    const tideOtmTicks: TideTick[] = tideOtmRes.value;
+    const zeroDteTicks: TideTick[] = zeroDteRes.value;
+    const spxGammaTicks: GammaTick[] = spxGammaRes.value;
+
+    const macroResults = [tideRes, tideOtmRes, zeroDteRes, spxGammaRes];
+    const transientFailures = macroResults.filter(
+      (r) => r.failure === 'transient',
+    ).length;
+    const genuineFailures = macroResults.filter(
+      (r) => r.failure === 'genuine',
+    ).length;
+    const macroSeriesFailed = transientFailures + genuineFailures;
+    const macroDegraded = macroSeriesFailed > 0;
+    // ALL failed reasons (not just the last) for the Sentry `extra`.
+    const macroReasons = macroResults
+      .filter((r) => r.failure != null)
+      .map((r) => r.reason);
+    const firstGenuineReason = macroResults.find(
+      (r) => r.failure === 'genuine',
+    )?.reason;
+    const firstTransientReason = macroResults.find(
+      (r) => r.failure === 'transient',
+    )?.reason;
+
+    if (genuineFailures > 0) {
+      // A genuine (non-retryable) macro error is a real bug — page. The
+      // alerts STILL land (null macro for the broken series); the loudness
+      // comes from the error-level capture + the handler returning 'error'
+      // (which the cron monitor maps to a red check-in).
+      ctx.logger.error(
+        {
+          err: firstGenuineReason,
+          genuineFailures,
+          transientFailures,
+          macroSeriesFailed,
+        },
+        'detect-silent-boom macro-series fetch hit a GENUINE error ' +
+          '(non-transient); alerts still insert with NULL macro, but the ' +
+          'run reports status:error so the bug pages',
+      );
+      Sentry.captureException(firstGenuineReason, {
+        level: 'error',
+        tags: {
+          cron: 'detect-silent-boom',
+          stage: 'macro_fetch',
+        },
+        extra: { genuineFailures, transientFailures, reasons: macroReasons },
+      });
+    } else if (transientFailures > 0) {
+      // Transient-only degradation: degrade quietly. The alerts insert with
+      // NULL macro for the affected series; the handler returns 'partial'
+      // only when fires actually landed (see the return block below).
       ctx.logger.warn(
-        { err: lastTransientReason, macroSeriesFailed },
+        {
+          err: firstTransientReason,
+          transientFailures,
+          macroSeriesFailed,
+        },
         'detect-silent-boom macro-series fetch degraded (transient); ' +
           'affected series use empty tick arrays (null macro for those fires)',
       );
-      Sentry.captureException(lastTransientReason, {
+      Sentry.captureException(firstTransientReason, {
         level: 'warning',
         tags: {
           cron: 'detect-silent-boom',
           stage: 'macro_fetch',
         },
-        extra: { macroSeriesFailed },
+        extra: { transientFailures, genuineFailures, reasons: macroReasons },
       });
     }
 
@@ -1061,15 +1100,28 @@ export default withCronInstrumentation(
         multilegMisses,
         macroDegraded,
         macroSeriesFailed,
+        macroGenuineFailures: genuineFailures,
       },
       'detect-silent-boom completed',
     );
 
-    // A transient macro outage degraded at least one series to NULL on
-    // every affected fire. Report 'partial' (not 'success') so the run is
-    // observably DEGRADED — never escalate to 'error': alerts still landed.
+    // Status contract (FIX #1 + #9). Alerts ALWAYS land — status only
+    // signals macro health:
+    //   - genuineFailures > 0 → 'error' (loud; pages via the cron monitor),
+    //     REGARDLESS of inserted count: a genuine schema bug is real even on
+    //     a 0-fire tick.
+    //   - else transientFailures > 0 AND inserted > 0 → 'partial'
+    //     (observably degraded). A transient blip on a 0-fire tick had zero
+    //     blast radius → stays 'success' (do NOT escalate).
+    //   - else → 'success'.
+    const status: 'error' | 'partial' | 'success' =
+      genuineFailures > 0
+        ? 'error'
+        : transientFailures > 0 && inserted > 0
+          ? 'partial'
+          : 'success';
     return {
-      status: macroDegraded ? 'partial' : 'success',
+      status,
       rows: inserted,
       metadata: {
         bucketRows: bucketRows.length,
@@ -1086,6 +1138,7 @@ export default withCronInstrumentation(
         multilegMisses,
         macroDegraded,
         macroSeriesFailed,
+        macroGenuineFailures: genuineFailures,
       },
     };
   },

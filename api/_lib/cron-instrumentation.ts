@@ -683,9 +683,15 @@ export function withCronInstrumentation(
       const durationMs = Date.now() - startTimeMs;
 
       if (monitorConfig && checkInId) {
+        // A caller-returned `status:'error'` is a genuine failure the
+        // handler chose not to throw on (e.g. detect-silent-boom's
+        // genuine-macro-error contract: land the alerts, but page). Map it
+        // to an 'error' check-in so the Sentry cron monitor goes red.
+        // 'partial'/'success'/'skipped' stay 'ok' — Sentry Crons has no
+        // 'degraded' state, and those are not failures.
         await sentryCheckInDirect({
           monitorSlug: jobName,
-          status: 'ok',
+          status: result.status === 'error' ? 'error' : 'ok',
           checkInId,
           duration: durationMs / 1000,
         });

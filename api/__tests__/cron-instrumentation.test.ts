@@ -617,6 +617,52 @@ describe('withCronInstrumentation', () => {
     expect(res._status).toBe(200);
   });
 
+  it('sends an ERROR check-in when the handler RETURNS status:error (no throw)', async () => {
+    // FIX #2: a caller-returned status:'error' (the handler chose to land
+    // its side effects but signal a genuine failure — e.g.
+    // detect-silent-boom's genuine-macro-error contract) must turn the
+    // success-path check-in red. Previously hardcoded 'ok', which left a
+    // real failure green on the cron monitor.
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn().mockResolvedValue({ status: 'error' as const });
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.body).toMatchObject({ status: 'in_progress' });
+    // The completion check-in reflects the returned error status.
+    expect(calls[1]!.body).toMatchObject({
+      monitor_slug: 'monitored-job',
+      status: 'error',
+      check_in_id: calls[0]!.body.check_in_id,
+    });
+    // Handler did NOT throw → response is still 200 with status:'error'.
+    expect(res._status).toBe(200);
+    expect((res._json as { status: string }).status).toBe('error');
+  });
+
+  it.each(['partial', 'skipped'] as const)(
+    'maps a returned status:%s to an OK check-in (only error goes red)',
+    async (status) => {
+      // Sentry Crons has no 'degraded' state — 'partial'/'skipped' are not
+      // failures, so they stay 'ok'. Only a returned 'error' goes red.
+      vi.mocked(cronGuard).mockReturnValue(guardOk);
+      const handler = vi.fn().mockResolvedValue({ status });
+      const wrapped = withCronInstrumentation('monitored-job', handler);
+
+      const res = mockResponse();
+      await wrapped(mockRequest(), res);
+
+      const calls = getCheckInCalls();
+      expect(calls).toHaveLength(2);
+      expect(calls[1]!.body).toMatchObject({ status: 'ok' });
+      expect(res._status).toBe(200);
+    },
+  );
+
   it('skips direct HTTP check-ins when no SCHEDULE_MAP entry', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn().mockResolvedValue({ status: 'success' as const });

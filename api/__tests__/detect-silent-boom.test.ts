@@ -24,6 +24,10 @@ vi.mock('../_lib/db.js', async () => {
     withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
     isRetryableDbError: actual.isRetryableDbError,
     TransientDbError: actual.TransientDbError,
+    // The handler classifies macro failures via the real settleDegradable
+    // (transient vs genuine) against the actual DB_RETRYABLE_RX — keep the
+    // real impl so the fail-open contract is exercised, not stubbed.
+    settleDegradable: actual.settleDegradable,
   };
 });
 
@@ -1440,6 +1444,7 @@ describe('detect-silent-boom handler', () => {
       inserted: 1,
       macroDegraded: true,
       macroSeriesFailed: 1,
+      macroGenuineFailures: 0,
     });
 
     // INSERT landed with all four macro fields NULL (empty tick arrays →
@@ -1463,23 +1468,75 @@ describe('detect-silent-boom handler', () => {
     );
   });
 
-  it('PROPAGATES a GENUINE (non-transient) macro error — the cron errors loudly instead of swallowing a real schema bug', async () => {
-    // Regression guard for finding #1: the per-query macro fail-open is
-    // ONLY for transient (retryable) errors. A genuine error — e.g. a
-    // renamed/missing column that does NOT match DB_RETRYABLE_RX — must NOT
-    // be swallowed as a warning (that would turn a permanent breakage into
-    // indefinite silent macro degradation). It must throw out of the handler
-    // so withCronInstrumentation reports status:'error' and returns 500.
+  it('fails open on a TransientDbError (the wrapper production emits) — status:partial + warning', async () => {
+    // FIX #6: production does not reject with a raw 'fetch failed' string —
+    // withDbRetry re-throws a `TransientDbError` after exhausting retries.
+    // This exercises isRetryableDbError's `instanceof TransientDbError`
+    // short-circuit (which does NOT depend on the message matching
+    // DB_RETRYABLE_RX). settleDegradable must classify it 'transient' so the
+    // series falls open to [], the alert lands with NULL macro, and the run
+    // reports status:'partial' with a warning-level capture.
+    const { TransientDbError } = await import('../_lib/db.js');
     const sentryModule = await import('../_lib/sentry.js');
     const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
     mockedSentryCapture.mockClear();
     mockSql
       .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
       .mockResolvedValueOnce([]) // prior fires
-      // GENUINE error: 'column "ncp" does not exist' does NOT match
-      // DB_RETRYABLE_RX → isRetryableDbError false → settleMacro re-throws.
-      .mockRejectedValueOnce(new Error('column "ncp" does not exist')) // tide
-      .mockResolvedValueOnce([]) // tide_otm ticks (allSettled drains all four)
+      // The production transient wrapper — message is arbitrary, the
+      // instanceof check classifies it transient regardless.
+      .mockRejectedValueOnce(new TransientDbError(new Error('whatever'))) // tide
+      .mockResolvedValueOnce([]) // tide_otm ticks
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 99 }]); // insert STILL lands
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      inserted: 1,
+      macroDegraded: true,
+      macroSeriesFailed: 1,
+      macroGenuineFailures: 0,
+    });
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBeNull();
+    // Warning-level (transient), not error-level.
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(TransientDbError),
+      expect.objectContaining({
+        level: 'warning',
+        tags: expect.objectContaining({
+          cron: 'detect-silent-boom',
+          stage: 'macro_fetch',
+        }),
+      }),
+    );
+  });
+
+  it('stays status:success when a TRANSIENT macro failure hits a 0-fire tick (zero blast radius — do NOT escalate to partial)', async () => {
+    // FIX #9: a transient blip is only 'partial' when fires actually
+    // landed. On a quiet tick with no fires, the macro degradation touched
+    // nothing — escalating to 'partial' would page on a non-event. The
+    // shortStream is below the 5-bucket detector minimum so no fire/insert
+    // happens; the transient tide rejection must keep status:'success'.
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
+    const shortStream = fireableSilentBoomStream().slice(0, 3); // too short
+    mockSql
+      .mockResolvedValueOnce(shortStream) // ticks
+      .mockRejectedValueOnce(new Error('fetch failed')) // tide REJECTS (transient)
+      .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]); // spx_gamma ticks
 
@@ -1490,21 +1547,89 @@ describe('detect-silent-boom handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // withCronInstrumentation catches the thrown genuine error → 500.
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
-    // No fire was inserted — the run aborted before the per-fire loop.
-    expect(extractAllInsertBinds(mockSql, 'silent_boom_alerts')).toHaveLength(
-      0,
-    );
-    // The genuine error is reported as an exception by the wrapper (status
-    // 'error'), NOT as a level:'warning' macro_fetch capture.
-    expect(mockedSentryCapture).not.toHaveBeenCalledWith(
-      expect.anything(),
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success', // NOT 'partial' — no fires, zero blast radius
+      inserted: 0,
+      skippedShort: 1,
+      macroDegraded: true,
+      macroSeriesFailed: 1,
+      macroGenuineFailures: 0,
+    });
+    // Still observable: a warning capture fires even with no blast radius.
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(Error),
       expect.objectContaining({
+        level: 'warning',
         tags: expect.objectContaining({ stage: 'macro_fetch' }),
       }),
     );
+  });
+
+  it('LANDS the alert but reports status:error on a GENUINE (non-transient) macro error — loud, no dropped alerts', async () => {
+    // New contract (FIX #1/#9): the macro fetch NEVER drops alerts — it
+    // ALWAYS fails open (null macro). A GENUINE error — e.g. a renamed/
+    // missing column that does NOT match DB_RETRYABLE_RX → settleDegradable
+    // classifies 'genuine' — must NOT be swallowed as a warning (that would
+    // turn a permanent breakage into indefinite silent macro degradation).
+    // Instead the alert STILL inserts with NULL macro, an ERROR-level Sentry
+    // capture fires (tag stage:'macro_fetch'), and the handler returns
+    // status:'error' (HTTP 200, NOT 500) so the cron monitor goes red while
+    // no alert is dropped.
+    const sentryModule = await import('../_lib/sentry.js');
+    const mockedSentryCapture = vi.mocked(sentryModule.Sentry.captureException);
+    mockedSentryCapture.mockClear();
+    mockSql
+      .mockResolvedValueOnce(fireableSilentBoomStream()) // ticks
+      .mockResolvedValueOnce([]) // prior fires
+      // GENUINE error: 'column "ncp" does not exist' does NOT match
+      // DB_RETRYABLE_RX → isRetryableDbError false → classified 'genuine'.
+      .mockRejectedValueOnce(new Error('column "ncp" does not exist')) // tide
+      .mockResolvedValueOnce([]) // tide_otm ticks (allSettled drains all four)
+      .mockResolvedValueOnce([]) // zero_dte ticks
+      .mockResolvedValueOnce([]) // spx_gamma ticks
+      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([]) // ticker_flow_snapshot
+      .mockResolvedValueOnce([{ id: 99 }]); // insert STILL lands
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    // Loud but no drop: 200 with status:'error', alert inserted.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'error',
+      inserted: 1,
+      macroDegraded: true,
+      macroSeriesFailed: 1,
+      macroGenuineFailures: 1,
+    });
+    // The alert landed with NULL macro for the broken series.
+    const binds = extractInsertBinds(mockSql, 'silent_boom_alerts');
+    expect(binds.get('mkt_tide_diff')).toBeNull();
+    expect(extractAllInsertBinds(mockSql, 'silent_boom_alerts')).toHaveLength(
+      1,
+    );
+    // ERROR-level macro_fetch capture (this is the page).
+    expect(mockedSentryCapture).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        level: 'error',
+        tags: expect.objectContaining({
+          cron: 'detect-silent-boom',
+          stage: 'macro_fetch',
+        }),
+        extra: expect.objectContaining({ genuineFailures: 1 }),
+      }),
+    );
+    // A returned status:'error' makes the cron-monitor check-in 'error'
+    // (FIX #2 in cron-instrumentation maps it). Asserted here at the
+    // result level — the wrapper mapping is covered in its own suite.
+    expect((res._json as { status: string }).status).toBe('error');
   });
 
   it('retains PARTIAL macro data — one series fails transiently while the others succeed (per-query fail-open)', async () => {

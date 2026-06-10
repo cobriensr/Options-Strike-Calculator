@@ -35,6 +35,28 @@ async function scanA11y(page: import('@playwright/test').Page) {
   return critical;
 }
 
+/**
+ * Ground the equal-split assertions: the panes' shared flex parent (the
+ * `<main>` that is `flex-1 min-h-0` inside App's `h-dvh` shell) must fill
+ * the viewport height. If it doesn't, the panes' `flex-1` split is being
+ * measured against a collapsed container and the 50/50 check is invalid.
+ */
+async function expectContainerFillsViewportHeight(
+  page: import('@playwright/test').Page,
+  container: import('@playwright/test').Locator,
+) {
+  const box = await container.boundingBox();
+  expect(box).not.toBeNull();
+  if (!box) return;
+  const viewport = page.viewportSize();
+  expect(viewport).not.toBeNull();
+  if (!viewport) return;
+  // The container sits beneath the app header, so it is the viewport height
+  // minus the header. Assert it occupies the bulk of the viewport (≥70%) — a
+  // collapsed/auto-height container would be far smaller.
+  expect(box.height).toBeGreaterThanOrEqual(viewport.height * 0.7);
+}
+
 test.describe('Options Alerts responsive layout', () => {
   test.beforeEach(async ({ page }) => {
     // marketOpen: true on the quotes mock gives `market.hasData`, which with
@@ -49,21 +71,25 @@ test.describe('Options Alerts responsive layout', () => {
 
   async function gotoAlerts(page: import('@playwright/test').Page) {
     await page.goto('/#alerts');
-    await expect(
-      page.getByRole('main', { name: /options alerts/i }),
-    ).toBeVisible();
+    const container = page.getByRole('main', { name: /options alerts/i });
+    await expect(container).toBeVisible();
     const lottery = page.getByRole('region', { name: 'Lottery Finder alerts' });
     const silentBoom = page.getByRole('region', { name: 'Silent Boom alerts' });
     await expect(lottery).toBeVisible();
     await expect(silentBoom).toBeVisible();
-    return { lottery, silentBoom };
+    return { container, lottery, silentBoom };
   }
 
   test('panes stack vertically below the xl breakpoint (1024px)', async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1024, height: 800 });
-    const { lottery, silentBoom } = await gotoAlerts(page);
+    const { container, lottery, silentBoom } = await gotoAlerts(page);
+
+    // Ground the split: the shared flex parent must fill the viewport height,
+    // otherwise the panes' flex-1 50/50 split is measured against a collapsed
+    // container and the equal-height assertion below is meaningless.
+    await expectContainerFillsViewportHeight(page, container);
 
     const first = await lottery.boundingBox();
     const second = await silentBoom.boundingBox();
@@ -94,7 +120,14 @@ test.describe('Options Alerts responsive layout', () => {
     page,
   }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    const { lottery, silentBoom } = await gotoAlerts(page);
+    const { container, lottery, silentBoom } = await gotoAlerts(page);
+
+    // Ground the split: the shared flex parent (the row that holds both
+    // columns) must fill the viewport height. In the side-by-side layout the
+    // two flex-1 columns split the row width, but the row only has a
+    // meaningful width to split when it occupies the full viewport height —
+    // a collapsed container would distort both panes' boxes.
+    await expectContainerFillsViewportHeight(page, container);
 
     const first = await lottery.boundingBox();
     const second = await silentBoom.boundingBox();
