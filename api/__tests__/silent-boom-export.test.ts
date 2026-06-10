@@ -272,3 +272,133 @@ describe('silent-boom-export handler', () => {
     expect(res._headers['Retry-After']).toBe('5');
   });
 });
+
+// ============================================================
+// Feed ↔ export filter-bucket PARITY.
+//
+// The export and the feed BOTH map the same UI chips (tod / dte / burst /
+// askPctBand) to half-open numeric SQL bounds. They are independent code
+// blocks (api/silent-boom-export.ts vs api/silent-boom-feed.ts) and have
+// drifted before. These tests pin that the export binds the SAME numeric
+// bounds the feed derives for every bucket arm. The bounds below are the
+// SINGLE SOURCE OF TRUTH copied from the feed's range mappers
+// (silent-boom-feed.ts:338-412); if the export ever diverges from the
+// feed, the export run captured here binds a different value and the test
+// fails. A failure here is a real feed↔export coherence bug, NOT a test
+// that should be relaxed.
+// ============================================================
+
+/** Run the export handler for one query and return the captured neon
+ *  tagged-template call: [TemplateStringsArray, ...bindParams]. */
+async function captureExportSql(
+  query: Record<string, string>,
+): Promise<{ sqlText: string; binds: unknown[] }> {
+  mockSql.mockResolvedValueOnce([]);
+  const req = mockRequest({ method: 'GET', query });
+  const res = mockResponse();
+  await handler(req, res);
+  expect(res._status).toBe(200);
+  expect(mockSql).toHaveBeenCalledTimes(1);
+  const call = mockSql.mock.calls[0] as unknown[];
+  const sqlText = (call[0] as TemplateStringsArray).join(' ');
+  return { sqlText, binds: call.slice(1) };
+}
+
+describe('silent-boom-export ↔ feed filter-bucket parity', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  // Feed's TOD → CT minute-of-day half-open [lo, hi). silent-boom-feed.ts:338.
+  const TOD_BOUNDS: Record<string, { lo: number; hi: number }> = {
+    AM_open: { lo: 0, hi: 10 * 60 },
+    MID: { lo: 10 * 60, hi: 12 * 60 },
+    LUNCH: { lo: 12 * 60, hi: 13 * 60 },
+    PM: { lo: 13 * 60, hi: 15 * 60 },
+    LATE: { lo: 15 * 60, hi: 24 * 60 },
+  };
+
+  for (const [tod, { lo, hi }] of Object.entries(TOD_BOUNDS)) {
+    it(`tod=${tod} binds the feed's CT minute bounds [${lo}, ${hi})`, async () => {
+      const { sqlText, binds } = await captureExportSql({
+        date: '2026-05-07',
+        tod,
+      });
+      expect(sqlText).toContain("AT TIME ZONE 'America/Chicago'");
+      // Both lo and hi are threaded as int binds; the predicate is
+      // `(${lo} IS NULL OR minuteOfDay >= ${lo}) AND (${hi} IS NULL OR ... < ${hi})`.
+      expect(binds).toContain(lo);
+      expect(binds).toContain(hi);
+    });
+  }
+
+  // Feed's DTE bucket → numeric [lo, hi]. silent-boom-feed.ts:353. The
+  // export has no `minDte`, so only the enum buckets apply.
+  const DTE_BOUNDS: Record<string, { lo: number; hi: number }> = {
+    '0': { lo: 0, hi: 0 },
+    '1-3': { lo: 1, hi: 3 },
+    '4+': { lo: 4, hi: 100_000 },
+  };
+
+  for (const [dte, { lo, hi }] of Object.entries(DTE_BOUNDS)) {
+    it(`dte=${dte} binds the feed's BETWEEN bounds [${lo}, ${hi}]`, async () => {
+      const { sqlText, binds } = await captureExportSql({
+        date: '2026-05-07',
+        dte,
+      });
+      expect(sqlText).toContain('dte BETWEEN');
+      expect(binds).toContain(lo);
+      expect(binds).toContain(hi);
+    });
+  }
+
+  // Feed's burst color → spike_ratio [lo, hi). silent-boom-feed.ts:390.
+  const BURST_BOUNDS: Record<string, { lo: number; hi: number }> = {
+    red: { lo: 50, hi: 1_000_000 },
+    yellow: { lo: 20, hi: 50 },
+    grey: { lo: 0, hi: 20 },
+  };
+
+  for (const [burst, { lo, hi }] of Object.entries(BURST_BOUNDS)) {
+    it(`burst=${burst} binds the feed's spike_ratio bounds [${lo}, ${hi})`, async () => {
+      const { sqlText, binds } = await captureExportSql({
+        date: '2026-05-07',
+        burst,
+      });
+      expect(sqlText).toContain('spike_ratio >=');
+      expect(binds).toContain(lo);
+      expect(binds).toContain(hi);
+    });
+  }
+
+  // Feed's ask% band → ask_pct [lo, hi). silent-boom-feed.ts:403. The
+  // '100' band is exact equality expressed as [1.0, 1.001).
+  const ASK_BOUNDS: Record<string, { lo: number; hi: number }> = {
+    '70-80': { lo: 0.7, hi: 0.8 },
+    '80-90': { lo: 0.8, hi: 0.9 },
+    '90-95': { lo: 0.9, hi: 0.95 },
+    '95-99': { lo: 0.95, hi: 1.0 },
+    '100': { lo: 1.0, hi: 1.001 },
+  };
+
+  for (const [askPctBand, { lo, hi }] of Object.entries(ASK_BOUNDS)) {
+    it(`askPctBand=${askPctBand} binds the feed's ask_pct bounds [${lo}, ${hi})`, async () => {
+      const { sqlText, binds } = await captureExportSql({
+        date: '2026-05-07',
+        askPctBand,
+      });
+      expect(sqlText).toContain('ask_pct >=');
+      expect(binds).toContain(lo);
+      expect(binds).toContain(hi);
+    });
+  }
+
+  it('binds NULL placeholders for every bucket when no chip is active', async () => {
+    // With no tod/dte/burst/askPctBand, each range mapper returns null and
+    // the predicate short-circuits on a NULL bind — the export dumps the
+    // full firehose. Mirrors the feed's "no filter" path.
+    const { binds } = await captureExportSql({ date: '2026-05-07' });
+    // todLo, todHi, dteLo, burstLo, askPctLo all bind null.
+    expect(binds.filter((b) => b === null).length).toBeGreaterThanOrEqual(5);
+  });
+});
