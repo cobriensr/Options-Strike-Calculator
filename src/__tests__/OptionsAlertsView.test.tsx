@@ -36,4 +36,32 @@ describe('OptionsAlertsView', () => {
     expect(await screen.findByTestId('lottery')).toBeInTheDocument();
     expect(await screen.findByTestId('silent-boom')).toBeInTheDocument();
   });
+
+  it('uses a responsive layout: stacked by default, side-by-side on xl', () => {
+    render(<OptionsAlertsView marketOpen hasMarketContext />);
+
+    const root = screen.getByRole('main', { name: /options alerts/i });
+    expect(root.className).toContain('flex-col');
+    expect(root.className).toContain('xl:flex-row');
+
+    const lottery = screen.getByRole('region', {
+      name: /lottery finder alerts/i,
+    });
+    const silentBoom = screen.getByRole('region', {
+      name: /silent boom alerts/i,
+    });
+
+    for (const pane of [lottery, silentBoom]) {
+      expect(pane.className).toContain('min-h-0');
+      expect(pane.className).toContain('flex-1');
+      expect(pane.className).toContain('overflow-y-auto');
+      expect(pane.className).toContain('min-w-0');
+    }
+
+    // The first (Lottery) pane carries the divider that flips from a bottom
+    // border (stacked) to a right border (side-by-side) at the xl breakpoint.
+    expect(lottery.className).toContain('border-b');
+    expect(lottery.className).toContain('xl:border-b-0');
+    expect(lottery.className).toContain('xl:border-r');
+  });
 });

@@ -23,14 +23,19 @@ export interface OptionsAlertsViewProps {
 }
 
 /**
- * Full-screen alerts view: a fixed 50/50 vertical split with Lottery Finder
- * on top and Silent Boom on the bottom, each pane scrolling independently.
+ * Full-screen alerts view: a responsive 50/50 split with Lottery Finder and
+ * Silent Boom, each pane scrolling independently. Below the `xl` breakpoint
+ * (1280px) the panes stack vertically (Lottery on top); at `xl` and wider
+ * they sit side-by-side (Lottery on the left).
  *
  * Layout: the root is `flex-1 min-h-0` inside App's `h-dvh` alerts shell, so
- * it fills the viewport beneath the header. Each pane is `flex-1 min-h-0
- * overflow-y-auto` — `min-h-0` lets a flex child shrink below its content
- * height, which is what gives each pane its own bounded scroll region
- * instead of growing the page.
+ * it fills the viewport beneath the header. It is `flex-col xl:flex-row`, so
+ * `flex-1` splits the cross-axis evenly in either orientation. Each pane is
+ * `flex-1 min-h-0 min-w-0 overflow-y-auto` — `min-h-0`/`min-w-0` let a flex
+ * child shrink below its content size, which is what gives each pane its own
+ * bounded scroll region instead of growing the page. The Lottery pane's
+ * divider flips from a bottom border (stacked) to a right border (side-by-side)
+ * at the breakpoint.
  */
 export function OptionsAlertsView({
   marketOpen,
@@ -55,11 +60,11 @@ export function OptionsAlertsView({
     <main
       id="options-alerts-main"
       aria-label="Options alerts"
-      className="flex min-h-0 flex-1 flex-col"
+      className="flex min-h-0 flex-1 flex-col xl:flex-row"
     >
       <section
         aria-label="Lottery Finder alerts"
-        className="border-edge min-h-0 flex-1 overflow-y-auto border-b"
+        className="border-edge min-h-0 min-w-0 flex-1 overflow-y-auto border-b xl:border-r xl:border-b-0"
       >
         <ErrorBoundary label="Lottery Finder">
           <Suspense fallback={<SkeletonSection lines={6} />}>
@@ -69,7 +74,7 @@ export function OptionsAlertsView({
       </section>
       <section
         aria-label="Silent Boom alerts"
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-0 min-w-0 flex-1 overflow-y-auto"
       >
         <ErrorBoundary label="Silent Boom">
           <Suspense fallback={<SkeletonSection lines={6} />}>
