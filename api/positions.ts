@@ -29,6 +29,7 @@ import {
   savePositions,
   getDb,
   withDbRetry,
+  safeDb,
   type PositionLeg,
 } from './_lib/db.js';
 import logger from './_lib/logger.js';
@@ -130,15 +131,18 @@ async function persistPositions(args: {
   const { date, fetchTime, accountHash, spxPrice, summary, legs, response } =
     args;
   const db = getDb();
-  const snapRows = await withDbRetry(
-    () => db`
-    SELECT id FROM market_snapshots WHERE date = ${date} ORDER BY created_at DESC LIMIT 1
-  `,
-    2,
-    10_000,
-  );
-  const snapshotId =
-    snapRows.length > 0 ? ((snapRows[0]?.id as number) ?? null) : null;
+  // Optional FK enrichment. A transient Neon failure here must NOT 500 the
+  // position read — soft-degrade snapshotId to null and still save the row.
+  const snapshotId = await safeDb(async () => {
+    const snapRows = await withDbRetry(
+      () => db`
+      SELECT id FROM market_snapshots WHERE date = ${date} ORDER BY created_at DESC LIMIT 1
+    `,
+      2,
+      10_000,
+    );
+    return snapRows.length > 0 ? ((snapRows[0]?.id as number) ?? null) : null;
+  }, null);
 
   try {
     await savePositions({

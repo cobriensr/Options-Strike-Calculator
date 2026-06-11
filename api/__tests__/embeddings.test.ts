@@ -140,6 +140,17 @@ describe('embeddings.ts', () => {
       expect(mockSql).toHaveBeenCalledTimes(1);
     });
 
+    it('selects source_date via TO_CHAR so Neon returns a YYYY-MM-DD string, not a Date', async () => {
+      mockSql.mockResolvedValueOnce([]);
+
+      const embedding = Array.from({ length: 2000 }, () => 0.1);
+      await findSimilarLessons(embedding);
+
+      const call = mockSql.mock.calls[0] as unknown[];
+      const fullQuery = (call[0] as string[]).join('?');
+      expect(fullQuery).toContain("TO_CHAR(source_date, 'YYYY-MM-DD')");
+    });
+
     it('returns empty array when no lessons exist', async () => {
       mockSql.mockResolvedValueOnce([]);
 
@@ -389,6 +400,17 @@ describe('embeddings.ts', () => {
       const lastParam = call[call.length - 1];
       expect(lastParam).toBe(10);
     });
+
+    it('selects a.date via TO_CHAR so Neon returns a YYYY-MM-DD string, not a Date', async () => {
+      mockSql.mockResolvedValueOnce([]);
+
+      const embedding = Array.from({ length: 2000 }, () => 0.1);
+      await findSimilarAnalyses(embedding, '2026-04-03');
+
+      const call = mockSql.mock.calls[0] as unknown[];
+      const fullQuery = (call[0] as string[]).join('?');
+      expect(fullQuery).toContain("TO_CHAR(a.date, 'YYYY-MM-DD')");
+    });
   });
 
   // ============================================================
@@ -454,6 +476,37 @@ describe('embeddings.ts', () => {
       expect(result).toContain('Outcome: pending');
       expect(result).not.toContain('Hedge:');
       expect(result).not.toContain('Reasoning:');
+    });
+
+    it('emits YYYY-MM-DD dates in the prompt block, never Date-toString/GMT output', () => {
+      const analyses: SimilarAnalysis[] = [
+        {
+          id: 20,
+          date: '2026-06-11',
+          mode: 'entry',
+          structure: 'PCS',
+          confidence: 'High',
+          suggestedDelta: 10,
+          spx: 5900,
+          vix: 16,
+          hedge: null,
+          reasoning: null,
+          settlement: null,
+          wasCorrect: null,
+          distance: 0.05,
+        },
+      ];
+
+      const result = formatSimilarAnalysesBlock(analyses);
+
+      // The analog header must carry a clean ISO date...
+      expect(result).toContain('[2026-06-11] PCS 10Δ');
+      // ...and never the JS Date toString artifacts that raw Neon DATE
+      // objects would interpolate (AUD-M3 regression guard).
+      expect(result).not.toContain('GMT');
+      expect(result).not.toMatch(
+        /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b/,
+      );
     });
 
     it('truncates long reasoning to 200 chars', () => {

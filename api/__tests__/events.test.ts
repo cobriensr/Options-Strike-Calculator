@@ -15,9 +15,26 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    captureMessage: vi.fn(),
+    captureException: vi.fn(),
+    // request-scope.js wraps every request in an isolation scope.
+    withIsolationScope: vi.fn((fn: (scope: unknown) => unknown) =>
+      fn({ setTransactionName: vi.fn(), setTag: vi.fn() }),
+    ),
+  },
+  metrics: {
+    cacheResult: vi.fn(),
+    // metrics.request(path) returns the `done` callback used by the handler.
+    request: vi.fn(() => vi.fn()),
+  },
+}));
+
 import handler from '../events.js';
 import { redis } from '../_lib/redis.js';
 import { checkBot } from '../_lib/api-helpers.js';
+import { Sentry } from '../_lib/sentry.js';
 
 describe('GET /api/events', () => {
   const originalEnv = process.env;
@@ -25,6 +42,7 @@ describe('GET /api/events', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     vi.restoreAllMocks();
+    vi.clearAllMocks();
     vi.mocked(redis.get).mockResolvedValue(null);
     vi.mocked(redis.set).mockResolvedValue('OK');
   });
@@ -291,6 +309,56 @@ describe('GET /api/events', () => {
     const json = res._json as { events: { source: string }[] };
     const staticEvents = json.events.filter((e) => e.source === 'static');
     expect(staticEvents.length).toBeGreaterThanOrEqual(0);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('does NOT cache the day-scoped key when FRED errors (AUD-M2)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(redis.get).mockResolvedValue(null);
+
+    // Every FRED release returns non-OK → degraded list. The degraded
+    // result must NOT be written to the date-scoped cache, so a later
+    // retry can succeed (e.g. recover a missing CPI flag on CPI morning).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 503 }),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
+
+    expect(res._status).toBe(200);
+    // The cache write is the bug: a FRED error must skip redis.set entirely.
+    expect(redis.set).not.toHaveBeenCalled();
+    // And a Sentry warning is emitted on the non-OK FRED response.
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'FRED API non-OK',
+      expect.objectContaining({ level: 'warning' }),
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it('caches the day-scoped key when all FRED sources return OK', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(redis.get).mockResolvedValue(null);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ release_dates: [] }),
+      }),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
+
+    expect(res._status).toBe(200);
+    // Full success → write-through to the date-scoped cache.
+    expect(redis.set).toHaveBeenCalledTimes(1);
 
     vi.unstubAllGlobals();
   });

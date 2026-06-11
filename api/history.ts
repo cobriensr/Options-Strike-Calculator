@@ -69,6 +69,16 @@ interface SymbolDayData {
   previousDay: DaySummary | null;
 }
 
+/**
+ * Internal fetch result: SymbolDayData plus an `ok` flag indicating whether the
+ * Schwab fetch succeeded. A failed fetch returns empty data with `ok: false`,
+ * which gates the long-TTL cache write so a transient per-symbol failure is not
+ * cached for 90 days.
+ */
+interface SymbolFetchResult extends SymbolDayData {
+  ok: boolean;
+}
+
 interface HistoryResponse {
   date: string;
   spx: SymbolDayData;
@@ -143,11 +153,12 @@ async function fetchSymbolHistory(
   startMs: number,
   endMs: number,
   targetDate: string,
-): Promise<SymbolDayData> {
-  const empty: SymbolDayData = {
+): Promise<SymbolFetchResult> {
+  const empty: SymbolFetchResult = {
     candles: [],
     previousClose: 0,
     previousDay: null,
+    ok: false,
   };
 
   const params = new URLSearchParams({
@@ -167,6 +178,15 @@ async function fetchSymbolHistory(
 
   if (!result.ok) {
     logger.error({ symbol, error: result.error }, 'History fetch failed');
+    Sentry.addBreadcrumb({
+      category: 'history',
+      level: 'warning',
+      message: 'History symbol fetch failed',
+      data: { symbol, targetDate, error: result.error },
+    });
+    Sentry.captureMessage(`history: ${symbol} fetch failed`, {
+      level: 'warning',
+    });
     return empty;
   }
 
@@ -202,7 +222,7 @@ async function fetchSymbolHistory(
     close: c.close,
   }));
 
-  return { candles: processed, previousClose, previousDay };
+  return { candles: processed, previousClose, previousDay, ok: true };
 }
 
 // ============================================================
@@ -270,13 +290,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         fetchSymbolHistory('$VVIX', startMs, endMs, dateParam),
       ]);
 
+      // A partially-failed fetch (e.g. $VIX1D times out while $SPX succeeds)
+      // must NOT be cached for 90 days — it would serve permanently-empty VIX
+      // panels for that date forever. Only the long-TTL write requires every
+      // symbol to have succeeded; a partial result falls back to the short TTL
+      // so the next request re-fetches and self-heals.
+      const allOk = [spx, vix, vix1d, vix9d, vvix].every((s) => s.ok);
+
+      // Strip the internal `ok` flag so it never leaks into the cached payload
+      // or the JSON response (HistoryResponse intentionally omits it).
+      const toDayData = ({
+        candles,
+        previousClose,
+        previousDay,
+      }: SymbolFetchResult): SymbolDayData => ({
+        candles,
+        previousClose,
+        previousDay,
+      });
+
       const response: HistoryResponse = {
         date: dateParam,
-        spx,
-        vix,
-        vix1d,
-        vix9d,
-        vvix,
+        spx: toDayData(spx),
+        vix: toDayData(vix),
+        vix1d: toDayData(vix1d),
+        vix9d: toDayData(vix9d),
+        vvix: toDayData(vvix),
         candleCount: spx.candles.length,
         asOf: new Date().toISOString(),
       };
@@ -285,14 +324,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       try {
         if (isToday) {
           await redis.set(cacheKey, response, { ex: 120 });
-        } else if (spx.candles.length > 0) {
+        } else if (allOk && spx.candles.length > 0) {
           await redis.set(cacheKey, response, { ex: PAST_CACHE_TTL });
+        } else if (spx.candles.length > 0) {
+          // Past date but at least one symbol failed: short TTL so the empty
+          // panels don't persist for 90 days. Observable via the per-symbol
+          // captureMessage above.
+          await redis.set(cacheKey, response, { ex: 120 });
         }
       } catch (err) {
         logger.error({ err }, 'Failed to cache history');
       }
 
-      setCacheHeaders(res, isToday ? 120 : 86400, isToday ? 60 : 3600);
+      // Only a complete past-date response earns the long CDN max-age. Today's
+      // data is still accumulating, and a partial-failure response must not be
+      // edge-cached for a day (it mirrors the short Redis TTL above).
+      const longLived = !isToday && allOk;
+      setCacheHeaders(res, longLived ? 86400 : 120, longLived ? 3600 : 60);
 
       done({ status: 200 });
       res.status(200).json(response);

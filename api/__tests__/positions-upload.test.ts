@@ -18,6 +18,15 @@ vi.mock('../_lib/db.js', () => ({
     return fn;
   }),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  // AUD-M6: the snapshot-id FK lookup is now wrapped in safeDb (soft-degrade
+  // to the fallback on a transient failure). Mirror the real behavior.
+  safeDb: async <T>(op: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await op();
+    } catch {
+      return fallback;
+    }
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({

@@ -31,9 +31,11 @@ function parseRow(r: Record<string, unknown>) {
     structure: r.structure as string,
     confidence: r.confidence as string,
     suggestedDelta: r.suggested_delta as number,
-    spx: r.spx as number | null,
-    vix: r.vix as number | null,
-    vix1d: r.vix1d as number | null,
+    // spx/vix/vix1d are DECIMAL columns — the Neon driver returns them as
+    // strings, so coerce to number (null-safe) rather than lying with `as number`.
+    spx: r.spx == null ? null : Number(r.spx),
+    vix: r.vix == null ? null : Number(r.vix),
+    vix1d: r.vix1d == null ? null : Number(r.vix1d),
     hedge: r.hedge as string | null,
     analysis:
       typeof r.full_response === 'string'

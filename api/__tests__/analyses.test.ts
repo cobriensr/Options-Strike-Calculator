@@ -296,6 +296,65 @@ describe('GET /api/analyses', () => {
       expect((res._json as Record<string, unknown>).hedge).toBe('long put');
     });
 
+    it('coerces string DECIMAL spx/vix/vix1d from the driver to numbers', async () => {
+      // Neon returns DECIMAL/NUMERIC columns as strings — pin that parseRow
+      // converts them to real numbers (not a type lie via `as number`).
+      mockSql.mockResolvedValue([
+        {
+          id: 3,
+          date: '2026-03-17',
+          entry_time: '10:00 AM',
+          mode: 'entry',
+          structure: 'IRON CONDOR',
+          confidence: 'HIGH',
+          suggested_delta: 8,
+          spx: '5712.34',
+          vix: '18.50',
+          vix1d: '15.25',
+          hedge: null,
+          full_response: '{"mode":"entry"}',
+          created_at: '2026-03-17T10:00:00Z',
+        },
+      ]);
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', query: { id: '3' } }), res);
+      const json = res._json as Record<string, unknown>;
+      expect(typeof json.spx).toBe('number');
+      expect(typeof json.vix).toBe('number');
+      expect(typeof json.vix1d).toBe('number');
+      expect(json.spx).toBe(5712.34);
+      expect(json.vix).toBe(18.5);
+      expect(json.vix1d).toBe(15.25);
+      // Arithmetic works on the coerced value (would be NaN/concat on a string).
+      expect((json.spx as number) + 1).toBe(5713.34);
+    });
+
+    it('preserves null spx/vix/vix1d as null', async () => {
+      mockSql.mockResolvedValue([
+        {
+          id: 4,
+          date: '2026-03-17',
+          entry_time: '10:00 AM',
+          mode: 'entry',
+          structure: 'IRON CONDOR',
+          confidence: 'HIGH',
+          suggested_delta: 8,
+          spx: null,
+          vix: null,
+          vix1d: null,
+          hedge: null,
+          full_response: '{"mode":"entry"}',
+          created_at: '2026-03-17T10:00:00Z',
+        },
+      ]);
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', query: { id: '4' } }), res);
+      const json = res._json as Record<string, unknown>;
+      expect(json.spx).toBeNull();
+      expect(json.vix).toBeNull();
+      expect(json.vix1d).toBeNull();
+    });
+
     it('passes through full_response when already an object', async () => {
       mockSql.mockResolvedValue([
         {

@@ -7,7 +7,9 @@
  *   - Finnhub API: Mega-cap earnings (AAPL, MSFT, NVDA, AMZN, GOOG, META, TSLA)
  *
  * Public endpoint — no owner gate. All data is publicly available.
- * Results cached in Upstash Redis for 7 days (key is date-scoped).
+ * Results cached in Upstash Redis for 7 days (key is date-scoped), but only
+ * when every source returned OK — a FRED error skips the cache write so a
+ * later request can retry (AUD-M2).
  *
  * Query params:
  *   ?days=30  — how many days ahead to return (default 30, max 90)
@@ -317,12 +319,17 @@ const FRED_BASE = 'https://api.stlouisfed.org/fred';
 const REDIS_KEY = 'events:v2';
 const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped)
 
+interface FredReleaseResult {
+  entries: FredReleaseDateEntry[];
+  ok: boolean;
+}
+
 async function fetchReleaseDates(
   releaseId: number,
   apiKey: string,
   startDate: string,
   endDate: string,
-): Promise<FredReleaseDateEntry[]> {
+): Promise<FredReleaseResult> {
   const params = new URLSearchParams({
     release_id: String(releaseId),
     api_key: apiKey,
@@ -336,26 +343,42 @@ async function fetchReleaseDates(
 
   if (!res.ok) {
     logger.error({ releaseId, status: res.status }, 'FRED API error');
-    return [];
+    Sentry.captureMessage('FRED API non-OK', {
+      level: 'warning',
+      extra: { releaseId, status: res.status },
+    });
+    // Signal the error so the caller skips the day-scoped cache write —
+    // a transient FRED blip must not pin a degraded list for the day
+    // (e.g. a missing CPI flag on a CPI morning).
+    return { entries: [], ok: false };
   }
 
   const data: FredReleaseDatesResponse = await res.json();
 
-  return (data.release_dates || []).filter(
-    (r) => r.date >= startDate && r.date <= endDate,
-  );
+  return {
+    entries: (data.release_dates || []).filter(
+      (r) => r.date >= startDate && r.date <= endDate,
+    ),
+    ok: true,
+  };
 }
 
 // ============================================================
 // MAIN FETCH
 // ============================================================
 
+interface AllEventsResult {
+  events: EventItem[];
+  /** True when every source returned OK — safe to cache for the full day. */
+  complete: boolean;
+}
+
 async function fetchAllEvents(
   fredKey: string,
   finnhubKey: string | undefined,
   startDate: string,
   endDate: string,
-): Promise<EventItem[]> {
+): Promise<AllEventsResult> {
   const releaseMap = new Map<number, FredReleaseConfig>();
   for (const r of TRACKED_RELEASES) releaseMap.set(r.id, r);
 
@@ -372,10 +395,15 @@ async function fetchAllEvents(
     earningsPromise,
   ]);
 
+  // Any FRED release erroring means the list may be missing economic
+  // events (e.g. CPI). Treat the whole fetch as incomplete so the caller
+  // does not cache a degraded result for the day.
+  const complete = fredResults.every((r) => r.ok);
+
   const events: EventItem[] = [];
 
   // Map FRED results to events
-  for (const entries of fredResults) {
+  for (const { entries } of fredResults) {
     for (const entry of entries) {
       const config = releaseMap.get(entry.release_id);
       if (!config) continue;
@@ -443,7 +471,7 @@ async function fetchAllEvents(
     return a.event.localeCompare(b.event);
   });
 
-  return events;
+  return { events, complete };
 }
 
 // ============================================================
@@ -515,22 +543,28 @@ export default withRequestScope(
       }
 
       // Fetch from all sources
-      const events = await fetchAllEvents(
+      const { events, complete } = await fetchAllEvents(
         fredKey,
         finnhubKey,
         startDate,
         endDate,
       );
 
-      // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
-      try {
-        await redis.set(
-          cacheKey,
-          { data: events, cachedAt: Date.now() },
-          { ex: CACHE_TTL_SEC },
-        );
-      } catch (err) {
-        logger.error({ err }, 'Failed to cache events in Redis');
+      // Only cache when every source returned OK. A FRED blip degrades the
+      // list to [] for those releases; caching that under the day-scoped key
+      // would serve a missing CPI/NFP flag all day (AUD-M2). Skipping the
+      // write lets the next request retry FRED.
+      if (complete) {
+        // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
+        try {
+          await redis.set(
+            cacheKey,
+            { data: events, cachedAt: Date.now() },
+            { ex: CACHE_TTL_SEC },
+          );
+        } catch (err) {
+          logger.error({ err }, 'Failed to cache events in Redis');
+        }
       }
 
       setCacheHeaders(res, 300, 120);

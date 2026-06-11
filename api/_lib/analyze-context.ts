@@ -188,33 +188,32 @@ export async function buildAnalysisContext(
   let straddleConeUpper = numOrUndef(context.straddleConeUpper);
   let straddleConeLower = numOrUndef(context.straddleConeLower);
 
-  // Core flow/greek/internals fetch (16-way Promise.all inside)
-  const main = await fetchMainData(
-    analysisDate,
-    asOf,
-    straddleConeUpper,
-    straddleConeLower,
-  );
+  // These four fetches are mutually independent — fire them concurrently
+  // (AUD-M5). `main` uses the pre-update cone boundaries (same as before:
+  // pre-market's cone updates are applied below and consumed only by the SPX
+  // candles fetch). Each fetcher owns its DB/UW calls; none reads another's
+  // result, so parallelizing changes latency only, not behavior.
+  const [main, ivTermStructureContext, volRealizedRow, preMarket] =
+    await Promise.all([
+      // Core flow/greek/internals fetch (16-way Promise.all inside)
+      fetchMainData(analysisDate, asOf, straddleConeUpper, straddleConeLower),
+      // IV term structure — direct UW API call
+      fetchIvTermContext(analysisDate, context.sigma as string | undefined),
+      // Realized vol + IV rank — single DB row
+      fetchVolRealizedContext(analysisDate),
+      // Pre-market + overnight gap (updates cone boundaries if present)
+      fetchPreMarketContext(
+        analysisDate,
+        context,
+        straddleConeUpper,
+        straddleConeLower,
+      ),
+    ]);
 
-  // IV term structure — direct UW API call
-  const ivTermStructureContext = await fetchIvTermContext(
-    analysisDate,
-    context.sigma as string | undefined,
-  );
-
-  // Realized vol + IV rank — single DB row
-  const volRealizedRow = await fetchVolRealizedContext(analysisDate);
   const volRealizedContext = volRealizedRow
     ? formatVolRealizedForClaude(volRealizedRow)
     : null;
 
-  // Pre-market + overnight gap (updates cone boundaries if present)
-  const preMarket = await fetchPreMarketContext(
-    analysisDate,
-    context,
-    straddleConeUpper,
-    straddleConeLower,
-  );
   straddleConeUpper = preMarket.straddleConeUpper;
   straddleConeLower = preMarket.straddleConeLower;
   let overnightGapContext = preMarket.overnightGapContext;
@@ -554,55 +553,64 @@ Provide your complete analysis as JSON. Mode is "${mode}".`;
     dayOfWeek: context.dowLabel != null ? String(context.dowLabel) : undefined,
   };
 
-  try {
-    const lessons = await getActiveLessons();
-    lessonsBlock = formatLessonsBlock(lessons);
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch lessons for injection');
-    Sentry.captureException(error_);
-  }
-
-  try {
-    const winRate = await getHistoricalWinRate(winRateConditions);
-    if (winRate) {
-      winRateContext = `\n## Historical Base Rate (from lessons database)\n${formatWinRateForClaude(winRate, winRateConditions)}\n`;
-    }
-  } catch (error_) {
-    logger.error({ err: error_ }, 'Failed to fetch historical win rate');
-    Sentry.captureException(error_);
-  }
-
-  // Retrieve similar past analyses by embedding similarity (entry mode only)
-  if (mode === 'entry') {
-    try {
-      const todaySummary = buildAnalysisSummary({
-        date: analysisDate,
-        mode,
-        vix: context.vix != null ? Number(context.vix) : null,
-        vix1d: context.vix1d != null ? Number(context.vix1d) : null,
-        spx: context.spx != null ? Number(context.spx) : null,
-        structure: 'unknown',
-        confidence: 'unknown',
-        suggestedDelta: null,
-        hedge: null,
-        vixTermShape: (context.vixTermSignal as string) ?? null,
-        gexRegime: (context.regimeZone as string) ?? null,
-        dayOfWeek: (context.dowLabel as string) ?? null,
-      });
-      const queryEmbedding = await generateEmbedding(todaySummary);
-      if (queryEmbedding) {
-        const similar = await findSimilarAnalyses(
-          queryEmbedding,
-          analysisDate,
-          3,
-        );
-        similarAnalysesBlock = formatSimilarAnalysesBlock(similar);
+  // These three enrichments are mutually independent — each sets its own
+  // output block under its own try/catch (a failure in one never aborts the
+  // others). Run them concurrently; the embedding → findSimilarAnalyses pair is
+  // internally sequential but independent of lessons/win-rate (AUD-M5).
+  await Promise.all([
+    (async () => {
+      try {
+        const lessons = await getActiveLessons();
+        lessonsBlock = formatLessonsBlock(lessons);
+      } catch (error_) {
+        logger.error({ err: error_ }, 'Failed to fetch lessons for injection');
+        Sentry.captureException(error_);
       }
-    } catch (error_) {
-      logger.error({ err: error_ }, 'Failed to fetch similar analyses');
-      Sentry.captureException(error_);
-    }
-  }
+    })(),
+    (async () => {
+      try {
+        const winRate = await getHistoricalWinRate(winRateConditions);
+        if (winRate) {
+          winRateContext = `\n## Historical Base Rate (from lessons database)\n${formatWinRateForClaude(winRate, winRateConditions)}\n`;
+        }
+      } catch (error_) {
+        logger.error({ err: error_ }, 'Failed to fetch historical win rate');
+        Sentry.captureException(error_);
+      }
+    })(),
+    (async () => {
+      // Retrieve similar past analyses by embedding similarity (entry mode only)
+      if (mode !== 'entry') return;
+      try {
+        const todaySummary = buildAnalysisSummary({
+          date: analysisDate,
+          mode,
+          vix: context.vix != null ? Number(context.vix) : null,
+          vix1d: context.vix1d != null ? Number(context.vix1d) : null,
+          spx: context.spx != null ? Number(context.spx) : null,
+          structure: 'unknown',
+          confidence: 'unknown',
+          suggestedDelta: null,
+          hedge: null,
+          vixTermShape: (context.vixTermSignal as string) ?? null,
+          gexRegime: (context.regimeZone as string) ?? null,
+          dayOfWeek: (context.dowLabel as string) ?? null,
+        });
+        const queryEmbedding = await generateEmbedding(todaySummary);
+        if (queryEmbedding) {
+          const similar = await findSimilarAnalyses(
+            queryEmbedding,
+            analysisDate,
+            3,
+          );
+          similarAnalysesBlock = formatSimilarAnalysesBlock(similar);
+        }
+      } catch (error_) {
+        logger.error({ err: error_ }, 'Failed to fetch similar analyses');
+        Sentry.captureException(error_);
+      }
+    })(),
+  ]);
 
   // Append win rate to context (after main contextText, before sending)
   const finalContextText = contextText + winRateContext;

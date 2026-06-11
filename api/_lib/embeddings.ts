@@ -93,7 +93,8 @@ export async function findSimilarLessons(
   const vectorLiteral = `[${embedding.join(',')}]`;
 
   const rows = await sql`
-    SELECT id, text, tags, category, source_date,
+    SELECT id, text, tags, category,
+           TO_CHAR(source_date, 'YYYY-MM-DD') AS source_date,
            embedding <=> ${vectorLiteral}::vector AS distance
     FROM lessons
     WHERE status = 'active'
@@ -235,7 +236,8 @@ export async function findSimilarAnalyses(
   const vectorLiteral = `[${embedding.join(',')}]`;
 
   const rows = await sql`
-    SELECT a.id, a.date, a.mode, a.structure, a.confidence,
+    SELECT a.id, TO_CHAR(a.date, 'YYYY-MM-DD') AS date, a.mode,
+           a.structure, a.confidence,
            a.suggested_delta, a.spx, a.vix, a.hedge,
            a.full_response->>'reasoning' AS reasoning,
            o.settlement,

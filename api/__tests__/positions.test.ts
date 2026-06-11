@@ -24,6 +24,7 @@ vi.mock('../_lib/db.js', async (importOriginal) => {
         throw err;
       }
     },
+    safeDb: actual.safeDb,
     TransientDbError: actual.TransientDbError,
     isRetryableDbError: actual.isRetryableDbError,
   };
@@ -413,9 +414,10 @@ describe('GET /api/positions', () => {
     expect(Sentry.captureException).toHaveBeenCalledWith('string error');
   });
 
-  it('degrades to 503 + Retry-After when the snapshot read trips a transient db timeout', async () => {
-    // Schwab succeeds; the in-handler snapshot SELECT (via withDbRetry)
-    // hits the per-attempt timeout → TransientDbError → soft 503.
+  it('AUD-M6: a transient db failure on the OPTIONAL snapshot lookup must NOT fail the read — succeeds 200 with snapshotId null', async () => {
+    // Schwab succeeds; the in-handler snapshot SELECT (via withDbRetry inside
+    // safeDb) hits a transient timeout. The lookup is incidental FK enrichment,
+    // so it must soft-degrade to null and the position read must still succeed.
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({
         ok: true,
@@ -436,12 +438,13 @@ describe('GET /api/positions', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
 
-    expect(res._status).toBe(503);
-    expect(res._headers['Retry-After']).toBe('5');
-    expect(res._json).toEqual({
-      error: 'temporarily unavailable',
-      transient: true,
-    });
+    expect(res._status).toBe(200);
+    expect((res._json as { saved: boolean }).saved).toBe(true);
+    // The optional FK degraded to null; the position row still saved.
+    expect(savePositions).toHaveBeenCalledWith(
+      expect.objectContaining({ snapshotId: null }),
+    );
+    // A soft-degraded optional lookup is not a Sentry-worthy event.
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
@@ -748,5 +751,53 @@ describe('POST /api/positions — CSV parse error', () => {
         message: 'CSV row 5: unexpected token in /internal/path.ts:42',
       }),
     );
+  });
+
+  it('AUD-M6: a transient db failure on the snapshot lookup must NOT surface as the misleading "Failed to parse CSV" 500 — succeeds 200 with snapshotId null', async () => {
+    // A real CSV parses fine; only the OPTIONAL snapshot FK lookup trips a
+    // transient db timeout. Before the fix this lookup sat outside the try and
+    // bubbled into the CSV catch → a misleading 'Failed to parse CSV' 500.
+    vi.mocked(parseFullCSV).mockReturnValue({
+      openLegs: [
+        {
+          putCall: 'PUT',
+          symbol: 'SPXW.P05600',
+          strike: 5600,
+          expiration: '2026-06-11',
+          quantity: -1,
+          averagePrice: 2.5,
+          marketValue: 200,
+          delta: undefined,
+          theta: undefined,
+          gamma: undefined,
+        },
+      ],
+      closedSpreads: [],
+      allTrades: [],
+      dayPnl: null,
+      ytdPnl: null,
+      netLiquidatingValue: null,
+      startingBalance: null,
+      hasOptionsSection: true,
+    });
+    mockSql.mockRejectedValueOnce(new Error('db attempt timeout'));
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        body: 'Options\nSPXW,...,...\n',
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).not.toEqual({ error: 'Failed to parse CSV' });
+    expect((res._json as { saved: boolean }).saved).toBe(true);
+    expect(savePositions).toHaveBeenCalledWith(
+      expect.objectContaining({ snapshotId: null }),
+    );
+    // The transient optional lookup is soft-degraded, not Sentry-reported.
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 });

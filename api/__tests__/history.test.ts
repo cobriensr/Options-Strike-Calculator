@@ -20,6 +20,8 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    addBreadcrumb: vi.fn(),
   },
   metrics: {
     request: vi.fn(() => vi.fn()),
@@ -230,6 +232,56 @@ describe('GET /api/history', () => {
     expect(json.candleCount).toBe(0);
   });
 
+  it('does NOT write the long-TTL cache when a symbol fetch fails (AUD-M1)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+
+    const targetDate = '2026-03-10';
+    const spxCandles = [makeCandle(targetDate, 9, 30, 5450, 5470, 5445, 5460)];
+
+    // $SPX succeeds with candles, but $VIX1D fails transiently. A partial
+    // response must not be cached for 90 days — the empty VIX1D panel would be
+    // served forever for this date.
+    vi.mocked(schwabFetch).mockImplementation(async (path: string) => {
+      if (path.includes('VIX1D')) {
+        return {
+          ok: false as const,
+          error: 'Schwab API error (502): transient',
+          status: 502,
+        };
+      }
+      return {
+        ok: true as const,
+        data: { symbol: '$SPX', candles: spxCandles, previousClose: 5380 },
+      };
+    });
+
+    // Clear any cache-write calls accumulated by earlier tests (mock.calls is
+    // not reset by restoreAllMocks) so the assertions below see only this run.
+    vi.mocked(redis.set).mockClear();
+
+    const res = mockResponse();
+    await handler(mockRequest({ query: { date: targetDate } }), res);
+
+    expect(res._status).toBe(200);
+
+    // The long-TTL (90-day) write must never happen on a partial failure.
+    const PAST_CACHE_TTL = 90 * 24 * 60 * 60;
+    const longTtlWrites = vi
+      .mocked(redis.set)
+      .mock.calls.filter(
+        (call) =>
+          (call[2] as { ex?: number } | undefined)?.ex === PAST_CACHE_TTL,
+      );
+    expect(longTtlWrites).toHaveLength(0);
+
+    // It may still write a short-TTL entry so the partial result self-heals.
+    for (const call of vi.mocked(redis.set).mock.calls) {
+      expect((call[2] as { ex?: number } | undefined)?.ex).toBeLessThan(
+        PAST_CACHE_TTL,
+      );
+    }
+  });
+
   it('caches past date data in Redis with long TTL', async () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
 
@@ -245,7 +297,12 @@ describe('GET /api/history', () => {
     await handler(mockRequest({ query: { date: targetDate } }), res);
 
     expect(res._status).toBe(200);
-    // Should cache in Redis (set called)
-    expect(redis.set).toHaveBeenCalled();
+    // Should cache in Redis with the 90-day TTL (all symbols succeeded).
+    const PAST_CACHE_TTL = 90 * 24 * 60 * 60;
+    expect(redis.set).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.anything(),
+      { ex: PAST_CACHE_TTL },
+    );
   });
 });
