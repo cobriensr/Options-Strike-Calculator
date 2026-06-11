@@ -243,6 +243,32 @@ def _simulate_exit(
     return last["ts"], float(last["close"]), ExitReason.EOD
 
 
+def _bar_hits_exit(
+    signal: Signal, bar: pd.Series
+) -> tuple[pd.Timestamp, float, ExitReason] | None:
+    """Check an already-entered bar's H/L for a stop/target hit.
+
+    Used for the ENTRY bar, whose fill price is the bar's open — so there is no
+    gap-through-at-open to model (the open IS the entry). Both extremes touched
+    in the same bar → conservative stop (same convention as ``_simulate_exit``).
+    Returns ``None`` if neither level is touched.
+    """
+    sign = signal.direction.sign
+    bar_high = float(bar["high"])
+    bar_low = float(bar["low"])
+    if sign > 0:
+        hit_stop = bar_low <= signal.stop_price
+        hit_target = bar_high >= signal.target_price
+    else:
+        hit_stop = bar_high >= signal.stop_price
+        hit_target = bar_low <= signal.target_price
+    if hit_stop:  # both-touched resolves here too (conservative)
+        return bar["ts"], signal.stop_price, ExitReason.STOP
+    if hit_target:
+        return bar["ts"], signal.target_price, ExitReason.TARGET
+    return None
+
+
 def _resolve_trade(
     signal: Signal,
     entry_bar: pd.Series,
@@ -257,7 +283,23 @@ def _resolve_trade(
     entry_price = raw_entry + sign * spec.slippage_price
 
     # Exit simulation uses raw prices; slippage applied after.
-    exit_ts, raw_exit, reason = _simulate_exit(signal, exit_bars)
+    # AUD-H9: examine the ENTRY bar's own H/L FIRST. We fill at T+1's open and
+    # hold through T+1, so a stop/target touched during the entry minute must
+    # count — but `exit_bars` starts at T+2 and never saw it, understating
+    # tight-stop (setups 5/6/6b) entry-minute losses.
+    entry_hit = _bar_hits_exit(signal, entry_bar)
+    if entry_hit is not None:
+        exit_ts, raw_exit, reason = entry_hit
+    elif not exit_bars.empty:
+        exit_ts, raw_exit, reason = _simulate_exit(signal, exit_bars)
+    else:
+        # Entry bar didn't trigger and there are no post-entry bars (signal on
+        # the second-to-last RTH bar). Close at the entry bar's close (EOD) — NOT
+        # at the pre-entry decision_ts/stop_price, which fabricated a ~-1R loss
+        # with exit_ts BEFORE entry_ts (AUD-H9).
+        exit_ts = entry_bar["ts"]
+        raw_exit = float(entry_bar["close"])
+        reason = ExitReason.EOD
     exit_price = raw_exit - sign * spec.slippage_price
 
     # P&L: (exit - entry) * direction * tick_value / tick_size.

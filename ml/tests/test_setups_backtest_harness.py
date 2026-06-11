@@ -226,6 +226,69 @@ def test_resolve_trade_short_stop_loss_is_negative_r():
     assert -1.5 < trade.r_multiple < -0.9
 
 
+def test_resolve_trade_stop_hit_on_entry_bar():
+    """AUD-H9: a stop touched DURING the entry minute (T+1) must register — the
+    post-entry walk starts at T+2 and previously missed it, understating
+    tight-stop losses."""
+    spec = CONTRACT_SPECS["ES"]
+    sig = Signal(
+        setup_name="test",
+        decision_ts=_utc("2026-04-15 14:00"),
+        direction=Direction.LONG,
+        contract="ESM6",
+        stop_price=5000.0,
+        target_price=5020.0,
+    )
+    # Enter at 5005 open; the entry bar's OWN low pierces the 5000 stop.
+    entry_bar = pd.Series(
+        {
+            "ts": _utc("2026-04-15 14:01"),
+            "open": 5005.0,
+            "high": 5006.0,
+            "low": 4998.0,
+            "close": 5001.0,
+        }
+    )
+    # A later bar that would have hit the target — must NOT be reached.
+    exit_bars = _bars([("2026-04-15 14:02", 5001, 5025, 5000, 5022, 100)])
+    trade = _resolve_trade(sig, entry_bar, exit_bars, spec)
+    assert trade.exit_reason is ExitReason.STOP
+    assert trade.exit_ts == _utc("2026-04-15 14:01")  # exited on the entry bar
+    assert trade.r_multiple < 0
+
+
+def test_resolve_trade_empty_exit_bars_closes_at_entry_close():
+    """AUD-H9: signal on the second-to-last bar → no post-entry bars. The entry
+    bar must close EOD at its own close with exit_ts == entry_ts, never the old
+    fabricated stop-loss at the pre-entry decision_ts (exit before entry)."""
+    spec = CONTRACT_SPECS["ES"]
+    sig = Signal(
+        setup_name="test",
+        decision_ts=_utc("2026-04-15 14:00"),
+        direction=Direction.LONG,
+        contract="ESM6",
+        stop_price=4990.0,
+        target_price=5020.0,
+    )
+    # Entry bar touches neither stop nor target; no bars after it.
+    entry_bar = pd.Series(
+        {
+            "ts": _utc("2026-04-15 14:01"),
+            "open": 5005.0,
+            "high": 5008.0,
+            "low": 5002.0,
+            "close": 5006.0,
+        }
+    )
+    exit_bars = _bars([])  # empty — signal fired on the second-to-last bar
+    trade = _resolve_trade(sig, entry_bar, exit_bars, spec)
+    assert trade.exit_reason is ExitReason.EOD
+    assert trade.exit_ts == _utc("2026-04-15 14:01")
+    assert trade.exit_ts >= trade.entry_ts  # never exit before entry
+    # Closed near its own close (5006, minus slippage) — a small winner, not -1R.
+    assert trade.r_multiple > 0
+
+
 # ---------------------------------------------------------------------------
 # Full-day driver smoke (with a stub evaluator)
 # ---------------------------------------------------------------------------
