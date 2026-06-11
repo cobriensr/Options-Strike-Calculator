@@ -1695,10 +1695,13 @@ def _butterfly_from_batch(
     concatenated and the single final triple-dedup runs ONCE on the
     concatenated result. Body rows are independent in the body×wing join, so
     slicing is output-identical: the triple key ``(ridx_lo, ridx_body,
-    ridx_hi)`` is body-partitioned across slices, and the cross-slice
-    duplicates that the ±1 bucket overlap can produce are removed by the
-    same final ``.unique()`` as the single-shot path. Below the chunk size
-    the path is byte-for-byte the prior single-shot implementation.
+    ridx_hi)`` is body-partitioned across slices (each ``ridx_body`` lives in
+    exactly one slice), so no cross-slice triple duplicates can arise. The
+    ±1 bucket overlap produces intra-slice duplicates (a shared wing joining
+    the same body twice within one slice), which the single final
+    ``.unique()`` collapses — deferred to the concatenated frame purely for
+    efficiency, equivalent to deduping each slice. Below the chunk size the
+    path is byte-for-byte the prior single-shot implementation.
     """
     if batch.height < 3:
         return _empty_candidates_3leg()
@@ -1972,9 +1975,12 @@ def _butterfly_candidates_for_bodies(
 
     # Return pre-dedup candidates. The caller runs the single final
     # ``.unique(subset=["ridx_lo", "ridx_body", "ridx_hi"])`` on the
-    # concatenated result so duplicate triples that surface from multiple
-    # offset joins (within a slice) AND from cross-slice overlap are removed
-    # exactly once.
+    # concatenated result. The only duplicates are intra-slice: the three
+    # offset joins (±1 bucket overlap) can surface the same triple twice
+    # within a slice. Bodies are body-partitioned across slices, so no
+    # cross-slice triple duplicate exists; deferring the dedup to the
+    # concatenated frame is purely an efficiency choice, equivalent to
+    # deduping each slice.
     return cand
 
 
