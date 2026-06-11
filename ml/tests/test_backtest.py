@@ -264,6 +264,30 @@ class TestSimulateStrategy:
 
         assert list(result["structure"]) == ["IC", "IC"]
 
+    def test_override_structure_is_label_only_not_counterfactual(self):
+        """AUD-H10: override_structure must NOT recompute the win flag — it stays
+        the realized structure_correct (no per-structure counterfactual outcomes
+        exist). So override baselines isolate sizing, not structure selection."""
+        df = make_df(
+            [
+                {
+                    "recommended_structure": "CCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": True,
+                },
+                {
+                    "recommended_structure": "PCS",
+                    "label_confidence": "MODERATE",
+                    "structure_correct": False,
+                },
+            ]
+        )
+        overridden = simulate_strategy(df, name="ov", override_structure="IC")
+        realized = simulate_strategy(df, name="re")
+        # Same win stream regardless of the structure relabel.
+        assert list(overridden["win"]) == list(realized["win"]) == [True, False]
+        assert list(overridden["structure"]) == ["IC", "IC"]
+
     def test_override_contracts(self):
         """override_contracts forces a specific contract count regardless of confidence."""
         df = make_df(
@@ -1439,20 +1463,24 @@ class TestPrintReport:
         assert "MODERATE" in captured.out
 
     def test_print_report_outperforms(self, capsys):
-        """When Claude beats baseline, 'outperforms' should appear."""
+        """When confidence sizing beats the flat baseline, the sizing-only
+        takeaway should say so (AUD-H10: not framed as structure selection)."""
         # Claude uses confidence sizing (1x for MODERATE).
         # Majority baseline uses override_contracts=2.
         # With 80% win rate: Claude P&L = 12*200 - 3*1800 = -3000
-        # Majority P&L = 12*400 - 3*3600 = -6000 => Claude outperforms.
+        # Majority P&L = 12*400 - 3*3600 = -6000 => Claude (sizing) wins.
         df, strategies, metrics = self._build_scenario(12, 3)
 
         print_report(df, strategies, metrics)
 
         captured = capsys.readouterr()
-        assert "outperforms" in captured.out.lower()
+        out_lower = captured.out.lower()
+        assert "confidence sizing beats" in out_lower
+        assert "sizing-only" in out_lower
 
     def test_print_report_underperforms(self, capsys):
-        """When baseline beats Claude, 'baseline outperforms' should appear."""
+        """When the flat baseline beats confidence sizing, the sizing-only
+        takeaway should say so (AUD-H10: not framed as structure selection)."""
         # Use HIGH confidence so Claude trades 2x.
         # Both Claude and baseline trade 2 contracts, so P&L is the same.
         # We need Claude < baseline. Use override_contracts=1 for baseline.
@@ -1504,9 +1532,8 @@ class TestPrintReport:
 
         captured = capsys.readouterr()
         out_lower = captured.out.lower()
-        assert (
-            "baseline outperforms" in out_lower or "not yet adding value" in out_lower
-        )
+        assert "baseline beats confidence sizing" in out_lower
+        assert "sizing-only" in out_lower
 
     def test_print_report_sizing_adds_value(self, capsys):
         """When confidence sizing > equal sizing, 'calibration is working' should appear."""

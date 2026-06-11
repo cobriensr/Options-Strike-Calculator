@@ -113,7 +113,13 @@ def simulate_strategy(
         df: DataFrame filtered to labeled days.
         name: Strategy name for labeling.
         use_confidence_sizing: If True, size by label_confidence.
-        override_structure: If set, always trade this structure.
+        override_structure: If set, relabel every trade with this structure.
+            LABEL-ONLY: the win/loss flag stays the realized ``structure_correct``
+            (the outcome of Claude's *recommended* structure). The dataset has no
+            per-structure counterfactual outcomes, so an override cannot simulate
+            that structure's actual win rate — structure-override strategies
+            isolate SIZING on the realized win stream, not structure selection
+            (AUD-H10).
         override_contracts: If set, always use this many contracts.
 
     Returns:
@@ -132,6 +138,9 @@ def simulate_strategy(
         else:
             contracts = 1
 
+        # Realized outcome of Claude's recommended structure. NOT recomputed
+        # when override_structure is set — no per-structure counterfactual
+        # outcomes exist in the dataset (see docstring, AUD-H10).
         won = bool(row["structure_correct"])
         if won:
             pnl = CREDIT_PER_CONTRACT * contracts
@@ -468,16 +477,22 @@ def print_report(
     majority_m = metrics.get("Majority Class (CCS)", {})
 
     if claude_m and majority_m:
+        # AUD-H10: the "Majority Class" baseline overrides only the structure
+        # LABEL and contract count — its win stream is still Claude's realized
+        # structure_correct, so this contrast isolates SIZING (confidence 1-3x
+        # vs a flat 2x), NOT structure selection. Framed as sizing-only.
         pnl_diff = claude_m["total_pnl"] - majority_m["total_pnl"]
         if pnl_diff > 0:
             takeaway(
-                f"Claude Analysis outperforms majority-class baseline "
-                f"by ${pnl_diff:,.0f}"
+                f"Confidence sizing beats a flat 2-contract baseline by "
+                f"${pnl_diff:,.0f} on the same realized win stream "
+                f"(sizing-only; structure selection is not measured here)"
             )
         else:
             takeaway(
-                f"Majority-class baseline outperforms Claude Analysis "
-                f"by ${abs(pnl_diff):,.0f} -- structure selection not yet adding value"
+                f"A flat 2-contract baseline beats confidence sizing by "
+                f"${abs(pnl_diff):,.0f} on the same realized win stream "
+                f"(sizing-only; structure selection is not measured here)"
             )
 
     if claude_m:
