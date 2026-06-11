@@ -1,11 +1,11 @@
 {
   "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-06-09T21:18:31.231374+00:00",
+  "trained_at": "2026-06-11T04:28:04.876578+00:00",
   "training_sample": {
-    "n": 148413,
+    "n": 140219,
     "date_range": [
-      "2026-03-11 00:00:00",
-      "2026-06-09 00:00:00"
+      "2026-03-13 00:00:00",
+      "2026-06-10 00:00:00"
     ],
     "filters_applied": [
       "last 90 days",
@@ -18,56 +18,56 @@
   "features": {
     "tod_weights": {
       "AM_open": 4,
-      "MID": 0,
+      "MID": -1,
       "LUNCH": -4,
       "PM": -4
     },
     "tod_weights_dow_overrides": {
       "Monday": {
-        "AM_open": -1,
+        "AM_open": 2,
         "MID": -3,
         "LUNCH": 5,
-        "PM": 2
+        "PM": -1
       }
     },
     "dte_weights": {
-      "0": -2,
-      "1": 4,
-      "2": -2,
-      "3": 0
+      "0": 2,
+      "1": 2,
+      "2": -4,
+      "3": -3
     },
     "vol_oi_quintile_weights": [
-      1,
+      -2,
+      -2,
+      3,
       -1,
-      2,
-      0,
-      -3
+      2
     ],
     "vol_oi_quintile_boundaries": [
-      0.06003373324421703,
-      0.09693813735625582,
-      0.15481171548117154,
-      0.3783783783783784
+      0.05946932636967901,
+      0.09467455621301775,
+      0.15254237288135594,
+      0.3673469387755102
     ],
     "gamma_quintile_weights": [
-      3,
-      -2,
       -1,
-      -2,
-      -1
+      1,
+      4,
+      3,
+      1
     ],
     "gamma_quintile_boundaries": [
-      0.01222928888888889,
-      0.025491016115481734,
-      0.042309433715925396,
-      0.06904836487060584
+      0.011830181622766773,
+      0.024667421177461193,
+      0.04107038520349969,
+      0.069019256534323
     ],
     "ask_pct_quintile_weights": [
-      1,
-      1,
-      1,
-      1,
-      -5
+      4,
+      -1,
+      0,
+      -1,
+      -2
     ],
     "ask_pct_quintile_boundaries": [
       0.5333333333333333,
@@ -76,47 +76,47 @@
       0.75
     ],
     "option_type_weights": {
-      "C": 2,
-      "P": -2
+      "C": -2,
+      "P": 2
     },
     "ticker_weights": {
-      "AAOI": 2,
-      "AAPL": 0,
+      "AAOI": 1,
+      "AAPL": -1,
       "AMD": 0,
-      "AMZN": 0,
-      "APLD": 0,
+      "AMZN": 1,
+      "APLD": 5,
       "APP": -1,
-      "ARM": 0,
-      "ASTS": 0,
+      "ARM": 4,
+      "ASTS": 2,
       "AVGO": 0,
-      "BA": 1,
+      "BA": 0,
       "BABA": 0,
       "BE": 0,
       "CAR": 0,
-      "COIN": 0,
-      "CRCL": 0,
-      "CRWD": 0,
+      "COIN": -1,
+      "CRCL": -1,
+      "CRWD": -1,
       "CRWV": 0,
       "CSCO": 0,
       "CVNA": 0,
-      "DELL": 0,
-      "GME": 0,
-      "GOOG": 1,
+      "DELL": -1,
+      "GME": -1,
+      "GOOG": 0,
       "GOOGL": 0,
       "HIMS": 0,
       "HOOD": 0,
-      "IBIT": 0,
+      "IBIT": -1,
       "IBM": 0,
       "INTC": 0,
-      "IONQ": 0,
-      "IREN": 0,
+      "IONQ": -1,
+      "IREN": -1,
       "IWM": -1,
-      "LITE": 0,
+      "LITE": -1,
       "LLY": 0,
       "META": 0,
-      "MRVL": 0,
+      "MRVL": -1,
       "MSFT": 0,
-      "MSTR": 0,
+      "MSTR": -1,
       "MU": 0,
       "NBIS": 0,
       "NFLX": 0,
@@ -124,47 +124,47 @@
       "NVDA": 0,
       "NVTS": 0,
       "OKLO": 0,
-      "ORCL": 0,
+      "ORCL": -1,
       "PLTR": 0,
       "POET": 0,
-      "QCOM": 1,
-      "QQQ": 0,
+      "QCOM": 0,
+      "QQQ": 3,
       "RBLX": -1,
-      "RDDT": 1,
+      "RDDT": 0,
       "RGTI": -1,
-      "RIOT": 0,
+      "RIOT": -1,
       "RIVN": 0,
-      "RKLB": 3,
-      "RUTW": 0,
+      "RKLB": 1,
+      "RUTW": -1,
       "SHOP": 0,
       "SLV": -1,
-      "SMCI": 1,
+      "SMCI": 0,
       "SMH": 0,
-      "SNDK": 1,
+      "SNDK": 0,
       "SNOW": 0,
       "SOFI": -1,
-      "SOUN": 5,
-      "SOXL": 0,
+      "SOUN": 2,
+      "SOXL": -1,
       "SOXS": -1,
-      "SPXW": 0,
-      "SPY": 0,
-      "SQQQ": 0,
+      "SPXW": -1,
+      "SPY": -1,
+      "SQQQ": -1,
       "STX": 0,
-      "TEAM": 0,
-      "TLT": 0,
-      "TNA": 0,
-      "TQQQ": 1,
+      "TEAM": -1,
+      "TLT": -1,
+      "TNA": -1,
+      "TQQQ": 0,
       "TSLA": 0,
-      "TSLL": 1,
-      "TSM": 2,
-      "UBER": 0,
-      "UNH": 1,
+      "TSLL": 0,
+      "TSM": 0,
+      "UBER": -1,
+      "UNH": 0,
       "USAR": -1,
       "USO": -1,
       "WDC": -1,
-      "WMT": 0,
+      "WMT": -1,
       "WULF": -1,
-      "XOM": 0
+      "XOM": -1
     },
     "composite_bonuses": [
       {
@@ -244,19 +244,18 @@
     ]
   },
   "cutoffs": {
-    "t1": 9,
-    "t2": 6,
+    "t1": 11,
+    "t2": 7,
     "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift."
   },
   "validation": {
-    "tier1_count": 8414,
-    "tier2_count": 17043,
-    "tier3_count": 122956,
-    "tier1_mean_outcome_pct": 38.66739629655201,
-    "tier2_mean_outcome_pct": 28.695146737680133,
-    "tier3_mean_outcome_pct": 5.840814927893838,
-    "spearman_score_outcome": 0.15602225808589498,
-    "spearman_p_value": 0.0
-  },
-  "ticker_weights_update_note": "ticker_weights is updated nightly by scripts/online_ticker_update.py via exponential smoothing (alpha=0.05, ±1 cap/night). All other features remain from the last full training run."
+    "tier1_count": 7268,
+    "tier2_count": 14073,
+    "tier3_count": 118878,
+    "tier1_mean_outcome_pct": 406.9876417912439,
+    "tier2_mean_outcome_pct": 48.80098082583443,
+    "tier3_mean_outcome_pct": 19.54368423681766,
+    "spearman_score_outcome": -0.05864479484765836,
+    "spearman_p_value": 4.599585205994279e-107
+  }
 }
