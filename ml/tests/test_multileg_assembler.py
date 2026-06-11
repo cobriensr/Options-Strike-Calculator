@@ -1077,6 +1077,37 @@ def test_self_join_small_bucket_no_subbatch_warning(
     assert out.sort("id").to_dicts() == baseline.sort("id").to_dicts()
 
 
+def test_self_join_per_chunk_prune_preserves_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-chunk _PER_BATCH_PRUNE_THRESHOLD prune inside the chunked
+    self-join path must not change the final classification.
+
+    The per-chunk prune is a top-K-per-trade APPROXIMATION (not a no-op),
+    so it is the one branch where chunked output could theoretically
+    diverge from single-shot. With a low cap (forces many anchor chunks)
+    AND a low per-batch prune threshold (forces the prune to fire inside a
+    chunk), the final global _prune_top_k_per_trade still makes the result
+    identical to the single-shot path. This locks that invariant for the
+    live-detector path.
+    """
+    import multileg_assembler as ma
+
+    # Dense bucket: many same-size verticals so a single anchor chunk's
+    # scored output exceeds the (low) per-batch prune threshold.
+    df = _df(_dense_same_type_calls(n=600, size=1, expiry=date(2026, 6, 12)))
+
+    monkeypatch.setattr(ma, "_SELF_JOIN_PAIR_CAP", 10_000_000)  # single-shot
+    monkeypatch.setattr(ma, "_PER_BATCH_PRUNE_THRESHOLD", 50_000)  # default
+    expected = ma.classify_trades(df, window_seconds=90)
+
+    monkeypatch.setattr(ma, "_SELF_JOIN_PAIR_CAP", 50_000)  # force chunking
+    monkeypatch.setattr(ma, "_PER_BATCH_PRUNE_THRESHOLD", 50)  # force prune
+    actual = ma.classify_trades(df, window_seconds=90)
+
+    assert expected.sort("id").to_dicts() == actual.sort("id").to_dicts()
+
+
 # ── Cross-type join sub-batching (OOM fix, 2026-06-04) ───────────────────────
 #
 # See docs/superpowers/specs/classifier-cross-type-subbatch-2026-06-04.md.
