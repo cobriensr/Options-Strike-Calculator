@@ -1108,6 +1108,136 @@ def test_self_join_per_chunk_prune_preserves_parity(
     assert expected.sort("id").to_dicts() == actual.sort("id").to_dicts()
 
 
+# ── Butterfly body×wing join chunking (OOM fix, 2026-06-11) ──────────────────
+#
+# See docs/superpowers/specs/classifier-oom-rework-2026-06-11.md (Task 5).
+# A dense butterfly-eligible cell makes the body × wing offset joins
+# materialize a large intermediate in one shot. The fix chunks the body
+# anchors so each intermediate stays ~_BUTTERFLY_BODY_CHUNK-sized. The
+# chunking MUST be output-identical: body rows are independent in the
+# body×wing join, and the single final triple-dedup runs on the
+# concatenated result, removing cross-slice duplicates exactly as today.
+
+
+def _dense_butterfly_cell(
+    *, n_flies: int = 120, expiry: date = EXP_NEAR
+) -> list[dict[str, object]]:
+    """Build many genuine butterflies in one same-expiry, same-type window.
+
+    Each fly is a (low wing, body, high wing) triple of calls with
+    equidistant strikes (gap 5), body size 2× wing size, body sold while
+    both wings are bought (body opposite wings, wings same direction) —
+    exactly the shape ``test_butterfly_matches`` accepts at confidence
+    > 0.7. Flies are spaced 1000 strikes apart AND the wing size varies
+    per fly (so a fly's body size 2*w only matches its OWN wings), so there
+    is exactly one valid butterfly per fly and zero cross-fly matches —
+    keeping the classification deterministic (a fully ambiguous cell makes
+    greedy tie-breaking non-deterministic and is a poor parity oracle).
+    ``n_flies`` bodies forces multiple body chunks when
+    ``_BUTTERFLY_BODY_CHUNK`` is small.
+    """
+    rows: list[dict[str, object]] = []
+    for f in range(n_flies):
+        center = 1000.0 + float(f) * 1000.0
+        base_off = float(f % 80)  # all within a 90s window
+        wing = 10 + (f % 7)  # vary so body=2*wing is fly-unique
+        # Low wing — buy.
+        rows.append(
+            _trade(
+                trade_id=f"bf{f}_lo",
+                offset_s=base_off,
+                strike=center - 5.0,
+                option_type="call",
+                expiry=expiry,
+                size=wing,
+                price=1.00,
+                nbbo_bid=0.90,
+                nbbo_ask=1.00,  # buy wing
+            )
+        )
+        # Body — sell, size 2× wing.
+        rows.append(
+            _trade(
+                trade_id=f"bf{f}_body",
+                offset_s=base_off,
+                strike=center,
+                option_type="call",
+                expiry=expiry,
+                size=2 * wing,
+                price=2.00,
+                nbbo_bid=2.00,
+                nbbo_ask=2.10,  # sell body
+            )
+        )
+        # High wing — buy.
+        rows.append(
+            _trade(
+                trade_id=f"bf{f}_hi",
+                offset_s=base_off,
+                strike=center + 5.0,
+                option_type="call",
+                expiry=expiry,
+                size=wing,
+                price=0.50,
+                nbbo_bid=0.40,
+                nbbo_ask=0.50,  # buy wing
+            )
+        )
+    return rows
+
+
+def test_butterfly_chunking_matches_unchunked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dense butterfly-eligible cell classifies identically whether or not
+    the body×wing join is chunked."""
+    import multileg_assembler as ma
+
+    df = _df(_dense_butterfly_cell(n_flies=120, expiry=date(2026, 6, 12)))
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_BODY_CHUNK", 10_000_000)  # single-shot
+    expected = ma.classify_trades(df, window_seconds=90)
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_BODY_CHUNK", 50)  # force chunking
+    actual = ma.classify_trades(df, window_seconds=90)
+
+    # The fixture must actually produce butterflies, else the test is vacuous.
+    assert any(
+        r["inferred_structure"] == "butterfly" for r in expected.to_dicts()
+    )
+    assert expected.sort("id").to_dicts() == actual.sort("id").to_dicts()
+
+
+def test_butterfly_subbatch_emits_runtime_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A low body chunk on a dense butterfly cell emits a sub-batch warning."""
+    df = _df(_dense_butterfly_cell(n_flies=120, expiry=date(2026, 6, 12)))
+    monkeypatch.setattr(multileg_assembler, "_BUTTERFLY_BODY_CHUNK", 50)
+    with pytest.warns(RuntimeWarning, match="sub-batching dense butterfly"):
+        multileg_assembler.classify_trades(df, window_seconds=90)
+
+
+def test_butterfly_small_cell_no_subbatch_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A small butterfly cell under the chunk size is untouched: no chunking
+    warning, and output matches the high-chunk single-shot baseline."""
+    df = _df(_dense_butterfly_cell(n_flies=10, expiry=date(2026, 6, 12)))
+
+    monkeypatch.setattr(
+        multileg_assembler, "_BUTTERFLY_BODY_CHUNK", 10_000_000
+    )
+    baseline = multileg_assembler.classify_trades(df, window_seconds=90)
+
+    monkeypatch.setattr(multileg_assembler, "_BUTTERFLY_BODY_CHUNK", 2_000)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        out = multileg_assembler.classify_trades(df, window_seconds=90)
+
+    assert out.sort("id").to_dicts() == baseline.sort("id").to_dicts()
+
+
 # ── Cross-type join sub-batching (OOM fix, 2026-06-04) ───────────────────────
 #
 # See docs/superpowers/specs/classifier-cross-type-subbatch-2026-06-04.md.

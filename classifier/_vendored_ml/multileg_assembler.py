@@ -224,6 +224,15 @@ _SELF_JOIN_PAIR_CAP: Final = 250_000
 _BUTTERFLY_CELL_LIMIT: Final = 30_000
 
 
+# Butterfly body chunk size. The body x wing offset joins in
+# _butterfly_from_batch are eager and uncapped; a dense butterfly-eligible
+# cell (up to _BUTTERFLY_CELL_LIMIT rows) can build a large intermediate.
+# Body rows are independent in the body-wing join, so processing bodies in
+# slices is output-identical (the final triple-dedup runs on the concatenated
+# result). Chunk the body anchors to bound the per-join intermediate.
+_BUTTERFLY_BODY_CHUNK: Final = 2_000
+
+
 # Ticker overload threshold. Any ticker whose largest single
 # (expiry, option_type) cell exceeds this row count is skipped entirely
 # (trades remain unclassified with null structure columns and a warning
@@ -1676,11 +1685,101 @@ def _butterfly_from_batch(
     Bodies are anchored to ``_is_body`` rows; wings come from the full
     batch (bodies' bucket + 1 either side, via the batch iterator's
     ``all_buckets`` set).
+
+    Peak memory is bounded by chunking the body anchors: the body × wing
+    offset joins are eager and uncapped, so a dense butterfly-eligible cell
+    (up to ``_BUTTERFLY_CELL_LIMIT`` rows) can build a large intermediate.
+    When ``bodies.height`` exceeds ``_BUTTERFLY_BODY_CHUNK`` the bodies are
+    sliced and each slice runs the full body×wing→filter→lo/hi→triple→score
+    pipeline against the FULL wing frame; the per-slice candidate frames are
+    concatenated and the single final triple-dedup runs ONCE on the
+    concatenated result. Body rows are independent in the body×wing join, so
+    slicing is output-identical: the triple key ``(ridx_lo, ridx_body,
+    ridx_hi)`` is body-partitioned across slices, and the cross-slice
+    duplicates that the ±1 bucket overlap can produce are removed by the
+    same final ``.unique()`` as the single-shot path. Below the chunk size
+    the path is byte-for-byte the prior single-shot implementation.
     """
     if batch.height < 3:
         return _empty_candidates_3leg()
 
     bodies = batch.filter(pl.col("_is_body"))
+    if bodies.height == 0:
+        return _empty_candidates_3leg()
+
+    # Common case: bodies fit under the chunk size → single-shot, scored once
+    # and deduped once, byte-for-byte the prior path.
+    if bodies.height <= _BUTTERFLY_BODY_CHUNK:
+        cand = _butterfly_candidates_for_bodies(
+            bodies,
+            batch,
+            window_seconds=window_seconds,
+            strike_tolerance=strike_tolerance,
+            size_tolerance=size_tolerance,
+        )
+        if cand.height == 0:
+            return _empty_candidates_3leg()
+        return cand.unique(
+            subset=["ridx_lo", "ridx_body", "ridx_hi"], keep="first"
+        )
+
+    # Dense cell: chunk the body anchors so each body×wing intermediate stays
+    # ~chunk-sized. Wings remain the full batch. The final triple-dedup runs
+    # ONCE on the concatenated result (outside the loop) so cross-slice
+    # duplicate triples are removed exactly as in the single-shot path.
+    n_bodies = bodies.height
+    n_chunks = (n_bodies + _BUTTERFLY_BODY_CHUNK - 1) // _BUTTERFLY_BODY_CHUNK
+    warnings.warn(
+        f"multileg matcher: sub-batching dense butterfly body×wing join "
+        f"(bodies={n_bodies:,} > {_BUTTERFLY_BODY_CHUNK:,} chunk) into "
+        f"{n_chunks} body sub-chunks.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    chunk_out: list[pl.DataFrame] = []
+    for start in range(0, n_bodies, _BUTTERFLY_BODY_CHUNK):
+        bodies_slice = bodies.slice(start, _BUTTERFLY_BODY_CHUNK)
+        cand = _butterfly_candidates_for_bodies(
+            bodies_slice,
+            batch,
+            window_seconds=window_seconds,
+            strike_tolerance=strike_tolerance,
+            size_tolerance=size_tolerance,
+        )
+        if cand.height > 0:
+            chunk_out.append(cand)
+    if not chunk_out:
+        return _empty_candidates_3leg()
+    cand = (
+        chunk_out[0]
+        if len(chunk_out) == 1
+        else pl.concat(chunk_out, how="vertical_relaxed")
+    )
+    # Single final triple-dedup on the concatenated result.
+    return cand.unique(
+        subset=["ridx_lo", "ridx_body", "ridx_hi"], keep="first"
+    )
+
+
+def _butterfly_candidates_for_bodies(
+    bodies: pl.DataFrame,
+    batch: pl.DataFrame,
+    *,
+    window_seconds: int,
+    strike_tolerance: float,
+    size_tolerance: float,
+) -> pl.DataFrame:
+    """Enumerate butterfly candidates for one body slice against the full
+    wing frame (``batch``).
+
+    Returns scored candidates BEFORE the final triple-dedup — the caller
+    (``_butterfly_from_batch``) is responsible for the single
+    ``.unique(subset=["ridx_lo", "ridx_body", "ridx_hi"])`` on the
+    concatenated result so cross-slice duplicate triples are removed exactly
+    once. ``bodies`` rows are independent in the body×wing join, so running
+    this per body-slice and concatenating is output-identical to a
+    single-shot pass over all bodies (modulo that final dedup).
+    """
     if bodies.height == 0:
         return _empty_candidates_3leg()
 
@@ -1871,10 +1970,12 @@ def _butterfly_from_batch(
     if cand.height == 0:
         return _empty_candidates_3leg()
 
-    # Dedup triples that may surface from multiple offset joins.
-    return cand.unique(
-        subset=["ridx_lo", "ridx_body", "ridx_hi"], keep="first"
-    )
+    # Return pre-dedup candidates. The caller runs the single final
+    # ``.unique(subset=["ridx_lo", "ridx_body", "ridx_hi"])`` on the
+    # concatenated result so duplicate triples that surface from multiple
+    # offset joins (within a slice) AND from cross-slice overlap are removed
+    # exactly once.
+    return cand
 
 
 def _empty_candidates_3leg() -> pl.DataFrame:
