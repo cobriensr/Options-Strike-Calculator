@@ -29,7 +29,7 @@ from handlers.base import Handler
 from health import run_server
 from logger_setup import log
 from router import Router
-from sentry_setup import capture_exception, init_sentry
+from sentry_setup import capture_exception, capture_message, init_sentry
 from state import state
 from subscription_watchdog import run_subscription_watchdog
 from ws_lease import WsLease
@@ -175,6 +175,18 @@ async def _run() -> None:
                         "timeout_s": settings.ws_lease_acquire_timeout_s,
                     },
                 )
+                # SystemExit is a BaseException, so main()'s `except Exception`
+                # never sees it — without this the acquire-timeout crash loop is
+                # Sentry-silent (AUD-H2). Report explicitly before exiting.
+                capture_message(
+                    "uw-stream ws lease acquire timed out — exiting for restart",
+                    level="error",
+                    tags={"component": "main", "reason": "lease_acquire_timeout"},
+                    context={
+                        "key": settings.ws_lease_key,
+                        "timeout_s": settings.ws_lease_acquire_timeout_s,
+                    },
+                )
                 raise SystemExit(1)
 
         handlers = _build_handlers(settings.channels)
@@ -292,6 +304,23 @@ async def _run() -> None:
             return_when=asyncio.FIRST_COMPLETED,
         )
 
+        # Detect unexpected task death. asyncio.wait(FIRST_COMPLETED) wakes on
+        # the stop signal OR on any pipeline/background task finishing — and it
+        # does NOT retrieve exceptions. Without this, an unhandled crash in the
+        # router, a handler drain, the health server or the watchdog would flow
+        # straight into graceful shutdown and exit 0; Railway's ON_FAILURE
+        # policy then does NOT restart, so ingestion silently stops (the same
+        # failure class as the 2026-06-09 lease incident, previously fixed only
+        # for the renewal task — AUD-H1). Any non-stop task in `done` is
+        # unexpected: these are meant to run until cancelled in _shutdown.
+        crashed_tasks = [t for t in done if t is not done_task]
+        for t in crashed_tasks:
+            exc = t.exception()
+            if exc is not None:
+                capture_exception(
+                    exc, tags={"component": "main", "task": t.get_name()}
+                )
+
         log.info("shutdown initiated", extra={"reason": _describe_done(done)})
 
         unique_handlers = list({id(h): h for h in handlers.values()}.values())
@@ -309,7 +338,9 @@ async def _run() -> None:
         # ``lease_lost`` unset → falls through to a clean exit 0 (no restart
         # loop on deploys). The SystemExit propagates AFTER the finally below
         # runs its idempotent best-effort cleanup, which is correct.
-        if lease_lost.is_set():
+        # Exit non-zero (→ Railway restart) on a confirmed lease loss OR any
+        # unexpected task death, so neither silently stops ingestion at exit 0.
+        if lease_lost.is_set() or crashed_tasks:
             raise SystemExit(1)
     finally:
         # Best-effort cleanup for ANY exit path that bypassed _shutdown

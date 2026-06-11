@@ -183,6 +183,13 @@ async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
 
     monkeypatch.setattr(main, "WsLease", _FakeLease)
 
+    # AUD-H2: SystemExit bypasses main()'s `except Exception`, so the path must
+    # report to Sentry itself.
+    messages: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        main, "capture_message", lambda msg, **kw: messages.append((msg, kw))
+    )
+
     with pytest.raises(SystemExit) as exc_info:
         await main._run()
 
@@ -193,6 +200,12 @@ async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
     assert fake_session.closed is True
     # CRITICAL: we exited before building ANY connector / opening a socket.
     assert built_connectors == []
+    # The acquire-timeout was reported to Sentry at error level (AUD-H2).
+    assert len(messages) == 1
+    msg, kw = messages[0]
+    assert "acquire timed out" in msg
+    assert kw.get("level") == "error"
+    assert kw.get("tags", {}).get("reason") == "lease_acquire_timeout"
 
 
 @pytest.mark.asyncio
@@ -278,6 +291,64 @@ async def test_run_wires_renewal_task_with_lease_lost_callback(monkeypatch):
     assert callable(on_lost)
     # And the lease was released during shutdown (graceful drain still ran).
     assert captured["lease"].released is True  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_run_exits_nonzero_and_reports_on_task_crash(
+    _reset_notify_state, monkeypatch
+):
+    """AUD-H1: if a pipeline/background task dies with an unhandled exception,
+    _run must capture it to Sentry AND exit non-zero. An exit 0 here would NOT
+    trip Railway's ON_FAILURE restart policy, silently stopping ingestion.
+    """
+    monkeypatch.setattr(main, "init_sentry", lambda: None)
+
+    async def _noop_pool() -> None:
+        return None
+
+    monkeypatch.setattr(main, "init_pool", _noop_pool)
+    monkeypatch.setattr(main, "close_pool", _noop_pool)
+
+    # Lease disabled so the ONLY thing that wakes _run is the crashing task.
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", False, raising=False)
+    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
+
+    class _ForeverConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs.get("name", "conn")
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    class _CrashingRouter:
+        def __init__(self, *_a, **_k) -> None: ...
+
+        async def run(self, _q) -> None:
+            raise RuntimeError("router boom")
+
+    async def _forever_bg() -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "Connector", _ForeverConnector)
+    monkeypatch.setattr(main, "Router", _CrashingRouter)
+    monkeypatch.setattr(main, "run_server", _forever_bg)
+    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
+
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(
+        main, "capture_exception", lambda exc, **kw: captured.append((exc, kw))
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        await main._run()
+
+    assert exc_info.value.code == 1
+    # The crash was reported to Sentry, tagged with the dead task's name.
+    assert len(captured) == 1
+    exc, kw = captured[0]
+    assert isinstance(exc, RuntimeError)
+    assert str(exc) == "router boom"
+    assert kw.get("tags", {}).get("task") == "router"
 
 
 @pytest.mark.asyncio
