@@ -114,7 +114,7 @@ helper and import it from all 18 + the 3 already-correct scripts.
 
 ## HIGH
 
-### [ ] AUD-H1 — uw-stream: unexpected task death exits 0 — no Sentry, no restart
+### [x] AUD-H1 — uw-stream: unexpected task death exits 0 — no Sentry, no restart  `8d01b307`
 
 **File:** `uw-stream/src/main.py:288-313, 397-400`
 
@@ -132,7 +132,7 @@ renewal task.
 after `_shutdown` (mirror the `lease_lost` flag). Land with a test that a
 non-`done_task` exception → non-zero exit + Sentry capture. ~10 lines.
 
-### [ ] AUD-H2 — uw-stream: lease acquire-timeout crash loop is Sentry-silent
+### [x] AUD-H2 — uw-stream: lease acquire-timeout crash loop is Sentry-silent  `8d01b307`
 
 **File:** `uw-stream/src/main.py:161-178` + `uw-stream/railway.toml:7-8`
 
@@ -147,7 +147,7 @@ level="error")` immediately before the `raise SystemExit(1)`. Consider a Sentry
 uptime monitor on `/healthz` for the exhausted-retries terminal state (no
 in-process fix can cover it).
 
-### [ ] AUD-H3 — cron `fetch-greek-exposure-strike` silently skipped every trading day in EST
+### [x] AUD-H3 — cron `fetch-greek-exposure-strike` silently skipped every trading day in EST  `8d01b307 / a40e69c0`
 
 **File:** `api/cron/fetch-greek-exposure-strike.ts:219` + `vercel.json` schedule `30 13 * * 1-5`
 
@@ -161,7 +161,7 @@ all winter.
 `timeCheck`, matching the established pattern (`compute-es-overnight`,
 `fetch-economic-calendar`, `fetch-outcomes`).
 
-### [ ] AUD-H4 — `api/analyze.ts` refusal path crashes after NDJSON stream started
+### [x] AUD-H4 — `api/analyze.ts` refusal path crashes after NDJSON stream started  `d2c72194`
 
 **File:** `api/analyze.ts:272-277`
 
@@ -176,7 +176,7 @@ once-latch in this file, unlike `withDbReader`), (3) spurious
 `done({ status: 422 }); res.write(JSON.stringify({ error }) + '\n'); return res.end();`
 and add a once-latch around `done`.
 
-### [ ] AUD-H5 — `npm run audit` gate is RED and CI doesn't run it
+### [x] AUD-H5 — `npm run audit` gate is RED and CI doesn't run it  `fe06cbf0`
 
 **Files:** `audit-ci.jsonc`, `package.json`, `.github/workflows/ci.yml:86`
 
@@ -191,7 +191,7 @@ files, so an allowlist entry with written justification is defensible, or swap t
 a thrift-free parquet reader (e.g. `hyparquet`); (b) change the CI step to
 `npm run audit` so the allowlisted gate is what CI enforces.
 
-### [ ] AUD-H6 — frontend: panelMap memo barrier structurally defeated — full panel re-render every 5s
+### [x] AUD-H6 — frontend: panelMap memo barrier structurally defeated — full panel re-render every 5s  `986f2f61`
 
 **Files:** `src/App.tsx:768-1435` (panelMap), `src/components/PanelRouter.tsx:46`, `src/hooks/useMarketData.ts:232,466`
 
@@ -210,7 +210,7 @@ move — the existing barrier then actually holds). Note `AppHeader`,
 `IVInputSection`, `MarketRegimeSection` also take the whole `market` object and
 can't be memoized until this lands.
 
-### [ ] AUD-H7 — `backfill-darkpool.mjs` string-concatenation corruption of `total_shares`
+### [x] AUD-H7 — `backfill-darkpool.mjs` string-concatenation corruption of `total_shares`  `a35aee75`
 
 **File:** `scripts/backfill-darkpool.mjs:155`
 
@@ -222,7 +222,7 @@ as numeric on INSERT → silent plausible-looking corruption.
 written by this script for the concat signature (values with improbable leading
 digit patterns / magnitudes).
 
-### [ ] AUD-H8 — `backfill-greek-flow-ticker.mjs`: rate-limit breach + resume design creates permanent holes
+### [x] AUD-H8 — `backfill-greek-flow-ticker.mjs`: rate-limit breach + resume design creates permanent holes  `f8f4d503`
 
 **File:** `scripts/backfill-greek-flow-ticker.mjs:41, 330, 335`
 
@@ -233,7 +233,7 @@ re-run. Transient 429s become unrecoverable data gaps.
 **Fix:** honor the cap (global limiter across workers), retry 429s with backoff,
 and make resume hole-aware (per-date completeness check, not MAX(ts)).
 
-### [ ] AUD-H9 — setups harness never checks stop/target on the entry bar
+### [x] AUD-H9 — setups harness never checks stop/target on the entry bar  `331c463a`
 
 **File:** `ml/src/setups_backtest/harness.py:385-386` (related: `:207-210`)
 
@@ -245,7 +245,7 @@ stop-outs are common → losses understated. Related: empty `exit_bars` returns
 **Fix:** include the entry bar in the exit walk (entry price = open, check H/L of
 that same bar); guard the empty-exit-bars case explicitly.
 
-### [ ] AUD-H10 — backtest baselines replay Claude's win/loss stream
+### [x] AUD-H10 — backtest baselines replay Claude's win/loss stream  `3aad18ee`
 
 **File:** `ml/src/backtest.py:125-139, 567-572`
 
