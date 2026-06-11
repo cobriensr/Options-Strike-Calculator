@@ -102,7 +102,17 @@ const anthropic = new Anthropic({
 // HANDLER
 // ============================================================
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const done = metrics.request('/api/analyze');
+  // Once-latch the request metric: after the NDJSON stream starts, a throw in
+  // any post-header path (refusal/empty/success write) lands in the outer catch
+  // which also calls done({ status: 500 }) — without the latch the request is
+  // recorded twice (e.g. 422 then 500). First call wins (AUD-H4).
+  const recordRequest = metrics.request('/api/analyze');
+  let requestRecorded = false;
+  const done = (opts?: { status?: number; error?: string }): void => {
+    if (requestRecorded) return;
+    requestRecorded = true;
+    recordRequest(opts);
+  };
   if (req.method !== 'POST') {
     done({ status: 405 });
     return res.status(405).json({ error: 'POST only' });
@@ -271,10 +281,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Check stop reason before parsing
     if (callResult.stopReason === 'refusal') {
       logger.warn({ model: usedModel }, 'Claude refused analysis request');
+      // Headers already flushed by the first keepalive ping, so res.status().json()
+      // would throw ERR_HTTP_HEADERS_SENT into the outer catch (client gets the
+      // raw error, done double-records, spurious Sentry). Mirror the
+      // empty/corruption path: write the error as NDJSON and end (AUD-H4).
       done({ status: 422 });
-      return res
-        .status(422)
-        .json({ error: 'Analysis request was refused by the model.' });
+      res.write(
+        JSON.stringify({
+          error: 'Analysis request was refused by the model.',
+        }) + '\n',
+      );
+      return res.end();
     }
     if (callResult.stopReason === 'max_tokens') {
       logger.warn({ model: usedModel }, 'Response truncated at max_tokens');

@@ -1276,7 +1276,11 @@ describe('POST /api/analyze', () => {
 
   // ── Model refusal handling ──────────────────────────────
 
-  it('returns 422 when Claude refuses the request', async () => {
+  it('streams a refusal as NDJSON without calling res.status (AUD-H4)', async () => {
+    // The refusal branch used to call res.status(422).json(), which throws
+    // ERR_HTTP_HEADERS_SENT once the keepalive ping has flushed headers. The
+    // fix mirrors the empty/corruption path: write the error as NDJSON + end,
+    // leaving the streaming default status (200) untouched.
     mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: 'I cannot assist with that.' }],
       usage: { input_tokens: 100, output_tokens: 10 },
@@ -1287,10 +1291,12 @@ describe('POST /api/analyze', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    expect(res._status).toBe(422);
-    expect(res._json).toEqual({
-      error: 'Analysis request was refused by the model.',
-    });
+    // Must NOT call res.status(422) after the stream has started.
+    expect(res._status).toBe(200);
+    const json = parseNdjsonResponse(res) as { error: string };
+    expect(json.error).toContain('refused');
+    // A handled refusal is not an unhandled exception — no spurious Sentry.
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   // ── Markdown code fence stripping ──────────────────────
