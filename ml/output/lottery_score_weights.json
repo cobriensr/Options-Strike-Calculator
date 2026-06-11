@@ -1,6 +1,6 @@
 {
   "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-06-11T04:28:04.876578+00:00",
+  "trained_at": "2026-06-11T04:39:34.837730+00:00",
   "training_sample": {
     "n": 140219,
     "date_range": [
@@ -252,9 +252,9 @@
     "tier1_count": 7268,
     "tier2_count": 14073,
     "tier3_count": 118878,
-    "tier1_mean_outcome_pct": 406.9876417912439,
-    "tier2_mean_outcome_pct": 48.80098082583443,
-    "tier3_mean_outcome_pct": 19.54368423681766,
+    "tier1_mean_outcome_pct": 406.98764179124396,
+    "tier2_mean_outcome_pct": 48.800980825834436,
+    "tier3_mean_outcome_pct": 19.543684236817665,
     "spearman_score_outcome": -0.05864479484765836,
     "spearman_p_value": 4.599585205994279e-107
   }
