@@ -132,7 +132,10 @@ function aggregateLevels(trades) {
 
     existing.totalPremium += premium;
     existing.tradeCount += 1;
-    existing.totalShares += trade.size;
+    // UW returns `size` as a string; `0 + "100" + "200"` => "0100200" (still
+    // parses numeric on INSERT → silent corruption). Coerce like premium above
+    // (AUD-H7).
+    existing.totalShares += Number(trade.size) || 0;
     if (trade.executed_at > existing.latestTime) {
       existing.latestTime = trade.executed_at;
     }
