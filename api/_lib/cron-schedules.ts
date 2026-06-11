@@ -345,7 +345,7 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'fetch-greek-exposure-strike': {
-    schedule: '30 13 * * 1-5',
+    schedule: '30 13,14 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
