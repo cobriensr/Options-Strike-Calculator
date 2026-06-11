@@ -118,3 +118,39 @@ def test_no_signal_when_history_too_short(monkeypatch):
     decision_ts = bars["ts"].iloc[-1] + pd.Timedelta(minutes=1)
     ctx = _Setup6Context(conn=None)
     assert EVALUATOR.evaluate_minute(decision_ts, ctx, bars) is None
+
+
+def test_future_tbbo_does_not_leak(monkeypatch):
+    """Point-in-time pin (AUD-C1): TBBO minutes at/after the decision must not
+    affect the signal. ``es_tbbo`` is the full UTC day in production, so the
+    CVD window must be bounded at ``now`` — otherwise ``cvd_at_now`` reads
+    end-of-day CVD and the peak/trough scan the whole future session.
+    """
+    bars = _bars_with_higher_high(n=60)
+    tbbo_now = _tbbo_with_cvd_pattern(bars, divergent=True)
+    decision_ts = bars["ts"].iloc[-1] + pd.Timedelta(minutes=1)
+
+    # Massive future buying that would dominate end-of-day CVD if it leaked.
+    future = pd.DataFrame(
+        {
+            "minute": [decision_ts + pd.Timedelta(minutes=k) for k in range(30)],
+            "buy_vol": [100_000] * 30,
+            "sell_vol": [0] * 30,
+        }
+    )
+    tbbo_full = pd.concat([tbbo_now, future], ignore_index=True)
+
+    from setups_backtest.evaluators import setup_6_cvd_divergence as mod
+
+    monkeypatch.setattr(mod, "_get_es_tbbo", lambda c, t: tbbo_now)
+    sig_truncated = EVALUATOR.evaluate_minute(decision_ts, _Setup6Context(conn=None), bars)
+
+    monkeypatch.setattr(mod, "_get_es_tbbo", lambda c, t: tbbo_full)
+    sig_full = EVALUATOR.evaluate_minute(decision_ts, _Setup6Context(conn=None), bars)
+
+    # The divergence signal must fire identically with or without future flow.
+    assert sig_truncated is not None and sig_full is not None
+    assert sig_full.direction is Direction.SHORT
+    assert sig_full.metadata["cvd_at_now"] == sig_truncated.metadata["cvd_at_now"]
+    assert sig_full.metadata["cvd_peak"] == sig_truncated.metadata["cvd_peak"]
+    assert sig_full.metadata["cvd_trough"] == sig_truncated.metadata["cvd_trough"]

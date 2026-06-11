@@ -92,15 +92,23 @@ def cvd_session(
 def cvd_series(
     tbbo_minute: pd.DataFrame,
     session_start: pd.Timestamp,
+    end_ts: pd.Timestamp | None = None,
 ) -> pd.Series:
     """Per-minute cumulative CVD across the session.
 
     Index is ``minute`` (tz-aware UTC). Used for divergence detection in
     Setup 6 (CVD divergence fade).
+
+    ``end_ts`` (exclusive) upper-bounds the window so the series is
+    point-in-time safe: callers evaluating at minute ``now`` must pass
+    ``end_ts=now`` or the ``.iloc[-1]`` / ``.idxmax()`` reads see end-of-day
+    (future) flow. Omitting it returns the full session (back-compat).
     """
     if tbbo_minute.empty:
         return pd.Series(dtype="float64")
     mask = tbbo_minute["minute"] >= session_start
+    if end_ts is not None:
+        mask &= tbbo_minute["minute"] < end_ts
     s = tbbo_minute.loc[mask].copy()
     if s.empty:
         return pd.Series(dtype="float64")

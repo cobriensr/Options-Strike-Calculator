@@ -104,8 +104,13 @@ class _CvdDivergenceFadeEvaluator:
             return None
 
         session_start = bars["ts"].iloc[0]
-        # CVD up to (but not including) `now`.
-        cvd_series = features.cvd_series(es_tbbo, session_start)
+        # CVD up to (but not including) `now` — `end_ts` bounds the window so
+        # `iloc[-1]`/`idxmax`/`idxmin` below cannot read end-of-day (future)
+        # flow. `es_tbbo` is the full UTC day; without this bound the divergence
+        # detector reads the whole-day CVD peak/trough.
+        cvd_series = features.cvd_series(
+            es_tbbo, session_start, end_ts=pd.Timestamp(now)
+        )
         if cvd_series.empty:
             return None
         cvd_at_now = float(cvd_series.iloc[-1])

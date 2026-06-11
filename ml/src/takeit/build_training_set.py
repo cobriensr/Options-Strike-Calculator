@@ -539,14 +539,24 @@ def add_sequential_features(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .rename(columns={"_is_win": "_daily_win_rate"})
     )
-    daily = daily.sort_values(["underlying_symbol", "date"])
-    daily["prior_session_win_rate_same_ticker"] = (
+    daily = daily.sort_values(["underlying_symbol", "date"]).reset_index(drop=True)
+    # Expanding mean of daily win rates, then shift one date WITHIN each
+    # ticker. NB: `groupby(...).expanding().mean()` returns a (ticker, idx)
+    # MultiIndex; a bare `.shift(1)` on it shifts across the *concatenated*
+    # groups, so each ticker's first date inherits the PRIOR ticker's final
+    # mean — future + wrong-ticker leakage (AUD-C3). Materialize the per-ticker
+    # expanding mean first, then shift per group so the first date of every
+    # ticker correctly maps to NaN.
+    daily["_expanding_win_rate"] = (
         daily.groupby("underlying_symbol")["_daily_win_rate"]
         .expanding()
         .mean()
-        .shift(1)
         .reset_index(level=0, drop=True)
     )
+    daily["prior_session_win_rate_same_ticker"] = daily.groupby(
+        "underlying_symbol"
+    )["_expanding_win_rate"].shift(1)
+    daily = daily.drop(columns=["_expanding_win_rate"])
     out = out.merge(
         daily[["underlying_symbol", "date", "prior_session_win_rate_same_ticker"]],
         on=["underlying_symbol", "date"],

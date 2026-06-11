@@ -96,15 +96,25 @@ def options_features_for_bars(
     vix_end = (pd.Timestamp(last_day) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     vix_df = load_vix_daily(start=vix_start, end=vix_end, refresh=refresh_vix)
 
-    # Build a calendar of ALL dates in the bar range (including weekends /
-    # holidays) so forward-fill has a continuous index to walk.
-    all_days = pd.date_range(first_day, last_day, freq="D").date
+    # Build a calendar of ALL dates (including weekends / holidays) so the
+    # shift / forward-fill has a continuous index to walk. Start ~14 days
+    # before the first bar day (matching the VIX pull window) so the first
+    # day has a prior-day close to carry forward from after the shift.
+    calendar_start = (pd.Timestamp(first_day) - pd.Timedelta(days=14)).date()
+    all_days = pd.date_range(calendar_start, last_day, freq="D").date
     vix_by_day = (
         pd.DataFrame({"day": all_days})
         .merge(vix_df, on="day", how="left")
         .sort_values("day")
-        .ffill()
+        .reset_index(drop=True)
     )
+    # Carry the PRIOR day's close forward (point-in-time safety): shift one
+    # calendar day BEFORE the ffill so a bar on day D never receives day D's
+    # own close, which is only finalized at 16:15 ET. shift(1) on the
+    # continuous calendar then ffill walks back across weekends / holidays to
+    # the last confirmed prior-session close. `vx_ratio` inherits the shift.
+    value_cols = [c for c in vix_by_day.columns if c != "day"]
+    vix_by_day[value_cols] = vix_by_day[value_cols].shift(1).ffill()
     out = out.merge(vix_by_day, on="day", how="left")
 
     # Calendar flags per bar

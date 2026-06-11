@@ -599,6 +599,39 @@ def test_prior_session_win_rate_excludes_current_day() -> None:
     assert by_id.loc[3, "prior_session_win_rate_same_ticker"] == pytest.approx(0.5)
 
 
+def test_prior_session_win_rate_no_cross_ticker_leak() -> None:
+    """AUD-C3: the expanding-mean shift must be per-ticker. A bare global
+    `.shift(1)` on the grouped expanding mean makes ticker B's first date
+    inherit ticker A's final win rate (future + wrong-ticker). Each ticker's
+    first-ever date must be NaN regardless of other tickers' history."""
+    rows = [
+        # Ticker AAA: two winning days -> expanding win rate 1.0.
+        _lot_row(id_=1, fire_time="2026-04-01 14:30:00+00:00", chain="A1",
+                 underlying="AAA", option_type="C", strike=500, spot=500,
+                 peak_ceiling_pct=80.0),  # win
+        _lot_row(id_=2, fire_time="2026-04-02 14:30:00+00:00", chain="A2",
+                 underlying="AAA", option_type="C", strike=500, spot=500,
+                 peak_ceiling_pct=80.0),  # win
+        # Ticker BBB: first-ever fire — must be NaN, NOT AAA's 1.0.
+        _lot_row(id_=3, fire_time="2026-04-03 14:30:00+00:00", chain="B1",
+                 underlying="BBB", option_type="C", strike=500, spot=500,
+                 peak_ceiling_pct=5.0),  # loss
+        # Ticker BBB second day: sees only BBB day-1 (loss) -> 0.0.
+        _lot_row(id_=4, fire_time="2026-04-04 14:30:00+00:00", chain="B2",
+                 underlying="BBB", option_type="C", strike=500, spot=500,
+                 peak_ceiling_pct=5.0),
+    ]
+    df = pd.DataFrame(rows)
+    df = derive_common_features(df, "spot_at_first", "trigger_ask_pct")
+    out = add_sequential_features(df)
+    by_id = out.set_index("id")
+    col = "prior_session_win_rate_same_ticker"
+    assert pd.isna(by_id.loc[1, col])  # AAA first fire — no prior
+    assert pd.isna(by_id.loc[3, col])  # BBB first-ever — would leak AAA's 1.0
+    assert by_id.loc[4, col] == pytest.approx(0.0)  # BBB sees only its own loss
+    assert by_id.loc[2, col] == pytest.approx(1.0)  # AAA day-2 sees its day-1 win
+
+
 # ── add_label ────────────────────────────────────────────────────────────────
 
 

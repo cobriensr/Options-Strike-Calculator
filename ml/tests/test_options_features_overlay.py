@@ -90,6 +90,34 @@ class TestOptionsFeaturesForBars:
         expected_ratio = 15.0 / 14.0
         assert np.allclose(out["vx_ratio"].values, expected_ratio)
 
+    def test_vix_uses_prior_day_close_no_leak(self, patched_vix_cache):
+        """AUD-C2 pin: a bar on day D carries the PRIOR trading day's VIX
+        close, never day D's own close (unknowable until 16:15 ET). Flat
+        fixtures hide this — use distinct per-day values."""
+
+        def fake_distinct(ticker: str, **_):
+            dates = pd.date_range("2024-01-02", "2024-01-10", freq="D")
+            vix_vals = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0]
+            base = {
+                "^VIX": vix_vals,
+                "^VIX9D": [v - 1 for v in vix_vals],
+                "^VIX1D": [v - 2 for v in vix_vals],
+                "^VVIX": [80.0] * len(dates),
+            }
+            ser = pd.Series(base[ticker], index=dates, name="Close")
+            return pd.DataFrame({"Close": ser})
+
+        # 2024-01-05 is a Friday; prior trading day is Thursday 2024-01-04,
+        # whose VIX close is 12.0 (index 2). A leak would surface 01-05's 13.0.
+        bars = _make_bars("2024-01-05 14:30:00+00:00", n_bars=3)
+        with patch("options_features.vix.yf.download", side_effect=fake_distinct):
+            from options_features.overlay import options_features_for_bars
+
+            out = options_features_for_bars(bars, refresh_vix=True)
+
+        assert np.allclose(out["vix"].values, 12.0)
+        assert np.allclose(out["vx_ratio"].values, 12.0 / 11.0)
+
     def test_opex_day_flagged(self, patched_vix_cache):
         """2024-01-19 was a Friday, day 19 — monthly OPEX."""
 
