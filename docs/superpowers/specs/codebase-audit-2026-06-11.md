@@ -41,7 +41,8 @@ never reached:
 
 ## CRITICAL — data correctness / invalid results
 
-### [ ] AUD-C1 — Setup 6 CVD divergence reads full-day (future) order flow
+### [x] AUD-C1 — Setup 6 CVD divergence reads full-day (future) order flow  `34846197`
+
 **File:** `ml/src/setups_backtest/evaluators/setup_6_cvd_divergence.py:106-127`
 
 ```python
@@ -59,7 +60,8 @@ over-firing. The reported −$35K result is invalid in both directions.
 **Fix:** slice `es_tbbo[es_tbbo["minute"] < now]` before computing CVD. Setup 6b
 already does this correctly via `end_ts` — copy its pattern. Re-run the backtest.
 
-### [ ] AUD-C2 — VIX overlay assigns same-day close to intraday bars
+### [x] AUD-C2 — VIX overlay assigns same-day close to intraday bars  `34846197`
+
 **File:** `ml/src/options_features/overlay.py:99-108`
 
 Docstring promises "prior-day close carried forward", but there is no `shift(1)` —
@@ -70,7 +72,8 @@ a 09:31 ET bar on day D receives day D's 16:15 ET close. Every backtest consumin
 **Fix:** `shift(1)` after building the continuous calendar, then ffill. Pin with a
 test. Re-run anything that consumed the overlay.
 
-### [ ] AUD-C3 — takeit training feature has cross-ticker + future leakage (runtime-verified)
+### [x] AUD-C3 — takeit training feature has cross-ticker + future leakage (runtime-verified)  `34846197`
+
 **File:** `ml/src/takeit/build_training_set.py:543-549`
 
 ```python
@@ -87,7 +90,8 @@ the parity fixture embeds the contaminated values).
 **Fix:** shift per group (`.groupby(...)[col].shift(1)` on the expanded series),
 regenerate parquets, update the parity fixture, **retrain takeit**.
 
-### [ ] AUD-C4 — local-vs-UTC `getTradingDays` bug copy-pasted into 18 backfill scripts
+### [x] AUD-C4 — local-vs-UTC `getTradingDays` bug copy-pasted into 18 backfill scripts  `0b24f9b8`
+
 **Files:** `scripts/backfill-{darkpool,etf-tide,flow-ratio,gex-0dte,greek-exposure,greek-exposure-strike,greek-flow,iv-monitor,local,netflow,nope,oi-change,oi-per-strike,spot-gex,strike-all,strike-exposure,vol-surface,zero-dte-flow}.mjs`
 
 ```js
@@ -111,6 +115,7 @@ helper and import it from all 18 + the 3 already-correct scripts.
 ## HIGH
 
 ### [ ] AUD-H1 — uw-stream: unexpected task death exits 0 — no Sentry, no restart
+
 **File:** `uw-stream/src/main.py:288-313, 397-400`
 
 If the router task, a handler drain task, or the health server dies with an
@@ -128,6 +133,7 @@ after `_shutdown` (mirror the `lease_lost` flag). Land with a test that a
 non-`done_task` exception → non-zero exit + Sentry capture. ~10 lines.
 
 ### [ ] AUD-H2 — uw-stream: lease acquire-timeout crash loop is Sentry-silent
+
 **File:** `uw-stream/src/main.py:161-178` + `uw-stream/railway.toml:7-8`
 
 The acquire-timeout path raises `SystemExit(1)`, which is a `BaseException` and
@@ -142,6 +148,7 @@ uptime monitor on `/healthz` for the exhausted-retries terminal state (no
 in-process fix can cover it).
 
 ### [ ] AUD-H3 — cron `fetch-greek-exposure-strike` silently skipped every trading day in EST
+
 **File:** `api/cron/fetch-greek-exposure-strike.ts:219` + `vercel.json` schedule `30 13 * * 1-5`
 
 The wrapper call passes no options → default `isMarketHours()` gate (opens 9:25
@@ -155,6 +162,7 @@ all winter.
 `fetch-economic-calendar`, `fetch-outcomes`).
 
 ### [ ] AUD-H4 — `api/analyze.ts` refusal path crashes after NDJSON stream started
+
 **File:** `api/analyze.ts:272-277`
 
 Headers flush with the first keepalive ping (lines 204-213) long before Opus
@@ -169,6 +177,7 @@ once-latch in this file, unlike `withDbReader`), (3) spurious
 and add a once-latch around `done`.
 
 ### [ ] AUD-H5 — `npm run audit` gate is RED and CI doesn't run it
+
 **Files:** `audit-ci.jsonc`, `package.json`, `.github/workflows/ci.yml:86`
 
 `npx audit-ci --config audit-ci.jsonc` fails today on two unallowlisted `thrift`
@@ -183,6 +192,7 @@ a thrift-free parquet reader (e.g. `hyparquet`); (b) change the CI step to
 `npm run audit` so the allowlisted gate is what CI enforces.
 
 ### [ ] AUD-H6 — frontend: panelMap memo barrier structurally defeated — full panel re-render every 5s
+
 **Files:** `src/App.tsx:768-1435` (panelMap), `src/components/PanelRouter.tsx:46`, `src/hooks/useMarketData.ts:232,466`
 
 `panelMap`'s ~77 deps include whole hook-return objects (`market`, `darkPool`,
@@ -201,6 +211,7 @@ move — the existing barrier then actually holds). Note `AppHeader`,
 can't be memoized until this lands.
 
 ### [ ] AUD-H7 — `backfill-darkpool.mjs` string-concatenation corruption of `total_shares`
+
 **File:** `scripts/backfill-darkpool.mjs:155`
 
 `existing.totalShares += trade.size;` — UW returns `size` as a string (the
@@ -212,6 +223,7 @@ written by this script for the concat signature (values with improbable leading
 digit patterns / magnitudes).
 
 ### [ ] AUD-H8 — `backfill-greek-flow-ticker.mjs`: rate-limit breach + resume design creates permanent holes
+
 **File:** `scripts/backfill-greek-flow-ticker.mjs:41, 330, 335`
 
 3 workers × ~125ms sleep ≈ 24 req/s vs UW's 120/min cap; the second 429 throws →
@@ -222,6 +234,7 @@ re-run. Transient 429s become unrecoverable data gaps.
 and make resume hole-aware (per-date completeness check, not MAX(ts)).
 
 ### [ ] AUD-H9 — setups harness never checks stop/target on the entry bar
+
 **File:** `ml/src/setups_backtest/harness.py:385-386` (related: `:207-210`)
 
 Entry fills at T+1 open but `_simulate_exit` walks from T+2 — the entry bar's
@@ -233,6 +246,7 @@ stop-outs are common → losses understated. Related: empty `exit_bars` returns
 that same bar); guard the empty-exit-bars case explicitly.
 
 ### [ ] AUD-H10 — backtest baselines replay Claude's win/loss stream
+
 **File:** `ml/src/backtest.py:125-139, 567-572`
 
 `simulate_strategy` overrides the structure label for the "Majority Class (CCS)"
