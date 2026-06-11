@@ -42,5 +42,17 @@
     "GHSA-vrm6-8vpv-qv8q", // undici WS permessage-deflate — CLI HTTP only
     "GHSA-v9p9-hfj2-hcw8", // undici WS server_max_window_bits — CLI HTTP only
     "GHSA-4992-7rv2-5pvq", // undici CRLF injection via upgrade — CLI HTTP only
+
+    // ── thrift (via @dsnp/parquetjs) ──────────────────────────────────────
+    // @dsnp/parquetjs (api/_lib/gexbot-parquet.ts) pulls `thrift`, which has
+    // two unpatched HIGH advisories with NO upstream fix available. Both
+    // require parsing attacker-controlled Thrift/Parquet input to be
+    // exploitable. This repo only ever reads OWNER-GENERATED archive parquet
+    // files written by our own GexBot pipeline — never third-party uploads —
+    // so the malicious-input code paths are unreachable. Re-evaluate if a
+    // thrift-free reader (e.g. hyparquet) replaces @dsnp/parquetjs, or if a
+    // patched thrift ships; remove these entries to confirm the fix.
+    "GHSA-526f-jxpj-jmg2", // thrift — unbounded memory allocation
+    "GHSA-r67j-r569-jrwp", // thrift — denial of service via malformed input
   ],
 }

@@ -79,7 +79,10 @@ jobs:
         run: npm ci
 
       - name: Security audit
-        run: npm audit --audit-level=critical
+        # Enforce the allowlisted moderate-level gate (audit-ci.jsonc), not a
+        # weaker critical-only npm audit — otherwise CI stays green while the
+        # project's own gate rots (AUD-H5).
+        run: npm run audit
 
       - name: Review (tsc + eslint + prettier + vitest)
         run: npm run review
