@@ -983,6 +983,100 @@ def test_classify_trades_handles_mixed_null_delta() -> None:
             )
 
 
+# ── Same-type self-join anchor chunking (OOM fix, 2026-06-11) ────────────────
+#
+# See docs/superpowers/specs/classifier-oom-rework-2026-06-11.md, Task 4.
+# The cross-type join was capped (_CROSS_JOIN_PAIR_CAP) but the same-type
+# self-join was not — a dense same-type 0DTE cell (thousands of size=1
+# prints in one bucket) builds a ~N^2 self-join intermediate eagerly,
+# BEFORE _PER_BATCH_PRUNE_THRESHOLD can prune the output. The fix chunks
+# the anchor (A) side so each intermediate stays under _SELF_JOIN_PAIR_CAP.
+# The chunking MUST be output-identical: a self-join + anchor-filter is
+# row-independent in A, so (A1 ∪ A2) ⋈ B == (A1 ⋈ B) ∪ (A2 ⋈ B).
+
+
+def _dense_same_type_calls(
+    *, n: int = 1200, size: int = 1, expiry: date = EXP_NEAR
+) -> list[dict[str, object]]:
+    """Build a dense single-bucket same-type (all-call) mix.
+
+    ``n`` call prints packed into one ~90s window, all same expiry and same
+    option_type, all ``size`` (the size=1 0DTE pathology), with strikes
+    spread across a realistic range and alternating buy/sell sides so
+    genuine vertical (call buy + call sell at differing strikes) structures
+    form across many candidate pairs — the dense same-type self-join shape
+    that materializes a ~N^2 intermediate and OOMs.
+    """
+    rows: list[dict[str, object]] = []
+    for i in range(n):
+        is_buy = i % 2 == 0
+        # Strikes spread 200..299 so verticals (differing strikes) match.
+        strike = 200.0 + float(i % 100)
+        rows.append(
+            _trade(
+                trade_id=f"sc{i}",
+                offset_s=float(i % 80),  # all within a 90s window
+                strike=strike,
+                option_type="call",
+                expiry=expiry,
+                size=size,
+                # buy: price >= ask; sell: price <= bid.
+                price=0.80 if is_buy else 0.70,
+                nbbo_bid=0.70,
+                nbbo_ask=0.80,
+            )
+        )
+    return rows
+
+
+def test_self_join_chunking_matches_unchunked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dense same-type cell classifies identically whether or not the
+    self-join is internally chunked. Mirrors the cross-type parity invariant.
+    """
+    import multileg_assembler as ma
+
+    df = _df(_dense_same_type_calls(n=1200, size=1, expiry=date(2026, 6, 12)))
+    monkeypatch.setattr(ma, "_SELF_JOIN_PAIR_CAP", 10_000_000)  # single-shot
+    expected = ma.classify_trades(df, window_seconds=90)
+    monkeypatch.setattr(ma, "_SELF_JOIN_PAIR_CAP", 50_000)  # force chunking
+    actual = ma.classify_trades(df, window_seconds=90)
+    assert expected.sort("id").to_dicts() == actual.sort("id").to_dicts()
+
+
+def test_self_join_subbatch_emits_runtime_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A low cap on a dense same-type bucket emits a sub-batching warning."""
+    df = _df(_dense_same_type_calls(n=1200, size=1, expiry=date(2026, 6, 12)))
+    monkeypatch.setattr(multileg_assembler, "_SELF_JOIN_PAIR_CAP", 50_000)
+    with pytest.warns(RuntimeWarning, match="sub-batch"):
+        multileg_assembler.classify_trades(df, window_seconds=90)
+
+
+def test_self_join_small_bucket_no_subbatch_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A small same-type bucket under the cap is untouched: no chunking
+    warning, and output matches the high-cap single-shot baseline."""
+    df = _df(_dense_same_type_calls(n=20, size=10, expiry=date(2026, 6, 12)))
+
+    monkeypatch.setattr(
+        multileg_assembler, "_SELF_JOIN_PAIR_CAP", 10_000_000
+    )
+    baseline = multileg_assembler.classify_trades(df, window_seconds=90)
+
+    monkeypatch.setattr(
+        multileg_assembler, "_SELF_JOIN_PAIR_CAP", 250_000
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        out = multileg_assembler.classify_trades(df, window_seconds=90)
+
+    assert out.sort("id").to_dicts() == baseline.sort("id").to_dicts()
+
+
 # ── Cross-type join sub-batching (OOM fix, 2026-06-04) ───────────────────────
 #
 # See docs/superpowers/specs/classifier-cross-type-subbatch-2026-06-04.md.

@@ -202,6 +202,15 @@ _PER_BATCH_PRUNE_THRESHOLD: Final = 50_000
 _CROSS_JOIN_PAIR_CAP: Final = 250_000
 
 
+# Same-type self-join pair cap. Mirrors _CROSS_JOIN_PAIR_CAP for the
+# uncapped sibling path: a dense same-type 0DTE cell (e.g. ~4,000 size=1
+# prints in one bucket) builds a ~16M-row self-join intermediate eagerly,
+# BEFORE _PER_BATCH_PRUNE_THRESHOLD can prune the output. Chunk the anchor
+# side so each intermediate stays ~cap-sized; the self-join + filter is
+# row-independent in the anchor frame so chunking is output-identical.
+_SELF_JOIN_PAIR_CAP: Final = 250_000
+
+
 # Butterfly skip threshold. A 3-leg butterfly body × low_wing × high_wing
 # join is structurally O(N²) in the per-cell row count (size-constraints
 # selectivity is high but the intermediate cross-product is not). For
@@ -794,31 +803,109 @@ def _two_leg_same_type_from_batch(
     candidates labelled with the pattern's name. New same-type 2-leg
     patterns added to ``PATTERNS`` in ``multileg_patterns`` flow through
     here automatically.
+
+    Peak memory is bounded by ~``_SELF_JOIN_PAIR_CAP`` rows per self-join:
+    when ``batch.height²`` exceeds the cap, the anchor (A) side is iterated
+    in row-chunks so the largest single intermediate stays ~cap-sized
+    instead of materializing the full ~N² self-join (which OOM's the box on
+    a dense same-type 0DTE open burst). Below the cap the path is
+    byte-for-byte the prior single-shot self-join.
     """
     if batch.height < 2 or not patterns:
         return _empty_candidates_2leg()
 
-    pairs = _self_join_two_leg(
-        batch, key_extra=["option_type"], size_tolerance=size_tolerance
-    )
-    if pairs.height == 0:
-        return _empty_candidates_2leg()
-
-    # Restrict to anchor-on-A: A must come from the batch's anchor
-    # buckets. B may come from anchor OR the single overlap bucket.
-    pairs = pairs.filter(pl.col("_is_anchor"))
-
-    pairs = _apply_two_leg_window_and_size(
-        pairs,
+    return _self_join_scored_chunked(
+        batch,
+        patterns=patterns,
         window_seconds=window_seconds,
         size_tolerance=size_tolerance,
     )
-    if pairs.height == 0:
-        return _empty_candidates_2leg()
 
-    return _score_per_pattern(
-        pairs, patterns=patterns, size_tolerance=size_tolerance
+
+def _self_join_scored_chunked(
+    batch: pl.DataFrame,
+    *,
+    patterns: tuple[PatternSpec, ...],
+    window_seconds: int,
+    size_tolerance: float,
+) -> pl.DataFrame:
+    """Self-join ``batch`` against itself, anchor-filter, window/size filter,
+    and score — sub-batching the anchor (A) side when ``batch.height²``
+    exceeds ``_SELF_JOIN_PAIR_CAP``.
+
+    Output-identical to a single-shot ``_self_join_two_leg(batch)`` + the
+    shared scoring tail: the self-join + ``ridx_b > ridx`` filter is
+    row-independent in A, and the ``_is_anchor`` filter,
+    ``_apply_two_leg_window_and_size``, and ``_score_per_pattern`` steps are
+    all per-row, so ``(A1 ∪ A2) ⋈ B`` scored == ``(A1 ⋈ B) ∪ (A2 ⋈ B)``
+    scored. When chunking is not triggered this is one
+    ``_self_join_two_leg`` call and one scoring pass, exactly as before.
+    """
+
+    def _score(pairs: pl.DataFrame) -> pl.DataFrame:
+        if pairs.height == 0:
+            return _empty_candidates_2leg()
+        # Restrict to anchor-on-A: A must come from the batch's anchor
+        # buckets. B may come from anchor OR the single overlap bucket.
+        pairs = pairs.filter(pl.col("_is_anchor"))
+        pairs = _apply_two_leg_window_and_size(
+            pairs,
+            window_seconds=window_seconds,
+            size_tolerance=size_tolerance,
+        )
+        if pairs.height == 0:
+            return _empty_candidates_2leg()
+        return _score_per_pattern(
+            pairs, patterns=patterns, size_tolerance=size_tolerance
+        )
+
+    n = batch.height
+
+    # Common case: the ~N² self-join fits under the cap → single-shot,
+    # byte-for-byte the prior path (no chunking overhead, no extra prune).
+    if n * n <= _SELF_JOIN_PAIR_CAP:
+        return _score(
+            _self_join_two_leg(
+                batch, key_extra=["option_type"], size_tolerance=size_tolerance
+            )
+        )
+
+    # Dense bucket: chunk the anchor (A) side so each self-join intermediate
+    # stays ~cap-sized. Partner (B) remains the full batch.
+    chunk_rows = max(1, _SELF_JOIN_PAIR_CAP // n)
+    n_chunks = (n + chunk_rows - 1) // chunk_rows
+    warnings.warn(
+        f"multileg matcher: sub-batching dense same-type self-join "
+        f"(batch={n:,} rows, {n * n:,} pairs > {_SELF_JOIN_PAIR_CAP:,} cap) "
+        f"into {n_chunks} sub-chunks of {chunk_rows:,} anchor rows.",
+        RuntimeWarning,
+        stacklevel=2,
     )
+    chunk_out: list[pl.DataFrame] = []
+    for start in range(0, n, chunk_rows):
+        a_chunk = batch.slice(start, chunk_rows)
+        scored = _score(
+            _self_join_two_leg(
+                batch,
+                key_extra=["option_type"],
+                size_tolerance=size_tolerance,
+                anchor=a_chunk,
+            )
+        )
+        if scored.height == 0:
+            continue
+        # Mirror the surrounding loop's per-batch prune so the chunked
+        # accumulator stays bounded on a hot cell.
+        if scored.height > _PER_BATCH_PRUNE_THRESHOLD:
+            scored, _ = _prune_top_k_per_trade(
+                scored, _empty_candidates_3leg()
+            )
+        chunk_out.append(scored)
+    if not chunk_out:
+        return _empty_candidates_2leg()
+    if len(chunk_out) == 1:
+        return chunk_out[0]
+    return pl.concat(chunk_out, how="vertical_relaxed")
 
 
 # ── 2-leg cross-type (strangle, risk_reversal, any future cross-type) ────
@@ -1092,11 +1179,27 @@ def _self_join_no_size_key(
 
 
 def _self_join_two_leg(
-    batch: pl.DataFrame, *, key_extra: list[str], size_tolerance: float
+    batch: pl.DataFrame,
+    *,
+    key_extra: list[str],
+    size_tolerance: float,
+    anchor: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
     """Same-type self-join: A × B on (tbk, size key) for same bucket OR
     (A.tbk + 1, size key) for adjacent. Caller pre-partitioned by
     (expiry, option_type) so ``key_extra`` is mostly a safety belt.
+
+    Anchor chunking
+    ---------------
+    The A (anchor) side defaults to ``batch`` — the classic self-join where
+    both sides are the same frame. ``_self_join_scored_chunked`` passes a
+    row-slice of ``batch`` as ``anchor`` while keeping ``batch`` as the full
+    partner (B) frame, so a dense cell's self-join intermediate stays
+    bounded per chunk. The join + the ``ridx_b > ridx`` filter are
+    row-independent in A, so chunking is output-identical:
+    ``(A1 ∪ A2) ⋈ B == (A1 ⋈ B) ∪ (A2 ⋈ B)``. When ``anchor is None`` the
+    A and B sides are identical and the path is byte-for-byte the prior
+    single-shot self-join.
 
     Bucket-bounded size key
     -----------------------
@@ -1130,9 +1233,17 @@ def _self_join_two_leg(
     Returns one frame with A's columns and B's columns suffixed _b,
     plus ``tbk`` (A's bucket; preserved for parity, not used downstream).
     """
+    # A (anchor) side defaults to the full batch (classic self-join). The
+    # chunked caller passes an anchor slice; B (partner) is always the full
+    # batch so the cross of (anchor_chunk × batch) reproduces the rows the
+    # single-shot (batch × batch) join would have emitted for those anchors.
+    if anchor is None:
+        anchor = batch
+    # The small-batch fast path keys off the PARTNER (B = batch) row count:
+    # the bucket explosion's overhead is governed by B's size, not A's.
     # ── Small-batch fast path: skip the bucket explosion entirely. ────
     if batch.height < _BUCKET_BATCH_MIN_ROWS:
-        a_proj = batch.select(
+        a_proj = anchor.select(
             *(pl.col(c) for c in _A_COLS_TWO_LEG),
             pl.col("tbk"),
             *(pl.col(k) for k in key_extra),
@@ -1157,7 +1268,7 @@ def _self_join_two_leg(
 
     # ── A side: one row per anchor, integer size key for the join. ────
     a_size_int = pl.col("size").round(0).cast(pl.Int64).alias("_size_a_key")
-    a_with_keys = batch.select(
+    a_with_keys = anchor.select(
         *(pl.col(c) for c in _A_COLS_TWO_LEG),
         pl.col("tbk"),
         *(pl.col(k) for k in key_extra),
