@@ -1,10 +1,9 @@
 # ml/experiments/exit-timing-engine/run_a2_rule_baseline.py
-"""A2: walk-forward parametric-rule baseline + same-basis (mid) on-path benchmark.
-
-Reads the partitioned decision dataset (cfg.DATASET_DIR/part-*.parquet). Uses the
-vectorized exit sim; baselines are recomputed on our own mid paths so the
-comparison is like-for-like (the stored trade-price realized_* columns are NOT
-used here — they're a different basis).
+"""A2: parametric-rule baseline + same-basis (mid) on-path benchmark, MONTH-LEVEL
+expanding walk-forward (matches A3). Memory-safe: reads ONE month-part at a time,
+builds a per-fire realized-%-per-knob matrix, then for each test month picks the
+knob with the best PRIOR-months mean and applies it OOS. On-path baselines
+(trail-30/10, hard-30m, tier-50, hold-EOD) recomputed on the same mid paths.
 
 Run: ml/.venv/bin/python ml/experiments/exit-timing-engine/run_a2_rule_baseline.py
 """
@@ -20,103 +19,93 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from exit_engine import config as cfg
 from exit_engine.costs import apply_costs
-from exit_engine.dataset import assign_walkforward_folds
 from exit_engine.onpath_policies import onpath_baselines
 from exit_engine.rule_family import decide_exit_index_vec, grid
 
-
-# Rule baseline only needs price-path + identity (NOT the 17 features) — read just
-# these to keep memory sane at scale (8 cols vs 26 ≈ 3x less RAM).
-_A2_COLS = ["fire_id", "date", "mode", "entry_price", "mid",
-            "ret_from_entry_pct", "minutes_since_entry", "spread_pct"]
+A2_COLS = ["fire_id", "entry_price", "mid", "ret_from_entry_pct", "minutes_since_entry", "spread_pct"]
 
 
-def _load_dataset() -> pd.DataFrame:
-    parts = sorted(cfg.DATASET_DIR.glob("part-*.parquet"))
-    if not parts:
-        print("No dataset parts found — run A1 first.", file=sys.stderr)
+def _parts() -> list[Path]:
+    ps = sorted(cfg.DATASET_DIR.glob("part-*.parquet"))
+    if not ps:
+        print("No dataset parts — run A1 first.", file=sys.stderr)
         sys.exit(1)
-    print(f"loading {len(parts)} parts (cols={len(_A2_COLS)}): {[p.name for p in parts]}", flush=True)
-    return pd.concat([pd.read_parquet(p, columns=_A2_COLS) for p in parts], ignore_index=True)
+    return ps
+
+
+def _stats(x) -> str:
+    a = np.asarray(x, dtype="float64")
+    return f"mean={a.mean():+6.1f}  median={np.median(a):+6.1f}  win%={(a > 0).mean() * 100:4.1f}"
 
 
 def main() -> int:
-    ds = _load_dataset()
-    ds["fold"] = assign_walkforward_folds(ds["date"], cfg.N_TRAIN_DAYS, cfg.TEST_BLOCK_DAYS)
-    print(f"rows={len(ds):,}  fires={ds['fire_id'].nunique():,}  "
-          f"test_folds={sorted(f for f in ds['fold'].unique() if f >= 0)}", flush=True)
-
-    # One pass: per-fire numpy arrays + metadata.
-    fids: list[int] = []
-    arrs: dict[int, tuple] = {}
-    fold_of: dict[int, int] = {}
-    for fid, g in ds.groupby("fire_id", sort=False):
-        g = g.sort_values("minutes_since_entry")
-        fids.append(int(fid))
-        arrs[int(fid)] = (
-            g["ret_from_entry_pct"].to_numpy("float64"),
-            g["minutes_since_entry"].to_numpy("float64"),
-            float(g["entry_price"].iloc[0]),
-            float(g["spread_pct"].iloc[0]),
-            g["mid"].to_numpy("float64"),
-        )
-        fold_of[int(fid)] = int(g["fold"].iloc[0])
-
+    parts = _parts()
+    if len(parts) < 2:
+        print("Need >=2 month-parts for walk-forward.", file=sys.stderr)
+        return 1
+    print(f"parts: {[p.name for p in parts]}", flush=True)
     knobs = grid()
-    folds_arr = np.array([fold_of[f] for f in fids])
 
-    # Realized %-return matrix: n_fires x n_knobs (vectorized exit per knob, cost-netted).
-    realized = np.zeros((len(fids), len(knobs)), dtype="float64")
-    for i, fid in enumerate(fids):
-        ret, mse, entry, spread0, mid = arrs[fid]
-        for j, kn in enumerate(knobs):
-            idx = decide_exit_index_vec(ret, mse, kn["activate_pct"], kn["giveback_pct"], kn["hard_stop_min"])
-            gross = (mid[idx] - entry) / entry * 100.0
-            realized[i, j] = apply_costs(gross, entry, spread0)
-        if i and i % 20000 == 0:
-            print(f"  rule-sim {i:,}/{len(fids):,}", flush=True)
+    # Per-part (one month at a time): per-fire realized-%-per-knob + on-path baselines.
+    realized_rows: list[np.ndarray] = []   # each: (n_knobs,) realized % per knob
+    month_idx: list[int] = []
+    base = {"eod": [], "trail30_10": [], "hard30m": [], "tier50_holdeod": []}
+    for mi, p in enumerate(parts):
+        df = pd.read_parquet(p, columns=A2_COLS)
+        for _fid, g in df.groupby("fire_id", sort=False):
+            g = g.sort_values("minutes_since_entry")
+            ret = g["ret_from_entry_pct"].to_numpy("float64")
+            mse = g["minutes_since_entry"].to_numpy("float64")
+            mid = g["mid"].to_numpy("float64")
+            entry = float(g["entry_price"].iloc[0])
+            sp = float(g["spread_pct"].iloc[0])
+            rv = np.empty(len(knobs), dtype="float64")
+            for j, kn in enumerate(knobs):
+                idx = decide_exit_index_vec(ret, mse, kn["activate_pct"], kn["giveback_pct"], kn["hard_stop_min"])
+                rv[j] = apply_costs((mid[idx] - entry) / entry * 100.0, entry, sp)
+            realized_rows.append(rv)
+            month_idx.append(mi)
+            rows = pd.DataFrame({"mid": mid, "entry_price": entry, "spread_pct": sp,
+                                 "ret_from_entry_pct": ret, "minutes_since_entry": mse})
+            b = onpath_baselines(rows)
+            for k in base:
+                base[k].append(b[k])
+        del df
+        print(f"  scanned {p.name}: cum fires {len(realized_rows):,}", flush=True)
 
-    # Walk-forward: per test fold, pick the knob with the best TRAIN-fold mean, apply OOS.
-    engine = np.full(len(fids), np.nan)
-    for f in sorted(set(folds_arr[folds_arr >= 0].tolist())):
-        train = folds_arr < f
-        test = folds_arr == f
+    realized = np.vstack(realized_rows)
+    months = np.array(month_idx)
+    base_month = np.array(month_idx)  # baselines are 1:1 with fires in the same order
+
+    # Month walk-forward: for test month k (k>=1), best knob = argmax over months<k mean.
+    engine = np.full(len(realized), np.nan)
+    for k in range(1, len(parts)):
+        train = months < k
+        test = months == k
         if not train.any() or not test.any():
             continue
-        train_means = realized[train].mean(axis=0)
-        best = int(np.argmax(train_means))
+        tm = realized[train].mean(axis=0)
+        best = int(np.argmax(tm))
         engine[test] = realized[test, best]
-        print(f"fold {f}: best={knobs[best]} train_mean={train_means[best]:+.1f} n_test={int(test.sum())}", flush=True)
+        print(f"WF test={parts[k].name[5:12]}: best={knobs[best]} train_mean={tm[best]:+.1f} n_test={int(test.sum())}", flush=True)
 
-    test_mask = folds_arr >= 0
-    oos = engine[test_mask & ~np.isnan(engine)]
+    oos_mask = (months >= 1) & ~np.isnan(engine)
+    oos = engine[oos_mask]
+    # Baselines restricted to the SAME OOS test months (k>=1) for an apples-to-apples table.
+    base_oos = {k: np.asarray(v)[base_month >= 1] for k, v in base.items()}
 
-    # On-path baselines (same mid basis) on the SAME OOS test population.
-    test_fids = [fids[i] for i in range(len(fids)) if test_mask[i]]
-    base = {"trail30_10": [], "hard30m": [], "tier50_holdeod": [], "eod": []}
-    for fid in test_fids:
-        ret, mse, entry, spread0, mid = arrs[fid]
-        rows = pd.DataFrame({
-            "mid": mid, "entry_price": entry, "spread_pct": spread0,
-            "ret_from_entry_pct": ret, "minutes_since_entry": mse,
-        })
-        b = onpath_baselines(rows)
-        for k in base:
-            base[k].append(b[k])
-
-    lines = ["# A2 — Rule Baseline vs On-Path Benchmark (same mid basis)", ""]
-    lines.append(f"- dataset rows: {len(ds):,}   fires: {len(fids):,}   OOS test fires: {len(oos):,}")
+    lines = ["# A2 — Rule Baseline vs On-Path Benchmark (month walk-forward, OOS, mid basis)", ""]
+    lines.append(f"- OOS test fires (months >= 2nd): {len(oos):,}")
     lines.append("")
-    lines.append("| policy | equal-weight mean realized % |")
-    lines.append("| --- | ---: |")
-    lines.append(f"| **ENGINE-RULE (walk-forward OOS)** | **{oos.mean():+.1f}** |")
-    for k, v in base.items():
-        lines.append(f"| {k} | {np.mean(v):+.1f} |")
+    lines.append("| policy | stats |")
+    lines.append("| --- | --- |")
+    lines.append(f"| **ENGINE-RULE (walk-forward OOS)** | {_stats(oos)} |")
+    for k, v in base_oos.items():
+        lines.append(f"| {k} | {_stats(v)} |")
     report = "\n".join(lines)
     print("\n" + report, flush=True)
-    out = Path(__file__).parent / "a2_rule_baseline.md"
-    out.write_text(report + "\n")
-    print(f"\nwrote {out}", flush=True)
+    (Path(__file__).parent / "a2_rule_baseline.md").write_text(report + "\n")
+    print(f"\nwrote {Path(__file__).parent / 'a2_rule_baseline.md'}", flush=True)
     return 0
 
 
