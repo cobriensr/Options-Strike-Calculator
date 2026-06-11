@@ -75,6 +75,23 @@ def main() -> int:
         return 2
 
     httpd = server.build_server(port)
+
+    # Surface the effective polars thread-pool size at boot so a regressed
+    # POLARS_MAX_THREADS (or a Railway env that didn't propagate) is visible
+    # in the Railway log stream rather than silently re-inflating peak memory.
+    try:
+        import polars as pl
+
+        print(
+            f"classifier: polars thread_pool_size={pl.thread_pool_size()}",
+            flush=True,
+        )
+    except Exception as exc:  # pragma: no cover - observability only
+        print(
+            f"classifier: could not read polars thread_pool_size: {exc}",
+            flush=True,
+        )
+
     print(f"classifier listening on 0.0.0.0:{port}", flush=True)
 
     # Install the SIGTERM handler BEFORE serve_forever so a Railway

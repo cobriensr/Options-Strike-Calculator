@@ -30,6 +30,17 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # the runtime sys.path injection that sidecar/src/multileg_routes.py's
 # _ensure_ml_src_on_path() did dynamically; here we set it statically.
 ENV PYTHONPATH=/app/src:/app/_vendored_ml
+# Cap the polars thread pool. polars defaults to the host core count; on a
+# multi-vCPU box each join fans into one build/probe partition per thread,
+# each holding a slice of the intermediate, multiplying peak memory — so a
+# bigger box raises the very peak that OOM-kills us. The matcher is ~1s/call
+# and the crons call us sequentially, so 2 threads is ample throughput while
+# capping the peak multiplier at 2x instead of Nx. Must be set BEFORE the
+# process imports polars (read once at import). See
+# docs/superpowers/specs/classifier-oom-rework-2026-06-11.md
+ENV POLARS_MAX_THREADS=2
+# Streaming-engine morsel size (rework Phase 3). Overridable for ops tuning.
+ENV POLARS_STREAMING_CHUNK_SIZE=50000
 
 USER classifier
 
