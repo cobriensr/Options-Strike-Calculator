@@ -12,8 +12,11 @@
  *       Phase 1 Task 1.2.
  *
  * Idempotent: ON CONFLICT (ticker, ts, source) DO NOTHING.
- * Resumable: queries MAX(ts) per ticker; BYPASS_RESUME=1 forces full
- * re-fetch (useful for filling gaps).
+ * Resumable (hole-aware): skips only (ticker, date) pairs that ALREADY have
+ * rows, so a date that failed transiently is retried on the next run instead
+ * of being permanently skipped. BYPASS_RESUME=1 forces a full re-fetch.
+ * Rate-limited: a global limiter spaces ALL requests under UW's 120/min cap
+ * regardless of CONCURRENCY; 429s are retried with exponential backoff.
  *
  * Filters:
  *   - 08:30-15:00 CT (13:30-20:00 UTC)
@@ -141,17 +144,22 @@ function isInSessionCT(tapeTimeUtc) {
   return mod >= 510 && mod < 900;
 }
 
-async function getMaxTsByTicker() {
-  if (DRY_RUN) return new Map();
+async function getCompletedTickerDates() {
+  if (DRY_RUN) return new Set();
+  // Hole-aware resume: a (ticker, date) is "done" only if it actually has
+  // rows. The old MAX(ts)-per-ticker approach skipped EVERY date < the latest
+  // stored ts, so any earlier date that failed transiently was skipped forever
+  // once a later date landed (AUD-H8). The session window (13:30-20:00 UTC)
+  // keeps the UTC date equal to the CT trading date, so ts::date is the
+  // backfill date.
   const rows = await sql`
-    SELECT ticker, MAX(ts)::text AS max_ts
+    SELECT DISTINCT ticker, (ts AT TIME ZONE 'UTC')::date::text AS d
     FROM greek_flow_per_ticker_history
     WHERE source = ${SOURCE}
-    GROUP BY ticker
   `;
-  const map = new Map();
-  for (const r of rows) map.set(r.ticker, r.max_ts);
-  return map;
+  const set = new Set();
+  for (const r of rows) set.add(`${r.ticker}|${r.d}`);
+  return set;
 }
 
 class RateLimitError extends Error {
@@ -161,7 +169,24 @@ class RateLimitError extends Error {
   }
 }
 
+// Global rate limiter shared across ALL workers. UW caps this endpoint at
+// 120 req/min; space requests ~550ms apart (~109/min) so concurrent workers
+// can never collectively breach the cap (AUD-H8). Single-threaded JS makes the
+// uwNextSlot read-modify-write atomic — there is no await between them.
+const UW_MIN_REQUEST_INTERVAL_MS = 550;
+let uwNextSlot = 0;
+async function rateLimitGate() {
+  const now = Date.now();
+  const slot = Math.max(now, uwNextSlot);
+  uwNextSlot = slot + UW_MIN_REQUEST_INTERVAL_MS;
+  const wait = slot - now;
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
+
+const MAX_FETCH_ATTEMPTS = 5;
+
 async function fetchGreekFlow(ticker, date) {
+  await rateLimitGate();
   const url = `${UW_BASE}/stock/${ticker}/greek-flow?date=${date}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
@@ -257,22 +282,32 @@ async function storeBatch(rows) {
   return stored;
 }
 
-async function backfillTickerDate(ticker, date) {
-  let raws;
-  try {
-    raws = await fetchGreekFlow(ticker, date);
-  } catch (err) {
-    if (err instanceof RateLimitError) {
-      const wait = (err.retryAfterSec + Math.random() * 2) * 1000;
-      console.warn(
-        `  rate-limited on ${ticker} ${date}; sleeping ${(wait / 1000).toFixed(1)}s`,
-      );
-      await new Promise((r) => setTimeout(r, wait));
-      raws = await fetchGreekFlow(ticker, date);
-    } else {
+async function fetchGreekFlowWithRetry(ticker, date) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await fetchGreekFlow(ticker, date);
+    } catch (err) {
+      attempt++;
+      if (err instanceof RateLimitError && attempt < MAX_FETCH_ATTEMPTS) {
+        // Honor retry-after, then exponential backoff with jitter. The old
+        // single retry let a SECOND 429 throw → the date was skipped, and with
+        // MAX(ts) resume it was then lost forever (AUD-H8).
+        const base = Math.max(err.retryAfterSec, 1) * 1000;
+        const backoff = base * 2 ** (attempt - 1) + Math.random() * 1000;
+        console.warn(
+          `  rate-limited on ${ticker} ${date} (attempt ${attempt}/${MAX_FETCH_ATTEMPTS}); backing off ${(backoff / 1000).toFixed(1)}s`,
+        );
+        await new Promise((r) => setTimeout(r, backoff));
+        continue;
+      }
       throw err;
     }
   }
+}
+
+async function backfillTickerDate(ticker, date) {
+  const raws = await fetchGreekFlowWithRetry(ticker, date);
   if (raws.length === 0) {
     return { fetched: 0, kept: 0, stored: 0, empty: true };
   }
@@ -283,7 +318,7 @@ async function backfillTickerDate(ticker, date) {
   return { fetched: raws.length, kept: kept.length, stored, empty: false };
 }
 
-async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
+async function pmapTickers(tickerList, dates, completed, concurrency) {
   const totals = {
     pairs: 0,
     fetched: 0,
@@ -297,8 +332,6 @@ async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
     while (queue.length > 0) {
       const ticker = queue.shift();
       if (!ticker) break;
-      const maxTs = maxTsByTicker.get(ticker) ?? null;
-      const maxDate = maxTs ? maxTs.slice(0, 10) : null;
       const perTicker = {
         fetched: 0,
         kept: 0,
@@ -307,12 +340,16 @@ async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
         skipped: 0,
       };
       for (const date of dates) {
-        if (process.env.BYPASS_RESUME !== '1' && maxDate && date < maxDate) {
+        if (
+          process.env.BYPASS_RESUME !== '1' &&
+          completed.has(`${ticker}|${date}`)
+        ) {
           perTicker.skipped++;
           totals.skipped++;
           continue;
         }
-        await new Promise((r) => setTimeout(r, 50 + Math.random() * 150));
+        // No per-worker sleep — the global rateLimitGate() in fetchGreekFlow
+        // spaces ALL requests under the UW cap, so concurrency can't breach it.
         try {
           const r = await backfillTickerDate(ticker, date);
           perTicker.fetched += r.fetched;
@@ -349,15 +386,15 @@ async function main() {
     `  concurrency: ${CONCURRENCY}  batch: ${BATCH_SIZE}  dry_run: ${DRY_RUN}`,
   );
 
-  const maxTsByTicker = await getMaxTsByTicker();
-  if (maxTsByTicker.size > 0) {
+  const completed = await getCompletedTickerDates();
+  if (completed.size > 0) {
     console.log(
-      `  resumability: ${maxTsByTicker.size} tickers have prior data; will skip dates < their max`,
+      `  resumability: ${completed.size} (ticker,date) pairs already stored; re-fetching only the gaps`,
     );
   }
 
   const startWall = Date.now();
-  const totals = await pmapTickers(tickers, dates, maxTsByTicker, CONCURRENCY);
+  const totals = await pmapTickers(tickers, dates, completed, CONCURRENCY);
   const elapsed = ((Date.now() - startWall) / 1000).toFixed(1);
 
   console.log('');
