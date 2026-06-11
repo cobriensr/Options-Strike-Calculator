@@ -17,7 +17,7 @@
  * advanced. Only the user's explicit scrubPrev/scrubNext actions set scrubTime.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
@@ -110,8 +110,17 @@ export function useDarkPoolLevels(
   // Time scrubber: null = live (no ?time= param), HH:MM = scrubbed.
   // The shared `useTimeGridScrubber` owns navigation; per-feature `isLive`
   // policy stays here because it depends on `isToday`.
-  const scrubber = useTimeGridScrubber();
-  const { scrubTime, isScrubbed, scrubLive } = scrubber;
+  const {
+    scrubTime,
+    isScrubbed,
+    scrubLive,
+    canScrubPrev,
+    canScrubNext,
+    scrubPrev,
+    scrubNext,
+    scrubTo,
+    timeGrid,
+  } = useTimeGridScrubber();
 
   // Recompute each render so the today-vs-past branch flips at midnight ET.
   const isToday = selectedDate === getETToday();
@@ -262,25 +271,54 @@ export function useDarkPoolLevels(
   // Cancel any in-flight request on unmount.
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  return {
-    levels,
-    loading,
-    error,
-    fetchedAt,
-    refresh,
-    selectedSymbol,
-    setSelectedSymbol,
-    selectedDate,
-    setSelectedDate,
-    scrubTime,
-    isLive,
-    isScrubbed,
-    canScrubPrev: scrubber.canScrubPrev,
-    canScrubNext: scrubber.canScrubNext,
-    scrubPrev: scrubber.scrubPrev,
-    scrubNext: scrubber.scrubNext,
-    scrubTo: scrubber.scrubTo,
-    timeGrid: scrubber.timeGrid,
-    scrubLive,
-  };
+  // Stabilize the returned object's identity so a parent `useMemo` keyed on
+  // this hook's return value holds across polls when no field changed. Every
+  // field below is either a primitive, a stable useState value/setter, or a
+  // stable useCallback (refresh + all scrubber fns), and `timeGrid` is the
+  // module-level `TIME_GRID` constant — so this memo only recomputes when a
+  // value genuinely changes, not on every render.
+  return useMemo(
+    () => ({
+      levels,
+      loading,
+      error,
+      fetchedAt,
+      refresh,
+      selectedSymbol,
+      setSelectedSymbol,
+      selectedDate,
+      setSelectedDate,
+      scrubTime,
+      isLive,
+      isScrubbed,
+      canScrubPrev,
+      canScrubNext,
+      scrubPrev,
+      scrubNext,
+      scrubTo,
+      timeGrid,
+      scrubLive,
+    }),
+    [
+      levels,
+      loading,
+      error,
+      fetchedAt,
+      refresh,
+      selectedSymbol,
+      setSelectedSymbol,
+      selectedDate,
+      setSelectedDate,
+      scrubTime,
+      isLive,
+      isScrubbed,
+      canScrubPrev,
+      canScrubNext,
+      scrubPrev,
+      scrubNext,
+      scrubTo,
+      timeGrid,
+      scrubLive,
+    ],
+  );
 }

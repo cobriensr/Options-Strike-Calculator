@@ -20,7 +20,7 @@
  * placeholder rather than crashing.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
@@ -165,15 +165,26 @@ export function usePeriscopeExposure({
     [canFetch, marketOpen, !isHistorical],
   );
 
-  return {
-    view,
-    emptyReason,
-    asOf,
-    availableSlots,
-    loading,
-    error,
-    refresh: () => {
-      void fetchView();
-    },
-  };
+  // Stable `refresh` identity — wraps `fetchView` (which returns a
+  // Promise) in a void-returning callback so the public signature stays
+  // `() => void` and its identity only changes when `fetchView` does.
+  const refresh = useCallback(() => {
+    void fetchView();
+  }, [fetchView]);
+
+  // Memoize the returned object so its identity is stable across renders
+  // when no field changed. A parent `useMemo` (App.tsx panelMap) keyed on
+  // this object then holds, avoiding ~30 panel re-renders every poll tick.
+  return useMemo(
+    () => ({
+      view,
+      emptyReason,
+      asOf,
+      availableSlots,
+      loading,
+      error,
+      refresh,
+    }),
+    [view, emptyReason, asOf, availableSlots, loading, error, refresh],
+  );
 }

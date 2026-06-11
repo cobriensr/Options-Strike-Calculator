@@ -21,7 +21,7 @@
  * `useMarketData.fetchers.ts` for independent testability.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { checkIsOwner } from '../utils/auth';
 import { usePolling } from './usePolling';
@@ -463,18 +463,43 @@ export function useMarketData(): MarketDataState {
   // call sites that haven't been migrated to `session` keep working.
   const marketOpen = session === 'regular';
 
-  return {
-    data,
-    loading,
-    hasData,
-    needsAuth,
-    refresh: fetchAll,
-    fetchedAt,
-    quotesFetchedAt,
-    isStale,
-    isVeryStale,
-    staleAgeSec,
-    session,
-    marketOpen,
-  };
+  // AUD-H6: stabilize the returned object's identity so a parent `useMemo`
+  // keyed on it (App.tsx's panelMap memo barrier) holds when the underlying
+  // data hasn't changed. Every field below is already individually
+  // render-stable — `data` / `loading` / `needsAuth` / `fetchedAt` /
+  // `quotesFetchedAt` / `session` are useState values, `fetchAll` is a
+  // useCallback, and `hasData` / `isStale` / `isVeryStale` / `staleAgeSec` /
+  // `marketOpen` are derived primitives. Only the object literal wrapper was
+  // churning its reference every render; useMemo holds it constant until one
+  // of the listed deps changes. Values and semantics are unchanged.
+  return useMemo(
+    () => ({
+      data,
+      loading,
+      hasData,
+      needsAuth,
+      refresh: fetchAll,
+      fetchedAt,
+      quotesFetchedAt,
+      isStale,
+      isVeryStale,
+      staleAgeSec,
+      session,
+      marketOpen,
+    }),
+    [
+      data,
+      loading,
+      hasData,
+      needsAuth,
+      fetchAll,
+      fetchedAt,
+      quotesFetchedAt,
+      isStale,
+      isVeryStale,
+      staleAgeSec,
+      session,
+      marketOpen,
+    ],
+  );
 }
