@@ -37,6 +37,8 @@
 
 import { neon } from '@neondatabase/serverless';
 
+import { getTradingDays } from './_lib/trading-days.mjs';
+
 // ── Env + config ────────────────────────────────────────────
 
 const UW_API_KEY = process.env.UW_API_KEY;
@@ -158,37 +160,6 @@ const tickers =
   TICKER_FILTER.length > 0
     ? LOTTERY_TICKERS_ALL.filter((t) => TICKER_FILTER.includes(t))
     : LOTTERY_TICKERS_ALL;
-
-// ── Trading-day generator ────────────────────────────────────
-
-// Always compute calendar dates in CT, never local TZ. Original bug:
-// d.getDay() used local TZ while d.toISOString().slice(0, 10) used UTC.
-// When run from CT after 6 PM, the UTC date was 1 day ahead of the CT
-// date, so the script pushed Saturday-labeled strings for Friday data,
-// silently missing Mondays in the resulting series.
-function getTradingDays(count) {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const dates = new Set();
-  let cursor = new Date();
-  while (dates.size < count) {
-    const ctDateStr = fmt.format(cursor); // YYYY-MM-DD in CT
-    if (!dates.has(ctDateStr)) {
-      // 18:00 UTC = midday CT regardless of DST — anchors the calendar
-      // date unambiguously to its weekday.
-      const dayOfWeek = new Date(`${ctDateStr}T18:00:00Z`).getUTCDay();
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-        dates.add(ctDateStr);
-      }
-    }
-    cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
-  }
-  return Array.from(dates).sort();
-}
 
 // ── Session-window filter (08:30–15:00 CT) ───────────────────
 

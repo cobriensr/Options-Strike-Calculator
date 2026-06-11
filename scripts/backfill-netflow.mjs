@@ -15,6 +15,8 @@
 
 import { neon } from '@neondatabase/serverless';
 
+import { getTradingDays } from './_lib/trading-days.mjs';
+
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -45,28 +47,6 @@ const tickers =
   tickerFilter.length > 0
     ? ALL_TICKERS.filter((t) => tickerFilter.includes(t.ticker))
     : ALL_TICKERS;
-
-// ── Generate last N trading days ────────────────────────────
-
-function getTradingDays(count) {
-  const dates = [];
-  const d = new Date();
-
-  // Include today if it's a weekday
-  const today = d.getDay();
-  if (today !== 0 && today !== 6) {
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  while (dates.length < count) {
-    d.setDate(d.getDate() - 1);
-    const day = d.getDay();
-    if (day === 0 || day === 6) continue;
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  return dates.reverse();
-}
 
 // ── Fetch + cumulate + sample ───────────────────────────────
 

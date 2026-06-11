@@ -13,6 +13,8 @@
 
 import { neon } from '@neondatabase/serverless';
 
+import { getTradingDays } from './_lib/trading-days.mjs';
+
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -31,28 +33,6 @@ const ATM_RANGE = 200;
 const ALL_EXPIRY_SENTINEL = '1970-01-01';
 
 const days = Number.parseInt(process.argv[2] ?? '30', 10);
-
-// ── Generate last N trading days ────────────────────────────
-
-function getTradingDays(count) {
-  const dates = [];
-  const d = new Date();
-
-  // Include today if it's a weekday
-  const today = d.getDay();
-  if (today !== 0 && today !== 6) {
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  while (dates.length < count) {
-    d.setDate(d.getDate() - 1);
-    const day = d.getDay();
-    if (day === 0 || day === 6) continue;
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  return dates.reverse();
-}
 
 // ── Fetch per-strike data for one date ──────────────────────
 

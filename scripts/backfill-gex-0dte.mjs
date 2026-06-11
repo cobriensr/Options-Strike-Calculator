@@ -17,6 +17,7 @@
  */
 
 import { neon } from '@neondatabase/serverless';
+import { getTradingDays, getTradingDaysForward } from './_lib/trading-days.mjs';
 
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -49,49 +50,6 @@ if (arg1 && /^\d{4}-\d{2}-\d{2}$/.test(arg1)) {
 } else if (arg1) {
   // Count mode: backfill-gex-0dte.mjs 5
   dayCount = Number.parseInt(arg1, 10);
-}
-
-// ── Generate trading days ──────────────────────────────────
-
-function getTradingDaysBack(count) {
-  const dates = [];
-  const d = new Date();
-
-  const today = d.getDay();
-  if (today !== 0 && today !== 6) {
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  while (dates.length < count) {
-    d.setDate(d.getDate() - 1);
-    const day = d.getDay();
-    if (day === 0 || day === 6) continue;
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  return dates.reverse();
-}
-
-function getTradingDaysForward(start, count) {
-  const dates = [];
-  const d = new Date(start + 'T12:00:00Z');
-  const today = new Date().toISOString().slice(0, 10);
-
-  const cursor = new Date(d);
-  while (dates.length < count) {
-    const dateStr = cursor.toISOString().slice(0, 10);
-
-    // Don't go past today
-    if (dateStr > today) break;
-
-    const day = cursor.getDay();
-    if (day !== 0 && day !== 6) {
-      dates.push(dateStr);
-    }
-    cursor.setDate(cursor.getDate() + 1);
-  }
-
-  return dates;
 }
 
 // ── Fetch per-strike 0DTE data for one date ────────────────
@@ -233,7 +191,7 @@ function logDay(date, rows, result) {
 async function main() {
   const tradingDays = startDate
     ? getTradingDaysForward(startDate, dayCount)
-    : getTradingDaysBack(dayCount);
+    : getTradingDays(dayCount);
 
   console.log(`Backfilling 0DTE Per-Strike GEX → gex_strike_0dte`);
   console.log(

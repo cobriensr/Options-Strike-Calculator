@@ -33,6 +33,8 @@
 
 import { neon } from '@neondatabase/serverless';
 
+import { getTradingDays } from './_lib/trading-days.mjs';
+
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 const DRY_RUN = process.env.DRY_RUN === '1';
@@ -116,28 +118,6 @@ const tickers =
   TICKER_FILTER.length > 0
     ? LOTTERY_TICKERS_ALL.filter((t) => TICKER_FILTER.includes(t))
     : LOTTERY_TICKERS_ALL;
-
-function getTradingDays(count) {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const dates = new Set();
-  let cursor = new Date();
-  while (dates.size < count) {
-    const ctDateStr = fmt.format(cursor);
-    if (!dates.has(ctDateStr)) {
-      const dayOfWeek = new Date(`${ctDateStr}T18:00:00Z`).getUTCDay();
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-        dates.add(ctDateStr);
-      }
-    }
-    cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
-  }
-  return Array.from(dates).sort();
-}
 
 function isInSessionCT(tapeTimeUtc) {
   const fmt = new Intl.DateTimeFormat('en-US', {

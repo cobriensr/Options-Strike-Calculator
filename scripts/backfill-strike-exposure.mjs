@@ -29,6 +29,8 @@
 
 import { neon } from '@neondatabase/serverless';
 
+import { getTradingDays } from './_lib/trading-days.mjs';
+
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -50,25 +52,6 @@ const ATM_RANGE_BY_TICKER = { SPX: 200, NDX: 500, SPY: 20, QQQ: 20 };
 const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
 // ── Trading-day + expiry helpers ────────────────────────────
-
-function getTradingDays(count) {
-  const dates = [];
-  const d = new Date();
-
-  const today = d.getDay();
-  if (today !== 0 && today !== 6) {
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  while (dates.length < count) {
-    d.setDate(d.getDate() - 1);
-    const day = d.getDay();
-    if (day === 0 || day === 6) continue;
-    dates.push(d.toISOString().slice(0, 10));
-  }
-
-  return dates.reverse();
-}
 
 function getNextTradingDay(dateStr) {
   const d = new Date(`${dateStr}T12:00:00Z`);

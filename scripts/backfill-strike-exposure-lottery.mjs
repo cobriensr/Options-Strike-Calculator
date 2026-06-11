@@ -29,6 +29,8 @@
 
 import { neon } from '@neondatabase/serverless';
 
+import { getTradingDays } from './_lib/trading-days.mjs';
+
 const UW_API_KEY = process.env.UW_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -169,40 +171,6 @@ const INTER_CALL_SLEEP_MS = 300;
 // 500 to match the Neon driver's preferred chunk and the project's
 // "Always batch multi-row INSERTs" rule (per project memory).
 const BATCH_INSERT_SIZE = 500;
-
-// ── Trading-day + expiry helpers ────────────────────────────
-
-// Always compute calendar dates in CT, never local TZ. Without the
-// CT anchor, `d.getDay()` reads local TZ while `d.toISOString().slice(0, 10)`
-// reads UTC — when run from CT after 6 PM, the UTC date is 1 day ahead
-// of the CT date, so the script pushes Saturday-labeled strings for
-// Friday data and silently skips the corresponding Monday at the back
-// of the window. Pattern lifted from backfill-net-prem-ticks.mjs.
-function getTradingDays(count) {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  const dates = new Set();
-  let cursor = new Date();
-  while (dates.size < count) {
-    const ctDateStr = fmt.format(cursor); // YYYY-MM-DD in CT
-    if (!dates.has(ctDateStr)) {
-      // 18:00 UTC = midday CT regardless of DST — anchors the calendar
-      // date unambiguously to its weekday.
-      const dayOfWeek = new Date(`${ctDateStr}T18:00:00Z`).getUTCDay();
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-        dates.add(ctDateStr);
-      }
-    }
-    cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
-  }
-  // Lex-sort is chronological on ISO YYYY-MM-DD strings — explicit
-  // comparator silences SonarJS S2871 (and documents the contract).
-  return Array.from(dates).sort((a, b) => a.localeCompare(b));
-}
 
 // ── UW fetch ────────────────────────────────────────────────
 
