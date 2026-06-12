@@ -319,7 +319,9 @@ async function main() {
     process.exitCode = 1;
   }
   if (totalFailed > 0) {
-    console.error(`\n⚠️  ${totalFailed} row upsert(s) failed. Exiting non-zero.`);
+    console.error(
+      `\n⚠️  ${totalFailed} row upsert(s) failed. Exiting non-zero.`,
+    );
     process.exitCode = 1;
   }
 }

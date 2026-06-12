@@ -72,13 +72,11 @@ test.describe('Delta Regime Guide', () => {
 
     // Change VIX significantly
     await page.getByLabel('VIX Value').fill('30');
-    await page.waitForTimeout(400); // debounce
 
-    // Range should be wider with higher VIX
-    const updatedText = await table
-      .getByText('90th H-L')
-      .locator('..')
-      .textContent();
-    expect(updatedText).not.toBe(initialText);
+    // Range should be wider with higher VIX — poll auto-retries through the
+    // debounce until the recomputed thresholds land
+    await expect
+      .poll(() => table.getByText('90th H-L').locator('..').textContent())
+      .not.toBe(initialText);
   });
 });

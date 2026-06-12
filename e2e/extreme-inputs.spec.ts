@@ -173,11 +173,10 @@ test.describe('Extreme Inputs', () => {
       .locator('section[aria-label="Advanced"]')
       .getByLabel('Number of contracts');
     await contractsInput.fill('1');
-    await page.waitForTimeout(300);
 
-    // Values should have changed (1 contract vs 20)
-    const updatedText = await results.textContent();
-    expect(updatedText).not.toBe(initialText);
+    // Values should have changed (1 contract vs 20) — poll auto-retries until
+    // the debounced recalculation lands
+    await expect.poll(() => results.textContent()).not.toBe(initialText);
 
     // IC section should still render
     await expect(results.getByText('Iron Condor').first()).toBeVisible();

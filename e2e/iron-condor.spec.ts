@@ -67,10 +67,9 @@ test.describe('Iron Condor Section', () => {
       .getByLabel('Number of contracts');
     await contractsInput.fill('1');
 
-    // P&L values should change (total dollar amounts will be 1/20th)
-    await page.waitForTimeout(300);
-    const updatedText = await results.textContent();
-    expect(updatedText).not.toBe(initialText);
+    // P&L values should change (total dollar amounts will be 1/20th) — poll
+    // auto-retries through the debounce until the recalculation lands
+    await expect.poll(() => results.textContent()).not.toBe(initialText);
   });
 
   test('hiding IC removes iron condor from results', async ({ page }) => {

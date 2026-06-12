@@ -65,10 +65,8 @@ test.describe('Error Recovery', () => {
     await page.getByLabel(/SPX Price/).fill('');
     await page.getByLabel('VIX Value').fill('');
 
-    // 3. Wait for debounce
-    await page.waitForTimeout(400);
-
-    // 4. Results section should show the empty state prompt
+    // 3. Results section should show the empty state prompt (auto-waits
+    // through the debounce until the empty state renders)
     await expect(page.getByText(/Fill in the inputs above/)).toBeVisible();
 
     // 5. Strike table should not be visible

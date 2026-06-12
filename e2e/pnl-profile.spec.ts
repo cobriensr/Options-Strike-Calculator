@@ -156,15 +156,12 @@ test.describe('P&L Profile Table', () => {
     });
     await wingWidthGroup.getByText('10', { exact: true }).click();
 
-    // Wait for the table to update
-    await page.waitForTimeout(300);
-
-    // Verify the heading now shows 10-pt wings
+    // Verify the heading now shows 10-pt wings (auto-waits for the re-render)
     const results = page.locator('#results');
     await expect(results.getByText('Iron Condor (10-pt wings)')).toBeVisible();
 
-    // Verify table content changed
-    const updatedContent = await pnlTable.textContent();
-    expect(updatedContent).not.toBe(initialContent);
+    // Verify table content changed (poll auto-retries until the debounced
+    // recalculation lands)
+    await expect.poll(() => pnlTable.textContent()).not.toBe(initialContent);
   });
 });

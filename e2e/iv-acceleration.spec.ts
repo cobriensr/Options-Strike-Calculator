@@ -83,15 +83,22 @@ test.describe('IV Acceleration', () => {
     // Afternoon entry: 3 PM
     await page.getByLabel('Hour').selectOption('3');
     await page.getByRole('radio', { name: 'PM' }).click();
-    await page.waitForTimeout(400);
+
+    // Poll until the recomputed (afternoon) premium differs from the morning
+    // value — auto-retries through the debounce instead of a fixed sleep
+    const putPremiumCell = table
+      .locator('tbody tr')
+      .first()
+      .locator('td')
+      .nth(4);
+    await expect
+      .poll(() =>
+        putPremiumCell.textContent().then((t) => Number.parseFloat(t!)),
+      )
+      .not.toBe(morningPutPremium);
 
     const afternoonPutPremium = Number.parseFloat(
-      (await table
-        .locator('tbody tr')
-        .first()
-        .locator('td')
-        .nth(4)
-        .textContent())!,
+      (await putPremiumCell.textContent())!,
     );
 
     // Afternoon premium should be higher due to IV acceleration

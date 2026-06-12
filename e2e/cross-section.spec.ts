@@ -43,9 +43,9 @@ test.describe('Cross-Section Input Cascades', () => {
     // Clear direct SPX so derived SPX is used, then change SPY to 690
     await page.getByLabel(/SPX Price/).fill('');
     await page.getByLabel('SPY Price').fill('690');
-    await page.waitForTimeout(400); // debounce
 
-    // Parameter summary should show the new derived SPX value (690 × 10 = 6900)
+    // Parameter summary should show the new derived SPX value (690 × 10 = 6900).
+    // This assertion auto-waits through the debounce until the value renders.
     await expect(
       page
         .locator('fieldset[aria-label="Calculation parameters"]')

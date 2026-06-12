@@ -100,9 +100,9 @@ test.describe('Input Validation', () => {
       results.locator('section[aria-label="Strike results for all deltas"]'),
     ).toBeVisible({ timeout: 5000 });
 
-    // Clear SPY price
+    // Clear SPY price — the assertion below auto-waits through the debounce
+    // until the results section is removed
     await page.getByLabel('SPY Price').fill('');
-    await page.waitForTimeout(400); // debounce
 
     await expect(
       results.locator('section[aria-label="Strike results for all deltas"]'),
