@@ -73,34 +73,51 @@ async function storeTermStructure(
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
 
-  for (const row of rows) {
-    const days = Number.parseInt(String(row.dte ?? row.days), 10);
-    if (Number.isNaN(days)) continue;
+  // Parse + filter to the rows that have a valid `days` before opening the
+  // transaction. Rows with a NaN dte/days are dropped entirely (they were
+  // `continue`d in the prior per-row loop) and never counted as stored or
+  // skipped — preserving the original counting semantics.
+  const parsed = rows
+    .map((row) => {
+      const days = Number.parseInt(String(row.dte ?? row.days), 10);
+      if (Number.isNaN(days)) return null;
+      const volatility = Number.parseFloat(String(row.volatility)) || 0;
+      const impliedMove =
+        Number.parseFloat(
+          String(row.implied_move_perc ?? row.implied_move ?? ''),
+        ) || null;
+      return { days, volatility, impliedMove };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
 
-    const volatility = Number.parseFloat(String(row.volatility)) || 0;
-    const impliedMove =
-      Number.parseFloat(
-        String(row.implied_move_perc ?? row.implied_move ?? ''),
-      ) || null;
+  if (parsed.length === 0) return { stored: 0, skipped: 0 };
 
-    const result = await withDbRetry(
-      () => sql`
-        INSERT INTO vol_term_structure (date, days, volatility, implied_move)
-        VALUES (${today}, ${days}, ${volatility}, ${impliedMove})
-        ON CONFLICT (date, days) DO NOTHING
-        RETURNING id
-      `,
-      2,
-      10_000,
+  try {
+    // Collapse the per-row INSERT loop into a single transaction round-trip.
+    // Each ON CONFLICT (date, days) DO NOTHING RETURNING id either returns the
+    // new row's id (stored) or an empty array (conflict → skipped).
+    const results = await sql.transaction((txn) =>
+      parsed.map(
+        (row) => txn`
+          INSERT INTO vol_term_structure (date, days, volatility, implied_move)
+          VALUES (${today}, ${row.days}, ${row.volatility}, ${row.impliedMove})
+          ON CONFLICT (date, days) DO NOTHING
+          RETURNING id
+        `,
+      ),
     );
-    if (result.length > 0) stored++;
-    else skipped++;
-  }
 
-  return { stored, skipped };
+    let stored = 0;
+    for (const result of results) {
+      if (result.length > 0) stored++;
+    }
+    return { stored, skipped: parsed.length - stored };
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.warn({ err }, 'Batch vol_term_structure insert failed');
+    return { stored: 0, skipped: parsed.length };
+  }
 }
 
 async function storeRealizedVol(

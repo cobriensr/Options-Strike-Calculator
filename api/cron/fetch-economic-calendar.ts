@@ -13,6 +13,7 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { bulkUpsert } from '../_lib/bulk-upsert.js';
 import { uwFetch, withRetry, checkDataQuality } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
@@ -87,14 +88,37 @@ export default withCronInstrumentation(
 
     const sql = getDb();
 
-    for (const e of todayEvents) {
-      const eventType = categorizeEvent(e.event);
+    // Collapse the per-row INSERT loop into one parameterized statement.
+    // ON CONFLICT DO NOTHING is preserved via conflictUpdateColumns: [].
+    const rows = todayEvents.map((e) => ({
+      date: todayStr,
+      event_name: e.event,
+      event_time: e.time,
+      event_type: categorizeEvent(e.event),
+      forecast: e.forecast,
+      previous: e.prev,
+      reported_period: e.reported_period,
+    }));
+
+    if (rows.length > 0) {
       await withDbRetry(
-        () => sql`
-          INSERT INTO economic_events (date, event_name, event_time, event_type, forecast, previous, reported_period)
-          VALUES (${todayStr}, ${e.event}, ${e.time}, ${eventType}, ${e.forecast}, ${e.prev}, ${e.reported_period})
-          ON CONFLICT (date, event_name, event_time) DO NOTHING
-        `,
+        () =>
+          bulkUpsert({
+            sql,
+            table: 'economic_events',
+            columns: [
+              'date',
+              'event_name',
+              'event_time',
+              'event_type',
+              'forecast',
+              'previous',
+              'reported_period',
+            ],
+            rows,
+            conflictTarget: '(date, event_name, event_time)',
+            conflictUpdateColumns: [],
+          }),
         2,
         10_000,
       );

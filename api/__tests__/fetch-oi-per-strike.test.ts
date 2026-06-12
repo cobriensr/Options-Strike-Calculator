@@ -5,7 +5,11 @@ import { mockRequest, mockResponse } from './helpers';
 
 // ── Mocks (before handler import) ──────────────────────────
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -89,6 +93,15 @@ describe('fetch-oi-per-strike handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
+    mockSql.transaction = mockTransaction;
+    // Default: every INSERT in the transaction stores a row.
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
     vi.mocked(isMarketHours).mockReturnValue(true);
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
@@ -187,10 +200,7 @@ describe('fetch-oi-per-strike handler', () => {
 
     // First call: COUNT query returns 0 (no existing data)
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
-    // Subsequent calls: INSERT RETURNING id (one per row)
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
-    mockSql.mockResolvedValueOnce([{ id: 2 }]);
-    mockSql.mockResolvedValueOnce([{ id: 3 }]);
+    // INSERTs run inside a single transaction (mocked to store all rows).
 
     stubFetch(rows);
 
@@ -205,8 +215,8 @@ describe('fetch-oi-per-strike handler', () => {
       skipped: 0,
       durationMs: expect.any(Number),
     });
-    // 1 COUNT + 3 INSERTs = 4 sql calls
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // One transaction for all INSERTs (stored=3 <= 10, no QC query)
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -269,12 +279,8 @@ describe('fetch-oi-per-strike handler', () => {
       makeOiRow({ strike: '5800', call_oi: 5000, put_oi: 6000 }),
     ];
 
-    // COUNT returns 0
+    // COUNT returns 0; INSERTs run inside the mocked transaction.
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
-    // INSERTs all succeed
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
-    mockSql.mockResolvedValueOnce([{ id: 2 }]);
-    mockSql.mockResolvedValueOnce([{ id: 3 }]);
 
     stubFetch(rows);
 
@@ -288,8 +294,8 @@ describe('fetch-oi-per-strike handler', () => {
       stored: 3,
       skipped: 0,
     });
-    // 1 COUNT + 3 INSERTs
-    expect(mockSql).toHaveBeenCalledTimes(4);
+    // One transaction wraps all INSERTs
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   // ── DB conflict (ON CONFLICT DO NOTHING) ────────────────
@@ -299,10 +305,15 @@ describe('fetch-oi-per-strike handler', () => {
 
     // COUNT returns 0
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
-    // First INSERT succeeds (returns id)
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
-    // Second INSERT hits conflict (returns empty array)
-    mockSql.mockResolvedValueOnce([]);
+    // Transaction: first INSERT stores (returns id), second hits the
+    // ON CONFLICT DO NOTHING and returns an empty array.
+    mockTransaction.mockImplementationOnce(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map((_q, i) => (i === 0 ? [{ id: 1 }] : []));
+      },
+    );
 
     stubFetch(rows);
 
@@ -317,21 +328,27 @@ describe('fetch-oi-per-strike handler', () => {
     });
   });
 
-  // ── DB error ────────────────────────────────────────────
+  // ── DB error (transaction abort) ────────────────────────
 
-  it('returns 500 when DB insert throws', async () => {
+  it('soft-degrades to all-skipped and captures to Sentry when the transaction aborts', async () => {
     // COUNT returns 0
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
-    // INSERT throws
-    mockSql.mockRejectedValueOnce(new Error('DB connection lost'));
+    // The whole transaction rejects (e.g. one INSERT fails → batch aborts).
+    mockTransaction.mockRejectedValueOnce(new Error('DB connection lost'));
 
-    stubFetch([makeOiRow()]);
+    stubFetch([makeOiRow({ strike: '5700' }), makeOiRow({ strike: '5750' })]);
 
     const res = mockResponse();
     await handler(authRequest(), res);
 
-    expect(res._status).toBe(500);
-    expect(res._json).toMatchObject({ error: 'Internal error' });
+    // storeStrikes catches the abort internally → cron still succeeds.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-oi-per-strike',
+      total: 2,
+      stored: 0,
+      skipped: 2,
+    });
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 

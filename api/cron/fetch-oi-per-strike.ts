@@ -13,7 +13,7 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { metrics } from '../_lib/sentry.js';
+import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { uwFetch, checkDataQuality, withRetry } from '../_lib/api-helpers.js';
 import {
@@ -48,38 +48,32 @@ async function storeStrikes(
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
 
-  for (const row of rows) {
-    const callOi = Number.parseInt(String(row.call_oi), 10) || 0;
-    const putOi = Number.parseInt(String(row.put_oi), 10) || 0;
-    const strike = Number.parseFloat(String(row.strike));
-
-    try {
-      const result = await withDbRetry(
-        () => sql`
+  try {
+    const results = await sql.transaction((txn) =>
+      rows.map((row) => {
+        const callOi = Number.parseInt(String(row.call_oi), 10) || 0;
+        const putOi = Number.parseInt(String(row.put_oi), 10) || 0;
+        const strike = Number.parseFloat(String(row.strike));
+        return txn`
           INSERT INTO oi_per_strike (date, strike, call_oi, put_oi)
           VALUES (${date}, ${strike}, ${callOi}, ${putOi})
           ON CONFLICT (date, strike) DO NOTHING
           RETURNING id
-        `,
-        2,
-        10_000,
-      );
-      if (result.length > 0) stored++;
-      else skipped++;
-    } catch (err) {
-      logger.warn(
-        { err, date, strike },
-        'fetch-oi-per-strike: insert failed for strike',
-      );
-      metrics.increment('fetch_oi_per_strike.insert_error');
-      skipped++;
-    }
-  }
+        `;
+      }),
+    );
 
-  return { stored, skipped };
+    let stored = 0;
+    for (const result of results) {
+      if (result.length > 0) stored++;
+    }
+    return { stored, skipped: rows.length - stored };
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.warn({ err, date }, 'Batch oi_per_strike insert failed');
+    return { stored: 0, skipped: rows.length };
+  }
 }
 
 // ── Handler ─────────────────────────────────────────────────

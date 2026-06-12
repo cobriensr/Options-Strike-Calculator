@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -77,6 +81,15 @@ describe('fetch-vol-surface cron handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
+    // Default term-structure transaction: every query stores (returns an id).
+    mockSql.transaction = mockTransaction;
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
     process.env = { ...originalEnv, CRON_SECRET: 'test-secret' };
 
     vi.mocked(cronGuard).mockReturnValue({
@@ -135,11 +148,8 @@ describe('fetch-vol-surface cron handler', () => {
       .mockResolvedValueOnce(rvRows)
       .mockResolvedValueOnce(ivRankRows);
 
-    // Term structure INSERTs (2 rows)
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
-    mockSql.mockResolvedValueOnce([{ id: 2 }]);
-
-    // Realized vol INSERT
+    // Term structure INSERTs run in one transaction (2 rows, default mock
+    // stores all). Realized vol INSERT is a direct sql call.
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
@@ -171,8 +181,8 @@ describe('fetch-vol-surface cron handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
-    // Only the second row gets inserted
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    // Only the second (valid) row reaches the transaction; the NaN-dte row is
+    // dropped before the transaction opens. Default mock stores the one query.
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -192,7 +202,7 @@ describe('fetch-vol-surface cron handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    // Single valid row → default transaction stores it.
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -211,8 +221,13 @@ describe('fetch-vol-surface cron handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
-    // INSERT returns empty (conflict)
-    mockSql.mockResolvedValueOnce([]);
+    // Every INSERT conflicts → each query returns an empty array → skipped.
+    mockTransaction.mockImplementationOnce(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const queries = fn(() => ({}));
+        return queries.map(() => []);
+      },
+    );
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -254,8 +269,7 @@ describe('fetch-vol-surface cron handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([makeIvRankRow()]);
 
-    // Term structure INSERT
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    // Term structure INSERT runs in the transaction (default stores it).
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -487,8 +501,8 @@ describe('fetch-vol-surface cron handler', () => {
       .mockResolvedValueOnce([makeRealizedVolRow()]) // realized-vol
       .mockRejectedValueOnce(new Error('UW iv-rank 503')); // iv-rank
 
-    // Term-structure INSERT, then realized-vol INSERT.
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    // Term-structure INSERT runs in the transaction (default stores it);
+    // realized-vol INSERT is the one direct sql call.
     mockSql.mockResolvedValueOnce([]);
 
     const res = mockResponse();
@@ -514,7 +528,7 @@ describe('fetch-vol-surface cron handler', () => {
       .mockResolvedValueOnce([makeRealizedVolRow()])
       .mockResolvedValueOnce([makeIvRankRow()]);
 
-    mockSql.mockResolvedValueOnce([{ id: 1 }]); // term-structure INSERT
+    // term-structure INSERT runs in the transaction (default stores it).
     mockSql.mockResolvedValueOnce([]); // realized-vol INSERT
 
     const res = mockResponse();
@@ -528,7 +542,7 @@ describe('fetch-vol-surface cron handler', () => {
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
-  it('returns 500 on DB write error during term structure insert', async () => {
+  it('soft-degrades term structure on a transaction abort (no 500)', async () => {
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
 
     vi.mocked(uwFetch)
@@ -536,14 +550,23 @@ describe('fetch-vol-surface cron handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
 
-    // INSERT fails
-    mockSql.mockRejectedValueOnce(new Error('connection refused'));
+    // The whole batch transaction rejects. Mirroring the gold-standard
+    // (fetch-spx-candles-1m), the transaction-level catch captures to Sentry
+    // and returns { stored: 0, skipped: all } instead of bubbling a 500.
+    mockTransaction.mockRejectedValueOnce(new Error('connection refused'));
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(res._status).toBe(500);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      termStructure: { stored: 0, skipped: 1 },
+    });
     expect(Sentry.captureException).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'Batch vol_term_structure insert failed',
+    );
   });
 
   it('returns 500 on DB read error (existing count check)', async () => {

@@ -3,7 +3,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+// The INSERT loop now uses bulkUpsert, which calls sql.query() internally.
+// The data-quality SELECT still uses the tagged-template `mockSql`. We keep
+// `mockSql` callable AND give it a `.query` method so both paths are covered.
+const mockQuery = vi.fn().mockResolvedValue([]);
+const mockSql = Object.assign(vi.fn().mockResolvedValue([]), {
+  query: mockQuery,
+});
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -57,6 +63,7 @@ describe('fetch-economic-calendar handler', () => {
     vi.resetAllMocks();
     // Default: return a row satisfying data-quality SELECT shapes
     mockSql.mockResolvedValue([{ total: 0, has_name: 0 }]);
+    mockQuery.mockResolvedValue([]);
     process.env = { ...originalEnv };
     vi.setSystemTime(PREMARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -258,8 +265,10 @@ describe('fetch-economic-calendar handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ eventsStored: 9 });
 
-    // 9 INSERTs + 1 data-quality SELECT = 10
-    expect(mockSql).toHaveBeenCalledTimes(10);
+    // bulkUpsert collapses all 9 inserts into a single sql.query() call.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    // Data-quality SELECT still uses the tagged-template form.
+    expect(mockSql).toHaveBeenCalledTimes(1);
 
     const expectedTypes = [
       'CPI',
@@ -273,11 +282,13 @@ describe('fetch-economic-calendar handler', () => {
       'OTHER',
     ];
 
+    // bulkUpsert builds one INSERT...VALUES(...) with a flat params array.
+    // Column order: date, event_name, event_time, event_type, forecast,
+    // previous, reported_period — so event_type is the 4th param of each
+    // 7-column tuple (0-indexed offset 3).
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
     for (let i = 0; i < expectedTypes.length; i++) {
-      const call = mockSql.mock.calls[i]!;
-      // Tagged template: args are [strings[], ...values]
-      // Values order: date, event_name, event_time, event_type, forecast, previous, reported_period
-      const eventType = call[4]; // index 0=strings, 1=date, 2=event_name, 3=event_time, 4=event_type
+      const eventType = params[i * 7 + 3];
       expect(eventType).toBe(expectedTypes[i]);
     }
   });
@@ -305,8 +316,9 @@ describe('fetch-economic-calendar handler', () => {
       eventsStored: 1,
       events: ['CPI'],
     });
-    // 1 INSERT + 1 data-quality SELECT = 2
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // 1 bulk insert (sql.query) + 1 data-quality SELECT (tagged template).
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
   // ── Error handling ────────────────────────────────────────
