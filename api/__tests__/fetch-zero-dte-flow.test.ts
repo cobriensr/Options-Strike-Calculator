@@ -18,7 +18,16 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    setTag: vi.fn(),
+  },
+}));
+
 import handler from '../cron/fetch-zero-dte-flow.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // Fixed "market hours" date: Tuesday 10:00 AM ET
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
@@ -328,6 +337,58 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(res._json).toMatchObject({ stored: 0, rejected: true });
     // Nothing persisted — the degenerate snapshot is dropped before insert.
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('captures a Sentry message when a degenerate snapshot is rejected', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([
+      makeFlowTick({
+        timestamp: '2026-03-24T14:31:00Z',
+        net_call_premium: '0',
+        net_put_premium: '0',
+      }),
+      makeFlowTick({
+        timestamp: '2026-03-24T14:36:00Z',
+        net_call_premium: '0',
+        net_put_premium: '0',
+      }),
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ rejected: true });
+    // A recurring UW degenerate feed must be observable, not a silent gap.
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('all-zero/null premium snapshot'),
+      expect.objectContaining({
+        level: 'error',
+        tags: expect.objectContaining({
+          cron: 'fetch-zero-dte-flow',
+          stage: 'degenerate_snapshot',
+        }),
+      }),
+    );
+  });
+
+  it('does not capture a Sentry message when a snapshot has signal', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    stubFetch([makeFlowTick()]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).not.toMatchObject({ rejected: true });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   it('treats null/blank premium as zero when rejecting', async () => {

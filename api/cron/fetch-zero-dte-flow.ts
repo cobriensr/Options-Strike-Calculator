@@ -96,6 +96,17 @@ async function storeLatest(
       { ticks: sampled.size, date: ticks[0]?.date },
       'fetch-zero-dte-flow: rejecting all-zero/null premium snapshot',
     );
+    // Surface the rejection to Sentry so a recurring UW degenerate feed
+    // (the 2026-06-03 incident) is observable rather than a silent 0DTE
+    // flow gap. The warn log alone produced no alert on recurrence.
+    Sentry.captureMessage(
+      'fetch-zero-dte-flow: rejected all-zero/null premium snapshot',
+      {
+        level: 'error',
+        tags: { cron: 'fetch-zero-dte-flow', stage: 'degenerate_snapshot' },
+        extra: { ticks: sampled.size, date: ticks[0]?.date },
+      },
+    );
     return { stored: 0, skipped: sampled.size, rejected: true };
   }
 

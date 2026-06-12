@@ -141,7 +141,11 @@ const MARKET_HOURS_TZ = 'America/New_York';
 
 export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   'auto-prefill-premarket': {
-    schedule: '30 13 * * 1-5',
+    // Dual-slot 13:30 + 14:30 UTC (mirrors compute-es-overnight). The
+    // handler's isAfterCashOpen gate skips the early CST slot (07:30 CT)
+    // so the post-open slot does the work; the redundant CDT slot is an
+    // idempotent re-run. See the header comment in the handler.
+    schedule: '30 13,14 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },

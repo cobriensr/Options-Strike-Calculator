@@ -223,10 +223,10 @@ describe('fetch-es-options-eod handler', () => {
     expect(json.oiConcentration.put.ratio).toBe(0.5);
   });
 
-  // ── Empty OI dataset (but rows exist) ─────────────────────
+  // ── QC gate: rows present but all OI is NULL ──────────────
 
-  it('handles rows with no OI data gracefully', async () => {
-    // Data exists but no open_interest values
+  it('alerts via Sentry and skips when rows exist but with_oi is 0', async () => {
+    // Sidecar drift: rows written but open_interest is NULL on all of them.
     mockSql.mockResolvedValueOnce([
       {
         total_rows: '10',
@@ -238,21 +238,21 @@ describe('fetch-es-options-eod handler', () => {
       },
     ]);
 
-    // OI query returns empty (no rows with non-null OI)
-    mockSql.mockResolvedValueOnce([]);
-
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
+    // QC gate must fire BEFORE the OI-concentration query runs.
+    expect(mockSql).toHaveBeenCalledTimes(1);
     expect(res._status).toBe(200);
-    const json = res._json as {
-      maxPain: number | null;
-      totalCallOi: number;
-      totalPutOi: number;
-    };
-    expect(json.maxPain).toBeNull();
-    expect(json.totalCallOi).toBe(0);
-    expect(json.totalPutOi).toBe(0);
+    expect(res._json).toMatchObject({
+      job: 'fetch-es-options-eod',
+      skipped: true,
+      reason: 'Rows present but no open interest',
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('ES options EOD QC failed'),
+      'warning',
+    );
   });
 
   // ── Single strike ─────────────────────────────────────────

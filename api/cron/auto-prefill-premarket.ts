@@ -1,23 +1,49 @@
 /**
  * GET /api/cron/auto-prefill-premarket
  *
- * Runs at 8:30 AM CT (13:30 UTC) on weekdays. Queries overnight ES bars
+ * Runs at the 8:30 AM CT cash open on weekdays. Queries overnight ES bars
  * from futures_bars (5:00 PM CT previous trading day through 8:30 AM CT
  * today), computes Globex high/low/close/VWAP, and writes to
  * market_snapshots.pre_market_data so the frontend auto-fills on load.
  *
- * Schedule: 30 13 * * 1-5
+ * Schedule: 30 13,14 * * 1-5 (DST-safe dual-slot; skips before cash open)
+ *
+ * DST handling — two independent fixes:
+ *   1. The overnight window END is the cash-open INSTANT (9:30 ET / 8:30 CT)
+ *      computed via getETMarketOpenUtcIso, so it covers the full Globex
+ *      session through the CT cash open in BOTH CDT (13:30 UTC) and CST
+ *      (14:30 UTC). The old hardcoded `T13:30:00Z` dropped the EST/CST last
+ *      Globex hour (07:30–08:30 CT) from H/L/C/VWAP.
+ *   2. The single `30 13` slot fired at 07:30 CT in CST — an hour BEFORE the
+ *      08:30 CT data is complete (no window math can conjure bars that
+ *      haven't printed). Mirroring compute-es-overnight, we fire at both
+ *      13:30 and 14:30 UTC and gate with isAfterCashOpen so the early CST
+ *      slot skips and the post-open slot does the work. The CDT 14:30-UTC
+ *      slot is a harmless idempotent re-run (same upsert).
  *
  * Environment: CRON_SECRET
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
+import { getETTime, getETMarketOpenUtcIso } from '../../src/utils/timezone.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 
 // ── Time helpers ────────────────────────────────────────────
+
+/**
+ * True once the 8:30 AM CT cash open (== 9:30 AM ET) has passed. Gates the
+ * dual-slot schedule: in CST the 13:30-UTC slot is 07:30 CT (before open →
+ * skip) and the 14:30-UTC slot is 08:30 CT (run). In CDT the 13:30-UTC slot
+ * is already 08:30 CT (run); the 14:30-UTC slot also passes but is an
+ * idempotent re-run.
+ */
+function isAfterCashOpen(): boolean {
+  const { hour, minute } = getETTime(new Date());
+  return hour * 60 + minute >= 570; // 9:30 AM ET
+}
 
 /**
  * Get previous trading day's 5:00 PM CT as a UTC ISO string.
@@ -36,11 +62,20 @@ function getOvernightStartCT(todayET: string): string {
 }
 
 /**
- * Get today's 8:30 AM CT as a UTC ISO string.
- * 8:30 AM CT = 13:30 UTC (CDT) or 14:30 UTC (CST).
+ * Get today's 8:30 AM CT cash open as a UTC ISO string. This is the same
+ * instant as 9:30 AM ET, so getETMarketOpenUtcIso gives the DST-aware UTC:
+ * 13:30 UTC in CDT, 14:30 UTC in CST. The old hardcoded `T13:30:00Z`
+ * excluded the CST last Globex hour (07:30–08:30 CT) from the aggregate.
  */
 function getOvernightEndCT(todayET: string): string {
-  return `${todayET}T13:30:00Z`;
+  const iso = getETMarketOpenUtcIso(todayET);
+  if (!iso) {
+    // todayET comes from cronGuard's getETDateStr(), always a valid
+    // YYYY-MM-DD — a null here means an upstream contract broke. Throw
+    // loudly rather than silently truncate the window to a bad bound.
+    throw new Error(`Invalid trade date for overnight end: ${todayET}`);
+  }
+  return iso;
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -163,5 +198,5 @@ export default withCronInstrumentation(
       },
     };
   },
-  { marketHours: false, requireApiKey: false },
+  { timeCheck: isAfterCashOpen, requireApiKey: false },
 );

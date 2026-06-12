@@ -255,6 +255,65 @@ describe('backfill-futures-gaps handler', () => {
     expect(json.errors).toHaveLength(1);
   });
 
+  // ── Status derivation (AUD-M9) ────────────────────────
+
+  it('reports status "error" when every symbol fetch throws', async () => {
+    // All 6 symbol fetches reject → every leg lands in the catch block →
+    // errors.length === total → deriveCronStatus returns 'error' instead of
+    // the old hardcoded 'ok'. HTTP stays 200 (handler-detected failure, not
+    // a thrown exception).
+    mockFetch.mockRejectedValue(new Error('Network down'));
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as {
+      status: string;
+      totalInserted: number;
+      errors: string[] | undefined;
+    };
+    expect(json.status).toBe('error');
+    expect(json.totalInserted).toBe(0);
+    expect(json.errors).toHaveLength(6);
+  });
+
+  it('reports status "partial" when some symbols fail and some succeed', async () => {
+    // First symbol (ES) throws; the rest succeed → 'partial'.
+    let callCount = 0;
+    mockFetch.mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.reject(new Error('Network timeout'));
+      }
+      return Promise.resolve({
+        ok: true,
+        text: () => Promise.resolve(makeNdjsonResponse([makeOhlcvRecord()])),
+      });
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { status: string };
+    expect(json.status).toBe('partial');
+  });
+
+  it('reports status "success" when all symbols complete without error', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(makeNdjsonResponse([makeOhlcvRecord()])),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { status: string };
+    expect(json.status).toBe('success');
+  });
+
   // ── Auth format ───────────────────────────────────────
 
   it('sends API key as Basic auth username', async () => {

@@ -43,6 +43,7 @@ import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
   withCronInstrumentation,
+  deriveCronStatus,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { computeZeroGammaLevel, type GexStrike } from '../_lib/zero-gamma.js';
@@ -323,9 +324,23 @@ export default withCronInstrumentation(
       TickerOutcome | { stored: false; error: string }
     > = {};
 
+    // Track per-leg outcome for deriveCronStatus. A ticker with no snapshot
+    // is a no-op skip (no data to work on), not a failure — it is excluded
+    // from BOTH counters so a quiet window reports 'success', not 'error'.
+    // `total` is the count of tickers that had real work (snapshot present),
+    // `failed` is the count that threw.
+    let failedLegs = 0;
+    let totalLegs = 0;
+
     for (const ticker of ZERO_GAMMA_TICKERS) {
       try {
-        perTicker[ticker] = await processTicker(sql, ticker, today);
+        const outcome = await processTicker(sql, ticker, today);
+        perTicker[ticker] = outcome;
+        // Only count tickers that had a snapshot to work on. A skipped
+        // (no-snapshot) ticker is excluded from the leg counters.
+        if (outcome.stored) {
+          totalLegs += 1;
+        }
       } catch (err) {
         // The wrapper sets `cron.job` once at entry; we only need the ticker
         // tag here so per-ticker exceptions are filterable in Sentry.
@@ -333,12 +348,19 @@ export default withCronInstrumentation(
         Sentry.captureException(err);
         logger.error({ err, ticker }, 'compute-zero-gamma: per-ticker failure');
         perTicker[ticker] = { stored: false, error: String(err) };
+        totalLegs += 1;
+        failedLegs += 1;
       }
     }
 
+    // Collapse the per-leg outcome into a single status. When every ticker
+    // that had work failed (or every ticker threw), this returns 'error'
+    // instead of masking total failure as 'success'.
+    const status = deriveCronStatus(failedLegs, totalLegs);
+
     return {
-      status: 'success',
-      metadata: { perTicker },
+      status,
+      metadata: { perTicker, failedLegs, totalLegs },
     };
   },
   { requireApiKey: false },

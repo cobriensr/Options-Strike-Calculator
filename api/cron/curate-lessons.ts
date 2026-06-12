@@ -470,6 +470,10 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Unknown DB error';
+        Sentry.setTag('cron.job', 'curate-lessons');
+        Sentry.captureException(err, {
+          tags: { stage: 'review-db-write', reviewId: String(review.id) },
+        });
         logger.error(
           { err, reviewId: review.id },
           'DB write failed for review',

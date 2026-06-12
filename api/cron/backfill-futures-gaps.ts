@@ -12,8 +12,11 @@
  * Environment: CRON_SECRET, DATABENTO_API_KEY
  */
 
-import { withCronCheckin } from '../_lib/cron-instrumentation.js';
-import { getDb } from '../_lib/db.js';
+import {
+  withCronCheckin,
+  deriveCronStatus,
+} from '../_lib/cron-instrumentation.js';
+import { getDb, withDbRetry } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import { checkDataQuality, cronGuard } from '../_lib/api-helpers.js';
@@ -268,11 +271,16 @@ export default withCronCheckin('backfill-futures-gaps', async (req, res) => {
           })
           .join(',\n');
 
-        await sql.query(
-          `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
-           VALUES ${valueRows}
-           ON CONFLICT (symbol, ts) DO NOTHING`,
-          params,
+        await withDbRetry(
+          () =>
+            sql.query(
+              `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
+               VALUES ${valueRows}
+               ON CONFLICT (symbol, ts) DO NOTHING`,
+              params,
+            ),
+          2,
+          10_000,
         );
         inserted += batch.length;
       }
@@ -317,8 +325,14 @@ export default withCronCheckin('backfill-futures-gaps', async (req, res) => {
 
   const durationMs = Date.now() - startTime;
 
+  // Demote the reported status from the per-symbol failure count so a run
+  // where every symbol fetch threw reports 'error' (not a hardcoded 'ok'),
+  // and a mixed run reports 'partial'. errors.length is the failed-leg count;
+  // total is the symbol universe.
+  const status = deriveCronStatus(errors.length, Object.keys(SYMBOLS).length);
+
   await reportCronRun('backfill-futures-gaps', {
-    status: 'ok',
+    status,
     range: `${startStr} to ${endStr}`,
     totalInserted,
     totalRejected,
@@ -329,6 +343,7 @@ export default withCronCheckin('backfill-futures-gaps', async (req, res) => {
 
   return res.status(200).json({
     job: 'backfill-futures-gaps',
+    status,
     range: `${startStr} to ${endStr}`,
     totalInserted,
     totalRejected,

@@ -11,7 +11,7 @@
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { metrics, Sentry } from '../_lib/sentry.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
-import { getETTime } from '../../src/utils/timezone.js';
+import { getETTime, getETMarketOpenUtcIso } from '../../src/utils/timezone.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -42,8 +42,18 @@ function getOvernightStart(todayET: string): string {
 }
 
 function getOvernightEnd(todayET: string): string {
-  // 9:30 AM ET = 13:30 UTC (EDT) or 14:30 UTC (EST)
-  return `${todayET}T13:30:00Z`; // Approximate: EDT
+  // Window end = the cash open (9:30 AM ET) instant in UTC. DST-aware via
+  // getETMarketOpenUtcIso: 13:30 UTC in EDT, 14:30 UTC in EST. Pinning the
+  // old hardcoded `T13:30:00Z` excluded the EST/CST last Globex hour
+  // (08:30–09:30 ET / 07:30–08:30 CT) from H/L/C/VWAP.
+  const iso = getETMarketOpenUtcIso(todayET);
+  if (!iso) {
+    // todayET comes from cronGuard's getETDateStr(), always a valid
+    // YYYY-MM-DD — a null here means an upstream contract broke. Throw
+    // loudly rather than silently truncate the window to a bad bound.
+    throw new Error(`Invalid trade date for overnight end: ${todayET}`);
+  }
+  return iso;
 }
 
 // ── Gap classification helpers ──────────────────────────────

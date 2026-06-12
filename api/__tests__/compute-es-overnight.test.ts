@@ -745,6 +745,38 @@ describe('compute-es-overnight handler', () => {
     expect(res._json).toHaveProperty('stored', true);
   });
 
+  // ── DST-aware overnight window end (AUD-M13) ──────────────
+  //
+  // The window end must be the cash-open INSTANT (9:30 ET), covering the
+  // full Globex session through cash open in BOTH DST regimes. The bars
+  // query is the 1st SQL call; its tagged-template args are
+  // [stringsArray, overnightStart, overnightEnd], so call[0][2] is the
+  // window end. `today` derives from getETDateStr(new Date()) → driven by
+  // the faked system time.
+
+  function barsQueryEnd(): unknown {
+    return mockSql.mock.calls[0]![2];
+  }
+
+  it('covers the EST last Globex hour: window ends 14:30 UTC in winter', async () => {
+    // 2026-01-15 09:35 ET = 14:35 UTC (EST). Cash open 9:30 ET = 14:30 UTC.
+    // The old hardcoded T13:30:00Z would have excluded 08:30–09:30 ET.
+    vi.setSystemTime(new Date('2026-01-15T14:35:00.000Z'));
+    setupSqlSequence();
+    await handler(authedReq(), mockResponse());
+
+    expect(barsQueryEnd()).toBe('2026-01-15T14:30:00.000Z');
+  });
+
+  it('window ends 13:30 UTC in summer (EDT)', async () => {
+    // 2026-07-15 09:35 ET = 13:35 UTC (EDT). Cash open 9:30 ET = 13:30 UTC.
+    vi.setSystemTime(new Date('2026-07-15T13:35:00.000Z'));
+    setupSqlSequence();
+    await handler(authedReq(), mockResponse());
+
+    expect(barsQueryEnd()).toBe('2026-07-15T13:30:00.000Z');
+  });
+
   // ── Error handling ──────────────────────────────────────
 
   it('returns 500 and captures exception on DB error', async () => {

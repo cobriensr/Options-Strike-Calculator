@@ -327,4 +327,90 @@ describe('compute-zero-gamma handler', () => {
     expect(body.perTicker.SPY).toMatchObject({ stored: true });
     expect(body.perTicker.QQQ).toMatchObject({ stored: true });
   });
+
+  // ── Aggregate status (AUD-M8) ────────────────────────────
+
+  it('reports status "success" when every ticker stores a row', async () => {
+    queueAllTickersHappyPath();
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as { status: string };
+    expect(body.status).toBe('success');
+  });
+
+  it('reports a non-success status when ALL tickers fail', async () => {
+    // Every ticker's first SELECT (latest_ts) throws → all three legs fail.
+    // The cron must NOT report 'success' when nothing landed.
+    for (let i = 0; i < TICKERS.length; i += 1) {
+      mockSql.mockRejectedValueOnce(new Error(`leg ${i} latest_ts failed`));
+    }
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    // HTTP stays 200; the cron-level status carries the failure signal.
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      status: string;
+      failedLegs: number;
+      totalLegs: number;
+      perTicker: Record<string, { stored: boolean; error?: string }>;
+    };
+    expect(body.status).not.toBe('success');
+    expect(body.status).toBe('error');
+    expect(body.failedLegs).toBe(TICKERS.length);
+    expect(body.totalLegs).toBe(TICKERS.length);
+    for (const ticker of TICKERS) {
+      expect(body.perTicker[ticker]).toMatchObject({ stored: false });
+      expect(body.perTicker[ticker]!.error).toBeDefined();
+    }
+  });
+
+  it('reports status "partial" when some tickers fail and others store', async () => {
+    // SPX throws; SPY + QQQ succeed (4 SQL calls each).
+    mockSql.mockRejectedValueOnce(new Error('SPX latest_ts failed'));
+    for (let i = 0; i < TICKERS.length - 1; i += 1) {
+      mockSql
+        .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
+        .mockResolvedValueOnce(balancedChain())
+        .mockResolvedValueOnce([]) // prev net_gamma SELECT
+        .mockResolvedValueOnce([]); // INSERT
+    }
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      status: string;
+      failedLegs: number;
+      totalLegs: number;
+    };
+    expect(body.status).toBe('partial');
+    expect(body.failedLegs).toBe(1);
+    expect(body.totalLegs).toBe(TICKERS.length);
+  });
+
+  it('reports status "success" when every ticker has no snapshot (quiet window)', async () => {
+    // No snapshots anywhere → no real work; an empty run is not a failure.
+    for (let i = 0; i < TICKERS.length; i += 1) {
+      mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    }
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as {
+      status: string;
+      failedLegs: number;
+      totalLegs: number;
+    };
+    expect(body.status).toBe('success');
+    expect(body.failedLegs).toBe(0);
+    expect(body.totalLegs).toBe(0);
+  });
 });

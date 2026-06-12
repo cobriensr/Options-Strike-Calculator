@@ -115,6 +115,37 @@ export default withCronInstrumentation(
       };
     }
 
+    // QC gate: rows present but no OI (and/or no IV) means the sidecar
+    // wrote NULL-stub rows -- Statistics never arrived from Databento.
+    // Without this gate the NULL-OI drift would compute a null max pain
+    // and zero concentration and report success, masking the failure.
+    const withOi = Number.parseInt(String(stats.with_oi), 10);
+    const withIv = Number.parseInt(String(stats.with_iv), 10);
+
+    if (withOi === 0) {
+      Sentry.captureMessage(
+        `ES options EOD QC failed for ${tradeDate}: ${totalRows} rows present but open_interest is NULL on all (with_iv=${withIv}) -- sidecar wrote NULL stubs`,
+        'warning',
+      );
+      logger.warn(
+        { tradeDate, totalRows, withOi, withIv },
+        'ES options EOD rows present but all OI is NULL -- sidecar Statistics drift',
+      );
+      return {
+        status: 'skipped',
+        message: 'EOD rows present but no open interest',
+        metadata: {
+          job: 'fetch-es-options-eod',
+          skipped: true,
+          reason: 'Rows present but no open interest',
+          tradeDate,
+          totalRows,
+          withOi,
+          withIv,
+        },
+      };
+    }
+
     // 2. Compute OI concentration ratios
     const oiByStrike = await withDbRetry(
       () => sql`

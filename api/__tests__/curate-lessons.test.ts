@@ -584,6 +584,7 @@ describe('GET /api/cron/curate-lessons', () => {
   // ── Transaction failure ────────────────────────────────────
 
   it('records error but continues when transaction fails for a review', async () => {
+    const { Sentry } = await import('../_lib/sentry.js');
     const review1 = makeReview({ id: 100 });
     const review2 = makeReview({
       id: 200,
@@ -650,6 +651,19 @@ describe('GET /api/cron/curate-lessons', () => {
             }),
           ]),
           added: expect.arrayContaining([expect.objectContaining({ id: 44 })]),
+        }),
+      }),
+    );
+
+    // The per-review write failure must surface to Sentry — not just the
+    // logger — so the monitor does not show green on a silent write failure.
+    expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'curate-lessons');
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'DB connection lost' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          stage: 'review-db-write',
+          reviewId: '100',
         }),
       }),
     );

@@ -30,9 +30,22 @@ vi.mock('../_lib/axiom.js', () => ({
   reportCronRun: vi.fn(),
 }));
 
-vi.mock('../../src/utils/timezone.js', () => ({
-  getETDateStr: vi.fn(() => '2026-04-03'),
+// Use the REAL getETMarketOpenUtcIso so the DST window-end math is
+// genuinely exercised; stub getETDateStr (cronGuard's date source) and
+// getETTime (the post-cash-open gate) so tests control them.
+// vi.hoisted lets the mock factory (hoisted to the top) reference the spy.
+const { mockGetETTime } = vi.hoisted(() => ({
+  mockGetETTime: vi.fn(() => ({ hour: 9, minute: 35 })), // after open
 }));
+vi.mock('../../src/utils/timezone.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../src/utils/timezone.js')>();
+  return {
+    ...actual,
+    getETDateStr: vi.fn(() => '2026-04-03'),
+    getETTime: mockGetETTime,
+  };
+});
 
 import handler from '../cron/auto-prefill-premarket.js';
 import { cronGuard } from '../_lib/api-helpers.js';
@@ -52,6 +65,7 @@ describe('auto-prefill-premarket handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
+    mockGetETTime.mockReturnValue({ hour: 9, minute: 35 }); // after cash open
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
 
@@ -108,6 +122,60 @@ describe('auto-prefill-premarket handler', () => {
         reason: 'No overnight bars',
       }),
     );
+  });
+
+  // ── DST-aware overnight window end (AUD-M13) ──────────────
+  //
+  // The window end must be the cash-open INSTANT (8:30 CT / 9:30 ET),
+  // covering the full Globex session through the CT cash open in BOTH
+  // DST regimes. The bars query is the 1st SQL call; its tagged-template
+  // args are [stringsArray, overnightStart, overnightEnd], so call[2] is
+  // the window end we assert on.
+
+  function barsQueryEnd(): unknown {
+    // mockSql is a tagged-template fn: (strings, ...values).
+    return mockSql.mock.calls[0]![2];
+  }
+
+  it('covers the CST last Globex hour: window ends 14:30 UTC in winter', async () => {
+    // 2026-01-15 is EST/CST. Cash open 8:30 CT = 14:30 UTC. The old
+    // hardcoded T13:30:00Z would have excluded 07:30–08:30 CT.
+    vi.mocked(cronGuard).mockReturnValue({ apiKey: '', today: '2026-01-15' });
+    mockSql.mockResolvedValueOnce([
+      {
+        globex_high: '5700',
+        globex_low: '5680',
+        globex_close: '5695',
+        vwap: '5690',
+        bar_count: '10',
+      },
+    ]);
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    mockSql.mockResolvedValueOnce([]);
+
+    await handler(makeCronReq(), mockResponse());
+
+    expect(barsQueryEnd()).toBe('2026-01-15T14:30:00.000Z');
+  });
+
+  it('window ends 13:30 UTC in summer (CDT)', async () => {
+    // 2026-07-15 is EDT/CDT. Cash open 8:30 CT = 13:30 UTC.
+    vi.mocked(cronGuard).mockReturnValue({ apiKey: '', today: '2026-07-15' });
+    mockSql.mockResolvedValueOnce([
+      {
+        globex_high: '5700',
+        globex_low: '5680',
+        globex_close: '5695',
+        vwap: '5690',
+        bar_count: '10',
+      },
+    ]);
+    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+    mockSql.mockResolvedValueOnce([]);
+
+    await handler(makeCronReq(), mockResponse());
+
+    expect(barsQueryEnd()).toBe('2026-07-15T13:30:00.000Z');
   });
 
   // ── Happy path: existing snapshot ─────────────────────────
