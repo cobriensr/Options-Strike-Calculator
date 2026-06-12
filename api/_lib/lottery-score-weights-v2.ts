@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-06-12T02:17:41.954452+00:00
+ * Trained at    : 2026-06-12T05:28:39.158938+00:00
  *
  * computeLotteryScoreV2() is wired into detect-lottery-fires.ts (feeds the
  * quality-adjusted score / qas; see lottery-tier.ts).
