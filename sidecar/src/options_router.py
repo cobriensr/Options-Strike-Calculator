@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from logger_setup import log
 from session_calendar import cme_session_date
+from stat_writer import StatRow, StatWriter
 from symbol_manager import OptionsStrikeSet
 
 if TYPE_CHECKING:
@@ -68,6 +69,14 @@ DEFINITION_LAG_SUMMARY_INTERVAL_S = 60.0
 
 # FINDING 4: emit a window-filter-drop summary at most once per this interval.
 WINDOW_FILTER_SUMMARY_INTERVAL_S = 60.0
+
+# AUD-M26: emit a stat-upsert-failure summary at most once per this interval.
+# A persistent failure (numeric overflow, schema drift, the SIDE-016 enum-adapt
+# class) would otherwise rot futures_options_daily with zero alerting. Matches
+# the SIDE-012 / FINDING 4 throttle cadence so a stuck upsert path is visible in
+# Sentry within a minute without per-row spam (stat records on a single iid can
+# arrive several times a second).
+STAT_UPSERT_FAILURE_SUMMARY_INTERVAL_S = 60.0
 
 # Window-filter drops are EXPECTED during trending sessions: as ES trends,
 # the ATM window recenters and previously-subscribed (now off-window) strikes
@@ -148,6 +157,15 @@ class OptionsRecordRouter:
         self.window_filter_drops = 0
         self.last_window_summary_ts = 0.0
 
+        # AUD-M26: stat-upsert-failure tracking. A persistent upsert failure
+        # (numeric overflow, schema drift, enum-adapt) was previously log-only
+        # with zero Sentry alerting. Own throttle state so it doesn't mask /
+        # get masked by the other two drop causes; the last raised exception
+        # text is carried into the summary so the root cause is visible.
+        self.stat_upsert_failures = 0
+        self.last_stat_failure_summary_ts = 0.0
+        self.last_stat_failure_error = ""
+
         # M7: throttle state for periodic pruning of past-expiry entries
         # from option_definitions. Matches the time.time() source used by
         # the SIDE-012 / FINDING 4 throttles above.
@@ -156,6 +174,15 @@ class OptionsRecordRouter:
         # Guards concurrent writes to option_definitions from the SDK
         # callback thread vs reads from other handlers.
         self._lock = threading.Lock()
+
+        # AUD-M27: route option-stat upserts through a BatchedWriter so
+        # the synchronous Neon round trip (a pool borrow + reconnect
+        # retry, up to ~10s during a stall) no longer runs on — and
+        # head-of-line-blocks — the single SDK callback thread that also
+        # drives TBBO + options-trade ingestion. handle_stat now only
+        # enqueues; the writer's background thread drains to Neon. The
+        # AUD-M26 failure counter is preserved via on_write_failure.
+        self._stat_writer = StatWriter(on_write_failure=self._on_stat_write_failure)
 
     # ------------------------------------------------------------------
     # Definition handler
@@ -303,7 +330,6 @@ class OptionsRecordRouter:
         """
         if self._is_shutting_down():
             return
-        from db import upsert_options_daily
 
         stat_type = record.stat_type
         mapping = STAT_TYPE_TO_KWARG.get(stat_type)
@@ -350,23 +376,68 @@ class OptionsRecordRouter:
             stat_quantity = getattr(record, "stat_quantity", None)
             value = int(stat_quantity) if stat_quantity else None
 
-        # Settlement carries an extra is_final flag derived from stat_flags.
-        extra_kwargs: dict[str, Any] = {}
+        # Assemble exactly the kwargs the synchronous upsert used to pass:
+        # the stat-specific value plus an optional is_final on settlement.
+        kwargs: dict[str, Any] = {kwarg_name: value}
         if stat_type == STAT_TYPE_SETTLEMENT:
-            extra_kwargs["is_final"] = bool(getattr(record, "stat_flags", 0) & 1)
+            kwargs["is_final"] = bool(getattr(record, "stat_flags", 0) & 1)
 
-        try:
-            upsert_options_daily(
-                "ES",
-                trade_date,
-                expiry,
-                Decimal(str(strike)),
-                option_type,
-                **{kwarg_name: value},
-                **extra_kwargs,
+        # AUD-M27: enqueue to the off-thread StatWriter instead of calling
+        # upsert_options_daily synchronously here. The buffered write drains
+        # on the StatWriter's background flush; a Neon stall on the stat path
+        # no longer head-of-line-blocks TBBO / options-trade ingestion on this
+        # SDK callback thread. futures_options_daily is ON CONFLICT DO UPDATE,
+        # so the writer's bounded re-queue on failure is safe. The AUD-M26
+        # failure counter is preserved via _on_stat_write_failure (wired as
+        # the writer's on_write_failure callback).
+        self._stat_writer.add(
+            StatRow(
+                underlying="ES",
+                trade_date=trade_date,
+                expiry=expiry,
+                strike=Decimal(str(strike)),
+                option_type=option_type,
+                kwargs=kwargs,
             )
-        except Exception as exc:
-            log.error("Failed to upsert stat for strike %s: %s", strike, exc)
+        )
+
+    def _on_stat_write_failure(self, exc: BaseException) -> None:
+        """AUD-M26 failure tracking, driven from the StatWriter's _write.
+
+        Previously ``handle_stat`` caught the synchronous upsert exception
+        inline. Now the upsert runs on the StatWriter's background thread,
+        so the writer invokes this callback on a write failure (before it
+        re-raises so BatchedWriter re-queues the idempotent rows). Keeps the
+        per-failure log line plus the throttled Sentry summary so a
+        persistent upsert failure — numeric overflow, schema drift, the
+        SIDE-016 enum-adapt class — surfaces instead of silently rotting
+        futures_options_daily.
+
+        Called on the StatWriter's flush thread, not the SDK callback
+        thread; the counter/summary state it touches is only read+written
+        here and in the throttled summary, so no extra lock is needed (the
+        single background flush thread serializes these updates).
+        """
+        log.error("Failed to upsert stat batch: %s", exc)
+        self.stat_upsert_failures += 1
+        self.last_stat_failure_error = f"{type(exc).__name__}: {exc}"
+        self._maybe_log_stat_upsert_failure_summary()
+
+    def start_stat_flush(self) -> None:
+        """Start the StatWriter's background flush thread.
+
+        Stats rarely fill a batch on their own, so the time-based flush is
+        the primary drain path. Called by ``DatabentoClient.start()``.
+        """
+        self._stat_writer.start_background_flush()
+
+    def stop_stat_writer(self) -> None:
+        """Stop the StatWriter (joins the flush thread + final flush).
+
+        Called by ``DatabentoClient.stop()`` so buffered stats land in Neon
+        before the DB pool is drained on shutdown.
+        """
+        self._stat_writer.stop()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -503,5 +574,48 @@ class OptionsRecordRouter:
                 "drops": drops,
                 "interval_s": round(WINDOW_FILTER_SUMMARY_INTERVAL_S, 1),
                 "stale_threshold": WINDOW_FILTER_STALE_DROP_THRESHOLD,
+            },
+        )
+
+    def _maybe_log_stat_upsert_failure_summary(self) -> None:
+        """Emit a periodic summary of stat-upsert failures (AUD-M26).
+
+        Called from ``_on_stat_write_failure`` (on the StatWriter flush
+        thread) when a buffered stat upsert raises. If any upserts have
+        failed since the last summary AND at least
+        ``STAT_UPSERT_FAILURE_SUMMARY_INTERVAL_S`` seconds have passed, page
+        Sentry with the failure count plus the most recent error string, then
+        reset the counter. Mirrors the SIDE-012 / FINDING 4 throttled summaries
+        (same ``time.time()`` clock, own throttle state) so a persistent upsert
+        failure — numeric overflow, schema drift, the SIDE-016 enum-adapt class
+        — becomes visible in Sentry instead of silently rotting
+        ``futures_options_daily``, without per-row Sentry spam.
+        """
+        if self.stat_upsert_failures == 0:
+            return
+        now = time.time()
+        if (
+            now - self.last_stat_failure_summary_ts
+            < STAT_UPSERT_FAILURE_SUMMARY_INTERVAL_S
+        ):
+            return
+        failures = self.stat_upsert_failures
+        last_error = self.last_stat_failure_error
+        self.stat_upsert_failures = 0
+        self.last_stat_failure_summary_ts = now
+
+        from sentry_setup import capture_message
+
+        capture_message(
+            f"Failed to upsert {failures} ES option stat(s) into "
+            f"futures_options_daily in "
+            f"{STAT_UPSERT_FAILURE_SUMMARY_INTERVAL_S:.0f}s "
+            f"(persistent failure rots the table — check for numeric overflow / "
+            f"schema drift / enum-adapt). Last error: {last_error}",
+            level="warning",
+            context={
+                "failures": failures,
+                "interval_s": round(STAT_UPSERT_FAILURE_SUMMARY_INTERVAL_S, 1),
+                "last_error": last_error,
             },
         )

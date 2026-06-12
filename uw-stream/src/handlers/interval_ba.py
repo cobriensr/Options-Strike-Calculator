@@ -167,6 +167,15 @@ class IntervalBAHandler(OptionTradesHandler):
     # when stale-date chains have actually accumulated across days.
     _CHAINS_PRUNE_THRESHOLD = 5_000
 
+    # Hard cap on the number of alert rows kept in ``self._pending_alerts``
+    # after a flush failure re-queues them. Alerts are a few rows/day, so
+    # this is effectively never hit in normal operation — it only bounds
+    # memory in the pathological case of a multi-hour DB outage where each
+    # flush both fails AND new fires accumulate. When the cap is exceeded
+    # we keep the NEWEST rows (oldest re-queued alerts are the most likely
+    # to already be stale / past their signal window) and drop the rest.
+    _PENDING_ALERTS_MAX = 1_000
+
     def __init__(self) -> None:
         if not self._TICKER:
             raise NotImplementedError(
@@ -452,42 +461,67 @@ class IntervalBAHandler(OptionTradesHandler):
     # Flush — write raw ticks via super(), then any pending alert rows.
     # ------------------------------------------------------------------
     async def _flush(self, rows: list[tuple]) -> int:
-        # Clear pending alerts up front. ``self._fired`` already records
-        # which buckets we tried to alert on, so the bucket can't fire
-        # again even if these rows never land. Trade-off: on DB failure
-        # the alerts in THIS batch are dropped (no retry); the daemon
-        # logs them via _observe and Sentry sees the flush failure.
-        # Bounded memory is the priority over alert durability during
-        # outages — alerts are a few rows/day, ticks are millions.
+        # Detach the alert buffer up front so a concurrent _observe (which
+        # appends to self._pending_alerts) can keep staging fresh fires
+        # while this flush is in flight. On the SUCCESS path the buffer
+        # stays empty (minus whatever _observe added mid-flush); on the
+        # FAILURE path we re-prepend ``pending`` below so it retries.
         pending = self._pending_alerts
         self._pending_alerts = []
-        inserted = await super()._flush(rows)
-        if pending and self._enabled:
-            await db.bulk_insert_ignore_conflict(
-                table=_ALERT_TABLE,
-                columns=_ALERT_COLUMNS,
-                rows=pending,
-                conflict_cols=_ALERT_CONFLICT_COLS,
-            )
-            # Fire-and-forget Web Push notification for each row written.
-            # See docs/superpowers/specs/interval-ba-push-v2-2026-05-12.md.
-            # schedule_notify no-ops silently when VERCEL_NOTIFY_URL or
-            # INTERNAL_NOTIFY_SECRET are unset, so this is safe to call
-            # regardless of v2 activation state. It also holds a strong
-            # ref to the task so the GC doesn't reap it mid-flight.
-            #
-            # Phase 4 confluence-only gate: when settings.interval_ba_
-            # push_confluence_only is True (default), build_payload
-            # returns None for solo fires — those rows still land in
-            # the DB and the in-app feed, but don't ping the phone.
-            confluence_only = bool(settings.interval_ba_push_confluence_only)
-            for row in pending:
-                payload = build_payload(
-                    row, _ALERT_COLUMNS, confluence_only=confluence_only,
+        try:
+            # The inherited raw-tick flush can raise on Neon retry
+            # exhaustion. If it does we MUST NOT drop the alert rows:
+            # self._fired already suppresses re-firing for these buckets,
+            # so a dropped batch is gone for good. Re-queue in the except.
+            inserted = await super()._flush(rows)
+            if pending and self._enabled:
+                # If THIS insert raises, the same except re-queues the
+                # rows for the next flush. _ALERT_CONFLICT_COLS makes the
+                # retry idempotent (ON CONFLICT DO NOTHING), so a partial
+                # success followed by a retry won't double-insert.
+                await db.bulk_insert_ignore_conflict(
+                    table=_ALERT_TABLE,
+                    columns=_ALERT_COLUMNS,
+                    rows=pending,
+                    conflict_cols=_ALERT_CONFLICT_COLS,
                 )
-                if payload is None:
-                    continue
-                schedule_notify(payload)
+                # Fire-and-forget Web Push notification for each row
+                # written. Only reached on a clean insert, so a row is
+                # never notified twice across a failure+retry.
+                # See docs/superpowers/specs/interval-ba-push-v2-2026-05-12.md.
+                # schedule_notify no-ops silently when VERCEL_NOTIFY_URL or
+                # INTERNAL_NOTIFY_SECRET are unset, so this is safe to call
+                # regardless of v2 activation state. It also holds a strong
+                # ref to the task so the GC doesn't reap it mid-flight.
+                #
+                # Phase 4 confluence-only gate: when settings.interval_ba_
+                # push_confluence_only is True (default), build_payload
+                # returns None for solo fires — those rows still land in
+                # the DB and the in-app feed, but don't ping the phone.
+                confluence_only = bool(settings.interval_ba_push_confluence_only)
+                for row in pending:
+                    payload = build_payload(
+                        row, _ALERT_COLUMNS, confluence_only=confluence_only,
+                    )
+                    if payload is None:
+                        continue
+                    schedule_notify(payload)
+        except Exception:
+            # A transient DB outage must NOT permanently drop alerts.
+            # Re-prepend the un-flushed ``pending`` rows AHEAD of anything
+            # _observe staged while we were awaiting, so the next flush
+            # retries them. Do NOT touch self._fired — the dedupe set must
+            # keep mapping these buckets so re-firing stays suppressed; it
+            # is the ON CONFLICT key, not _fired, that makes the retry
+            # idempotent. Bound the buffer so a multi-hour outage can't
+            # grow it without limit: keep the newest _PENDING_ALERTS_MAX
+            # rows (older re-queued alerts are the most likely already
+            # stale past their signal window).
+            requeued = pending + self._pending_alerts
+            if len(requeued) > self._PENDING_ALERTS_MAX:
+                requeued = requeued[-self._PENDING_ALERTS_MAX :]
+            self._pending_alerts = requeued
+            raise
         return inserted
 
     # ------------------------------------------------------------------

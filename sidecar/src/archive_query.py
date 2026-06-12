@@ -24,8 +24,10 @@ Design notes:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,59 @@ from front_month import front_month_cte, session_date_expr
 from logger_setup import log
 
 _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
+
+
+# ---------------------------------------------------------------------------
+# Concurrency bound for archive query execution (SIDE / AUD-M25)
+# ---------------------------------------------------------------------------
+#
+# The /archive/* routes are unauthenticated and run on an unbounded
+# `ThreadingHTTPServer` (one thread per request — see health.py). Each
+# DuckDB connection is capped at `memory_limit='500MB'` PLUS up to ~2 GB
+# of on-disk temp spill, and those caps are PER thread-local connection.
+# So N concurrent /archive/* requests cost N × (500 MB RAM + ~2 GB temp)
+# on a 3-vCPU Railway box with a documented OOM history — a trivial
+# unauthenticated memory-exhaustion DoS.
+#
+# This semaphore bounds how many archive queries may execute DuckDB work
+# at once. Callers that find the cap saturated must NOT block-and-spawn
+# another heavy connection; they acquire the slot non-blocking via
+# `archive_query_slot()` and, on failure, surface `ArchiveBusyError` so
+# the HTTP layer can return 503 instead of piling on more memory pressure.
+#
+# 2 is deliberate: it leaves headroom for /health + the Theta/Databento
+# relay while still allowing one backfill request to overlap a single
+# interactive analyze-context query. Override via env for ops tuning.
+_ARCHIVE_QUERY_CONCURRENCY = int(
+    os.environ.get("ARCHIVE_QUERY_CONCURRENCY", "2")
+)
+_archive_query_semaphore = threading.BoundedSemaphore(_ARCHIVE_QUERY_CONCURRENCY)
+
+
+class ArchiveBusyError(Exception):
+    """Raised when the archive-query concurrency cap is saturated.
+
+    The HTTP layer maps this to 503 (Service Unavailable) rather than
+    spawning another heavy DuckDB connection. Distinct from ValueError
+    (no-data / bad-input, → 404/400) so the dispatch can branch cleanly.
+    """
+
+
+@contextlib.contextmanager
+def archive_query_slot() -> Iterator[None]:
+    """Bound concurrent archive DuckDB execution to `_ARCHIVE_QUERY_CONCURRENCY`.
+
+    Non-blocking acquire: if all slots are taken, raise `ArchiveBusyError`
+    immediately instead of queueing (which would let an attacker pin
+    unbounded request threads waiting behind heavy queries). The slot is
+    released on exit even if the wrapped query raises.
+    """
+    if not _archive_query_semaphore.acquire(blocking=False):
+        raise ArchiveBusyError("archive query concurrency limit reached")
+    try:
+        yield
+    finally:
+        _archive_query_semaphore.release()
 
 
 def _ohlcv_glob(root: Path | None = None) -> str:

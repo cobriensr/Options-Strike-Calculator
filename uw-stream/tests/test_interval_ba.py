@@ -767,7 +767,7 @@ class TestFlush:
         assert [c for c in alert_calls if c["table"] == "interval_ba_alerts"] == []
 
     @pytest.mark.asyncio
-    async def test_flush_clears_buffer_when_alert_insert_fails(
+    async def test_flush_requeues_alerts_when_alert_insert_fails(
         self,
         handler,
         base_payload,
@@ -775,9 +775,11 @@ class TestFlush:
     ):
         """Alert-only failure: raw ticks succeed, alert insert raises.
 
-        _pending_alerts must still be cleared (the dedupe set already
-        marks the bucket so the alert won't reattempt) and the raise
-        must propagate so the base class's _safe_flush captures it.
+        AUD-M29: the alert rows must be RE-QUEUED (not dropped) so a
+        later flush retries them, and the raise must propagate so the
+        base class's _safe_flush captures it. self._fired must NOT be
+        cleared — the dedupe set is what suppresses re-firing; the
+        ON CONFLICT key is what makes the retry idempotent.
         """
         handler._enabled = True
         handler._transform(
@@ -791,6 +793,8 @@ class TestFlush:
         chain = "SPXW260512C07360000"
         bucket_epoch = _BUCKET_ANCHOR_MS // 1000
         assert (chain, bucket_epoch) in handler._fired
+        staged = list(handler._pending_alerts)
+        assert len(staged) == 1
 
         async def raw_ok(*, table, columns, rows, conflict_cols):
             return len(rows)
@@ -810,25 +814,26 @@ class TestFlush:
         with pytest.raises(RuntimeError, match="simulated alert insert"):
             await handler._flush([])
 
-        assert handler._pending_alerts == []
-        # _fired retains the bucket so a follow-up tick in the same
-        # bucket cannot re-emit the dropped alert.
+        # Rows retained for retry — NOT dropped.
+        assert handler._pending_alerts == staged
+        # _fired still maps the bucket so a follow-up tick in the same
+        # bucket can't re-emit; the retry will be the ON CONFLICT key.
         assert (chain, bucket_epoch) in handler._fired
 
     @pytest.mark.asyncio
-    async def test_flush_clears_buffer_when_raw_tick_insert_fails(
+    async def test_flush_requeues_alerts_when_raw_tick_insert_fails(
         self,
         handler,
         base_payload,
         monkeypatch,
     ):
-        """Raw-tick failure with alerts pending: alerts cleared anyway.
+        """Raw-tick failure with alerts pending: alerts RE-QUEUED.
 
-        Up-front clear guarantees the buffer stays bounded even when
-        the inherited raw-tick path raises — the alerts in this batch
-        are dropped (logged via _observe; the dedupe set keeps
-        retry-fires suppressed).
+        AUD-M29: a transient raw-tick (Neon) outage must not permanently
+        drop the alert rows. They are re-prepended for the next flush;
+        self._fired is left intact so re-firing stays suppressed.
         """
+        handler._enabled = True
         handler._transform(
             _payload(
                 base_payload,
@@ -837,7 +842,10 @@ class TestFlush:
                 size=888,
             ),
         )
-        assert len(handler._pending_alerts) == 1
+        staged = list(handler._pending_alerts)
+        assert len(staged) == 1
+        chain = "SPXW260512C07360000"
+        bucket_epoch = _BUCKET_ANCHOR_MS // 1000
 
         async def boom(**_kwargs):
             raise RuntimeError("simulated raw-tick failure")
@@ -849,7 +857,77 @@ class TestFlush:
 
         with pytest.raises(RuntimeError, match="simulated raw-tick"):
             await handler._flush([("dummy",)])
+
+        # Alert rows retained for the next flush, dedupe set untouched.
+        assert handler._pending_alerts == staged
+        assert (chain, bucket_epoch) in handler._fired
+
+    @pytest.mark.asyncio
+    async def test_requeued_alerts_emit_on_subsequent_successful_flush(
+        self,
+        handler,
+        base_payload,
+        monkeypatch,
+    ):
+        """AUD-M29 end-to-end: flush raises once, then succeeds.
+
+        Pins the whole point of the fix: when the underlying flush raises,
+        the pending alert rows are retained (re-queued) and NOT marked as
+        a permanent drop, so the next flush emits them to the DB.
+        """
+        handler._enabled = True
+        handler._transform(
+            _payload(
+                base_payload,
+                executed_at_ms=_BUCKET_ANCHOR_MS + 60_000,
+                price="4.60",
+                size=888,
+            ),
+        )
+        staged = list(handler._pending_alerts)
+        assert len(staged) == 1
+
+        # handlers.option_trades.db and handlers.interval_ba.db are the
+        # SAME module object (both ``import db``), so a single dispatch
+        # mock keyed on ``table`` distinguishes the raw-tick write
+        # (ws_option_trades) from the alert write (interval_ba_alerts).
+        # The raw-tick insert raises on the FIRST flush, then succeeds —
+        # models a transient Neon outage that recovers by the next batch.
+        raw_calls = {"n": 0}
+        alert_inserts: list[list[tuple]] = []
+
+        async def flaky_insert(*, table, columns, rows, conflict_cols):
+            if table == "ws_option_trades":
+                raw_calls["n"] += 1
+                if raw_calls["n"] == 1:
+                    raise RuntimeError("transient Neon outage")
+                return len(rows)
+            alert_inserts.append(list(rows))
+            return len(rows)
+
+        monkeypatch.setattr(
+            "handlers.option_trades.db.bulk_insert_ignore_conflict",
+            flaky_insert,
+        )
+        monkeypatch.setattr(
+            "handlers.interval_ba.db.bulk_insert_ignore_conflict",
+            flaky_insert,
+        )
+
+        # First flush: raw-tick insert raises BEFORE the alert insert, so
+        # the alert never reached the DB and must be re-queued.
+        with pytest.raises(RuntimeError, match="transient Neon outage"):
+            await handler._flush([("dummy",)])
+        assert handler._pending_alerts == staged
+        assert alert_inserts == []  # alert insert never ran
+
+        # Second flush: raw-tick insert succeeds, so the re-queued alert
+        # finally lands in the DB and the buffer drains.
+        inserted = await handler._flush([("dummy",)])
+        assert inserted == 1
         assert handler._pending_alerts == []
+        assert len(alert_inserts) == 1
+        assert alert_inserts[0] == staged
 
 
 # ----------------------------------------------------------------------

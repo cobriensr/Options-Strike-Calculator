@@ -335,6 +335,9 @@ class TestHandleStat:
         rec.ts_event = 1_780_000_000_000_000_000
 
         router.handle_stat(rec)
+        # AUD-M27: handle_stat enqueues to the off-thread StatWriter; flush
+        # forces the buffered upsert so we can assert on the call.
+        router._stat_writer.flush()
         kwargs = mocks["upsert_options_daily"].call_args.kwargs
         assert "settlement" in kwargs
         assert kwargs["is_final"] is True
@@ -353,6 +356,7 @@ class TestHandleStat:
         rec.ts_event = 1_780_000_000_000_000_000
 
         router.handle_stat(rec)
+        router._stat_writer.flush()  # AUD-M27: drain the off-thread writer
         kwargs = mocks["upsert_options_daily"].call_args.kwargs
         assert kwargs["open_interest"] == 1234
         assert "is_final" not in kwargs
@@ -422,9 +426,83 @@ class TestHandleStat:
         rec.ts_event = 1_781_562_600_000_000_000
 
         router.handle_stat(rec)
+        router._stat_writer.flush()  # AUD-M27: drain the off-thread writer
         passed_trade_date = mocks["upsert_options_daily"].call_args.args[1]
         assert passed_trade_date == date(2026, 6, 16)
         assert passed_trade_date != date.today()
+
+
+# ---------------------------------------------------------------------------
+# AUD-M27 — option stats are ENQUEUED to the off-thread StatWriter, not
+# upserted synchronously on the SDK callback thread.
+# ---------------------------------------------------------------------------
+
+
+class TestAudM27StatEnqueue:
+    def _preload(self, router: OptionsRecordRouter) -> None:
+        router.option_definitions[7] = {
+            "strike": 5800.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+
+    def _make_stat(self) -> MagicMock:
+        rec = MagicMock()
+        rec.instrument_id = 7
+        rec.stat_type = STAT_TYPE_OPEN_INTEREST
+        rec.stat_value = 0
+        rec.stat_quantity = 4321
+        rec.ts_event = 1_780_000_000_000_000_000
+        return rec
+
+    def test_stat_is_buffered_not_synchronously_upserted(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """handle_stat must enqueue the stat to the StatWriter buffer and
+        NOT call upsert_options_daily on the callback thread."""
+        router, mocks = router_setup
+        self._preload(router)
+
+        router.handle_stat(self._make_stat())
+
+        mocks["upsert_options_daily"].assert_not_called()
+        assert len(router._stat_writer._buffer) == 1
+        buffered = router._stat_writer._buffer[0]
+        assert buffered.underlying == "ES"
+        assert buffered.option_type == "C"
+        assert buffered.kwargs == {"open_interest": 4321}
+
+    def test_buffered_stat_drains_on_flush(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """Flushing the StatWriter drains the buffered stat through the
+        idempotent upsert_options_daily with the original kwargs."""
+        router, mocks = router_setup
+        self._preload(router)
+
+        router.handle_stat(self._make_stat())
+        router._stat_writer.flush()
+
+        mocks["upsert_options_daily"].assert_called_once()
+        assert router._stat_writer._buffer == []
+        kwargs = mocks["upsert_options_daily"].call_args.kwargs
+        assert kwargs["open_interest"] == 4321
+
+    def test_stop_stat_writer_flushes_buffer(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """stop_stat_writer drains any buffered stats so they land in Neon
+        before the DB pool is torn down on shutdown."""
+        router, mocks = router_setup
+        self._preload(router)
+
+        router.handle_stat(self._make_stat())
+        assert len(router._stat_writer._buffer) == 1
+
+        router.stop_stat_writer()
+
+        mocks["upsert_options_daily"].assert_called_once()
+        assert router._stat_writer._buffer == []
 
 
 # ---------------------------------------------------------------------------
@@ -552,6 +630,114 @@ class TestWindowFilterSummaryThrottle:
         router._maybe_log_window_filter_summary()
         assert mocks["capture_message"].call_count == 1
         assert router.window_filter_drops == WINDOW_FILTER_STALE_DROP_THRESHOLD + 10
+
+
+# ---------------------------------------------------------------------------
+# Stat-upsert-failure summary throttling (AUD-M26)
+# ---------------------------------------------------------------------------
+
+
+class TestStatUpsertFailureSummaryThrottle:
+    """AUD-M26: a stat upsert failure must page Sentry via the throttled
+    summary, not just a log line. Verifies the capture fires on failure and
+    that repeated failures within the interval throttle to one capture."""
+
+    def _preload(self, router: OptionsRecordRouter) -> None:
+        router.option_definitions[7] = {
+            "strike": 5800.0,
+            "option_type": "C",
+            "expiry": date(2030, 1, 1),
+        }
+
+    def _make_stat_record(self, quantity: int = 1234) -> MagicMock:
+        rec = MagicMock()
+        rec.instrument_id = 7
+        rec.stat_type = STAT_TYPE_OPEN_INTEREST
+        rec.stat_value = 0
+        rec.stat_quantity = quantity
+        rec.ts_event = 1_780_000_000_000_000_000
+        return rec
+
+    def test_summary_does_not_fire_when_zero_failures(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        router, mocks = router_setup
+        router._maybe_log_stat_upsert_failure_summary()
+        mocks["capture_message"].assert_not_called()
+
+    def test_upsert_failure_pages_sentry_with_error_text(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """A raising upsert is counted AND surfaced via capture_message
+        (fires immediately because last_stat_failure_summary_ts = 0). The
+        underlying error string is carried into the message + context so the
+        root cause (overflow / schema drift / enum-adapt) is visible."""
+        router, mocks = router_setup
+        self._preload(router)
+        mocks["upsert_options_daily"].side_effect = ValueError(
+            "numeric field overflow"
+        )
+
+        # AUD-M27: handle_stat enqueues; the upsert (and thus the failure)
+        # runs when the StatWriter drains. flush() surfaces it through
+        # _on_stat_write_failure, preserving the AUD-M26 counter + summary.
+        router.handle_stat(self._make_stat_record())
+        router._stat_writer.flush()
+
+        mocks["capture_message"].assert_called_once()
+        msg = mocks["capture_message"].call_args.args[0]
+        assert "futures_options_daily" in msg
+        assert "numeric field overflow" in msg
+        kwargs = mocks["capture_message"].call_args.kwargs
+        assert kwargs["level"] == "warning"
+        assert kwargs["context"]["failures"] == 1
+        assert "numeric field overflow" in kwargs["context"]["last_error"]
+        # Counter reset after the summary fired.
+        assert router.stat_upsert_failures == 0
+
+    def test_repeated_failures_throttle_to_one_summary(
+        self, router_setup: tuple[OptionsRecordRouter, dict]
+    ) -> None:
+        """Multiple failed flush cycles within
+        STAT_UPSERT_FAILURE_SUMMARY_INTERVAL_S produce only one capture —
+        own throttle state, no per-batch Sentry spam.
+
+        AUD-M27: the upsert now runs on a StatWriter drain, so each failed
+        flush() is one failure increment (the writer re-queues the rows on
+        failure, but the AUD-M26 counter is driven once per failed batch via
+        _on_stat_write_failure). We avoid re-queue double-counting by giving
+        each flush its own fresh writer so the throttle behavior — not the
+        re-queue mechanics — is what's under test.
+        """
+        router, mocks = router_setup
+        self._preload(router)
+        mocks["upsert_options_daily"].side_effect = ValueError("boom")
+
+        # First failed flush: fires immediately (last_stat_failure_summary_ts
+        # = 0) and resets the counter.
+        router.handle_stat(self._make_stat_record())
+        router._stat_writer.flush()
+        assert mocks["capture_message"].call_count == 1
+
+        # Pin the throttle clock to "now" so subsequent failures don't page.
+        import time as real_time
+
+        router.last_stat_failure_summary_ts = real_time.time()
+
+        # Drive 5 more failed flush cycles. Use a fresh writer each time so a
+        # re-queued row from the prior failure doesn't inflate the count —
+        # we're testing the throttle, which must hold the capture at one.
+        from stat_writer import StatWriter
+
+        for i in range(5):
+            router._stat_writer = StatWriter(
+                on_write_failure=router._on_stat_write_failure
+            )
+            router.handle_stat(self._make_stat_record(quantity=1000 + i))
+            router._stat_writer.flush()
+
+        assert mocks["capture_message"].call_count == 1
+        assert router.stat_upsert_failures == 5
 
 
 # ---------------------------------------------------------------------------

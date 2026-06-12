@@ -555,3 +555,187 @@ async def test_reconcile_subscriptions_returns_on_connection_closed(
 
     # Must complete without raising — the loop catches ConnectionClosed.
     await connector._reconcile_subscriptions(_ClosedWS())
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# AUD-M28: over-cap-shed defense — clean-close storm alerting + a sub-threshold
+# session must NOT reset the reconnect backoff.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_clean_close_storm_trips_alert(monkeypatch) -> None:
+    """Repeated rapid CLEAN closes must trip the storm alert.
+
+    A provider shedding an over-cap connection (the 50-channel-cap incident
+    class) accepts the joins and then sends a graceful close — no exception.
+    ``_connect_once`` returns cleanly, so before this fix the clean-close
+    branch in ``run()`` recorded the reconnect but never storm-checked, and
+    the incident stayed silent. This drives that branch ``threshold`` times
+    and asserts ``_maybe_alert_storm`` fires.
+    """
+    import connector as connector_mod
+
+    # Single shard → threshold is the bare base.
+    class _FakeSettings:
+        channel_shards: ClassVar[list[list[str]]] = [["a"]]
+        ws_url = "wss://example/socket"
+
+    monkeypatch.setattr(connector_mod, "settings", _FakeSettings())
+
+    captured: list[str] = []
+    monkeypatch.setattr(
+        connector_mod,
+        "capture_message",
+        lambda msg, **_kw: captured.append(msg),
+    )
+
+    # No real backoff sleeps.
+    async def _no_sleep(_d: float) -> None:
+        return None
+
+    monkeypatch.setattr(connector_mod.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 0.0)
+
+    threshold = connector_mod._RECONNECT_STORM_THRESHOLD
+    # _connect_once returns cleanly (no raise) `threshold` times — the
+    # over-cap-shed pattern — then cancels to end the run loop.
+    calls = 0
+
+    async def _clean_close(self) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > threshold:
+            raise asyncio.CancelledError()
+        await asyncio.sleep(0)  # clean return → graceful-close branch
+
+    monkeypatch.setattr(Connector, "_connect_once", _clean_close)
+
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=1))
+
+    state.reconnect_times.clear()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await connector.run()
+        # The clean-close branch storm-checked on every iteration and tripped
+        # once the count crossed the threshold.
+        assert captured == ["uw-stream reconnect storm"], (
+            "rapid clean closes must trip the storm alert from the clean-close "
+            f"branch, but capture_message was called with: {captured}"
+        )
+    finally:
+        state.reconnect_times.clear()
+
+
+@pytest.mark.parametrize(
+    ("min_healthy_s", "expect_established", "label"),
+    [
+        # Threshold far above any real elapsed time → the (near-instant) session
+        # is sub-threshold → a flap → must NOT count as established.
+        (1.0e9, False, "flap"),
+        # Threshold below any real elapsed time → any session clears it →
+        # healthy → must count as established.
+        (-1.0, True, "healthy"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_connect_once_marks_established_only_after_healthy_duration(
+    monkeypatch, min_healthy_s: float, expect_established: bool, label: str
+) -> None:
+    """``_established`` keys on session DURATION, not subscribe success.
+
+    Drives the REAL ``_connect_once`` (the over-cap-shed pattern: subscribe
+    accepts the joins, then the socket closes). The healthy threshold is moved
+    relative to the real elapsed time rather than stubbing the monotonic clock
+    (asyncio internals also read ``time.monotonic``, so a hard 2-value stub is
+    fragile). A sub-threshold session must leave ``_established`` False so
+    ``run`` escalates the backoff on a flap; a healthy session must flip it True.
+    """
+    import connector as connector_mod
+
+    monkeypatch.setattr(connector_mod, "_MIN_HEALTHY_SESSION_S", min_healthy_s)
+
+    class _ConnCtx:
+        async def __aenter__(self):
+            return _AsyncIterableWS([])  # empty → receive loop exits at once
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def _fake_connect(*_args, **_kwargs):
+        return _ConnCtx()
+
+    async def _ok_subscribe(_ws):
+        return None  # over-cap-shed accepts the joins...
+
+    monkeypatch.setattr(connector_mod.websockets, "connect", _fake_connect)
+
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10))
+    monkeypatch.setattr(connector, "_subscribe_all", _ok_subscribe)
+
+    assert connector._established is False
+    await connector._connect_once()  # ...then the socket closes
+
+    assert connector._established is expect_established, (
+        f"a {label} session should set _established={expect_established} "
+        "(subscribe success alone must not count a flap as healthy)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sub_threshold_flaps_keep_escalating_backoff(monkeypatch) -> None:
+    """Repeated sub-threshold sessions must keep escalating backoff (no reset).
+
+    ``run`` keys the backoff reset on ``_established``. A flap leaves it False,
+    so the backoff must keep doubling across consecutive flaps — the defense
+    against an over-cap-shed ~1s tight reconnect loop — and reset only when a
+    session finally proves healthy.
+
+    Sequence: iter1 flap (escalate 1→2), iter2 flap (escalate 2→4), iter3
+    healthy (reset to 1), iter4 cancels. The recorded sleeps pin it.
+    """
+    import connector as connector_mod
+
+    sleeps: list[float] = []
+
+    async def _record_sleep(d: float) -> None:
+        sleeps.append(d)
+
+    monkeypatch.setattr(connector_mod.asyncio, "sleep", _record_sleep)
+    monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 1.0)
+    monkeypatch.setattr(connector_mod, "_MAX_BACKOFF_S", 60.0)
+
+    calls = 0
+
+    async def _conn(self) -> None:
+        nonlocal calls
+        calls += 1
+        if calls in (1, 2):
+            # Flap: subscribed then dropped before the healthy threshold, so
+            # the real _connect_once would leave _established False. Simulate
+            # that, then raise ConnectionClosed like a real socket drop.
+            self._established = False
+            raise websockets.ConnectionClosed(None, None)
+        if calls == 3:
+            # Healthy session: stayed up past the threshold → _established True.
+            self._established = True
+            raise websockets.ConnectionClosed(None, None)
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(Connector, "_connect_once", _conn)
+
+    connector = Connector(
+        channels=["a"], receive_queue=asyncio.Queue(maxsize=10)
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await connector.run()
+
+    # iter1 flap: not established → sleep(1.0), escalate to 2.0
+    # iter2 flap: still not established → sleep(2.0), escalate to 4.0
+    # iter3 healthy: established → reset to 1.0, sleep(1.0), no escalation
+    # iter4: CancelledError before any sleep
+    assert sleeps == [1.0, 2.0, 1.0], (
+        "sub-threshold flaps must keep escalating backoff (1→2→4); only a "
+        f"healthy session resets it to 1.0. recorded sleeps: {sleeps}"
+    )

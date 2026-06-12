@@ -202,41 +202,48 @@ class HealthHandler(BaseHTTPRequestHandler):
     seed_archive: Callable[[], dict[str, Any]] | None = None
     seed_is_busy: Callable[[], bool] | None = None
 
+    # Archive route prefix → bound, heavy DuckDB handler. Ordered by
+    # specificity — longer/more-specific prefixes MUST come before shorter
+    # ones or they get swallowed (e.g. `/archive/day-summary-prediction`
+    # would match `/archive/day-summary` if that route check ran first).
+    # Every entry runs a DuckDB query, so the whole group is gated behind
+    # `archive_query_slot()` in do_GET (AUD-M25 concurrency bound).
+    _ARCHIVE_ROUTES: tuple[tuple[str, str], ...] = (
+        ("/archive/es-range", "_handle_archive_es_range"),
+        ("/archive/analog-days", "_handle_archive_analog_days"),
+        (
+            "/archive/day-summary-prediction-batch",
+            "_handle_archive_day_summary_prediction_batch",
+        ),
+        (
+            "/archive/day-summary-prediction",
+            "_handle_archive_day_summary_prediction",
+        ),
+        ("/archive/day-summary-batch", "_handle_archive_day_summary_batch"),
+        ("/archive/day-summary", "_handle_archive_day_summary"),
+        ("/archive/day-features-batch", "_handle_archive_day_features_batch"),
+        ("/archive/day-features", "_handle_archive_day_features"),
+        (
+            "/archive/tbbo-day-microstructure",
+            "_handle_archive_tbbo_day_microstructure",
+        ),
+        ("/archive/tbbo-ofi-percentile", "_handle_archive_tbbo_ofi_percentile"),
+    )
+
     def do_GET(self) -> None:
-        # Route dispatch ordered by specificity — longer/more-specific
-        # prefixes MUST come before shorter ones or they get swallowed.
-        # e.g. `/archive/day-summary-prediction` would match
-        # `/archive/day-summary` if that route check ran first.
-        if self.path.startswith("/archive/es-range"):
-            self._handle_archive_es_range()
-            return
-        if self.path.startswith("/archive/analog-days"):
-            self._handle_archive_analog_days()
-            return
-        if self.path.startswith("/archive/day-summary-prediction-batch"):
-            self._handle_archive_day_summary_prediction_batch()
-            return
-        if self.path.startswith("/archive/day-summary-prediction"):
-            self._handle_archive_day_summary_prediction()
-            return
-        if self.path.startswith("/archive/day-summary-batch"):
-            self._handle_archive_day_summary_batch()
-            return
-        if self.path.startswith("/archive/day-summary"):
-            self._handle_archive_day_summary()
-            return
-        if self.path.startswith("/archive/day-features-batch"):
-            self._handle_archive_day_features_batch()
-            return
-        if self.path.startswith("/archive/day-features"):
-            self._handle_archive_day_features()
-            return
-        if self.path.startswith("/archive/tbbo-day-microstructure"):
-            self._handle_archive_tbbo_day_microstructure()
-            return
-        if self.path.startswith("/archive/tbbo-ofi-percentile"):
-            self._handle_archive_tbbo_ofi_percentile()
-            return
+        # /archive/* routes all run heavy, unbounded-memory DuckDB queries.
+        # Bound their concurrency so N unauthenticated requests can't each
+        # spawn a 500 MB + ~2 GB-temp DuckDB connection and OOM the box
+        # (AUD-M25). When the cap is saturated, return 503 instead of
+        # piling on another connection. The slot wraps the FULL handler so
+        # the bound also covers the query the handler dispatches; cheap
+        # input validation inside the handler runs under the slot too, but
+        # that cost is negligible next to the DuckDB scan it protects.
+        for prefix, handler_name in self._ARCHIVE_ROUTES:
+            if self.path.startswith(prefix):
+                self._dispatch_bounded_archive(handler_name)
+                return
+
         if self.path == "/takeit/health":
             self._handle_takeit_health()
             return
@@ -453,6 +460,30 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(body, default=str).encode())
+
+    def _dispatch_bounded_archive(self, handler_name: str) -> None:
+        """Run an /archive/* handler under the concurrency-bound slot.
+
+        Acquires a slot from `archive_query.archive_query_slot()` (a
+        non-blocking semaphore, cap `_ARCHIVE_QUERY_CONCURRENCY`). If the
+        cap is saturated, returns 503 with a Retry-After hint instead of
+        spawning another heavy DuckDB connection (AUD-M25). The slot is
+        held for the whole handler so it covers the DuckDB query the
+        handler runs, and released even if the handler raises.
+        """
+        try:
+            with _aq().archive_query_slot():
+                getattr(self, handler_name)()
+        except _aq().ArchiveBusyError:
+            # Cap saturated — shed load. 503 + Retry-After tells the Vercel
+            # caller to back off rather than treating it as a hard failure.
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Retry-After", "1")
+            self.end_headers()
+            self.wfile.write(
+                json.dumps({"error": "archive busy, retry shortly"}).encode()
+            )
 
     def _handle_archive_es_range(self) -> None:
         """GET /archive/es-range?date=YYYY-MM-DD → ES day summary from archive.

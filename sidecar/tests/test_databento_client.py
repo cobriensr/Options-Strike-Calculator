@@ -160,6 +160,11 @@ class TestShutdownBarrier:
         rec = _make_bar_record()
         with patch("db.upsert_futures_bar") as upsert_mock:
             client._handle_ohlcv(rec)
+            # AUD-M27: the bar is enqueued to the off-thread BarWriter, not
+            # upserted synchronously on the SDK callback thread. The upsert
+            # only fires when the writer drains.
+            upsert_mock.assert_not_called()
+            client._bar_writer.flush()
             upsert_mock.assert_called_once()
 
     def test_handle_trade_early_returns_when_shutting_down(
@@ -946,6 +951,10 @@ class TestStatTypeToKwargTable:
             rec.ts_event = 1_780_000_000_000_000_000
             client._handle_stat(rec)
 
+            # AUD-M27: handle_stat now enqueues to the off-thread StatWriter;
+            # flush forces the buffered upsert so we can assert on it.
+            client._router._stat_writer.flush()
+
             client._test_upsert_options_daily.assert_called_once()
             call_kwargs = client._test_upsert_options_daily.call_args.kwargs
             assert kwarg_name in call_kwargs, (
@@ -991,6 +1000,8 @@ class TestStatTypeToKwargTable:
         rec.stat_flags = 1  # final
         rec.ts_event = 1_780_000_000_000_000_000
         client._handle_stat(rec)
+        # AUD-M27: drain the off-thread StatWriter so the upsert fires.
+        client._router._stat_writer.flush()
 
         call_kwargs = client._test_upsert_options_daily.call_args.kwargs
         assert call_kwargs["is_final"] is True
@@ -1153,6 +1164,9 @@ class TestHandleOhlcvFromClient:
 
         with patch("db.upsert_futures_bar") as upsert_mock:
             client._handle_ohlcv_from_client(rec, fake_client)
+            # AUD-M27: enqueued, not synchronously upserted. Drain to assert.
+            upsert_mock.assert_not_called()
+            client._bar_writer.flush()
             upsert_mock.assert_called_once()
             args = upsert_mock.call_args.args
             assert args[0] == "ES"  # symbol
@@ -1203,14 +1217,21 @@ class TestHandleOhlcvFromClient:
             upsert_mock.assert_not_called()
 
     def test_handles_db_exception_silently(self, client: DatabentoClient) -> None:
-        """A DB blip in upsert_futures_bar must be caught and logged, not
-        propagated up to the SDK callback (which would tear the stream)."""
+        """A DB blip on the bar upsert must never tear the SDK callback.
+
+        AUD-M27: the bar is enqueued (which cannot raise) and the upsert
+        runs on the BarWriter's drain. Even forcing the drain inline with a
+        raising upsert must not propagate — BatchedWriter captures the
+        exception to Sentry and bounded-re-queues the row.
+        """
         fake_client = MagicMock()
         fake_client.symbology_map = {7: "ESM6"}
         rec = _make_bar_record(iid=7)
         with patch("db.upsert_futures_bar", side_effect=RuntimeError("boom")):
-            # Must not raise
+            # Enqueue must not raise.
             client._handle_ohlcv_from_client(rec, fake_client)
+            # Draining with a raising upsert must also not propagate.
+            client._bar_writer.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -1637,3 +1658,74 @@ class TestBlockForClose:
     def test_block_is_noop_when_client_none(self, client: DatabentoClient) -> None:
         client._client = None
         client.block_for_close()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# AUD-M27 — bars/stats are ENQUEUED off the SDK callback thread, not written
+# synchronously. The pool-borrow + retry that head-of-line-blocked TBBO +
+# options ingestion now runs on a background drain thread.
+# ---------------------------------------------------------------------------
+
+
+class TestAudM27BarEnqueue:
+    def test_bar_is_buffered_not_synchronously_upserted(
+        self, client: DatabentoClient
+    ) -> None:
+        """_handle_ohlcv must enqueue the bar to the BarWriter buffer and
+        NOT call upsert_futures_bar on the callback thread. The buffer holds
+        the row until a flush/background-drain fires."""
+        rec = _make_bar_record(iid=1, close_raw=5800_000_000_000)
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv(rec)
+            # No synchronous DB write on the callback thread.
+            upsert_mock.assert_not_called()
+            # The bar is sitting in the writer's buffer.
+            assert len(client._bar_writer._buffer) == 1
+            buffered = client._bar_writer._buffer[0]
+            assert buffered.symbol == "ES"
+            assert float(buffered.close) == pytest.approx(5800.0)
+
+    def test_buffered_bar_drains_on_flush(self, client: DatabentoClient) -> None:
+        """Flushing the BarWriter drains the buffered bar through the
+        idempotent upsert_futures_bar."""
+        rec = _make_bar_record(iid=1, close_raw=5800_000_000_000)
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv(rec)
+            client._bar_writer.flush()
+            upsert_mock.assert_called_once()
+            assert client._bar_writer._buffer == []
+            args = upsert_mock.call_args.args
+            assert args[0] == "ES"
+
+    def test_from_client_bar_is_buffered_not_synchronous(
+        self, client: DatabentoClient
+    ) -> None:
+        """The alternate _handle_ohlcv_from_client path also enqueues."""
+        fake_client = MagicMock()
+        fake_client.symbology_map = {7: "ESM6"}
+        rec = _make_bar_record(iid=7, close_raw=5800_000_000_000)
+        with patch("db.upsert_futures_bar") as upsert_mock:
+            client._handle_ohlcv_from_client(rec, fake_client)
+            upsert_mock.assert_not_called()
+            assert len(client._bar_writer._buffer) == 1
+
+    def test_stop_flushes_bar_and_stat_writers(
+        self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """stop() must drain both off-thread writers so buffered bars/stats
+        land in Neon before the pool is torn down."""
+        monkeypatch.setattr("time.sleep", lambda _s: None)
+        # Keep the fixture's _client (its symbology_map resolves iid=1 -> ES);
+        # stop() will null it out after the barrier.
+
+        # Buffer a bar without flushing.
+        rec = _make_bar_record(iid=1, close_raw=5800_000_000_000)
+        with patch("db.upsert_futures_bar") as bar_upsert:
+            client._handle_ohlcv(rec)
+            assert len(client._bar_writer._buffer) == 1
+
+            client.stop()
+
+            # stop() joined the flush thread + did a final flush.
+            bar_upsert.assert_called_once()
+            assert client._bar_writer._buffer == []

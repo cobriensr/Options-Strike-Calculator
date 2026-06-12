@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 
 import orjson
 import websockets
@@ -35,6 +36,16 @@ _PING_TIMEOUT_S = 20.0
 
 # Threshold for raising a Sentry warning if reconnects pile up.
 _RECONNECT_STORM_THRESHOLD = 5
+
+# A session must stay up at least this long to count as "healthy" and reset
+# the reconnect backoff. Mirrors the Databento sidecar's MIN_HEALTHY_SESSION_S
+# (sidecar/src/main.py). Subscribe succeeding is NOT enough: a provider shedding
+# an over-cap connection (the 50-channel-cap incident class) accepts the joins
+# and then closes the socket ~immediately. If we reset backoff on subscribe
+# success alone, those sub-second sessions form a ~1s tight reconnect loop with
+# no escalation — exactly the silent flap this guards against. Genuinely healthy
+# sessions stream for minutes/hours and clear this bar trivially.
+_MIN_HEALTHY_SESSION_S = 60.0
 
 # Inter-join pacing. With the Lottery universe expanded across
 # option_trades / net_flow / gex_strike_expiry shorthands we send ~150
@@ -80,19 +91,21 @@ class Connector:
         # receive task can never block on JSON parsing or handler
         # dispatch — those happen on the router task.
         self._receive_queue = receive_queue
-        # Set True by ``_connect_once`` once a connection is fully
-        # established (subscribe succeeded, ws_connected flipped). ``run``
-        # reads it to decide whether the next reconnect resets the backoff
-        # (healthy session dropped → start fresh at 1s) or escalates it
-        # (string of connect failures with no healthy session between).
+        # Set True by ``_connect_once`` only once a connection has stayed up
+        # for at least ``_MIN_HEALTHY_SESSION_S`` (subscribe success alone is
+        # NOT enough — see that constant). ``run`` reads it to decide whether
+        # the next reconnect resets the backoff (healthy session dropped →
+        # start fresh at 1s) or escalates it (connect failures, or sub-threshold
+        # flaps, with no healthy session between).
         self._established = False
 
     async def run(self) -> None:
         """Run forever, reconnecting as needed."""
         backoff = _INITIAL_BACKOFF_S
         while True:
-            # Reset per iteration; ``_connect_once`` flips it to True only
-            # once the connection is fully established (subscribe ok).
+            # Reset per iteration; ``_connect_once`` flips it to True only if
+            # the session stayed up at least ``_MIN_HEALTHY_SESSION_S`` (subscribe
+            # success alone is not enough — see _connect_once / that constant).
             self._established = False
             try:
                 await self._connect_once()
@@ -104,6 +117,12 @@ class Connector:
                 state.set_connection(self.name, False)
                 state.record_reconnect()
                 log.info("WS closed cleanly, reconnecting after grace")
+                # Storm-check the clean-close path too. A provider shedding an
+                # over-cap connection sends a CLEAN close (no exception), so a
+                # rapid succession of clean closes is exactly how that incident
+                # class presents — and must trip the same alert the exception
+                # branches do, not slip through silently.
+                self._maybe_alert_storm()
             except (
                 websockets.ConnectionClosed,
                 # Handshake-rejection variants (HTTP 503, 502, 504, etc. on the
@@ -142,16 +161,17 @@ class Connector:
             # Backoff schedule, applied uniformly across the clean-close
             # and every exception branch:
             #
-            # - If THIS attempt established a healthy connection (subscribe
-            #   succeeded, ``ws_connected`` flipped True), reset to the
-            #   initial 1s so the NEXT reconnect starts fresh. A connection
-            #   that streamed for hours and then dropped should not inherit
-            #   an escalated backoff left over from an earlier rough start.
-            #   This mirrors UW's own reference consumer, which resets
-            #   backoff to 1 immediately after the join frames go out.
-            # - Otherwise (connect/subscribe failed with no healthy session
-            #   in between), sleep the current backoff and then escalate it
-            #   toward the cap — the original sustained-outage behavior.
+            # - If THIS attempt established a HEALTHY connection (stayed up at
+            #   least ``_MIN_HEALTHY_SESSION_S``), reset to the initial 1s so
+            #   the NEXT reconnect starts fresh. A connection that streamed for
+            #   hours and then dropped should not inherit an escalated backoff
+            #   left over from an earlier rough start.
+            # - Otherwise (connect/subscribe failed, OR a sub-threshold flap
+            #   that subscribed and then dropped near-instantly), sleep the
+            #   current backoff and then escalate it toward the cap. This is
+            #   the sustained-outage behavior AND the defense against an
+            #   over-cap-shed tight reconnect loop: escalation keeps us off a
+            #   ~1s hammer when a provider repeatedly accepts joins then closes.
             if self._established:
                 backoff = _INITIAL_BACKOFF_S
             await asyncio.sleep(backoff)
@@ -167,6 +187,12 @@ class Connector:
         a typo'd channel name or server-side error frame causes the
         join to fail. The socket would stay open with no data flowing
         and the daemon would report green until the next disconnect.
+
+        ``self._established`` (which ``run`` keys the backoff-reset on) is set
+        ONLY in the receive-loop ``finally``, and only if the session stayed up
+        at least ``_MIN_HEALTHY_SESSION_S``. Subscribe succeeding does not count
+        a session as healthy: an over-cap-shed connection accepts the joins and
+        then closes immediately, and we must NOT reset backoff for those flaps.
         """
         log.info(
             "connecting to WS",
@@ -196,10 +222,10 @@ class Connector:
                 )
                 raise
             state.set_connection(self.name, True)
-            # Mark this attempt as a healthy session so ``run`` resets the
-            # reconnect backoff after the socket eventually drops.
-            self._established = True
             log.info("WS connected, awaiting messages", extra={"shard": self.name})
+            # Monotonic clock so a wall-clock adjustment (NTP step) can't make a
+            # short session look healthy or vice-versa.
+            session_start = time.monotonic()
             # Self-healing re-subscribe runs concurrently with the receive loop
             # on the same socket (websockets >=12 allows concurrent send+recv).
             # Cancelled in the finally when the socket drops — the next connect
@@ -241,6 +267,14 @@ class Connector:
                             )
                         state.receive_queue_drops += 1
             finally:
+                # Treat the session as healthy (→ reset backoff in ``run``)
+                # ONLY if it stayed up long enough. Runs on both the clean
+                # ``async for`` exit and an exception unwinding through here
+                # (e.g. ConnectionClosed), so a sub-threshold flap that
+                # subscribed then dropped near-instantly leaves _established
+                # False and the backoff escalates.
+                session_dur = time.monotonic() - session_start
+                self._established = session_dur >= _MIN_HEALTHY_SESSION_S
                 reconcile_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await reconcile_task

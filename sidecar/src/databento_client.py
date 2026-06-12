@@ -26,6 +26,7 @@ import databento as db
 import pandas as pd
 from databento import ReconnectPolicy
 
+from bar_writer import BarRow, BarWriter
 from config import settings
 from logger_setup import log
 from options_router import (
@@ -97,6 +98,11 @@ class DatabentoClient:
         # events get persisted; when None, those records are silently
         # ignored by _handle_tbbo and _subscribe_es_l1 is skipped.
         self._quote_processor = quote_processor
+        # AUD-M27: OHLCV-1m bars are buffered + drained off the SDK
+        # callback thread so a Neon stall on the bar upsert can't
+        # head-of-line-block TBBO / options ingestion (same thread). The
+        # background flush is started in start() and stopped in stop().
+        self._bar_writer = BarWriter()
         self._connected = False
         self._last_bar_ts = 0.0
 
@@ -237,6 +243,13 @@ class DatabentoClient:
         # The ATM strike window still needs the first ES bar to center.
         self._options_subscription_pending = True
 
+        # AUD-M27: start the off-thread bar + stat flush threads before the
+        # SDK starts delivering records, so the first bar/stat enqueued has
+        # a drain thread already running. Idempotent — safe across reconnect
+        # restarts (start_background_flush no-ops if a live thread exists).
+        self._bar_writer.start_background_flush()
+        self._router.start_stat_flush()
+
         # Start streaming (non-blocking with callbacks)
         self._client.start()
         self._connected = True
@@ -306,7 +319,6 @@ class DatabentoClient:
         """Process an OHLCV bar using a specific client's symbology map."""
         if self._shutting_down:
             return
-        from db import upsert_futures_bar
 
         iid = getattr(record, "instrument_id", None)
         if iid is None or client is None:
@@ -340,19 +352,21 @@ class DatabentoClient:
         ts = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
         ts = ts.replace(second=0, microsecond=0)
 
-        try:
-            upsert_futures_bar(symbol, ts, open_, high, low, close, volume)
-            self._last_bar_ts = time.time()
-            log.debug("Bar: %s %s C=%.2f", symbol, ts.isoformat(), close)
-        except Exception as exc:
-            from sentry_setup import capture_exception
-
-            capture_exception(
-                exc,
-                tags={"component": "databento_client", "stage": "upsert_bar"},
-                context={"symbol": symbol, "ts": ts.isoformat()},
+        # AUD-M27: enqueue off-thread (see _handle_ohlcv for the full
+        # rationale). futures_bars is ON CONFLICT DO UPDATE → re-queue safe.
+        self._bar_writer.add(
+            BarRow(
+                symbol=symbol,
+                ts=ts,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
             )
-            log.error("Failed to upsert bar for %s: %s", symbol, exc)
+        )
+        self._last_bar_ts = time.time()
+        log.debug("Bar: %s %s C=%.2f", symbol, ts.isoformat(), close)
 
     def _subscribe_es_options_streams(self) -> None:
         """Subscribe to the ES.OPT definition/statistics/trades streams.
@@ -656,7 +670,6 @@ class DatabentoClient:
         """Process an OHLCV-1m bar record."""
         if self._shutting_down:
             return
-        from db import upsert_futures_bar
 
         symbol = self._resolve_symbol(record)
         if symbol is None:
@@ -712,29 +725,36 @@ class DatabentoClient:
         # consulted the prior baseline, so updating it now is safe.
         self._last_close_before_disconnect[symbol] = float(close)
 
-        # Write to DB
-        try:
-            upsert_futures_bar(symbol, ts, open_, high, low, close, volume)
-            self._last_bar_ts = time.time()
-            log.debug(
-                "Bar: %s %s O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
-                symbol,
-                ts.isoformat(),
-                open_,
-                high,
-                low,
-                close,
-                volume,
+        # AUD-M27: enqueue the bar to the off-thread BarWriter instead of
+        # a synchronous upsert on this SDK callback thread. The buffered
+        # write drains on the BarWriter's background flush, so a Neon
+        # stall on the bar path no longer head-of-line-blocks TBBO /
+        # options ingestion (which share this same callback thread).
+        # ``futures_bars`` is ON CONFLICT DO UPDATE, so the writer's
+        # bounded re-queue on failure is safe (Sentry capture + retry is
+        # owned by BatchedWriter — no per-call try/except needed here).
+        self._bar_writer.add(
+            BarRow(
+                symbol=symbol,
+                ts=ts,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
             )
-        except Exception as exc:
-            from sentry_setup import capture_exception
-
-            capture_exception(
-                exc,
-                tags={"component": "databento_client", "stage": "upsert_bar_es"},
-                context={"symbol": symbol, "ts": ts.isoformat()},
-            )
-            log.error("Failed to upsert bar for %s: %s", symbol, exc)
+        )
+        self._last_bar_ts = time.time()
+        log.debug(
+            "Bar: %s %s O=%.2f H=%.2f L=%.2f C=%.2f V=%d",
+            symbol,
+            ts.isoformat(),
+            open_,
+            high,
+            low,
+            close,
+            volume,
+        )
 
         # Set the initial ATM window on the first ES bar. Subscriptions
         # for ES.OPT streams were already established at startup; this
@@ -891,6 +911,11 @@ class DatabentoClient:
         self._trade_processor.stop()
         if self._quote_processor is not None:
             self._quote_processor.flush()
+        # AUD-M27: drain the off-thread bar + stat buffers before the pool
+        # is torn down. stop() joins each flush thread and performs a final
+        # flush, so buffered bars/stats land in Neon on shutdown.
+        self._bar_writer.stop()
+        self._router.stop_stat_writer()
         log.info("Databento clients stopped")
 
     def block_for_close(self, timeout: float | None = None) -> None:
