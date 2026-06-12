@@ -204,6 +204,28 @@ describe('useChainData', () => {
     expect(result.current.chain).toEqual(errorResponse);
   });
 
+  it('keeps last-good chain when a transient fetch fails (AUD-M14)', async () => {
+    // First fetch succeeds and loads real chain data.
+    const fetchMock = mockFetch(200, mockChain);
+
+    const { result } = renderHook(() => useChainData(true, true));
+
+    await waitFor(() => expect(result.current.chain).toEqual(mockChain));
+
+    // Next poll cycle: the network blows up (transient failure).
+    fetchMock.mockImplementation(() =>
+      Promise.reject(new Error('Network error')),
+    );
+
+    act(() => {
+      result.current.refresh();
+    });
+
+    // Error surfaces, but the previously-loaded chain is NOT wiped.
+    await waitFor(() => expect(result.current.error).toBe('Network error'));
+    expect(result.current.chain).toEqual(mockChain);
+  });
+
   it('does not auto-refresh when market is closed', async () => {
     const fetchMock = mockFetch(200, mockChain);
 

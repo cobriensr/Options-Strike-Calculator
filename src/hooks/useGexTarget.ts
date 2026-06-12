@@ -213,6 +213,21 @@ export interface UseGexTargetReturn {
 }
 
 /**
+ * Single hoisted CT formatter, reused across every candle. Constructing a
+ * fresh `Intl.DateTimeFormat` is comparatively expensive, and the bulk
+ * response carries ~390 candles re-filtered on every 60s poll — building one
+ * formatter per candle was needless per-poll churn (AUD-M22). The formatter
+ * is stateless, so a single module-scope instance is safe to share. Template
+ * mirrors `ctFormatter` in `src/utils/timezone.ts`.
+ */
+const SESSION_CT_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Chicago',
+  hour: 'numeric',
+  minute: 'numeric',
+  hour12: false,
+});
+
+/**
  * Filter candles to the regular SPX session: 8:30 AM – 3:00 PM CT.
  *
  * The DB cron occasionally stores early bars (9:00 AM ET = 8:00 AM CT)
@@ -223,12 +238,7 @@ export interface UseGexTargetReturn {
  */
 function filterRegularSessionCT(candles: SPXCandle[]): SPXCandle[] {
   return candles.filter((c) => {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/Chicago',
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: false,
-    }).formatToParts(new Date(c.datetime));
+    const parts = SESSION_CT_FORMATTER.formatToParts(new Date(c.datetime));
     const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? 0);
     const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
     const mins = hour * 60 + minute;
@@ -269,6 +279,22 @@ export function useGexTarget(
   );
 
   const mountedRef = useRef(true);
+  /**
+   * Monotonic request-sequence counter (AUD-M15). Every fetch — bulk or
+   * single — increments this and captures its own value. Before writing any
+   * state, the fetch checks that its captured value still equals the latest;
+   * a stale, superseded response (e.g. a slow today-request still in flight
+   * for up to 30s on a Neon hang when the user has since scrubbed to a past
+   * date) is dropped instead of clobbering the newer selection's data.
+   * Mirrors the abort-on-supersede pattern in useFetchedData.ts.
+   */
+  const requestSeqRef = useRef(0);
+  /**
+   * AbortController for the most recent in-flight request. A new fetch aborts
+   * the prior one so a superseded request stops consuming the network as soon
+   * as it's been replaced, complementing the sequence guard above.
+   */
+  const abortRef = useRef<AbortController | null>(null);
   /** Cache of every snapshot loaded for the current date (keyed by timestamp). */
   const allSnapshotsRef = useRef<Map<string, BulkSnapshot>>(new Map());
   const [openingCallStrike, setOpeningCallStrike] = useState<number | null>(
@@ -294,6 +320,13 @@ export function useGexTarget(
 
   const fetchData = useCallback(
     async (tsOverride?: string | null) => {
+      // AUD-M15: claim a sequence number and abort any prior in-flight
+      // request before issuing this one. The captured `seq` lets us drop the
+      // response if a newer fetch supersedes us while this one is awaiting.
+      abortRef.current?.abort();
+      const seq = ++requestSeqRef.current;
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
       try {
         const qs = new URLSearchParams();
         // Always send the date so the server doesn't have to infer ET.
@@ -306,10 +339,11 @@ export function useGexTarget(
           // intermittent Neon serverless HTTP cold-connection hangs the
           // /api/gex-target-history path is subject to (same root cause
           // as gex-strike-expiry — see api/_lib/db.ts withDbRetry).
-          signal: AbortSignal.timeout(30_000),
+          signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(30_000)]),
         });
 
-        if (!mountedRef.current) return;
+        // Drop superseded or unmounted responses before touching any state.
+        if (!mountedRef.current || seq !== requestSeqRef.current) return;
 
         if (!res.ok) {
           // 401 is the owner check -- silently swallow so guest visitors
@@ -328,7 +362,7 @@ export function useGexTarget(
 
         const data = (await res.json()) as GexTargetHistoryResponse;
 
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || seq !== requestSeqRef.current) return;
 
         // Three parallel modes -- always written as a triple so a successful
         // fetch never leaves a stale mix of old/new across the three fields.
@@ -344,13 +378,17 @@ export function useGexTarget(
         failCountRef.current = 0;
         setError(null);
       } catch (err) {
-        if (!mountedRef.current) return;
+        // A supersede-driven abort isn't a real failure — don't count it
+        // toward the streak or surface an error for the newer selection.
+        if (!mountedRef.current || seq !== requestSeqRef.current) return;
         failCountRef.current += 1;
         if (failCountRef.current >= FAIL_GRACE_COUNT) {
           setError(getErrorMessage(err));
         }
       } finally {
-        if (mountedRef.current) setLoading(false);
+        if (mountedRef.current && seq === requestSeqRef.current) {
+          setLoading(false);
+        }
       }
     },
     [selectedDate],
@@ -362,21 +400,28 @@ export function useGexTarget(
    * so that scrubbing is served from the local cache without per-step fetches.
    */
   const fetchAllSnapshots = useCallback(async () => {
+    // AUD-M15: same supersede guard as fetchData. A bulk load for a freshly
+    // selected date claims the latest sequence number and aborts any prior
+    // in-flight request, so a slow earlier response can't overwrite it.
+    abortRef.current?.abort();
+    const seq = ++requestSeqRef.current;
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
       const qs = new URLSearchParams();
       qs.set('date', selectedDate);
       qs.set('all', 'true');
       const res = await fetch(`/api/gex-target-history?${qs}`, {
         credentials: 'same-origin',
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(10_000)]),
       });
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== requestSeqRef.current) return;
       if (!res.ok) {
         if (res.status !== 401) setError('Failed to load GexTarget data');
         return;
       }
       const data = (await res.json()) as GexTargetBulkResponse;
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || seq !== requestSeqRef.current) return;
 
       // Populate snapshot cache
       const cache = new Map<string, BulkSnapshot>();
@@ -435,9 +480,13 @@ export function useGexTarget(
       setTimestamp(latest?.timestamp ?? null);
       setError(null);
     } catch (err) {
-      if (mountedRef.current) setError(getErrorMessage(err));
+      // Drop supersede-driven aborts; only surface errors for the live request.
+      if (!mountedRef.current || seq !== requestSeqRef.current) return;
+      setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current && seq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [selectedDate]);
 
@@ -445,6 +494,9 @@ export function useGexTarget(
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      // Abort any in-flight request on unmount so a late response can't run
+      // its post-await body (AUD-M15 companion to the supersede guard).
+      abortRef.current?.abort();
     };
   }, []);
 

@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
+import { StrictMode, createElement, type ReactNode } from 'react';
 import { useMarketData, computeMarketSession } from '../../hooks/useMarketData';
+
+// Wrapper that mounts the hook under React StrictMode so updaters and effects
+// are double-invoked in dev, exactly as they are in the real app's
+// `<StrictMode>` root. Used by the AUD-M16 regression test below.
+function StrictWrapper({ children }: { children: ReactNode }) {
+  return createElement(StrictMode, null, children);
+}
 
 /**
  * Tests for the useMarketData React hook.
@@ -1159,5 +1167,150 @@ describe('useMarketData: FE-STATE-002 session gating', () => {
     });
     expect(fetchMock.mock.calls.length).toBe(initialCalls);
     expect(result.current.session).toBe('closed');
+  });
+});
+
+// ============================================================
+// AUD-M16 / AUD-M17 / AUD-M18: failure counting, backoff, fetchedAt contract
+// ============================================================
+
+describe('useMarketData: AUD-M16/M17/M18 regressions', () => {
+  const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
+
+  // Count how many times the quotes endpoint was hit. During RTH with the
+  // default (complete) opening range, each poll fires exactly one quotes
+  // request, so this is a clean proxy for "number of polls so far".
+  function countQuotesCalls(
+    fetchMock: ReturnType<typeof mockFetchResponses>,
+  ): number {
+    return fetchMock.mock.calls.filter((call: [string, ...unknown[]]) =>
+      call[0].includes('/api/quotes'),
+    ).length;
+  }
+
+  // Advance one 60s window inside act() and return the cumulative number of
+  // quotes polls the given mock has received. Flushes the trailing promise
+  // microtasks so the poll's async `.then` (which updates the fail counter)
+  // settles before we read.
+  async function stepAndCount(mock: ReturnType<typeof vi.fn>): Promise<number> {
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+    });
+    return countQuotesCalls(
+      mock as unknown as ReturnType<typeof mockFetchResponses>,
+    );
+  }
+
+  it('AUD-M16: StrictMode does not double-count poll failures (side effects outside the updater)', async () => {
+    // The original bug put the fail-counter increment INSIDE the setData
+    // updater. React StrictMode invokes updaters twice in dev, so a single
+    // failed fetch bumped the counter twice — crossing the 3-failure backoff
+    // threshold in ~half the failures. With the fix the increment lives
+    // OUTSIDE the (now-pure) updater, so it advances exactly once per failure
+    // even under StrictMode.
+    //
+    // This is M17's scenario run under StrictMode: a SUCCESSFUL mount (resets
+    // the streak, avoiding the mount-failure confound) followed by failing
+    // polls. The cadence MUST be identical to the non-Strict M17 case —
+    // backoff after exactly THREE failing polls ([1,2,3,3,4,4]). If the
+    // increment double-counted, StrictMode would reach the threshold sooner
+    // and the cadence would diverge.
+    vi.setSystemTime(REGULAR_HOURS);
+    const okMock = mockFetchResponses({
+      quotes: { status: 200, body: mockQuotesOpen },
+    });
+    globalThis.fetch = okMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData(), {
+      wrapper: StrictWrapper,
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Swap in a failing fetch (non-401 → genuine failure) for every poll.
+    const failMock = vi.fn(() => Promise.reject(new Error('Network error')));
+    globalThis.fetch = failMock as unknown as typeof fetch;
+
+    const counts: number[] = [];
+    for (let i = 0; i < 6; i++) counts.push(await stepAndCount(failMock));
+
+    // Identical to M17 (non-Strict): backoff engages after exactly 3 failing
+    // polls. A double-count under StrictMode would slow the cadence earlier.
+    expect(counts[0]).toBe(1);
+    expect(counts[1]).toBe(2);
+    expect(counts[2]).toBe(3); // streak now 3 → backoff engages
+    expect(counts[3]).toBe(3); // no poll (doubled interval)
+    expect(counts[4]).toBe(4); // poll fires
+    expect(counts[5]).toBe(4); // no poll
+  });
+
+  it('AUD-M17: poll-path failures drive the counter so backoff engages after 3 failures', async () => {
+    // Pre-fix, the poll tick never touched the fail counter and the ref read
+    // at render never re-rendered, so the documented "interval doubling on
+    // 3+ failures" was dead code on the poll path. Here the mount SUCCEEDS
+    // (authenticates + starts polling at the 60s cadence) and only the polls
+    // fail — exercising exactly the path that was previously inert.
+    vi.setSystemTime(REGULAR_HOURS);
+    const okMock = mockFetchResponses({
+      quotes: { status: 200, body: mockQuotesOpen },
+    });
+    globalThis.fetch = okMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Swap in a failing fetch (non-401 → genuine failure). All polls now
+    // hit this mock, so we count against it.
+    const failMock = vi.fn(() => Promise.reject(new Error('Network error')));
+    globalThis.fetch = failMock as unknown as typeof fetch;
+
+    const counts: number[] = [];
+    for (let i = 0; i < 6; i++) counts.push(await stepAndCount(failMock));
+
+    // Without the fix the poll path never incremented the counter, so the
+    // interval would stay at 60s forever and polls would fire EVERY window
+    // (1,2,3,4,5,6). With the fix the counter reaches 3 after three failing
+    // polls and the interval doubles — polls then fire every OTHER window.
+    expect(counts[0]).toBe(1);
+    expect(counts[1]).toBe(2);
+    expect(counts[2]).toBe(3); // streak now 3 → backoff engages
+    expect(counts[3]).toBe(3); // no poll (doubled interval)
+    expect(counts[4]).toBe(4); // poll fires
+    expect(counts[5]).toBe(4); // no poll
+  });
+
+  it('AUD-M18: fetchedAt is unchanged when every poll fetch fails', async () => {
+    // Contract: fetchedAt / quotesFetchedAt track the LAST SUCCESSFUL fetch.
+    // The original poll path bumped fetchedAt unconditionally inside
+    // Promise.all(...).then(), so an all-failed poll moved the freshness
+    // timestamp forward and masked a stale feed.
+    vi.setSystemTime(REGULAR_HOURS);
+    const fetchMock = mockFetchResponses({
+      quotes: { status: 200, body: mockQuotesOpen },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.fetchedAt).not.toBeNull());
+
+    const fetchedAtBefore = result.current.fetchedAt;
+    const quotesFetchedAtBefore = result.current.quotesFetchedAt;
+    expect(fetchedAtBefore).not.toBeNull();
+    expect(quotesFetchedAtBefore).not.toBeNull();
+
+    // Every subsequent fetch fails outright (network error).
+    globalThis.fetch = vi.fn(() =>
+      Promise.reject(new Error('Network error')),
+    ) as unknown as typeof fetch;
+
+    // Advance real wall-clock so a fresh `Date.now()` inside the poll would
+    // differ from the mount value if it were (wrongly) written.
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    // Both freshness timestamps must be pinned to the last SUCCESSFUL fetch.
+    expect(result.current.fetchedAt).toBe(fetchedAtBefore);
+    expect(result.current.quotesFetchedAt).toBe(quotesFetchedAtBefore);
   });
 });

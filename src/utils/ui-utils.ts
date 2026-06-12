@@ -30,20 +30,37 @@ export function tintedSurface(
   return `color-mix(in srgb, ${accent} ${pct}%, ${surface})`;
 }
 
-/** Build a data URI for a dropdown chevron. Resolves CSS var if needed. */
+/**
+ * Resolved chevron stroke colors, mirroring `--color-chevron` in index.css
+ * for the light (`:root`) and dark (`.dark`) themes respectively.
+ *
+ * The SVG data URI bakes the stroke color in at build time, so it cannot
+ * reference the CSS variable directly — it must carry a concrete color.
+ * Selecting the color from the known `darkMode` flag (rather than reading
+ * `getComputedStyle` during render) keeps the chevron in sync with the
+ * CURRENT theme: the `.dark` class is toggled in an effect that runs AFTER
+ * render, so a getComputedStyle read would always lag one toggle behind.
+ */
+export const CHEVRON_COLOR_LIGHT = '#5c5950';
+export const CHEVRON_COLOR_DARK = '#9898a8';
+
+/** Resolve the chevron stroke color from the active theme flag. */
+export function chevronColorForTheme(darkMode: boolean): string {
+  return darkMode ? CHEVRON_COLOR_DARK : CHEVRON_COLOR_LIGHT;
+}
+
+/**
+ * Build a data URI for a dropdown chevron from a concrete stroke color.
+ *
+ * Pass a resolved color (e.g. via `chevronColorForTheme`) — this function
+ * does NOT read computed styles, so the result reflects the color you give
+ * it on the current render rather than the previously-applied theme.
+ */
 export function buildChevronUrl(color: string): string {
-  let resolved = color;
-  if (color.startsWith('var(') && typeof document !== 'undefined') {
-    const prop = color.slice(4, -1);
-    resolved =
-      getComputedStyle(document.documentElement)
-        .getPropertyValue(prop)
-        .trim() || color;
-  }
   return (
     'url("data:image/svg+xml,' +
     encodeURIComponent(
-      `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12"><path d="M3 5l3 3 3-3" fill="none" stroke="${resolved}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+      `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12"><path d="M3 5l3 3 3-3" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     ) +
     '")'
   );

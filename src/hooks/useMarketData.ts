@@ -250,6 +250,17 @@ export function useMarketData(): MarketDataState {
     events: null,
     movers: null,
   });
+  // AUD-M16: mirror the latest `data` on a ref so `fetchAll` can feed the
+  // current snapshot to `processEndpointResults` (which carries-forward
+  // non-updated endpoints) WITHOUT depending on `data` in its dep array.
+  // Keeping `fetchAll` identity stable preserves the original behavior where
+  // the mount effect fires exactly once and `refresh` is referentially
+  // stable for consumers. Previously this carry-forward was done via the
+  // functional `setData(prev => …)` updater; moving side effects out of the
+  // updater (so it stays pure under StrictMode double-invoke) means we read
+  // `prev` from this ref instead.
+  const dataRef = useRef(data);
+  dataRef.current = data;
   const [loading, setLoading] = useState(true);
   const [needsAuth, setNeedsAuth] = useState(false);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
@@ -276,45 +287,69 @@ export function useMarketData(): MarketDataState {
   );
   // Track if the owner cookie is present (any endpoint returned 200,
   // or the sc-hint cookie exists from a prior auth session).
-  const isOwnerRef = useRef(checkIsOwner());
+  //
+  // AUD-M17: owner status is STATE (mirrored on a ref) rather than a bare
+  // ref. The polling gate `[isOwner, session !== 'closed']` must re-evaluate
+  // when a visitor who was public at mount authenticates in another tab and
+  // a later fetch returns 200 — a bare ref mutated in `fetchAll` would flip
+  // silently without re-rendering, so usePolling would never (re)start. The
+  // ref mirror lets `fetchAll` read the latest value without being recreated.
+  const [isOwner, setIsOwner] = useState<boolean>(() => checkIsOwner());
+  const isOwnerRef = useRef(isOwner);
+  isOwnerRef.current = isOwner;
+  // AUD-M16 / AUD-M17: consecutive-failure streak is STATE (mirrored on a
+  // ref). State so that crossing the backoff threshold re-renders and
+  // usePolling re-schedules at the doubled cadence (a bare ref read at
+  // render never re-renders, so the documented backoff was dead code). The
+  // ref mirror lets the mount-fetch and the poll tick read/update the latest
+  // streak without recreating `fetchAll`. Mirrors useChainData's pattern.
+  const [consecutiveFails, setConsecutiveFails] = useState(0);
   const consecutiveFailsRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
     const results = await fetchAllEndpoints();
 
-    setData((prev) => {
-      const { nextData, anySuccess, anyAuthError, quotesSuccess } =
-        processEndpointResults(prev, results);
+    // AUD-M16: process results and run ALL side effects OUTSIDE the setData
+    // updater. The updater must be pure (return new state only) — under
+    // React StrictMode the updater is invoked twice, so any side effect
+    // inside it (ref mutation, nested setState, Date.now()) would run twice
+    // per fetch, e.g. double-incrementing the fail streak and halving the
+    // backoff threshold.
+    const { nextData, anySuccess, anyAuthError, quotesSuccess } =
+      processEndpointResults(dataRef.current, results);
 
-      // Only show needsAuth if the user previously had data (was authenticated)
-      // but now gets 401s. Don't show it for public visitors who never auth'd.
-      // Check the ref BEFORE updating it so we can detect the transition.
-      if (anyAuthError && !anySuccess && isOwnerRef.current) {
-        setNeedsAuth(true);
-      } else {
-        setNeedsAuth(false);
-      }
+    // Only show needsAuth if the user previously had data (was authenticated)
+    // but now gets 401s. Don't show it for public visitors who never auth'd.
+    // Read the ref BEFORE updating it so we can detect the transition.
+    setNeedsAuth(anyAuthError && !anySuccess && isOwnerRef.current);
 
-      if (anySuccess) isOwnerRef.current = true;
+    if (anySuccess && !isOwnerRef.current) {
+      isOwnerRef.current = true;
+      setIsOwner(true);
+    }
 
-      if (anySuccess) {
+    if (anySuccess) {
+      if (consecutiveFailsRef.current !== 0) {
         consecutiveFailsRef.current = 0;
-      } else if (!anyAuthError) {
-        // Only count as a failure if it wasn't just a 401 (public visitor)
-        consecutiveFailsRef.current += 1;
+        setConsecutiveFails(0);
       }
+    } else if (!anyAuthError) {
+      // Only count as a failure if it wasn't just a 401 (public visitor)
+      const next = consecutiveFailsRef.current + 1;
+      consecutiveFailsRef.current = next;
+      setConsecutiveFails(next);
+    }
 
-      if (anySuccess) {
-        setFetchedAt(Date.now());
-      }
-      // FE-STATE-001: track quote-specific freshness independently.
-      if (quotesSuccess) {
-        setQuotesFetchedAt(Date.now());
-      }
+    const now = Date.now();
+    if (anySuccess) {
+      setFetchedAt(now);
+    }
+    // FE-STATE-001: track quote-specific freshness independently.
+    if (quotesSuccess) {
+      setQuotesFetchedAt(now);
+    }
 
-      return nextData;
-    });
-
+    setData(nextData);
     setLoading(false);
   }, []);
 
@@ -335,24 +370,36 @@ export function useMarketData(): MarketDataState {
   //     on `!openingRangeComplete` so we stop fetching it once the 30-min
   //     window has closed.
   //
-  // Extracted to `usePolling` — the gate `[isOwnerRef.current, session !== 'closed']`
+  // Extracted to `usePolling`. The gate `[isOwner, session !== 'closed']`
   // matches the original `if (isOwnerRef.current && session !== 'closed')`
-  // guard. Backoff (interval doubling on 3+ consecutive failures) is
-  // expressed via the `intervalMs` argument; ref reads happen at render
-  // time, just as the original effect read them once per run.
+  // guard, but reads `isOwner` STATE so the gate re-evaluates when a visitor
+  // authenticates mid-session (AUD-M17 — a bare ref read here would never
+  // restart polling).
+  //
+  // AUD-M17: backoff (interval doubling on 3+ consecutive failures) is driven
+  // by `consecutiveFails` STATE, not the ref. The ref read at render never
+  // re-rendered, so the doubled interval never reached usePolling — the
+  // documented backoff was dead code. With state, crossing the threshold
+  // re-renders, `backoff` recomputes, and usePolling re-schedules. The poll
+  // tick below also feeds the fail counter (previously only the mount/refresh
+  // path did), so a failing poll can actually engage the backoff.
   const openingRangeComplete = data.intraday?.openingRange?.complete ?? false;
-  const backoff = consecutiveFailsRef.current >= 3 ? 2 : 1;
+  const backoff = consecutiveFails >= 3 ? 2 : 1;
 
   usePolling(
     () => {
-      // Track whether the quotes fetch specifically succeeded so we can
-      // update `quotesFetchedAt` independently of `fetchedAt`.
+      // Track per-endpoint outcomes so we can (a) update `quotesFetchedAt`
+      // independently of `fetchedAt`, (b) only advance freshness on success
+      // (AUD-M18), and (c) feed the consecutive-failure counter (AUD-M17).
       let quotesSucceeded = false;
+      let quotesAuthError = false;
       const fetches: Promise<void>[] = [
         fetchJson<QuotesResponse>('/api/quotes').then((result) => {
           if ('data' in result) {
             quotesSucceeded = true;
             setData((prev) => ({ ...prev, quotes: result.data }));
+          } else if (result.status === 401) {
+            quotesAuthError = true;
           }
         }),
       ];
@@ -374,16 +421,37 @@ export function useMarketData(): MarketDataState {
       }
 
       Promise.all(fetches).then(() => {
-        // Both freshness fields use epoch ms (canonical fetchedAt shape).
-        const now = Date.now();
-        setFetchedAt(now);
+        // AUD-M18: only advance freshness fields on a successful quotes
+        // fetch. The contract says `fetchedAt` is the "last successful"
+        // fetch; bumping it after an all-failed poll would mask a stale
+        // feed and suppress the staleness badge.
         if (quotesSucceeded) {
+          // Both freshness fields use epoch ms (canonical fetchedAt shape).
+          const now = Date.now();
+          setFetchedAt(now);
           setQuotesFetchedAt(now);
+        }
+
+        // AUD-M17: drive the consecutive-failure counter from the poll path
+        // so backoff can actually engage. Reset on success; increment only
+        // on a genuine failure (not a 401, which is just a public visitor or
+        // an expired session — neither is a transient error worth backing
+        // off for). The quotes endpoint is the gating signal here since it
+        // runs in every poll.
+        if (quotesSucceeded) {
+          if (consecutiveFailsRef.current !== 0) {
+            consecutiveFailsRef.current = 0;
+            setConsecutiveFails(0);
+          }
+        } else if (!quotesAuthError) {
+          const next = consecutiveFailsRef.current + 1;
+          consecutiveFailsRef.current = next;
+          setConsecutiveFails(next);
         }
       });
     },
     REFRESH_INTERVAL_MS * backoff,
-    [isOwnerRef.current, session !== 'closed'],
+    [isOwner, session !== 'closed'],
   );
 
   // FE-STATE-002: wall-clock tick that advances `session` across phase

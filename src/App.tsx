@@ -8,8 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { theme } from './themes';
-import { buildChevronUrl } from './utils/ui-utils';
+import { buildChevronUrl, chevronColorForTheme } from './utils/ui-utils';
 import { handleStaleChunk } from './utils/handle-stale-chunk';
 import { useViewMode } from './hooks/useViewMode';
 import { useIvInputs } from './hooks/useIvInputs';
@@ -664,11 +663,13 @@ export default function StrikeCalculator() {
     [setIvMode, setDirectIVInput],
   );
 
+  // Derive the chevron color from the known `darkMode` flag — the same state
+  // that drives the `.dark` class — rather than from getComputedStyle. The
+  // class toggle happens in an effect AFTER render, so a computed-style read
+  // would always lag one theme toggle behind (AUD-M21).
   const chevronUrl = useMemo(
-    () => buildChevronUrl(theme.chevronColor),
-    // darkMode triggers recomputation because the CSS variable resolves differently
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [darkMode, theme.chevronColor],
+    () => buildChevronUrl(chevronColorForTheme(darkMode)),
+    [darkMode],
   );
 
   // Owner/guest data sections need EITHER live market context OR a backtest

@@ -58,6 +58,7 @@ import {
 } from '../../constants/panel-registry';
 import { resolveGroupOrder, resolvePanelOrder } from '../../utils/panel-order';
 import type { PanelPrefs } from '../../hooks/usePanelPrefs';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { resolveDragEnd } from './drag-resolver';
 
 const GRIP_LABEL_PREFIX_GROUP = 'Drag to reorder group';
@@ -203,6 +204,12 @@ export function PanelPrefsModal({
 }: Props) {
   const doneButtonRef = useRef<HTMLButtonElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Trap Tab/Shift+Tab inside the dialog while open so focus can't walk
+  // into the (aria-hidden-to-AT) background — AUD-M20. Initial focus +
+  // restore-on-close stay in the effect below.
+  useFocusTrap(dialogRef, isOpen);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -319,6 +326,7 @@ export function PanelPrefsModal({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
         className="bg-surface border-edge-strong flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border p-6 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >

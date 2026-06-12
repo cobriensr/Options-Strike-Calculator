@@ -76,6 +76,48 @@ describe('PreMarketInput', () => {
     expect(screen.getByRole('button', { name: /Update/i })).toBeInTheDocument();
   });
 
+  it('clears prior date fields and saved flag when switching to a date with no saved data (AUD-M19)', async () => {
+    // First date returns fully saved Globex data.
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          data: {
+            globexHigh: 5720,
+            globexLow: 5690,
+            globexClose: 5710,
+            globexVwap: 5705,
+            savedAt: '2026-03-28T12:00:00Z',
+          },
+        }),
+    });
+
+    const { rerender } = render(<PreMarketInput date="2026-03-28" />);
+
+    // Confirm date A's data loaded and the button reflects saved state.
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Globex High/)).toHaveValue('5720');
+    });
+    expect(screen.getByRole('button', { name: /Update/i })).toBeInTheDocument();
+
+    // Second date has NO saved data (default beforeEach mock → { data: null }).
+    rerender(<PreMarketInput date="2026-03-29" />);
+
+    // Fields must reset to empty — no carryover from date A.
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Globex High/)).toHaveValue('');
+      expect(screen.getByLabelText(/Globex Low/)).toHaveValue('');
+      expect(screen.getByLabelText(/Globex Close/)).toHaveValue('');
+      expect(screen.getByLabelText(/Globex VWAP/)).toHaveValue('');
+    });
+
+    // saved flag must reset → button reverts to Save, not Update.
+    expect(screen.getByRole('button', { name: /Save/i })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Update/i }),
+    ).not.toBeInTheDocument();
+  });
+
   it('fetches with correct date param', async () => {
     render(<PreMarketInput date="2026-03-28" apiBase="/test" />);
 

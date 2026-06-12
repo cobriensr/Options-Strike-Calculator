@@ -1,6 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   buildChevronUrl,
+  chevronColorForTheme,
+  CHEVRON_COLOR_LIGHT,
+  CHEVRON_COLOR_DARK,
   mkTh,
   mkTd,
   tinyLbl,
@@ -19,22 +22,46 @@ describe('buildChevronUrl', () => {
     expect(result).toContain(encodeURIComponent('#ff0000'));
   });
 
-  it('resolves CSS var() via getComputedStyle', () => {
-    const spy = vi
-      .spyOn(globalThis, 'getComputedStyle')
-      .mockReturnValue({ getPropertyValue: () => '  #abcdef  ' } as any);
-    const result = buildChevronUrl('var(--color-chevron)');
-    expect(result).toContain(encodeURIComponent('#abcdef'));
-    spy.mockRestore();
+  it('does not read getComputedStyle (no render-time style read)', () => {
+    // AUD-M21: the chevron color must be passed in already-resolved, never
+    // read from computed styles during render. Fail loudly if anything tries.
+    const original = globalThis.getComputedStyle;
+    globalThis.getComputedStyle = (() => {
+      throw new Error('buildChevronUrl must not call getComputedStyle');
+    }) as typeof globalThis.getComputedStyle;
+    try {
+      expect(() => buildChevronUrl('var(--color-chevron)')).not.toThrow();
+    } finally {
+      globalThis.getComputedStyle = original;
+    }
+  });
+});
+
+describe('chevronColorForTheme (AUD-M21: reflects CURRENT theme)', () => {
+  it('returns the dark chevron color when darkMode is true', () => {
+    expect(chevronColorForTheme(true)).toBe(CHEVRON_COLOR_DARK);
   });
 
-  it('falls back to original var() when computed value is empty', () => {
-    const spy = vi
-      .spyOn(globalThis, 'getComputedStyle')
-      .mockReturnValue({ getPropertyValue: () => '  ' } as any);
-    const result = buildChevronUrl('var(--missing)');
-    expect(result).toContain(encodeURIComponent('var(--missing)'));
-    spy.mockRestore();
+  it('returns the light chevron color when darkMode is false', () => {
+    expect(chevronColorForTheme(false)).toBe(CHEVRON_COLOR_LIGHT);
+  });
+
+  it('the two theme colors are distinct', () => {
+    expect(CHEVRON_COLOR_DARK).not.toBe(CHEVRON_COLOR_LIGHT);
+  });
+
+  it('toggling the theme flips the baked chevron color on the SAME call', () => {
+    // Pins the fix: the URL is derived from the darkMode flag, so flipping
+    // the flag immediately yields the other theme's color — no lag behind
+    // the `.dark` class toggle (which is applied in a post-render effect).
+    const darkUrl = buildChevronUrl(chevronColorForTheme(true));
+    const lightUrl = buildChevronUrl(chevronColorForTheme(false));
+
+    expect(darkUrl).toContain(encodeURIComponent(CHEVRON_COLOR_DARK));
+    expect(darkUrl).not.toContain(encodeURIComponent(CHEVRON_COLOR_LIGHT));
+    expect(lightUrl).toContain(encodeURIComponent(CHEVRON_COLOR_LIGHT));
+    expect(lightUrl).not.toContain(encodeURIComponent(CHEVRON_COLOR_DARK));
+    expect(darkUrl).not.toBe(lightUrl);
   });
 });
 

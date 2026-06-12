@@ -52,6 +52,17 @@ export default function PreMarketInput({
 
   // Load existing data for this date
   useEffect(() => {
+    // Reset all fields + flags before loading so a date with no saved data
+    // can't inherit the prior date's Globex H/L/C/VWAP or saved flag (which
+    // would let one Update click write the prior date's levels onto this one).
+    setGlobexHigh('');
+    setGlobexLow('');
+    setGlobexClose('');
+    setGlobexVwap('');
+    setSaved(false);
+    setAutoFilled(false);
+    setError('');
+
     const controller = new AbortController();
     async function load() {
       try {

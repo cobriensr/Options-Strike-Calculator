@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { PanelPrefsModal } from '../PanelPrefsModal';
 import type { PanelPrefs } from '../../../hooks/usePanelPrefs';
 
@@ -262,6 +263,50 @@ describe('PanelPrefsModal', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('traps Tab from the last focusable element back to the first (AUD-M20)', async () => {
+    const user = userEvent.setup();
+    render(
+      <PanelPrefsModal
+        isOpen
+        onClose={() => undefined}
+        panelPrefs={makePrefs()}
+        isAuthenticated
+        hasMarketOrSnapshot
+      />,
+    );
+    const dialog = screen.getByRole('dialog');
+    const focusable = within(dialog).getAllByRole('button');
+    const first = focusable.at(0)!;
+    const last = focusable.at(-1)!;
+
+    last.focus();
+    expect(last).toHaveFocus();
+    await user.tab();
+    expect(first).toHaveFocus();
+  });
+
+  it('traps Shift+Tab from the first focusable element to the last (AUD-M20)', async () => {
+    const user = userEvent.setup();
+    render(
+      <PanelPrefsModal
+        isOpen
+        onClose={() => undefined}
+        panelPrefs={makePrefs()}
+        isAuthenticated
+        hasMarketOrSnapshot
+      />,
+    );
+    const dialog = screen.getByRole('dialog');
+    const focusable = within(dialog).getAllByRole('button');
+    const first = focusable.at(0)!;
+    const last = focusable.at(-1)!;
+
+    first.focus();
+    expect(first).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(last).toHaveFocus();
   });
 
   it('Escape key closes the modal', () => {

@@ -63,13 +63,16 @@ export function useChainData(
     setError(null);
     fetchChain().then((result) => {
       if (!mountedRef.current) return;
-      setChain(result.data);
       if (result.networkError) {
+        // Transient fetch failure: keep the last-good chain in state so
+        // pin-risk / skew don't go blank for a full poll cycle. Only a
+        // successful fetch (incl. the 401 public-visitor case) replaces it.
         const next = failStreakRef.current + 1;
         failStreakRef.current = next;
         setFailStreak(next);
         setError(result.networkError);
       } else {
+        setChain(result.data);
         if (failStreakRef.current !== 0) {
           failStreakRef.current = 0;
           setFailStreak(0);

@@ -1155,3 +1155,146 @@ describe('useGexTarget: scrubNext branches', () => {
     expect(result.current.isLive).toBe(true);
   });
 });
+
+// ============================================================
+// STALE-RESPONSE RACE (AUD-M15)
+// ============================================================
+
+describe('useGexTarget: stale-response supersede guard', () => {
+  it('a slow superseded response does not overwrite a newer selection', async () => {
+    // Scenario: the initial (today) bulk request hangs in flight. The user
+    // then scrubs to a past date, which issues a NEW bulk request that
+    // resolves first with the past date's data. When the slow today-request
+    // finally resolves, its data must be DROPPED — not clobber the past
+    // date already on screen.
+    const TODAY = '2026-04-02';
+    const PAST = '2026-03-28';
+
+    // Deferred control for the first (today) request.
+    let resolveToday!: (value: ReturnType<typeof mockBulkSnapshot>) => void;
+    const todayPromise = new Promise<ReturnType<typeof mockBulkSnapshot>>(
+      (resolve) => {
+        resolveToday = resolve;
+      },
+    );
+
+    const todayResponse = mockBulkSnapshot({
+      timestamp: `${TODAY}T19:59:00Z`,
+      timestamps: [`${TODAY}T19:59:00Z`],
+      date: TODAY,
+      oi: makeTargetScore({
+        target: makeStrike({ strike: 9999 }),
+        leaderboard: [makeStrike({ strike: 9999 })],
+      }),
+    });
+    const pastResponse = mockBulkSnapshot({
+      timestamp: `${PAST}T15:00:00Z`,
+      timestamps: [`${PAST}T15:00:00Z`],
+      date: PAST,
+      oi: makeTargetScore({
+        target: makeStrike({ strike: 5750 }),
+        leaderboard: [makeStrike({ strike: 5750 })],
+      }),
+    });
+
+    // 1st call (today, on mount) -> hangs. 2nd call (past, on date change)
+    // -> resolves immediately.
+    mockFetch
+      .mockReset()
+      .mockReturnValueOnce(todayPromise)
+      .mockResolvedValue(pastResponse);
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    // Initial today request is in flight (not yet resolved).
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // User scrubs to a past date -> supersedes the today request.
+    act(() => {
+      result.current.setSelectedDate(PAST);
+    });
+
+    // The past-date request resolves and paints the screen.
+    await waitFor(() => expect(result.current.oi?.target?.strike).toBe(5750));
+    expect(result.current.selectedDate).toBe(PAST);
+
+    // NOW the slow today-request finally resolves. Its data is superseded.
+    await act(async () => {
+      resolveToday(todayResponse);
+      await todayPromise;
+    });
+
+    // The stale today-response must NOT have clobbered the past date's data.
+    expect(result.current.oi?.target?.strike).toBe(5750);
+    expect(result.current.oi?.target?.strike).not.toBe(9999);
+    expect(result.current.selectedDate).toBe(PAST);
+  });
+});
+
+// ============================================================
+// CT FORMATTER HOIST (AUD-M22)
+// ============================================================
+
+describe('useGexTarget: hoisted CT session formatter', () => {
+  it('does not construct a new Intl.DateTimeFormat per candle', async () => {
+    // The session-filter formatter is built once at module scope. Processing
+    // a full response of candles must therefore trigger ZERO new
+    // `Intl.DateTimeFormat` constructions — the regression we are pinning is
+    // a fresh formatter per candle (~390/response, every 60s poll).
+    const ctorSpy = vi.spyOn(globalThis.Intl, 'DateTimeFormat');
+
+    // Many candles across the CT session and outside it (some filtered out),
+    // so the filter loop runs over every one.
+    const baseDt = new Date('2026-04-02T14:00:00Z').getTime(); // 9:00 AM CT
+    const candles = Array.from({ length: 50 }, (_, i) =>
+      makeCandle({ datetime: baseDt + i * 60_000 }),
+    );
+
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        candles,
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+    await waitFor(() =>
+      expect(result.current.candles.length).toBeGreaterThan(0),
+    );
+
+    // Filtering 50 candles created no new formatters (it reuses the hoisted
+    // module-scope instance built before this spy was installed).
+    expect(ctorSpy).not.toHaveBeenCalled();
+
+    ctorSpy.mockRestore();
+  });
+
+  it('hoisted formatter filters candles to the 8:30 AM–3:00 PM CT session', async () => {
+    // Correctness of the shared formatter: bars before 8:30 AM CT and at/after
+    // 3:00 PM CT are dropped; in-session bars are kept. On 2026-04-02 (CDT,
+    // UTC-5): 8:00 AM CT = 13:00Z (drop), 8:30 AM CT = 13:30Z (keep),
+    // 2:59 PM CT = 19:59Z (keep), 3:00 PM CT = 20:00Z (drop).
+    const at = (utc: string) => new Date(utc).getTime();
+    const candles = [
+      makeCandle({ datetime: at('2026-04-02T13:00:00Z'), close: 1 }), // 8:00 CT drop
+      makeCandle({ datetime: at('2026-04-02T13:30:00Z'), close: 2 }), // 8:30 CT keep
+      makeCandle({ datetime: at('2026-04-02T19:59:00Z'), close: 3 }), // 2:59 CT keep
+      makeCandle({ datetime: at('2026-04-02T20:00:00Z'), close: 4 }), // 3:00 CT drop
+    ];
+
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        candles,
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+    await waitFor(() => expect(result.current.candles.length).toBe(2));
+
+    expect(result.current.candles.map((c) => c.close)).toEqual([2, 3]);
+  });
+});
