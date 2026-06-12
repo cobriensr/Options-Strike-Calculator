@@ -1544,7 +1544,7 @@ export function SilentBoomSection({
               so every step lands on a real bucket boundary. The scrub
               filter is client-side; the API still returns the whole
               day and pagination/total stay tied to the unfiltered set. */}
-          <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
             <label className="flex items-center gap-1.5">
               <span className={SECTION_LABEL}>date</span>
               <input
@@ -1684,8 +1684,11 @@ export function SilentBoomSection({
                 ⤓ all
               </a>
               {fetchedAt != null && !isHistorical && (
-                <span className="ml-1 text-[10px] text-neutral-500">
-                  updated {formatTimeCT(fetchedAt)} CT
+                <span
+                  className="ml-1 text-[10px] text-neutral-500"
+                  title="Last updated"
+                >
+                  {formatTimeCT(fetchedAt)} CT
                 </span>
               )}
               {isHistorical && (

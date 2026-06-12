@@ -1600,7 +1600,7 @@ export function LotteryFinderSection({
             step. Export anchors are inlined to the right so the
             toolbar starts with a single row of controls instead of
             two. */}
-          <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
             <label className="flex items-center gap-1.5">
               <span className={SECTION_LABEL}>date</span>
               <input
@@ -1752,8 +1752,11 @@ export function LotteryFinderSection({
                 ⤓ all
               </a>
               {fetchedAt != null && !isHistorical && (
-                <span className="ml-1 text-[10px] text-neutral-500">
-                  updated {formatTimeCT(fetchedAt)} CT
+                <span
+                  className="ml-1 text-[10px] text-neutral-500"
+                  title="Last updated"
+                >
+                  {formatTimeCT(fetchedAt)} CT
                 </span>
               )}
               {isHistorical && (
