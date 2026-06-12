@@ -19,6 +19,7 @@ jobs:
   changes:
     name: Detect Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     outputs:
@@ -38,12 +39,16 @@ jobs:
               - '.github/**'
               - 'src/**'
               - 'api/**'
+              - 'scripts/**'
+              - 'index.html'
+              - 'public/**'
+              - 'vercel.json'
+              - 'audit-ci.jsonc'
               - 'package.json'
               - 'package-lock.json'
               - 'tsconfig.json'
               - 'vite.config.ts'
               - 'eslint.config.ts'
-              - 'vitest.config.ts'
             ml:
               - 'ml/**'
             sidecar:
@@ -59,6 +64,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       # Vitest + V8 coverage across 330 test files pushes past Node's
@@ -98,6 +104,7 @@ jobs:
     # let regressions in OAuth / analyze / export flows reach prod silently.
     if: needs.changes.outputs.e2e == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -132,6 +139,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.ml == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       PYTHON: python
     steps:
@@ -156,6 +164,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.sidecar == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:

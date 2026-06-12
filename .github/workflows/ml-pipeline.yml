@@ -52,7 +52,11 @@ jobs:
           node-version: '24'
 
       - name: Install Node dependencies
-        run: npm install @vercel/blob
+        # Pinned to the exact version in the committed package-lock.json
+        # (AUD-M35). This step runs with `contents: write` + the prod
+        # DATABASE_URL in scope, so an unpinned install is a supply-chain
+        # exposure — a malicious newer publish could exfiltrate the token.
+        run: npm install @vercel/blob@2.4.0
 
       - name: Lint & format check
         run: cd ml && make lint
@@ -167,7 +171,10 @@ jobs:
           node-version: '24'
 
       - name: Install Node dependencies for Blob upload
-        run: npm install @vercel/blob
+        # Pinned to the exact version in the committed package-lock.json
+        # (AUD-M35). This job holds the prod DATABASE_URL + Blob token in
+        # `env:`, so an unpinned install is a supply-chain exposure.
+        run: npm install @vercel/blob@2.4.0
 
       - name: Build training set from production DB
         run: PYTHONPATH=. python -m ml.src.takeit.build_training_set

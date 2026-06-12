@@ -144,6 +144,17 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov', 'html', 'json'],
       reportsDirectory: './coverage',
+      // Conservative floors set a few points below current coverage
+      // (~94.8% statements / 87.4% branches / 95.7% functions / 96.5%
+      // lines as of 2026-06-11). These do not fail today but give the
+      // "Tests Are Mandatory" policy a mechanical backstop against
+      // regressions. Raise these as coverage climbs.
+      thresholds: {
+        statements: 90,
+        branches: 80,
+        functions: 90,
+        lines: 90,
+      },
       include: ['src/**/*.ts', 'src/**/*.tsx', 'api/**/*.ts'],
       exclude: [
         'src/__tests__/**',
