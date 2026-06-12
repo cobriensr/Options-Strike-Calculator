@@ -377,17 +377,24 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 2: Smoke-run on SB (smaller) to verify shape + no leakage**
+- [ ] **Step 2: Build BOTH entry datasets (SB and lottery are co-equal tracks)**
+
+SB is smaller — run it first as the shape/leakage smoke, then lottery. Both `entry_dataset*.parquet` must exist before Task 4's B2.
 
 Run:
 ```bash
 cd /Users/charlesobrien/Documents/Workspace/strike-calculator && set -a && source .env.local && set +a
 cd <worktree>
+# SB (smoke + real build)
 EXIT_SOURCE=silentboom \
 EXIT_DATASET_DIR=<worktree>/ml/experiments/exit-timing-engine/decision_dataset_sb \
   ml/.venv/bin/python ml/experiments/exit-timing-engine/run_b1_entry_dataset.py
+# Lottery
+EXIT_SOURCE=lottery \
+EXIT_DATASET_DIR=<worktree>/ml/experiments/exit-timing-engine/decision_dataset \
+  ml/.venv/bin/python ml/experiments/exit-timing-engine/run_b1_entry_dataset.py
 ```
-Expected: prints `SOURCE=silentboom fires=67,130 should_have_held=… (…%) -> entry_dataset_sb.parquet`, no `ValueError: leakage`.
+Expected: SB prints `SOURCE=silentboom fires=67,130 should_have_held=… -> entry_dataset_sb.parquet`; lottery prints `SOURCE=lottery fires=697,395 should_have_held=… -> entry_dataset.parquet`; neither raises `ValueError: leakage`.
 
 - [ ] **Step 3: Commit**
 
