@@ -25,7 +25,6 @@ import type { OiChangeRow } from '../_lib/db-oi-change.js';
 
 function makeRow(overrides: Partial<OiChangeRow> = {}): OiChangeRow {
   return {
-    date: '2026-04-01',
     optionSymbol: 'SPX260401C05800',
     strike: 5800,
     isCall: true,
@@ -44,7 +43,6 @@ function makeRow(overrides: Partial<OiChangeRow> = {}): OiChangeRow {
 /** Build a raw DB row (snake_case fields as DB returns). */
 function makeDbRow(overrides: Record<string, unknown> = {}) {
   return {
-    date: '2026-04-01',
     option_symbol: 'SPX260401C05800',
     strike: 5800,
     is_call: true,
@@ -89,7 +87,6 @@ describe('getOiChangeData', () => {
     expect(rows).toHaveLength(2);
 
     expect(rows[0]).toEqual({
-      date: '2026-04-01',
       optionSymbol: 'SPX260401C05800',
       strike: 5800,
       isCall: true,

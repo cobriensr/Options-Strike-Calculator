@@ -19,7 +19,6 @@ export default [
       '.agents/skills',
       '.clone',
       'sidecar',
-      'daemon',
       'uw-stream',
       // Standalone Python service for multileg classifier — same pattern
       // as sidecar/uw-stream. Its own .venv contains third-party JS files

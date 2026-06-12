@@ -47,7 +47,18 @@ export function adjustICPoPForKurtosis(
   T: number,
   kurtosis: KurtosisPair = DEFAULTS.KURTOSIS_FACTOR,
 ): number {
-  if ((kurtosis.crash <= 1 && kurtosis.rally <= 1) || T <= 0)
+  // Degenerate inputs (zero/negative sigma or breakeven) make the d2
+  // formulas below divide by zero → NaN. calcPoP returns 0 for these, so
+  // mirror that here instead of leaking NaN through the kurtosis branch.
+  // (AUD-L7)
+  if (
+    (kurtosis.crash <= 1 && kurtosis.rally <= 1) ||
+    T <= 0 ||
+    putSigma <= 0 ||
+    callSigma <= 0 ||
+    beLow <= 0 ||
+    beHigh <= 0
+  )
     return calcPoP(spot, beLow, beHigh, putSigma, callSigma, T);
 
   const sqrtT = Math.sqrt(T);

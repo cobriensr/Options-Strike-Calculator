@@ -66,7 +66,13 @@ function classifyRetryDelay(msg: string, attempt: number): number | null {
     return 1000 * (attempt + 1);
   }
 
-  if (/50[234]/.test(msg)) {
+  // Match a genuine upstream 5xx (502/503/504) only when it is the LEADING
+  // status token after a service prefix — `UW API 502: …`, `GEXBot 503 …`
+  // (withRetry is a generic helper shared across UW + GexBot + others). The
+  // required ≥1 leading alphabetic word excludes a bare `502 Bad Gateway`, and
+  // because the prefix run is letters-only it can't skip a non-5xx status to a
+  // `50x` buried later in the body (e.g. `UW API 400: …503…`). (AUD-L2)
+  if (/^(?:[A-Za-z]+ )+50[234]\b/.test(msg)) {
     return 1000 * (attempt + 1);
   }
 

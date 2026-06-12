@@ -10,7 +10,6 @@ from symbol_manager import (
     ES_STRIKE_SPACING,
     ES_STRIKES_EACH_SIDE,
     OptionsStrikeSet,
-    build_es_option_symbols,
     compute_atm_strikes,
     get_all_futures_subscriptions,
     get_nearest_es_expiry,
@@ -223,51 +222,6 @@ class TestRecenterHysteresis:
         big_move = 5850.0 + self._window_half_width() + ES_STRIKE_SPACING
         assert oss.needs_recenter(big_move) is True
         assert oss.needs_recenter(5850.0 - self._window_half_width()) is True
-
-
-# ---------------------------------------------------------------------------
-# build_es_option_symbols
-# ---------------------------------------------------------------------------
-
-
-class TestBuildEsOptionSymbols:
-    def test_june_2025_prefix(self):
-        """June 2025 -> month code M, year digit 5 -> ESM5."""
-        strikes = [5850.0, 5855.0]
-        calls, puts = build_es_option_symbols(strikes, date(2025, 6, 20))
-        assert calls == ["ESM5 C5850", "ESM5 C5855"]
-        assert puts == ["ESM5 P5850", "ESM5 P5855"]
-
-    def test_march_2026_prefix(self):
-        """March 2026 -> month code H, year digit 6 -> ESH6."""
-        strikes = [5900.0]
-        calls, puts = build_es_option_symbols(strikes, date(2026, 3, 20))
-        assert calls == ["ESH6 C5900"]
-        assert puts == ["ESH6 P5900"]
-
-    def test_december_2025_prefix(self):
-        """December 2025 -> month code Z, year digit 5 -> ESZ5."""
-        strikes = [6000.0, 6005.0, 6010.0]
-        calls, puts = build_es_option_symbols(strikes, date(2025, 12, 19))
-        assert all(c.startswith("ESZ5 C") for c in calls)
-        assert all(p.startswith("ESZ5 P") for p in puts)
-
-    def test_september_2030_year_digit_wraps(self):
-        """Year 2030 -> year digit 0 -> ESU0."""
-        calls, puts = build_es_option_symbols([5500.0], date(2030, 9, 20))
-        assert calls == ["ESU0 C5500"]
-        assert puts == ["ESU0 P5500"]
-
-    def test_returns_same_length(self):
-        strikes = compute_atm_strikes(5850.0)
-        calls, puts = build_es_option_symbols(strikes, date(2025, 6, 20))
-        assert len(calls) == len(strikes)
-        assert len(puts) == len(strikes)
-
-    def test_empty_strikes(self):
-        calls, puts = build_es_option_symbols([], date(2025, 6, 20))
-        assert calls == []
-        assert puts == []
 
 
 # ---------------------------------------------------------------------------

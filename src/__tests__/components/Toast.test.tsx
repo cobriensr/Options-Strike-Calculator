@@ -1,3 +1,4 @@
+import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   render,
@@ -245,6 +246,49 @@ describe('Toast: max 3 visible', () => {
     expect(screen.getByText('Toast 2')).toBeInTheDocument();
     expect(screen.getByText('Toast 3')).toBeInTheDocument();
     expect(screen.getByText('Toast 4')).toBeInTheDocument();
+  });
+
+  // AUD-L5: the eviction side effects (dismiss) used to run inside the
+  // setToasts updater, which StrictMode double-invokes. Wrapping in
+  // StrictMode here proves eviction is computed once and produces exactly
+  // MAX_VISIBLE toasts (no extra/duplicate dismissals corrupting state).
+  it('evicts correctly under StrictMode (no double-fire)', () => {
+    vi.useFakeTimers();
+
+    function MultiConsumer() {
+      const toast = useToast();
+      return (
+        <>
+          <button onClick={() => toast.show('S1')}>s1</button>
+          <button onClick={() => toast.show('S2')}>s2</button>
+          <button onClick={() => toast.show('S3')}>s3</button>
+          <button onClick={() => toast.show('S4')}>s4</button>
+        </>
+      );
+    }
+
+    render(
+      <React.StrictMode>
+        <ToastProvider>
+          <MultiConsumer />
+        </ToastProvider>
+      </React.StrictMode>,
+    );
+
+    fireEvent.click(screen.getByText('s1'));
+    fireEvent.click(screen.getByText('s2'));
+    fireEvent.click(screen.getByText('s3'));
+    fireEvent.click(screen.getByText('s4'));
+
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(screen.getAllByRole('status')).toHaveLength(3);
+    expect(screen.queryByText('S1')).not.toBeInTheDocument();
+    expect(screen.getByText('S2')).toBeInTheDocument();
+    expect(screen.getByText('S3')).toBeInTheDocument();
+    expect(screen.getByText('S4')).toBeInTheDocument();
   });
 });
 

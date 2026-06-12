@@ -142,27 +142,13 @@ scripts/eod-flow-analysis/output/backfill-buckets/
 # intermediates from earlier phases (q*, p1-p9, p11-p22) so they don't
 # pollute git on every pipeline re-run.
 docs/tmp/options-flow-analysis/outputs/q*.csv
-docs/tmp/options-flow-analysis/outputs/p1_*.csv
-docs/tmp/options-flow-analysis/outputs/p2_*.csv
-docs/tmp/options-flow-analysis/outputs/p3_*.csv
-docs/tmp/options-flow-analysis/outputs/p4_*.csv
-docs/tmp/options-flow-analysis/outputs/p5_*.csv
-docs/tmp/options-flow-analysis/outputs/p6_*.csv
-docs/tmp/options-flow-analysis/outputs/p6b_*.csv
-docs/tmp/options-flow-analysis/outputs/p6c_*.csv
-docs/tmp/options-flow-analysis/outputs/p6d_*.csv
-docs/tmp/options-flow-analysis/outputs/p7_*.csv
-docs/tmp/options-flow-analysis/outputs/p8_*.csv
-docs/tmp/options-flow-analysis/outputs/p9_*.csv
-docs/tmp/options-flow-analysis/outputs/p11_*.csv
-docs/tmp/options-flow-analysis/outputs/p12_*.csv
-docs/tmp/options-flow-analysis/outputs/p15_*.csv
-docs/tmp/options-flow-analysis/outputs/p17_*.csv
-docs/tmp/options-flow-analysis/outputs/p18_*.csv
-docs/tmp/options-flow-analysis/outputs/p19_*.csv
-docs/tmp/options-flow-analysis/outputs/p20_*.csv
-docs/tmp/options-flow-analysis/outputs/p21_*.csv
-docs/tmp/options-flow-analysis/outputs/p22_*.csv
+# Single glob for all numbered phase intermediates (p<N>_*.csv and the
+# p6b/p6c/p6d suffixed variants). Replaces the prior brittle enumeration
+# (p1_…p22_) which let an unlisted phase number leak an 8.4MB CSV past the
+# ignore. Load-bearing summaries already tracked (p26_*, p27_policy_summary,
+# p28_*, p30_*, p31_*) are unaffected — gitignore does not re-ignore
+# already-committed files.
+docs/tmp/options-flow-analysis/outputs/p*_*.csv
 docs/tmp/options-flow-analysis/outputs/v3_alerts.csv
 docs/tmp/options-flow-analysis/outputs/*.log
 

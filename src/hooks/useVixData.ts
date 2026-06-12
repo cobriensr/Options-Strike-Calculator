@@ -46,6 +46,16 @@ export function useVixData(
   );
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Mirror the latest committed VIX map so handleFileUpload (whose deps are
+  // [] so it stays referentially stable) can merge against the current data
+  // and run the localStorage write OUTSIDE the setState updater. Keeping the
+  // updater pure avoids double-writing the cache under React StrictMode,
+  // which double-invokes updaters.
+  const vixDataRef = useRef<VIXDataMap>(vixData);
+  useEffect(() => {
+    vixDataRef.current = vixData;
+  }, [vixData]);
+
   // Load VIX data on mount: try localStorage cache first, then static JSON
   useEffect(() => {
     const cached = loadCachedVixData();
@@ -185,11 +195,11 @@ export function useVixData(
       const count = Object.keys(parsed).length;
       if (count > 0) {
         const sourceName = count.toLocaleString() + ' days';
-        setVixData((prev) => {
-          const merged = { ...prev, ...parsed };
-          cacheVixData(merged, sourceName);
-          return merged;
-        });
+        // Merge against the latest committed map (via ref) so the setState
+        // updater stays pure and the cache write happens exactly once.
+        const merged = { ...vixDataRef.current, ...parsed };
+        cacheVixData(merged, sourceName);
+        setVixData(merged);
         setVixDataLoaded(true);
         setVixDataSource(sourceName);
       }

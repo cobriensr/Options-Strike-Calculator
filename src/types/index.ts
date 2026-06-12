@@ -35,13 +35,6 @@ export type Timezone = 'ET' | 'CT';
 /** OHLC field selector for VIX date lookup */
 export type OHLCField = 'smart' | 'open' | 'high' | 'low' | 'close';
 
-/** Result of market time validation */
-export interface TimeValidation {
-  readonly valid: boolean;
-  readonly error?: string;
-  readonly hoursRemaining?: number;
-}
-
 /** IV resolution input when using VIX mode */
 export interface VIXInput {
   readonly vix: number;

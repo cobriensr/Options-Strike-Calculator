@@ -9,6 +9,7 @@
 import {
   memo,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -113,6 +114,14 @@ export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
   const timersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(
     new Map(),
   );
+  // Mirror of `toasts` so the stable `show` callback can read the current
+  // toast list to compute evictions without depending on `toasts` (which
+  // would re-create `show` on every toast change and churn the context
+  // value). Kept in sync after each commit. See AUD-L5.
+  const toastsRef = useRef<Toast[]>(toasts);
+  useEffect(() => {
+    toastsRef.current = toasts;
+  }, [toasts]);
 
   const dismiss = useCallback((id: number) => {
     // Clear any pending auto-dismiss timer
@@ -148,17 +157,21 @@ export function ToastProvider({ children }: Readonly<{ children: ReactNode }>) {
         actionLabel: opts?.actionLabel,
       };
 
-      setToasts((prev) => {
-        const next = [...prev, toast];
-        // Evict oldest beyond max
-        if (next.length > MAX_VISIBLE) {
-          const evicted = next.slice(0, next.length - MAX_VISIBLE);
-          for (const t of evicted) {
-            dismiss(t.id);
-          }
-        }
-        return next;
-      });
+      // Compute which toasts to evict from the current (committed) list up
+      // front, then start their exit animations via dismiss() *after* the
+      // state update. Running dismiss() inside the updater is impure and
+      // double-fires under StrictMode (which intentionally invokes updaters
+      // twice). dismiss() handles the actual removal + exit animation, so the
+      // updater itself only appends the new toast. See AUD-L5.
+      const current = toastsRef.current;
+      const evictCount = Math.max(0, current.length + 1 - MAX_VISIBLE);
+      const evictedIds = current.slice(0, evictCount).map((t) => t.id);
+
+      setToasts((prev) => [...prev, toast]);
+
+      for (const evictedId of evictedIds) {
+        dismiss(evictedId);
+      }
 
       // Auto-dismiss
       const timer = setTimeout(() => {

@@ -59,17 +59,23 @@ export function useTimeInputs(): UseTimeInputsReturn {
   // DOM writes to the <select> elements inside the same SectionBox as
   // the date input, which causes Firefox Android to close the native
   // date picker while it is open.
+  //
+  // Read the clock ONCE and derive all three seed fields from that single
+  // snapshot. Calling getInitialCTTime() separately per useState lazy
+  // initializer could read the clock across a minute / AM-PM boundary and
+  // tear the seeded hour/minute/AM-PM apart (e.g. 11:59:59.9 AM → hour
+  // reads 11 AM but minute reads :00 of 12 PM).
+  const seed = getInitialCTTime();
   const [timeHour, setTimeHour] = useState(() => {
-    const { hour } = getInitialCTTime();
-    const h = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
+    const h =
+      seed.hour > 12 ? seed.hour - 12 : seed.hour === 0 ? 12 : seed.hour;
     return String(h);
   });
-  const [timeMinute, setTimeMinute] = useState(() => {
-    const { minute } = getInitialCTTime();
-    return String(Math.floor(minute / 5) * 5).padStart(2, '0');
-  });
+  const [timeMinute, setTimeMinute] = useState(() =>
+    String(Math.floor(seed.minute / 5) * 5).padStart(2, '0'),
+  );
   const [timeAmPm, setTimeAmPm] = useState<AmPm>(() =>
-    getInitialCTTime().hour >= 12 ? 'PM' : 'AM',
+    seed.hour >= 12 ? 'PM' : 'AM',
   );
   const [timezone, setTimezone] = useState<Timezone>('CT');
 

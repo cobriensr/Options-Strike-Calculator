@@ -289,6 +289,47 @@ async def test_invalid_handshake_logs_warning_not_capture_exception(monkeypatch)
     assert state.reconnects_last_hour() >= 1
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# AUD-L12a: reconnect backoff jitter — de-syncs lockstep per-shard reconnects.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_jittered_backoff_stays_within_band() -> None:
+    """``_jittered_backoff`` must keep the realized sleep within
+    ``[base*(1-f), base*(1+f)]`` for every draw, so N sharded connections
+    de-sync their reconnects instead of re-handshaking in lockstep.
+
+    Seed-independent by design (production wants independent draws per
+    process), so we sample many times and assert the band holds on every
+    draw AND that we actually observe spread (not a constant).
+    """
+    import connector as connector_mod
+
+    f = connector_mod._BACKOFF_JITTER_FRACTION
+    assert 0.0 < f < 1.0  # a sane fraction, never zero or full-scale
+
+    for base in (1.0, 2.0, 60.0):
+        low = base * (1 - f)
+        high = base * (1 + f)
+        draws = [connector_mod._jittered_backoff(base) for _ in range(500)]
+        for d in draws:
+            assert low <= d <= high, (
+                f"jittered sleep {d} escaped band [{low}, {high}] for base {base}"
+            )
+        # The point of jitter is spread — assert the draws are not all equal.
+        assert max(draws) > min(draws), (
+            "jitter produced a constant — shards would still reconnect in lockstep"
+        )
+
+
+def test_jittered_backoff_zero_is_zero() -> None:
+    """A zero base (tests drop _INITIAL_BACKOFF_S to 0.0) jitters to exactly
+    0.0 — multiplicative jitter can't manufacture a nonzero wait."""
+    import connector as connector_mod
+
+    assert connector_mod._jittered_backoff(0.0) == 0.0
+
+
 @pytest.mark.asyncio
 async def test_backoff_resets_after_established_connection(monkeypatch) -> None:
     """A healthy session that drops must reset the reconnect backoff.
@@ -341,13 +382,23 @@ async def test_backoff_resets_after_established_connection(monkeypatch) -> None:
     with pytest.raises(asyncio.CancelledError):
         await connector.run()
 
-    # iter1: not established → sleep(1.0), then escalate to 2.0
-    # iter2: established → reset to 1.0, sleep(1.0), no escalation
+    # iter1: not established → sleep(~1.0), then escalate to 2.0
+    # iter2: established → reset to 1.0, sleep(~1.0), no escalation
     # iter3: CancelledError before any sleep
-    assert sleeps == [1.0, 1.0], (
-        "iter2 should have reset backoff to 1.0s after the healthy session "
-        f"dropped, but the recorded sleeps were {sleeps}"
+    # Sleeps are jittered by ±_BACKOFF_JITTER_FRACTION (de-syncs lockstep
+    # per-shard reconnects), so assert each realized sleep is within the band
+    # around its un-jittered base rather than an exact value.
+    f = connector_mod._BACKOFF_JITTER_FRACTION
+    expected_bases = [1.0, 1.0]
+    assert len(sleeps) == len(expected_bases), (
+        f"expected {len(expected_bases)} sleeps, got {sleeps}"
     )
+    for realized, base in zip(sleeps, expected_bases, strict=True):
+        assert base * (1 - f) <= realized <= base * (1 + f), (
+            f"iter2 should have reset backoff to ~1.0s after the healthy "
+            f"session dropped; realized sleep {realized} out of jitter band "
+            f"around base {base}. recorded sleeps: {sleeps}"
+        )
 
 
 @pytest.mark.asyncio
@@ -731,11 +782,22 @@ async def test_sub_threshold_flaps_keep_escalating_backoff(monkeypatch) -> None:
     with pytest.raises(asyncio.CancelledError):
         await connector.run()
 
-    # iter1 flap: not established → sleep(1.0), escalate to 2.0
-    # iter2 flap: still not established → sleep(2.0), escalate to 4.0
-    # iter3 healthy: established → reset to 1.0, sleep(1.0), no escalation
+    # iter1 flap: not established → sleep(~1.0), escalate to 2.0
+    # iter2 flap: still not established → sleep(~2.0), escalate to 4.0
+    # iter3 healthy: established → reset to 1.0, sleep(~1.0), no escalation
     # iter4: CancelledError before any sleep
-    assert sleeps == [1.0, 2.0, 1.0], (
-        "sub-threshold flaps must keep escalating backoff (1→2→4); only a "
-        f"healthy session resets it to 1.0. recorded sleeps: {sleeps}"
+    # Sleeps are jittered by ±_BACKOFF_JITTER_FRACTION, so assert each
+    # realized sleep falls in the band around its un-jittered base. The
+    # escalation schedule itself (1→2→4, reset to 1) is what's under test
+    # and is driven by the un-jittered ``backoff``.
+    f = connector_mod._BACKOFF_JITTER_FRACTION
+    expected_bases = [1.0, 2.0, 1.0]
+    assert len(sleeps) == len(expected_bases), (
+        f"expected {len(expected_bases)} sleeps, got {sleeps}"
     )
+    for realized, base in zip(sleeps, expected_bases, strict=True):
+        assert base * (1 - f) <= realized <= base * (1 + f), (
+            "sub-threshold flaps must keep escalating backoff (1→2→4); only a "
+            f"healthy session resets it to 1.0. realized sleep {realized} out "
+            f"of jitter band around base {base}. recorded sleeps: {sleeps}"
+        )

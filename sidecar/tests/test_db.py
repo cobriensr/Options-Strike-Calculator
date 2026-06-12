@@ -1118,48 +1118,6 @@ class TestUpsertFuturesBar:
 
 
 # ---------------------------------------------------------------------------
-# insert_options_trade — single-row execute SQL shape
-# ---------------------------------------------------------------------------
-
-
-class TestInsertOptionsTrade:
-    def test_execute_called_with_expected_sql_and_params(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
-        from datetime import date as _date, datetime as _datetime
-
-        ts = _datetime(2026, 4, 5, 14, 30)
-        expiry = _date(2026, 4, 6)
-        trade_date = _date(2026, 4, 5)
-
-        db.insert_options_trade(
-            "ES",
-            expiry,
-            Decimal("5300.0"),
-            "C",
-            ts,
-            Decimal("50.25"),
-            1,
-            "B",
-            trade_date,
-        )
-        mock_conn_pool.execute.assert_called_once()
-        sql, params = mock_conn_pool.execute.call_args[0]
-        assert "INSERT INTO futures_options_trades" in sql
-        assert params == (
-            "ES",
-            expiry,
-            Decimal("5300.0"),
-            "C",
-            ts,
-            Decimal("50.25"),
-            1,
-            "B",
-            trade_date,
-        )
-
-
-# ---------------------------------------------------------------------------
 # upsert_options_daily — single-row execute SQL shape
 # ---------------------------------------------------------------------------
 

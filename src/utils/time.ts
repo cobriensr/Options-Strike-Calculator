@@ -1,11 +1,12 @@
 import { MARKET, DEFAULTS, IV_MODES } from '../constants/index.js';
-import type { TimeValidation, IVResult, IVMode } from '../types/index.js';
-import { convertCTToET } from './timezone.js';
+import type { IVResult, IVMode } from '../types/index.js';
+import { convertCTToET, getETDayOfWeek } from './timezone.js';
 
 /**
  * Parses the day of week from 'YYYY-MM-DD' (UTC to avoid timezone shift).
  * Returns 0 = Mon .. 4 = Fri, or null for weekends / invalid input.
- * If no date is given, uses today's local day.
+ * If no date is given, uses today's day in Eastern Time (the trading-day
+ * convention) so the result is independent of the host machine's timezone.
  */
 export function parseDow(selectedDate?: string): number | null {
   if (selectedDate) {
@@ -19,38 +20,9 @@ export function parseDow(selectedDate?: string): number | null {
       return null; // weekend
     }
   }
-  const jsDay = new Date().getDay();
+  const jsDay = getETDayOfWeek(new Date()); // 0=Sun..6=Sat in ET
   if (jsDay === 0 || jsDay === 6) return null;
   return jsDay - 1;
-}
-
-/**
- * Validates that a given time (in ET, 24h format) falls within market hours.
- * Returns hours remaining if valid, error message if not.
- */
-export function validateMarketTime(
-  hour: number,
-  minute: number,
-): TimeValidation {
-  const totalMinutes = hour * 60 + minute;
-  const openMinutes = MARKET.OPEN_HOUR_ET * 60 + MARKET.OPEN_MINUTE_ET;
-  const closeMinutes = MARKET.CLOSE_HOUR_ET * 60 + MARKET.CLOSE_MINUTE_ET;
-
-  if (totalMinutes < openMinutes) {
-    return {
-      valid: false,
-      error: 'Before market open; use 9:30 AM ET or later',
-    };
-  }
-  if (totalMinutes >= closeMinutes) {
-    return {
-      valid: false,
-      error: 'After market close; use before 4:00 PM ET',
-    };
-  }
-
-  const hoursRemaining = (closeMinutes - totalMinutes) / 60;
-  return { valid: true, hoursRemaining };
 }
 
 /**

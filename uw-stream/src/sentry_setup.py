@@ -13,10 +13,9 @@ can invoke them unconditionally.
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
 
-from logger_setup import log
+from logger_setup import log, scrub_log_tokens
 
 _sentry_enabled = False
 
@@ -24,12 +23,9 @@ _sentry_enabled = False
 # The UW WS handshake uses ``wss://api.unusualwhales.com/socket?token=<API_KEY>``
 # (UW does not accept the API key as an Authorization header for WS). If an
 # upstream handshake error includes the URL in its repr, the key would land
-# in Sentry verbatim. Scrub the value while preserving the param shape so
-# triage can still see the URL had a token attached.
-#
-# Pattern covers `token=` (UW today) plus the two most common aliases an
-# upstream provider might switch to without warning. Cheap belt-and-braces.
-_TOKEN_PATTERN = re.compile(r"([?&])(token|api_key|key)=[^&\s\"']+")
+# in Sentry verbatim. We reuse the SAME scrubber the plain-log path uses
+# (``logger_setup.scrub_log_tokens``) so the two redaction paths can't drift
+# — a previous gap (AUD-L12b) was that only the Sentry path scrubbed.
 
 
 def _scrub_tokens(value: Any) -> Any:
@@ -38,7 +34,7 @@ def _scrub_tokens(value: Any) -> Any:
     caller can drop the original.
     """
     if isinstance(value, str):
-        return _TOKEN_PATTERN.sub(r"\1\2=REDACTED", value)
+        return scrub_log_tokens(value)
     if isinstance(value, dict):
         return {k: _scrub_tokens(v) for k, v in value.items()}
     if isinstance(value, list):

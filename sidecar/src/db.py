@@ -307,38 +307,6 @@ def upsert_futures_bar(
     )
 
 
-def insert_options_trade(
-    underlying: str,
-    expiry: date,
-    strike: Decimal,
-    option_type: str,
-    ts: datetime,
-    price: Decimal,
-    size: int,
-    side: str,
-    trade_date: date,
-) -> None:
-    """Insert a single ES options trade record."""
-    _execute_with_retry(
-        """
-        INSERT INTO futures_options_trades
-            (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-        (
-            underlying,
-            expiry,
-            strike,
-            option_type,
-            ts,
-            price,
-            size,
-            side,
-            trade_date,
-        ),
-    )
-
-
 def batch_insert_options_trades(rows: list[tuple]) -> None:
     """Batch insert ES options trades for efficiency.
 

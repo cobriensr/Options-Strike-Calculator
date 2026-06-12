@@ -315,59 +315,6 @@ class DatabentoClient:
         )
         log.info("Subscribed to ES + NQ TBBO on %s", DATASET_CME)
 
-    def _handle_ohlcv_from_client(self, record: Any, client: db.Live | None) -> None:
-        """Process an OHLCV bar using a specific client's symbology map."""
-        if self._shutting_down:
-            return
-
-        iid = getattr(record, "instrument_id", None)
-        if iid is None or client is None:
-            return
-
-        raw_symbol = client.symbology_map.get(iid)
-        if raw_symbol is None:
-            return
-
-        raw_str = str(raw_symbol)
-
-        # Filter out spreads/combos
-        if "-" in raw_str or ":" in raw_str or " " in raw_str:
-            return
-
-        # Prefix match to internal symbol
-        symbol = None
-        for prefix in sorted(self._prefix_to_internal, key=len, reverse=True):
-            if raw_str.startswith(prefix):
-                symbol = self._prefix_to_internal[prefix]
-                break
-        if symbol is None:
-            return
-
-        open_ = Decimal(record.open) / Decimal(1_000_000_000)
-        high = Decimal(record.high) / Decimal(1_000_000_000)
-        low = Decimal(record.low) / Decimal(1_000_000_000)
-        close = Decimal(record.close) / Decimal(1_000_000_000)
-        volume = record.volume
-        ts_ns = record.ts_event
-        ts = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
-        ts = ts.replace(second=0, microsecond=0)
-
-        # AUD-M27: enqueue off-thread (see _handle_ohlcv for the full
-        # rationale). futures_bars is ON CONFLICT DO UPDATE → re-queue safe.
-        self._bar_writer.add(
-            BarRow(
-                symbol=symbol,
-                ts=ts,
-                open=open_,
-                high=high,
-                low=low,
-                close=close,
-                volume=volume,
-            )
-        )
-        self._last_bar_ts = time.time()
-        log.debug("Bar: %s %s C=%.2f", symbol, ts.isoformat(), close)
-
     def _subscribe_es_options_streams(self) -> None:
         """Subscribe to the ES.OPT definition/statistics/trades streams.
 

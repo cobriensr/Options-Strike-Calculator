@@ -16,25 +16,6 @@ from datetime import date, datetime, timezone
 import math
 
 
-# ---------------------------------------------------------------------------
-# Month codes for CME/CBOT/NYMEX/CFE futures
-# ---------------------------------------------------------------------------
-
-MONTH_CODES = {
-    1: "F",
-    2: "G",
-    3: "H",
-    4: "J",
-    5: "K",
-    6: "M",
-    7: "N",
-    8: "Q",
-    9: "U",
-    10: "V",
-    11: "X",
-    12: "Z",
-}
-
 QUARTERLY_MONTHS = [3, 6, 9, 12]
 
 
@@ -129,33 +110,6 @@ def compute_atm_strikes(es_price: float) -> list[float]:
     for i in range(-ES_STRIKES_EACH_SIDE, ES_STRIKES_EACH_SIDE + 1):
         strikes.append(atm + i * ES_STRIKE_SPACING)
     return sorted(strikes)
-
-
-def build_es_option_symbols(
-    strikes: list[float],
-    expiry: date,
-) -> tuple[list[str], list[str]]:
-    """Build Databento raw symbols for ES option strikes.
-
-    ES option symbols on CME follow the pattern:
-    ES + expiry code + C/P + strike
-    e.g., ESM5 C5850, ESM5 P5800
-
-    For Databento with parent symbology, we use the raw symbol format.
-    The exact format depends on the venue; for live streaming we'll
-    use instrument IDs discovered via the Definition schema instead.
-
-    Returns (call_symbols, put_symbols) -- these are placeholder names
-    used for logging. Actual subscription uses instrument IDs from
-    Definition records.
-    """
-    month_code = MONTH_CODES[expiry.month]
-    year_digit = expiry.year % 10
-    prefix = f"ES{month_code}{year_digit}"
-
-    calls = [f"{prefix} C{int(s)}" for s in strikes]
-    puts = [f"{prefix} P{int(s)}" for s in strikes]
-    return calls, puts
 
 
 def get_all_futures_subscriptions() -> dict[str, dict]:

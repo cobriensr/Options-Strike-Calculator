@@ -10,7 +10,6 @@ import { getDb } from './db.js';
 // ── Types ───────────────────────────────────────────────────
 
 export interface OiChangeRow {
-  date: string;
   optionSymbol: string;
   strike: number;
   isCall: boolean;
@@ -33,7 +32,7 @@ export interface OiChangeRow {
 export async function getOiChangeData(date: string): Promise<OiChangeRow[]> {
   const sql = getDb();
   const rows = await sql`
-    SELECT date, option_symbol, strike, is_call,
+    SELECT option_symbol, strike, is_call,
            oi_diff, curr_oi, last_oi, avg_price,
            prev_ask_volume, prev_bid_volume,
            prev_multi_leg_volume, prev_total_premium
@@ -44,7 +43,6 @@ export async function getOiChangeData(date: string): Promise<OiChangeRow[]> {
   `;
 
   return rows.map((r) => ({
-    date: r.date as string,
     optionSymbol: r.option_symbol as string,
     strike: Number(r.strike),
     isCall: r.is_call as boolean,

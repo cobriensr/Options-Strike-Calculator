@@ -11,14 +11,18 @@ sleep through real-time intervals.
 
 from __future__ import annotations
 
+import json as _json
+import logging as _logging
 from unittest.mock import patch
 
 import pytest
 
 from logger_setup import (
     MALFORMED_PAYLOAD_LOG_INTERVAL_S,
+    JsonFormatter,
     RateLimitedLogger,
     rate_limited_log,
+    scrub_log_tokens,
 )
 
 
@@ -302,3 +306,103 @@ def test_patched_logger_module_singleton_does_not_blow_up_on_reset():
         rate_limited_log._state.clear()
         # Re-fire — should treat as fresh head-of-window.
         rate_limited_log.warning(scope="a", kind="b", message="c")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# AUD-L12b: token scrubbing in the PLAIN-LOG path (JsonFormatter).
+#
+# Sentry already scrubbed ``?token=<key>`` via sentry_setup._before_send, but
+# the JSON formatter wrote messages/extra/exc verbatim — so the WS handshake
+# URL (which embeds the UW API key) could land in stdout / the Railway log
+# drain in plaintext. These pin the formatter's redaction.
+# ──────────────────────────────────────────────────────────────────────────
+
+_WS_URL = "wss://api.unusualwhales.com/socket?token=SUPER_SECRET_KEY"
+
+
+def _format(record: _logging.LogRecord) -> dict:
+    """Run a record through JsonFormatter and parse the emitted JSON line."""
+    return _json.loads(JsonFormatter().format(record))
+
+
+def test_scrub_log_tokens_redacts_and_preserves_shape() -> None:
+    out = scrub_log_tokens(f"connecting to {_WS_URL}")
+    assert "SUPER_SECRET_KEY" not in out
+    assert "token=REDACTED" in out
+
+
+def test_scrub_log_tokens_noop_without_token() -> None:
+    assert scrub_log_tokens("just a plain message") == "just a plain message"
+
+
+def test_scrub_log_tokens_handles_aliases() -> None:
+    assert "X" not in scrub_log_tokens("u?api_key=X")
+    assert "Y" not in scrub_log_tokens("u?key=Y")
+
+
+def test_formatter_scrubs_token_in_message() -> None:
+    record = _logging.LogRecord(
+        name="uw-stream",
+        level=_logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="connecting to %s",
+        args=(_WS_URL,),
+        exc_info=None,
+    )
+    entry = _format(record)
+    assert "SUPER_SECRET_KEY" not in entry["msg"]
+    assert "token=REDACTED" in entry["msg"]
+
+
+def test_formatter_scrubs_token_in_string_extra() -> None:
+    record = _logging.LogRecord(
+        name="uw-stream",
+        level=_logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="connecting",
+        args=(),
+        exc_info=None,
+    )
+    record.ws_url = _WS_URL  # caller-attached extra
+    entry = _format(record)
+    assert "SUPER_SECRET_KEY" not in _json.dumps(entry)
+    assert "token=REDACTED" in entry["ws_url"]
+
+
+def test_formatter_scrubs_token_in_nested_extra() -> None:
+    """A non-string extra (dict) carrying the URL must still be scrubbed by
+    the whole-line guard so no path leaks the secret."""
+    record = _logging.LogRecord(
+        name="uw-stream",
+        level=_logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="connecting",
+        args=(),
+        exc_info=None,
+    )
+    record.detail = {"url": _WS_URL}
+    line = JsonFormatter().format(record)
+    assert "SUPER_SECRET_KEY" not in line
+
+
+def test_formatter_scrubs_token_in_exception_text() -> None:
+    try:
+        raise RuntimeError(f"handshake failed for {_WS_URL}")
+    except RuntimeError:
+        import sys
+
+        record = _logging.LogRecord(
+            name="uw-stream",
+            level=_logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="boom",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+    entry = _format(record)
+    assert "SUPER_SECRET_KEY" not in entry["exc"]
+    assert "token=REDACTED" in entry["exc"]

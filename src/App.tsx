@@ -218,7 +218,6 @@ export default function StrikeCalculator() {
     setSpxRatio,
     dSpot,
     dSpx,
-    spyVal,
     spxVal,
     spxDirectActive,
     effectiveRatio,
@@ -809,7 +808,7 @@ export default function StrikeCalculator() {
                 dSpot={dSpot}
                 effectiveRatio={effectiveRatio}
                 spxDirectActive={spxDirectActive}
-                derivedRatio={spxDirectActive ? spxVal / spyVal : spxRatio}
+                derivedRatio={effectiveRatio}
                 errors={errors}
               />
             </>
@@ -1419,7 +1418,6 @@ export default function StrikeCalculator() {
       spxDirectActive,
       spxRatio,
       spxVal,
-      spyVal,
       timeAmPm,
       timeEditedForDisplay,
       timeHour,

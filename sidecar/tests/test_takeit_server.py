@@ -442,12 +442,3 @@ def test_handle_explain_500_on_unexpected_error() -> None:
         )
     assert status == 500
     assert body == {"error": "boom"}
-
-
-# ── start_in_thread (backward-compat no-op) ────────────────────────────
-
-
-def test_start_in_thread_is_a_noop_returning_none() -> None:
-    """Legacy entrypoint now returns None — routes live on the health
-    server, so no separate thread is spawned."""
-    assert takeit_server.start_in_thread() is None

@@ -42,7 +42,6 @@
     "@neondatabase/serverless": "^1.0.2",
     "@sentry/node": "^10.44.0",
     "@sentry/react": "^10.44.0",
-    "@sentry/vite-plugin": "^5.1.1",
     "@upstash/redis": "^1.36.4",
     "@vercel/analytics": "^2.0.1",
     "@vercel/blob": "^2.3.3",
@@ -69,6 +68,7 @@
     "@electric-sql/pglite": "^0.5.1",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.59.1",
+    "@sentry/vite-plugin": "^5.1.1",
     "@tailwindcss/vite": "^4.2.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -100,7 +100,6 @@
     "typescript-eslint": "^8.58.2",
     "vite": "^7.3.1",
     "vite-plugin-pwa": "^1.2.0",
-    "vitest": "^4.0.18",
-    "ws": "^8.20.0"
+    "vitest": "^4.0.18"
   }
 }

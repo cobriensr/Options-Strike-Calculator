@@ -137,7 +137,6 @@ export default defineConfig({
     include: [
       'src/**/*.{test,spec}.{ts,tsx}',
       'api/**/*.{test,spec}.{ts,tsx}',
-      'daemon/__tests__/**/*.{test,spec}.{ts,tsx}',
       'scripts/_lib/**/*.{test,spec}.{ts,mjs}',
     ],
     coverage: {

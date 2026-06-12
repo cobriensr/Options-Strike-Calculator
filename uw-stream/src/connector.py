@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import random
 import time
 
 import orjson
@@ -28,6 +29,33 @@ from state import state
 # any clean connect.
 _INITIAL_BACKOFF_S = 1.0
 _MAX_BACKOFF_S = 60.0
+
+# Reconnect jitter. The lease/deploy model runs up to N sharded connections
+# (PER_CONN_MAX shards), and a single upstream event — a UW outage, the
+# over-cap shed, a Railway redeploy — drops every shard at the same instant.
+# Without jitter all shards walk the identical 1→2→4…→60s backoff schedule
+# in LOCKSTEP and re-handshake in a synchronized thundering herd on each
+# tick, hammering UW with N simultaneous reconnects. Spread each shard's
+# sleep by ±_BACKOFF_JITTER_FRACTION so the herd de-syncs. Jitter is applied
+# to the SLEEP only, never to the stored ``backoff`` value, so the doubling
+# schedule (and its cap) stays exact and deterministic; only the realized
+# wait is randomized. Bounded multiplicatively so the realized sleep always
+# stays within [base*0.8, base*1.2] — testable without mocking the RNG.
+_BACKOFF_JITTER_FRACTION = 0.2
+
+
+def _jittered_backoff(backoff: float) -> float:
+    """Return ``backoff`` perturbed by ±_BACKOFF_JITTER_FRACTION.
+
+    De-syncs lockstep reconnects across sharded connections. Uses
+    ``random.uniform`` (not a seeded generator) so independent processes /
+    shards draw independent offsets. The result is bounded to
+    ``[backoff * (1 - f), backoff * (1 + f)]`` so callers/tests can assert
+    the realized sleep stays within that band regardless of the draw.
+    """
+    low = 1.0 - _BACKOFF_JITTER_FRACTION
+    high = 1.0 + _BACKOFF_JITTER_FRACTION
+    return backoff * random.uniform(low, high)
 
 # Ping cadence so we get prompt failure detection on a hung TCP. UW
 # does not document a server-side keepalive; 20s is conservative.
@@ -174,7 +202,10 @@ class Connector:
             #   ~1s hammer when a provider repeatedly accepts joins then closes.
             if self._established:
                 backoff = _INITIAL_BACKOFF_S
-            await asyncio.sleep(backoff)
+            # Jitter the SLEEP only — the escalation below still doubles the
+            # un-jittered ``backoff`` so the schedule + cap stay exact while
+            # the realized wait de-syncs lockstep per-shard reconnects.
+            await asyncio.sleep(_jittered_backoff(backoff))
             if not self._established:
                 backoff = min(backoff * 2, _MAX_BACKOFF_S)
 

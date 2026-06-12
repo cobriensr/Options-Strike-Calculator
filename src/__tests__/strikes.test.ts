@@ -220,7 +220,7 @@ describe('calcStrikes', () => {
   // sigma/spot produces NaN/0 strikes that silently propagate into the
   // strike table. Every function in black-scholes.ts guards against the
   // same `T <= 0 || sigma <= 0 || spot <= 0` trio; calcStrikes must too.
-  // Upstream validateMarketTime protects production, but this is an
+  // Upstream computeMarketTime protects production, but this is an
   // exported pure utility, so it must defend its own boundary.
 
   it('returns an error for non-positive T (no NaN strikes)', () => {

@@ -255,15 +255,3 @@ def handle_explain_payload(body_bytes: bytes, auth_header: str) -> tuple[int, di
         logger.exception("takeit explain failed: unexpected")
         return 500, {"error": str(e)}
     return 200, {"results": results}
-
-
-# Kept for backward compatibility while main.py is being updated; this is
-# now a no-op since the takeit routes live on the existing health server
-# (port 8080) instead of a separate Flask process. Safe to delete after
-# the next deploy.
-def start_in_thread() -> threading.Thread | None:
-    logger.info(
-        "takeit_server.start_in_thread: takeit routes now live on the "
-        "health server (port 8080); no separate thread needed"
-    )
-    return None

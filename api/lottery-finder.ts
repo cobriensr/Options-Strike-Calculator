@@ -14,7 +14,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, isRetryableDbError, withDbRetry } from './_lib/db.js';
-import { Sentry } from './_lib/sentry.js';
+import { Sentry, metrics } from './_lib/sentry.js';
 import { readLastGood, writeLastGood } from './_lib/last-good-cache.js';
 import { readKeptTickers, addKeptTickers } from './_lib/kept-tickers.js';
 import {
@@ -449,12 +449,14 @@ export async function degradeOnTimeout<T>(
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guarded = await guardOwnerOrGuestEndpoint(req, res, () => undefined);
+  const done = metrics.request('/api/lottery-finder');
+  const guarded = await guardOwnerOrGuestEndpoint(req, res, done);
   if (guarded) return;
 
   try {
     const parsed = lotteryFinderQuerySchema.safeParse(req.query);
     if (!parsed.success) {
+      done({ status: 400 });
       res.status(400).json({
         error: 'invalid query',
         issues: parsed.error.issues.map((i) => ({
@@ -1938,7 +1940,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // filters as `fires`; can be empty when no chains qualify.
       reignitedFires,
     });
+    done({ status: 200 });
   } catch (err) {
+    done({ status: 500, error: 'lottery_finder_error' });
     sendDbErrorResponse(res, err, {
       label: 'lottery_finder',
       serverErrorBody: { error: 'Internal error' },

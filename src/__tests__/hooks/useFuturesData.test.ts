@@ -200,6 +200,43 @@ describe('useFuturesData', () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
+  // ── Superseded request must not flip loading off early (AUD-L11) ──
+
+  it('keeps loading=true when a superseded request settles before the latest', async () => {
+    // First request: a promise we never resolve directly — refresh() will
+    // abort its controller. Its `finally` still runs (AbortError path), but
+    // the guard must prevent it from clearing `loading` while request #2 is
+    // still pending.
+    let rejectFirst: ((e: unknown) => void) | undefined;
+    mockFetch.mockReturnValueOnce(
+      new Promise((_resolve, reject) => {
+        rejectFirst = reject;
+      }),
+    );
+    // Second request: stays pending so the hook should remain in loading.
+    mockFetch.mockReturnValueOnce(new Promise(() => {}));
+
+    const { result } = renderHook(() => useFuturesData());
+    expect(result.current.loading).toBe(true);
+
+    // Supersede request #1 with request #2 (aborts controller #1).
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    // Now let request #1 settle via its (now-aborted) controller. Simulate
+    // the fetch rejecting with an AbortError, which hits the catch+return,
+    // then `finally`. The guard (abortRef !== controller1) must keep loading.
+    await act(async () => {
+      rejectFirst?.(new DOMException('Aborted', 'AbortError'));
+      await Promise.resolve();
+    });
+
+    // Request #2 is still in flight → loading must stay true.
+    expect(result.current.loading).toBe(true);
+    expect(result.current.error).toBeNull();
+  });
+
   // ── Null fields ─────────────────────────────────────────
 
   it('handles null fields in API response', async () => {

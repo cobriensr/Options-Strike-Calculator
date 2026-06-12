@@ -115,9 +115,13 @@ jobs:
           body=$(echo "$response" | sed '$d')
 
           echo "HTTP Status: $http_code"
-          echo "Response: $body"
 
+          # On success the response body can contain the full Claude analysis
+          # payload; dumping it bloats the Actions log and can leak internal
+          # detail. Only echo a truncated preview on a non-200 so failures
+          # remain diagnosable without spilling the entire body.
           if [ "$http_code" != "200" ]; then
+            echo "Response (first 500 chars): $(echo "$body" | head -c 500)"
             echo "::warning::Claude analysis returned HTTP $http_code — analysis may be incomplete"
           fi
 

@@ -502,13 +502,57 @@ describe('api-helpers', () => {
       expect(result).toBe('recovered');
     });
 
-    it('retries on 502 error', async () => {
+    it('retries on a structured "UW API 502:" upstream error', async () => {
       const fn = vi
         .fn()
-        .mockRejectedValueOnce(new Error('502 Bad Gateway'))
+        .mockRejectedValueOnce(new Error('UW API 502: Bad Gateway'))
         .mockResolvedValue('recovered');
       const result = await withRetry(fn, 1);
       expect(result).toBe('recovered');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries "UW API 503:" and "UW API 504:" upstream errors', async () => {
+      for (const status of [503, 504]) {
+        const fn = vi
+          .fn()
+          .mockRejectedValueOnce(new Error(`UW API ${status}: upstream down`))
+          .mockResolvedValue('recovered');
+        const result = await withRetry(fn, 1);
+        expect(result).toBe('recovered');
+        expect(fn).toHaveBeenCalledTimes(2);
+      }
+    });
+
+    // AUD-L2: the 5xx classifier is anchored to the `UW API <status>:`
+    // prefix, so a "50x" substring buried in a response BODY (e.g. a 200
+    // payload that quotes a prior 502, or a 4xx error message that happens
+    // to contain "503") must NOT trigger a false retry.
+    it('does not retry when "502/503/504" appears only in the error body', async () => {
+      const fn = vi
+        .fn()
+        .mockRejectedValue(
+          new Error('UW API 400: {"detail":"upstream returned 503 earlier"}'),
+        );
+      await expect(withRetry(fn, 2)).rejects.toThrow('UW API 400');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not retry a bare "502 Bad Gateway" without a service prefix', async () => {
+      const fn = vi.fn().mockRejectedValue(new Error('502 Bad Gateway'));
+      await expect(withRetry(fn, 2)).rejects.toThrow('502 Bad Gateway');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a non-UW service 5xx (e.g. "GEXBot 503 /path:") — generic helper', async () => {
+      // withRetry is shared across callers; GexBot throws `GEXBot <status> <path>: …`.
+      const fn = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('GEXBot 503 /v2/SPX/orderflow: down'))
+        .mockResolvedValue('recovered');
+      const result = await withRetry(fn, 1);
+      expect(result).toBe('recovered');
+      expect(fn).toHaveBeenCalledTimes(2);
     });
 
     it('does not retry non-Error throws', async () => {

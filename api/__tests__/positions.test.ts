@@ -299,6 +299,71 @@ describe('GET /api/positions', () => {
     expect(json.saved).toBe(true);
   });
 
+  it('ignores a non-finite ?spx= param (no SPX cushion in summary)', async () => {
+    const today = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+
+    vi.mocked(schwabTraderFetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        data: [{ accountNumber: '123', hashValue: 'hash1' }],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          securitiesAccount: {
+            accountNumber: '123',
+            type: 'MARGIN',
+            positions: [
+              {
+                shortQuantity: 1,
+                longQuantity: 0,
+                averagePrice: 2.5,
+                currentDayProfitLoss: 50,
+                currentDayProfitLossPercentage: 20,
+                marketValue: 200,
+                instrument: {
+                  assetType: 'OPTION',
+                  symbol: `SPXW${today.replaceAll('-', '')}P05600`,
+                  putCall: 'PUT',
+                  underlyingSymbol: '$SPX',
+                  strikePrice: 5600,
+                  expirationDate: `${today}T00:00:00.000+00:00`,
+                },
+              },
+              {
+                shortQuantity: 0,
+                longQuantity: 1,
+                averagePrice: 1.0,
+                currentDayProfitLoss: -20,
+                currentDayProfitLossPercentage: -20,
+                marketValue: 80,
+                instrument: {
+                  assetType: 'OPTION',
+                  symbol: `SPXW${today.replaceAll('-', '')}P05575`,
+                  putCall: 'PUT',
+                  underlyingSymbol: '$SPX',
+                  strikePrice: 5575,
+                  expirationDate: `${today}T00:00:00.000+00:00`,
+                },
+              },
+            ],
+          },
+        },
+      });
+
+    const res = mockResponse();
+    // ?spx=abc parses to NaN — must be treated as absent, not poisoned.
+    await handler(mockRequest({ method: 'GET', query: { spx: 'abc' } }), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as { positions: { summary: string } };
+    // No spxPrice → buildSummary omits the "SPX at fetch time" + Cushion lines.
+    expect(json.positions.summary).not.toContain('SPX at fetch time');
+    expect(json.positions.summary).not.toContain('Cushion:');
+  });
+
   it('uses query date param when provided', async () => {
     vi.mocked(schwabTraderFetch)
       .mockResolvedValueOnce({

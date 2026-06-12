@@ -15,10 +15,32 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+
+# The UW WS handshake URL carries the API key as a query param
+# (``wss://api.unusualwhales.com/socket?token=<API_KEY>`` — UW does not
+# accept it as an Authorization header). If that URL ever reaches a log
+# call — directly, in an ``extra`` field, or inside a formatted exception
+# repr — the secret would be written to stdout / the Railway log drain in
+# plaintext. Sentry already scrubs this in ``sentry_setup._before_send``;
+# this is the parallel guard for the plain-log path so the two can't drift.
+# Pattern matches ``token=`` (UW today) plus the two most common aliases a
+# provider might switch to. Kept here (the lowest-level module, no internal
+# deps) so ``sentry_setup`` can import it rather than maintaining a second copy.
+_LOG_TOKEN_PATTERN = re.compile(r"([?&])(token|api_key|key)=[^&\s\"']+")
+
+
+def scrub_log_tokens(text: str) -> str:
+    """Redact ``?token=<secret>`` query params in a log string.
+
+    Preserves the param shape (``token=REDACTED``) so triage can still see a
+    token was attached. A no-op on strings without a matching param.
+    """
+    return _LOG_TOKEN_PATTERN.sub(r"\1\2=REDACTED", text)
 
 # Fields that handlers may attach via `extra={}` in log calls. New
 # fields are forwarded into the JSON line so we don't have to extend
@@ -60,15 +82,22 @@ class JsonFormatter(logging.Formatter):
             "level": record.levelname.lower(),
             "time": datetime.now(UTC).isoformat(),
             "service": "uw-stream",
-            "msg": record.getMessage(),
+            # Scrub any ``?token=<key>`` that leaked into the message (e.g. a
+            # handshake error repr carrying the WS URL) before it hits stdout.
+            "msg": scrub_log_tokens(record.getMessage()),
         }
-        # Forward any structured `extra` fields verbatim.
+        # Forward any structured `extra` fields, scrubbing tokens out of
+        # string values (a caller could attach the WS URL as context).
         for key, value in record.__dict__.items():
             if key not in _RESERVED_LOGRECORD_ATTRS and not key.startswith("_"):
-                entry[key] = value
+                entry[key] = scrub_log_tokens(value) if isinstance(value, str) else value
         if record.exc_info:
-            entry["exc"] = self.formatException(record.exc_info)
-        return json.dumps(entry, default=str)
+            entry["exc"] = scrub_log_tokens(self.formatException(record.exc_info))
+        # Final belt-and-braces: a non-string extra (dict/list) could still
+        # carry the URL. Scrub the serialized line as a whole so no path
+        # leaks the secret, then re-parse is unnecessary — the regex only
+        # touches ``token=``-style params, never structural JSON.
+        return scrub_log_tokens(json.dumps(entry, default=str))
 
 
 def get_logger(name: str = "uw-stream") -> logging.Logger:

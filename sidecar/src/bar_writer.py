@@ -2,7 +2,7 @@
 
 OHLCV-1m bars arrive on the single Databento SDK callback thread. The
 old path called ``db.upsert_futures_bar`` synchronously inside the
-``_handle_ohlcv`` / ``_handle_ohlcv_from_client`` callbacks, so every
+``_handle_ohlcv`` callback, so every
 bar held that thread for a full Neon round trip (and, under
 ``_execute_with_retry``, a pool borrow + one reconnect retry — up to
 ~10s during a Neon stall). That head-of-line-blocked the SAME callback

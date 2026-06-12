@@ -126,9 +126,18 @@ export function useFuturesData(
       if (err instanceof DOMException && err.name === 'AbortError') {
         return;
       }
-      setError(getErrorMessage(err));
+      // A superseded request (a newer fetch already replaced abortRef) must
+      // not surface its error — the latest request owns the UI state.
+      if (abortRef.current === controller) {
+        setError(getErrorMessage(err));
+      }
     } finally {
-      setLoading(false);
+      // Only the latest in-flight request may flip `loading` off. A
+      // superseded request reaching `finally` would otherwise clear the
+      // spinner while the newer fetch is still pending (cosmetic flicker).
+      if (abortRef.current === controller) {
+        setLoading(false);
+      }
     }
   }, [at]);
 

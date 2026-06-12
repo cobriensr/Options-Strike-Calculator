@@ -1,6 +1,6 @@
 /**
  * useOpeningFlowSignal — polls /api/opening-flow-signal during the
- * 09:25–09:50 CT signal window so the panel updates as slice-1 →
+ * 08:25–08:50 CT signal window so the panel updates as slice-1 →
  * slice-2 → evaluation progresses.
  *
  * Outside the window, the hook returns the last known state (or null)

@@ -184,17 +184,6 @@ class TestShutdownBarrier:
         client._handle_trade(rec)
         client._trade_processor.process_trade.assert_not_called()
 
-    def test_handle_ohlcv_from_client_early_returns_when_shutting_down(
-        self, client: DatabentoClient
-    ) -> None:
-        client._shutting_down = True
-        fake_client = MagicMock()
-        fake_client.symbology_map = {5: "DXH6"}
-        rec = _make_bar_record(iid=5)
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_ohlcv_from_client(rec, fake_client)
-            upsert_mock.assert_not_called()
-
     def test_handle_stat_early_returns_when_shutting_down(
         self, client: DatabentoClient
     ) -> None:
@@ -1151,90 +1140,6 @@ class TestSubscribeFuturesOhlcv:
 
 
 # ---------------------------------------------------------------------------
-# _handle_ohlcv_from_client — alternate path that uses an explicit client arg
-# ---------------------------------------------------------------------------
-
-
-class TestHandleOhlcvFromClient:
-    def test_writes_bar_when_symbol_resolves(self, client: DatabentoClient) -> None:
-        fake_client = MagicMock()
-        fake_client.symbology_map = {7: "ESM6"}
-        # _prefix_to_internal already maps "ES" -> "ES" from fixture
-        rec = _make_bar_record(iid=7, close_raw=5800_000_000_000)
-
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_ohlcv_from_client(rec, fake_client)
-            # AUD-M27: enqueued, not synchronously upserted. Drain to assert.
-            upsert_mock.assert_not_called()
-            client._bar_writer.flush()
-            upsert_mock.assert_called_once()
-            args = upsert_mock.call_args.args
-            assert args[0] == "ES"  # symbol
-            assert float(args[5]) == pytest.approx(5800.0)  # close
-
-    def test_returns_when_iid_missing(self, client: DatabentoClient) -> None:
-        fake_client = MagicMock()
-        rec = MagicMock()
-        rec.instrument_id = None
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_ohlcv_from_client(rec, fake_client)
-            upsert_mock.assert_not_called()
-
-    def test_returns_when_client_is_none(self, client: DatabentoClient) -> None:
-        rec = _make_bar_record(iid=1)
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_ohlcv_from_client(rec, None)
-            upsert_mock.assert_not_called()
-
-    def test_returns_when_symbology_map_lookup_fails(
-        self, client: DatabentoClient
-    ) -> None:
-        fake_client = MagicMock()
-        fake_client.symbology_map = {}  # iid=7 not in map
-        rec = _make_bar_record(iid=7)
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_ohlcv_from_client(rec, fake_client)
-            upsert_mock.assert_not_called()
-
-    def test_drops_spread_symbols(self, client: DatabentoClient) -> None:
-        """Raw symbols containing '-', ':', or whitespace are spreads/combos
-        and must be filtered out before any DB write."""
-        fake_client = MagicMock()
-        fake_client.symbology_map = {7: "ESM6-ESU6"}  # spread
-        rec = _make_bar_record(iid=7)
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_ohlcv_from_client(rec, fake_client)
-            upsert_mock.assert_not_called()
-
-    def test_drops_unrecognised_prefix(self, client: DatabentoClient) -> None:
-        """An outright contract whose prefix isn't in _prefix_to_internal
-        is dropped without crashing."""
-        fake_client = MagicMock()
-        fake_client.symbology_map = {7: "DXH6"}  # prefix "DX" not registered
-        rec = _make_bar_record(iid=7)
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_ohlcv_from_client(rec, fake_client)
-            upsert_mock.assert_not_called()
-
-    def test_handles_db_exception_silently(self, client: DatabentoClient) -> None:
-        """A DB blip on the bar upsert must never tear the SDK callback.
-
-        AUD-M27: the bar is enqueued (which cannot raise) and the upsert
-        runs on the BarWriter's drain. Even forcing the drain inline with a
-        raising upsert must not propagate — BatchedWriter captures the
-        exception to Sentry and bounded-re-queues the row.
-        """
-        fake_client = MagicMock()
-        fake_client.symbology_map = {7: "ESM6"}
-        rec = _make_bar_record(iid=7)
-        with patch("db.upsert_futures_bar", side_effect=RuntimeError("boom")):
-            # Enqueue must not raise.
-            client._handle_ohlcv_from_client(rec, fake_client)
-            # Draining with a raising upsert must also not propagate.
-            client._bar_writer.flush()
-
-
-# ---------------------------------------------------------------------------
 # _on_record — exception handling & misc dispatch
 # ---------------------------------------------------------------------------
 
@@ -1696,18 +1601,6 @@ class TestAudM27BarEnqueue:
             assert client._bar_writer._buffer == []
             args = upsert_mock.call_args.args
             assert args[0] == "ES"
-
-    def test_from_client_bar_is_buffered_not_synchronous(
-        self, client: DatabentoClient
-    ) -> None:
-        """The alternate _handle_ohlcv_from_client path also enqueues."""
-        fake_client = MagicMock()
-        fake_client.symbology_map = {7: "ESM6"}
-        rec = _make_bar_record(iid=7, close_raw=5800_000_000_000)
-        with patch("db.upsert_futures_bar") as upsert_mock:
-            client._handle_ohlcv_from_client(rec, fake_client)
-            upsert_mock.assert_not_called()
-            assert len(client._bar_writer._buffer) == 1
 
     def test_stop_flushes_bar_and_stat_writers(
         self, client: DatabentoClient, monkeypatch: pytest.MonkeyPatch

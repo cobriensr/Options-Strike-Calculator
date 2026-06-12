@@ -121,6 +121,9 @@ vi.mock('../_lib/sentry.js', () => ({
     captureMessage: mockCaptureMessage,
     setTag: vi.fn(),
   },
+  metrics: {
+    request: vi.fn(() => vi.fn()),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({

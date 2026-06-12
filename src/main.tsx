@@ -27,8 +27,6 @@ if (import.meta.env.DEV) {
 // and notifies useAccessSession so the public-mode UI surfaces immediately.
 installAuthInterceptor();
 
-console.log('[build]', __BUILD_SHA__);
-
 /**
  * Redact query-string VALUES while preserving keys on fetch/xhr
  * breadcrumb URLs. `?ticker=SPX&qty=10` → `?ticker=REDACTED&qty=REDACTED`.

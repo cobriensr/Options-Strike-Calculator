@@ -106,6 +106,17 @@ function isExpiringToday(expirationDate: string, today: string): boolean {
   return expirationDate.startsWith(today);
 }
 
+/**
+ * Parse the optional `?spx=` query param into a finite SPX price, or
+ * `undefined` when absent or non-finite (NaN/Infinity from a malformed
+ * value). Guards downstream distance/P&L math from poisoned inputs.
+ */
+function parseSpxQuery(raw: unknown): number | undefined {
+  if (typeof raw !== 'string' || raw === '') return undefined;
+  const n = Number.parseFloat(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
 // ============================================================
 // SHARED PERSISTENCE
 // ============================================================
@@ -196,10 +207,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const today = (rawDate as string) || getTodayET();
   const fetchTime = getNowCT();
   if (req.method === 'POST') {
-    return handleCSVUpload(req, res, today, fetchTime);
+    return handleCSVUpload(req, res, today, fetchTime, done);
   }
-  return handleSchwabFetch(req, res, today, fetchTime);
+  return handleSchwabFetch(req, res, today, fetchTime, done);
 }
+
+type RequestDone = (opts?: { status?: number; error?: string }) => void;
 
 // ============================================================
 // POST — CSV upload from thinkorswim paperMoney
@@ -209,6 +222,7 @@ async function handleCSVUpload(
   res: VercelResponse,
   today: string,
   fetchTime: string,
+  done: RequestDone,
 ) {
   try {
     const rawCsv =
@@ -218,6 +232,7 @@ async function handleCSVUpload(
           ? req.body.csv
           : null;
     if (rawCsv === null) {
+      done({ status: 400 });
       return res.status(400).json({
         error: 'Request body must be CSV text or JSON { csv: "..." }',
       });
@@ -228,13 +243,16 @@ async function handleCSVUpload(
       const tooLarge = validation.error.issues.some((i) =>
         i.message.includes('too large'),
       );
-      return res.status(tooLarge ? 413 : 400).json({
+      const status = tooLarge ? 413 : 400;
+      done({ status });
+      return res.status(status).json({
         error: 'Invalid CSV payload',
         issues: validation.error.issues,
       });
     }
     const csv = validation.data.csv;
     if (!csv.trim()) {
+      done({ status: 400 });
       return res.status(400).json({ error: 'Empty CSV body' });
     }
 
@@ -245,15 +263,14 @@ async function handleCSVUpload(
     const spxLegs = parsed.openLegs;
 
     if (spxLegs.length === 0 && parsed.allTrades.length === 0) {
+      done({ status: 400 });
       return res.status(400).json({
         error:
           'No SPX options found in CSV. Ensure the file contains an "Options" or "Account Trade History" section with SPX trades.',
       });
     }
 
-    const spxPrice = req.query.spx
-      ? Number.parseFloat(req.query.spx as string)
-      : undefined;
+    const spxPrice = parseSpxQuery(req.query.spx);
 
     // Build spread stats from open legs
     const r = buildPositionResponse(spxLegs, spxPrice);
@@ -271,7 +288,7 @@ async function handleCSVUpload(
       response: r,
     });
 
-    return res.status(200).json({
+    const result = res.status(200).json({
       positions: {
         summary: fullSummary,
         legs: spxLegs,
@@ -296,9 +313,12 @@ async function handleCSVUpload(
       fetchTime,
       source: 'paperMoney',
     });
+    done({ status: 200 });
+    return result;
   } catch (err) {
     Sentry.captureException(err);
     logger.error({ err }, 'CSV upload error');
+    done({ status: 500, error: 'csv_parse_error' });
     return res.status(500).json({ error: 'Failed to parse CSV' });
   }
 }
@@ -311,15 +331,18 @@ async function handleSchwabFetch(
   res: VercelResponse,
   today: string,
   fetchTime: string,
+  done: RequestDone,
 ) {
   try {
     const acctResult = await schwabTraderFetch<SchwabAccountNumber[]>(
       '/accounts/accountNumbers',
     );
     if (!acctResult.ok) {
+      done({ status: acctResult.status });
       return res.status(acctResult.status).json({ error: acctResult.error });
     }
     if (!acctResult.data || acctResult.data.length === 0) {
+      done({ status: 404 });
       return res.status(404).json({ error: 'No linked accounts found' });
     }
     const accountHash = acctResult.data[0]!.hashValue;
@@ -328,6 +351,7 @@ async function handleSchwabFetch(
       `/accounts/${accountHash}?fields=positions`,
     );
     if (!posResult.ok) {
+      done({ status: posResult.status });
       return res.status(posResult.status).json({ error: posResult.error });
     }
     const positions = posResult.data?.securitiesAccount?.positions ?? [];
@@ -360,9 +384,7 @@ async function handleSchwabFetch(
       }
     }
 
-    const spxPrice = req.query.spx
-      ? Number.parseFloat(req.query.spx as string)
-      : undefined;
+    const spxPrice = parseSpxQuery(req.query.spx);
     const r = buildPositionResponse(spxLegs, spxPrice);
 
     const saved = await persistPositions({
@@ -375,7 +397,7 @@ async function handleSchwabFetch(
       response: r,
     });
 
-    return res.status(200).json({
+    const result = res.status(200).json({
       positions: {
         summary: r.summary,
         legs: spxLegs,
@@ -395,7 +417,10 @@ async function handleSchwabFetch(
       saved,
       fetchTime,
     });
+    done({ status: 200 });
+    return result;
   } catch (err) {
+    done({ status: 500, error: 'positions_fetch_error' });
     sendDbErrorResponse(res, err, {
       label: 'positions',
       serverErrorBody: { error: 'Failed to fetch positions' },

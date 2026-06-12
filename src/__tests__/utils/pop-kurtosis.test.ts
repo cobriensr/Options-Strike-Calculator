@@ -207,6 +207,86 @@ describe('adjustICPoPForKurtosis', () => {
     expect(result).toBe(0);
   });
 
+  // AUD-L7: with kurtosis > 1 the d2 formulas divide by sigma, so a
+  // zero/negative sigma produces NaN when spot sits exactly on the
+  // breakeven (log(spot/BE) = 0 → 0/0). A zero/negative breakeven feeds
+  // log(spot/0) = Infinity into the same expression. Either way the
+  // unguarded kurtosis branch leaks NaN; the guard must match calcPoP
+  // and return 0. The putSigma=0 cases below use spot === beLow so the
+  // pre-fix code returned NaN (the exact bug being pinned).
+  it('putSigma <= 0 returns 0 (not NaN), matching calcPoP', () => {
+    // spot === beLow → log(1)=0 → 0 / (0 * sqrtT) = NaN pre-fix
+    const result = adjustICPoPForKurtosis(
+      beLow,
+      beLow,
+      beHigh,
+      0,
+      sigma,
+      T,
+      kp(2.0),
+    );
+    expect(result).toBe(0);
+    expect(Number.isNaN(result)).toBe(false);
+  });
+
+  it('callSigma <= 0 returns 0 (not NaN), matching calcPoP', () => {
+    // spot === beHigh → log(1)=0 → 0 / (0 * sqrtT) = NaN pre-fix
+    const result = adjustICPoPForKurtosis(
+      beHigh,
+      beLow,
+      beHigh,
+      sigma,
+      0,
+      T,
+      kp(2.0),
+    );
+    expect(result).toBe(0);
+    expect(Number.isNaN(result)).toBe(false);
+  });
+
+  it('beLow <= 0 returns 0 (not NaN), matching calcPoP', () => {
+    const result = adjustICPoPForKurtosis(
+      spot,
+      0,
+      beHigh,
+      sigma,
+      sigma,
+      T,
+      kp(2.0),
+    );
+    expect(result).toBe(0);
+    expect(Number.isNaN(result)).toBe(false);
+  });
+
+  it('beHigh <= 0 returns 0 (not NaN), matching calcPoP', () => {
+    const result = adjustICPoPForKurtosis(
+      spot,
+      beLow,
+      -10,
+      sigma,
+      sigma,
+      T,
+      kp(2.0),
+    );
+    expect(result).toBe(0);
+    expect(Number.isNaN(result)).toBe(false);
+  });
+
+  it('guarded inputs return exactly what calcPoP returns', () => {
+    // The guard delegates to calcPoP; verify they agree on the value (0).
+    const guarded = adjustICPoPForKurtosis(
+      beLow,
+      beLow,
+      beHigh,
+      0,
+      sigma,
+      T,
+      kp(2.0),
+    );
+    const fromCalcPoP = calcPoP(beLow, beLow, beHigh, 0, sigma, T);
+    expect(guarded).toBe(fromCalcPoP);
+  });
+
   it('wider breakevens → higher adjusted PoP', () => {
     const narrow = adjustICPoPForKurtosis(
       spot,

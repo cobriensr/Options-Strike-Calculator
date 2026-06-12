@@ -50,10 +50,4 @@ export {
   buildScenarioTable,
 } from './hedge/index.js';
 
-export {
-  validateMarketTime,
-  calcTimeToExpiry,
-  resolveIV,
-  to24Hour,
-  toETTime,
-} from './time.js';
+export { calcTimeToExpiry, resolveIV, to24Hour, toETTime } from './time.js';

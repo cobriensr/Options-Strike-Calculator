@@ -267,7 +267,8 @@ export function impliedVolatility(
 
   // Newton-Raphson from a Manaster-Koehler-style initial guess.
   // σ₀ ≈ √(2 / T) × |ln(S/K)| is a solid starting point for near-ATM strikes;
-  // for far-OTM we bump it to 0.5 to avoid vega ≈ 0 at σ ≈ 0.
+  // we floor it at 0.3 to avoid vega ≈ 0 at σ ≈ 0. If the guess is still
+  // non-finite or non-positive (e.g. ATM where ln(S/K) = 0), fall back to 0.5.
   const logMoneyness = Math.abs(Math.log(spot / strike));
   let sigma = Math.max(Math.sqrt((2 * logMoneyness) / T), 0.3);
   if (!Number.isFinite(sigma) || sigma <= 0) sigma = 0.5;
