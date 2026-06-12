@@ -71,6 +71,13 @@ async function fetchNetFlowForDate(ticker, date) {
 
   if (ticks.length === 0) return [];
 
+  // The running sums below assume chronological order, but UW does not
+  // guarantee net-prem-ticks come back sorted. Sort ascending by tape_time
+  // before cumulating so the cumulative NCP/NPP/volume series is correct.
+  ticks.sort(
+    (a, b) => new Date(a.tape_time).getTime() - new Date(b.tape_time).getTime(),
+  );
+
   // Cumulate incremental ticks
   let runningNcp = 0;
   let runningNpp = 0;

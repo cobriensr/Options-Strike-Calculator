@@ -314,6 +314,83 @@ async function bulkInsertStrikes(rows, date, ticker, expiry) {
   return totalInserted;
 }
 
+// ── Resume support ──────────────────────────────────────────
+
+/**
+ * Return the set of dates ('YYYY-MM-DD') already present in
+ * strike_exposures for a ticker. A multi-hour run that crashes near the
+ * end must not re-fetch every (ticker, date) it already wrote — query
+ * once per ticker up front, then skip dates we already have.
+ *
+ * Idempotency (ON CONFLICT DO NOTHING) makes a re-run *correct*, but it
+ * still re-pays the UW fetch + insert round-trip for every already-done
+ * day. Skipping turns a crash-and-resume into a cheap fast-forward.
+ */
+async function fetchExistingDates(ticker) {
+  const rows = await sql`
+    SELECT DISTINCT date FROM strike_exposures WHERE ticker = ${ticker}
+  `;
+  // Neon returns DATE as a Date object; normalize to 'YYYY-MM-DD'.
+  return new Set(
+    rows.map((r) =>
+      r.date instanceof Date ? r.date.toISOString().slice(0, 10) : r.date,
+    ),
+  );
+}
+
+// ── Per-ticker worker ───────────────────────────────────────
+
+/**
+ * Process one ticker across all trading days. Returns per-ticker counts
+ * so the caller can aggregate without sharing mutable closure state.
+ * Resume-aware (skips dates already in strike_exposures) and per-date
+ * fault-tolerant (one bad date is counted, not fatal).
+ */
+async function processTicker(ticker, tradingDays) {
+  const counts = { written: 0, fetched: 0, empty: 0, skipped: 0, failed: 0 };
+
+  // Resume: load dates already in strike_exposures for this ticker once,
+  // then fast-forward past them. A crash near the end of a multi-hour
+  // run resumes cheaply instead of re-fetching the whole window.
+  let existingDates;
+  try {
+    existingDates = await fetchExistingDates(ticker);
+  } catch (err) {
+    // If the resume probe itself fails, fall back to processing all
+    // dates (idempotent inserts keep that correct, just slower) rather
+    // than aborting the ticker.
+    console.warn(
+      `  ${ticker}: resume probe failed (${err.message}) — processing all dates`,
+    );
+    existingDates = new Set();
+  }
+
+  for (const date of tradingDays) {
+    if (existingDates.has(date)) {
+      counts.skipped++;
+      continue;
+    }
+
+    // Per-date try/catch: one bad (ticker, date) must not abort the
+    // whole multi-hour run. Count the failure and continue.
+    try {
+      await new Promise((r) => setTimeout(r, INTER_CALL_SLEEP_MS));
+      const rows = await fetchStrikeExposure(ticker, date, date); // 0DTE: expiry == date
+      counts.fetched++;
+      if (rows.length === 0) {
+        counts.empty++;
+        continue;
+      }
+      counts.written += await bulkInsertStrikes(rows, date, ticker, date);
+    } catch (err) {
+      counts.failed++;
+      console.warn(`  ✗ ${ticker} ${date} failed: ${err.message}`);
+    }
+  }
+
+  return counts;
+}
+
 // ── Main ────────────────────────────────────────────────────
 
 async function main() {
@@ -329,36 +406,43 @@ async function main() {
 
   const totals = Object.fromEntries(TICKERS.map((t) => [t, 0]));
   let fetchesDone = 0;
+  let failedDates = 0;
+  let skippedResume = 0;
   const start = Date.now();
 
   for (const ticker of TICKERS) {
-    let tickerWritten = 0;
-    let tickerEmpty = 0;
-    for (const date of tradingDays) {
-      await new Promise((r) => setTimeout(r, INTER_CALL_SLEEP_MS));
-      const rows = await fetchStrikeExposure(ticker, date, date); // 0DTE: expiry == date
-      fetchesDone++;
-      if (rows.length === 0) {
-        tickerEmpty++;
-        continue;
-      }
-      const inserted = await bulkInsertStrikes(rows, date, ticker, date);
-      tickerWritten += inserted;
-    }
-    totals[ticker] = tickerWritten;
+    const counts = await processTicker(ticker, tradingDays);
+    totals[ticker] = counts.written;
+    fetchesDone += counts.fetched;
+    failedDates += counts.failed;
+    skippedResume += counts.skipped;
+
     const elapsed = ((Date.now() - start) / 1000).toFixed(0);
     const pct = ((fetchesDone / totalFetches) * 100).toFixed(1);
+    const skippedNote =
+      counts.skipped > 0 ? ` · skipped ${counts.skipped} (resume)` : '';
+    const daysWithData = tradingDays.length - counts.empty - counts.skipped;
     console.log(
-      `  ${ticker}: ${tickerWritten} rows ` +
-        `(${tradingDays.length - tickerEmpty}/${tradingDays.length} days with data) ` +
-        `· ${pct}% complete · ${elapsed}s elapsed`,
+      `  ${ticker}: ${counts.written} rows ` +
+        `(${daysWithData}/${tradingDays.length} days fetched with data)` +
+        skippedNote +
+        ` · ${pct}% complete · ${elapsed}s elapsed`,
     );
   }
 
   console.log('\nDone.');
   const grandTotal = Object.values(totals).reduce((a, b) => a + b, 0);
-  console.log(`  Total rows inserted: ${grandTotal}`);
+  console.log(`  Total rows inserted:   ${grandTotal}`);
+  console.log(`  Dates skipped (resume): ${skippedResume}`);
+  console.log(`  Failed dates:          ${failedDates}`);
   console.log(`  Wall-clock: ${((Date.now() - start) / 1000).toFixed(0)}s`);
+
+  // Truthful exit code so CI/cron detects partial failures (every other
+  // date-loop backfill silently exited 0). Mirrors the pattern in
+  // backfill-periscope-playbook.mjs.
+  if (failedDates > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

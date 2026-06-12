@@ -100,11 +100,20 @@ function getTradingDays(count) {
 
 // ── Fetch ─────────────────────────────────────────────────
 
+// The /spot-exposures/expiry-strike endpoint caps a page at `limit` rows
+// and exposes no offset/cursor/next-page parameter (verified against every
+// caller in this repo — all pass a bare `limit`). For SPY/QQQ ~80 strikes
+// per expiry this is ample, but for a wide chain (e.g. SPXW) a single
+// expiry can exceed 500 strikes and get silently truncated. Since we can't
+// paginate, detect a full page and flag the run as a failure.
+const EXPIRY_STRIKE_LIMIT = 500;
+
+// Set true if any (ticker, date) page hit the limit (likely truncated).
+let overflowDetected = false;
+
 async function fetchExpiryStrike(ticker, date) {
-  // expirations[] = date pins to that day's 0DTE expiry. limit=500 is
-  // the endpoint's max; SPY/QQQ have ~80 strikes per expiry so this is
-  // ample.
-  const url = `${UW_BASE}/stock/${ticker}/spot-exposures/expiry-strike?expirations[]=${date}&date=${date}&limit=500`;
+  // expirations[] = date pins to that day's 0DTE expiry.
+  const url = `${UW_BASE}/stock/${ticker}/spot-exposures/expiry-strike?expirations[]=${date}&date=${date}&limit=${EXPIRY_STRIKE_LIMIT}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
     signal: AbortSignal.timeout(20_000),
@@ -117,7 +126,18 @@ async function fetchExpiryStrike(ticker, date) {
     return [];
   }
   const json = await res.json();
-  return json.data ?? [];
+  const data = json.data ?? [];
+
+  if (data.length >= EXPIRY_STRIKE_LIMIT) {
+    console.warn(
+      `  ⚠️  OVERFLOW: ${ticker} ${date} returned ${data.length} rows ` +
+        `(== limit ${EXPIRY_STRIKE_LIMIT}). The endpoint has no offset/cursor ` +
+        `pagination, so additional strikes were likely truncated.`,
+    );
+    overflowDetected = true;
+  }
+
+  return data;
 }
 
 // ── UPSERT ─────────────────────────────────────────────────
@@ -243,6 +263,10 @@ async function upsertOne(r) {
 
 // ── Main ──────────────────────────────────────────────────
 
+// Total per-row upsert failures across the whole run. Surfaced as a
+// non-zero exit code so a partially-failed backfill doesn't report success.
+let totalFailed = 0;
+
 async function backfillDate(date) {
   for (const ticker of TICKERS) {
     await new Promise((r) => setTimeout(r, 250));
@@ -264,6 +288,7 @@ async function backfillDate(date) {
         console.error(`  ${ticker} strike ${restRow.strike}: ${err.message}`);
       }
     }
+    totalFailed += failed;
     console.log(
       `  ${date} ${ticker}: ${restRows.length} ticks → ${inserted} new, ${updated} updated, ${failed} failed`,
     );
@@ -285,6 +310,18 @@ async function main() {
   }
 
   console.log('\nDone.');
+
+  if (overflowDetected) {
+    console.error(
+      `\n⚠️  One or more (ticker, date) pages hit the ${EXPIRY_STRIKE_LIMIT}-row limit — ` +
+        `data may be truncated (endpoint has no pagination). Exiting non-zero.`,
+    );
+    process.exitCode = 1;
+  }
+  if (totalFailed > 0) {
+    console.error(`\n⚠️  ${totalFailed} row upsert(s) failed. Exiting non-zero.`);
+    process.exitCode = 1;
+  }
 }
 
 try {

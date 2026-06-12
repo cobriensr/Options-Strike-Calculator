@@ -63,6 +63,7 @@ async function fetchFlowTicks(date) {
 
 async function storeTicks(date, ticks) {
   let stored = 0;
+  let errors = 0;
 
   for (const tick of ticks) {
     const ncp = Number.parseFloat(tick.net_call_premium);
@@ -88,12 +89,19 @@ async function storeTicks(date, ticks) {
         ON CONFLICT (date, timestamp) DO NOTHING
       `;
       stored++;
-    } catch {
-      // Skip duplicates silently
+    } catch (err) {
+      // Don't swallow: an INSERT that throws is a real failure (connection
+      // drop, constraint violation, bad value), NOT a duplicate — duplicates
+      // are handled by ON CONFLICT DO NOTHING and never reach here. Log it and
+      // count it so the run can report and exit non-zero.
+      errors++;
+      console.warn(
+        `  Insert error for ${date} @ ${tick.timestamp}: ${err.message}`,
+      );
     }
   }
 
-  return stored;
+  return { stored, errors };
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -108,6 +116,7 @@ async function main() {
 
   let totalStored = 0;
   let skipped = 0;
+  let totalErrors = 0;
 
   for (const date of tradingDays) {
     // Rate limit: 600ms between calls
@@ -121,8 +130,9 @@ async function main() {
       continue;
     }
 
-    const stored = await storeTicks(date, ticks);
+    const { stored, errors } = await storeTicks(date, ticks);
     totalStored += stored;
+    totalErrors += errors;
 
     // Compute summary stats for logging
     const ratios = ticks
@@ -146,6 +156,13 @@ async function main() {
   console.log('\nDone!');
   console.log(`  Stored: ${totalStored} readings`);
   console.log(`  Skipped (no data): ${skipped}`);
+  console.log(`  Insert errors: ${totalErrors}`);
+
+  // Surface insert errors to CI/cron — the process otherwise exits 0 and hides
+  // genuine DB-write failures (previously swallowed by a bare catch {}).
+  if (totalErrors > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

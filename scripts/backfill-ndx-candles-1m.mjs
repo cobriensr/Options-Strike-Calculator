@@ -52,14 +52,45 @@ const UW_BASE = 'https://api.unusualwhales.com/api';
 // → ~41. The live production cron fetches the ratio from Schwab each
 // minute; this static value is a backfill-only approximation that will
 // systematically over- or under-state historical NDX values by the
-// drift between this constant and the actual session ratio. Recalibrate
-// before running if QQQ has moved >5% since this constant was last
-// updated. A future enhancement (option b in the Phase 1e review) would
-// fetch the Schwab quote once at script startup and use the live ratio
-// for the whole run, eliminating the seam between backfill and live-cron
-// rows.
-const QQQ_TO_NDX_RATIO = 41;
+// drift between this constant and the actual session ratio (~1-2% per
+// quarter). Recalibrate before running if QQQ has moved >5% since this
+// constant was last updated.
+//
+// We can't compute the ratio from actual prices in this script: Nasdaq
+// prohibits external distribution of NDX index prices, which is the
+// whole reason we proxy via QQQ — we have QQQ here but no real NDX to
+// divide against. The only correct live source is the Schwab quote the
+// production cron uses. So the robustness lever here is an env override
+// plus a loud warning, not an in-script computation.
+const DEFAULT_QQQ_TO_NDX_RATIO = 41;
+const QQQ_TO_NDX_RATIO = (() => {
+  const raw = process.env.QQQ_TO_NDX_RATIO;
+  if (raw == null || raw.trim() === '') return DEFAULT_QQQ_TO_NDX_RATIO;
+  const parsed = Number.parseFloat(raw);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    console.error(
+      `Invalid QQQ_TO_NDX_RATIO="${raw}" (must be a positive number)`,
+    );
+    process.exit(1);
+  }
+  return parsed;
+})();
 const DAYS_TO_BACKFILL = 30;
+
+// Loud, unmissable warning: the translated NDX values are an
+// approximation pinned to a STATIC ratio. Drifts ~1-2%/quarter from the
+// live Schwab ratio the production cron uses, so backfilled rows will
+// not tick-match live rows. Override with QQQ_TO_NDX_RATIO to recalibrate.
+console.warn(
+  '⚠️  STATIC QQQ→NDX ratio approximation in use ' +
+    `(QQQ_TO_NDX_RATIO=${QQQ_TO_NDX_RATIO}` +
+    `${process.env.QQQ_TO_NDX_RATIO ? ' from env' : ' default'}).`,
+);
+console.warn(
+  '⚠️  Drifts ~1-2%/quarter from the live Schwab ratio; backfilled NDX ' +
+    'rows will NOT tick-match live-cron rows. Recalibrate via the ' +
+    'QQQ_TO_NDX_RATIO env var if QQQ has moved >5% since 2026-05.',
+);
 
 // ── ET timezone helpers ─────────────────────────────────────
 //
@@ -299,6 +330,13 @@ async function main() {
   console.log(`  Total rows skipped:     ${totals.rowsSkipped}`);
   console.log(`  Errors:                 ${totals.errors}`);
   console.log(`  Duration:               ${durationSec}s`);
+
+  // Truthful exit code so CI/cron detects partial failures (every other
+  // date-loop backfill silently exited 0). Mirrors the pattern in
+  // backfill-periscope-playbook.mjs.
+  if (totals.errors > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

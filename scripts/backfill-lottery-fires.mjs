@@ -75,18 +75,84 @@ if (!existsSync(P26_PATH)) {
 }
 
 // ============================================================
-// Minimal CSV parser — pandas writes well-formed RFC 4180 with
-// quoted strings only when commas are inside fields. The p14/p26
-// outputs don't have embedded commas, so a simple split is safe.
+// RFC 4180 CSV parser. pandas writes well-formed RFC 4180 and
+// quotes any field containing a comma, a double-quote, or a
+// newline. A naive `.split(',')` corrupts every such row, so we
+// parse character-by-character: track whether we're inside a
+// quoted field, treat `""` as an escaped quote, and honor quoted
+// newlines (a record can span multiple physical lines).
 // ============================================================
+
+/**
+ * Split the full CSV text into records, each an array of string fields.
+ * Handles quoted fields with embedded commas, escaped `""`, and embedded
+ * newlines. Trailing whitespace-only lines are dropped.
+ *
+ * Implemented as a small state machine. `state` is mutated in place by the
+ * two per-character handlers so the top-level loop stays flat (keeps
+ * cognitive complexity low).
+ */
+function parseCsvRecords(raw) {
+  const records = [];
+  const state = {
+    field: '',
+    record: [],
+    inQuotes: false,
+    sawField: false, // distinguishes an empty trailing line from a real row
+  };
+
+  const pushField = () => {
+    state.record.push(state.field);
+    state.field = '';
+    state.sawField = true;
+  };
+  const pushRecord = () => {
+    pushField();
+    records.push(state.record);
+    state.record = [];
+    state.sawField = false;
+  };
+
+  // Returns the index to resume at (lets the `""` escape consume two chars).
+  const handleQuoted = (ch, i) => {
+    if (ch !== '"') {
+      state.field += ch;
+      return i;
+    }
+    if (raw[i + 1] === '"') {
+      state.field += '"'; // escaped quote
+      return i + 1;
+    }
+    state.inQuotes = false;
+    return i;
+  };
+
+  const handleUnquoted = (ch) => {
+    if (ch === '"') state.inQuotes = true;
+    else if (ch === ',') pushField();
+    else if (ch === '\n') pushRecord();
+    else if (ch !== '\r') state.field += ch;
+    // '\r' is swallowed — '\n' handles the record break (CRLF or lone CR)
+  };
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (state.inQuotes) i = handleQuoted(ch, i);
+    else handleUnquoted(ch);
+  }
+
+  // Flush the last record if the file didn't end with a newline.
+  if (state.sawField || state.field.length > 0) pushRecord();
+
+  return records;
+}
 
 function parseCsv(path) {
   const raw = readFileSync(path, 'utf8');
-  const lines = raw.split(/\r?\n/).filter((l) => l.length > 0);
-  if (lines.length < 2) return [];
-  const header = lines[0].split(',');
-  return lines.slice(1).map((line) => {
-    const cells = line.split(',');
+  const records = parseCsvRecords(raw);
+  if (records.length < 2) return [];
+  const header = records[0];
+  return records.slice(1).map((cells) => {
     const obj = {};
     for (let i = 0; i < header.length; i++) {
       obj[header[i]] = cells[i] ?? '';
@@ -117,6 +183,18 @@ function toIsoUtc(v) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+// Stable price-join key. The p27 join keys on entry_price, but p14 and p27
+// are written by different pipeline stages and the same fire's entry_price
+// can differ by sub-cent float/format noise ("1.05" vs "1.0500000001" vs
+// "1.050"). Raw-string equality misses those; raw float equality is equally
+// fragile. Round to 4 decimals (premiums are cent-meaningful) and format to
+// a canonical fixed-precision string so both sides collapse to the same key.
+// Returns '' for non-numeric input so a bad value never spuriously matches.
+function priceKey(v) {
+  const n = num(v);
+  return n == null ? '' : n.toFixed(4);
+}
+
 // ============================================================
 // Load + join p14 + p26
 // ============================================================
@@ -130,17 +208,18 @@ const p26Rows = parseCsv(P26_PATH);
 console.log(`  ${p26Rows.length} p26 rows`);
 
 // p27 is optional — supplies tier_50_holdEod (the third Phase-1 exit
-// policy) and the wider grid. Joined on (date, chain, entry_price)
-// since p27 lacks alert_seq. Collisions on identical entry_price are
-// rare; if they happen, last-write-wins is fine because both rows are
-// the same fire's outcome.
+// policy) and the wider grid. Joined on (date, chain, entry_price) since
+// p27 lacks alert_seq. entry_price is normalized via priceKey() so sub-cent
+// float/format noise between p14 and p27 doesn't break the match. Collisions
+// on identical entry_price are rare; if they happen, last-write-wins is fine
+// because both rows are the same fire's outcome.
 let p27ByKey = new Map();
 if (existsSync(P27_PATH)) {
   console.log('Reading', P27_PATH);
   const p27Rows = parseCsv(P27_PATH);
   console.log(`  ${p27Rows.length} p27 rows`);
   for (const r of p27Rows) {
-    const key = `${r.date_str}|${r.option_chain_id}|${r.entry_price}`;
+    const key = `${r.date_str}|${r.option_chain_id}|${priceKey(r.entry_price)}`;
     p27ByKey.set(key, r);
   }
 } else {
@@ -233,10 +312,12 @@ for (const m of p26Rows) {
 
     realized_trail30_10_pct: num(m.realized_trail30_10_pct),
     realized_hard30m_pct: num(m.realized_hard30m_pct),
-    // tier_50_holdEod isn't in p26; pull from p27 when available.
+    // tier_50_holdEod isn't in p26; pull from p27 when available. Key on the
+    // normalized entry_price (priceKey) to match the p27 index above.
     realized_tier50_holdeod_pct: num(
-      p27ByKey.get(`${m.date_str}|${m.option_chain_id}|${t.entry_price}`)
-        ?.tier_50_holdEod,
+      p27ByKey.get(
+        `${m.date_str}|${m.option_chain_id}|${priceKey(t.entry_price)}`,
+      )?.tier_50_holdEod,
     ),
     realized_eod_pct: num(m.realized_eod_pct),
     peak_ceiling_pct: num(m.peak_ceiling_pct),

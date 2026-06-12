@@ -56,7 +56,17 @@ async function fetchAggregate(date) {
 
   const body = await res.json();
   const data = body.data ?? [];
-  return data.find((r) => r.date === date) ?? data[data.length - 1] ?? null;
+  // Return ONLY the row matching the requested date. Do NOT fall back to
+  // data.at(-1): the endpoint can return a window of dates, and the last row
+  // is some OTHER day's data. storeAggregate stamps the row with ${date}, so a
+  // fallback would mislabel another day's greek exposure as belonging to this
+  // date. No match -> null (the caller skips, logging "no aggregate data").
+  const match = data.find((r) => r.date === date);
+  if (!match) {
+    console.warn(`  No aggregate row matching ${date} — skipping aggregate`);
+    return null;
+  }
+  return match;
 }
 
 // ── Fetch by-expiry for one date ────────────────────────────
@@ -184,6 +194,7 @@ async function main() {
   let totalStored = 0;
   let aggCount = 0;
   let skipped = 0;
+  let aggErrors = 0;
 
   for (const date of tradingDays) {
     // Skip any date that already has rows (live cron data) — backfilling it
@@ -207,7 +218,13 @@ async function main() {
     let netGamma = 'N/A';
     if (aggRow) {
       aggResult = await storeAggregate(aggRow, date);
-      if (aggResult) aggCount++;
+      if (aggResult) {
+        aggCount++;
+      } else {
+        // storeAggregate returned false -> the INSERT threw (it already logged
+        // the error). Count it so the run can exit non-zero for CI/cron.
+        aggErrors++;
+      }
       const ng =
         Number.parseFloat(aggRow.call_gamma) +
         Number.parseFloat(aggRow.put_gamma);
@@ -239,6 +256,13 @@ async function main() {
   console.log(`  Expiry rows stored: ${totalStored}`);
   console.log(`  Total expiry rows processed: ${totalExpiries}`);
   console.log(`  Dates skipped (already had rows): ${skipped}`);
+  console.log(`  Aggregate insert failures: ${aggErrors}`);
+
+  // Surface DB-write failures to CI/cron — the process otherwise falls through
+  // and exits 0, hiding genuine insert errors.
+  if (aggErrors > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

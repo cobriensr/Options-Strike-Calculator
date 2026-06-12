@@ -134,10 +134,40 @@ async function upsert(date, symbol, summary, embedding) {
   `;
 }
 
+async function fetchExistingDates(fromIso, toIso) {
+  const existing = await sql`
+    SELECT date FROM day_embeddings
+    WHERE date >= ${fromIso}::date AND date <= ${toIso}::date
+  `;
+  // Neon returns DATE as a Date object; normalize to 'YYYY-MM-DD' so the
+  // Set membership test matches the string `date` field on summary rows.
+  return new Set(
+    existing.map((r) =>
+      r.date instanceof Date ? r.date.toISOString().slice(0, 10) : r.date,
+    ),
+  );
+}
+
 async function handleRange(fromIso, toIso, counters) {
-  const rows = await fetchSummariesBatch(fromIso, toIso);
-  if (rows.length === 0) {
+  const allRows = await fetchSummariesBatch(fromIso, toIso);
+  if (allRows.length === 0) {
     counters.emptyChunks += 1;
+    return;
+  }
+
+  // Skip-existing: a crash + re-run must not re-pay OpenAI for days that
+  // already have an embedding. Query the target table for the chunk's
+  // date window once, then drop rows whose date is already present.
+  // (ON CONFLICT DO UPDATE keeps re-runs correct, but the embed call has
+  // already cost money by the time the upsert runs — so we gate before
+  // embedding, not at insert time.)
+  const existingDates = await fetchExistingDates(fromIso, toIso);
+  const rows = allRows.filter((r) => !existingDates.has(r.date));
+  const skippedExisting = allRows.length - rows.length;
+  if (skippedExisting > 0) {
+    counters.skippedExisting += skippedExisting;
+  }
+  if (rows.length === 0) {
     return;
   }
 
@@ -190,7 +220,12 @@ async function main() {
   const ranges = buildRanges(START, END);
   console.log(`  ${ranges.length} 6-month chunks\n`);
 
-  const counters = { upserted: 0, failed: 0, emptyChunks: 0 };
+  const counters = {
+    upserted: 0,
+    failed: 0,
+    emptyChunks: 0,
+    skippedExisting: 0,
+  };
   const startWall = Date.now();
 
   for (const [i, [from, to]] of ranges.entries()) {
@@ -210,12 +245,20 @@ async function main() {
 
   const totalElapsed = ((Date.now() - startWall) / 1000).toFixed(1);
   console.log(`\n✓ Backfill complete in ${totalElapsed}s`);
-  console.log(`  upserted:     ${counters.upserted}`);
-  console.log(`  empty chunks: ${counters.emptyChunks}`);
-  console.log(`  failed:       ${counters.failed}`);
+  console.log(`  upserted:        ${counters.upserted}`);
+  console.log(`  skipped existing: ${counters.skippedExisting}`);
+  console.log(`  empty chunks:    ${counters.emptyChunks}`);
+  console.log(`  failed:          ${counters.failed}`);
 
   const [row] = await sql`SELECT COUNT(*)::int AS n FROM day_embeddings`;
   console.log(`\n  day_embeddings rows in DB: ${row.n}`);
+
+  // Truthful exit code so CI/cron detects partial failures (every other
+  // date-loop backfill silently exited 0). Mirrors the pattern in
+  // backfill-periscope-playbook.mjs.
+  if (counters.failed > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

@@ -65,11 +65,40 @@ async function fetchIvForDate(date) {
   };
 }
 
+// ── ET offset for a calendar date ───────────────────────────
+
+/**
+ * Return the America/New_York UTC offset (e.g. '-04:00' in EDT, '-05:00'
+ * in EST) for 09:31 local on the given YYYY-MM-DD date. Hardcoding -04:00
+ * is wrong in winter (EST is -05:00) and, because the timestamp is part of
+ * the iv_monitor conflict key, the wrong offset produces a *different*
+ * timestamp and thus a duplicate row instead of an upsert.
+ */
+function etOffsetForDate(date) {
+  // Use noon UTC to land safely inside the ET calendar day regardless of
+  // which side of the date line the offset puts us on.
+  const probe = new Date(`${date}T12:00:00Z`);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    timeZoneName: 'shortOffset',
+  }).formatToParts(probe);
+  const tzName = parts.find((p) => p.type === 'timeZoneName')?.value ?? '';
+  // tzName looks like 'GMT-4' or 'GMT-5'. Normalize to '±HH:00'.
+  const match = /GMT([+-])(\d{1,2})/.exec(tzName);
+  if (!match) {
+    throw new Error(`Could not derive ET offset for ${date} (got "${tzName}")`);
+  }
+  const sign = match[1];
+  const hours = match[2].padStart(2, '0');
+  return `${sign}${hours}:00`;
+}
+
 // ── Store reading ───────────────────────────────────────────
 
 async function storeReading(date, reading) {
-  // Use 9:31 AM ET as the timestamp (represents the open reading)
-  const timestamp = `${date}T09:31:00-04:00`;
+  // Use 9:31 AM ET as the timestamp (represents the open reading). Derive
+  // the correct ET offset for the date so EST dates don't collide with EDT.
+  const timestamp = `${date}T09:31:00${etOffsetForDate(date)}`;
 
   try {
     await sql`
@@ -134,6 +163,11 @@ async function main() {
   console.log(`  Stored: ${stored}`);
   console.log(`  Skipped (no data): ${skipped}`);
   console.log(`  Errors: ${errors}`);
+
+  if (errors > 0) {
+    console.error(`\n⚠️  ${errors} insert error(s). Exiting non-zero.`);
+    process.exitCode = 1;
+  }
 }
 
 try {

@@ -34,11 +34,23 @@ const ALL_EXPIRY_SENTINEL = '1970-01-01';
 
 const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
+// UW's /spot-exposures/strike endpoint caps a page at `limit` rows and
+// exposes no offset/cursor/next-page parameter (verified against every
+// caller in this repo — all use a bare `limit`). So if a page returns
+// exactly the limit, more strikes likely exist beyond it and were
+// silently dropped. We can't paginate; the best we can do is warn loudly
+// and flag the run as a failure so the truncation isn't silent.
+const STRIKE_LIMIT = 500;
+
+// Set true if any date's page hit the limit (likely truncated). Forces a
+// non-zero exit code at the end so the run reports failure.
+let overflowDetected = false;
+
 // ── Fetch per-strike data for one date ──────────────────────
 
 async function fetchStrikeAll(date) {
   const res = await fetch(
-    `${UW_BASE}/stock/SPX/spot-exposures/strike?date=${date}&limit=500`,
+    `${UW_BASE}/stock/SPX/spot-exposures/strike?date=${date}&limit=${STRIKE_LIMIT}`,
     { headers: { Authorization: `Bearer ${UW_API_KEY}` } },
   );
 
@@ -49,7 +61,18 @@ async function fetchStrikeAll(date) {
   }
 
   const body = await res.json();
-  return body.data ?? [];
+  const data = body.data ?? [];
+
+  if (data.length >= STRIKE_LIMIT) {
+    console.warn(
+      `  ⚠️  OVERFLOW: ${date} returned ${data.length} rows (== limit ${STRIKE_LIMIT}). ` +
+        `The endpoint has no offset/cursor pagination, so additional strikes were ` +
+        `likely truncated. Data for this date may be incomplete.`,
+    );
+    overflowDetected = true;
+  }
+
+  return data;
 }
 
 // ── Store strikes ───────────────────────────────────────────
@@ -163,6 +186,14 @@ async function main() {
 
   console.log(`\nDone!`);
   console.log(`  Total strike rows stored: ${totalStored}`);
+
+  if (overflowDetected) {
+    console.error(
+      `\n⚠️  One or more dates hit the ${STRIKE_LIMIT}-row page limit — data may be ` +
+        `truncated (endpoint has no pagination). Exiting non-zero.`,
+    );
+    process.exitCode = 1;
+  }
 }
 
 try {

@@ -150,31 +150,29 @@ function aggregateLevels(trades) {
 
 // ── Store levels ────────────────────────────────────────────
 
+// Atomic replace: DELETE + all INSERTs run in a single transaction so a
+// failed insert rolls back the delete — we never wipe a day's levels and
+// then fail to repopulate them. The error is NOT swallowed: it propagates
+// to the caller, which logs it, counts the day, and sets exitCode=1.
 async function storeLevels(date, levels) {
-  await sql`DELETE FROM dark_pool_levels WHERE date = ${date}`;
-
   const now = new Date().toISOString();
-  let stored = 0;
 
+  const statements = [sql`DELETE FROM dark_pool_levels WHERE date = ${date}`];
   for (const l of levels) {
-    try {
-      await sql`
-        INSERT INTO dark_pool_levels (
-          date, spx_approx, total_premium, trade_count, total_shares,
-          latest_time, updated_at
-        ) VALUES (
-          ${date}, ${l.spxLevel}, ${l.totalPremium},
-          ${l.tradeCount}, ${l.totalShares},
-          ${l.latestTime || null}, ${now}
-        )
-      `;
-      stored++;
-    } catch (err) {
-      console.warn(`  Insert error: ${err.message}`);
-    }
+    statements.push(sql`
+      INSERT INTO dark_pool_levels (
+        date, spx_approx, total_premium, trade_count, total_shares,
+        latest_time, updated_at
+      ) VALUES (
+        ${date}, ${l.spxLevel}, ${l.totalPremium},
+        ${l.tradeCount}, ${l.totalShares},
+        ${l.latestTime || null}, ${now}
+      )
+    `);
   }
 
-  return stored;
+  await sql.transaction(statements);
+  return levels.length;
 }
 
 // ── Format premium ──────────────────────────────────────────
@@ -198,7 +196,7 @@ async function main() {
     `Days: ${tradingDays.length} (${tradingDays[0]} → ${tradingDays.at(-1)})\n`,
   );
 
-  const totals = { trades: 0, levels: 0, stored: 0, skipped: 0 };
+  const totals = { trades: 0, levels: 0, stored: 0, skipped: 0, failed: 0 };
 
   for (const date of tradingDays) {
     // Pause between dates to let the rate limit window reset
@@ -213,7 +211,20 @@ async function main() {
     }
 
     const levels = aggregateLevels(trades);
-    const stored = dryRun ? 0 : await storeLevels(date, levels);
+    let stored = 0;
+    if (!dryRun) {
+      try {
+        stored = await storeLevels(date, levels);
+      } catch (err) {
+        // Atomic transaction failed — the day's levels are unchanged (the
+        // DELETE rolled back with the failed INSERT). Surface it loudly and
+        // mark the run as failed so CI / the operator notices.
+        console.error(`  ${date}: store failed (rolled back): ${err.message}`);
+        totals.failed++;
+        process.exitCode = 1;
+        continue;
+      }
+    }
 
     const top = levels[0];
     const topStr = top
@@ -235,6 +246,7 @@ async function main() {
   console.log(`  Total levels: ${totals.levels}`);
   console.log(`  Stored: ${totals.stored}`);
   console.log(`  Days skipped (no data): ${totals.skipped}`);
+  console.log(`  Days failed (rolled back): ${totals.failed}`);
 }
 
 try {

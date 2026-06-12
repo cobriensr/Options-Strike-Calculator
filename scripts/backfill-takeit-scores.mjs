@@ -309,11 +309,22 @@ async function loadBundleOrAbort() {
   return { bundle, taggedVersion };
 }
 
-/** Build the SQL WHERE clause (strict-clean + optional SINCE). */
+/**
+ * Build the SQL WHERE clause (strict-clean + optional SINCE) as a
+ * parameterized fragment. `STRICT_CLEAN_WHERE` is a static array of literal
+ * predicates (no user data); the only dynamic value is SINCE, which is bound
+ * as a positional param ($1) rather than interpolated into the SQL text.
+ * Returns the placeholder count so callers can append further params (id
+ * cursor, LIMIT) at the correct positions.
+ */
 function buildWhereClause() {
   const where = [...STRICT_CLEAN_WHERE];
-  if (SINCE) where.push(`date >= '${SINCE}'::date`);
-  return where.join(' AND ');
+  const params = [];
+  if (SINCE) {
+    params.push(SINCE);
+    where.push(`date >= $${params.length}::date`);
+  }
+  return { text: where.join(' AND '), params, paramCount: params.length };
 }
 
 /**
@@ -322,20 +333,22 @@ function buildWhereClause() {
  * distinct candidate session dates (ISO `YYYY-MM-DD`) so the win-rate
  * pre-loader can run one PIT aggregate per date.
  */
-async function loadEnvelope(whereClause) {
+async function loadEnvelope(where) {
   const envelope = await sql.query(
     `SELECT COUNT(*) AS n,
             MIN(trigger_time_ct) AS min_t,
             MAX(trigger_time_ct) AS max_t
        FROM lottery_finder_fires
-      WHERE ${whereClause}`,
+      WHERE ${where.text}`,
+    where.params,
   );
   const { n, min_t, max_t } = envelope[0];
 
   // Distinct dates — neon returns DATE as Date objects (memory:
   // feedback_neon_date_columns.md), so we coerce via isoDateKey.
   const dateRows = await sql.query(
-    `SELECT DISTINCT date FROM lottery_finder_fires WHERE ${whereClause} ORDER BY date`,
+    `SELECT DISTINCT date FROM lottery_finder_fires WHERE ${where.text} ORDER BY date`,
+    where.params,
   );
   const candidateDates = dateRows.map((r) => isoDateKey(r.date));
 
@@ -354,9 +367,10 @@ async function loadEnvelope(whereClause) {
  * sanity-check that early-date rows see a SMALLER map than late-date rows
  * (the buggy global map made them all the same size).
  */
-async function runPreflight(whereClause, bundle, history) {
+async function runPreflight(where, bundle, history) {
   const probeBatch = await sql.query(
-    `SELECT * FROM lottery_finder_fires WHERE ${whereClause} ORDER BY id LIMIT 1`,
+    `SELECT * FROM lottery_finder_fires WHERE ${where.text} ORDER BY id LIMIT 1`,
+    where.params,
   );
   if (probeBatch.length === 0) {
     log('lottery: probe found no rows (race?), aborting');
@@ -455,9 +469,9 @@ async function processBatch(batch, bundle, history, taggedVersion) {
 
 async function main() {
   const { bundle, taggedVersion } = await loadBundleOrAbort();
-  const whereClause = buildWhereClause();
+  const where = buildWhereClause();
   const { candidateCount, minT, maxT, candidateDates } =
-    await loadEnvelope(whereClause);
+    await loadEnvelope(where);
   if (candidateCount === 0) {
     log('lottery: no candidate rows under strict-clean WHERE, done.');
     return;
@@ -470,7 +484,7 @@ async function main() {
   const windowEnd = new Date(maxT.getTime() + 60_000);
   const history = await preloadHistory(windowStart, windowEnd, candidateDates);
 
-  await runPreflight(whereClause, bundle, history);
+  await runPreflight(where, bundle, history);
 
   // Mass loop.
   let totalScored = 0;
@@ -487,11 +501,16 @@ async function main() {
       log(`lottery: hit LIMIT=${LIMIT}, stopping`);
       break;
     }
+    // Append the id cursor + LIMIT as positional params after the WHERE
+    // params so nothing is interpolated into the SQL text.
+    const idParam = where.paramCount + 1;
+    const limitParam = where.paramCount + 2;
     const batch = await sql.query(
       `SELECT * FROM lottery_finder_fires
-        WHERE ${whereClause} AND id > ${lastId}
+        WHERE ${where.text} AND id > $${idParam}
         ORDER BY id
-        LIMIT ${batchSize}`,
+        LIMIT $${limitParam}`,
+      [...where.params, lastId, batchSize],
     );
     if (!batch.length) {
       log('lottery: no more rows, done');

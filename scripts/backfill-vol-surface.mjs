@@ -87,17 +87,22 @@ async function storeTermStructure(date, rows) {
 // ── Store realized vol + IV rank ────────────────────────────
 
 async function storeRealizedVol(date, rvRows, rankRows) {
-  // Find the entry matching the date (or last entry)
+  // Find ONLY the entry matching the requested date. Do NOT fall back to
+  // rows.at(-1): the UW endpoints can return a window of dates, and the last
+  // row is some OTHER day's data. Stamping it with ${date} would mislabel
+  // another day's vol as belonging to this date. Missing -> null (skip).
   const findRow = (rows) => {
     if (!rows || rows.length === 0) return null;
-    const match = rows.find((r) => r.date === date);
-    return match ?? rows.at(-1);
+    return rows.find((r) => r.date === date) ?? null;
   };
 
   const rvRow = findRow(rvRows);
   const rankRow = findRow(rankRows);
 
-  if (!rvRow && !rankRow) return false;
+  if (!rvRow && !rankRow) {
+    console.log(`  ${date}: no matching realized vol / IV rank row — skipping`);
+    return 'skipped';
+  }
 
   const iv30d =
     rvRow?.implied_volatility != null
@@ -136,10 +141,10 @@ async function storeRealizedVol(date, rvRows, rankRows) {
         iv_overpricing_pct = EXCLUDED.iv_overpricing_pct,
         iv_rank = EXCLUDED.iv_rank
     `;
-    return true;
+    return 'stored';
   } catch (err) {
     console.warn(`  RV insert error for ${date}: ${err.message}`);
-    return false;
+    return 'error';
   }
 }
 
@@ -182,11 +187,15 @@ async function main() {
 
     // Realized vol + IV rank
     if (rvData || rankData) {
-      const ok = await storeRealizedVol(date, rvData, rankData);
-      if (ok) {
-        const iv = rvData?.at(-1)?.implied_volatility;
-        const rv = rvData?.at(-1)?.realized_volatility;
-        const rank = rankData?.at(-1)?.iv_rank_1y ?? rankData?.at(-1)?.iv_rank;
+      const result = await storeRealizedVol(date, rvData, rankData);
+      if (result === 'stored') {
+        // Log the date-matched rows (same selection storeRealizedVol uses),
+        // never .at(-1) which is some other day's data.
+        const rvMatch = rvData?.find((r) => r.date === date);
+        const rankMatch = rankData?.find((r) => r.date === date);
+        const iv = rvMatch?.implied_volatility;
+        const rv = rvMatch?.realized_volatility;
+        const rank = rankMatch?.iv_rank_1y ?? rankMatch?.iv_rank;
         console.log(
           `  ${date}: RV stored` +
             (iv != null ? ` IV=${(Number(iv) * 100).toFixed(1)}%` : '') +
@@ -194,6 +203,8 @@ async function main() {
             (rank != null ? ` Rank=${Number(rank).toFixed(0)}` : ''),
         );
         rvStored++;
+      } else if (result === 'skipped') {
+        skipped++;
       } else {
         errors++;
       }
@@ -208,6 +219,12 @@ async function main() {
   console.log(`  Realized vol days: ${rvStored}`);
   console.log(`  Skipped (no data): ${skipped}`);
   console.log(`  Errors: ${errors}`);
+
+  // Surface insert errors to CI/cron — the process otherwise exits 0 and hides
+  // genuine DB-write failures. Skipped (no matching row) is NOT an error.
+  if (errors > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {
