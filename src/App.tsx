@@ -30,6 +30,7 @@ import { useIntervalBAAlerts } from './hooks/useIntervalBAAlerts';
 import { useIntervalBAMute } from './hooks/useIntervalBAMute';
 import { usePushSubscription } from './hooks/usePushSubscription';
 import { useDarkPoolLevels } from './hooks/useDarkPoolLevels';
+import { usePersistedFlag } from './hooks/usePersistedFlag';
 import { useGexTarget } from './hooks/useGexTarget';
 import {
   usePeriscopeExposure,
@@ -493,18 +494,12 @@ export default function StrikeCalculator() {
     vix1dStatic,
   });
 
-  // BacktestDiag dismiss state lives here (not in the component) so it resets
-  // when the user scrubs to a new backtest date — otherwise dismissing once
-  // would hide the diagnostic for every subsequent date, defeating its purpose.
-  const [backtestDiagDismissed, setBacktestDiagDismissed] = useState(false);
-
-  // Re-show the diagnostic whenever the backtest date changes (and when leaving
-  // backtest mode, since selectedDate changes back to today). Keyed on the date
-  // string, not the snapshot object identity, so unrelated re-renders don't
-  // reset it.
-  useEffect(() => {
-    setBacktestDiagDismissed(false);
-  }, [vix.selectedDate]);
+  // BacktestDiag dismissal is permanent (guest feedback 2026-06-12):
+  // dismiss once and the overlay never returns, across dates and
+  // sessions. Reset path: localStorage.removeItem('backtestDiag.dismissed').
+  const [backtestDiagDismissed, setBacktestDiagDismissed] = usePersistedFlag(
+    'backtestDiag.dismissed',
+  );
 
   // True whenever the selected date+time is in the past — drives BACKTEST
   // badge independently of whether candle data is available. This decouples
