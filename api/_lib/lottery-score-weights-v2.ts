@@ -7,7 +7,7 @@
  * Source JSON: ml/output/lottery_score_weights.json
  *
  * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-06-11T04:39:34.837730+00:00
+ * Trained at    : 2026-06-12T02:17:41.954452+00:00
  *
  * computeLotteryScoreV2() is wired into detect-lottery-fires.ts (feeds the
  * quality-adjusted score / qas; see lottery-tier.ts).
@@ -95,7 +95,7 @@ export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
   TSLA: 0,
   TSLL: 0,
   TSM: 0,
-  UBER: -1,
+  UBER: 0,
   UNH: 0,
   USAR: -1,
   USO: -1,
@@ -114,7 +114,7 @@ export const TOD_WEIGHTS_V2: Readonly<
 > = {
   AM_open: 4,
   MID: -1,
-  LUNCH: -4,
+  LUNCH: -3,
   PM: -4,
 };
 
@@ -149,7 +149,7 @@ export const TOD_WEIGHTS_DOW_OVERRIDES_V2: Readonly<
 
 export const DTE_WEIGHTS_V2: Readonly<Record<string, number>> = {
   '0': 2,
-  '1': 2,
+  '1': 1,
   '2': -4,
   '3': -3,
 };
@@ -171,8 +171,8 @@ export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
  * Quintile 4 : value > boundaries[3]
  */
 export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.05946932636967901, 0.09467455621301775, 0.15254237288135594,
-  0.3673469387755102,
+  0.05955942606670463, 0.0950625951439236, 0.1529680365296803,
+  0.3696060037523452,
 ];
 
 // ---------------------------------------------------------------------------
@@ -181,8 +181,8 @@ export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
 
 export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [-1, 1, 4, 3, 1];
 export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.011830181622766773, 0.024667421177461193, 0.04107038520349969,
-  0.069019256534323,
+  0.011935028722861027, 0.02483815759195978, 0.04109721870450829,
+  0.06862287686085901,
 ];
 
 // ---------------------------------------------------------------------------
@@ -291,8 +291,8 @@ export const COMPOSITE_BONUSES_V2: ReadonlyArray<CompositeBonus> = [
 // ---------------------------------------------------------------------------
 
 export const LOTTERY_TIER_THRESHOLDS_V2 = {
-  t1: 11,
-  t2: 7,
+  t1: 10,
+  t2: 6,
 } as const;
 
 // ---------------------------------------------------------------------------
