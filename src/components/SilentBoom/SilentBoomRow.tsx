@@ -5,6 +5,7 @@ import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { SiblingAssetConfirmationBar } from '../Gexbot/SiblingAssetConfirmationBar.js';
 import { ContractTapeChart } from '../charts/ContractTapeChart.js';
 import { TickerNetFlowChart } from '../charts/TickerNetFlowChart.js';
+import { EXPANDED_ROW_CHART_HEIGHT } from '../../constants/chart-layout.js';
 import { TakeItScore } from '../TakeItScore/TakeItScore.js';
 import {
   SILENT_BOOM_EXIT_POLICY_LABELS,
@@ -1033,6 +1034,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
               <ContractTapeChart
                 series={tapeSeries}
                 markerTs={alert.bucketCt}
+                pixelHeight={EXPANDED_ROW_CHART_HEIGHT}
                 ariaLabel={`${alert.optionChainId} per-minute tape`}
               />
             )}
@@ -1057,6 +1059,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
                 markerTs={alert.bucketCt}
                 date={alert.date}
                 symbol={alert.underlyingSymbol}
+                height={EXPANDED_ROW_CHART_HEIGHT}
                 ariaLabel={`${alert.underlyingSymbol} cumulative net call/put premium with stock price overlay`}
               />
             )}

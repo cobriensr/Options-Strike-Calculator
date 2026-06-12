@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ContractTapeChart } from '../components/charts/ContractTapeChart';
+import { viewBoxHeightFor } from '../constants/chart-layout';
 import type { ContractTapeBar } from '../components/LotteryFinder/types';
 
 // ── Fixture factory ──────────────────────────────────────────
@@ -356,5 +357,48 @@ describe('ContractTapeChart: historical fire markers', () => {
     expect(Number.isFinite(x1)).toBe(true);
     // PAD_X = 4 in the source — the clamped position should land at PAD_X.
     expect(x1).toBe(4);
+  });
+});
+
+// ============================================================
+// PIXEL-HEIGHT MODE — viewBoxHeightFor helper
+// ============================================================
+
+describe('viewBoxHeightFor', () => {
+  it('falls back when width is unmeasured or zero (jsdom)', () => {
+    expect(viewBoxHeightFor(200, 280, null, 130)).toBe(130);
+    expect(viewBoxHeightFor(200, 280, 0, 130)).toBe(130);
+  });
+
+  it('derives viewBox height so SVG units stay square', () => {
+    // 800px-wide column at 280px tall: 200 viewBox units across 800px
+    // = 0.25 units/px, so 280px tall = 70 viewBox units.
+    expect(viewBoxHeightFor(200, 280, 800, 130)).toBe(70);
+    // Narrower column → taller viewBox (same px height, fewer px/unit).
+    expect(viewBoxHeightFor(200, 280, 400, 130)).toBe(140);
+  });
+});
+
+describe('ContractTapeChart: pixelHeight mode', () => {
+  const bars = [
+    makeBar({ ts: '2026-05-08T14:30:00Z', avgPrice: 1.2 }),
+    makeBar({ ts: '2026-05-08T14:31:00Z', avgPrice: 1.3 }),
+  ];
+
+  it('pins the svg to the pixel height and keeps the fallback viewBox when unmeasured (jsdom)', () => {
+    render(
+      <ContractTapeChart series={bars} pixelHeight={280} ariaLabel="tape" />,
+    );
+    const svg = screen.getByRole('img', { name: 'tape' });
+    expect(svg.getAttribute('style')).toContain('height: 280px');
+    // jsdom measures container width 0 → fallback viewBox height (130).
+    expect(svg.getAttribute('viewBox')).toBe('0 0 200 130');
+  });
+
+  it('applies no inline height style without pixelHeight', () => {
+    render(<ContractTapeChart series={bars} ariaLabel="tape" />);
+    const svg = screen.getByRole('img', { name: 'tape' });
+    expect(svg.getAttribute('style')).toBeNull();
+    expect(svg.getAttribute('viewBox')).toBe('0 0 200 130');
   });
 });

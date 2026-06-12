@@ -6,6 +6,7 @@ import { SiblingAssetConfirmationBar } from '../Gexbot/SiblingAssetConfirmationB
 import { TakeItScore } from '../TakeItScore/TakeItScore.js';
 import { ContractTapeChart } from '../charts/ContractTapeChart.js';
 import { TickerNetFlowChart } from '../charts/TickerNetFlowChart.js';
+import { EXPANDED_ROW_CHART_HEIGHT } from '../../constants/chart-layout.js';
 import type {
   ExitPolicy,
   LotteryFire,
@@ -1343,6 +1344,7 @@ export const LotteryRow = memo(function LotteryRow({
                 historicalFires={fire.historicalFires}
                 syncHoverTime={hoverTime}
                 onHoverTime={onHoverTimeChange}
+                pixelHeight={EXPANDED_ROW_CHART_HEIGHT}
                 ariaLabel={`${fire.optionChainId} per-minute tape`}
               />
             )}
@@ -1369,6 +1371,7 @@ export const LotteryRow = memo(function LotteryRow({
                 symbol={fire.underlyingSymbol}
                 syncHoverTime={hoverTime}
                 onHoverTime={onHoverTimeChange}
+                height={EXPANDED_ROW_CHART_HEIGHT}
                 ariaLabel={`${fire.underlyingSymbol} cumulative net call/put premium with stock price overlay`}
               />
             )}

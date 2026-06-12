@@ -15,6 +15,7 @@ import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from '../charts/ContractTapeChart.js';
 import { TickerNetFlowChart } from '../charts/TickerNetFlowChart.js';
+import { EXPANDED_ROW_CHART_HEIGHT } from '../../constants/chart-layout.js';
 import type { IntervalBAFeedAlert } from '../../hooks/useIntervalBAFeed.js';
 
 interface IntervalBARowProps {
@@ -453,6 +454,7 @@ export const IntervalBARow = memo(function IntervalBARow({
               <ContractTapeChart
                 series={tapeSeries}
                 markerTs={alert.fired_at}
+                pixelHeight={EXPANDED_ROW_CHART_HEIGHT}
                 ariaLabel={`${alert.option_chain} per-minute tape`}
               />
             )}
@@ -477,6 +479,7 @@ export const IntervalBARow = memo(function IntervalBARow({
                 markerTs={alert.fired_at}
                 date={date}
                 symbol={alert.ticker}
+                height={EXPANDED_ROW_CHART_HEIGHT}
                 ariaLabel={`${alert.ticker} cumulative net call/put premium with stock price overlay`}
               />
             )}

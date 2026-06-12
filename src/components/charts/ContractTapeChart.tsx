@@ -29,8 +29,9 @@
  * Hand-rolled SVG — same approach as FlowChart, no Recharts dep.
  */
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ContractTapeBar } from '../LotteryFinder/types.js';
+import { viewBoxHeightFor } from '../../constants/chart-layout.js';
 
 interface ContractTapeChartProps {
   /** Per-minute bars from /api/lottery-contract-tape. */
@@ -52,6 +53,15 @@ interface ContractTapeChartProps {
   }>;
   /** Fixed height override (SVG units). Default 130. */
   height?: number;
+  /**
+   * Fixed on-screen height (CSS px). When set, the SVG renders at this
+   * exact pixel height and the viewBox height is derived from the
+   * measured container width so SVG units stay square (no text
+   * distortion). Takes precedence over `height`. Falls back to the
+   * `height` viewBox default until the container is measured (and
+   * permanently in environments without layout, e.g. jsdom).
+   */
+  pixelHeight?: number;
   /**
    * UTC-second cursor time pushed down from a sibling chart (NET FLOW)
    * via the parent LotteryRow. When set, this chart paints a thin
@@ -117,6 +127,7 @@ function ContractTapeChartInner({
   markerTs,
   historicalFires,
   height = 130,
+  pixelHeight,
   syncHoverTime,
   onHoverTime,
   ariaLabel,
@@ -131,21 +142,41 @@ function ContractTapeChartInner({
   const rectRef = useRef<DOMRect | null>(null);
   /** Index of the bar nearest the cursor; null when not hovering. */
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  /**
+   * Measured container width (CSS px) — drives the derived viewBox
+   * height in `pixelHeight` mode. `null` until first measurement (and
+   * forever in layout-less environments like jsdom, where the chart
+   * falls back to the legacy `height` viewBox).
+   */
+  const [measuredW, setMeasuredW] = useState<number | null>(null);
 
-  // Measure container size once on mount and again whenever it
-  // resizes. Falls back to a one-shot measurement when ResizeObserver
-  // is unavailable (older jsdom).
-  useEffect(() => {
+  // Measure container size once on mount (before first paint, so
+  // pixelHeight mode doesn't flash a letterboxed frame) and again
+  // whenever it resizes. Falls back to a one-shot measurement when
+  // ResizeObserver is unavailable (older jsdom).
+  useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     rectRef.current = el.getBoundingClientRect();
+    setMeasuredW(rectRef.current.width);
     if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
       rectRef.current = el.getBoundingClientRect();
+      setMeasuredW(rectRef.current.width);
     });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  /**
+   * Effective viewBox height: derived from the measured width in
+   * `pixelHeight` mode (so SVG units stay square at the fixed CSS
+   * height), otherwise the legacy `height` viewBox value.
+   */
+  const viewH =
+    pixelHeight != null
+      ? viewBoxHeightFor(VIEW_W, pixelHeight, measuredW, height)
+      : height;
 
   const layout = useMemo(() => {
     if (series.length === 0) return null;
@@ -155,7 +186,7 @@ function ContractTapeChartInner({
     const tsMax = tsMs[tsMs.length - 1]!;
     const tsRange = Math.max(tsMax - tsMin, 60_000); // ≥1 min so a single bar still renders
 
-    const innerH = height - PAD_Y * 2 - AXIS_H;
+    const innerH = viewH - PAD_Y * 2 - AXIS_H;
     const innerW = VIEW_W - PAD_X * 2;
     const priceAreaH = innerH * PRICE_AREA_RATIO;
     const volAreaH = innerH - priceAreaH;
@@ -327,7 +358,7 @@ function ContractTapeChartInner({
       axisLabels,
       axisLabelY,
     };
-  }, [series, markerTs, historicalFires, height]);
+  }, [series, markerTs, historicalFires, viewH]);
 
   if (layout == null) {
     return (
@@ -442,7 +473,7 @@ function ContractTapeChartInner({
   if (hoveredBar != null && rectRef.current != null) {
     const rect = rectRef.current;
     const scaleX = rect.width / VIEW_W;
-    const scaleY = rect.height / height;
+    const scaleY = rect.height / viewH;
     tooltipLeft = hoveredBar.cx * scaleX;
     tooltipTop = sepY * scaleY;
   }
@@ -457,8 +488,9 @@ function ContractTapeChartInner({
       onMouseLeave={onMouseLeave}
     >
       <svg
-        viewBox={`0 0 ${VIEW_W} ${height}`}
+        viewBox={`0 0 ${VIEW_W} ${viewH}`}
         className="block w-full"
+        style={pixelHeight != null ? { height: pixelHeight } : undefined}
         role="img"
         aria-label={ariaLabel}
       >
