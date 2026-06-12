@@ -1018,7 +1018,16 @@ export function LotteryFinderSection({
     // The full unfiltered fire list — drives conviction/storm so chip
     // filters don't silently erase a ticker's true-footprint badges.
     unfilteredItems: fires,
-    sortMode: sortMode === 'peak' ? 'peak' : 'default',
+    // 'chronological' maps to 'time' (within-group trigger-time desc)
+    // — the kept-set union can interleave rows, so arrival order
+    // within a ticker isn't guaranteed time-desc. The 'score' metric
+    // chip keeps 'default' so the API's score order is preserved.
+    sortMode:
+      sortMode === 'peak'
+        ? 'peak'
+        : sortMode === 'chronological'
+          ? 'time'
+          : 'default',
     stormIntensityThreshold: BURST_STORM_INTENSITY_THRESHOLDS.lottery,
     extract: (f) => {
       const triggerMs = Date.parse(f.triggerTimeCt);

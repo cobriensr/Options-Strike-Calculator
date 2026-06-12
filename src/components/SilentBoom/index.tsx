@@ -994,7 +994,12 @@ export function SilentBoomSection({
     // The full unfiltered alert list — drives conviction/storm so chip
     // filters don't silently erase a ticker's true-footprint badges.
     unfilteredItems: alerts,
-    sortMode: sortMode === 'peak' ? 'peak' : 'default',
+    // 'newest' maps to 'time' (within-group trigger-time desc) — the
+    // kept-set union can interleave rows, so arrival order within a
+    // ticker isn't guaranteed time-desc. Metric chips (spike_ratio,
+    // vol_oi) keep 'default' so the API's metric order is preserved.
+    sortMode:
+      sortMode === 'peak' ? 'peak' : sortMode === 'newest' ? 'time' : 'default',
     stormIntensityThreshold: BURST_STORM_INTENSITY_THRESHOLDS.silentBoom,
     extract: (a) => {
       const triggerMs = Date.parse(a.bucketCt);

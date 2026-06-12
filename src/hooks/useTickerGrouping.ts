@@ -50,7 +50,10 @@ export interface TickerGroupingExtract {
 
 export interface TickerGroup<T> {
   ticker: string;
-  /** Items in their within-group order (peak desc for 'peak' mode). */
+  /**
+   * Items in their within-group order — peak desc for 'peak' mode,
+   * trigger-time desc for 'time' mode, input order for 'default'.
+   */
   items: T[];
   conviction: boolean;
   /**
@@ -91,11 +94,17 @@ export interface TickerGroup<T> {
 
 /**
  * `'peak'` orders both groups AND within-group items by realized
- * peak desc (nulls last). `'default'` orders groups by
- * conviction → storm → item-count desc → recency desc, and leaves
- * within-group order untouched.
+ * peak desc (nulls last). `'time'` orders within-group items by
+ * trigger time desc (newest first) — use it for the sections'
+ * time-based chips (SB 'newest', Lottery 'chronological'), where the
+ * feeds' never-vanish kept-set union can interleave rows so arrival
+ * order within a ticker is NOT guaranteed time-desc. `'default'`
+ * leaves within-group order untouched — use it for metric chips
+ * (score / spike_ratio / vol_oi) where the API order IS the chosen
+ * ordering. Both `'time'` and `'default'` order groups by
+ * conviction → storm → item-count desc → recency desc.
  */
-export type TickerGroupSortMode = 'peak' | 'default';
+export type TickerGroupSortMode = 'peak' | 'time' | 'default';
 
 export interface UseTickerGroupingOptions<T> {
   items: readonly T[];
@@ -205,7 +214,19 @@ export function useTickerGrouping<T>(
               const bp = extract(b).peakPct ?? -Infinity;
               return bp - ap;
             })
-          : list;
+          : sortMode === 'time'
+            ? [...list].sort((a, b) => {
+                // Trigger-time desc (newest first). Non-finite
+                // triggerMs sinks to the bottom — same NaN guard
+                // philosophy as the latestTriggerMs reduction below.
+                const at = extract(a).triggerMs;
+                const bt = extract(b).triggerMs;
+                return (
+                  (Number.isFinite(bt) ? bt : -Infinity) -
+                  (Number.isFinite(at) ? at : -Infinity)
+                );
+              })
+            : list;
       const summaries = orderedItems.map(extract);
       const rollupSummaries = summaries.map((s) => s.rollupSummary);
       const agg = computeRollupAggregates(rollupSummaries);

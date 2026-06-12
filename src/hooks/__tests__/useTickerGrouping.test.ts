@@ -176,6 +176,63 @@ describe('useTickerGrouping', () => {
     });
   });
 
+  describe('time sort', () => {
+    // Bug repro from the 2026-06-12 guest screenshot: the feeds'
+    // never-vanish kept-set union can interleave rows, so arrival
+    // order within a ticker is NOT guaranteed time-desc even though
+    // the API's global ORDER BY is. 'time' mode re-sorts each group
+    // by triggerMs desc so SB 'newest' / Lottery 'chronological'
+    // render newest-first within every ticker group.
+
+    it('orders within-group items by triggerMs desc when supplied out of order', () => {
+      const items = [
+        fix({ ticker: 'TSLA', ms: 200 }),
+        fix({ ticker: 'TSLA', ms: 300 }),
+        fix({ ticker: 'TSLA', ms: 100 }),
+      ];
+      const { result } = render(items, 'time');
+      expect(result.current[0]?.items.map((f) => f.ms)).toEqual([
+        300, 200, 100,
+      ]);
+    });
+
+    it('does not mutate the input array', () => {
+      const items = [
+        fix({ ticker: 'TSLA', ms: 200 }),
+        fix({ ticker: 'TSLA', ms: 300 }),
+        fix({ ticker: 'TSLA', ms: 100 }),
+      ];
+      render(items, 'time');
+      expect(items.map((f) => f.ms)).toEqual([200, 300, 100]);
+    });
+
+    it('keeps the default group-level ordering (count desc then recency)', () => {
+      const items = [
+        fix({ ticker: 'A', ms: 1_000 }),
+        fix({ ticker: 'B', ms: 2 }),
+        fix({ ticker: 'B', ms: 3 }),
+      ];
+      const { result } = render(items, 'time');
+      // B wins on item count despite A's later trigger — same
+      // group-level rule as 'default' mode.
+      expect(result.current.map((g) => g.ticker)).toEqual(['B', 'A']);
+    });
+
+    it('default mode preserves arrival order on the same input (metric-mode contract)', () => {
+      // Pins the contrast: metric chips (score / spike_ratio / vol_oi)
+      // map to 'default' where the API order IS the chosen ordering.
+      const items = [
+        fix({ ticker: 'TSLA', ms: 200 }),
+        fix({ ticker: 'TSLA', ms: 300 }),
+        fix({ ticker: 'TSLA', ms: 100 }),
+      ];
+      const { result } = render(items, 'default');
+      expect(result.current[0]?.items.map((f) => f.ms)).toEqual([
+        200, 300, 100,
+      ]);
+    });
+  });
+
   describe('empty input', () => {
     it('returns an empty array', () => {
       const { result } = render([], 'default');
