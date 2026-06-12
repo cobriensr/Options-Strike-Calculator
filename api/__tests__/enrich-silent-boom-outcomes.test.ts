@@ -92,26 +92,26 @@ describe('enrich-silent-boom-outcomes', () => {
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
-  it('enriches a fire with post-entry ticks and lands trail-30/10 in the right UPDATE slot', async () => {
+  it('enriches a fire with post-entry ticks and lands trail-30/10 in the right UPDATE array slot', async () => {
     // Tape: entry $1.00, peak $1.50 (+50%) at t=2min, gives back 10pp to
     // $1.40 at t=3min → trail-30/10 exits at +40%; EoD price $1.20 (+20%).
     mockSql.mockResolvedValueOnce([baseAlert]); // SELECT alerts
+    // Batched ticks read — each row carries the joining alertId.
     mockSql.mockResolvedValueOnce([
-      { executedAt: new Date('2026-05-13T14:31:00Z'), price: 1.2 },
-      { executedAt: new Date('2026-05-13T14:32:00Z'), price: 1.5 },
-      { executedAt: new Date('2026-05-13T14:33:00Z'), price: 1.4 },
-      { executedAt: new Date('2026-05-13T14:40:00Z'), price: 1.2 },
-    ]); // SELECT ticks
+      { alertId: 1, executedAt: new Date('2026-05-13T14:31:00Z'), price: 1.2 },
+      { alertId: 1, executedAt: new Date('2026-05-13T14:32:00Z'), price: 1.5 },
+      { alertId: 1, executedAt: new Date('2026-05-13T14:33:00Z'), price: 1.4 },
+      { alertId: 1, executedAt: new Date('2026-05-13T14:40:00Z'), price: 1.2 },
+    ]); // SELECT ticks (JOIN LATERAL)
 
-    // Capture the UPDATE bind shape so we can confirm trail-30/10 lands
-    // in the expected slot. The tagged-template call invokes mockSql with
-    // (stringsArray, ...values).
+    // Capture the batched enriched UPDATE bind shape. The tagged-template
+    // call invokes mockSql with (stringsArray, ...arrayValues); each bound
+    // value is now an ARRAY (one element per enriched alert).
     let updateValues: unknown[] = [];
     mockSql.mockImplementationOnce((..._args: unknown[]) => {
-      // Drop the strings array; keep the bound parameter values in order.
       updateValues = _args.slice(1);
       return Promise.resolve([]);
-    }); // UPDATE
+    }); // enriched UPDATE
 
     const req = mockRequest({
       method: 'GET',
@@ -126,15 +126,18 @@ describe('enrich-silent-boom-outcomes', () => {
       status: 'success',
       message: expect.stringContaining('Enriched 1 fires'),
     });
+    // SELECT alerts + batched ticks read + ONE batched enriched UPDATE
+    // (no no-tick alerts → no second write).
     expect(mockSql).toHaveBeenCalledTimes(3);
 
-    // UPDATE bind order from the handler:
-    //   peak, minToPeak, r30, r60, r120, eod, trail30, id
-    // Verify trail-30/10 = +40% lands in the 7th bind slot (index 6).
+    // Batched UPDATE unnest array order from the handler:
+    //   ids, peak, minToPeak, r30, r60, r120, eod, trail30
+    // Each bind is an array of one (single enriched alert).
     expect(updateValues).toHaveLength(8);
-    expect(updateValues[0]).toBeCloseTo(50, 5); // peak ceiling %
-    expect(updateValues[6]).toBeCloseTo(40, 5); // trail-30/10 %
-    expect(updateValues[7]).toBe(1); // id
+    const [ids, peak, , , , , , trail30] = updateValues as number[][];
+    expect(ids).toEqual([1]); // id array
+    expect(peak![0]).toBeCloseTo(50, 5); // peak ceiling %
+    expect(trail30![0]).toBeCloseTo(40, 5); // trail-30/10 %
   });
 
   it('stamps a terminal enriched_at (NULL outcomes) on a no-tick alert so it exits the candidate set', async () => {
@@ -147,13 +150,13 @@ describe('enrich-silent-boom-outcomes', () => {
         entryPrice: 0.5,
       },
     ]); // SELECT alerts
-    mockSql.mockResolvedValueOnce([]); // ticks empty
+    mockSql.mockResolvedValueOnce([]); // batched ticks read returns no rows
 
     let noTickUpdate: { text: string; values: unknown[] } | null = null;
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       noTickUpdate = { text: queryText(args), values: args.slice(1) };
       return Promise.resolve([]);
-    }); // terminal UPDATE
+    }); // terminal no-tick UPDATE
 
     const req = mockRequest({
       method: 'GET',
@@ -168,7 +171,8 @@ describe('enrich-silent-boom-outcomes', () => {
       status: 'success',
       message: expect.stringContaining('skipped 1'),
     });
-    // SELECT alerts + SELECT ticks + terminal UPDATE.
+    // SELECT alerts + batched ticks read + terminal no-tick UPDATE
+    // (no enriched alerts → no enriched write).
     expect(mockSql).toHaveBeenCalledTimes(3);
 
     // The terminal UPDATE stamps enriched_at = NOW() and touches NO realized
@@ -180,28 +184,38 @@ describe('enrich-silent-boom-outcomes', () => {
     expect(update.text).not.toContain('realized_');
     expect(update.text).not.toContain('peak_ceiling_pct');
     expect(update.text).not.toContain('minutes_to_peak');
-    // Only the alert id is bound (the WHERE clause); no outcome values.
-    expect(update.values).toEqual([2]);
+    // The no-tick UPDATE binds the id array for the WHERE id = ANY(...) clause.
+    expect(update.values).toEqual([[2]]);
   });
 
-  it('coerces string prices (un-cast NUMERIC) to a numerically correct peak', async () => {
-    // Belt-and-suspenders for the SQL ::float8 cast: if a future SELECT drops
-    // the cast and Neon returns NUMERIC-as-string, the function-level Number()
-    // guard in peakCeiling/minutesToPeak must still pick the numeric max.
-    // Tape: "9.50","10.50","8.00" — lexicographic max is "9.50"; numeric max
-    // is 10.50. Entry 1.0 → peak +950%, NOT +850%.
-    mockSql.mockResolvedValueOnce([{ ...baseAlert, entryPrice: 1.0 }]); // SELECT alerts
+  it('batches enriched and no-tick alerts into separate writes in the same run', async () => {
+    // Alert 1 has ticks → enriched UPDATE; alert 2 has none → terminal UPDATE.
     mockSql.mockResolvedValueOnce([
-      { executedAt: new Date('2026-05-13T14:31:00Z'), price: '9.50' },
-      { executedAt: new Date('2026-05-13T14:32:00Z'), price: '10.50' },
-      { executedAt: new Date('2026-05-13T14:33:00Z'), price: '8.00' },
-    ]); // SELECT ticks (strings, as un-cast Neon returns)
+      baseAlert,
+      {
+        ...baseAlert,
+        id: 2,
+        optionChainId: 'SPY260513P00495000',
+        bucketCt: new Date('2026-05-13T20:59:00Z'),
+        entryPrice: 0.5,
+      },
+    ]); // SELECT alerts
+    // Only alert 1 has post-entry ticks. Rows arrive ordered by alert id.
+    mockSql.mockResolvedValueOnce([
+      { alertId: 1, executedAt: new Date('2026-05-13T14:31:00Z'), price: 1.2 },
+      { alertId: 1, executedAt: new Date('2026-05-13T14:32:00Z'), price: 1.5 },
+    ]); // SELECT ticks (JOIN LATERAL)
 
-    let updateValues: unknown[] = [];
+    let enrichedUpdate: { text: string; values: unknown[] } | null = null;
+    let noTickUpdate: { text: string; values: unknown[] } | null = null;
     mockSql.mockImplementationOnce((...args: unknown[]) => {
-      updateValues = args.slice(1);
+      enrichedUpdate = { text: queryText(args), values: args.slice(1) };
       return Promise.resolve([]);
-    }); // UPDATE
+    }); // enriched UPDATE (first — updates.length > 0 branch runs before no-tick)
+    mockSql.mockImplementationOnce((...args: unknown[]) => {
+      noTickUpdate = { text: queryText(args), values: args.slice(1) };
+      return Promise.resolve([]);
+    }); // terminal no-tick UPDATE
 
     const req = mockRequest({
       method: 'GET',
@@ -212,11 +226,72 @@ describe('enrich-silent-boom-outcomes', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // UPDATE bind order:
-    //   peak, minToPeak, r30, r60, r120, eod, trail30, id
-    // peak_ceiling_pct is the 1st bind (index 0): numeric max 10.50 → +950%.
-    expect(updateValues[0]).toBeCloseTo(950, 5);
-    // minutes_to_peak (index 1): the 10.50 tick is 2 min after the 14:30 entry.
-    expect(updateValues[1]).toBeCloseTo(2, 5);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: expect.stringMatching(/Enriched 1 fires, skipped 1/),
+    });
+    // SELECT + ticks + enriched UPDATE + no-tick UPDATE = 4 calls.
+    expect(mockSql).toHaveBeenCalledTimes(4);
+
+    expect(enrichedUpdate).not.toBeNull();
+    const enr = enrichedUpdate!;
+    expect(enr.text).toContain('peak_ceiling_pct = u.peak');
+    expect(enr.text).toContain('realized_trail30_10_pct = u.trail30');
+    // First bound array is the enriched id list (alert 1 only).
+    expect(enr.values[0] as number[]).toEqual([1]);
+
+    expect(noTickUpdate).not.toBeNull();
+    const noT = noTickUpdate!;
+    expect(noT.text).toContain('id = ANY');
+    expect(noT.values).toEqual([[2]]);
+  });
+
+  it('coerces string prices (un-cast NUMERIC) to a numerically correct peak', async () => {
+    // Belt-and-suspenders for the SQL ::float8 cast: if a future SELECT drops
+    // the cast and Neon returns NUMERIC-as-string, the function-level Number()
+    // guard in peakCeiling/minutesToPeak must still pick the numeric max.
+    // Tape: "9.50","10.50","8.00" — lexicographic max is "9.50"; numeric max
+    // is 10.50. Entry 1.0 → peak +950%, NOT +850%.
+    mockSql.mockResolvedValueOnce([{ ...baseAlert, entryPrice: 1.0 }]); // SELECT alerts
+    mockSql.mockResolvedValueOnce([
+      {
+        alertId: 1,
+        executedAt: new Date('2026-05-13T14:31:00Z'),
+        price: '9.50',
+      },
+      {
+        alertId: 1,
+        executedAt: new Date('2026-05-13T14:32:00Z'),
+        price: '10.50',
+      },
+      {
+        alertId: 1,
+        executedAt: new Date('2026-05-13T14:33:00Z'),
+        price: '8.00',
+      },
+    ]); // SELECT ticks (strings, as un-cast Neon returns)
+
+    let updateValues: unknown[] = [];
+    mockSql.mockImplementationOnce((...args: unknown[]) => {
+      updateValues = args.slice(1);
+      return Promise.resolve([]);
+    }); // enriched UPDATE
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // Batched UPDATE array order:
+    //   ids, peak, minToPeak, r30, r60, r120, eod, trail30
+    const [, peak, minToPeak] = updateValues as number[][];
+    // peak array element 0: numeric max 10.50 → +950% (not lexicographic 9.50).
+    expect(peak![0]).toBeCloseTo(950, 5);
+    // minToPeak array element 0: the 10.50 tick is 2 min after the 14:30 entry.
+    expect(minToPeak![0]).toBeCloseTo(2, 5);
   });
 });

@@ -789,6 +789,74 @@ export default withCronInstrumentation(
       cofireKeyset.add(k);
     }
 
+    // Pre-trade-count (migration #169): non-canceled, positive-price
+    // trades on each fire's chain from session open (08:30 CT) to the
+    // spike's bucket_ct. Fed into the score for the +4 heavy-activity
+    // bonus (≥501 trades). Spec:
+    //   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
+    //
+    // One grouped query for ALL fires instead of N per-fire COUNTs
+    // (AUD-M7). The count window is determined by the
+    // (option_chain, date, bucketTs) triple — both bounds vary per fire —
+    // so we unnest those parallel arrays and LEFT JOIN ws_option_trades
+    // per-key. LEFT JOIN + COUNT(t.*) yields 0 for a key with no matching
+    // trades, identical to a per-fire COUNT returning 0. Postgres handles
+    // the CT-to-UTC conversion via AT TIME ZONE so DST works without
+    // explicit math (same predicate as the prior per-fire query).
+    const preTradeCountByKey = new Map<string, number>();
+    const ptcKey = (chain: string, date: string, bucketIso: string): string =>
+      `${chain}|${date}|${bucketIso}`;
+    if (allFires.length > 0) {
+      // Dedupe the key triples so a chain that fires twice in the same
+      // bucket_ct (adjacent-strike co-fires share bucketTs) is counted
+      // once; the map lookup below resolves both fires to the same count.
+      // `keys[i]` is the canonical app-side key string for unnest ordinal
+      // i+1 — joining the grouped result back by WITH ORDINALITY avoids
+      // any reliance on Postgres echoing date/timestamptz text in the
+      // exact format the app-side key was built from.
+      const keys: string[] = [];
+      const chainArg: string[] = [];
+      const dateArg: string[] = [];
+      const bucketArg: string[] = [];
+      const seenKeys = new Set<string>();
+      for (const { g, f, date } of allFires) {
+        const bucketIso = f.bucketTs.toISOString();
+        const k = ptcKey(g.optionChain, date, bucketIso);
+        if (seenKeys.has(k)) continue;
+        seenKeys.add(k);
+        keys.push(k);
+        chainArg.push(g.optionChain);
+        dateArg.push(date);
+        bucketArg.push(bucketIso);
+      }
+      const preTradeCountRows = (await withDbRetry(
+        () => db`
+            SELECT k.ord AS ord, COUNT(t.option_chain)::int AS cnt
+              FROM unnest(
+                     ${chainArg}::text[],
+                     ${dateArg}::date[],
+                     ${bucketArg}::timestamptz[]
+                   ) WITH ORDINALITY AS k(chain, day, bts, ord)
+              LEFT JOIN ws_option_trades t
+                ON t.option_chain = k.chain
+               AND t.canceled = FALSE
+               AND t.price > 0
+               AND t.executed_at >= (
+                 (k.day + INTERVAL '8 hours 30 minutes')
+                   AT TIME ZONE 'America/Chicago'
+               )
+               AND t.executed_at < k.bts
+             GROUP BY k.ord
+          `,
+        2,
+        10_000,
+      )) as { ord: number; cnt: number }[];
+      for (const row of preTradeCountRows) {
+        const key = keys[Number(row.ord) - 1];
+        if (key !== undefined) preTradeCountByKey.set(key, row.cnt);
+      }
+    }
+
     for (const { g, f, date, dte } of allFires) {
       // Score is deterministic from the fire payload + day context.
       // Computed inline so the row lands fully scored (no lazy
@@ -810,31 +878,14 @@ export default withCronInstrumentation(
           `${g.ticker}|${g.optionType}|${cofireTs}|${g.strike - cofireStep}`,
         );
 
-      // Pre-trade-count: non-canceled trades on this chain from
-      // session open (08:30 CT) to the spike's bucket_ct. Fed into
-      // the score for the +4 heavy-activity bonus (≥501 trades).
-      // Spec:
-      //   docs/superpowers/specs/silent-boom-h1-h3-features-2026-05-17.md
-      // Postgres handles the CT-to-UTC conversion via AT TIME ZONE so
-      // DST works without explicit math. Migration #169 added the
-      // storage column.
-      const preTradeCountRows = (await withDbRetry(
-        () => db`
-            SELECT COUNT(*)::int AS cnt
-              FROM ws_option_trades
-             WHERE option_chain = ${g.optionChain}
-               AND canceled = FALSE
-               AND price > 0
-               AND executed_at >= (
-                 (${date}::date + INTERVAL '8 hours 30 minutes')
-                   AT TIME ZONE 'America/Chicago'
-               )
-               AND executed_at < ${f.bucketTs.toISOString()}::timestamptz
-          `,
-        2,
-        10_000,
-      )) as { cnt: number }[];
-      const preTradeCount = preTradeCountRows[0]?.cnt ?? 0;
+      // Pre-trade-count: looked up from the single grouped COUNT computed
+      // above (keyed on the same (option_chain, date, bucketTs) window).
+      // A missing key means zero matching trades — identical to the prior
+      // per-fire COUNT returning 0.
+      const preTradeCount =
+        preTradeCountByKey.get(
+          ptcKey(g.optionChain, date, f.bucketTs.toISOString()),
+        ) ?? 0;
 
       const score = computeSilentBoomScore({
         dte,

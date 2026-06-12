@@ -50,8 +50,25 @@ interface UnenrichedAlert {
 }
 
 interface TradeTick {
+  alertId: number;
   executedAt: Date;
   price: number;
+}
+
+/** Enriched UPDATE payload — one per alert that had post-entry ticks.
+ *  r30/r60/r120 are nullable: returnAtHorizon returns null when no tick
+ *  falls inside the horizon, and that NULL must survive into the DB so a
+ *  sparse-chain alert isn't coded as a bogus 0%. peak/minToPeak/eod/trail30
+ *  are always numeric (their exit-policy helpers never return null). */
+interface EnrichUpdate {
+  id: number;
+  peak: number;
+  minToPeak: number;
+  r30: number | null;
+  r60: number | null;
+  r120: number | null;
+  eod: number;
+  trail30: number;
 }
 
 /**
@@ -109,43 +126,73 @@ export default withCronInstrumentation(
     let enriched = 0;
     let skipped = 0;
 
-    for (const alert of alerts) {
-      const ticks = (await withDbRetry(
-        () => db`
-          SELECT
-            executed_at AS "executedAt",
-            -- price is Postgres NUMERIC; the Neon serverless driver returns
-            -- NUMERIC as a STRING. Cast to float8 so downstream comparisons
-            -- (peakCeiling/minutesToPeak) are numeric, not lexicographic.
-            price::float8 AS price
-          FROM ws_option_trades
-          WHERE option_chain = ${alert.optionChainId}
-            AND executed_at >= ${alert.bucketCt}
-            AND canceled = FALSE
-            AND price > 0
-          ORDER BY executed_at ASC
-        `,
-        2,
-        10_000,
-      )) as TradeTick[];
+    // ONE batched ticks read — unnest the candidate alerts into a virtual
+    // input table, JOIN LATERAL the per-alert post-entry print stream.
+    // Replaces the prior per-alert SELECT loop (1 + 2N queries → ≤3 queries
+    // flat). Same shape as evaluate-round-trip.ts:148 and
+    // enrich-lottery-outcomes' batched refactor. Rows arrive ordered by
+    // (alert id, executed_at) so a single linear pass buckets them per alert.
+    const ids = alerts.map((a) => a.id);
+    const chains = alerts.map((a) => a.optionChainId);
+    const entries = alerts.map((a) =>
+      a.bucketCt instanceof Date
+        ? a.bucketCt.toISOString()
+        : new Date(a.bucketCt).toISOString(),
+    );
 
-      if (ticks.length === 0) {
-        // No post-entry ticks → nothing to compute. Stamp a TERMINAL marker
-        // so this alert leaves the candidate set (enriched_at IS NULL).
-        // Without it the row is re-selected every run forever, and once
-        // ws_option_trades purges (2-day retention) it becomes permanently
-        // un-enrichable while still accumulating in the scan. Realized/peak
-        // columns stay NULL so a no-tick alert is distinguishable from a real
-        // outcome (no bogus 0).
-        await withDbRetry(
-          () => db`
-            UPDATE silent_boom_alerts
-            SET enriched_at = NOW()
-            WHERE id = ${alert.id}
-          `,
-          2,
-          10_000,
-        );
+    const tickRows = (await withDbRetry(
+      () => db`
+        SELECT
+          u.id AS "alertId",
+          t.executed_at AS "executedAt",
+          -- price is Postgres NUMERIC; the Neon serverless driver returns
+          -- NUMERIC as a STRING. Cast to float8 so downstream comparisons
+          -- (peakCeiling/minutesToPeak) are numeric, not lexicographic.
+          t.price::float8 AS price
+        FROM unnest(
+               ${ids}::int[],
+               ${chains}::text[],
+               ${entries}::timestamptz[]
+             ) AS u(id, chain, entry)
+        JOIN LATERAL (
+               SELECT executed_at, price
+                 FROM ws_option_trades
+                WHERE option_chain = u.chain
+                  AND executed_at >= u.entry
+                  AND canceled = FALSE
+                  AND price > 0
+                ORDER BY executed_at ASC
+             ) t ON TRUE
+        ORDER BY u.id, t.executed_at
+      `,
+      2,
+      30_000,
+    )) as TradeTick[];
+
+    // Bucket ticks per alert. Rows arrive ordered by (alert id, executed_at),
+    // so each alert's ticks are already contiguous and ascending.
+    const ticksByAlert = new Map<number, TradeTick[]>();
+    for (const row of tickRows) {
+      const bucket = ticksByAlert.get(row.alertId);
+      if (bucket) bucket.push(row);
+      else ticksByAlert.set(row.alertId, [row]);
+    }
+
+    const updates: EnrichUpdate[] = [];
+    const noTickIds: number[] = [];
+
+    for (const alert of alerts) {
+      const ticks = ticksByAlert.get(alert.id);
+
+      if (!ticks || ticks.length === 0) {
+        // No post-entry ticks → nothing to compute. Collect for a TERMINAL
+        // marker stamp so this alert leaves the candidate set
+        // (enriched_at IS NULL). Without it the row is re-selected every run
+        // forever, and once ws_option_trades purges (2-day retention) it
+        // becomes permanently un-enrichable while still accumulating in the
+        // scan. Realized/peak columns stay NULL so a no-tick alert is
+        // distinguishable from a real outcome (no bogus 0).
+        noTickIds.push(alert.id);
         skipped++;
         continue;
       }
@@ -180,25 +227,76 @@ export default withCronInstrumentation(
         ((prices.at(-1)! - alert.entryPrice) / alert.entryPrice) * 100;
       const trail30 = realizedTrailAct30Trail10(prices, alert.entryPrice);
 
+      updates.push({
+        id: alert.id,
+        peak,
+        minToPeak,
+        r30,
+        r60,
+        r120,
+        eod,
+        trail30,
+      });
+      enriched++;
+    }
+
+    // TWO batched writes after the loop, each guarded on non-empty.
+    //
+    // (1) Enriched UPDATE — unnest of typed arrays joined back by id. The
+    // realized_30m/60m/120m arrays are float8[] and PRESERVE NULL elements
+    // (a sparse-chain alert keeps NULL columns, not a bogus 0). Mirrors the
+    // evaluate-round-trip.ts batched UPDATE shape.
+    if (updates.length > 0) {
+      const upIds = updates.map((u) => u.id);
+      const upPeak = updates.map((u) => u.peak);
+      const upMinToPeak = updates.map((u) => u.minToPeak);
+      const upR30 = updates.map((u) => u.r30);
+      const upR60 = updates.map((u) => u.r60);
+      const upR120 = updates.map((u) => u.r120);
+      const upEod = updates.map((u) => u.eod);
+      const upTrail30 = updates.map((u) => u.trail30);
+      await withDbRetry(
+        () => db`
+          UPDATE silent_boom_alerts AS s
+          SET
+            peak_ceiling_pct = u.peak,
+            minutes_to_peak = u.min_to_peak,
+            realized_30m_pct = u.r30,
+            realized_60m_pct = u.r60,
+            realized_120m_pct = u.r120,
+            realized_eod_pct = u.eod,
+            realized_trail30_10_pct = u.trail30,
+            enriched_at = NOW()
+          FROM unnest(
+                 ${upIds}::int[],
+                 ${upPeak}::float8[],
+                 ${upMinToPeak}::float8[],
+                 ${upR30}::float8[],
+                 ${upR60}::float8[],
+                 ${upR120}::float8[],
+                 ${upEod}::float8[],
+                 ${upTrail30}::float8[]
+               ) AS u(id, peak, min_to_peak, r30, r60, r120, eod, trail30)
+          WHERE s.id = u.id
+        `,
+        2,
+        30_000,
+      );
+    }
+
+    // (2) No-tick terminal UPDATE — stamp enriched_at on the un-enrichable
+    // alerts in one statement so they leave the candidate set. Realized/peak
+    // columns stay NULL.
+    if (noTickIds.length > 0) {
       await withDbRetry(
         () => db`
           UPDATE silent_boom_alerts
-          SET
-            peak_ceiling_pct = ${peak},
-            minutes_to_peak = ${minToPeak},
-            realized_30m_pct = ${r30},
-            realized_60m_pct = ${r60},
-            realized_120m_pct = ${r120},
-            realized_eod_pct = ${eod},
-            realized_trail30_10_pct = ${trail30},
-            enriched_at = NOW()
-          WHERE id = ${alert.id}
+          SET enriched_at = NOW()
+          WHERE id = ANY(${noTickIds}::int[])
         `,
         2,
-        10_000,
+        30_000,
       );
-
-      enriched++;
     }
 
     return {

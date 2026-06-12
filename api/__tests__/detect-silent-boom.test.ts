@@ -280,7 +280,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
@@ -371,7 +371,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([]); // insert returns no rows = ON CONFLICT hit
 
@@ -448,7 +448,7 @@ describe('detect-silent-boom handler', () => {
         { ts_ms: String(tickMs), ncp: '500', npp: '200' },
       ]) // zero_dte ticks → diff +300
       .mockResolvedValueOnce([{ ts_ms: String(tickMs), gamma_oi: '12345' }]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
@@ -545,7 +545,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
@@ -582,7 +582,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ cnt: 0 }])
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ id: 42 }]);
 
@@ -613,7 +613,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ cnt: 0 }])
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ id: 42 }]);
 
@@ -660,7 +660,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([
         { ts_ms: String(staleTickMs), gamma_oi: '12345' },
       ]) // spx_gamma tick — also stale
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 2 }]);
 
@@ -710,7 +710,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
@@ -768,7 +768,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
@@ -822,7 +822,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
@@ -873,7 +873,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
@@ -915,7 +915,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 11 }]); // insert
 
@@ -953,7 +953,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 12 }]); // insert still lands
 
@@ -1003,15 +1003,17 @@ describe('detect-silent-boom handler', () => {
   }
 
   /**
-   * Queue per-fire SQL mocks after the four (tide/tide_otm/zero_dte/
-   * spx_gamma) macro lookups. Per-fire shape: pre_trade_count + INSERT.
-   * The ticker_flow_snapshot lookup is cached per (ticker, date), so
-   * only the FIRST fire on a given ticker issues that query — every
-   * subsequent fire on SNDK in the same tick hits the cache.
+   * Queue the SQL mocks that follow the four (tide/tide_otm/zero_dte/
+   * spx_gamma) macro lookups. First the ONE grouped pre_trade_count
+   * (AUD-M7) covering all `count` fires (distinct chains → `count`
+   * ordinals), then per-fire: ticker_flow_snapshot (cached per
+   * (ticker, date), so only the FIRST fire on SNDK issues it) + INSERT.
    */
   function queueSilentBoomPerFireMocks(count: number, inserted: boolean) {
+    mockSql.mockResolvedValueOnce(
+      Array.from({ length: count }, (_, i) => ({ ord: i + 1, cnt: 0 })),
+    ); // grouped pre_trade_count (all fires)
     for (let i = 0; i < count; i += 1) {
-      mockSql.mockResolvedValueOnce([{ cnt: 0 }]); // pre_trade_count
       if (i === 0) {
         mockSql.mockResolvedValueOnce([]); // ticker_flow_snapshot (cache miss only on fire 0)
       }
@@ -1155,7 +1157,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm
       .mockResolvedValueOnce([]) // zero_dte
       .mockResolvedValueOnce([]) // spx_gamma
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
@@ -1195,7 +1197,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 99 }]); // insert
 
@@ -1233,14 +1235,16 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      // Two fires → two pre_trade_count + two ticker_flow_snapshot
-      // (ticker_flow_snapshot cache hit on the 2nd one — same ticker
-      // + date) + two INSERTs. ticker_flow_snapshot only fires once
-      // because cache shares across chains on the same (ticker, date).
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count fire #1
+      // Two fires (distinct adjacent chains) → ONE grouped pre_trade_count
+      // (AUD-M7) covering both keys, run once before the score loop, then
+      // per-fire: two ticker_flow_snapshot (cache hit on the 2nd — same
+      // ticker + date — so only one DB call) + two INSERTs.
+      .mockResolvedValueOnce([
+        { ord: 1, cnt: 0 },
+        { ord: 2, cnt: 0 },
+      ]) // grouped pre_trade_count (both fires)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot (once, shared)
       .mockResolvedValueOnce([{ id: 100 }]) // insert fire #1
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count fire #2
       .mockResolvedValueOnce([{ id: 101 }]); // insert fire #2
 
     const req = mockRequest({
@@ -1259,9 +1263,8 @@ describe('detect-silent-boom handler', () => {
     });
 
     // Both INSERTs should have adj_cofire=true. Use the multi-call
-    // extractor (the pre_trade_count COUNT query interleaves with the
-    // INSERTs so a plain `mockSql.mock.calls.at(-N)` walk would catch
-    // the wrong row).
+    // extractor to pull the named binds from each INSERT regardless of
+    // surrounding query order.
     const allBinds = extractAllInsertBinds(mockSql, 'silent_boom_alerts');
     expect(allBinds).toHaveLength(2);
     expect(allBinds[0]!.get('adj_cofire')).toBe(true);
@@ -1303,7 +1306,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 42 }]); // insert
 
@@ -1366,13 +1369,17 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      // Fire A (bucket 13:20): pre_trade_count + ticker_flow_snapshot
-      // (cache miss, first SNDK fire) + INSERT.
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count A
+      // ONE grouped pre_trade_count (AUD-M7) covering both fires (distinct
+      // chains/buckets → two ordinals), run once before the score loop.
+      .mockResolvedValueOnce([
+        { ord: 1, cnt: 0 },
+        { ord: 2, cnt: 0 },
+      ]) // grouped pre_trade_count (A + B)
+      // Fire A (bucket 13:20): ticker_flow_snapshot (cache miss, first SNDK
+      // fire) + INSERT.
       .mockResolvedValueOnce([]) // ticker_flow_snapshot (once, shared per ticker+date)
       .mockResolvedValueOnce([{ id: 1 }]) // INSERT A
-      // Fire B (bucket 14:00): pre_trade_count + INSERT (flow snapshot cached).
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count B
+      // Fire B (bucket 14:00): INSERT (flow snapshot cached).
       .mockResolvedValueOnce([{ id: 2 }]); // INSERT B
 
     const req = mockRequest({
@@ -1425,7 +1432,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 99 }]); // insert
 
@@ -1489,7 +1496,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 99 }]); // insert STILL lands
 
@@ -1588,7 +1595,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks (allSettled drains all four)
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count (#169)
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count (#169)
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 99 }]); // insert STILL lands
 
@@ -1651,7 +1658,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockRejectedValueOnce(new Error('fetch failed')) // spx_gamma REJECTS (transient)
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 7 }]); // insert
 
@@ -1702,7 +1709,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
@@ -1728,7 +1735,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm ticks
       .mockResolvedValueOnce([]) // zero_dte ticks
       .mockResolvedValueOnce([]) // spx_gamma ticks
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 2 }]); // insert
 
@@ -1767,7 +1774,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm
       .mockResolvedValueOnce([]) // zero_dte
       .mockResolvedValueOnce([]) // spx_gamma
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 1 }]); // insert
 
@@ -1793,7 +1800,7 @@ describe('detect-silent-boom handler', () => {
       .mockResolvedValueOnce([]) // tide_otm
       .mockResolvedValueOnce([]) // zero_dte
       .mockResolvedValueOnce([]) // spx_gamma
-      .mockResolvedValueOnce([{ cnt: 0 }]) // pre_trade_count
+      .mockResolvedValueOnce([{ ord: 1, cnt: 0 }]) // pre_trade_count
       .mockResolvedValueOnce([]) // ticker_flow_snapshot
       .mockResolvedValueOnce([{ id: 2 }]); // insert
 

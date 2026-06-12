@@ -60,6 +60,25 @@ interface TradeTick {
   price: number;
 }
 
+/** One row of the batched LATERAL read — joins a fire id to a single tick. */
+interface BatchedTickRow {
+  fireId: number;
+  executedAt: Date;
+  price: number;
+}
+
+/** Accumulated enrichment for one fire, staged for the batched UPDATE. */
+interface EnrichUpdate {
+  id: number;
+  trail30_10: number;
+  hard30m: number;
+  tier50: number;
+  eod: number;
+  flowInversion: number | null;
+  peak: number;
+  minToPeak: number;
+}
+
 interface FlowRow {
   ts: Date;
   netCallPrem: string | number | null;
@@ -205,25 +224,66 @@ export default withCronInstrumentation(
     let inversionFilled = 0;
     const flowCache = new Map<string, FlowMinute[]>();
 
+    // ── ONE batched read of EVERY fire's post-entry ticks ────────────────────
+    // Replaces the prior per-fire SELECT loop (N awaited reads → 1). unnest the
+    // fires into a virtual input table, then JOIN LATERAL the per-chain tape
+    // window. JOIN (not LEFT) so no-tick fires simply don't appear in the
+    // result — they're recovered below via the ids that never land in the Map.
+    // ORDER BY u.fire_id, t.executed_at keeps each fire's ticks chronological,
+    // matching the prior per-fire `ORDER BY executed_at ASC`. Mirrors the
+    // evaluate-round-trip.ts LATERAL pattern; heavy on ws_option_trades, so the
+    // longer 30s retry timeout (vs the prior 10s) matches that cron.
+    const ids = fires.map((f) => f.id);
+    const chains = fires.map((f) => f.optionChainId);
+    const entries = fires.map((f) => f.entryTimeCt.toISOString());
+
+    const tickRows = (await withDbRetry(
+      () => db`
+        SELECT
+          u.fire_id AS "fireId",
+          t.executed_at AS "executedAt",
+          -- price is Postgres NUMERIC; the Neon serverless driver returns
+          -- NUMERIC as a STRING. Cast to float8 so downstream comparisons
+          -- (peakCeiling/minutesToPeak) are numeric, not lexicographic.
+          t.price::float8 AS price
+        FROM unnest(
+               ${ids}::int[],
+               ${chains}::text[],
+               ${entries}::timestamptz[]
+             ) AS u(fire_id, chain, entry)
+        JOIN LATERAL (
+          SELECT executed_at, price
+            FROM ws_option_trades
+           WHERE option_chain = u.chain
+             AND executed_at >= u.entry
+             AND canceled = FALSE
+             AND price > 0
+           ORDER BY executed_at ASC
+        ) t ON TRUE
+        ORDER BY u.fire_id, t.executed_at ASC
+      `,
+      2,
+      30_000,
+    )) as BatchedTickRow[];
+
+    // Group ticks by fire id. Rows arrive ordered by (fire_id, executed_at),
+    // so each fire's ticks stay chronological as they're pushed in order.
+    const ticksByFire = new Map<number, TradeTick[]>();
+    for (const row of tickRows) {
+      let arr = ticksByFire.get(row.fireId);
+      if (arr === undefined) {
+        arr = [];
+        ticksByFire.set(row.fireId, arr);
+      }
+      arr.push({ executedAt: row.executedAt, price: row.price });
+    }
+
+    // Stage results in JS, then flush in two batched writes after the loop.
+    const noTickIds: number[] = [];
+    const updates: EnrichUpdate[] = [];
+
     for (const fire of fires) {
-      const ticks = (await withDbRetry(
-        () => db`
-          SELECT
-            executed_at AS "executedAt",
-            -- price is Postgres NUMERIC; the Neon serverless driver returns
-            -- NUMERIC as a STRING. Cast to float8 so downstream comparisons
-            -- (peakCeiling/minutesToPeak) are numeric, not lexicographic.
-            price::float8 AS price
-          FROM ws_option_trades
-          WHERE option_chain = ${fire.optionChainId}
-            AND executed_at >= ${fire.entryTimeCt}
-            AND canceled = FALSE
-            AND price > 0
-          ORDER BY executed_at ASC
-        `,
-        2,
-        10_000,
-      )) as TradeTick[];
+      const ticks = ticksByFire.get(fire.id) ?? [];
 
       if (ticks.length === 0) {
         // No post-entry ticks → nothing to compute. Stamp a TERMINAL marker
@@ -232,15 +292,7 @@ export default withCronInstrumentation(
         // purges (2-day retention) it becomes permanently un-enrichable while
         // still accumulating in the scan. Realized/peak columns stay NULL so a
         // no-tick fire is distinguishable from a real outcome (no bogus 0).
-        await withDbRetry(
-          () => db`
-            UPDATE lottery_finder_fires
-            SET enriched_at = NOW()
-            WHERE id = ${fire.id}
-          `,
-          2,
-          10_000,
-        );
+        noTickIds.push(fire.id);
         skipped++;
         continue;
       }
@@ -262,8 +314,9 @@ export default withCronInstrumentation(
       const peak = peakCeiling(prices, fire.entryPrice);
       const minToPeak = minutesToPeak(prices, minutesSinceEntry);
 
-      // Flow-inversion: failures are non-fatal — column stays NULL for
-      // this fire and the rest of the enrichment still lands.
+      // Flow-inversion: per-fire because it hits the rate-limited UW REST API
+      // (NOT batchable). Failures are non-fatal — column stays NULL for this
+      // fire and the rest of the enrichment still lands.
       let flowInversion: number | null = null;
       try {
         const dateStr = dateToIso(fire.date);
@@ -297,25 +350,76 @@ export default withCronInstrumentation(
       }
       if (flowInversion != null) inversionFilled++;
 
+      updates.push({
+        id: fire.id,
+        trail30_10,
+        hard30m,
+        tier50,
+        eod,
+        flowInversion,
+        peak,
+        minToPeak,
+      });
+      enriched++;
+    }
+
+    // ── Batched write #1: enriched fires ─────────────────────────────────────
+    // ONE UPDATE for all enriched fires via unnest of typed arrays. The inv
+    // array preserves null elements (flow-inversion failures) — Postgres
+    // unnest passes NULLs straight through, so realized_flow_inversion_pct
+    // lands NULL for those fires exactly as the prior per-fire write did.
+    if (updates.length > 0) {
+      const uIds = updates.map((u) => u.id);
+      const trail = updates.map((u) => u.trail30_10);
+      const hard = updates.map((u) => u.hard30m);
+      const tier = updates.map((u) => u.tier50);
+      const eod = updates.map((u) => u.eod);
+      const inv = updates.map((u) => u.flowInversion);
+      const peak = updates.map((u) => u.peak);
+      const mtp = updates.map((u) => u.minToPeak);
+      await withDbRetry(
+        () => db`
+          UPDATE lottery_finder_fires AS f
+          SET
+            realized_trail30_10_pct = u.trail,
+            realized_hard30m_pct = u.hard,
+            realized_tier50_holdeod_pct = u.tier,
+            realized_eod_pct = u.eod,
+            realized_flow_inversion_pct = u.inv,
+            peak_ceiling_pct = u.peak,
+            minutes_to_peak = u.mtp,
+            enriched_at = NOW()
+          FROM unnest(
+                 ${uIds}::int[],
+                 ${trail}::float8[],
+                 ${hard}::float8[],
+                 ${tier}::float8[],
+                 ${eod}::float8[],
+                 ${inv}::float8[],
+                 ${peak}::float8[],
+                 ${mtp}::float8[]
+               ) AS u(id, trail, hard, tier, eod, inv, peak, mtp)
+          WHERE f.id = u.id
+        `,
+        2,
+        30_000,
+      );
+    }
+
+    // ── Batched write #2: no-tick terminal stamps ────────────────────────────
+    // Stamp enriched_at on every no-tick fire in one UPDATE so they leave the
+    // candidate set. Realized/peak columns stay NULL (a no-tick fire is NOT a
+    // 0% outcome).
+    if (noTickIds.length > 0) {
       await withDbRetry(
         () => db`
           UPDATE lottery_finder_fires
-          SET
-            realized_trail30_10_pct = ${trail30_10},
-            realized_hard30m_pct = ${hard30m},
-            realized_tier50_holdeod_pct = ${tier50},
-            realized_eod_pct = ${eod},
-            realized_flow_inversion_pct = ${flowInversion},
-            peak_ceiling_pct = ${peak},
-            minutes_to_peak = ${minToPeak},
-            enriched_at = NOW()
-          WHERE id = ${fire.id}
+          SET enriched_at = NOW()
+          WHERE id = ANY(${noTickIds}::int[])
         `,
         2,
-        10_000,
+        30_000,
       );
-
-      enriched++;
     }
 
     // Best-effort retention prune, AFTER all enrichment work has landed so a

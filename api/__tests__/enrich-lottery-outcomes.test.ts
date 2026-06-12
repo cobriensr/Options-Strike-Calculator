@@ -130,12 +130,29 @@ describe('enrich-lottery-outcomes', () => {
 
   it('enriches fires with post-entry ticks and writes flow_inversion when computable', async () => {
     mockSql.mockResolvedValueOnce([baseFire]); // SELECT fires
+    // ONE batched LATERAL read of ALL fires' ticks (keyed by fireId).
     mockSql.mockResolvedValueOnce([
-      { executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.6 },
-      { executedAt: new Date('2026-05-02T14:32:00Z'), price: 1.8 },
-      { executedAt: new Date('2026-05-02T14:33:00Z'), price: 1.7 },
-      { executedAt: new Date('2026-05-02T14:40:00Z'), price: 1.9 },
-    ]); // SELECT ticks
+      {
+        fireId: 1,
+        executedAt: new Date('2026-05-02T14:31:00Z'),
+        price: 1.6,
+      },
+      {
+        fireId: 1,
+        executedAt: new Date('2026-05-02T14:32:00Z'),
+        price: 1.8,
+      },
+      {
+        fireId: 1,
+        executedAt: new Date('2026-05-02T14:33:00Z'),
+        price: 1.7,
+      },
+      {
+        fireId: 1,
+        executedAt: new Date('2026-05-02T14:40:00Z'),
+        price: 1.9,
+      },
+    ]); // batched tick read
     mockSql.mockResolvedValueOnce([
       {
         ts: new Date('2026-05-02T14:35:00Z'),
@@ -148,7 +165,7 @@ describe('enrich-lottery-outcomes', () => {
         netPutPrem: '0',
       },
     ]); // loadMatchedFlow SELECT
-    mockSql.mockResolvedValueOnce([]); // UPDATE
+    mockSql.mockResolvedValueOnce([]); // batched enriched UPDATE
     mockSql.mockResolvedValueOnce([]); // prune DELETE
 
     mockFetchIntraday.mockResolvedValueOnce([
@@ -179,15 +196,112 @@ describe('enrich-lottery-outcomes', () => {
       '2026-05-02',
     );
     expect(mockSimulateInversion).toHaveBeenCalled();
-    // 4 enrichment queries + 1 retention-prune DELETE.
+    // SELECT fires + batched tick read + loadMatchedFlow SELECT +
+    // batched enriched UPDATE + retention-prune DELETE.
     expect(mockSql).toHaveBeenCalledTimes(5);
 
     // The retention prune ran, and ran AFTER the main work (it is the last
-    // mockSql call — the UPDATE that lands enrichment is call index 3).
+    // mockSql call — the batched UPDATE that lands enrichment is call index 3).
     const calls = mockSql.mock.calls;
     const pruneCall = findPruneCall(calls);
     expect(pruneCall).toBeDefined();
     expect(calls.indexOf(pruneCall!)).toBe(calls.length - 1);
+
+    // Shape-assert the batched read (call index 1): ONE unnest + JOIN LATERAL,
+    // keyed by fire id, ordered so each fire's ticks stay chronological. A
+    // malformed batch (e.g. LEFT JOIN, missing ORDER BY, or a per-fire loop)
+    // changes this text and fails here even when bind values look right.
+    const readText = queryText(calls[1]!);
+    expect(readText).toContain('unnest(');
+    expect(readText).toContain('JOIN LATERAL');
+    expect(readText).not.toContain('LEFT JOIN LATERAL');
+    expect(readText).toContain('ON TRUE');
+    expect(readText).toContain('ORDER BY u.fire_id');
+
+    // Shape-assert the batched enriched UPDATE (call index 3): UPDATE ... FROM
+    // unnest of the typed arrays, keyed by f.id = u.id — the gold-standard
+    // batched-write form from evaluate-round-trip.ts.
+    const updateText = queryText(calls[3]!);
+    expect(updateText).toContain('UPDATE lottery_finder_fires');
+    expect(updateText).toContain('FROM unnest(');
+    expect(updateText).toContain('f.id = u.id');
+    expect(updateText).toContain('realized_flow_inversion_pct = u.inv');
+  });
+
+  it('batches a mixed run: one enriched fire + one no-tick fire → both writes fire, fires grouped by id', async () => {
+    // The whole point of the N+1 collapse: process MANY fires in one batched
+    // read + one enriched UPDATE + one no-tick UPDATE. Fire 1 has ticks (gets
+    // enriched), fire 3 has none (gets the terminal stamp). The batched read
+    // returns only fire 1's rows (JOIN LATERAL drops no-tick fires), so the
+    // grouping must split correctly and BOTH writes must fire.
+    const fire1 = { ...baseFire, id: 1, entryPrice: 1.0 };
+    const fire3 = {
+      ...baseFire,
+      id: 3,
+      optionChainId: 'SPY260502P00495000',
+      optionType: 'P' as const,
+      entryTimeCt: new Date('2026-05-02T20:59:00Z'),
+      entryPrice: 0.5,
+    };
+    mockSql.mockResolvedValueOnce([fire1, fire3]); // SELECT fires (2)
+    // Batched read: ONLY fire 1 appears (fire 3 has no post-entry ticks).
+    mockSql.mockResolvedValueOnce([
+      { fireId: 1, executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.5 },
+      { fireId: 1, executedAt: new Date('2026-05-02T14:33:00Z'), price: 2.0 },
+    ]); // batched tick read
+
+    let enrichedValues: unknown[] = [];
+    mockSql.mockImplementationOnce((...args: unknown[]) => {
+      enrichedValues = args.slice(1);
+      return Promise.resolve([]);
+    }); // batched enriched UPDATE
+    let noTickValues: unknown[] = [];
+    mockSql.mockImplementationOnce((...args: unknown[]) => {
+      noTickValues = args.slice(1);
+      return Promise.resolve([]);
+    }); // no-tick UPDATE
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+    // fire 1's intraday returns no minutes → inversion skipped (no
+    // loadMatchedFlow SELECT). Keeps the call sequence to exactly 5.
+    mockFetchIntraday.mockResolvedValue([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: expect.stringMatching(/Enriched 1.*skipped 1/),
+    });
+
+    // SELECT fires + batched tick read + enriched UPDATE + no-tick UPDATE +
+    // prune DELETE = 5 calls (NOT 1 read + 2 writes PER fire).
+    expect(mockSql).toHaveBeenCalledTimes(5);
+
+    // Enriched UPDATE arrays carry ONLY fire 1 (fire 3 is no-tick). ids[]
+    // (index 0) → [1]; peak[] (index 6) element 0 → max 2.0 from entry 1.0 =
+    // +100%; mtp[] (index 7) element 0 → 2.0 tick is 3 min after 14:30 entry.
+    expect(enrichedValues[0]).toEqual([1]);
+    expect((enrichedValues[6] as number[])[0]).toBeCloseTo(100, 5);
+    expect((enrichedValues[7] as number[])[0]).toBeCloseTo(3, 5);
+
+    // No-tick UPDATE binds fire 3's id as the int[] for ANY(...).
+    expect(noTickValues).toEqual([[3]]);
+
+    // The enriched fire's UW intraday was fetched; the no-tick fire's was NOT
+    // (it short-circuits before the inversion step).
+    expect(mockFetchIntraday).toHaveBeenCalledTimes(1);
+    expect(mockFetchIntraday).toHaveBeenCalledWith(
+      'test-key',
+      'SPY260502C00500000',
+      '2026-05-02',
+    );
   });
 
   it('stamps a terminal enriched_at (NULL outcomes) on a no-tick fire so it exits the candidate set', async () => {
@@ -201,14 +315,14 @@ describe('enrich-lottery-outcomes', () => {
         entryPrice: 0.5,
       },
     ]);
-    mockSql.mockResolvedValueOnce([]); // ticks empty
+    mockSql.mockResolvedValueOnce([]); // batched tick read — no fires appear
 
-    // Capture the no-tick terminal UPDATE bind shape.
+    // Capture the no-tick batched terminal UPDATE bind shape.
     let noTickUpdate: { text: string; values: unknown[] } | null = null;
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       noTickUpdate = { text: queryText(args), values: args.slice(1) };
       return Promise.resolve([]);
-    }); // terminal UPDATE
+    }); // no-tick UPDATE
     mockSql.mockResolvedValueOnce([]); // prune DELETE
 
     const req = mockRequest({
@@ -224,10 +338,10 @@ describe('enrich-lottery-outcomes', () => {
       status: 'success',
       message: expect.stringContaining('skipped 1'),
     });
-    // SELECT fires + SELECT ticks + terminal UPDATE + retention-prune DELETE.
+    // SELECT fires + batched tick read + no-tick UPDATE + retention-prune DELETE.
     expect(mockSql).toHaveBeenCalledTimes(4);
 
-    // The terminal UPDATE stamps enriched_at = NOW() and touches NO realized
+    // The no-tick UPDATE stamps enriched_at = NOW() and touches NO realized
     // or peak columns (they stay NULL — a no-tick fire is NOT a 0% outcome).
     expect(noTickUpdate).not.toBeNull();
     const update = noTickUpdate!;
@@ -236,8 +350,9 @@ describe('enrich-lottery-outcomes', () => {
     expect(update.text).not.toContain('realized_');
     expect(update.text).not.toContain('peak_ceiling_pct');
     expect(update.text).not.toContain('minutes_to_peak');
-    // Only the fire id is bound (the WHERE clause); no outcome values.
-    expect(update.values).toEqual([2]);
+    // The no-tick ids are bound as a single int[] array for the ANY(...)
+    // WHERE clause — one no-tick fire → [[2]].
+    expect(update.values).toEqual([[2]]);
 
     expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
     expect(mockFetchIntraday).not.toHaveBeenCalled();
@@ -251,16 +366,28 @@ describe('enrich-lottery-outcomes', () => {
     // numeric max is 10.50. Entry 1.0 → peak +950%, NOT +850%.
     mockSql.mockResolvedValueOnce([{ ...baseFire, entryPrice: 1.0 }]); // SELECT fires
     mockSql.mockResolvedValueOnce([
-      { executedAt: new Date('2026-05-02T14:31:00Z'), price: '9.50' },
-      { executedAt: new Date('2026-05-02T14:32:00Z'), price: '10.50' },
-      { executedAt: new Date('2026-05-02T14:33:00Z'), price: '8.00' },
-    ]); // SELECT ticks (strings, as un-cast Neon returns)
+      {
+        fireId: 1,
+        executedAt: new Date('2026-05-02T14:31:00Z'),
+        price: '9.50',
+      },
+      {
+        fireId: 1,
+        executedAt: new Date('2026-05-02T14:32:00Z'),
+        price: '10.50',
+      },
+      {
+        fireId: 1,
+        executedAt: new Date('2026-05-02T14:33:00Z'),
+        price: '8.00',
+      },
+    ]); // batched tick read (strings, as un-cast Neon returns)
 
     let updateValues: unknown[] = [];
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       updateValues = args.slice(1);
       return Promise.resolve([]);
-    }); // UPDATE
+    }); // batched enriched UPDATE
     mockSql.mockResolvedValueOnce([]); // prune DELETE
 
     const req = mockRequest({
@@ -272,13 +399,12 @@ describe('enrich-lottery-outcomes', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // UPDATE bind order:
-    //   trail30_10, hard30m, tier50, eod, flowInversion,
-    //   peak_ceiling_pct, minutes_to_peak, id
-    // peak_ceiling_pct is the 6th bind (index 5): numeric max 10.50 → +950%.
-    expect(updateValues[5]).toBeCloseTo(950, 5);
-    // minutes_to_peak (index 6): the 10.50 tick is 2 min after the 14:30 entry.
-    expect(updateValues[6]).toBeCloseTo(2, 5);
+    // Batched UPDATE bind order (each bind is an ARRAY, one element per fire):
+    //   ids[], trail[], hard[], tier[], eod[], inv[], peak[], mtp[]
+    // peak[] is the 7th bind (index 6); element 0 → numeric max 10.50 → +950%.
+    expect((updateValues[6] as number[])[0]).toBeCloseTo(950, 5);
+    // mtp[] (index 7), element 0: the 10.50 tick is 2 min after the 14:30 entry.
+    expect((updateValues[7] as number[])[0]).toBeCloseTo(2, 5);
   });
 
   it('returns early when no unenriched fires exist, but still prunes', async () => {
@@ -382,10 +508,10 @@ describe('enrich-lottery-outcomes', () => {
     // the other realized binds + peak are real numbers, enriched_at stamped.
     mockSql.mockResolvedValueOnce([{ ...baseFire, entryPrice: 1.0 }]); // SELECT fires
     mockSql.mockResolvedValueOnce([
-      { executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.5 },
-      { executedAt: new Date('2026-05-02T14:33:00Z'), price: 2.0 },
-      { executedAt: new Date('2026-05-02T14:40:00Z'), price: 1.7 },
-    ]); // SELECT ticks
+      { fireId: 1, executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.5 },
+      { fireId: 1, executedAt: new Date('2026-05-02T14:33:00Z'), price: 2.0 },
+      { fireId: 1, executedAt: new Date('2026-05-02T14:40:00Z'), price: 1.7 },
+    ]); // batched tick read
     mockSql.mockResolvedValueOnce([
       {
         ts: new Date('2026-05-02T14:35:00Z'),
@@ -398,7 +524,7 @@ describe('enrich-lottery-outcomes', () => {
     mockSql.mockImplementationOnce((...args: unknown[]) => {
       updateValues = args.slice(1);
       return Promise.resolve([]);
-    }); // UPDATE
+    }); // batched enriched UPDATE
     mockSql.mockResolvedValueOnce([]); // prune DELETE
 
     // Intraday returns minutes (so the inversion path is entered), then the
@@ -426,18 +552,18 @@ describe('enrich-lottery-outcomes', () => {
     });
     expect(mockSimulateInversion).toHaveBeenCalled();
 
-    // UPDATE bind order:
-    //   trail30_10, hard30m, tier50, eod, flowInversion,
-    //   peak_ceiling_pct, minutes_to_peak, id
-    // flowInversion (index 4) MUST be null — the throw degraded only it.
-    expect(updateValues[4]).toBeNull();
+    // Batched UPDATE bind order (each bind is an ARRAY, one element per fire):
+    //   ids[], trail[], hard[], tier[], eod[], inv[], peak[], mtp[]
+    // inv[] (index 5), element 0 MUST be null — the throw degraded only it.
+    // unnest passes the null element straight through to the column.
+    expect((updateValues[5] as (number | null)[])[0]).toBeNull();
     // The other realized fields + peak are real numbers (enrichment landed).
-    // peak (index 5): max tick 2.0 from entry 1.0 → +100%.
-    expect(updateValues[5]).toBeCloseTo(100, 5);
-    // minutes_to_peak (index 6): the 2.0 tick is 3 min after the 14:30 entry.
-    expect(updateValues[6]).toBeCloseTo(3, 5);
-    // id (index 7) is the fire id from the WHERE clause.
-    expect(updateValues[7]).toBe(baseFire.id);
+    // peak[] (index 6), element 0: max tick 2.0 from entry 1.0 → +100%.
+    expect((updateValues[6] as number[])[0]).toBeCloseTo(100, 5);
+    // mtp[] (index 7), element 0: the 2.0 tick is 3 min after the 14:30 entry.
+    expect((updateValues[7] as number[])[0]).toBeCloseTo(3, 5);
+    // ids[] (index 0), element 0 is the fire id targeted by the WHERE clause.
+    expect((updateValues[0] as number[])[0]).toBe(baseFire.id);
   });
 
   // ── dateToIso parity: Date object vs YYYY-MM-DD string ────────────────────
@@ -451,9 +577,9 @@ describe('enrich-lottery-outcomes', () => {
     async function captureDateStrFor(dateCol: Date | string): Promise<string> {
       mockSql.mockResolvedValueOnce([{ ...baseFire, date: dateCol }]); // SELECT fires
       mockSql.mockResolvedValueOnce([
-        { executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.6 },
-      ]); // SELECT ticks
-      mockSql.mockResolvedValueOnce([]); // UPDATE
+        { fireId: 1, executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.6 },
+      ]); // batched tick read
+      mockSql.mockResolvedValueOnce([]); // batched enriched UPDATE
       mockSql.mockResolvedValueOnce([]); // prune DELETE
       mockFetchIntraday.mockResolvedValueOnce([]); // no minutes → inversion skipped
 
