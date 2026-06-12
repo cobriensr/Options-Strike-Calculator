@@ -179,6 +179,9 @@ async function main() {
 
   const [row] = await sql`SELECT COUNT(*)::int AS n FROM day_features`;
   console.log(`\n  day_features rows in DB: ${row.n}`);
+
+  // Surface partial failures to CI/operators via a non-zero exit code.
+  if (counters.failed > 0) process.exitCode = 1;
 }
 
 try {

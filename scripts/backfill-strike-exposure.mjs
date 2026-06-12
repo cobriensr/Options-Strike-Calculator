@@ -97,7 +97,7 @@ function getExpiriesToFetch(ticker, date) {
 
 // ── UW fetch ────────────────────────────────────────────────
 
-async function fetchStrikeExposure(ticker, date, expiry) {
+async function fetchStrikeExposure(ticker, date, expiry, failures) {
   const params = new URLSearchParams({
     'expirations[]': expiry,
     date,
@@ -114,6 +114,7 @@ async function fetchStrikeExposure(ticker, date, expiry) {
     console.warn(
       `  UW API ${res.status} for ${ticker} ${date} expiry ${expiry}: ${text.slice(0, 100)}`,
     );
+    failures.count++;
     return [];
   }
 
@@ -123,7 +124,7 @@ async function fetchStrikeExposure(ticker, date, expiry) {
 
 // ── Store ───────────────────────────────────────────────────
 
-async function storeStrikes(rows, date, ticker, expiry) {
+async function storeStrikes(rows, date, ticker, expiry, failures) {
   if (rows.length === 0) return { stored: 0, price: null, filtered: 0 };
 
   const atmRange = ATM_RANGE_BY_TICKER[ticker];
@@ -175,6 +176,7 @@ async function storeStrikes(rows, date, ticker, expiry) {
       console.warn(
         `  Insert error ${ticker} ${date} strike ${row.strike}: ${err.message}`,
       );
+      failures.count++;
     }
   }
 
@@ -194,6 +196,7 @@ async function main() {
   );
 
   const totals = Object.fromEntries(TICKERS.map((t) => [t, 0]));
+  const failures = { count: 0 };
 
   for (const date of tradingDays) {
     // Build (ticker, expiry) tasks for this date.
@@ -211,13 +214,13 @@ async function main() {
     const fetched = [];
     for (const { ticker, expiry } of tasks) {
       await new Promise((r) => setTimeout(r, 200));
-      const rows = await fetchStrikeExposure(ticker, date, expiry);
+      const rows = await fetchStrikeExposure(ticker, date, expiry, failures);
       fetched.push({ ticker, expiry, rows });
     }
 
     const dailySummary = [];
     for (const { ticker, expiry, rows } of fetched) {
-      const result = await storeStrikes(rows, date, ticker, expiry);
+      const result = await storeStrikes(rows, date, ticker, expiry, failures);
       totals[ticker] += result.stored;
       const tag = ticker === 'SPX' && expiry !== date ? '1DTE' : 'primary';
       const priceTag = result.price ? `, ${result.price.toFixed(2)}` : '';
@@ -233,6 +236,9 @@ async function main() {
   for (const ticker of TICKERS) {
     console.log(`  ${ticker}: ${totals[ticker]} new rows`);
   }
+  console.log(`  Failed (API + insert errors): ${failures.count}`);
+
+  if (failures.count > 0) process.exitCode = 1;
 }
 
 try {

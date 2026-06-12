@@ -54,7 +54,7 @@ if (arg1 && /^\d{4}-\d{2}-\d{2}$/.test(arg1)) {
 
 // ── Fetch per-strike 0DTE data for one date ────────────────
 
-async function fetchStrike0dte(date) {
+async function fetchStrike0dte(date, counters) {
   const params = new URLSearchParams({
     'expirations[]': date, // 0DTE = expiry matches the date
     date,
@@ -69,7 +69,8 @@ async function fetchStrike0dte(date) {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
 
-    // Detect historic data access limit and extract earliest date
+    // Detect historic data access limit and extract earliest date.
+    // This is an expected plan-limit skip-ahead, not a failure.
     if (res.status === 403 && text.includes('historic_data_access_missing')) {
       const match = /available to you is (\d{4}-\d{2}-\d{2})/.exec(text);
       if (match) {
@@ -79,6 +80,7 @@ async function fetchStrike0dte(date) {
     }
 
     console.warn(`  UW API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    counters.failed++;
     return [];
   }
 
@@ -88,7 +90,7 @@ async function fetchStrike0dte(date) {
 
 // ── Store strikes into gex_strike_0dte ─────────────────────
 
-async function storeStrikes(rows, date) {
+async function storeStrikes(rows, date, counters) {
   if (rows.length === 0) return { stored: 0, price: null, filtered: 0 };
 
   const price = Number.parseFloat(rows[0].price);
@@ -138,6 +140,7 @@ async function storeStrikes(rows, date) {
       if (result.length > 0) stored++;
     } catch (err) {
       console.warn(`  Insert error at strike ${row.strike}: ${err.message}`);
+      counters.failed++;
     }
   }
 
@@ -199,6 +202,7 @@ async function main() {
   );
 
   let totalStored = 0;
+  const counters = { failed: 0 };
 
   let skippedToDate = null;
 
@@ -209,7 +213,7 @@ async function main() {
     // Rate limit: 120 req/60s → 550ms between requests with margin
     await new Promise((r) => setTimeout(r, 550));
 
-    const rows = await fetchStrike0dte(date);
+    const rows = await fetchStrike0dte(date, counters);
 
     // Handle historic data access block — skip ahead automatically
     if (
@@ -229,13 +233,17 @@ async function main() {
       continue;
     }
 
-    const result = await storeStrikes(rows, date);
+    const result = await storeStrikes(rows, date, counters);
     totalStored += result.stored;
     logDay(date, rows, result);
   }
 
   console.log(`\nDone!`);
   console.log(`  Total rows stored: ${totalStored}`);
+  console.log(`  Failures: ${counters.failed}`);
+
+  // Surface partial failures to CI/operators via a non-zero exit code.
+  if (counters.failed > 0) process.exitCode = 1;
 }
 
 try {

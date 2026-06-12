@@ -50,6 +50,8 @@ const tickers =
 
 // ── Fetch + cumulate + sample ───────────────────────────────
 
+let fetchFailures = 0;
+
 async function fetchNetFlowForDate(ticker, date) {
   const res = await fetch(
     `${UW_BASE}/stock/${ticker}/net-prem-ticks?date=${date}`,
@@ -63,6 +65,7 @@ async function fetchNetFlowForDate(ticker, date) {
     console.warn(
       `  UW API ${res.status} for ${ticker} ${date}: ${text.slice(0, 100)}`,
     );
+    fetchFailures++;
     return [];
   }
 
@@ -185,6 +188,11 @@ async function main() {
   console.log(`  Total candles: ${totals.candles}`);
   console.log(`  Newly stored: ${totals.stored}`);
   console.log(`  Skipped (duplicates): ${totals.candles - totals.stored}`);
+  console.log(`  Fetch failures: ${fetchFailures}`);
+
+  if (fetchFailures > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

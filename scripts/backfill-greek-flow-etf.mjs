@@ -85,6 +85,8 @@ function getTradingDays(count) {
 
 // ── Fetch Greek flow for one (ticker, date) ─────────────────
 
+let fetchFailures = 0;
+
 async function fetchGreekFlow(ticker, date) {
   const res = await fetch(
     `${UW_BASE}/stock/${ticker}/greek-flow?date=${date}`,
@@ -96,6 +98,7 @@ async function fetchGreekFlow(ticker, date) {
     console.warn(
       `  UW API ${res.status} for ${ticker} ${date}: ${text.slice(0, 100)}`,
     );
+    fetchFailures++;
     return [];
   }
 
@@ -226,6 +229,11 @@ async function main() {
   console.log(`  Total bars seen: ${totalBars}`);
   console.log(`  Inserted: ${totalInserted}`);
   console.log(`  Updated:  ${totalUpdated}`);
+  console.log(`  Fetch failures: ${fetchFailures}`);
+
+  if (fetchFailures > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

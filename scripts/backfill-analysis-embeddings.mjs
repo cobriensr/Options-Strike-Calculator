@@ -175,6 +175,9 @@ async function main() {
   console.log(
     `\nDone: ${success} embedded, ${failed} failed, ${skipped} skipped`,
   );
+
+  // Surface partial failures to CI/operators via a non-zero exit code.
+  if (failed > 0) process.exitCode = 1;
 }
 
 main().catch((err) => {

@@ -245,6 +245,10 @@ async function main() {
   console.log(`  Inserted:                    ${totals.inserted}`);
   console.log(`  Updated:                     ${totals.updated}`);
   console.log(`  Failed:                      ${totals.failed}`);
+
+  if (totals.failed > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

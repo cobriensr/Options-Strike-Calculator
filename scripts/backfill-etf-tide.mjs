@@ -48,7 +48,7 @@ const tickers =
 
 // ── Fetch ETF Tide for one date ─────────────────────────────
 
-async function fetchEtfTide(ticker, date) {
+async function fetchEtfTide(ticker, date, counters) {
   const res = await fetch(`${UW_BASE}/market/${ticker}/etf-tide?date=${date}`, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
   });
@@ -58,6 +58,7 @@ async function fetchEtfTide(ticker, date) {
     console.warn(
       `  UW API ${res.status} for ${ticker} ETF Tide ${date}: ${text.slice(0, 100)}`,
     );
+    counters.failed++;
     return [];
   }
 
@@ -95,7 +96,7 @@ function sampleTo5Min(rows) {
 
 // ── Store all sampled candles ───────────────────────────────
 
-async function storeCandles(candles, source, date) {
+async function storeCandles(candles, source, date, counters) {
   let stored = 0;
 
   for (const c of candles) {
@@ -109,6 +110,7 @@ async function storeCandles(candles, source, date) {
       if (result.length > 0) stored++;
     } catch (err) {
       console.warn(`  Insert error: ${err.message}`);
+      counters.failed++;
     }
   }
 
@@ -128,6 +130,7 @@ async function main() {
   );
 
   const totals = { candles: 0, stored: 0 };
+  const counters = { failed: 0 };
 
   for (const date of tradingDays) {
     await new Promise((r) => setTimeout(r, 300));
@@ -137,9 +140,9 @@ async function main() {
     for (const { ticker, source } of tickers) {
       await new Promise((r) => setTimeout(r, 100));
 
-      const rows = await fetchEtfTide(ticker, date);
+      const rows = await fetchEtfTide(ticker, date, counters);
       const candles = sampleTo5Min(rows);
-      const stored = await storeCandles(candles, source, date);
+      const stored = await storeCandles(candles, source, date, counters);
 
       totals.candles += candles.length;
       totals.stored += stored;
@@ -154,6 +157,10 @@ async function main() {
   console.log(`  Total candles: ${totals.candles}`);
   console.log(`  Newly stored: ${totals.stored}`);
   console.log(`  Skipped (duplicates): ${totals.candles - totals.stored}`);
+  console.log(`  Failures: ${counters.failed}`);
+
+  // Surface partial failures to CI/operators via a non-zero exit code.
+  if (counters.failed > 0) process.exitCode = 1;
 }
 
 try {

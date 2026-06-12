@@ -32,6 +32,8 @@ const UW_BASE = 'https://api.unusualwhales.com/api';
 
 // ── Fetch Market Tide for one date ──────────────────────────
 
+let fetchFailures = 0;
+
 async function fetchMarketTide(date, otmOnly) {
   const params = new URLSearchParams({ date, interval_5m: 'true' });
   if (otmOnly) params.set('otm_only', 'true');
@@ -45,6 +47,7 @@ async function fetchMarketTide(date, otmOnly) {
     console.warn(
       `  UW API ${res.status} for ${date} (${otmOnly ? 'OTM' : 'all-in'}): ${text.slice(0, 100)}`,
     );
+    fetchFailures++;
     return [];
   }
 
@@ -117,6 +120,11 @@ async function main() {
   console.log(`  Total candles: ${totalRows}`);
   console.log(`  Newly stored: ${totalStored}`);
   console.log(`  Skipped (duplicates): ${totalRows - totalStored}`);
+  console.log(`  Fetch failures: ${fetchFailures}`);
+
+  if (fetchFailures > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

@@ -193,10 +193,15 @@ function translateRows(rows) {
 
 async function storeCandles(candles) {
   if (candles.length === 0) {
-    return { stored: 0, marketTimeCounts: { pr: 0, r: 0, po: 0 } };
+    return {
+      stored: 0,
+      marketTimeCounts: { pr: 0, r: 0, po: 0 },
+      insertErrors: 0,
+    };
   }
 
   let stored = 0;
+  let insertErrors = 0;
   const marketTimeCounts = { pr: 0, r: 0, po: 0 };
 
   for (const c of candles) {
@@ -223,10 +228,11 @@ async function storeCandles(candles) {
       }
     } catch (err) {
       console.warn(`  Insert error: ${err.message}`);
+      insertErrors++;
     }
   }
 
-  return { stored, marketTimeCounts };
+  return { stored, marketTimeCounts, insertErrors };
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -293,6 +299,7 @@ async function main() {
     totals.daysWithData++;
     totals.rowsStored += result.stored;
     totals.rowsSkipped += translated.length - result.stored;
+    totals.errors += result.insertErrors;
 
     const { pr, r, po } = result.marketTimeCounts;
     console.log(
@@ -310,6 +317,8 @@ async function main() {
   console.log(`  Total rows skipped:     ${totals.rowsSkipped}`);
   console.log(`  Errors:                 ${totals.errors}`);
   console.log(`  Duration:               ${durationSec}s`);
+
+  if (totals.errors > 0) process.exitCode = 1;
 }
 
 try {

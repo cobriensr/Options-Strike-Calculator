@@ -38,6 +38,8 @@ const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
 // ── Fetch Greek flow for one date ───────────────────────────
 
+let fetchFailures = 0;
+
 async function fetchGreekFlow(date) {
   const res = await fetch(
     `${UW_BASE}/stock/SPX/greek-flow/${date}?date=${date}`,
@@ -47,6 +49,7 @@ async function fetchGreekFlow(date) {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     console.warn(`  UW API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    fetchFailures++;
     return [];
   }
 
@@ -137,6 +140,11 @@ async function main() {
   console.log(`\nDone!`);
   console.log(`  Total candles: ${totalCandles}`);
   console.log(`  Newly stored: ${totalStored}`);
+  console.log(`  Fetch failures: ${fetchFailures}`);
+
+  if (fetchFailures > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

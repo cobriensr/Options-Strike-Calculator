@@ -160,6 +160,9 @@ async function main() {
     WHERE day_open IS NOT NULL
   `;
   console.log(`\n  day_embeddings rows with OHLC: ${row.n}`);
+
+  // Surface partial failures to CI/operators via a non-zero exit code.
+  if (counters.failed > 0) process.exitCode = 1;
 }
 
 try {

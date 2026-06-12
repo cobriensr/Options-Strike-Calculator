@@ -34,7 +34,7 @@ const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
 // ── Fetch OI per strike for one date ────────────────────────
 
-async function fetchOiPerStrike(date) {
+async function fetchOiPerStrike(date, totals) {
   const res = await fetch(`${UW_BASE}/stock/SPX/oi-per-strike?date=${date}`, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
   });
@@ -42,6 +42,7 @@ async function fetchOiPerStrike(date) {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     console.warn(`  UW API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    totals.failed++;
     return [];
   }
 
@@ -51,7 +52,7 @@ async function fetchOiPerStrike(date) {
 
 // ── Store strikes ───────────────────────────────────────────
 
-async function storeStrikes(rows, date) {
+async function storeStrikes(rows, date, totals) {
   if (rows.length === 0) return { stored: 0 };
 
   let stored = 0;
@@ -71,6 +72,7 @@ async function storeStrikes(rows, date) {
       if (result.length > 0) stored++;
     } catch (err) {
       console.warn(`  Insert error at strike ${row.strike}: ${err.message}`);
+      totals.failed++;
     }
   }
 
@@ -98,12 +100,13 @@ async function main() {
   );
 
   let totalStored = 0;
+  const totals = { failed: 0 };
 
   for (const date of tradingDays) {
     await new Promise((r) => setTimeout(r, 400));
 
-    const rows = await fetchOiPerStrike(date);
-    const result = await storeStrikes(rows, date);
+    const rows = await fetchOiPerStrike(date, totals);
+    const result = await storeStrikes(rows, date, totals);
 
     totalStored += result.stored;
 
@@ -127,6 +130,9 @@ async function main() {
 
   console.log(`\nDone!`);
   console.log(`  Total strike rows stored: ${totalStored}`);
+  console.log(`  Failed (API + insert errors): ${totals.failed}`);
+
+  if (totals.failed > 0) process.exitCode = 1;
 }
 
 try {

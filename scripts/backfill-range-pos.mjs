@@ -68,7 +68,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * non-2xx returns [] immediately so transient server errors don't
  * stall the whole backfill.
  */
-async function fetchStockCandles1m(ticker, date) {
+async function fetchStockCandles1m(ticker, date, failures) {
   const url = `${UW_BASE}/stock/${ticker}/ohlc/1m?date=${date}`;
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
@@ -94,16 +94,19 @@ async function fetchStockCandles1m(ticker, date) {
         console.warn(
           `  UW ${ticker} ${date} → HTTP ${res.status}; leaving NULL`,
         );
+        failures.count++;
         return [];
       }
       const body = await res.json();
       return Array.isArray(body?.data) ? body.data : [];
     } catch (err) {
       console.warn(`  UW ${ticker} ${date} → ${err.message}; leaving NULL`);
+      failures.count++;
       return [];
     }
   }
   console.warn(`  UW ${ticker} ${date} → exhausted 4 retries on 429`);
+  failures.count++;
   return [];
 }
 
@@ -155,6 +158,7 @@ console.log(
 let groupsProcessed = 0;
 let rowsUpdated = 0;
 let rowsLeftNull = 0;
+const fetchFailures = { count: 0 };
 
 for (const g of groups) {
   groupsProcessed++;
@@ -164,7 +168,7 @@ for (const g of groups) {
   // Steady-state pacing — skip on the first request since the loop
   // entry already has zero rate budget consumed.
   if (groupsProcessed > 1) await sleep(UW_INTER_CALL_DELAY_MS);
-  const candles = await fetchStockCandles1m(g.ticker, g.date);
+  const candles = await fetchStockCandles1m(g.ticker, g.date, fetchFailures);
   if (candles.length === 0) {
     rowsLeftNull += g.n;
     continue;
@@ -215,3 +219,6 @@ console.log('\n── Backfill summary ──');
 console.log(`  Groups processed:  ${groupsProcessed}`);
 console.log(`  Rows updated:      ${rowsUpdated}${dryRun ? ' (dry-run)' : ''}`);
 console.log(`  Rows left NULL:    ${rowsLeftNull}`);
+console.log(`  UW fetch failures: ${fetchFailures.count}`);
+
+if (fetchFailures.count > 0) process.exitCode = 1;

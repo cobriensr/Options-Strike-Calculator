@@ -59,7 +59,7 @@ function parseOptionSymbol(symbol) {
 
 // ── Fetch OI change for a date ──────────────────────────────
 
-async function fetchOiChange(date) {
+async function fetchOiChange(date, totals) {
   const res = await fetch(`${UW_BASE}/stock/SPX/oi-change?date=${date}`, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
     signal: AbortSignal.timeout(15_000),
@@ -68,6 +68,7 @@ async function fetchOiChange(date) {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     console.warn(`  UW API ${res.status}: ${text.slice(0, 100)}`);
+    totals.failed++;
     return [];
   }
 
@@ -77,7 +78,7 @@ async function fetchOiChange(date) {
 
 // ── Store OI changes ────────────────────────────────────────
 
-async function storeOiChanges(date, rows) {
+async function storeOiChanges(date, rows, totals) {
   let stored = 0;
 
   for (const r of rows) {
@@ -111,6 +112,7 @@ async function storeOiChanges(date, rows) {
       stored++;
     } catch (err) {
       console.warn(`  Insert error: ${err.message}`);
+      totals.failed++;
     }
   }
 
@@ -127,13 +129,13 @@ async function main() {
     `Days: ${tradingDays.length} (${tradingDays[0]} → ${tradingDays.at(-1)})\n`,
   );
 
-  const totals = { rows: 0, stored: 0, skipped: 0 };
+  const totals = { rows: 0, stored: 0, skipped: 0, failed: 0 };
 
   for (const date of tradingDays) {
     // Rate limit: 600ms between dates
     await new Promise((r) => setTimeout(r, 600));
 
-    const rows = await fetchOiChange(date);
+    const rows = await fetchOiChange(date, totals);
 
     if (rows.length === 0) {
       console.log(`  ${date}: no data`);
@@ -141,7 +143,7 @@ async function main() {
       continue;
     }
 
-    const stored = await storeOiChanges(date, rows);
+    const stored = await storeOiChanges(date, rows, totals);
 
     totals.rows += rows.length;
     totals.stored += stored;
@@ -153,6 +155,9 @@ async function main() {
   console.log(`  Total rows fetched: ${totals.rows}`);
   console.log(`  Stored: ${totals.stored}`);
   console.log(`  Days skipped (no data): ${totals.skipped}`);
+  console.log(`  Failed (API + insert errors): ${totals.failed}`);
+
+  if (totals.failed > 0) process.exitCode = 1;
 }
 
 try {

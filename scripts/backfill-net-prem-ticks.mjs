@@ -355,6 +355,7 @@ async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
     stored: 0,
     empty: 0,
     skipped: 0,
+    failed: 0,
   };
   const queue = [...tickerList];
   const workers = Array.from({ length: concurrency }, async () => {
@@ -385,6 +386,7 @@ async function pmapTickers(tickerList, dates, maxTsByTicker, concurrency) {
           if (r.empty) perTicker.empty++;
         } catch (err) {
           console.warn(`  ${ticker} ${date} failed: ${err.message}`);
+          totals.failed++;
         }
         totals.pairs++;
       }
@@ -434,6 +436,11 @@ async function main() {
   console.log(`  rows stored:     ${totals.stored}`);
   console.log(`  empty days:      ${totals.empty}`);
   console.log(`  pre-skipped:     ${totals.skipped}`);
+  console.log(`  failed:          ${totals.failed}`);
+
+  if (totals.failed > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

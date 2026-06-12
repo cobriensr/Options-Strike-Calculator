@@ -39,7 +39,7 @@ const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
 // ── Fetch 0DTE index flow for one date ──────────────────────
 
-async function fetchZeroDteFlow(date) {
+async function fetchZeroDteFlow(date, totals) {
   const params = new URLSearchParams({
     expiration: 'zero_dte',
     tide_type: 'index_only',
@@ -53,6 +53,7 @@ async function fetchZeroDteFlow(date) {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     console.warn(`  UW API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    totals.failed++;
     return [];
   }
 
@@ -64,7 +65,7 @@ async function fetchZeroDteFlow(date) {
 
 // ── Sample to 5-min and store ───────────────────────────────
 
-async function storeCandles(ticks, date) {
+async function storeCandles(ticks, date, totals) {
   if (ticks.length === 0) return { stored: 0, sampled: 0 };
 
   // Sample to 5-min intervals
@@ -93,6 +94,7 @@ async function storeCandles(ticks, date) {
       if (result.length > 0) stored++;
     } catch (err) {
       console.warn(`  Insert error: ${err.message}`);
+      totals.failed++;
     }
   }
 
@@ -123,12 +125,13 @@ async function main() {
 
   let totalStored = 0;
   let totalCandles = 0;
+  const totals = { failed: 0 };
 
   for (const date of tradingDays) {
     await new Promise((r) => setTimeout(r, 300));
 
-    const ticks = await fetchZeroDteFlow(date);
-    const result = await storeCandles(ticks, date);
+    const ticks = await fetchZeroDteFlow(date, totals);
+    const result = await storeCandles(ticks, date, totals);
 
     totalStored += result.stored;
     totalCandles += result.sampled;
@@ -145,6 +148,9 @@ async function main() {
   console.log(`\nDone!`);
   console.log(`  Total candles: ${totalCandles}`);
   console.log(`  Newly stored: ${totalStored}`);
+  console.log(`  Failed (API + insert errors): ${totals.failed}`);
+
+  if (totals.failed > 0) process.exitCode = 1;
 }
 
 try {

@@ -76,7 +76,7 @@ function getTradingDays(count) {
 
 // ── Fetch 1-min OHLC for one (ticker, date) ─────────────────
 
-async function fetchCandles(ticker, date) {
+async function fetchCandles(ticker, date, counters) {
   const res = await fetch(`${UW_BASE}/stock/${ticker}/ohlc/1m?date=${date}`, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
   });
@@ -86,6 +86,7 @@ async function fetchCandles(ticker, date) {
     console.warn(
       `  UW API ${res.status} for ${ticker} ${date}: ${text.slice(0, 100)}`,
     );
+    counters.failed++;
     return [];
   }
 
@@ -95,7 +96,7 @@ async function fetchCandles(ticker, date) {
 
 // ── Store every minute candle ───────────────────────────────
 
-async function storeCandles(candles, ticker) {
+async function storeCandles(candles, ticker, counters) {
   if (candles.length === 0) return { stored: 0, total: 0 };
 
   let stored = 0;
@@ -117,6 +118,7 @@ async function storeCandles(candles, ticker) {
       if (result.length > 0) stored++;
     } catch (err) {
       console.warn(`  Insert error: ${err.message}`);
+      counters.failed++;
     }
   }
 
@@ -136,14 +138,15 @@ async function main() {
 
   let totalStored = 0;
   let totalBars = 0;
+  const counters = { failed: 0 };
 
   for (const date of tradingDays) {
     for (const ticker of TICKERS) {
       // Pause between (date, ticker) pairs to avoid 429s.
       await new Promise((r) => setTimeout(r, 300));
 
-      const candles = await fetchCandles(ticker, date);
-      const result = await storeCandles(candles, ticker);
+      const candles = await fetchCandles(ticker, date, counters);
+      const result = await storeCandles(candles, ticker, counters);
 
       totalStored += result.stored;
       totalBars += result.total;
@@ -159,6 +162,10 @@ async function main() {
   console.log(`  Total bars seen: ${totalBars}`);
   console.log(`  Newly stored: ${totalStored}`);
   console.log(`  Skipped (duplicates): ${totalBars - totalStored}`);
+  console.log(`  Failures: ${counters.failed}`);
+
+  // Surface partial failures to CI/operators via a non-zero exit code.
+  if (counters.failed > 0) process.exitCode = 1;
 }
 
 try {

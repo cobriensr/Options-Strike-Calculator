@@ -34,7 +34,7 @@ const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
 // ── Fetch strike-expiry rows for one date (0DTE: date=expiry) ──
 
-async function fetchStrikeExpiry(date) {
+async function fetchStrikeExpiry(date, counters) {
   const url = `${UW_BASE}/stock/SPX/greek-exposure/strike-expiry?date=${date}&expiry=${date}`;
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
@@ -45,6 +45,7 @@ async function fetchStrikeExpiry(date) {
     console.warn(
       `  UW strike-expiry API ${res.status} for ${date}: ${text.slice(0, 100)}`,
     );
+    counters.failed++;
     return [];
   }
 
@@ -54,7 +55,7 @@ async function fetchStrikeExpiry(date) {
 
 // ── Store strike rows for a date ────────────────────────────
 
-async function storeStrikeRows(rows, date) {
+async function storeStrikeRows(rows, date, counters) {
   let stored = 0;
 
   for (const row of rows) {
@@ -117,6 +118,7 @@ async function storeStrikeRows(rows, date) {
       console.warn(
         `  Insert error for ${date} strike ${row.strike}: ${err.message}`,
       );
+      counters.failed++;
     }
   }
 
@@ -135,18 +137,19 @@ async function main() {
 
   let totalStrikes = 0;
   let totalStored = 0;
+  const counters = { failed: 0 };
 
   for (const date of tradingDays) {
     await new Promise((r) => setTimeout(r, 300));
 
-    const rows = await fetchStrikeExpiry(date);
+    const rows = await fetchStrikeExpiry(date, counters);
 
     // Filter zero-GEX rows before logging count
     const nonZero = rows.filter(
       (r) => r.call_gex !== '0.0000' || r.put_gex !== '0.0000',
     );
 
-    const stored = await storeStrikeRows(rows, date);
+    const stored = await storeStrikeRows(rows, date, counters);
 
     totalStrikes += nonZero.length;
     totalStored += stored;
@@ -175,6 +178,10 @@ async function main() {
   console.log(`\nDone!`);
   console.log(`  Total strikes processed: ${totalStrikes}`);
   console.log(`  Total strikes stored: ${totalStored}`);
+  console.log(`  Failures: ${counters.failed}`);
+
+  // Surface partial failures to CI/operators via a non-zero exit code.
+  if (counters.failed > 0) process.exitCode = 1;
 }
 
 try {

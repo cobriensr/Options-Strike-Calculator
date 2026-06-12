@@ -35,7 +35,7 @@ const days = Number.parseInt(process.argv[2] ?? '30', 10);
 
 // ── Fetch spot exposures for one date ───────────────────────
 
-async function fetchSpotExposures(date) {
+async function fetchSpotExposures(date, totals) {
   const res = await fetch(`${UW_BASE}/stock/SPX/spot-exposures?date=${date}`, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
   });
@@ -43,6 +43,7 @@ async function fetchSpotExposures(date) {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     console.warn(`  UW API ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    totals.failed++;
     return [];
   }
 
@@ -87,7 +88,7 @@ function sampleTo5Min(rows) {
 
 // ── Store sampled candles ───────────────────────────────────
 
-async function storeCandles(candles, date) {
+async function storeCandles(candles, date, totals) {
   let stored = 0;
 
   for (const c of candles) {
@@ -111,6 +112,7 @@ async function storeCandles(candles, date) {
       if (result.length > 0) stored++;
     } catch (err) {
       console.warn(`  Insert error: ${err.message}`);
+      totals.failed++;
     }
   }
 
@@ -142,13 +144,14 @@ async function main() {
 
   let totalCandles = 0;
   let totalStored = 0;
+  const totals = { failed: 0 };
 
   for (const date of tradingDays) {
     await new Promise((r) => setTimeout(r, 300));
 
-    const rawRows = await fetchSpotExposures(date);
+    const rawRows = await fetchSpotExposures(date, totals);
     const candles = sampleTo5Min(rawRows);
-    const stored = await storeCandles(candles, date);
+    const stored = await storeCandles(candles, date, totals);
 
     totalCandles += candles.length;
     totalStored += stored;
@@ -169,6 +172,9 @@ async function main() {
   console.log(`  Total candles: ${totalCandles}`);
   console.log(`  Newly stored: ${totalStored}`);
   console.log(`  Skipped (duplicates): ${totalCandles - totalStored}`);
+  console.log(`  Failed (API + insert errors): ${totals.failed}`);
+
+  if (totals.failed > 0) process.exitCode = 1;
 }
 
 try {

@@ -39,6 +39,8 @@ const days = Number.parseInt(args[0] ?? '30', 10);
 
 // ── Fetch NOPE for a date ───────────────────────────────────
 
+let fetchFailures = 0;
+
 async function fetchNopeForDate(date) {
   const res = await fetch(`${UW_BASE}/stock/${TICKER}/nope?date=${date}`, {
     headers: { Authorization: `Bearer ${UW_API_KEY}` },
@@ -47,6 +49,7 @@ async function fetchNopeForDate(date) {
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     console.warn(`  UW ${res.status} for ${date}: ${text.slice(0, 100)}`);
+    fetchFailures++;
     return [];
   }
 
@@ -138,6 +141,11 @@ async function main() {
   console.log(`  Total fetched: ${totals.fetched}`);
   console.log(`  Stored (new or updated): ${totals.stored}`);
   console.log(`  Skipped (bad stock_vol): ${totals.skipped}`);
+  console.log(`  Fetch failures: ${fetchFailures}`);
+
+  if (fetchFailures > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {

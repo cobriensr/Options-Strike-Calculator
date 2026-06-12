@@ -384,6 +384,9 @@ async function main() {
   );
   console.log(`  Errors:           ${totals.errors}`);
   console.log(`  Duration:         ${durationSec}s`);
+
+  // Surface partial failures to CI/operators via a non-zero exit code.
+  if (totals.errors > 0) process.exitCode = 1;
 }
 
 try {

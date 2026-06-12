@@ -331,6 +331,10 @@ async function main() {
   console.log(`  Rows skipped:     ${totals.skipped}`);
   console.log(`  Errors:           ${totals.errors}`);
   console.log(`  Duration:         ${durationSec}s`);
+
+  if (totals.errors > 0) {
+    process.exitCode = 1;
+  }
 }
 
 try {
