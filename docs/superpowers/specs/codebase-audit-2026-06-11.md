@@ -489,7 +489,7 @@ structure, or relabel the comparison as sizing-only.
       `moc_eda.py:362` / `payoff_eda_probe.py:500` `boxplot(labels=)` removed in
       matplotlib 3.11; `imbalance/decoder.py:97-99` NaN-into-uint32 may raise under
       pandas 3.
-- [ ] **AUD-M41** _(DEFERRED — bundle of many sub-items; schedule as its own focused session per 2026-06-11 decision)_ — scripts/ misc mediums: `backfill-vol-surface.mjs:110-114` +
+- [x] **AUD-M41** `5f50f26e` (the broad exit-code sweep of all ~40 backfills noted as follow-up; specific bugs all fixed) _(DEFERRED — bundle of many sub-items; schedule as its own focused session per 2026-06-11 decision)_ — scripts/ misc mediums: `backfill-vol-surface.mjs:110-114` +
       `backfill-greek-exposure.mjs:79` wrong-day `?? rows.at(-1)` fallback stores
       another day's row stamped as `${date}`; `backfill-flow-ratio.mjs:110-112` bare
       `catch {}` eats ALL insert errors; `backfill-strike-all.mjs:59-63` +
@@ -570,7 +570,7 @@ structure, or relabel the comparison as sizing-only.
       `eslint.config.ts:22`, `vercel.json:2`. Unused `ws` devDependency
       (grep-verified zero imports). `@sentry/vite-plugin` in dependencies but
       build-only (move to devDeps).
-- [ ] **AUD-L16** (DEFERRED — e2e waitForTimeout + coverage gaps) 8 e2e specs use hardcoded `waitForTimeout` (≤400ms debounce
+- [~] **AUD-L16** (PARTIAL `983559cb` — 8 waitForTimeout→web-first done; broad untested-component coverage deferred) 8 e2e specs use hardcoded `waitForTimeout` (≤400ms debounce
       waits — low flake risk; canonical fix is web-first assertions/`toPass()`).
       ~62 of 239 components never named in any test (many are leaves covered via
       parents — spot-check against coverage HTML, smoke-test the truly untouched).
