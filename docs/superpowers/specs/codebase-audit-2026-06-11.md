@@ -388,30 +388,30 @@ structure, or relabel the comparison as sizing-only.
 
 ### Python services — `sidecar/`, `uw-stream/`
 
-- [ ] **AUD-M25** `sidecar/src/health.py:972` + `sidecar/src/archive_query.py:62-139`
+- [x] **AUD-M25** `13e16a0c` `sidecar/src/health.py:972` + `sidecar/src/archive_query.py:62-139`
       — unauthenticated `/archive/*` on an **unbounded** `ThreadingHTTPServer`;
       DuckDB `memory_limit = '500MB'` is per-connection (thread-local), so N
       concurrent requests = N×500MB (+N×2GB temp) on a container with documented OOM
       history. _Fix:_ `threading.Semaphore(2)` around archive query execution
       (503/429 when saturated) or a small fixed pool.
-- [ ] **AUD-M26** `sidecar/src/options_router.py:358-369` — stat upsert failures
+- [x] **AUD-M26** `13e16a0c` `sidecar/src/options_router.py:358-369` — stat upsert failures
       are log-only, never Sentry; persistent failure (overflow, schema drift,
       SIDE-016 class) silently rots `futures_options_daily`. _Fix:_
       `capture_exception` with the file's existing throttled-summary pattern.
-- [ ] **AUD-M27** sidecar `db.py`/`databento_client.py` — per-record synchronous
+- [x] **AUD-M27** `13e16a0c` sidecar `db.py`/`databento_client.py` — per-record synchronous
       Neon writes on the single SDK callback thread (`upsert_futures_bar` at
       `databento_client.py:717`, `upsert_options_daily` in `handle_stat`): pool
       borrow up to 10s + retry head-of-line-blocks TBBO and options ingestion during
       a Neon stall. _Fix:_ route bars/stats through `BatchedWriter` (already exists,
       tables are upsert-idempotent).
-- [ ] **AUD-M28** `uw-stream/src/connector.py:99-106, 155-159` — repeated _clean_
+- [x] **AUD-M28** `13e16a0c` `uw-stream/src/connector.py:99-106, 155-159` — repeated _clean_
       closes form a 1s tight reconnect loop that never trips the storm alert
       (`_maybe_alert_storm` only fires from exception branches) and resets backoff
       each cycle (`_established = True` after subscribe). This is exactly how a
       provider sheds over-cap connections. _Fix:_ alert from the clean-close branch;
       don't reset backoff on sub-threshold session duration (sidecar's
       `MIN_HEALTHY_SESSION_S` pattern).
-- [ ] **AUD-M29** `uw-stream/src/handlers/interval_ba.py:454-471` — alert rows
+- [x] **AUD-M29** `13e16a0c` `uw-stream/src/handlers/interval_ba.py:454-471` — alert rows
       unconditionally discarded when the raw-tick flush raises: `pending` is cleared
       before `super()._flush(rows)`; on Neon-outage retry exhaustion the alert rows +
       push notifications are gone and `_fired` blocks re-fire. _Fix:_ re-prepend
