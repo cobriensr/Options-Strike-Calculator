@@ -8,12 +8,19 @@ Run: ml/.venv/bin/python ml/experiments/exit-timing-engine/run_a3_model.py
 """
 from __future__ import annotations
 
+import resource
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+
+
+def _rss_gb() -> float:
+    # ru_maxrss is bytes on macOS, kilobytes on Linux.
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return rss / 1024**3 if sys.platform == "darwin" else rss / 1024**2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -58,10 +65,17 @@ def main() -> int:
     for k in range(1, len(parts)):
         train_parts, test_part = parts[:k], parts[k]
 
-        # train fire universe (from prior months) -> stratified sample
-        tm = pd.concat([pd.read_parquet(p, columns=["fire_id", "date", "mode"]) for p in train_parts], ignore_index=True)
-        tf = tm.groupby("fire_id").agg(date=("date", "first"), mode=("mode", "first")).reset_index()
-        del tm
+        # train fire universe (from prior months) -> stratified sample.
+        # Collapse each part to one row PER FIRE before concat — never materialize
+        # the full per-minute object-dtype frame across all prior months (OOM bomb).
+        per_part = []
+        for p in train_parts:
+            d = pd.read_parquet(p, columns=["fire_id", "date", "mode"])
+            per_part.append(d.groupby("fire_id", as_index=False).agg(date=("date", "first"), mode=("mode", "first")))
+            del d
+        tf = pd.concat(per_part, ignore_index=True).groupby("fire_id", as_index=False).agg(
+            date=("date", "first"), mode=("mode", "first"))
+        del per_part
         train_sample = set(stratified_fire_sample(tf, target=TRAIN_SAMPLE_FIRES, seed=13))
         del tf
 
@@ -103,7 +117,8 @@ def main() -> int:
             n_test_fires += 1
         del df, model
         print(f"WF train={[p.name[5:12] for p in train_parts]} (n_rows={n_train:,}) "
-              f"-> test={test_part.name[5:12]} ({n_test_fires:,} fires)  cum_test={len(base['eod']):,}", flush=True)
+              f"-> test={test_part.name[5:12]} ({n_test_fires:,} fires)  cum_test={len(base['eod']):,}  "
+              f"peakRSS={_rss_gb():.1f}GB", flush=True)
 
     best_t = max(EXIT_THRESHOLDS, key=lambda t: np.mean(model_real[t]))
     lines = ["# A3 — model vs on-path baselines (month walk-forward, OOS, mid basis)", ""]
