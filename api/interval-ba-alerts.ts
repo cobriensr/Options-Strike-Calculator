@@ -39,6 +39,7 @@
 
 import { getDb, withDbRetry } from './_lib/db.js';
 import { withDbReader } from './_lib/request-scope.js';
+import { sinceParamSchema } from './_lib/validation.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 type Severity = 'extreme' | 'critical' | 'warning';
@@ -174,6 +175,16 @@ export default withDbReader(
   async (req, res, done) => {
     const sql = getDb();
     const since = req.query.since as string | undefined;
+
+    // Reject a malformed `since` with a 400 instead of letting Postgres throw
+    // on the TIMESTAMPTZ compare (repeatable 500 on this 10s-polled endpoint).
+    if (since !== undefined && !sinceParamSchema.safeParse(since).success) {
+      done({ status: 400 });
+      return res
+        .status(400)
+        .json({ error: 'Invalid `since` — expected an ISO-8601 timestamp' });
+    }
+
     const today = getETDateStr(new Date());
 
     // Neon's serverless `sql` tag returns `Record<string, any>[]`;

@@ -143,6 +143,20 @@ describe('GET /api/alerts', () => {
     expect(res._json).toEqual({ alerts: [alertRow] });
   });
 
+  it('returns 400 for a malformed ?since= without touching the DB (AUD-M42)', async () => {
+    mockSql.mockResolvedValue([]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { since: 'not-a-timestamp' } }),
+      res,
+    );
+
+    expect(res._status).toBe(400);
+    expect((res._json as { error: string }).error).toContain('since');
+    // The guard short-circuits before any TIMESTAMPTZ query runs.
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
   it('sets Cache-Control: no-store header', async () => {
     mockSql.mockResolvedValue([]);
     const res = mockResponse();

@@ -93,3 +93,10 @@ export type PushNotifyBody = z.infer<typeof pushNotifySchema>;
 export const num = z.number().nullable().optional();
 export const str = z.string().nullable().optional();
 export const bool = z.boolean().nullable().optional();
+
+// `?since=` query param for the poll-since reader endpoints (alerts,
+// interval-ba-alerts). Interpolated into a TIMESTAMPTZ compare — parameterized
+// so not injectable, but a non-timestamp value makes Postgres throw → a
+// repeatable 500 on a 10s-polled endpoint. Validate the ISO-8601 shape so
+// garbage degrades to a 400 (AUD-M42).
+export const sinceParamSchema = z.string().datetime({ offset: true });
