@@ -420,26 +420,26 @@ structure, or relabel the comparison as sizing-only.
 
 ### CI / config / build
 
-- [ ] **AUD-M30** `vercel.json:2` — `ignoreCommand` diffs only `HEAD^ HEAD`: a
+- [x] **AUD-M30** `18e93f2a` `vercel.json:2` — `ignoreCommand` diffs only `HEAD^ HEAD`: a
       two-commit push ending in a docs-only commit **skips deploying the src
       change**. _Fix:_ one-commit-at-a-time habit (current), or compare against
       `$VERCEL_GIT_PREVIOUS_SHA` / turbo-ignore-style logic. Also references
       nonexistent `daemon/`.
-- [ ] **AUD-M31** `.github/workflows/ci.yml` `changes` filter — misses
+- [x] **AUD-M31** `18e93f2a` `.github/workflows/ci.yml` `changes` filter — misses
       `scripts/**` (includes `run-migrations.ts` → prod Neon), `index.html`,
       `public/**`, `vercel.json`, `audit-ci.jsonc`; lists nonexistent
       `vitest.config.ts` (vitest config lives in `vite.config.ts`). A PR touching
       only scripts/ runs zero checks.
-- [ ] **AUD-M32** `tsconfig.json:27` — `scripts/` (5.7MB of TS incl. prod-DB
+- [x] **AUD-M32** `acd70d4f` `tsconfig.json:27` — `scripts/` (5.7MB of TS incl. prod-DB
       tooling) never type-checked; eslint.config.ts:121-127 acknowledges it.
       Combined with AUD-M31: zero static checks on prod-DB scripts. _Fix:_ minimal
       `tsconfig.scripts.json` (noEmit) for the non-throwaway scripts.
-- [ ] **AUD-M33** `vite.config.ts:142-181` — coverage configured, **no
+- [x] **AUD-M33** `18e93f2a` `vite.config.ts:142-181` — coverage configured, **no
       `thresholds`** — the "Tests Are Mandatory" policy has no mechanical backstop.
-- [ ] **AUD-M34** `tsconfig.json:5` — one tsconfig serves browser + server:
+- [x] **AUD-M34** `acd70d4f` `tsconfig.json:5` — one tsconfig serves browser + server:
       `api/` compiles with DOM globals (`window`, `localStorage` available in Vercel
       Functions). _Fix:_ split app/api tsconfigs (standard Vite solution-style).
-- [ ] **AUD-M35** ci.yml has no `timeout-minutes` on any job (hung Playwright
+- [x] **AUD-M35** `18e93f2a` ci.yml has no `timeout-minutes` on any job (hung Playwright
       burns the 6h default); `ml-pipeline.yml:55,170` runs `npm install @vercel/blob`
       unpinned at runtime inside a job holding `contents: write` + prod
       `DATABASE_URL`. _Fix:_ timeouts (20 app / 30 e2e); pin or lockfile-install.
