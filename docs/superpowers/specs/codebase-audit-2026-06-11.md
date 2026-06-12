@@ -446,29 +446,29 @@ structure, or relabel the comparison as sizing-only.
 
 ### ML — additional methodology issues
 
-- [ ] **AUD-M36** `ml/src/nq_flow_leadership/backtest.py` + `correlate.py` — QQQ
+- [~] **AUD-M36** (DROPPED — ML, per user 2026-06-11) `ml/src/nq_flow_leadership/backtest.py` + `correlate.py` — QQQ
       sweep-imbalance backtest evaluates on its discovery sample (signal/bucket/exit
       geometry all selected from the same 15 days scored); headline 100%-WR/10-trade
       result is in-sample selection. Also: entry fills at the signal bar's own close;
       time stop counts join rows not minutes; overlapping forward windows inflate the
       correlation scan.
-- [ ] **AUD-M37** `ml/src/imbalance/eod_analysis.py:391-399` — NOII "predictive"
+- [~] **AUD-M37** (DROPPED — ML, per user 2026-06-11) `ml/src/imbalance/eod_analysis.py:391-399` — NOII "predictive"
       test correlates `signed_imbalance_last` (~15:59) against the 15:50→15:59 return
       — concurrence, not prediction (Phase-5 `index_aggregator.py` gets it right).
       `ml/src/moc_features.py:63-69, 240-268` + `moc_eda.py` — same class: T55
       features vs a 15:50-anchored target.
-- [ ] **AUD-M38** `ml/src/cross_section_eda.py:282-308, 347-368` — H2/H3 mix
+- [~] **AUD-M38** (DROPPED — ML, per user 2026-06-11) `ml/src/cross_section_eda.py:282-308, 347-368` — H2/H3 mix
       SPX-scale levels with equity fires → `pd.cut` NaN → silently dropped; the
       documented 2026-05-16 rerun fixed it but the buggy script remains with no
       SUPERSEDED banner (and the rerun's tier gate `score >= 12` on bare `score`
       looks like a V1-cutoff-on-V2-field scale mismatch — verify).
-- [ ] **AUD-M39** `ml/src/enrich_lottery_outcomes.py:111-123` — per-fire
+- [~] **AUD-M39** (DROPPED — ML, per user 2026-06-11) `ml/src/enrich_lottery_outcomes.py:111-123` — per-fire
       full-archive `read_parquet('{archive}/*.parquet')` + fresh DuckDB connection
       inside the loop (the measured 40× per-row scan cliff). Tickless fires never get
       `enriched_at` → once ≥1000 accumulate, `LIMIT 1000` refetches the same dead
       batch forever. _Fix:_ derive `{date}-trades.parquet` from fire date; one
       connection; mark dead fires.
-- [ ] **AUD-M40** _(DEFERRED — bundle of many sub-items; schedule as its own focused session per 2026-06-11 decision)_ — Assorted (one line each — see agent report for detail):
+- [~] **AUD-M40** (DROPPED — ML, per user 2026-06-11) _(DEFERRED — bundle of many sub-items; schedule as its own focused session per 2026-06-11 decision)_ — Assorted (one line each — see agent report for detail):
       `clustering.py:228-236` preprocessing fit before split-half validation;
       `lottery_scoring.py:484-515` in-sample stats saved under `"validation"`;
       `takeit/train.py:264-276` calibration AUC on its own fit data;
@@ -509,7 +509,7 @@ structure, or relabel the comparison as sizing-only.
       `QQQ_TO_NDX_RATIO = 41` (drifts 1-2%/quarter, no guard);
       `backfill-strike-exposure-lottery.mjs:226-233` multi-hour run, no try/catch,
       no resume.
-- [ ] **AUD-M42** Security mediums: `api/alerts.ts:36` +
+- [x] **AUD-M42** `20421697` Security mediums: `api/alerts.ts:36` +
       `api/interval-ba-alerts.ts:212` — `?since=` reaches a TIMESTAMPTZ compare
       unvalidated (parameterized, NOT injection — but garbage input → repeatable
       500s on a 10s-polled endpoint; add an ISO-format guard → 400). `xlsx@0.18.5`
