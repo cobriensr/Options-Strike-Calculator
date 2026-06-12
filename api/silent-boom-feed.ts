@@ -479,13 +479,21 @@ export default async function handler(
     )) as { n: number }[];
     const total = totalRow[0]?.n ?? 0;
 
-    // Sort clause — neon tagged-template doesn't support unsafe()
-    // identifier interpolation, so we route via a switch on the
-    // validated enum.
-    let rows: AlertRow[];
-    if (q.sort === 'spike_ratio') {
-      rows = (await withDbRetry(
-        () => db`
+    // Whitelisted ORDER BY clauses keyed on the validated `q.sort` enum.
+    // neon can't bind ORDER BY through ${}, so splice it as a raw fragment via
+    // db.unsafe — injection-safe (constant identifier lists), byte-identical SQL
+    // to the prior per-sort copies. (AUD-L3)
+    const SB_FEED_ORDER_BY: Record<
+      'newest' | 'spike_ratio' | 'vol_oi' | 'peak',
+      string
+    > = {
+      spike_ratio: 'spike_ratio DESC, bucket_ct DESC',
+      vol_oi: 'vol_oi DESC, bucket_ct DESC',
+      peak: 'peak_ceiling_pct DESC NULLS LAST, bucket_ct DESC',
+      newest: 'bucket_ct DESC, id DESC',
+    };
+    const rows = (await withDbRetry(
+      () => db`
         SELECT
           s.*,
           s.cum_ncp_at_fire AS fire_time_cum_ncp,
@@ -532,179 +540,12 @@ export default async function handler(
               )
             )
           )
-        ORDER BY spike_ratio DESC, bucket_ct DESC
+        ORDER BY ${db.unsafe(SB_FEED_ORDER_BY[q.sort])}
         LIMIT ${q.limit} OFFSET ${q.offset}
       `,
-        2,
-        10000,
-      )) as AlertRow[];
-    } else if (q.sort === 'vol_oi') {
-      rows = (await withDbRetry(
-        () => db`
-        SELECT
-          s.*,
-          s.cum_ncp_at_fire AS fire_time_cum_ncp,
-          s.cum_npp_at_fire AS fire_time_cum_npp
-        FROM silent_boom_alerts s
-        WHERE s.date = ${date}::date
-          AND (${tickerUpper ?? null}::text IS NULL OR underlying_symbol = ${tickerUpper ?? null}::text)
-          AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
-          AND vol_oi >= ${q.minVolOi}::numeric
-          AND spike_ratio >= ${q.minSpikeRatio}::numeric
-          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
-          AND (${todLo}::int IS NULL OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) >= ${todLo}::int)
-          AND (${todHi}::int IS NULL OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) < ${todHi}::int)
-          AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
-          AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
-          AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
-          AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
-          AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
-        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
-        AND (
-          ${hideLatePm}::boolean IS NOT TRUE
-          OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) < 870
-        )
-          AND (
-            ${aggressivePremium}::boolean IS NOT TRUE
-            OR (
-              entry_price * spike_volume * 100 >= 100000
-              AND dte <= 8
-              AND vol_oi > 1.0
-              AND COALESCE(multi_leg_share, 0) < 0.10
-              AND underlying_price_at_spike IS NOT NULL
-              AND (
-                (option_type = 'C' AND strike > underlying_price_at_spike)
-                OR (option_type = 'P' AND strike < underlying_price_at_spike)
-              )
-            )
-          )
-        ORDER BY vol_oi DESC, bucket_ct DESC
-        LIMIT ${q.limit} OFFSET ${q.offset}
-      `,
-        2,
-        10000,
-      )) as AlertRow[];
-    } else if (q.sort === 'peak') {
-      rows = (await withDbRetry(
-        () => db`
-        SELECT
-          s.*,
-          s.cum_ncp_at_fire AS fire_time_cum_ncp,
-          s.cum_npp_at_fire AS fire_time_cum_npp
-        FROM silent_boom_alerts s
-        WHERE s.date = ${date}::date
-          AND (${tickerUpper ?? null}::text IS NULL OR underlying_symbol = ${tickerUpper ?? null}::text)
-          AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
-          AND vol_oi >= ${q.minVolOi}::numeric
-          AND spike_ratio >= ${q.minSpikeRatio}::numeric
-          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
-          AND (${todLo}::int IS NULL OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) >= ${todLo}::int)
-          AND (${todHi}::int IS NULL OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) < ${todHi}::int)
-          AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
-          AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
-          AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
-          AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
-          AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
-        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
-        AND (
-          ${hideLatePm}::boolean IS NOT TRUE
-          OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) < 870
-        )
-          AND (
-            ${aggressivePremium}::boolean IS NOT TRUE
-            OR (
-              entry_price * spike_volume * 100 >= 100000
-              AND dte <= 8
-              AND vol_oi > 1.0
-              AND COALESCE(multi_leg_share, 0) < 0.10
-              AND underlying_price_at_spike IS NOT NULL
-              AND (
-                (option_type = 'C' AND strike > underlying_price_at_spike)
-                OR (option_type = 'P' AND strike < underlying_price_at_spike)
-              )
-            )
-          )
-        ORDER BY peak_ceiling_pct DESC NULLS LAST, bucket_ct DESC
-        LIMIT ${q.limit} OFFSET ${q.offset}
-      `,
-        2,
-        10000,
-      )) as AlertRow[];
-    } else {
-      // 'newest' — default
-      rows = (await withDbRetry(
-        () => db`
-        SELECT
-          s.*,
-          s.cum_ncp_at_fire AS fire_time_cum_ncp,
-          s.cum_npp_at_fire AS fire_time_cum_npp
-        FROM silent_boom_alerts s
-        WHERE s.date = ${date}::date
-          AND (${tickerUpper ?? null}::text IS NULL OR underlying_symbol = ${tickerUpper ?? null}::text)
-          AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
-          AND vol_oi >= ${q.minVolOi}::numeric
-          AND spike_ratio >= ${q.minSpikeRatio}::numeric
-          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
-          AND (${todLo}::int IS NULL OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) >= ${todLo}::int)
-          AND (${todHi}::int IS NULL OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) < ${todHi}::int)
-          AND (${dteLo}::int IS NULL OR dte BETWEEN ${dteLo}::int AND ${dteHiBound}::int)
-          AND (${burstLo}::numeric IS NULL OR (spike_ratio >= ${burstLo}::numeric AND spike_ratio < ${burstHiBound}::numeric))
-          AND (${askPctLo}::numeric IS NULL OR (ask_pct >= ${askPctLo}::numeric AND ask_pct < ${askPctHiBound}::numeric))
-          AND entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
-          AND (${minPremium}::numeric IS NULL OR entry_price * spike_volume * 100 >= ${minPremium}::numeric)
-        AND (${minTakeitProb}::numeric IS NULL OR takeit_prob >= ${minTakeitProb}::numeric)
-        AND (
-          ${hideLatePm}::boolean IS NOT TRUE
-          OR (
-            EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
-            EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
-          ) < 870
-        )
-          AND (
-            ${aggressivePremium}::boolean IS NOT TRUE
-            OR (
-              entry_price * spike_volume * 100 >= 100000
-              AND dte <= 8
-              AND vol_oi > 1.0
-              AND COALESCE(multi_leg_share, 0) < 0.10
-              AND underlying_price_at_spike IS NOT NULL
-              AND (
-                (option_type = 'C' AND strike > underlying_price_at_spike)
-                OR (option_type = 'P' AND strike < underlying_price_at_spike)
-              )
-            )
-          )
-        ORDER BY bucket_ct DESC, id DESC
-        LIMIT ${q.limit} OFFSET ${q.offset}
-      `,
-        2,
-        10000,
-      )) as AlertRow[];
-    }
+      2,
+      10000,
+    )) as AlertRow[];
 
     // Day-scoped cluster-candidate query — runs after the page query so
     // it covers ALL 0DTE fires for the date, not just the current page.

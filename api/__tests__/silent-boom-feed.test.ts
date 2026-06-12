@@ -8,7 +8,10 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
-const mockSql = vi.fn();
+// The feed now splices its ORDER BY clause via `db.unsafe(...)` (AUD-L3 dedup),
+// so the tagged-template mock needs an `.unsafe` method. It just echoes the raw
+// string into the template; mockSql ignores interpolated values.
+const mockSql = Object.assign(vi.fn(), { unsafe: (raw: string) => raw });
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
@@ -984,9 +987,14 @@ describe('silent-boom-feed handler', () => {
     // The list query (2nd call) is the sort-specific branch — check
     // the ORDER BY clause matches.
     const listCall = mockSql.mock.calls[1];
-    const sqlText = (
-      (listCall?.[0] as TemplateStringsArray | undefined) ?? []
-    ).join(' ');
+    // ORDER BY is now spliced as a db.unsafe(...) interpolation (AUD-L3), so
+    // reconstruct the rendered SQL by interleaving strings + values.
+    const strings = (listCall?.[0] as TemplateStringsArray | undefined) ?? [];
+    const sqlText = strings
+      .map((s, i) =>
+        i < (listCall?.length ?? 1) - 1 ? s + String(listCall?.[i + 1]) : s,
+      )
+      .join('');
     expect(sqlText).toContain('ORDER BY spike_ratio DESC');
   });
 
@@ -1007,9 +1015,14 @@ describe('silent-boom-feed handler', () => {
     const body = res._json as { filters: { sort: string } };
     expect(body.filters.sort).toBe('vol_oi');
     const listCall = mockSql.mock.calls[1];
-    const sqlText = (
-      (listCall?.[0] as TemplateStringsArray | undefined) ?? []
-    ).join(' ');
+    // ORDER BY is now spliced as a db.unsafe(...) interpolation (AUD-L3), so
+    // reconstruct the rendered SQL by interleaving strings + values.
+    const strings = (listCall?.[0] as TemplateStringsArray | undefined) ?? [];
+    const sqlText = strings
+      .map((s, i) =>
+        i < (listCall?.length ?? 1) - 1 ? s + String(listCall?.[i + 1]) : s,
+      )
+      .join('');
     expect(sqlText).toContain('ORDER BY vol_oi DESC');
   });
 
@@ -1030,9 +1043,14 @@ describe('silent-boom-feed handler', () => {
     const body = res._json as { filters: { sort: string } };
     expect(body.filters.sort).toBe('peak');
     const listCall = mockSql.mock.calls[1];
-    const sqlText = (
-      (listCall?.[0] as TemplateStringsArray | undefined) ?? []
-    ).join(' ');
+    // ORDER BY is now spliced as a db.unsafe(...) interpolation (AUD-L3), so
+    // reconstruct the rendered SQL by interleaving strings + values.
+    const strings = (listCall?.[0] as TemplateStringsArray | undefined) ?? [];
+    const sqlText = strings
+      .map((s, i) =>
+        i < (listCall?.length ?? 1) - 1 ? s + String(listCall?.[i + 1]) : s,
+      )
+      .join('');
     expect(sqlText).toContain('ORDER BY peak_ceiling_pct DESC');
   });
 

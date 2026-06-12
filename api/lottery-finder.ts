@@ -315,6 +315,21 @@ const num = (v: DbNullableNumeric): number | null =>
 const QAS_FIRE_ALIAS_WHITELIST = ['f.', 'ranked.', ''] as const;
 type QasFireAlias = (typeof QAS_FIRE_ALIAS_WHITELIST)[number];
 
+// Whitelisted ORDER BY clauses for the lottery feed, keyed on the validated
+// `sort` enum (validation/lottery.ts). neon tagged templates can't bind ORDER
+// BY through ${}, so the clause is spliced as a raw fragment via db.unsafe —
+// the same mechanism as qasExprText below. Each value is a constant identifier
+// list (injection-safe), producing SQL byte-identical to the prior per-sort
+// copies. (AUD-L3)
+const LOTTERY_FEED_ORDER_BY: Record<
+  'chronological' | 'score' | 'peak',
+  string
+> = {
+  score: 'f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC',
+  peak: 'f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC',
+  chronological: 'f.trigger_time_ct DESC, f.id DESC',
+};
+
 function qasExprText(fireAlias: QasFireAlias): string {
   if (!(QAS_FIRE_ALIAS_WHITELIST as readonly string[]).includes(fireAlias)) {
     throw new Error(`qasExprText: invalid fire alias "${fireAlias}"`);
@@ -619,9 +634,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       reignitedRows,
       clusterCandidateRows,
     ] = (await Promise.all([
-      sort === 'score'
-        ? withDbRetry(
-            () => db`
+      withDbRetry(
+        () => db`
         WITH filtered AS (
           SELECT
             f.*,
@@ -718,224 +732,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           -- count query so pagination/total stay coherent.
           AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minScore ?? 0})
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
-        ORDER BY f.score DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
+        ORDER BY ${db.unsafe(LOTTERY_FEED_ORDER_BY[sort])}
         LIMIT ${limit}
         OFFSET ${offset}
       `,
-            2,
-            10000,
-          )
-        : sort === 'peak'
-          ? withDbRetry(
-              () => db`
-        WITH filtered AS (
-          SELECT
-            f.*,
-            COUNT(*) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-            )::int AS fire_count,
-            MIN(f.trigger_time_ct) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-            ) AS first_fire_time_ct,
-            ROW_NUMBER() OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-              ORDER BY f.trigger_time_ct DESC, f.id DESC
-            ) AS rn,
-            -- Chain-level peak TAKE-IT + the timestamp of the fire that
-            -- hit it. The chain is gated on chain_max_takeit (NOT the
-            -- rep row's takeit_prob) so a chain that ever cleared the
-            -- floor stays visible for the rest of the day — monotonic,
-            -- never disappears (spec lottery-no-vanish-2026-05-29.md).
-            -- peak_takeit_at feeds the "peak TAKE-IT 0.XX @ HH:MM" badge.
-            MAX(f.takeit_prob) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-            ) AS chain_max_takeit,
-            FIRST_VALUE(f.trigger_time_ct) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-              ORDER BY f.takeit_prob DESC NULLS LAST, f.trigger_time_ct ASC
-            ) AS peak_takeit_at
-          FROM lottery_finder_fires f
-          WHERE f.date = ${targetDate}::date
-            AND f.trigger_time_ct >= ${windowStart}::timestamptz
-            AND f.trigger_time_ct < ${windowEnd}::timestamptz
-            AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
-            AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
-            AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
-            AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
-            AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
-            AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-            AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
-            AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
-        )
-        SELECT
-          f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
-          f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
-          f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
-          f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
-          f.trigger_window_size, f.trigger_window_prints,
-          f.entry_price, f.open_interest, f.spot_at_first, f.spot_at_trigger,
-          f.alert_seq, f.minutes_since_prev_fire,
-          f.flow_quad, f.tod, f.mode,
-          f.reload_tagged, f.cheap_call_pm_tagged,
-          f.burst_ratio_vs_prev, f.entry_drop_pct_vs_prev,
-          f.mkt_tide_ncp, f.mkt_tide_npp, f.mkt_tide_diff, f.mkt_tide_otm_diff,
-          f.spx_flow_diff, f.spy_etf_diff, f.qqq_etf_diff, f.zero_dte_diff,
-          f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
-          f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
-          f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
-          f.gex_one_cvroflow, f.gex_net_put_dex, f.gex_one_dexoflow,
-          f.gex_one_gexoflow, f.gex_zcvr, f.gex_zero_gamma, f.gex_spot,
-          f.gex_captured_at,
-          f.realized_trail30_10_pct, f.realized_hard30m_pct,
-          f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
-          f.realized_eod_pct,
-          f.peak_ceiling_pct, f.minutes_to_peak,
-          f.inserted_at, f.enriched_at,
-          f.score, f.direction_gated, f.range_pos_at_trigger,
-          f.round_trip_net_pct, f.round_trip_score_deduct,
-          f.fire_count_score_adjustment,
-          f.gamma_at_trigger,
-          f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
-          f.fire_count, f.first_fire_time_ct,
-          f.chain_max_takeit, f.peak_takeit_at,
-          s.n_fires AS ticker_n_fires,
-          s.high_peak_rate AS ticker_high_peak_rate,
-          s.ci_lower AS ticker_ci_lower,
-          s.ci_upper AS ticker_ci_upper,
-          s.ci_width AS ticker_ci_width,
-          s.tier AS ticker_tier,
-          s.inversion_blend       AS ticker_inversion_blend,
-          s.inversion_quintile    AS ticker_inversion_quintile,
-          s.inversion_n_21d       AS ticker_inversion_n_21d,
-          s.inversion_n_90d       AS ticker_inversion_n_90d,
-          f.cum_ncp_at_fire AS fire_time_cum_ncp,
-          f.cum_npp_at_fire AS fire_time_cum_npp
-        FROM filtered f
-        LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
-        WHERE f.rn = 1
-          AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
-          AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
-          AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          -- Fix C: minScore gates on the DISPLAYED qas (the value the tier
-          -- badge uses), not the raw score. qas = GREATEST(0, score + rt +
-          -- fc) + inversion bonus (NO gamma, post-Fix-B). Applied at the rep
-          -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
-          -- so it reads s.inversion_quintile; identical expression in the
-          -- count query so pagination/total stay coherent.
-          AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minScore ?? 0})
-          AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
-        ORDER BY f.peak_ceiling_pct DESC NULLS LAST, f.trigger_time_ct DESC, f.id DESC
-        LIMIT ${limit}
-        OFFSET ${offset}
-      `,
-              2,
-              10000,
-            )
-          : withDbRetry(
-              () => db`
-        WITH filtered AS (
-          SELECT
-            f.*,
-            COUNT(*) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-            )::int AS fire_count,
-            MIN(f.trigger_time_ct) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-            ) AS first_fire_time_ct,
-            ROW_NUMBER() OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-              ORDER BY f.trigger_time_ct DESC, f.id DESC
-            ) AS rn,
-            -- Chain-level peak TAKE-IT + the timestamp of the fire that
-            -- hit it. The chain is gated on chain_max_takeit (NOT the
-            -- rep row's takeit_prob) so a chain that ever cleared the
-            -- floor stays visible for the rest of the day — monotonic,
-            -- never disappears (spec lottery-no-vanish-2026-05-29.md).
-            -- peak_takeit_at feeds the "peak TAKE-IT 0.XX @ HH:MM" badge.
-            MAX(f.takeit_prob) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-            ) AS chain_max_takeit,
-            FIRST_VALUE(f.trigger_time_ct) OVER (
-              PARTITION BY f.underlying_symbol, f.strike, f.option_type, f.expiry
-              ORDER BY f.takeit_prob DESC NULLS LAST, f.trigger_time_ct ASC
-            ) AS peak_takeit_at
-          FROM lottery_finder_fires f
-          WHERE f.date = ${targetDate}::date
-            AND f.trigger_time_ct >= ${windowStart}::timestamptz
-            AND f.trigger_time_ct < ${windowEnd}::timestamptz
-            AND (${ticker ?? null}::text IS NULL OR f.underlying_symbol = ${ticker ?? ''})
-            AND (${reload ?? null}::boolean IS NULL OR f.reload_tagged = ${reload ?? false})
-            AND (${cheapCallPm ?? null}::boolean IS NULL OR f.cheap_call_pm_tagged = ${cheapCallPm ?? false})
-            AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
-            AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
-            AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-            AND f.entry_price >= ${MIN_ALERT_ENTRY_PRICE}::numeric
-            AND (${minPremium}::numeric IS NULL OR f.entry_price * f.trigger_window_size * 100 >= ${minPremium}::numeric)
-        )
-        SELECT
-          f.id, f.date, f.trigger_time_ct, f.entry_time_ct, f.option_chain_id,
-          f.underlying_symbol, f.option_type, f.strike, f.expiry, f.dte,
-          f.trigger_vol_to_oi_window, f.trigger_vol_to_oi_cum,
-          f.trigger_iv, f.trigger_delta, f.trigger_ask_pct,
-          f.trigger_window_size, f.trigger_window_prints,
-          f.entry_price, f.open_interest, f.spot_at_first, f.spot_at_trigger,
-          f.alert_seq, f.minutes_since_prev_fire,
-          f.flow_quad, f.tod, f.mode,
-          f.reload_tagged, f.cheap_call_pm_tagged,
-          f.burst_ratio_vs_prev, f.entry_drop_pct_vs_prev,
-          f.mkt_tide_ncp, f.mkt_tide_npp, f.mkt_tide_diff, f.mkt_tide_otm_diff,
-          f.spx_flow_diff, f.spy_etf_diff, f.qqq_etf_diff, f.zero_dte_diff,
-          f.spx_spot_gamma_oi, f.spx_spot_gamma_vol, f.spx_spot_charm_oi, f.spx_spot_vanna_oi,
-          f.gex_strike_call_minus_put, f.gex_strike_call_ask_minus_bid,
-          f.gex_strike_put_ask_minus_bid, f.gex_strike_actual_strike,
-          f.gex_one_cvroflow, f.gex_net_put_dex, f.gex_one_dexoflow,
-          f.gex_one_gexoflow, f.gex_zcvr, f.gex_zero_gamma, f.gex_spot,
-          f.gex_captured_at,
-          f.realized_trail30_10_pct, f.realized_hard30m_pct,
-          f.realized_tier50_holdeod_pct, f.realized_flow_inversion_pct,
-          f.realized_eod_pct,
-          f.peak_ceiling_pct, f.minutes_to_peak,
-          f.inserted_at, f.enriched_at,
-          f.score, f.direction_gated, f.range_pos_at_trigger,
-          f.round_trip_net_pct, f.round_trip_score_deduct,
-          f.fire_count_score_adjustment,
-          f.gamma_at_trigger,
-          f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
-          f.fire_count, f.first_fire_time_ct,
-          f.chain_max_takeit, f.peak_takeit_at,
-          s.n_fires AS ticker_n_fires,
-          s.high_peak_rate AS ticker_high_peak_rate,
-          s.ci_lower AS ticker_ci_lower,
-          s.ci_upper AS ticker_ci_upper,
-          s.ci_width AS ticker_ci_width,
-          s.tier AS ticker_tier,
-          s.inversion_blend       AS ticker_inversion_blend,
-          s.inversion_quintile    AS ticker_inversion_quintile,
-          s.inversion_n_21d       AS ticker_inversion_n_21d,
-          s.inversion_n_90d       AS ticker_inversion_n_90d,
-          f.cum_ncp_at_fire AS fire_time_cum_ncp,
-          f.cum_npp_at_fire AS fire_time_cum_npp
-        FROM filtered f
-        LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
-        WHERE f.rn = 1
-          AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
-          AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
-          AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          -- Fix C: minScore gates on the DISPLAYED qas (the value the tier
-          -- badge uses), not the raw score. qas = GREATEST(0, score + rt +
-          -- fc) + inversion bonus (NO gamma, post-Fix-B). Applied at the rep
-          -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
-          -- so it reads s.inversion_quintile; identical expression in the
-          -- count query so pagination/total stay coherent.
-          AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minScore ?? 0})
-          AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
-        ORDER BY f.trigger_time_ct DESC, f.id DESC
-        LIMIT ${limit}
-        OFFSET ${offset}
-      `,
-              2,
-              10000,
-            ),
+        2,
+        10000,
+      ),
       // Total counts the collapsed shape (one row per chain per day:
       // ticker × strike × option_type × expiry) so pagination math
       // matches the dedup'd CTE above.
