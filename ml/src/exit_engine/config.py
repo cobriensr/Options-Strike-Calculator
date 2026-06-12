@@ -5,6 +5,7 @@ full tape is the source of truth; ws_option_trades is Project B's concern.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 MODE_INTRADAY = "A_intraday_0DTE"
@@ -23,11 +24,18 @@ PARQUET_TRADES_PATTERN = "{date}-trades.parquet"
 PARQUET_FULLTAPE_PATTERN = "{date}-fulltape.parquet"
 
 # Partitioned, resumable decision dataset (one part-YYYY-MM.parquet per entry month).
-DATASET_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "experiments"
-    / "exit-timing-engine"
-    / "decision_dataset"
+# EXIT_DATASET_DIR env override lets a second source (e.g. silent boom) build to its
+# own dir without clobbering the lottery parts; all three drivers honor it uniformly.
+DATASET_DIR = Path(
+    os.environ.get(
+        "EXIT_DATASET_DIR",
+        str(
+            Path(__file__).resolve().parents[2]
+            / "experiments"
+            / "exit-timing-engine"
+            / "decision_dataset"
+        ),
+    )
 )
 
 # Walk-forward split (shared by all phase drivers).

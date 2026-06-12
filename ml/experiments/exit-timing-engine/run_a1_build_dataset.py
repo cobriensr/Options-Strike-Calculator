@@ -47,6 +47,24 @@ def load_fires(conn) -> pd.DataFrame:
     )
 
 
+def load_fires_sb(conn) -> pd.DataFrame:
+    """Silent Boom alerts shaped to match load_fires. bucket_ct (the spike bucket)
+    is the entry time; silent_boom_alerts has no `mode`, so synthesize it from dte
+    (dte 0 -> single-session intraday, dte>=1 -> multi-day), mirroring lottery A/B."""
+    df = pd.read_sql(
+        """
+        SELECT id, date, bucket_ct AS entry_time_ct, entry_price,
+               option_chain_id, option_type, dte, peak_ceiling_pct
+        FROM silent_boom_alerts
+        WHERE entry_price > 0 AND peak_ceiling_pct IS NOT NULL
+        ORDER BY date, bucket_ct
+        """,
+        conn,
+    )
+    df["mode"] = df["dte"].apply(lambda d: cfg.MODE_INTRADAY if d == 0 else cfg.MODE_MULTIDAY)
+    return df.drop(columns=["dte"])
+
+
 def _parquet_path(date_str: str) -> Path | None:
     for pat in (cfg.PARQUET_TRADES_PATTERN, cfg.PARQUET_FULLTAPE_PATTERN):
         p = cfg.PARQUET_DIR / pat.format(date=date_str)
@@ -166,8 +184,10 @@ def main() -> int:
     if not db_url:
         print("Missing DATABASE_URL", file=sys.stderr)
         return 1
+    source = os.environ.get("EXIT_SOURCE", "lottery")
     with psycopg2.connect(db_url) as conn:
-        fires = load_fires(conn)
+        fires = load_fires_sb(conn) if source == "silentboom" else load_fires(conn)
+    print(f"SOURCE: {source}  -> {len(fires):,} fires  dataset_dir={cfg.DATASET_DIR.name}", flush=True)
     if fires.empty:
         print("No in-universe fires found.")
         return 1
