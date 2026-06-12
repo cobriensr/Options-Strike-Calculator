@@ -312,23 +312,23 @@ structure, or relabel the comparison as sizing-only.
       batched UNNEST/LATERAL gold standard to copy).
       `detect-silent-boom:822-838` — per-fire COUNT(\*) trivially batchable with
       `= ANY(...) GROUP BY`.
-- [ ] **AUD-M8** `api/cron/compute-zero-gamma.ts:326-341` — all-tickers-failed
+- [x] **AUD-M8** `f2257fda` `api/cron/compute-zero-gamma.ts:326-341` — all-tickers-failed
       still returns `status: 'success'`. `deriveCronStatus(failed, total)` exists
       (`cron-instrumentation.ts:467`) and is unused here.
-- [ ] **AUD-M9** `api/cron/backfill-futures-gaps.ts:320-339` — hardcoded
+- [x] **AUD-M9** `f2257fda` `api/cron/backfill-futures-gaps.ts:320-339` — hardcoded
       `status: 'ok'` + HTTP 200 even if all 7 symbols fail; also its batch
       `sql.query()` inserts are the only cron DB writes not wrapped in `withDbRetry`.
-- [ ] **AUD-M10** `api/cron/curate-lessons.ts:471-482` — per-review DB write
+- [x] **AUD-M10** `f2257fda` `api/cron/curate-lessons.ts:471-482` — per-review DB write
       failures: `logger.error` only, no Sentry; stream ends 200 so the monitor shows
       green even if every review fails. _Fix:_ `Sentry.captureException` in the catch.
-- [ ] **AUD-M11** `api/cron/fetch-zero-dte-flow.ts:90-100` — degenerate-snapshot
+- [x] **AUD-M11** `f2257fda` `api/cron/fetch-zero-dte-flow.ts:90-100` — degenerate-snapshot
       rejection (the 2026-06-03 incident fix) is warn-log only; a recurring UW
       degenerate feed = silent 0DTE flow gap. _Fix:_ one `Sentry.captureMessage`.
-- [ ] **AUD-M12** `api/cron/fetch-es-options-eod.ts:77-116` — QC counters
+- [x] **AUD-M12** `f2257fda` `api/cron/fetch-es-options-eod.ts:77-116` — QC counters
       (`with_oi`, `with_iv`) computed but never checked; only `total_rows === 0`
       alerts. Sidecar drift writing NULL-OI stubs sails through. _Fix:_ gate on
       `with_oi === 0` too.
-- [ ] **AUD-M13** DST-hardcoded overnight windows:
+- [x] **AUD-M13** `f2257fda` DST-hardcoded overnight windows:
       `api/cron/auto-prefill-premarket.ts:40-44` + `api/cron/compute-es-overnight.ts:40-46`
       — window end pinned to the CDT offset (`T13:30:00Z`); in CST the last hour of
       Globex (7:30–8:30 CT) is excluded from H/L/C/VWAP, and auto-prefill also _runs_
