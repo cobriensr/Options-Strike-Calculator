@@ -528,7 +528,7 @@ structure, or relabel the comparison as sizing-only.
 - [x] **AUD-L2** `60c655b6` `api/_lib/uw-fetch.ts:69` — unanchored `/50[234]/` retry
       classifier matches status codes appearing anywhere in the error body; anchor
       `^UW API (5\d\d):` like `sentry.ts:63`.
-- [ ] **AUD-L3** (DEFERRED — ~400-line query dedup refactor) `api/lottery-finder.ts:621-950` + `api/silent-boom-feed.ts:485+`
+- [x] **AUD-L3** `5cc3f0ba` (~350 lines removed; whitelist-splice, byte-identical SQL) `api/lottery-finder.ts:621-950` + `api/silent-boom-feed.ts:485+`
       — full ~100-line query duplicated per ORDER BY branch (~400 collapsible lines
       via the whitelist-splice pattern already used in the same file).
 - [x] **AUD-L4** `60c655b6` `api/_lib/db-oi-change.ts:36-47` — dead `date` field with the
