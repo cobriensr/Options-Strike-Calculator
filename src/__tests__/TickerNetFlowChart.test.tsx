@@ -99,6 +99,15 @@ vi.mock('lightweight-charts', () => ({
   BaselineSeries: class BaselineSeries {},
 }));
 
+// Spy on Sentry so the malformed-tick diagnostic breadcrumb can be asserted.
+const { mockCaptureMessage } = vi.hoisted(() => ({
+  mockCaptureMessage: vi.fn(),
+}));
+
+vi.mock('@sentry/react', () => ({
+  captureMessage: mockCaptureMessage,
+}));
+
 // ── Fixtures ──────────────────────────────────────────────────────────
 
 function makeTick(overrides: Partial<NetFlowTick> = {}): NetFlowTick {
@@ -133,6 +142,15 @@ function makeCandle(overrides: Partial<TickerCandle> = {}): TickerCandle {
 beforeEach(() => {
   vi.clearAllMocks();
 });
+
+// ── Shared assertion helper ───────────────────────────────────────────
+// Flow-series setData payloads (≥2 items) captured by the shared series
+// mock — used by the scaffold and malformed-timestamp suites.
+type Item = { time: number; value?: number };
+const flowArrays = (): Item[][] =>
+  mockSetData.mock.calls
+    .map((c) => c[0] as Item[])
+    .filter((arr) => Array.isArray(arr) && arr.length >= 2);
 
 // ============================================================
 // EMPTY STATE
@@ -332,12 +350,6 @@ describe('TickerNetFlowChart: session-span whitespace scaffold', () => {
   const openSec = Math.floor(Date.parse('2026-05-08T13:30:00Z') / 1000);
   const closeSec = Math.floor(Date.parse('2026-05-08T20:00:00Z') / 1000);
   const firstTickSec = Math.floor(Date.parse('2026-05-08T14:30:00Z') / 1000);
-
-  type Item = { time: number; value?: number };
-  const flowArrays = (): Item[][] =>
-    mockSetData.mock.calls
-      .map((c) => c[0] as Item[])
-      .filter((arr) => Array.isArray(arr) && arr.length >= 2);
 
   it('brackets flow data with session-bound whitespace when date is provided', () => {
     render(
@@ -736,5 +748,174 @@ describe('TickerNetFlowChart: UW-style inline header', () => {
     );
     expect(screen.queryByText('SPY')).not.toBeInTheDocument();
     expect(screen.queryByText('Net Premiums')).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// MALFORMED-TIMESTAMP RESILIENCE
+// ============================================================
+// Regression for the production blank-chart bug: ONE tick whose `ts`
+// failed Date.parse poisoned the minute grid (NaN map key → NaN grid
+// bounds → empty grid) and the data effect setData([])'d every flow
+// series — silently wiping a previously-full chart on every poll. The
+// resulting empty time scale then made the session pin throw, leaving
+// the axis in the default ~1h tail view.
+
+describe('TickerNetFlowChart: malformed-timestamp resilience', () => {
+  // 2026-05-08 is CDT (UTC-5): 08:30 CT = 13:30Z, 15:00 CT = 20:00Z.
+  const openSec = Math.floor(Date.parse('2026-05-08T13:30:00Z') / 1000);
+  const closeSec = Math.floor(Date.parse('2026-05-08T20:00:00Z') / 1000);
+  const m1431 = Math.floor(Date.parse('2026-05-08T14:31:00Z') / 1000);
+
+  it('drops a poisoned tick instead of wiping the chart (setData stays non-empty)', () => {
+    const ticks = [
+      makeTick({ ts: '2026-05-08T14:30:00Z', cumNcp: 100 }),
+      makeTick({ ts: 'not-a-date', cumNcp: 999 }),
+      makeTick({ ts: '2026-05-08T14:31:00Z', cumNcp: 200 }),
+    ];
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        date="2026-05-08"
+        ariaLabel="t"
+      />,
+    );
+    // The full-session grid still reaches setData — NOT an empty wipe.
+    const grid = flowArrays().find(
+      (arr) => arr[0]!.time === openSec && arr.at(-1)!.time === closeSec,
+    );
+    expect(grid).toBeDefined();
+    // The valid ticks survive; the poisoned tick's value never appears.
+    expect(grid!.find((p) => p.time === m1431)?.value).toBe(200);
+    expect(grid!.some((p) => p.value === 999)).toBe(false);
+    // No NaN time ever reaches the chart in any setData call.
+    for (const call of mockSetData.mock.calls) {
+      for (const p of call[0] as Item[]) {
+        expect(Number.isFinite(p.time)).toBe(true);
+      }
+    }
+    // The session pin still holds (grid spans the bounds).
+    expect(mockChart.timeScale().setVisibleRange).toHaveBeenCalledWith({
+      from: openSec,
+      to: closeSec,
+    });
+  });
+
+  it('reports dropped ticks to Sentry once per mount (not per poll)', () => {
+    const ticks = [
+      makeTick({ ts: '2026-05-08T14:30:00Z', cumNcp: 100 }),
+      makeTick({ ts: 'not-a-date', cumNcp: 999 }),
+      makeTick({ ts: '2026-05-08T14:31:00Z', cumNcp: 200 }),
+    ];
+    const { rerender } = render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        date="2026-05-08"
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    const droppedCalls = () =>
+      mockCaptureMessage.mock.calls.filter(
+        (c) => c[0] === 'TickerNetFlowChart.droppedMalformedTicks',
+      );
+    expect(droppedCalls().length).toBe(1);
+    expect(droppedCalls()[0]![1]).toMatchObject({
+      level: 'warning',
+      extra: { symbol: 'SPY', dropped: 1, sampleTs: 'not-a-date' },
+    });
+    // A new poll delivers a fresh array (same poisoned tick) — the ref
+    // guard must keep this at ONE message for the mount.
+    rerender(
+      <TickerNetFlowChart
+        series={[...ticks]}
+        candles={[]}
+        date="2026-05-08"
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(droppedCalls().length).toBe(1);
+  });
+
+  it('surfaces a clamp-class sample (finite-but-ancient ts) in the Sentry message', () => {
+    // V8 parses digit-bearing garbage to a FINITE far-away date (e.g.
+    // 'garbage-1' → Jan 2001). Those ticks are range-clamped, not
+    // NaN-dropped — the sample must still surface the raw string, since
+    // that string IS the diagnosis.
+    const ticks = [
+      makeTick({ ts: '2026-05-08T14:30:00Z', cumNcp: 100 }),
+      makeTick({ ts: '2001-01-01T12:00:00Z', cumNcp: 999 }),
+      makeTick({ ts: '2026-05-08T14:31:00Z', cumNcp: 200 }),
+    ];
+    render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[]}
+        date="2026-05-08"
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'TickerNetFlowChart.droppedMalformedTicks',
+      expect.objectContaining({
+        extra: expect.objectContaining({
+          dropped: 1,
+          sampleTs: '2001-01-01T12:00:00Z',
+        }),
+      }),
+    );
+  });
+
+  it('does not crash when ALL ts are malformed; falls back to fitContent', () => {
+    const ticks = [
+      makeTick({ ts: 'garbage', cumNcp: 100 }),
+      makeTick({ ts: 'not-a-date', cumNcp: 200 }),
+    ];
+    expect(() =>
+      render(
+        <TickerNetFlowChart
+          series={ticks}
+          candles={[]}
+          date="2026-05-08"
+          ariaLabel="t"
+        />,
+      ),
+    ).not.toThrow();
+    // An empty grid can't span the session bounds — the pin must not be
+    // attempted (it would throw "Value is null" inside the library).
+    expect(mockChart.timeScale().setVisibleRange).not.toHaveBeenCalled();
+    expect(mockChart.timeScale().fitContent).toHaveBeenCalled();
+  });
+
+  it('falls back to fitContent when the session pin throws (no 1h-tail view)', () => {
+    const ticks = [
+      makeTick({ ts: '2026-05-08T14:30:00Z', cumNcp: 100 }),
+      makeTick({ ts: '2026-05-08T14:31:00Z', cumNcp: 200 }),
+    ];
+    mockChart.timeScale().setVisibleRange.mockImplementationOnce(() => {
+      throw new Error('Value is null');
+    });
+    expect(() =>
+      render(
+        <TickerNetFlowChart
+          series={ticks}
+          candles={[]}
+          date="2026-05-08"
+          ariaLabel="t"
+        />,
+      ),
+    ).not.toThrow();
+    // The failed pin degrades to "all data visible", not the library's
+    // default right-aligned tail view.
+    expect(mockChart.timeScale().fitContent).toHaveBeenCalled();
+    // The existing skip breadcrumb is preserved.
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'TickerNetFlowChart.setVisibleRange skipped',
+      expect.objectContaining({ level: 'warning' }),
+    );
   });
 });

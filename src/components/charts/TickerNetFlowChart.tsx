@@ -41,6 +41,13 @@ import type {
 import * as Sentry from '@sentry/react';
 import type { NetFlowTick, TickerCandle } from '../LotteryFinder/types.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
+import {
+  isoToUtcSec,
+  sessionMinuteGrid,
+  dedupAscending,
+  isDroppedTickTs,
+} from './netflow-time-grid.js';
+import type { Point } from './netflow-time-grid.js';
 
 /** Live crosshair readout state — populated on hover, cleared on leave. */
 interface CrosshairReadout {
@@ -111,77 +118,6 @@ const fmtHeaderTime = (iso: string): string => {
   return `${md} ${tm}`;
 };
 
-/** Local time-pinned alias — narrower than the library's Time union. */
-type Point = { time: UTCTimestamp; value: number };
-
-/**
- * A drawn point or a whitespace point. lightweight-charts treats a data
- * item with no `value` as whitespace: it reserves a slot on the (index-
- * based) time scale without painting anything.
- */
-type FlowPoint = Point | { time: UTCTimestamp };
-
-/** Grid cadence — one slot per minute across the whole session. */
-const SESSION_STEP_SEC = 60;
-
-/**
- * Lay a value series onto a uniform one-point-per-minute grid spanning the
- * full 08:30→close CT session. Minutes with a tick carry that minute's last
- * cumulative value; empty minutes are whitespace (a `{time}`-only item that
- * reserves an axis slot without painting).
- *
- * Why a uniform grid (not just bracketing the data with whitespace at the
- * ends): lightweight-charts' time scale is index-based — a point's pixel
- * position is driven by its ORDINAL position, not its wall-clock time, and
- * `setVisibleRange` cannot extrapolate beyond the data. With a uniform
- * minute grid the logical index of any time is exactly its minute-offset
- * from the session open, so:
- *   - `setVisibleRange(open→close)` spans the full session even when the WS
- *     daemon has only indexed the last few minutes, and
- *   - the fixed-time fire marker maps to a STABLE coordinate regardless of
- *     how many (sub-minute, irregular) live ticks have arrived — the live
- *     feed is per-tick, so a non-uniform layout would let busy tickers
- *     drift the marker as point-count grew between polls.
- *
- * The grid extends past the session bounds only if real ticks fall outside
- * them (rare pre-open / post-close prints) so no data point is dropped.
- * No-op fallback to deduped raw points when `date` is absent (legacy/tests).
- */
-function sessionMinuteGrid(
-  points: Point[],
-  date: string | undefined,
-): FlowPoint[] {
-  if (date == null) return dedupAscending(points);
-  if (points.length === 0) return points;
-  const bounds = ctSessionBounds(date);
-  const openSec = Math.floor(Date.parse(bounds.min) / 1000);
-  const closeSec = Math.floor(Date.parse(bounds.max) / 1000);
-  if (!Number.isFinite(openSec) || !Number.isFinite(closeSec)) {
-    return dedupAscending(points);
-  }
-
-  // Bucket to the minute; the last cumulative value within a minute wins.
-  // `points` is ts-ascending (API ORDER BY ts), so a later set() overwrites.
-  const byMinute = new Map<number, number>();
-  for (const p of points) {
-    byMinute.set(Math.floor((p.time as number) / 60) * 60, p.value);
-  }
-  const minutes = [...byMinute.keys()];
-  const gridStart = Math.min(openSec, ...minutes);
-  const gridEnd = Math.max(closeSec, ...minutes);
-
-  const out: FlowPoint[] = [];
-  for (let t = gridStart; t <= gridEnd; t += SESSION_STEP_SEC) {
-    const v = byMinute.get(t);
-    out.push(
-      v == null
-        ? { time: t as UTCTimestamp }
-        : { time: t as UTCTimestamp, value: v },
-    );
-  }
-  return out;
-}
-
 interface TickerNetFlowChartProps {
   /** Per-tick rows with cumNcp / cumNpp / cumNcv / cumNpv populated. */
   series: NetFlowTick[];
@@ -226,9 +162,6 @@ interface TickerNetFlowChartProps {
   ariaLabel: string;
 }
 
-const isoToUtcSec = (iso: string): UTCTimestamp =>
-  Math.floor(Date.parse(iso) / 1000) as UTCTimestamp;
-
 /** Format a UTCTimestamp (seconds) as a CT HH:MM string. */
 const formatCt = (t: UTCTimestamp): string =>
   new Date((t as number) * 1000).toLocaleTimeString('en-US', {
@@ -237,31 +170,6 @@ const formatCt = (t: UTCTimestamp): string =>
     hour12: false,
     timeZone: 'America/Chicago',
   });
-
-/**
- * lightweight-charts shows duplicate-time points as outright errors
- * and silently drops monotonically-out-of-order points. Our net-flow
- * series can occasionally have two ticks at the same second (rare,
- * but possible when the daemon timestamps coincide); collapse them
- * by keeping the last value for each second.
- */
-function dedupAscending<T extends { time: UTCTimestamp; value: number }>(
-  rows: T[],
-): T[] {
-  if (rows.length === 0) return rows;
-  const out: T[] = [];
-  let lastSec: UTCTimestamp | null = null;
-  for (const r of rows) {
-    if (lastSec != null && r.time === lastSec) {
-      out[out.length - 1] = r;
-      continue;
-    }
-    if (lastSec != null && r.time < lastSec) continue; // out-of-order; skip
-    out.push(r);
-    lastSec = r.time;
-  }
-  return out;
-}
 
 function TickerNetFlowChartInner({
   series,
@@ -317,34 +225,75 @@ function TickerNetFlowChartInner({
   // ── Build series data (memoized per props) ──────────────────────
   const flowData = useMemo(() => {
     if (series.length < 2) return null;
+    // A malformed `ts` becomes a NaN-timed point here; sessionMinuteGrid
+    // drops (and counts) those so one bad tick can't poison the grid and
+    // wipe the whole chart (the production blank-chart bug).
+    const toTime = (ts: string): UTCTimestamp =>
+      isoToUtcSec(ts) ?? (Number.NaN as UTCTimestamp);
     const ncpRaw: Point[] = series.map((r) => ({
-      time: isoToUtcSec(r.ts),
+      time: toTime(r.ts),
       value: r.cumNcp,
     }));
     const nppRaw: Point[] = series.map((r) => ({
-      time: isoToUtcSec(r.ts),
+      time: toTime(r.ts),
       value: r.cumNpp,
     }));
     const netVolRaw: Point[] = series.map((r) => ({
-      time: isoToUtcSec(r.ts),
+      time: toTime(r.ts),
       value: r.cumNcv - r.cumNpv,
     }));
     // Lay each series on a uniform full-session minute grid so the time
     // scale spans 08:30→close and the fire marker stays pinned regardless
     // of live tick density (see sessionMinuteGrid).
+    const ncp = sessionMinuteGrid(ncpRaw, date);
+    const npp = sessionMinuteGrid(nppRaw, date);
+    const netVol = sessionMinuteGrid(netVolRaw, date);
+    // All three series share the same `ts` column, so one dropped count
+    // (and one sample raw string) describes them all.
     return {
-      ncp: sessionMinuteGrid(ncpRaw, date),
-      npp: sessionMinuteGrid(nppRaw, date),
-      netVol: sessionMinuteGrid(netVolRaw, date),
+      ncp: ncp.points,
+      npp: npp.points,
+      netVol: netVol.points,
+      dropped: ncp.dropped,
+      // isDroppedTickTs covers BOTH drop classes (unparsable AND
+      // finite-but-outside-the-session-clamp), so the Sentry sample
+      // surfaces the raw string for whichever tick the grid rejected.
+      sampleDroppedTs:
+        ncp.dropped > 0
+          ? (series.find((r) => isDroppedTickTs(r.ts, date))?.ts ?? null)
+          : null,
     };
   }, [series, date]);
 
+  /** One Sentry breadcrumb per MOUNT (not per poll — the same poisoned
+   *  tick re-arrives on every refetch) when malformed timestamps were
+   *  dropped. Converts the next field occurrence into a one-look
+   *  diagnosis: which ticker, how many ticks, and a sample raw `ts`. */
+  const droppedReportedRef = useRef(false);
+  useEffect(() => {
+    if (!flowData || flowData.dropped === 0 || droppedReportedRef.current) {
+      return;
+    }
+    droppedReportedRef.current = true;
+    Sentry.captureMessage('TickerNetFlowChart.droppedMalformedTicks', {
+      level: 'warning',
+      extra: {
+        symbol: symbol ?? null,
+        dropped: flowData.dropped,
+        sampleTs: flowData.sampleDroppedTs,
+      },
+    });
+  }, [flowData, symbol]);
+
   const priceData = useMemo<Point[] | null>(() => {
     if (candles.length === 0) return null;
-    const raw: Point[] = candles.map((c) => ({
-      time: isoToUtcSec(c.ts),
-      value: c.close,
-    }));
+    // Candles with a malformed `ts` are dropped for the same NaN-poisoning
+    // reason as flow ticks (lightweight-charts rejects NaN times).
+    const raw: Point[] = [];
+    for (const c of candles) {
+      const t = isoToUtcSec(c.ts);
+      if (t != null) raw.push({ time: t, value: c.close });
+    }
     return dedupAscending(raw);
   }, [candles]);
 
@@ -556,7 +505,9 @@ function TickerNetFlowChartInner({
     // pinning would throw "Value is null" and the ErrorBoundary would nuke the
     // entire alert panel. Pin only when the flow grid exists; else fitContent
     // (null-safe) to whatever data is present.
-    if (date == null || !flowData) {
+    // An empty flow grid (all ticks dropped as malformed) can't span the
+    // session bounds either — treat it like "no flow data" and fit.
+    if (date == null || !flowData || flowData.ncp.length === 0) {
       ts.fitContent();
       return;
     }
@@ -577,6 +528,9 @@ function TickerNetFlowChartInner({
           error: err instanceof Error ? err.message : String(err),
         },
       });
+      // Degrade to "all data visible" instead of the library's default
+      // right-aligned ~1h tail view, which reads as a blank/clipped chart.
+      ts.fitContent();
     }
   }, [flowData, priceData, date]);
 
@@ -670,6 +624,11 @@ function TickerNetFlowChartInner({
       return;
     }
     const ts = isoToUtcSec(markerTs);
+    if (ts == null) {
+      // Malformed marker timestamp — no coordinate to pin to.
+      setMarkerX(null);
+      return;
+    }
     const recompute = () => {
       const x = chart.timeScale().timeToCoordinate(ts);
       setMarkerX(typeof x === 'number' ? x : null);
