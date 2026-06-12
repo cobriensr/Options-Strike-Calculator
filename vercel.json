@@ -1,5 +1,5 @@
 {
-  "ignoreCommand": "git diff --quiet \"${VERCEL_GIT_PREVIOUS_SHA:-HEAD^}\" HEAD -- ':!sidecar' ':!ml' ':!uw-stream' ':!docs' ':!scripts' ':!pine' ':!*.md'",
+  "ignoreCommand": "BASE=\"${VERCEL_GIT_PREVIOUS_SHA:-HEAD^}\"; git cat-file -e \"$BASE^{commit}\" 2>/dev/null || BASE=HEAD^; git diff --quiet \"$BASE\" HEAD -- ':!sidecar' ':!ml' ':!uw-stream' ':!docs' ':!scripts' ':!pine' ':!*.md'",
   "crons": [
     {
       "path": "/api/cron/backup-tables",
