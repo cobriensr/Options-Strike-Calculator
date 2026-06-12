@@ -336,51 +336,51 @@ structure, or relabel the comparison as sizing-only.
 
 ### Frontend — `src/`
 
-- [ ] **AUD-M14** `src/hooks/useChainData.ts:64-67` — transient fetch failure
+- [x] **AUD-M14** `e5d0e759` `src/hooks/useChainData.ts:64-67` — transient fetch failure
       wipes the live chain: `setChain(result.data)` runs unconditionally and
       `result.data === null` on networkError → pin-risk/skew blank for a full poll
       cycle (120s after backoff). _Fix:_ keep last-good data when
       `result.networkError` is set.
-- [ ] **AUD-M15** `src/hooks/useGexTarget.ts:295-357, 364-442` — stale-response
+- [x] **AUD-M15** `e5d0e759` `src/hooks/useGexTarget.ts:295-357, 364-442` — stale-response
       race on date change: no abort-on-supersede, no sequence counter; a slow
       in-flight today-request (up to 30s on a Neon hang) can overwrite a freshly
       scrubbed past date's data. `useFetchedData.ts:136-151` has the correct pattern.
-- [ ] **AUD-M16** `src/hooks/useMarketData.ts:285-316` — side effects inside the
+- [x] **AUD-M16** `e5d0e759` `src/hooks/useMarketData.ts:285-316` — side effects inside the
       `setData` updater (nested `setNeedsAuth`/`setFetchedAt`, ref mutations,
       `Date.now()`). StrictMode double-invokes → `consecutiveFailsRef` increments 2×
       per failure, halving the backoff threshold. _Fix:_ compute
       `processEndpointResults` outside the updater.
-- [ ] **AUD-M17** `src/hooks/useMarketData.ts:344, 386` — quotes-poll backoff can
+- [x] **AUD-M17** `e5d0e759` `src/hooks/useMarketData.ts:344, 386` — quotes-poll backoff can
       never engage: the poll tick never increments the fail counter, and ref reads at
       render don't re-render. The documented "interval doubling on 3+ failures" is
       dead code on the path it was built for. Same ref-at-render issue gates polling
       start for a visitor who authenticates in another tab. _Fix:_ adopt
       `useChainData`'s state+ref pattern.
-- [ ] **AUD-M18** `src/hooks/useMarketData.ts:376-383` — poll path bumps
+- [x] **AUD-M18** `e5d0e759` `src/hooks/useMarketData.ts:376-383` — poll path bumps
       `fetchedAt` even when every fetch failed (contract says "last successful").
       No current UI consumer, but any future "last updated" display would lie.
-- [ ] **AUD-M19** `src/components/PreMarketInput.tsx:54-80` — scrubbing to a date
+- [x] **AUD-M19** `e5d0e759` `src/components/PreMarketInput.tsx:54-80` — scrubbing to a date
       with no saved data keeps the previous date's Globex H/L/C and `saved=true`; one
       Update click writes date A's overnight levels onto date B → wrong gap context
       to analyze. _Fix:_ reset all fields + flags at the top of the date-change
       effect.
-- [ ] **AUD-M20** `src/components/PanelPrefsModal/PanelPrefsModal.tsx:207-221,
+- [x] **AUD-M20** `e5d0e759` `src/components/PanelPrefsModal/PanelPrefsModal.tsx:207-221,
 313-320` — `aria-modal="true"` with no focus trap; Tab walks into the inert
       background AT was told doesn't exist. Escape + focus-restore are already
       correct. _Fix:_ focus-trap loop, native `<dialog>`, or `inert` on the shell.
       Spot-check `AccessKeyModal` and Tracker's `AddContractForm` dialog too.
-- [ ] **AUD-M21** `src/App.tsx:275-280, 667-672` + `src/utils/ui-utils.ts:34-50`
+- [x] **AUD-M21** `e5d0e759` `src/App.tsx:275-280, 667-672` + `src/utils/ui-utils.ts:34-50`
       — `chevronUrl` reads `getComputedStyle` during render and is permanently one
       theme-toggle behind (the `.dark` class flips in an effect after the memo
       recomputes). Render-purity violation + wrong chevron color per theme.
-- [ ] **AUD-M22** `src/hooks/useGexTarget.ts:224-238` — fresh
+- [x] **AUD-M22** `e5d0e759` `src/hooks/useGexTarget.ts:224-238` — fresh
       `Intl.DateTimeFormat` per candle (~390/response, every 60s poll). Hoist one CT
       formatter to module scope (`src/utils/timezone.ts:9-41` is the template).
-- [ ] **AUD-M23** Dead components (grep-verified, referenced only by own tests /
+- [x] **AUD-M23** `e5d0e759` Dead components (grep-verified, referenced only by own tests /
       barrel): `src/components/DateLookupSection.tsx`,
       `src/components/VixUploadSection.tsx` (superseded by inline AppHeader upload),
       `src/components/ui/SortableHeader.tsx` + 3 orphan test files + barrel export.
-- [ ] **AUD-M24** LotteryFinder/SilentBoom ~4,000-line near-twins:
+- [ ] **AUD-M24** (DEFERRED — ~4k-line dedup refactor, quality not correctness) LotteryFinder/SilentBoom ~4,000-line near-twins:
       `LotteryFinder/index.tsx` (1,997) vs `SilentBoom/index.tsx` (1,941), row + group
       components likewise. Identical 30s tick + 60s midnight-roll effects copied
       verbatim; drift management is manual per the comments. Extract: now-tick +
