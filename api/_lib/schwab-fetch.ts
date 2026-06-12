@@ -130,7 +130,9 @@ async function schwabApiFetch<T>(
   }
 
   done(true);
-  const data: T = await res.json();
+  // Node's fetch types `.json()` as Promise<unknown>; the caller's generic T
+  // is the declared response contract (AUD-M34 — was implicit `any` under DOM lib).
+  const data = (await res.json()) as T;
   return { ok: true, data };
 }
 

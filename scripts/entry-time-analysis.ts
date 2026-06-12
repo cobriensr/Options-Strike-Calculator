@@ -248,7 +248,7 @@ async function fetchDay(
       console.error(`  ✗ ${date}: HTTP ${r.status} ${r.statusText}`);
       return null;
     }
-    const data: HistoryResponse = await r.json();
+    const data = (await r.json()) as HistoryResponse;
     if (verbose) {
       console.log(
         `    ${date}: candleCount=${data.candleCount}, spx=${data.spx.candles.length}, vix=${data.vix.candles.length}`,
@@ -285,7 +285,10 @@ async function main() {
       console.error(`✗ API returned ${test.status}: ${await test.text()}`);
       process.exit(1);
     }
-    const q = await test.json();
+    const q = (await test.json()) as {
+      spx?: { price?: number };
+      vix?: { price?: number };
+    };
     console.log(
       `✓ Authenticated. SPX: ${q.spx?.price ?? 'N/A'}, VIX: ${q.vix?.price ?? 'N/A'}\n`,
     );

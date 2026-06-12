@@ -24,5 +24,8 @@
     "exactOptionalPropertyTypes": false,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "api", "e2e"]
+  /* Browser/app surface (DOM lib). The server surface (api/) is checked by
+     tsconfig.api.json with a Node-only lib so browser-only globals can't leak
+     into Vercel Functions — AUD-M34. The lint/review scripts run both. */
+  "include": ["src", "e2e"]
 }

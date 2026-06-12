@@ -206,7 +206,7 @@ async function refreshAccessToken(
     throw new Error(`Schwab token refresh failed (${res.status}): ${body}`);
   }
 
-  const data: SchwabTokenResponse = await res.json();
+  const data = (await res.json()) as SchwabTokenResponse;
   const now = Date.now();
 
   return {
@@ -427,7 +427,7 @@ export async function storeInitialTokens(
       };
     }
 
-    const data: SchwabTokenResponse = await res.json();
+    const data = (await res.json()) as SchwabTokenResponse;
     const now = Date.now();
 
     const tokens: SchwabTokens = {

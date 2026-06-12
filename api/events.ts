@@ -258,7 +258,7 @@ async function fetchMegaCapEarnings(
       return [];
     }
 
-    const data: FinnhubEarningsResponse = await res.json();
+    const data = (await res.json()) as FinnhubEarningsResponse;
 
     for (const entry of data.earningsCalendar || []) {
       if (!MEGA_CAP_SYMBOLS.has(entry.symbol)) continue;
@@ -353,7 +353,7 @@ async function fetchReleaseDates(
     return { entries: [], ok: false };
   }
 
-  const data: FredReleaseDatesResponse = await res.json();
+  const data = (await res.json()) as FredReleaseDatesResponse;
 
   return {
     entries: (data.release_dates || []).filter(

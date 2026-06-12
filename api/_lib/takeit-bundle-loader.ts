@@ -77,7 +77,7 @@ async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
 // param on downloadUrl only forces Content-Disposition; it does NOT auth.
 // (Verified 2026-05-20 via direct probe — list() succeeds with the token
 // but fetch() of either URL 403s without an Authorization header.)
-function blobAuthHeaders(): HeadersInit {
+function blobAuthHeaders(): Record<string, string> {
   const token = process.env.BLOB_READ_WRITE_TOKEN;
   if (!token) throw new Error('BLOB_READ_WRITE_TOKEN not set');
   return { Authorization: `Bearer ${token}` };

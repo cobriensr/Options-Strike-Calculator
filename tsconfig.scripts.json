@@ -1,0 +1,42 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "forceConsistentCasingInFileNames": true
+  },
+  /* AUD-M32: type-check the OPERATIONAL TypeScript scripts (prod-DB tooling +
+     backfills that import production logic). One-off research/probe scripts
+     (_probe-*, analyze-*-2026, replay-*) are intentionally excluded — they are
+     throwaway. backfill-detect.ts / backfill-flow-phase.ts are also excluded:
+     they import the retired IV-anomaly modules (deleted in 227498dd) and are
+     dead — flagged for removal. */
+  "include": [
+    "scripts/backfill-futures.ts",
+    "scripts/backfill-gamma-setup-fires.ts",
+    "scripts/backfill-gex-target-features.ts",
+    "scripts/backfill-lottery-score.ts",
+    "scripts/backfill-opening-flow-signal.ts",
+    "scripts/backfill-periscope-lottery-fires.ts",
+    "scripts/backfill-regime-0dte.ts",
+    "scripts/backfill-snapshots.ts",
+    "scripts/backfill-zero-gamma.ts",
+    "scripts/migrate-db.ts",
+    "scripts/run-migrations.ts",
+    "scripts/verify-lottery-no-vanish.ts",
+    "scripts/entry-time-analysis.ts"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    /* Server runtime (Vercel Functions, Node 24) — NO DOM lib, so a stray
+       browser-only global (window, document, localStorage) in api/ is a type
+       error instead of silently "available". fetch/Response/URL/etc. come from
+       @types/node. (AUD-M34) */
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode (mirrors the app config) */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    /* node globals (incl. fetch/Response/URL) + vitest test globals — the
+       latter is otherwise carried by src/vite-env.d.ts, which this api-only
+       project does not include. */
+    "types": ["node", "vitest/globals"],
+
+    /* Strict mode — all flags enabled (mirrors the app config) */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["api"]
+}

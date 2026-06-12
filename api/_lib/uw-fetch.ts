@@ -198,17 +198,20 @@ export async function uwFetch<T>(
       throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
     }
 
-    const body = await res.json();
+    // Node types `.json()` as Promise<unknown> (was implicit `any` under DOM
+    // lib). UW responses are JSON objects; narrow to a record so `.data` and
+    // the extractor see a typed shape (AUD-M34).
+    const body = (await res.json()) as Record<string, unknown>;
     if (extract) return extract(body);
     if (body.data === undefined) {
       logger.warn(
-        { keys: Object.keys(body as Record<string, unknown>) },
+        { keys: Object.keys(body) },
         'uwFetch: response.data missing',
       );
       Sentry.captureMessage('uwFetch: response.data missing', 'warning');
       return [];
     }
-    return body.data ?? [];
+    return (body.data ?? []) as T[];
   } finally {
     await releaseConcurrencySlot(slotId);
   }

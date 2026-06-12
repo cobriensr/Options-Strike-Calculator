@@ -68,11 +68,12 @@ function parseArgs(): BackfillConfig {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--symbols' && args[i + 1]) {
-      symbols = args[i + 1].split(',').map((s) => s.trim());
+    const next = args[i + 1];
+    if (arg === '--symbols' && next) {
+      symbols = next.split(',').map((s) => s.trim());
       i++;
-    } else if (arg === '--days' && args[i + 1]) {
-      days = Number.parseInt(args[i + 1], 10);
+    } else if (arg === '--days' && next) {
+      days = Number.parseInt(next, 10);
       if (Number.isNaN(days) || days < 1) {
         console.error('--days must be a positive integer');
         process.exit(1);
@@ -228,9 +229,10 @@ async function fetchBars(
     .map((line) => JSON.parse(line) as DabentoOhlcvRecord);
 
   // Log first record shape for debugging
-  if (records.length > 0) {
-    console.log('  Sample record keys:', Object.keys(records[0]).join(', '));
-    console.log('  Sample record:', JSON.stringify(records[0]).slice(0, 300));
+  const firstRecord = records[0];
+  if (firstRecord) {
+    console.log('  Sample record keys:', Object.keys(firstRecord).join(', '));
+    console.log('  Sample record:', JSON.stringify(firstRecord).slice(0, 300));
   }
 
   // Convert nanosecond epoch strings to ISO timestamps, nanodollar strings to numbers

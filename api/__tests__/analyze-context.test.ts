@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { vi, beforeEach, describe, it, expect } from 'vitest';
+import { vi, beforeEach, afterEach, describe, it, expect } from 'vitest';
 
 /**
  * Tests for pure helper functions exported from analyze-context.ts.
