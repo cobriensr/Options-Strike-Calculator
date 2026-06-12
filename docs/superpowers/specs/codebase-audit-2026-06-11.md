@@ -522,67 +522,67 @@ structure, or relabel the comparison as sizing-only.
 
 ## LOW (selected — quick wins)
 
-- [ ] **AUD-L1** `api/positions.ts` — `done` metrics callback never invoked on
+- [x] **AUD-L1** `60c655b6` `api/positions.ts` — `done` metrics callback never invoked on
       real outcomes (only 405/guard/rate-limit/400); `api/lottery-finder.ts:452` —
       no-op `done`, heaviest-polled endpoint invisible in `api.duration_ms`.
-- [ ] **AUD-L2** `api/_lib/uw-fetch.ts:69` — unanchored `/50[234]/` retry
+- [x] **AUD-L2** `60c655b6` `api/_lib/uw-fetch.ts:69` — unanchored `/50[234]/` retry
       classifier matches status codes appearing anywhere in the error body; anchor
       `^UW API (5\d\d):` like `sentry.ts:63`.
-- [ ] **AUD-L3** `api/lottery-finder.ts:621-950` + `api/silent-boom-feed.ts:485+`
+- [ ] **AUD-L3** (DEFERRED — ~400-line query dedup refactor) `api/lottery-finder.ts:621-950` + `api/silent-boom-feed.ts:485+`
       — full ~100-line query duplicated per ORDER BY branch (~400 collapsible lines
       via the whitelist-splice pattern already used in the same file).
-- [ ] **AUD-L4** `api/_lib/db-oi-change.ts:36-47` — dead `date` field with the
+- [x] **AUD-L4** `60c655b6` `api/_lib/db-oi-change.ts:36-47` — dead `date` field with the
       DATE-as-Date type lie (never read; drop or TO_CHAR).
-- [ ] **AUD-L5** `src/components/Toast.tsx:151-161` — `dismiss()` side effects
+- [x] **AUD-L5** `60c655b6` `src/components/Toast.tsx:151-161` — `dismiss()` side effects
       inside a state updater (StrictMode double-fire; nested setState in updater).
-- [ ] **AUD-L6** `src/App.tsx:811` — `derivedRatio` recomputes
+- [x] **AUD-L6** `60c655b6` `src/App.tsx:811` — `derivedRatio` recomputes
       `useSpotInputs().effectiveRatio` inline; `src/main.tsx:30` — `console.log`
       build stamp (redundant with the corner badge).
-- [ ] **AUD-L7** `src/utils/iron-condor.ts:41-68` —
+- [x] **AUD-L7** `60c655b6` `src/utils/iron-condor.ts:41-68` —
       `adjustICPoPForKurtosis` returns NaN where `calcPoP` returns 0
       (`putSigma===0`/`beLow<=0` unguarded in the kurtosis branch).
-- [ ] **AUD-L8** `src/hooks/useTimeInputs.ts:62-73` — three independent
+- [x] **AUD-L8** `60c655b6` `src/hooks/useTimeInputs.ts:62-73` — three independent
       `getInitialCTTime()` clock reads can tear the seeded time across a minute/AM-PM
       boundary; window check ignores early-close days.
-- [ ] **AUD-L9** `src/hooks/useOpeningFlowSignal.ts:2-4` — header says
+- [x] **AUD-L9** `60c655b6` `src/hooks/useOpeningFlowSignal.ts:2-4` — header says
       09:25–09:50 CT, code implements 08:25–08:50 CT (code is right, doc misleads).
-- [ ] **AUD-L10** `src/utils/time.ts:31-54` — `validateMarketTime`
+- [x] **AUD-L10** `60c655b6` `src/utils/time.ts:31-54` — `validateMarketTime`
       production-dead, drifting from `computeMarketTime` (no early-close support);
       `parseDow` no-arg fallback uses host-local day not ET.
-- [ ] **AUD-L11** `src/hooks/useVixData.ts:188-192` — localStorage write inside
+- [x] **AUD-L11** `60c655b6` `src/hooks/useVixData.ts:188-192` — localStorage write inside
       setState updater; `src/utils/black-scholes.ts:268-273` — IV-seed comment/code
       drift (0.5 vs 0.3); `src/hooks/useFuturesData.ts:125-132` — superseded request
       flips `loading` off early (cosmetic flicker).
-- [ ] **AUD-L12** uw-stream: no jitter on reconnect backoff (8 shards in
+- [x] **AUD-L12** `60c655b6` uw-stream: no jitter on reconnect backoff (8 shards in
       lockstep, `connector.py:26-29`); WS token in URL scrubbed for Sentry but not
       plain logs (`config.py:427-430`); floor-only pins in requirements.txt (both
       services — `databento>=` is the riskiest given SIDE-014 record-type churn).
-- [ ] **AUD-L13** sidecar dead code: `_handle_ohlcv_from_client` (unreachable,
+- [x] **AUD-L13** `60c655b6` sidecar dead code: `_handle_ohlcv_from_client` (unreachable,
       missing SIDE-011 check — trap if wired in), `db.insert_options_trade` (zero
       callers, **no ON CONFLICT** — reintroduces SIDE-003 if revived),
       `takeit_server.start_in_thread` ("safe to delete after next deploy" — shipped),
       `symbol_manager.build_es_option_symbols` (placeholder).
-- [ ] **AUD-L14** Repo hygiene: `sidecar/ThetaTerminalv3.jar` 11.8MB binary
+- [~] **AUD-L14** (PARTIAL `60c655b6` — gitignore widened; jar/experiments left as follow-up) Repo hygiene: `sidecar/ThetaTerminalv3.jar` 11.8MB binary
       tracked in git (fetch at build time instead); `ml/experiments/` 21.2MB of
       parquet/CSV; `docs/tmp/` leaked an 8.4MB CSV past the `p1_*…p6c_*` ignore
       patterns (widen to `p*_*.csv`).
-- [ ] **AUD-L15** Stale `daemon/` references: `vite.config.ts:140`,
+- [x] **AUD-L15** `60c655b6` Stale `daemon/` references: `vite.config.ts:140`,
       `eslint.config.ts:22`, `vercel.json:2`. Unused `ws` devDependency
       (grep-verified zero imports). `@sentry/vite-plugin` in dependencies but
       build-only (move to devDeps).
-- [ ] **AUD-L16** 8 e2e specs use hardcoded `waitForTimeout` (≤400ms debounce
+- [ ] **AUD-L16** (DEFERRED — e2e waitForTimeout + coverage gaps) 8 e2e specs use hardcoded `waitForTimeout` (≤400ms debounce
       waits — low flake risk; canonical fix is web-first assertions/`toPass()`).
       ~62 of 239 components never named in any test (many are leaves covered via
       parents — spot-check against coverage HTML, smoke-test the truly untouched).
       Hooks with zero direct tests, largest first: `useGreekHeatmap`,
       `useIntervalBAAlerts`, `useIntervalBAFeed`, `useGexStrikeExpiry`,
       `useGexbotData`, `useVegaSpikes`, `usePeriscopeExposure`, `useTermStructure`.
-- [ ] **AUD-L17** `api/positions.ts:250-251,359-360` — `?spx=` parseFloat
+- [x] **AUD-L17** `60c655b6` `api/positions.ts:250-251,359-360` — `?spx=` parseFloat
       without `Number.isFinite` bounds (owner-gated; data-integrity only).
       `vercel.json:399` — deprecated `X-XSS-Protection: 1; mode=block` (OWASP now
       recommends `0`/omit). `ml-pipeline.yml:110-114` echoes full response body to
       Actions log (truncate on non-200 instead).
-- [ ] **AUD-L18** ml/ lows: `backtest.py` profit_factor `Infinity` → invalid
+- [~] **AUD-L18** (DROPPED — ML, per user) ml/ lows: `backtest.py` profit_factor `Infinity` → invalid
       JSON; `pyproject.toml` has no dependency table (the pandas-3 breakages arrived
       exactly this way) + ruff targets py313 on py314 venv; `conftest.py` puts
       tests/ ahead of src/ on sys.path; hardcoded `~/Desktop/Bot-Eod-parquet` in
