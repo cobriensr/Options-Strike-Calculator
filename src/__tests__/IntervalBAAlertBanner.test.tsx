@@ -223,4 +223,53 @@ describe('IntervalBAAlertBanner', () => {
     await user.click(screen.getByLabelText('Unmute alerts (1 pending)'));
     expect(toggle).toHaveBeenCalledTimes(1);
   });
+
+  it('muted chip renders a dismiss × alongside the restore button, and clicking it hides the chip', async () => {
+    const user = userEvent.setup();
+    const toggle = vi.fn();
+    const { container } = render(
+      <IntervalBAAlertBanner
+        alerts={[sample]}
+        onAcknowledge={async () => {}}
+        muted={true}
+        onToggleMute={toggle}
+      />,
+    );
+    expect(
+      screen.getByLabelText('Unmute alerts (1 pending)'),
+    ).toBeInTheDocument();
+    const dismiss = screen.getByLabelText(
+      'Hide muted indicator until next mute toggle',
+    );
+    expect(dismiss).toBeInTheDocument();
+    await user.click(dismiss);
+    expect(container.firstChild).toBeNull();
+    // Dismissing the chip must NOT unmute.
+    expect(toggle).not.toHaveBeenCalled();
+  });
+
+  it('dismissed chip re-arms when the muted prop toggles', async () => {
+    const user = userEvent.setup();
+    const props = {
+      alerts: [sample],
+      onAcknowledge: async () => {},
+      onToggleMute: () => {},
+    };
+    const { container, rerender } = render(
+      <IntervalBAAlertBanner {...props} muted={true} />,
+    );
+    await user.click(
+      screen.getByLabelText('Hide muted indicator until next mute toggle'),
+    );
+    expect(container.firstChild).toBeNull();
+    // Unmute then re-mute — the dismiss only lasts until the next toggle.
+    rerender(<IntervalBAAlertBanner {...props} muted={false} />);
+    rerender(<IntervalBAAlertBanner {...props} muted={true} />);
+    expect(
+      screen.getByLabelText('Unmute alerts (1 pending)'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByLabelText('Hide muted indicator until next mute toggle'),
+    ).toBeInTheDocument();
+  });
 });

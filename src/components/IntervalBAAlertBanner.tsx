@@ -17,6 +17,8 @@
  * suppressed. See {@link useIntervalBAMute} for the persistence layer.
  */
 
+import { useEffect, useState } from 'react';
+
 import type { IntervalBAAlert } from '../hooks/useIntervalBAAlerts';
 import {
   formatIntervalBABody,
@@ -77,14 +79,22 @@ export default function IntervalBAAlertBanner({
 }: Readonly<IntervalBAAlertBannerProps>) {
   const active = alerts.filter((a) => !a.acknowledged);
 
+  // Dismissing the muted chip is session-scoped and lasts only until the
+  // next mute toggle: any change of `muted` re-arms the chip. Intentionally
+  // NOT persisted to localStorage — re-arming on toggle is the contract.
+  const [chipDismissed, setChipDismissed] = useState(false);
+  useEffect(() => {
+    setChipDismissed(false);
+  }, [muted]);
+
   // Muted state: render the restore chip iff a control was wired up AND
   // we'd otherwise be showing alerts. If no alerts are pending and the
   // user is muted, render nothing — the speaker icon doesn't need to
   // permanently camp the corner of the screen.
   if (muted && onToggleMute) {
-    if (active.length === 0) return null;
+    if (active.length === 0 || chipDismissed) return null;
     return (
-      <div className="fixed right-4 bottom-24 z-[80]">
+      <div className="fixed right-4 bottom-24 z-[80] flex items-center gap-1.5">
         <button
           type="button"
           onClick={onToggleMute}
@@ -99,6 +109,20 @@ export default function IntervalBAAlertBanner({
         >
           <span aria-hidden="true">{'\u{1F507}'}</span>
           <span>{active.length} muted &mdash; click to restore</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setChipDismissed(true)}
+          aria-label="Hide muted indicator until next mute toggle"
+          title="Hide muted indicator until next mute toggle"
+          className="cursor-pointer rounded-full border px-2 py-1.5 font-sans text-xs font-semibold shadow-lg transition-opacity hover:opacity-90"
+          style={{
+            backgroundColor: theme.surface,
+            color: theme.text,
+            borderColor: theme.textMuted,
+          }}
+        >
+          &#x2715;
         </button>
       </div>
     );
