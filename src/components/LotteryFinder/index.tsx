@@ -1635,12 +1635,12 @@ export function LotteryFinderSection({
                 onClick={() => setMinute(null)}
                 title={
                   isLive
-                    ? 'Live · All day — clears the minute pick and shows every fire on today (polls every 30s)'
+                    ? 'Live — clears the minute pick and shows every fire on today (polls every 30s)'
                     : 'All day — clears the minute pick and shows every fire on the selected day'
                 }
                 ariaPressed={minute == null}
               >
-                {date === todayCt() ? 'Live · All day' : 'All day'}
+                {date === todayCt() ? 'Live' : 'All day'}
               </FilterChip>
               {/* Per-minute controls. Lo = 08:30 CT, hi = 15:00 CT
                 (regular session). For today, hi is further capped at
