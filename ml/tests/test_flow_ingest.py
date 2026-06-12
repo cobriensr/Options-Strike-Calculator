@@ -144,6 +144,32 @@ def test_validate_categoricals_allows_nulls() -> None:
     ingest_flow.validate_categoricals(df)  # nulls should not trigger
 
 
+def test_write_full_archive_atomic_rename(tmp_path: Path) -> None:
+    """Happy path: parquet lands at the final path, no .tmp left behind."""
+    archive = tmp_path / "2026-04-24-trades.parquet"
+    lf = pl.LazyFrame({"a": [1, 2, 3]})
+    ingest_flow.write_full_archive(lf, archive)
+    assert archive.exists()
+    assert pl.read_parquet(archive)["a"].to_list() == [1, 2, 3]
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_write_full_archive_crash_leaves_no_final_file(tmp_path: Path) -> None:
+    """A crash mid-write must not leave a file at the final path — the
+    caller's exists() skip guard would lock a truncated archive in."""
+    archive = tmp_path / "2026-04-24-trades.parquet"
+    lf = pl.LazyFrame({"a": [1]})
+
+    def boom(self: pl.LazyFrame, path: Path, **kwargs: object) -> None:
+        Path(path).write_bytes(b"partial")
+        raise RuntimeError("simulated crash mid-write")
+
+    with patch.object(pl.LazyFrame, "sink_parquet", boom):
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            ingest_flow.write_full_archive(lf, archive)
+    assert not archive.exists()
+
+
 def test_blob_pathname_format() -> None:
     assert (
         ingest_flow.blob_pathname("2026-04-24")

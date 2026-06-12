@@ -179,15 +179,22 @@ def write_archive(lf: pl.LazyFrame, archive_path: Path) -> None:
     `sink_parquet` keeps the 11M-row, ~4 GB CSV from being fully
     materialized in memory. zstd-3 + 1M-row groups + statistics matches
     the bot-eod archive's compression profile for consistency.
+
+    Writes via a .tmp sibling + atomic rename: the caller skips the write
+    whenever archive_path exists (and the 10 MB CSV-deletion floor can't
+    catch a partial file that's already past 10 MB), so a truncated file
+    left by a crash mid-write would otherwise be locked in permanently.
     """
     archive_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = archive_path.with_name(archive_path.name + ".tmp")
     lf.sink_parquet(
-        archive_path,
+        tmp_path,
         compression="zstd",
         compression_level=3,
         row_group_size=1_048_576,
         statistics=True,
     )
+    tmp_path.rename(archive_path)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

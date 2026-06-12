@@ -112,15 +112,21 @@ def write_full_archive(lf: pl.LazyFrame, archive_path: Path) -> None:
     Uses `sink_parquet` so the 11M-row, 3 GB CSV is never fully materialized in
     memory. No filtering, no added columns — this is the recovery copy of the
     raw CSV. zstd-3 matches the upload parquet's compression profile.
+
+    Writes via a .tmp sibling + atomic rename: the caller skips the write
+    whenever archive_path exists, so a truncated file left by a crash
+    mid-write would otherwise be locked in permanently.
     """
     archive_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = archive_path.with_name(archive_path.name + ".tmp")
     lf.sink_parquet(
-        archive_path,
+        tmp_path,
         compression="zstd",
         compression_level=3,
         row_group_size=1_048_576,
         statistics=True,
     )
+    tmp_path.rename(archive_path)
 
 
 def blob_pathname(date: str) -> str:
