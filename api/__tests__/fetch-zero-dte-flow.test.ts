@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -76,6 +80,16 @@ describe('fetch-zero-dte-flow handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([{ id: 1 }]);
+    mockSql.transaction = mockTransaction;
+    // Default: every row insert returns a row (stored), mirroring the
+    // ON CONFLICT DO NOTHING RETURNING id contract on a fresh insert.
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -207,7 +221,7 @@ describe('fetch-zero-dte-flow handler', () => {
       stored: 1,
       skipped: 0,
     });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('handles empty outer data array (no ticks)', async () => {
@@ -227,7 +241,7 @@ describe('fetch-zero-dte-flow handler', () => {
       stored: 0,
       skipped: 0,
     });
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it('handles empty inner data array', async () => {
@@ -262,9 +276,9 @@ describe('fetch-zero-dte-flow handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // Both ticks round to 14:30, so only 1 insert
+    // Both ticks round to 14:30, so only 1 insert (in 1 transaction)
     expect(res._json).toMatchObject({ ticks: 2, stored: 1, skipped: 0 });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('ticks in different 5-min windows produce separate inserts', async () => {
@@ -282,17 +296,23 @@ describe('fetch-zero-dte-flow handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // 14:31 → 14:30 window, 14:36 → 14:35 window
+    // 14:31 → 14:30 window, 14:36 → 14:35 window: 2 inserts in 1 transaction
     expect(res._json).toMatchObject({ ticks: 2, stored: 2, skipped: 0 });
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   // ── Duplicate handling ────────────────────────────────────
 
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Empty result = ON CONFLICT DO NOTHING (duplicate)
-    mockSql.mockResolvedValue([]);
+    // Empty result per query = ON CONFLICT DO NOTHING (duplicate)
+    mockTransaction.mockImplementationOnce(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => []);
+      },
+    );
     stubFetch([makeFlowTick()]);
 
     const req = mockRequest({
@@ -336,7 +356,7 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ stored: 0, rejected: true });
     // Nothing persisted — the degenerate snapshot is dropped before insert.
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it('captures a Sentry message when a degenerate snapshot is rejected', async () => {
@@ -415,7 +435,7 @@ describe('fetch-zero-dte-flow handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ stored: 0, rejected: true });
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   it('stores when at least one tick carries net premium', async () => {
@@ -443,7 +463,8 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ stored: 2 });
     expect(res._json).not.toMatchObject({ rejected: true });
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // 2 inserts batched into 1 transaction round-trip.
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   // ── Error handling ────────────────────────────────────────
@@ -488,10 +509,14 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(res._json).toMatchObject({ error: 'Internal error' });
   });
 
-  it('handles insert errors gracefully (counts as skipped)', async () => {
+  it('handles a batch insert error gracefully (whole batch counts as skipped)', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
-    stubFetch([makeFlowTick()]);
+    // A failing transaction aborts the whole batch: stored 0, all skipped.
+    mockTransaction.mockRejectedValueOnce(new Error('DB batch insert failed'));
+    stubFetch([
+      makeFlowTick({ timestamp: '2026-03-24T14:31:00Z' }),
+      makeFlowTick({ timestamp: '2026-03-24T14:36:00Z' }),
+    ]);
 
     const req = mockRequest({
       method: 'GET',
@@ -503,8 +528,18 @@ describe('fetch-zero-dte-flow handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       stored: 0,
-      skipped: 1,
+      skipped: 2,
     });
+    // The batch failure is surfaced to Sentry, not silently swallowed.
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          cron: 'fetch-zero-dte-flow',
+          stage: 'batch_insert',
+        }),
+      }),
+    );
   });
 
   it('calls the correct UW API endpoint with expiration and tide_type params', async () => {

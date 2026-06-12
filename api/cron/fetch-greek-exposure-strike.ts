@@ -32,8 +32,9 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb, withDbRetry } from '../_lib/db.js';
+import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 import { uwFetch, checkDataQuality, withRetry } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
@@ -83,16 +84,20 @@ async function storeStrikeRows(
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
 
-  for (const row of rows) {
-    try {
-      const { netGex, netDelta, netCharm, netVanna, absGex, callGexFraction } =
-        computeColumns(row);
+  try {
+    const results = await sql.transaction((txn) =>
+      rows.map((row) => {
+        const {
+          netGex,
+          netDelta,
+          netCharm,
+          netVanna,
+          absGex,
+          callGexFraction,
+        } = computeColumns(row);
 
-      const result = await withDbRetry(
-        () => sql`
+        return txn`
           INSERT INTO greek_exposure_strike (
             date, expiry, strike, dte,
             call_gex, put_gex, call_delta, put_delta,
@@ -126,22 +131,20 @@ async function storeStrikeRows(
             abs_gex           = EXCLUDED.abs_gex,
             call_gex_fraction = EXCLUDED.call_gex_fraction
           RETURNING strike
-        `,
-        2,
-        10_000,
-      );
-      if (result.length > 0) stored++;
-      else skipped++;
-    } catch (err) {
-      logger.warn(
-        { err, strike: row.strike },
-        'Greek exposure strike insert failed',
-      );
-      skipped++;
-    }
-  }
+        `;
+      }),
+    );
 
-  return { stored, skipped };
+    let stored = 0;
+    for (const result of results) {
+      if (result.length > 0) stored++;
+    }
+    return { stored, skipped: rows.length - stored };
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.warn({ err }, 'Batch greek_exposure_strike insert failed');
+    return { stored: 0, skipped: rows.length };
+  }
 }
 
 // ── Handler ──────────────────────────────────────────────────

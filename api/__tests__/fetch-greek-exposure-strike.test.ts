@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -66,8 +70,18 @@ describe('fetch-greek-exposure-strike handler', () => {
     mockCronGuard.mockReturnValue(GUARD);
     // Default: uwFetch returns empty
     mockUwFetch.mockResolvedValue([]);
-    // Default: DB INSERT returns a stored row; data-quality SELECT returns QC_ROW
+    // Default: direct-call mockSql (the data-quality SELECT) returns a stored row
     mockSql.mockResolvedValue([{ strike: '6800' }]);
+    // Default: transaction runs each per-row query and returns one stored
+    // row ([{ strike }]) per INSERT — mirrors Neon's sql.transaction contract.
+    mockSql.transaction = mockTransaction;
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => [{ strike: '6800' }]);
+      },
+    );
     mockCheckDataQuality.mockResolvedValue(undefined);
   });
 
@@ -117,10 +131,22 @@ describe('fetch-greek-exposure-strike handler', () => {
     const row = makeStrikeRow('6800', '6105.1409', '-699.9181');
     mockUwFetch.mockResolvedValue([row]);
 
-    // INSERT RETURNING → stored; QC SELECT
-    mockSql
-      .mockResolvedValueOnce([{ strike: '6800' }]) // INSERT → stored
-      .mockResolvedValueOnce([{ total: '1', nonzero: '1' }]); // QC SELECT
+    // QC SELECT (direct mockSql call after the transaction)
+    mockSql.mockResolvedValue([{ total: '1', nonzero: '1' }]);
+
+    // Capture the interpolated values bound to the per-row INSERT inside the
+    // transaction (Neon's tagged-template signature: (strings, ...values)).
+    let insertValues: unknown[] = [];
+    mockTransaction.mockImplementationOnce(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = (..._args: unknown[]) => {
+          insertValues = _args.slice(1);
+          return {};
+        };
+        const queries = fn(txnFn);
+        return queries.map(() => [{ strike: '6800' }]);
+      },
+    );
 
     const req = mockRequest({
       method: 'GET',
@@ -132,15 +158,12 @@ describe('fetch-greek-exposure-strike handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ fetched: 1, stored: 1, skipped: 0 });
 
-    // Verify INSERT was called (mockSql is the tagged-template function)
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // One transaction (the INSERT batch) + one direct QC SELECT.
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockSql).toHaveBeenCalledTimes(1);
 
-    // Inspect the SQL call to verify computed columns were passed
-    // mockSql is called as a tagged template: mockSql`...`(values...)
-    // The values array is the second argument received by the mock
-    const insertCall = mockSql.mock.calls[0]!;
-    // Tagged template: first arg is the strings array, rest are interpolated values
-    const values = insertCall.slice(1);
+    // Inspect the interpolated values passed to the per-row INSERT template.
+    const values = insertValues;
 
     const callGex = 6105.1409;
     const putGex = -699.9181;
@@ -169,9 +192,19 @@ describe('fetch-greek-exposure-strike handler', () => {
     const validRow = makeStrikeRow('6800', '6105.1409', '-699.9181');
     mockUwFetch.mockResolvedValue([zeroRow, validRow]);
 
-    mockSql
-      .mockResolvedValueOnce([{ strike: '6800' }]) // INSERT for validRow
-      .mockResolvedValueOnce([{ total: '1', nonzero: '1' }]); // QC SELECT
+    // QC SELECT (direct mockSql call); transaction default stores each row
+    mockSql.mockResolvedValue([{ total: '1', nonzero: '1' }]);
+
+    // Capture the number of INSERTs that reached the transaction.
+    let insertCount = 0;
+    mockTransaction.mockImplementationOnce(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        insertCount = queries.length;
+        return queries.map(() => [{ strike: '6800' }]);
+      },
+    );
 
     const req = mockRequest({
       method: 'GET',
@@ -184,18 +217,18 @@ describe('fetch-greek-exposure-strike handler', () => {
     // fetched = 2 (raw from API), stored = 1 (zeroRow excluded before INSERT)
     expect(res._json).toMatchObject({ fetched: 2, stored: 1, skipped: 0 });
 
-    // Only one INSERT should have fired (the valid row)
-    // First mockSql call = INSERT, second = QC SELECT
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // Only one INSERT should reach the transaction (the valid row); the
+    // zero-GEX row is filtered before storeStrikeRows runs.
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(insertCount).toBe(1);
   });
 
   it('keeps a strike where only call_gex is 0.0000 (put_gex is non-zero)', async () => {
     const halfZeroRow = makeStrikeRow('6500', '0.0000', '-1234.5678');
     mockUwFetch.mockResolvedValue([halfZeroRow]);
 
-    mockSql
-      .mockResolvedValueOnce([{ strike: '6500' }])
-      .mockResolvedValueOnce([{ total: '1', nonzero: '1' }]);
+    // QC SELECT (direct mockSql call); transaction default stores the row
+    mockSql.mockResolvedValue([{ total: '1', nonzero: '1' }]);
 
     const req = mockRequest({ method: 'GET', headers: {} });
     const res = mockResponse();
@@ -205,18 +238,20 @@ describe('fetch-greek-exposure-strike handler', () => {
     expect(res._json).toMatchObject({ fetched: 1, stored: 1 });
   });
 
-  // ── Per-row INSERT error → skipped counter ─────────────────
+  // ── Transaction abort → all rows skipped (atomic batch) ────
 
-  it('increments skipped when an individual row INSERT throws', async () => {
+  it('skips the entire batch when the transaction aborts', async () => {
+    const { Sentry } = await import('../_lib/sentry.js');
     const goodRow = makeStrikeRow('6800', '6105.1409', '-699.9181');
     const badRow = makeStrikeRow('6900', '100.0000', '-50.0000');
     mockUwFetch.mockResolvedValue([goodRow, badRow]);
 
-    // First INSERT succeeds (returns stored row), second throws, QC SELECT returns data
-    mockSql
-      .mockResolvedValueOnce([{ strike: '6800' }]) // INSERT for goodRow → stored
-      .mockRejectedValueOnce(new Error('unique violation')) // INSERT for badRow → skipped
-      .mockResolvedValueOnce([{ total: '1', nonzero: '1' }]); // QC SELECT
+    // The whole transaction rejects — the INSERT batch is atomic, so a single
+    // failed row aborts every row (stored = 0, skipped = all). The store
+    // helper catches it, reports via Sentry, and returns the all-skipped tuple.
+    mockTransaction.mockRejectedValueOnce(new Error('unique violation'));
+    // QC SELECT (direct mockSql call) still runs afterward.
+    mockSql.mockResolvedValue([{ total: '0', nonzero: '0' }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -226,7 +261,8 @@ describe('fetch-greek-exposure-strike handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ fetched: 2, stored: 1, skipped: 1 });
+    expect(res._json).toMatchObject({ fetched: 2, stored: 0, skipped: 2 });
+    expect(Sentry.captureException).toHaveBeenCalled();
   });
 
   // ── Largest-magnitude GEX strike logging ───────────────────
@@ -238,10 +274,8 @@ describe('fetch-greek-exposure-strike handler', () => {
     const largeRow = makeStrikeRow('6800', '6105.1409', '-699.9181');
     mockUwFetch.mockResolvedValue([smallRow, largeRow]);
 
-    mockSql
-      .mockResolvedValueOnce([{ strike: '6700' }]) // INSERT smallRow
-      .mockResolvedValueOnce([{ strike: '6800' }]) // INSERT largeRow
-      .mockResolvedValueOnce([{ total: '2', nonzero: '2' }]); // QC SELECT
+    // Transaction default stores both rows; QC SELECT is the direct mockSql call
+    mockSql.mockResolvedValue([{ total: '2', nonzero: '2' }]);
 
     const req = mockRequest({
       method: 'GET',

@@ -15,6 +15,8 @@
 
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { uwFetch, checkDataQuality, withRetry } from '../_lib/api-helpers.js';
+import { Sentry } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -73,49 +75,55 @@ async function storeOiChanges(
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
 
-  for (const row of rows) {
-    const parsed = parseOptionSymbol(row.option_symbol);
-    const strike = parsed?.strike ?? null;
-    const isCall = parsed?.isCall ?? null;
-    const oiDiff = Number.parseInt(String(row.oi_diff_plain), 10) || 0;
-    const currOi = Number.parseInt(String(row.curr_oi), 10) || 0;
-    const lastOi = Number.parseInt(String(row.last_oi), 10) || 0;
-    const avgPrice = Number.parseFloat(String(row.avg_price)) || null;
-    const prevAskVolume = Number.parseInt(String(row.prev_ask_volume), 10) || 0;
-    const prevBidVolume = Number.parseInt(String(row.prev_bid_volume), 10) || 0;
-    const prevMultiLegVolume =
-      Number.parseInt(String(row.prev_multi_leg_volume), 10) || 0;
-    const prevTotalPremium =
-      Number.parseFloat(String(row.prev_total_premium)) || null;
+  try {
+    const results = await sql.transaction((txn) =>
+      rows.map((row) => {
+        const parsed = parseOptionSymbol(row.option_symbol);
+        const strike = parsed?.strike ?? null;
+        const isCall = parsed?.isCall ?? null;
+        const oiDiff = Number.parseInt(String(row.oi_diff_plain), 10) || 0;
+        const currOi = Number.parseInt(String(row.curr_oi), 10) || 0;
+        const lastOi = Number.parseInt(String(row.last_oi), 10) || 0;
+        const avgPrice = Number.parseFloat(String(row.avg_price)) || null;
+        const prevAskVolume =
+          Number.parseInt(String(row.prev_ask_volume), 10) || 0;
+        const prevBidVolume =
+          Number.parseInt(String(row.prev_bid_volume), 10) || 0;
+        const prevMultiLegVolume =
+          Number.parseInt(String(row.prev_multi_leg_volume), 10) || 0;
+        const prevTotalPremium =
+          Number.parseFloat(String(row.prev_total_premium)) || null;
 
-    const result = await withDbRetry(
-      () => sql`
-        INSERT INTO oi_changes (
-          date, option_symbol, strike, is_call, oi_diff,
-          curr_oi, last_oi, avg_price,
-          prev_ask_volume, prev_bid_volume,
-          prev_multi_leg_volume, prev_total_premium
-        )
-        VALUES (
-          ${date}, ${row.option_symbol}, ${strike}, ${isCall},
-          ${oiDiff}, ${currOi}, ${lastOi}, ${avgPrice},
-          ${prevAskVolume}, ${prevBidVolume},
-          ${prevMultiLegVolume}, ${prevTotalPremium}
-        )
-        ON CONFLICT (date, option_symbol) DO NOTHING
-        RETURNING id
-      `,
-      2,
-      10_000,
+        return txn`
+          INSERT INTO oi_changes (
+            date, option_symbol, strike, is_call, oi_diff,
+            curr_oi, last_oi, avg_price,
+            prev_ask_volume, prev_bid_volume,
+            prev_multi_leg_volume, prev_total_premium
+          )
+          VALUES (
+            ${date}, ${row.option_symbol}, ${strike}, ${isCall},
+            ${oiDiff}, ${currOi}, ${lastOi}, ${avgPrice},
+            ${prevAskVolume}, ${prevBidVolume},
+            ${prevMultiLegVolume}, ${prevTotalPremium}
+          )
+          ON CONFLICT (date, option_symbol) DO NOTHING
+          RETURNING id
+        `;
+      }),
     );
-    if (result.length > 0) stored++;
-    else skipped++;
-  }
 
-  return { stored, skipped };
+    let stored = 0;
+    for (const result of results) {
+      if (result.length > 0) stored++;
+    }
+    return { stored, skipped: rows.length - stored };
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.warn({ err, date }, 'Batch oi_changes insert failed');
+    return { stored: 0, skipped: rows.length };
+  }
 }
 
 // ── Handler ─────────────────────────────────────────────────

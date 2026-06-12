@@ -17,7 +17,7 @@
  */
 
 import { withCronCheckin } from '../_lib/cron-instrumentation.js';
-import { getDb, withDbRetry } from '../_lib/db.js';
+import { getDb } from '../_lib/db.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
@@ -111,17 +111,16 @@ async function storeLatest(
   }
 
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
-  // Cap per-run Sentry captures so a sustained Neon hiccup that fails
-  // many adjacent timestamps doesn't flood the Sentry project.
-  let sentryCaptured = 0;
-  const SENTRY_CAPTURE_CAP = 3;
+  const rows = [...sampled.entries()];
 
-  for (const [ts, tick] of sampled) {
-    try {
-      const result = await withDbRetry(
-        () => sql`
+  // Collapse the per-row INSERT loop into a single transaction round-trip
+  // (AUD-M7). All sampled rows ship in one network call; a failure aborts
+  // the whole batch (transaction-level Sentry capture replaces the prior
+  // per-row capture + cap).
+  try {
+    const results = await sql.transaction((txn) =>
+      rows.map(
+        ([ts, tick]) => txn`
           INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
           VALUES (
             ${tick.date}, ${ts}, ${SOURCE},
@@ -130,30 +129,24 @@ async function storeLatest(
           ON CONFLICT (date, timestamp, source) DO NOTHING
           RETURNING id
         `,
-        2,
-        10_000,
-      );
-      if (result.length > 0) stored++;
-      else skipped++;
-    } catch (err) {
-      logger.warn({ err, ts }, '0DTE flow insert failed');
-      // Surface to Sentry — the prior version only logger.warned,
-      // so a pattern of transient Neon errors silently inflated the
-      // skip count with zero Sentry signal. Cap captures per cron run
-      // to avoid flooding (one error usually means many adjacent
-      // timestamps will fail the same way).
-      if (sentryCaptured < SENTRY_CAPTURE_CAP) {
-        Sentry.captureException(err, {
-          tags: { cron: 'fetch-zero-dte-flow', stage: 'per_row_insert' },
-          extra: { ts: String(ts) },
-        });
-        sentryCaptured++;
-      }
-      skipped++;
-    }
-  }
+      ),
+    );
 
-  return { stored, skipped };
+    let stored = 0;
+    for (const result of results) {
+      if (result.length > 0) stored++;
+    }
+    return { stored, skipped: rows.length - stored };
+  } catch (err) {
+    logger.warn({ err }, '0DTE flow batch insert failed');
+    // Surface to Sentry — the prior version only logger.warned for per-row
+    // failures, so a pattern of transient Neon errors silently inflated the
+    // skip count with zero Sentry signal.
+    Sentry.captureException(err, {
+      tags: { cron: 'fetch-zero-dte-flow', stage: 'batch_insert' },
+    });
+    return { stored: 0, skipped: rows.length };
+  }
 }
 
 // ── Handler ─────────────────────────────────────────────────

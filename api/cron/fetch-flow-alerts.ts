@@ -40,6 +40,7 @@
 import { cronJitter, uwFetch, withRetry } from '../_lib/api-helpers.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { computeDerived, type UwFlowAlert } from '../_lib/flow-alert-derive.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   withCronInstrumentation,
   type CronResult,
@@ -103,6 +104,34 @@ async function fetchAllNewAlerts(
   return collected.slice(0, SAFETY_CAP);
 }
 
+// ── Row validation ───────────────────────────────────────────
+
+/**
+ * Guard against a malformed UW row aborting the whole batch.
+ *
+ * The insert now runs as a single all-or-nothing `sql.transaction(...)`, so
+ * one row that violates a NOT NULL constraint would roll back every other
+ * row in the batch. UW rows are typed (`UwFlowAlert`) but not zod-validated
+ * at runtime, so we filter out any row missing a value the `flow_alerts`
+ * NOT NULL columns require before it can reach the insert.
+ *
+ * NOT NULL columns sourced directly from UW: alert_rule, ticker,
+ * option_chain, strike, expiry, type, created_at, total_premium.
+ * (The denormalized derived columns are all nullable.)
+ */
+function isInsertableAlert(a: UwFlowAlert): boolean {
+  return (
+    a.alert_rule != null &&
+    a.ticker != null &&
+    a.option_chain != null &&
+    a.strike != null &&
+    a.expiry != null &&
+    a.type != null &&
+    a.created_at != null &&
+    a.total_premium != null
+  );
+}
+
 // ── Handler ──────────────────────────────────────────────────
 
 export default withCronInstrumentation(
@@ -141,44 +170,82 @@ export default withCronInstrumentation(
       };
     }
 
-    // 3. Upsert each row.
+    // 3. Drop malformed rows before the all-or-nothing transaction so one
+    //    NOT-NULL violation can't roll back the whole batch.
+    const insertable = alerts.filter(isInsertableAlert);
+    const dropped = alerts.length - insertable.length;
+    if (dropped > 0) {
+      logger.warn(
+        { dropped, fetched: alerts.length },
+        'fetch-flow-alerts dropped malformed rows (missing NOT NULL field)',
+      );
+    }
+
+    if (insertable.length === 0) {
+      return {
+        status: 'success',
+        metadata: {
+          fetched: alerts.length,
+          inserted: 0,
+          dropped,
+        },
+      };
+    }
+
+    // 4. Upsert all rows in a single transaction round-trip. Transaction-map
+    //    is all-or-nothing; the pre-insert filter above guards against a bad
+    //    row aborting the batch.
     let inserted = 0;
-    for (const a of alerts) {
-      const d = computeDerived(a);
-      const result = await withDbRetry(
-        () => db`
-          INSERT INTO flow_alerts (
-            alert_rule, ticker, issue_type, option_chain, strike, expiry, type,
-            created_at, price, underlying_price,
-            total_premium, total_ask_side_prem, total_bid_side_prem,
-            total_size, trade_count, expiry_count, volume, open_interest, volume_oi_ratio,
-            has_sweep, has_floor, has_multileg, has_singleleg, all_opening_trades,
-            ask_side_ratio, bid_side_ratio, net_premium,
-            dte_at_alert, distance_from_spot, distance_pct, moneyness, is_itm,
-            minute_of_day, session_elapsed_min, day_of_week,
-            raw_response
-          ) VALUES (
-            ${a.alert_rule}, ${a.ticker}, ${a.issue_type}, ${a.option_chain}, ${a.strike}, ${a.expiry}, ${a.type},
-            ${a.created_at}, ${a.price}, ${a.underlying_price},
-            ${a.total_premium}, ${a.total_ask_side_prem}, ${a.total_bid_side_prem},
-            ${a.total_size}, ${a.trade_count}, ${a.expiry_count}, ${a.volume}, ${a.open_interest}, ${a.volume_oi_ratio},
-            ${a.has_sweep}, ${a.has_floor}, ${a.has_multileg}, ${a.has_singleleg}, ${a.all_opening_trades},
-            ${d.ask_side_ratio}, ${d.bid_side_ratio}, ${d.net_premium},
-            ${d.dte_at_alert}, ${d.distance_from_spot}, ${d.distance_pct}, ${d.moneyness}, ${d.is_itm},
-            ${d.minute_of_day}, ${d.session_elapsed_min}, ${d.day_of_week},
-            ${JSON.stringify(a)}::jsonb
-          )
-          ON CONFLICT (option_chain, created_at) DO NOTHING
-          RETURNING id
-        `,
+    try {
+      const results = await withDbRetry(
+        () =>
+          db.transaction((txn) =>
+            insertable.map((a) => {
+              const d = computeDerived(a);
+              return txn`
+                INSERT INTO flow_alerts (
+                  alert_rule, ticker, issue_type, option_chain, strike, expiry, type,
+                  created_at, price, underlying_price,
+                  total_premium, total_ask_side_prem, total_bid_side_prem,
+                  total_size, trade_count, expiry_count, volume, open_interest, volume_oi_ratio,
+                  has_sweep, has_floor, has_multileg, has_singleleg, all_opening_trades,
+                  ask_side_ratio, bid_side_ratio, net_premium,
+                  dte_at_alert, distance_from_spot, distance_pct, moneyness, is_itm,
+                  minute_of_day, session_elapsed_min, day_of_week,
+                  raw_response
+                ) VALUES (
+                  ${a.alert_rule}, ${a.ticker}, ${a.issue_type}, ${a.option_chain}, ${a.strike}, ${a.expiry}, ${a.type},
+                  ${a.created_at}, ${a.price}, ${a.underlying_price},
+                  ${a.total_premium}, ${a.total_ask_side_prem}, ${a.total_bid_side_prem},
+                  ${a.total_size}, ${a.trade_count}, ${a.expiry_count}, ${a.volume}, ${a.open_interest}, ${a.volume_oi_ratio},
+                  ${a.has_sweep}, ${a.has_floor}, ${a.has_multileg}, ${a.has_singleleg}, ${a.all_opening_trades},
+                  ${d.ask_side_ratio}, ${d.bid_side_ratio}, ${d.net_premium},
+                  ${d.dte_at_alert}, ${d.distance_from_spot}, ${d.distance_pct}, ${d.moneyness}, ${d.is_itm},
+                  ${d.minute_of_day}, ${d.session_elapsed_min}, ${d.day_of_week},
+                  ${JSON.stringify(a)}::jsonb
+                )
+                ON CONFLICT (option_chain, created_at) DO NOTHING
+                RETURNING id
+              `;
+            }),
+          ),
         2,
         10_000,
       );
-      if (result.length > 0) inserted++;
+      for (const result of results) {
+        if (result.length > 0) inserted++;
+      }
+    } catch (err) {
+      Sentry.captureException(err);
+      logger.warn(
+        { err, fetched: alerts.length, insertable: insertable.length },
+        'fetch-flow-alerts batch insert failed',
+      );
+      inserted = 0;
     }
 
     logger.info(
-      { fetched: alerts.length, inserted },
+      { fetched: alerts.length, inserted, dropped },
       'fetch-flow-alerts completed',
     );
 
@@ -187,6 +254,7 @@ export default withCronInstrumentation(
       metadata: {
         fetched: alerts.length,
         inserted,
+        dropped,
       },
     };
   },

@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn();
+const mockTransaction = vi.fn();
+const mockSql = vi.fn() as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -34,6 +38,7 @@ import handler, {
   computeDerived,
   type UwFlowAlert,
 } from '../cron/fetch-flow-alerts.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // ── Fixtures ─────────────────────────────────────────────────
 
@@ -72,12 +77,38 @@ const makeAlert = (overrides: Partial<UwFlowAlert> = {}): UwFlowAlert => ({
 const GUARD = { apiKey: 'test-uw-key', today: '2026-04-14' };
 
 /**
- * Grab the most recent mockSql call whose SQL text contains `needle`.
- * Returns the interpolated values array, or null if none matched.
+ * Tagged-template stub passed to the transaction mapper as `txn`. Records
+ * each INSERT's SQL-strings + interpolated values so `callValuesFor` can
+ * inspect them. Returns a marker object; the transaction mock decides the
+ * RETURNING shape per query.
+ */
+const mockTxn = vi.fn(
+  (strings: TemplateStringsArray, ...values: unknown[]) => ({
+    __insert: true as const,
+    strings,
+    values,
+  }),
+);
+
+/**
+ * Default transaction behaviour: run the mapper with the recording `txn`
+ * stub and resolve one `[{ id }]` per query (every row stored). Tests that
+ * need dedupe/empty-returning semantics override `mockTransaction`.
+ */
+function defaultTransaction(
+  fn: (txn: typeof mockTxn) => unknown[],
+): Promise<unknown[][]> {
+  const queries = fn(mockTxn);
+  return Promise.resolve(queries.map((_q, i) => [{ id: i + 1 }]));
+}
+
+/**
+ * Grab the most recent recorded INSERT (via `mockTxn`) whose SQL text
+ * contains `needle`. Returns the interpolated values array, or null.
  */
 function callValuesFor(needle: string): unknown[] | null {
-  for (let i = mockSql.mock.calls.length - 1; i >= 0; i--) {
-    const call = mockSql.mock.calls[i]!;
+  for (let i = mockTxn.mock.calls.length - 1; i >= 0; i--) {
+    const call = mockTxn.mock.calls[i]!;
     const strings = call[0] as unknown;
     if (
       Array.isArray(strings) &&
@@ -96,6 +127,9 @@ describe('fetch-flow-alerts handler', () => {
     mockUwFetch.mockResolvedValue([]);
     // Default: MAX(created_at) SELECT returns empty (first run).
     mockSql.mockResolvedValue([{ max_created_at: null }]);
+    // Re-attach the transaction mock (vi.resetAllMocks clears the property).
+    mockSql.transaction = mockTransaction;
+    mockTransaction.mockImplementation(defaultTransaction);
   });
 
   // ── Happy path ─────────────────────────────────────────────
@@ -118,12 +152,9 @@ describe('fetch-flow-alerts handler', () => {
       }),
     ];
     mockUwFetch.mockResolvedValueOnce(alerts);
-    // SELECT MAX(created_at) → empty; then 3 INSERT RETURNING, all stored.
-    mockSql
-      .mockResolvedValueOnce([{ max_created_at: null }])
-      .mockResolvedValueOnce([{ id: 1 }])
-      .mockResolvedValueOnce([{ id: 2 }])
-      .mockResolvedValueOnce([{ id: 3 }]);
+    // SELECT MAX(created_at) → empty; then a single transaction maps 3
+    // INSERT RETURNING, all stored (defaultTransaction).
+    mockSql.mockResolvedValueOnce([{ max_created_at: null }]);
 
     const req = mockRequest({
       method: 'GET',
@@ -138,6 +169,8 @@ describe('fetch-flow-alerts handler', () => {
       fetched: 3,
       inserted: 3,
     });
+    // One transaction round-trip for the whole batch.
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
   // ── Empty UW response ──────────────────────────────────────
@@ -236,10 +269,8 @@ describe('fetch-flow-alerts handler', () => {
     mockUwFetch
       .mockResolvedValueOnce(firstPage)
       .mockResolvedValueOnce(secondPage);
-    // 201 inserts total, all RETURNING an id.
-    for (let i = 0; i < 201; i++) {
-      mockSql.mockResolvedValueOnce([{ id: i + 1 }]);
-    }
+    // 201 inserts total across a single transaction, all stored
+    // (defaultTransaction returns one [{ id }] per mapped query).
 
     const req = mockRequest({
       method: 'GET',
@@ -268,7 +299,7 @@ describe('fetch-flow-alerts handler', () => {
   it('computes derived fields correctly and passes them to INSERT', async () => {
     mockSql.mockResolvedValueOnce([{ max_created_at: null }]);
     mockUwFetch.mockResolvedValueOnce([SAMPLE_ALERT]);
-    mockSql.mockResolvedValueOnce([{ id: 1 }]); // INSERT RETURNING id
+    // INSERT runs inside the transaction (defaultTransaction stores it).
 
     const req = mockRequest({
       method: 'GET',
@@ -338,10 +369,14 @@ describe('fetch-flow-alerts handler', () => {
       makeAlert({ option_chain: 'SPXW260415C06900000' }),
       makeAlert({ option_chain: 'SPXW260415C06910000' }),
     ]);
-    // First INSERT: dupe (empty returning); second: stored.
-    mockSql
-      .mockResolvedValueOnce([]) // dupe
-      .mockResolvedValueOnce([{ id: 2 }]); // new
+    // Transaction maps both rows: first is a dupe (empty RETURNING), second
+    // is stored ([{ id }]). Only the stored row increments `inserted`.
+    mockTransaction.mockImplementation(
+      (fn: (txn: typeof mockTxn) => unknown[]) => {
+        const queries = fn(mockTxn);
+        return Promise.resolve([[], [{ id: 2 }]].slice(0, queries.length));
+      },
+    );
 
     const req = mockRequest({
       method: 'GET',
@@ -352,5 +387,53 @@ describe('fetch-flow-alerts handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ fetched: 2, inserted: 1 });
+  });
+
+  // ── Malformed-row filter: bad row dropped, batch survives ──
+
+  it('drops a malformed row missing a NOT NULL field and inserts the rest', async () => {
+    mockSql.mockResolvedValueOnce([{ max_created_at: null }]);
+    const good = makeAlert({ option_chain: 'SPXW260415C06900000' });
+    // Missing option_chain (a NOT NULL column) — must be filtered out.
+    const bad = makeAlert({ option_chain: undefined as unknown as string });
+    mockUwFetch.mockResolvedValueOnce([good, bad]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // fetched counts the raw UW rows; the bad row is dropped, the good one stored.
+    expect(res._json).toMatchObject({
+      fetched: 2,
+      inserted: 1,
+      dropped: 1,
+    });
+    // Exactly one INSERT reached the transaction.
+    expect(mockTxn).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Transaction failure → soft-degrade to inserted:0 ───────
+
+  it('returns inserted:0 and captures to Sentry when the transaction throws', async () => {
+    mockSql.mockResolvedValueOnce([{ max_created_at: null }]);
+    mockUwFetch.mockResolvedValueOnce([
+      makeAlert({ option_chain: 'SPXW260415C06900000' }),
+    ]);
+    mockTransaction.mockRejectedValueOnce(new Error('neon blip'));
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ fetched: 1, inserted: 0 });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 });

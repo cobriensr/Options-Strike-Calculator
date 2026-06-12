@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -58,6 +62,30 @@ function makeOiRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Build a transaction mock implementation that captures the bound values
+ * of each INSERT issued inside the transaction. Neon's tagged-template
+ * signature is (strings, ...values); bound order for oi_changes is:
+ *   0 date, 1 option_symbol, 2 strike, 3 isCall, 4 oiDiff, ...
+ * Every query resolves to [{ id: 1 }] (stored).
+ */
+function captureTransaction(sink: Array<Record<string, unknown>>) {
+  return async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+    const txnFn = (..._args: unknown[]) => {
+      const values = _args.slice(1);
+      sink.push({
+        date: values[0],
+        option_symbol: values[1],
+        strike: values[2],
+        isCall: values[3],
+      });
+      return {};
+    };
+    const queries = fn(txnFn);
+    return queries.map(() => [{ id: 1 }]);
+  };
+}
+
 // ── Lifecycle ─────────────────────────────────────────────
 
 describe('fetch-oi-change cron handler', () => {
@@ -66,6 +94,15 @@ describe('fetch-oi-change cron handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
+    mockSql.transaction = mockTransaction;
+    // Default: every INSERT in the batch returns a new row (stored).
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
     process.env = { ...originalEnv, CRON_SECRET: 'test-secret' };
 
     vi.mocked(cronGuard).mockReturnValue({
@@ -121,9 +158,7 @@ describe('fetch-oi-change cron handler', () => {
     ];
     vi.mocked(uwFetch).mockResolvedValue(rows);
 
-    // INSERT results: both return new rows
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
-    mockSql.mockResolvedValueOnce([{ id: 2 }]);
+    // Default transaction mock returns [{ id: 1 }] per row → both stored.
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -146,7 +181,13 @@ describe('fetch-oi-change cron handler', () => {
     vi.mocked(uwFetch).mockResolvedValue([makeOiRow()]);
 
     // INSERT returns empty (ON CONFLICT DO NOTHING)
-    mockSql.mockResolvedValueOnce([]);
+    mockTransaction.mockImplementationOnce(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => []);
+      },
+    );
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -169,10 +210,7 @@ describe('fetch-oi-change cron handler', () => {
     );
     vi.mocked(uwFetch).mockResolvedValue(rows);
 
-    // All 12 INSERTs succeed
-    for (let i = 0; i < 12; i++) {
-      mockSql.mockResolvedValueOnce([{ id: i + 1 }]);
-    }
+    // All 12 INSERTs succeed via the default transaction mock.
 
     // Quality check query
     mockSql.mockResolvedValueOnce([{ total: 12, nonzero: 10 }]);
@@ -196,7 +234,6 @@ describe('fetch-oi-change cron handler', () => {
 
     const rows = [makeOiRow()];
     vi.mocked(uwFetch).mockResolvedValue(rows);
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -230,18 +267,18 @@ describe('fetch-oi-change cron handler', () => {
     vi.mocked(uwFetch).mockResolvedValue([
       makeOiRow({ option_symbol: 'SPXW  260403C06500000' }),
     ]);
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+
+    // Capture the bound values from the INSERT issued inside the transaction.
+    const captured: Array<Record<string, unknown>> = [];
+    mockTransaction.mockImplementationOnce(captureTransaction(captured));
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    // Verify the SQL was called with correct parsed values
-    // The second mockSql call is the INSERT
-    const insertCall = mockSql.mock.calls[1];
-    // Template literal args: date, option_symbol, strike, isCall, ...
-    // In tagged template calls, the values are in the subsequent arguments
-    expect(insertCall).toBeDefined();
     expect(res._status).toBe(200);
+    expect(captured[0]).toBeDefined();
+    expect(captured[0]!.strike).toBe(6500);
+    expect(captured[0]!.isCall).toBe(true);
   });
 
   it('parses put option symbols correctly', async () => {
@@ -250,13 +287,17 @@ describe('fetch-oi-change cron handler', () => {
     vi.mocked(uwFetch).mockResolvedValue([
       makeOiRow({ option_symbol: 'SPXW  260403P05800000' }),
     ]);
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+
+    const captured: Array<Record<string, unknown>> = [];
+    mockTransaction.mockImplementationOnce(captureTransaction(captured));
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ stored: 1 });
+    expect(captured[0]!.strike).toBe(5800);
+    expect(captured[0]!.isCall).toBe(false);
   });
 
   it('handles unparseable option symbols with null strike/isCall', async () => {
@@ -265,13 +306,17 @@ describe('fetch-oi-change cron handler', () => {
     vi.mocked(uwFetch).mockResolvedValue([
       makeOiRow({ option_symbol: 'INVALID_SYMBOL' }),
     ]);
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
+
+    const captured: Array<Record<string, unknown>> = [];
+    mockTransaction.mockImplementationOnce(captureTransaction(captured));
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ stored: 1 });
+    expect(captured[0]!.strike).toBeNull();
+    expect(captured[0]!.isCall).toBeNull();
   });
 
   // ── Numeric parsing edge cases ────────────────────────
@@ -288,7 +333,6 @@ describe('fetch-oi-change cron handler', () => {
         prev_total_premium: 'bad',
       }),
     ]);
-    mockSql.mockResolvedValueOnce([{ id: 1 }]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
@@ -314,17 +358,28 @@ describe('fetch-oi-change cron handler', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
-  it('returns 500 on DB write error', async () => {
+  it('soft-degrades to stored:0/skipped:all when the insert transaction aborts', async () => {
     mockSql.mockResolvedValueOnce([{ cnt: 0 }]);
 
-    vi.mocked(uwFetch).mockResolvedValue([makeOiRow()]);
-    mockSql.mockRejectedValueOnce(new Error('connection refused'));
+    vi.mocked(uwFetch).mockResolvedValue([makeOiRow(), makeOiRow()]);
+    // The whole batched transaction round-trip fails (e.g. connection drop).
+    mockTransaction.mockRejectedValueOnce(new Error('connection refused'));
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(res._status).toBe(500);
+    // storeOiChanges catches the transaction error, reports it to Sentry,
+    // and returns a soft-degraded result rather than crashing the cron.
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      stored: 0,
+      skipped: 2,
+    });
     expect(Sentry.captureException).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      'Batch oi_changes insert failed',
+    );
   });
 
   it('returns 500 on DB read error (existing count check)', async () => {
