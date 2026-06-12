@@ -298,7 +298,7 @@ structure, or relabel the comparison as sizing-only.
 
 ### Crons — `api/cron/`
 
-- [ ] **AUD-M7** _(DEFERRED — bundle of many sub-items; schedule as its own focused session per 2026-06-11 decision)_ — Per-row awaited INSERT/UPDATE loops despite `bulk-upsert.ts`
+- [~] **AUD-M7** (PARTIAL `53cb40fd`/`8f77aece`/`a5718177` — 11 simple-insert crons migrated to transaction-map/bulkUpsert; N+1 enrichment loops deferred with lottery/SB work; takeit-fill-shap left as ML) _(DEFERRED — bundle of many sub-items; schedule as its own focused session per 2026-06-11 decision)_ — Per-row awaited INSERT/UPDATE loops despite `bulk-upsert.ts`
       existing (staged as Phase 3b of `docs/superpowers/specs/api-refactor-2026-05-02.md`,
       never adopted). Offenders: `fetch-etf-tide:110-123`, `fetch-net-flow:140-160`,
       `fetch-greek-flow:91-122`, `fetch-greek-exposure:117-145`,
