@@ -140,6 +140,20 @@ class TestShutdownBarrier:
     def test_init_has_barrier_false(self, client: DatabentoClient) -> None:
         assert client._shutting_down is False
 
+    def test_start_resets_shutdown_barrier(self, client: DatabentoClient) -> None:
+        # A prior stop() leaves the latch True; start() reuses the same object
+        # on a full-session restart and must clear it, or every gated callback
+        # early-returns forever (silent ingestion death).
+        client._shutting_down = True
+        with (
+            patch("databento_client.db.Live"),
+            patch.object(client, "_subscribe_futures_ohlcv"),
+            patch.object(client, "_subscribe_l1"),
+            patch.object(client, "_subscribe_es_options_streams"),
+        ):
+            client.start()
+        assert client._shutting_down is False
+
     def test_handle_ohlcv_early_returns_when_shutting_down(
         self, client: DatabentoClient
     ) -> None:

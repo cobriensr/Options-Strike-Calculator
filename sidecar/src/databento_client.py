@@ -200,6 +200,13 @@ class DatabentoClient:
         """Initialize the Databento Live client and subscribe to all feeds."""
         log.info("Initializing Databento Live client")
 
+        # Reset the shutdown latch: stop() sets it True, and a full-session
+        # restart (connect_with_retry's permanent-exit path) reuses this same
+        # object. Without resetting here, every _shutting_down-gated callback
+        # would early-return permanently after the first stop() — silently
+        # killing ingestion on restart.
+        self._shutting_down = False
+
         self._client = db.Live(
             key=settings.databento_api_key,
             ts_out=True,
