@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -55,6 +59,15 @@ describe('fetch-etf-tide handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
+    mockSql.transaction = mockTransaction;
+    // Default: every INSERT in the batch stores a row (RETURNING id non-empty).
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -178,8 +191,7 @@ describe('fetch-etf-tide handler', () => {
   it('stores the latest candle from each ticker and returns 200', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();
-    // Mock INSERT ... RETURNING id to indicate a successful insert
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default mockTransaction returns [{ id: 1 }] per query → stored.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -203,8 +215,8 @@ describe('fetch-etf-tide handler', () => {
         qqq_etf_tide: { stored: 1 },
       },
     });
-    // Two INSERT calls (one per ticker)
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // Two INSERT batches (one transaction per ticker)
+    expect(mockTransaction).toHaveBeenCalledTimes(2);
     vi.unstubAllGlobals();
   });
 
@@ -269,8 +281,7 @@ describe('fetch-etf-tide handler', () => {
   it('partial: one ticker fails → status partial, healthy ticker still stored (BE-CRON-H4)', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();
-    // QQQ succeeds so the INSERT RETURNING should return a row
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // QQQ succeeds; default mockTransaction returns [{ id: 1 }] → stored.
     let callCount = 0;
     vi.stubGlobal(
       'fetch',
@@ -304,7 +315,7 @@ describe('fetch-etf-tide handler', () => {
       },
     });
     // The healthy QQQ leg still wrote one row.
-    expect(mockSql).toHaveBeenCalled();
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
@@ -341,7 +352,7 @@ describe('fetch-etf-tide handler', () => {
   it('success: all tickers succeed → status success', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default mockTransaction returns [{ id: 1 }] per query → stored.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -370,8 +381,14 @@ describe('fetch-etf-tide handler', () => {
   it('counts skipped candles when INSERT conflicts', async () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();
-    // ON CONFLICT DO NOTHING returns empty array (no RETURNING id)
-    mockSql.mockResolvedValue([]);
+    // ON CONFLICT DO NOTHING → each query in the batch returns an empty array.
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => []);
+      },
+    );
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -407,7 +424,7 @@ describe('fetch-etf-tide handler', () => {
       net_put_premium: 'also-bad',
       net_volume: 0,
     });
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default mockTransaction returns [{ id: 1 }] per query → stored.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -445,7 +462,7 @@ describe('fetch-etf-tide handler', () => {
       timestamp: '2026-03-24T14:03:00.000Z',
       net_call_premium: '200',
     });
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default mockTransaction returns [{ id: 1 }] per query → stored.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -481,7 +498,7 @@ describe('fetch-etf-tide handler', () => {
     const rowEarly = makeEtfTideRow({
       timestamp: '2026-03-24T14:00:00.000Z',
     });
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default mockTransaction returns [{ id: 1 }] per query → stored.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -521,16 +538,9 @@ describe('fetch-etf-tide handler', () => {
       return makeEtfTideRow({ timestamp: ts });
     });
 
-    // Use mockImplementation to return different results for
-    // INSERT vs SELECT COUNT queries
-    mockSql.mockImplementation((strings: TemplateStringsArray) => {
-      const query = strings.join('');
-      if (query.includes('SELECT COUNT')) {
-        return Promise.resolve([{ total: 11, nonzero: 0 }]);
-      }
-      // INSERT ... RETURNING id
-      return Promise.resolve([{ id: 1 }]);
-    });
+    // INSERTs run through the batched transaction (default → all 11 stored).
+    // The only direct mockSql call is the SELECT COUNT data-quality query.
+    mockSql.mockResolvedValue([{ total: 11, nonzero: 0 }]);
 
     vi.stubGlobal(
       'fetch',
@@ -575,7 +585,7 @@ describe('fetch-etf-tide handler', () => {
       return makeEtfTideRow({ timestamp: ts });
     });
 
-    mockSql.mockResolvedValue([{ id: 1 }]);
+    // Default mockTransaction stores all 10; no SELECT COUNT expected.
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -620,13 +630,15 @@ describe('fetch-etf-tide handler', () => {
       return makeEtfTideRow({ timestamp: ts });
     });
 
-    let callCount = 0;
-    // First insert returns id (stored), rest return empty (skipped)
-    mockSql.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([{ id: 1 }]);
-      return Promise.resolve([]);
-    });
+    // First insert in the batch stores (RETURNING id), the rest conflict
+    // (empty) → stored !== candles, so the data-quality check is skipped.
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map((_, i) => (i === 0 ? [{ id: 1 }] : []));
+      },
+    );
 
     vi.stubGlobal(
       'fetch',
@@ -669,15 +681,10 @@ describe('fetch-etf-tide handler', () => {
       return makeEtfTideRow({ timestamp: ts });
     });
 
-    // INSERT succeeds, but the SELECT COUNT query in the data
-    // quality check throws, landing in the outer catch block
-    mockSql.mockImplementation((strings: TemplateStringsArray) => {
-      const query = strings.join('');
-      if (query.includes('SELECT COUNT')) {
-        return Promise.reject(new Error('DB connection lost'));
-      }
-      return Promise.resolve([{ id: 1 }]);
-    });
+    // INSERTs succeed via the batched transaction (default → all 11 stored),
+    // but the SELECT COUNT data-quality query (the only direct mockSql call)
+    // throws, landing in the handler's outer catch block.
+    mockSql.mockRejectedValue(new Error('DB connection lost'));
 
     vi.stubGlobal(
       'fetch',

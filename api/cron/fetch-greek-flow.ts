@@ -26,7 +26,7 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb, withDbRetry } from '../_lib/db.js';
+import { getDb } from '../_lib/db.js';
 import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
@@ -84,18 +84,20 @@ async function storeLatest(
     sampled.set(rounded.toISOString(), tick);
   }
 
+  const entries = [...sampled];
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
 
-  for (const [ts, tick] of sampled) {
-    try {
-      // Store delta flow in ncp/npp columns for compatibility with flow_data table.
-      // ncp = total_delta_flow, npp = dir_delta_flow, net_volume = volume.
-      // otm_ncp = otm_total_delta_flow, otm_npp = otm_dir_delta_flow
-      // (wings-only variants that better represent directional conviction).
-      const result = await withDbRetry(
-        () => sql`
+  try {
+    // Collapse the per-row INSERT loop into ONE transaction = one Neon
+    // round-trip (AUD-M7 gold standard; see fetch-spx-candles-1m.ts).
+    //
+    // Store delta flow in ncp/npp columns for compatibility with flow_data
+    // table. ncp = total_delta_flow, npp = dir_delta_flow, net_volume = volume.
+    // otm_ncp = otm_total_delta_flow, otm_npp = otm_dir_delta_flow (wings-only
+    // variants that better represent directional conviction).
+    const results = await sql.transaction((txn) =>
+      entries.map(
+        ([ts, tick]) => txn`
           INSERT INTO flow_data (
             date, timestamp, source,
             ncp, npp, net_volume,
@@ -109,19 +111,19 @@ async function storeLatest(
           ON CONFLICT (date, timestamp, source) DO NOTHING
           RETURNING id
         `,
-        2,
-        10_000,
-      );
-      if (result.length > 0) stored++;
-      else skipped++;
-    } catch (err) {
-      logger.warn({ err, ts }, 'Greek flow insert failed');
-      metrics.increment('fetch_greek_flow.store_error');
-      skipped++;
-    }
-  }
+      ),
+    );
 
-  return { stored, skipped };
+    let stored = 0;
+    for (const result of results) {
+      if (result.length > 0) stored++;
+    }
+    return { stored, skipped: entries.length - stored };
+  } catch (err) {
+    logger.warn({ err }, 'Greek flow batch insert failed');
+    metrics.increment('fetch_greek_flow.store_error');
+    return { stored: 0, skipped: entries.length };
+  }
 }
 
 // ── Handler ─────────────────────────────────────────────────

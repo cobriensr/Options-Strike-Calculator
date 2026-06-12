@@ -3,7 +3,42 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+// Each entry captures one INSERT built inside the transaction:
+//   { strings: TemplateStringsArray, values: bound parameters }
+interface TxnCall {
+  strings: readonly string[];
+  values: unknown[];
+}
+let txnCalls: TxnCall[] = [];
+// Per-row RETURNING result. `[{ id: 1 }]` = inserted (stored),
+// `[]` = ON CONFLICT DO NOTHING (skipped). Override per test.
+let txnRowResult: unknown[] = [{ id: 1 }];
+
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
+
+/**
+ * Default transaction mock: drives the handler's
+ * `rows.map((row) => txn\`INSERT ...\`)` shape. The `txn` tag captures
+ * each query's strings + bound values into `txnCalls`, and the
+ * transaction resolves to one `txnRowResult` per query so the
+ * stored/skipped accounting in storeLatest is exercised end-to-end.
+ */
+function defaultTransactionImpl(
+  fn: (txn: (...args: unknown[]) => unknown) => unknown[],
+): Promise<unknown[][]> {
+  const txnFn = (...args: unknown[]) => {
+    // Neon's tagged-template signature: (strings, ...values).
+    const [strings, ...values] = args as [readonly string[], ...unknown[]];
+    txnCalls.push({ strings: [...strings], values });
+    return {};
+  };
+  const queries = fn(txnFn);
+  return Promise.resolve(queries.map(() => txnRowResult));
+}
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -63,6 +98,10 @@ describe('fetch-greek-flow handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([{ id: 1 }]);
+    txnCalls = [];
+    txnRowResult = [{ id: 1 }];
+    mockSql.transaction = mockTransaction;
+    mockTransaction.mockImplementation(defaultTransactionImpl);
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -194,7 +233,9 @@ describe('fetch-greek-flow handler', () => {
       stored: 1,
       skipped: 0,
     });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    // One transaction = one Neon round-trip, with one INSERT inside it.
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(txnCalls).toHaveLength(1);
   });
 
   it('persists OTM delta flow fields via the INSERT (ENH-FIX-001)', async () => {
@@ -220,11 +261,13 @@ describe('fetch-greek-flow handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(txnCalls).toHaveLength(1);
 
-    // Verify the INSERT targets the new OTM columns.
-    const [strings, ...values] = mockSql.mock.calls[0]!;
-    const sqlText = (strings as readonly string[]).join('?');
+    // Verify the INSERT (built inside the transaction) targets the new
+    // OTM columns.
+    const { strings, values } = txnCalls[0]!;
+    const sqlText = strings.join('?');
     expect(sqlText).toContain('otm_ncp');
     expect(sqlText).toContain('otm_npp');
 
@@ -250,7 +293,7 @@ describe('fetch-greek-flow handler', () => {
       stored: 0,
       skipped: 0,
     });
-    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
   });
 
   // ── 5-min sampling ────────────────────────────────────────
@@ -272,7 +315,8 @@ describe('fetch-greek-flow handler', () => {
     expect(res._status).toBe(200);
     // Both ticks round to 14:30, so only 1 insert
     expect(res._json).toMatchObject({ ticks: 2, stored: 1, skipped: 0 });
-    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(txnCalls).toHaveLength(1);
   });
 
   it('ticks in different 5-min windows produce separate inserts', async () => {
@@ -290,17 +334,19 @@ describe('fetch-greek-flow handler', () => {
     await handler(req, res);
 
     expect(res._status).toBe(200);
-    // 14:31 → 14:30 window, 14:36 → 14:35 window
+    // 14:31 → 14:30 window, 14:36 → 14:35 window.
+    // Still ONE transaction (one round-trip) but two INSERTs inside it.
     expect(res._json).toMatchObject({ ticks: 2, stored: 2, skipped: 0 });
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(txnCalls).toHaveLength(2);
   });
 
   // ── Duplicate handling ────────────────────────────────────
 
   it('counts skipped duplicates correctly (ON CONFLICT DO NOTHING)', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    // Empty result = ON CONFLICT DO NOTHING (duplicate)
-    mockSql.mockResolvedValue([]);
+    // Empty RETURNING result = ON CONFLICT DO NOTHING (duplicate)
+    txnRowResult = [];
     stubFetch([makeGreekFlowTick()]);
 
     const req = mockRequest({
@@ -361,7 +407,9 @@ describe('fetch-greek-flow handler', () => {
 
   it('handles insert errors gracefully (counts as skipped)', async () => {
     process.env.UW_API_KEY = 'uwkey';
-    mockSql.mockRejectedValueOnce(new Error('DB insert failed'));
+    // A failing transaction is all-or-nothing: every sampled row is
+    // counted as skipped (here n=1) and the cron still returns 200.
+    mockTransaction.mockRejectedValueOnce(new Error('DB insert failed'));
     stubFetch([makeGreekFlowTick()]);
 
     const req = mockRequest({

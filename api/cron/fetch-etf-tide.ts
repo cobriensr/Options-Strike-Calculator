@@ -13,8 +13,9 @@
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
-import { getDb, withDbRetry } from '../_lib/db.js';
+import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
 import {
   uwFetch,
   roundTo5Min,
@@ -104,25 +105,29 @@ async function storeAllCandles(
   if (candles.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
 
-  for (const candle of candles) {
-    const result = await withDbRetry(
-      () => sql`
-        INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
-        VALUES (${date}, ${candle.timestamp}, ${source}, ${candle.ncp}, ${candle.npp}, ${candle.netVolume})
-        ON CONFLICT (date, timestamp, source) DO NOTHING
-        RETURNING id
-      `,
-      2,
-      10_000,
+  try {
+    const results = await sql.transaction((txn) =>
+      candles.map(
+        (candle) => txn`
+          INSERT INTO flow_data (date, timestamp, source, ncp, npp, net_volume)
+          VALUES (${date}, ${candle.timestamp}, ${source}, ${candle.ncp}, ${candle.npp}, ${candle.netVolume})
+          ON CONFLICT (date, timestamp, source) DO NOTHING
+          RETURNING id
+        `,
+      ),
     );
-    if (result.length > 0) stored++;
-    else skipped++;
-  }
 
-  return { stored, skipped };
+    let stored = 0;
+    for (const result of results) {
+      if (result.length > 0) stored++;
+    }
+    return { stored, skipped: candles.length - stored };
+  } catch (err) {
+    Sentry.captureException(err);
+    logger.warn({ err, source }, 'Batch flow_data insert failed');
+    return { stored: 0, skipped: candles.length };
+  }
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -130,7 +135,7 @@ async function storeAllCandles(
 export default withCronInstrumentation(
   'fetch-etf-tide',
   async (ctx): Promise<CronResult> => {
-    const { apiKey, today, logger } = ctx;
+    const { apiKey, today } = ctx;
     const results: Record<
       string,
       { stored: number; skipped: number; candles: number }

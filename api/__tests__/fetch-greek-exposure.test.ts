@@ -3,7 +3,27 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
+
+// The expiry INSERTs now run inside sql.transaction((txn) => rows.map(...)).
+// Delegate each `txn` tagged-template to `mockSql` so:
+//   1. The per-row INSERT calls are still recorded on mockSql.mock.calls
+//      (the timestamp-column and append-snapshot tests inspect those).
+//   2. The existing mockResolvedValueOnce / mockResolvedValue queue still
+//      feeds each expiry INSERT result in order, preserving the conflict-skip
+//      ([]) duplicate counting.
+// A rejected txn promise propagates out of the mapped Promise.all, so the
+// handler's transaction-level catch fires → stored:0 / skipped:all.
+mockTransaction.mockImplementation(
+  async (fn: (txn: typeof mockSql) => Promise<unknown[]>[]) => {
+    const queries = fn(mockSql);
+    return Promise.all(queries);
+  },
+);
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -15,6 +35,17 @@ vi.mock('../_lib/logger.js', () => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
+  },
+}));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
+  metrics: {
+    increment: vi.fn(),
   },
 }));
 
@@ -77,6 +108,16 @@ describe('fetch-greek-exposure handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
+    // Re-establish the transaction mock (reset by resetAllMocks). Delegates
+    // each txn query to mockSql so the per-row INSERT result queue and call
+    // recording behave as before the transaction-map refactor.
+    mockSql.transaction = mockTransaction;
+    mockTransaction.mockImplementation(
+      async (fn: (txn: typeof mockSql) => Promise<unknown[]>[]) => {
+        const queries = fn(mockSql);
+        return Promise.all(queries);
+      },
+    );
     // Default: return a row satisfying INSERT RETURNING and data-quality shapes
     mockSql.mockResolvedValue([
       { id: 1, total: 0, nonzero: 0, qcTotal: 0, qcNonzero: 0 },
@@ -442,9 +483,14 @@ describe('fetch-greek-exposure handler', () => {
     expect(res._json).toMatchObject({ error: 'All sources failed' });
   });
 
-  // ── storeExpiryRows individual row insert failure ────────
+  // ── storeExpiryRows transaction-level failure ────────────
 
-  it('counts individual expiry row INSERT failures as skipped', async () => {
+  it('aborts the whole batch when any expiry row INSERT fails (transaction-level)', async () => {
+    // Behavior change from the prior per-row try/catch: the expiry INSERTs now
+    // run inside a single sql.transaction((txn) => rows.map(...)). The
+    // transaction is all-or-nothing — a single failing row aborts the entire
+    // batch, so NO rows are stored (stored:0 / skipped:all), rather than the
+    // old per-row resilience (stored:1 / skipped:1).
     process.env.UW_API_KEY = 'uwkey';
     const rows = [
       makeExpiryRow({ expiry: '2026-03-24', dte: 0 }),
@@ -452,11 +498,12 @@ describe('fetch-greek-exposure handler', () => {
     ];
     stubFetch([], rows);
 
-    // First expiry INSERT succeeds, second throws
+    // First expiry INSERT would succeed, second throws → Promise.all rejects →
+    // handler's transaction-level catch returns stored:0 / skipped:all.
     mockSql
       .mockResolvedValueOnce([{ id: 1 }]) // first expiry INSERT OK
-      .mockRejectedValueOnce(new Error('constraint violation')) // second throws
-      .mockResolvedValue([{ total: 1, nonzero: 0 }]); // data-quality
+      .mockRejectedValueOnce(new Error('constraint violation')) // second throws → aborts txn
+      .mockResolvedValue([{ total: 0, nonzero: 0 }]); // data-quality
 
     const req = mockRequest({
       method: 'GET',
@@ -467,8 +514,8 @@ describe('fetch-greek-exposure handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      stored: 1,
-      skipped: 1,
+      stored: 0,
+      skipped: 2,
     });
   });
 

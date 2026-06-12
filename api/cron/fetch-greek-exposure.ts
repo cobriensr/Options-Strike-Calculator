@@ -111,13 +111,20 @@ async function storeExpiryRows(
   if (rows.length === 0) return { stored: 0, skipped: 0 };
 
   const sql = getDb();
-  let stored = 0;
-  let skipped = 0;
 
-  for (const row of rows) {
-    try {
-      const result = await withDbRetry(
-        () => sql`
+  try {
+    // One transaction = one Neon round-trip. The per-row RETURNING id
+    // results are preserved in order, so the conflict-skip split
+    // (DO NOTHING → empty result = duplicate) still counts exactly.
+    //
+    // Behavior change vs. the prior per-row try/catch: the transaction is
+    // all-or-nothing. A single bad row aborts the whole batch → stored:0 /
+    // skipped:all (matching the fetch-spx-candles-1m gold standard). Rows
+    // are pre-validated upstream, so transaction-level error handling is
+    // acceptable.
+    const results = await sql.transaction((txn) =>
+      rows.map(
+        (row) => txn`
           INSERT INTO greek_exposure (
             date, ticker, expiry, dte, timestamp,
             call_gamma, put_gamma, call_charm, put_charm,
@@ -133,18 +140,19 @@ async function storeExpiryRows(
           ON CONFLICT (date, ticker, expiry, dte, timestamp) DO NOTHING
           RETURNING id
         `,
-        2,
-        10_000,
-      );
-      if (result.length > 0) stored++;
-      else skipped++;
-    } catch (err) {
-      log.warn({ err, expiry: row.expiry }, 'Greek exposure insert failed');
-      skipped++;
-    }
-  }
+      ),
+    );
 
-  return { stored, skipped };
+    let stored = 0;
+    for (const result of results) {
+      if (result.length > 0) stored++;
+    }
+    return { stored, skipped: rows.length - stored };
+  } catch (err) {
+    Sentry.captureException(err);
+    log.warn({ err }, 'Batch greek_exposure insert failed');
+    return { stored: 0, skipped: rows.length };
+  }
 }
 
 // Handler

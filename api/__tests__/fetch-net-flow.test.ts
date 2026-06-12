@@ -3,7 +3,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+const mockTransaction = vi.fn();
+const mockSql = vi.fn().mockResolvedValue([]) as ReturnType<typeof vi.fn> & {
+  transaction: typeof mockTransaction;
+};
+mockSql.transaction = mockTransaction;
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -17,6 +21,25 @@ vi.mock('../_lib/logger.js', () => ({
     error: vi.fn(),
   },
 }));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
+  metrics: {
+    increment: vi.fn(),
+  },
+}));
+
+/**
+ * Captures the bound values from each INSERT issued inside the
+ * sql.transaction callback. Reset per-test in beforeEach. Index 0 is the
+ * first INSERT's interpolated values (date, timestamp, source, ncp, npp,
+ * netVolume — the strings array is stripped via slice(1)).
+ */
+let txnInsertValues: unknown[][] = [];
 
 import handler from '../cron/fetch-net-flow.js';
 
@@ -62,9 +85,29 @@ describe('fetch-net-flow handler', () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    // Default: return a row that satisfies both INSERT RETURNING and
-    // data-quality SELECT shapes (the handler destructures rows[0]!).
+    // Direct sql calls are now only the data-quality SELECTs (the INSERTs
+    // moved into sql.transaction). Return a row that satisfies the SELECT
+    // shape (the handler destructures rows[0]!).
     mockSql.mockResolvedValue([{ id: 1, total: 0, nonzero: 0 }]);
+
+    // Default transaction: each INSERT returns [{ id: 1 }] (stored). Also
+    // captures the bound values per INSERT so cumulation/sampling tests can
+    // assert on them via txnInsertValues.
+    mockSql.transaction = mockTransaction;
+    txnInsertValues = [];
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = (..._args: unknown[]) => {
+          // Neon tagged-template signature: (strings, ...values). Strip the
+          // strings array to capture the interpolated values.
+          txnInsertValues.push(_args.slice(1));
+          return {};
+        };
+        const queries = fn(txnFn);
+        return queries.map(() => [{ id: 1 }]);
+      },
+    );
+
     process.env = { ...originalEnv };
     vi.setSystemTime(MARKET_TIME);
     process.env.CRON_SECRET = 'test-secret';
@@ -197,8 +240,10 @@ describe('fetch-net-flow handler', () => {
     // 3 fetch calls — one per ticker (SPX, SPY, QQQ)
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(3);
 
-    // 3 SQL inserts (one per ticker) + 3 data-quality SELECTs = 6
-    expect(mockSql).toHaveBeenCalledTimes(6);
+    // INSERTs now batch through sql.transaction — one transaction per ticker.
+    expect(mockTransaction).toHaveBeenCalledTimes(3);
+    // Direct sql calls are only the 3 data-quality SELECTs.
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   it('includes all 3 sources in results', async () => {
@@ -301,14 +346,13 @@ describe('fetch-net-flow handler', () => {
     expect(res._status).toBe(200);
     // Both ticks fall in the 14:00 window, so the stored candle should have
     // cumulated values: ncp = 100000+200000 = 300000, npp = -50000+-100000 = -150000
-    // 3 inserts (one per ticker) + 3 data-quality SELECTs = 6
-    expect(mockSql).toHaveBeenCalledTimes(6);
+    // One transaction per ticker (3) + 3 data-quality SELECTs.
+    expect(mockTransaction).toHaveBeenCalledTimes(3);
+    expect(mockSql).toHaveBeenCalledTimes(3);
 
-    // Check the first SQL call (an INSERT) has the cumulated ncp value
-    const firstCall = mockSql.mock.calls[0]!;
-    // Tagged template: strings array + interpolated values
-    // Values are: date, timestamp, source, ncp, npp, netVolume
-    const callValues = firstCall.slice(1);
+    // Check the first INSERT (captured from inside the transaction) has the
+    // cumulated ncp value. Bound values: date, timestamp, source, ncp, npp, netVolume
+    const callValues = txnInsertValues[0]!;
     // ncp (4th interpolated value, index 3) should be 300000
     expect(callValues[3]).toBe(300000);
     // npp (5th interpolated value, index 4) should be -150000
@@ -344,9 +388,12 @@ describe('fetch-net-flow handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // Two 5-min windows (14:00, 14:05): storeAllCandles stores 2 candles
-    // per ticker → 3 tickers × 2 = 6 inserts + 3 data-quality SELECTs = 9
-    expect(mockSql).toHaveBeenCalledTimes(9);
+    // Two 5-min windows (14:00, 14:05): storeAllCandles batches 2 candles
+    // per ticker in one transaction → 3 transactions (one per ticker),
+    // each issuing 2 INSERTs (6 total) + 3 data-quality SELECTs.
+    expect(mockTransaction).toHaveBeenCalledTimes(3);
+    expect(txnInsertValues).toHaveLength(6);
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 
   // ── Error handling ────────────────────────────────────────
@@ -569,8 +616,7 @@ describe('fetch-net-flow handler', () => {
 
     expect(res._status).toBe(200);
     // Both ticks land in the 14:00 window — cumulated ncp = 0 + 100000
-    const firstCall = mockSql.mock.calls[0]!;
-    const callValues = firstCall.slice(1);
+    const callValues = txnInsertValues[0]!;
     expect(callValues[3]).toBe(100000);
     expect(callValues[4]).toBe(-50000);
     // netVolume = (0 + 10) + (0 + 5) = 15
@@ -600,8 +646,7 @@ describe('fetch-net-flow handler', () => {
 
     expect(res._status).toBe(200);
     // Non-numeric parseFloat → NaN, || 0 → 0; null/undefined volumes → 0
-    const firstCall = mockSql.mock.calls[0]!;
-    const callValues = firstCall.slice(1);
+    const callValues = txnInsertValues[0]!;
     expect(callValues[3]).toBe(0); // ncp
     expect(callValues[4]).toBe(0); // npp
     expect(callValues[5]).toBe(0); // netVolume
@@ -615,13 +660,16 @@ describe('fetch-net-flow handler', () => {
     const ticks = [makeNetPremTick({ tape_time: '2026-03-24T14:01:00.000Z' })];
     stubFetchWith(ticks);
 
-    // First 3 calls are INSERTs (one per ticker) — return empty to
-    // simulate ON CONFLICT DO NOTHING; remaining 3 are data-quality SELECTs
-    mockSql
-      .mockResolvedValueOnce([]) // SPX insert → skipped
-      .mockResolvedValueOnce([]) // SPY insert → skipped
-      .mockResolvedValueOnce([]) // QQQ insert → skipped
-      .mockResolvedValue([{ id: 1, total: 0, nonzero: 0 }]); // quality checks
+    // Every INSERT inside the transaction returns [] to simulate
+    // ON CONFLICT DO NOTHING (every row skipped). Direct sql calls remain
+    // the data-quality SELECTs (default mock).
+    mockTransaction.mockImplementation(
+      async (fn: (txn: (...args: unknown[]) => unknown) => unknown[]) => {
+        const txnFn = () => ({});
+        const queries = fn(txnFn);
+        return queries.map(() => []);
+      },
+    );
 
     const req = mockRequest({
       method: 'GET',
@@ -673,12 +721,12 @@ describe('fetch-net-flow handler', () => {
 
     expect(res._status).toBe(200);
     // All 3 ticks → same 14:00 window → 1 candle per ticker
-    // 3 inserts + 3 quality checks = 6
-    expect(mockSql).toHaveBeenCalledTimes(6);
+    // 3 transactions (one per ticker) + 3 quality checks
+    expect(mockTransaction).toHaveBeenCalledTimes(3);
+    expect(mockSql).toHaveBeenCalledTimes(3);
 
     // The stored candle should have the cumulated value of all 3 ticks
-    const firstCall = mockSql.mock.calls[0]!;
-    const callValues = firstCall.slice(1);
+    const callValues = txnInsertValues[0]!;
     // ncp = 100000 + 200000 + 300000 = 600000
     expect(callValues[3]).toBe(600000);
     // npp = -50000 + -100000 + -150000 = -300000
@@ -712,7 +760,10 @@ describe('fetch-net-flow handler', () => {
     const res = mockResponse();
     await handler(req, res);
 
-    // 3 windows × 3 tickers = 9 inserts + 3 quality = 12
-    expect(mockSql).toHaveBeenCalledTimes(12);
+    // 3 windows × 3 tickers = 9 INSERTs batched across 3 transactions
+    // (one per ticker) + 3 data-quality SELECTs.
+    expect(mockTransaction).toHaveBeenCalledTimes(3);
+    expect(txnInsertValues).toHaveLength(9);
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 });
