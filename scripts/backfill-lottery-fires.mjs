@@ -135,10 +135,14 @@ function parseCsvRecords(raw) {
     // '\r' is swallowed — '\n' handles the record break (CRLF or lone CR)
   };
 
-  for (let i = 0; i < raw.length; i++) {
+  // `while` (not `for`) so the escaped-quote skip can advance the index
+  // without tripping sonarjs/updated-loop-counter on a for-counter.
+  let i = 0;
+  while (i < raw.length) {
     const ch = raw[i];
     if (state.inQuotes) i = handleQuoted(ch, i);
     else handleUnquoted(ch);
+    i += 1;
   }
 
   // Flush the last record if the file didn't end with a newline.
