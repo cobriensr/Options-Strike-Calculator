@@ -61,10 +61,14 @@ test.describe('Options Alerts responsive layout', () => {
   test.beforeEach(async ({ page }) => {
     // marketOpen: true on the quotes mock gives `market.hasData`, which with
     // the dev-server's owner mode satisfies `hasMarketContext` and mounts the
-    // two feed panes instead of the gated message.
+    // two feed panes instead of the gated message. /api/history is mocked as
+    // a 404 (useHistoryData's handled not-OK path) because the helper's
+    // default `{}` fallback crashes its candle parse and trips the app-level
+    // ErrorBoundary, so the alerts view never mounts.
     await page.addInitScript(
       buildApiFetchMock({
         '/api/quotes': { body: MOCK_QUOTES },
+        '/api/history': { body: { error: 'no data' }, status: 404 },
       }),
     );
   });

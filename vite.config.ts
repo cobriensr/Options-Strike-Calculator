@@ -126,6 +126,21 @@ export default defineConfig({
         target: process.env.VITE_API_TARGET ?? 'http://localhost:3000',
         changeOrigin: true,
         secure: false,
+        // Serve Vite MODULE requests under /api locally instead of
+        // proxying them. Constraint: src/components/FlowRegimeBadge/
+        // classify.ts statically imports api/_lib/flow-regime-baseline
+        // .json, which the dev server requests from the browser as
+        // /api/_lib/flow-regime-baseline.json?import. Without this
+        // bypass, frontend-only `npm run dev` (no backend on :3000)
+        // proxies that import to a dead port and the chunk fails to
+        // load — blank app, and every Playwright spec dies on boot.
+        // Returning req.url tells http-proxy to let Vite handle the
+        // request; returning undefined proxies as normal. `?url` is
+        // covered too since it's the other Vite asset-module marker.
+        bypass: (req) =>
+          req.url?.includes('?import') || req.url?.includes('?url')
+            ? req.url
+            : undefined,
       },
     },
   },
