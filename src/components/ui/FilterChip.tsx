@@ -2,6 +2,7 @@ import { memo, type ReactNode } from 'react';
 import {
   CHIP_ACTIVE,
   CHIP_BASE,
+  CHIP_BASE_COMPACT,
   CHIP_INACTIVE,
   type FilterChipColor,
 } from './filter-toolbar-tokens.js';
@@ -25,6 +26,11 @@ interface FilterChipProps {
   testId?: string;
   /** Escape hatch for one-off classes. Rare. */
   className?: string;
+  /**
+   * Opt-in dense variant (CHIP_BASE_COMPACT). Only the LotteryFinder /
+   * SilentBoom row-1 toolbars use it; everything else keeps the default.
+   */
+  size?: 'compact';
   children: ReactNode;
 }
 
@@ -38,8 +44,10 @@ export const FilterChip = memo(function FilterChip({
   ariaLabel,
   testId,
   className,
+  size,
   children,
 }: FilterChipProps) {
+  const baseClass = size === 'compact' ? CHIP_BASE_COMPACT : CHIP_BASE;
   const stateClass =
     active && activeColor ? CHIP_ACTIVE[activeColor] : CHIP_INACTIVE;
   const extraClass = className ? ` ${className}` : '';
@@ -52,7 +60,7 @@ export const FilterChip = memo(function FilterChip({
       aria-pressed={ariaPressed}
       aria-label={ariaLabel}
       data-testid={testId}
-      className={`${CHIP_BASE} ${stateClass}${extraClass} disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:text-neutral-300`}
+      className={`${baseClass} ${stateClass}${extraClass} disabled:opacity-40 disabled:hover:border-neutral-700 disabled:hover:text-neutral-300`}
     >
       {children}
     </button>

@@ -41,7 +41,7 @@ import {
   type SilentBoomTod,
 } from './types.js';
 import {
-  CHIP_BASE,
+  CHIP_BASE_COMPACT,
   CHIP_INACTIVE,
   SECTION_LABEL,
   TOOLBAR_DIVIDER,
@@ -1548,8 +1548,12 @@ export function SilentBoomSection({
               bucket by ±5 min — matches the detector's bucket cadence
               so every step lands on a real bucket boundary. The scrub
               filter is client-side; the API still returns the whole
-              day and pagination/total stay tied to the unfiltered set. */}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+              day and pagination/total stay tied to the unfiltered set.
+              Compact sizing (CHIP_BASE_COMPACT, 11px text, gap-x-1.5)
+              keeps the export cluster on this line even in the widest
+              state (All day + 5-min bucket + replay caption) at the
+              ~660px side-by-side pane width. */}
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
             <label className="flex items-center gap-1.5">
               <span className={SECTION_LABEL}>date</span>
               <input
@@ -1564,12 +1568,13 @@ export function SilentBoomSection({
                   // Picking today again re-arms the auto-roll.
                   setManualDatePick(e.target.value !== todayCt());
                 }}
-                className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none"
+                className="rounded-md border border-neutral-800 bg-neutral-900/60 px-1.5 py-1 font-mono text-[11px] text-neutral-100 focus:border-neutral-600 focus:outline-none"
                 aria-label="Select trading day"
               />
             </label>
             <div className="flex items-center gap-1">
               <FilterChip
+                size="compact"
                 active={bucketIso == null}
                 activeColor="green"
                 onClick={() => setBucketIso(null)}
@@ -1610,6 +1615,7 @@ export function SilentBoomSection({
                 return (
                   <>
                     <FilterChip
+                      size="compact"
                       onClick={() => step(-300_000)}
                       disabled={atMin}
                       ariaLabel="Step back one 5-min bucket"
@@ -1630,9 +1636,9 @@ export function SilentBoomSection({
                           ? `Jump to a specific bucket. Capped at the current open bucket (${formatTimeCT(nowBucketMs)}).`
                           : 'Jump to a specific 5-min bucket (08:30–15:00 CT).'
                       }
-                      className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                      className="rounded-md border border-neutral-800 bg-neutral-900/60 px-1.5 py-1 font-mono text-[11px] text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
                     >
-                      <option value="">— pick —</option>
+                      <option value="">pick…</option>
                       {options.map((o) => (
                         <option key={o.value} value={o.value}>
                           {o.label}
@@ -1640,6 +1646,7 @@ export function SilentBoomSection({
                       ))}
                     </select>
                     <FilterChip
+                      size="compact"
                       onClick={() => step(300_000)}
                       disabled={atMax}
                       ariaLabel="Step forward one 5-min bucket"
@@ -1655,12 +1662,15 @@ export function SilentBoomSection({
                 );
               })()}
               {bucketIso && (
-                <span className="font-mono text-xs text-purple-200">
-                  (5-min bucket)
+                <span
+                  className="font-mono text-[11px] text-purple-200"
+                  title="Filtered to the selected 5-minute bucket"
+                >
+                  (5-min)
                 </span>
               )}
             </div>
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex items-center gap-1">
               <span className={SECTION_LABEL}>export</span>
               <a
                 href={buildExportUrl({
@@ -1675,7 +1685,7 @@ export function SilentBoomSection({
                   askPctBand,
                 })}
                 download
-                className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
+                className={`${CHIP_BASE_COMPACT} ${CHIP_INACTIVE}`}
                 title="Export the current filtered view as CSV (one row per alert, all columns including score / tier / outcomes)."
               >
                 ⤓ filtered
@@ -1683,7 +1693,7 @@ export function SilentBoomSection({
               <a
                 href={buildExportUrl({ date })}
                 download
-                className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
+                className={`${CHIP_BASE_COMPACT} ${CHIP_INACTIVE}`}
                 title="Export every alert on the selected day as CSV — ignores active filters."
               >
                 ⤓ all
@@ -1697,8 +1707,11 @@ export function SilentBoomSection({
                 </span>
               )}
               {isHistorical && (
-                <span className="ml-1 text-[10px] text-neutral-500">
-                  historical replay
+                <span
+                  className="ml-1 text-[10px] text-neutral-500"
+                  title="Historical replay — showing the selected past day, no live polling"
+                >
+                  replay
                 </span>
               )}
             </div>

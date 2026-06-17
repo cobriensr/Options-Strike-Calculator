@@ -21,6 +21,18 @@ export type FilterChipColor =
 export const CHIP_BASE =
   'inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors';
 
+/**
+ * Dense-toolbar variant of CHIP_BASE — tighter horizontal padding and an
+ * 11px font, otherwise identical (kept as a full literal for the same
+ * Tailwind-scanner reason as above). Opt-in via FilterChip's
+ * `size="compact"` prop, or directly on raw anchor "chips". Used by the
+ * LotteryFinder / SilentBoom row-1 toolbars so the export cluster never
+ * wraps at the ~660px side-by-side pane width. Do NOT make this the
+ * default — other sections keep CHIP_BASE.
+ */
+export const CHIP_BASE_COMPACT =
+  'inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[11px] font-medium transition-colors';
+
 export const CHIP_INACTIVE =
   'border-neutral-700 bg-neutral-800/60 text-neutral-300 hover:border-neutral-600 hover:text-neutral-100';
 

@@ -43,7 +43,7 @@ import {
 import { useTickerGrouping } from '../../hooks/useTickerGrouping.js';
 import { deltaFromAtFire } from '../../utils/macro-badges.js';
 import {
-  CHIP_BASE,
+  CHIP_BASE_COMPACT,
   CHIP_INACTIVE,
   SECTION_LABEL,
   TOOLBAR_DIVIDER,
@@ -1598,8 +1598,9 @@ export function LotteryFinderSection({
 
         {/* Filter toolbar — single contained panel for date/scrub,
             sort/conviction, type/TOD, mode tags, ticker, and exit
-            policy. All chips share CHIP_BASE styling so spacing and
-            weight stay consistent across groups. */}
+            policy. Rows 2+ share CHIP_BASE; row 1 uses the compact
+            variant (CHIP_BASE_COMPACT) so the export cluster stays on
+            one line at the ~660px side-by-side pane width. */}
         <div className="space-y-2.5 rounded-lg border border-neutral-800/80 bg-neutral-950/40 p-2.5">
           {/* Row 1: date + scrub controls. Prev/next buttons step the
             1-minute point-in-time bucket by ±1 min — the drag slider
@@ -1608,8 +1609,11 @@ export function LotteryFinderSection({
             bucket. Keyboard: tab to a button and press space/enter to
             step. Export anchors are inlined to the right so the
             toolbar starts with a single row of controls instead of
-            two. */}
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+            two. Compact sizing (CHIP_BASE_COMPACT, 11px text, gap-x-1.5)
+            keeps the export cluster on this line even in the widest
+            state (All day + minute bucket + replay caption) at the
+            ~660px side-by-side pane width. */}
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
             <label className="flex items-center gap-1.5">
               <span className={SECTION_LABEL}>date</span>
               <input
@@ -1624,12 +1628,13 @@ export function LotteryFinderSection({
                   // Picking today again re-arms the auto-roll.
                   setManualDatePick(e.target.value !== todayCt());
                 }}
-                className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none"
+                className="rounded-md border border-neutral-800 bg-neutral-900/60 px-1.5 py-1 font-mono text-[11px] text-neutral-100 focus:border-neutral-600 focus:outline-none"
                 aria-label="Select trading day"
               />
             </label>
             <div className="flex items-center gap-1">
               <FilterChip
+                size="compact"
                 active={minute == null}
                 activeColor="green"
                 onClick={() => setMinute(null)}
@@ -1677,6 +1682,7 @@ export function LotteryFinderSection({
                 return (
                   <>
                     <FilterChip
+                      size="compact"
                       onClick={() => step(-60_000)}
                       disabled={atMin}
                       ariaLabel="Step back one minute"
@@ -1697,9 +1703,9 @@ export function LotteryFinderSection({
                           ? `Jump to a specific minute. Capped at the current CT minute (${formatTimeCT(nowMinuteMs)}).`
                           : 'Jump to a specific minute (08:30–15:00 CT).'
                       }
-                      className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1 font-mono text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                      className="rounded-md border border-neutral-800 bg-neutral-900/60 px-1.5 py-1 font-mono text-[11px] text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
                     >
-                      <option value="">— pick —</option>
+                      <option value="">pick…</option>
                       {options.map((o) => (
                         <option key={o.value} value={o.value}>
                           {o.label}
@@ -1707,6 +1713,7 @@ export function LotteryFinderSection({
                       ))}
                     </select>
                     <FilterChip
+                      size="compact"
                       onClick={() => step(60_000)}
                       disabled={atMax}
                       ariaLabel="Step forward one minute"
@@ -1722,8 +1729,11 @@ export function LotteryFinderSection({
                 );
               })()}
               {minute && (
-                <span className="font-mono text-xs text-purple-200">
-                  (1 min bucket)
+                <span
+                  className="font-mono text-[11px] text-purple-200"
+                  title="Filtered to the selected 1-minute point-in-time bucket"
+                >
+                  (1-min)
                 </span>
               )}
             </div>
@@ -1733,7 +1743,7 @@ export function LotteryFinderSection({
               handle the file save while carrying the owner cookie
               naturally (no JS fetch + Blob round-trip needed). Inlined
               here so the toolbar starts with one row of controls. */}
-            <div className="ml-auto flex items-center gap-1.5">
+            <div className="ml-auto flex items-center gap-1">
               <span className={SECTION_LABEL}>export</span>
               <a
                 href={buildExportUrl({
@@ -1747,7 +1757,7 @@ export function LotteryFinderSection({
                   minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
                 })}
                 download
-                className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
+                className={`${CHIP_BASE_COMPACT} ${CHIP_INACTIVE}`}
                 title="Export the current filtered view as CSV (one row per fire, all columns)."
               >
                 ⤓ filtered
@@ -1755,7 +1765,7 @@ export function LotteryFinderSection({
               <a
                 href={buildExportUrl({ date })}
                 download
-                className={`${CHIP_BASE} ${CHIP_INACTIVE}`}
+                className={`${CHIP_BASE_COMPACT} ${CHIP_INACTIVE}`}
                 title="Export every fire on the selected day as CSV — ignores active filters."
               >
                 ⤓ all
@@ -1769,8 +1779,11 @@ export function LotteryFinderSection({
                 </span>
               )}
               {isHistorical && (
-                <span className="ml-1 text-[10px] text-neutral-500">
-                  historical replay
+                <span
+                  className="ml-1 text-[10px] text-neutral-500"
+                  title="Historical replay — showing the selected past day, no live polling"
+                >
+                  replay
                 </span>
               )}
             </div>

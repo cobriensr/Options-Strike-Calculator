@@ -92,4 +92,26 @@ describe('<FilterChip>', () => {
     );
     expect(screen.getByTestId('t').className).toContain('extra-cls');
   });
+
+  it('applies the compact base when size="compact"', () => {
+    render(
+      <FilterChip onClick={() => undefined} testId="t" size="compact">
+        x
+      </FilterChip>,
+    );
+    const chip = screen.getByTestId('t');
+    expect(chip.className).toContain('px-1.5');
+    expect(chip.className).toContain('text-[11px]');
+  });
+
+  it('applies the default base when size is omitted', () => {
+    render(
+      <FilterChip onClick={() => undefined} testId="t">
+        x
+      </FilterChip>,
+    );
+    const chip = screen.getByTestId('t');
+    expect(chip.className).toContain('px-2.5');
+    expect(chip.className).toContain('text-xs');
+  });
 });
