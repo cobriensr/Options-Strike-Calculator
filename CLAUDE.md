@@ -10,7 +10,7 @@ src/              React 19 SPA (Tailwind CSS 4, no router)
   hooks/          Custom React hooks (useAppState, useMarketData, useChainData, etc.)
   utils/          Pure calculation modules (black-scholes, strikes, hedge, iron-condor, pin-risk, etc.)
   types/          Shared TypeScript types
-  data/           Static data (market hours, VIX stats — VIX OHLC has a cutoff date)
+  data/           Static data (market hours, VIX stats — VIX OHLC has a cutoff date, flow-regime baseline percentiles)
   constants/      App-wide constants
 
 api/              Vercel Serverless Functions

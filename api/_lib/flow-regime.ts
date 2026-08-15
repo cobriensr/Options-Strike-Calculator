@@ -23,7 +23,7 @@
  * and premium = price·size·100 — or the percentiles are meaningless.
  */
 
-import baselineJson from './flow-regime-baseline.json' with { type: 'json' };
+import baselineJson from '../../src/data/flow-regime-baseline.json' with { type: 'json' };
 import type {
   FlowRegime,
   FlowRegimeColor,
