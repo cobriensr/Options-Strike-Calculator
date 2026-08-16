@@ -8,7 +8,8 @@ Boot sequence:
   1. Abort if THETA_EMAIL or THETA_PASSWORD is unset (matches the
      sentry_setup no-op pattern — local dev works without creds).
   2. Write creds.txt into THETA_DATA_DIR with 0600 perms.
-  3. Popen `java -jar ThetaTerminalv3.jar` with cwd at that dir.
+  3. Popen `java -jar ThetaTerminalv3.jar --creds-file=<dir>/creds.txt`
+     with cwd at that dir (the jar does NOT auto-read creds.txt).
   4. Poll http://127.0.0.1:25503/v2/list/roots/stock for up to 60s until
      HTTP 200.
   5. Spawn daemon threads that:
@@ -184,11 +185,13 @@ def shutdown() -> None:
 
 
 def _write_creds(email: str, password: str) -> None:
-    """Write creds.txt where the jar looks for it, with 0600 perms.
+    """Write creds.txt for the jar to read via --creds-file, 0600 perms.
 
     Plaintext-on-disk is unavoidable: the third-party Theta Terminal jar
-    reads `creds.txt` from disk at boot (no stdin / keystore alternative
-    exists in v3). The mitigations are:
+    reads the creds file ONLY when pointed at it via `--creds-file`
+    (passed by _spawn_subprocess); without that flag it prompts for
+    credentials on stdin and dies at EOF in a TTY-less container. The
+    mitigations are:
       - File mode 0600 (only the container's own uid can read).
       - Parent dir mode 0700 (no traversal via parent listing).
       - Lives on the container's writable layer only — not the mounted
@@ -255,9 +258,17 @@ def _spawn_subprocess() -> None:
 
     _reap_old_proc(old_proc, old_drain_threads)
 
+    # --creds-file (single token, equals syntax, AFTER the jar path) is
+    # required: the jar does NOT auto-read creds.txt from cwd. Without
+    # the flag it prompts for credentials on stdout and reads stdin —
+    # then dies at EOF in a TTY-less container ("Failed to parse command
+    # line arguments: No line found", exit 1). stdin=DEVNULL (not PIPE)
+    # because _reap_old_proc closes only stdout/stderr, so a PIPE stdin
+    # would leak one FD per respawn.
     new_proc = subprocess.Popen(
-        ["java", "-jar", str(_JAR_PATH)],
+        ["java", "-jar", str(_JAR_PATH), f"--creds-file={_THETA_HOME / 'creds.txt'}"],
         cwd=str(_THETA_HOME),
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

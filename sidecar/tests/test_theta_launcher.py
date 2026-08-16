@@ -351,8 +351,15 @@ def test_spawn_subprocess_calls_popen_with_jar_and_starts_threads(
     assert args[0][0] == "java"
     assert args[0][1] == "-jar"
     assert args[0][2].endswith("ThetaTerminalv3.jar")
+    # The jar reads creds.txt ONLY when pointed at it via --creds-file
+    # (single token, equals syntax, after the jar path). Without it the
+    # jar prompts on stdin and dies at EOF in a TTY-less container.
+    assert args[0][3] == f"--creds-file={tmp_path / 'creds.txt'}"
     assert kwargs["stdout"] == subprocess.PIPE
     assert kwargs["stderr"] == subprocess.PIPE
+    # DEVNULL, not PIPE — _reap_old_proc closes only stdout/stderr, so a
+    # PIPE stdin would leak one FD per respawn.
+    assert kwargs["stdin"] is subprocess.DEVNULL
     assert kwargs["text"] is True
 
     # State was populated.
