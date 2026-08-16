@@ -8,7 +8,7 @@ Databento streams are long-lived TCP connections; Theta Data Terminal is a Java 
 
 ## What it does
 
-- **Databento ingestion** — OHLCV-1m for 7 futures symbols (ES, NQ, ZN, RTY, CL, GC, DX). VX is deferred pending Databento availability.
+- **Databento ingestion** — OHLCV-1m for 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) (DX would require the ICE IFUS.IMPACT dataset and is not implemented; VX deferred pending Databento availability).
 - **ES options chain** — Front-month polled from Databento.
 - **Theta Data Terminal** — Co-resident Java service (Eclipse Temurin 21) for additional options data not in Databento.
 - **Archive volume** — Persistent `/data/archive` on Railway, SHA-resumable seed from Vercel Blob via `POST /admin/seed-archive`. See `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
@@ -29,7 +29,7 @@ cp .env.example .env
 python -m src.main
 ```
 
-Health check: `curl http://localhost:8080/healthz`.
+Health check: `curl http://localhost:8080/health`.
 
 ### Tests
 
@@ -95,7 +95,7 @@ src/
   takeit_server.py    # /api/takeit/* (XGBoost scoring)
   archive_seeder.py   # /admin/seed-archive
   archive_query.py    # Read-side of /data/archive
-  health.py           # /healthz
+  health.py           # /health
   sentry_setup.py     # Sentry tagging
   logger_setup.py     # Pino-style structured logs
 ```

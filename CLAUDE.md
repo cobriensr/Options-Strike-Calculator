@@ -22,7 +22,7 @@ api/              Vercel Serverless Functions
 
 sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
   src/            Python 3 service using databento SDK + psycopg2
-                  Ingests 7 futures symbols (ES, NQ, ZN, RTY, CL, GC, DX) + ES options
+                  Ingests 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) + ES options
                   Own requirements.txt, pyproject.toml, Dockerfile
                   Uses psycopg2 (not @neondatabase/serverless) for Neon Postgres
                   Sentry SDK for error tracking; VX deferred pending Databento availability
@@ -31,7 +31,7 @@ sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
 uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
                   asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
                   per-channel handler queues → asyncpg COPY → Neon. Subscribes to flow-alerts (note hyphen,
-                  not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (~50 tickers).
+                  not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (~86 tickers).
                   Writes to ws_flow_alerts (sql/001) and ws_option_trades (api migration #110); cron-fed
                   flow_alerts table is NOT touched and runs in parallel during the soak window.
                   Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).

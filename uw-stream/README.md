@@ -9,7 +9,7 @@ Currently subscribes to:
 - **`flow-alerts`** — global UW WS firehose of unusual options flow alerts.
   Writes to `ws_flow_alerts` (DDL: `sql/001_ws_flow_alerts.sql`).
 - **`option_trades:<TICKER>`** — per-tick option trade stream for the
-  Lottery Finder ticker universe (~50 tickers). Writes to
+  Lottery Finder ticker universe (~86 tickers). Writes to
   `ws_option_trades` (DDL: `sql/002_ws_option_trades.sql`). One shared
   handler instance services every per-ticker subscription.
 
@@ -76,7 +76,7 @@ the migration plan.
 | `WS_BATCH_INTERVAL_MS`   | no       | Default 2000ms                                                                                                                                     |
 | `WS_BACKPRESSURE_POLICY` | no       | `drop_oldest` (default), `drop_newest`, or `block`                                                                                                 |
 | `WS_LOG_SAMPLE_RATE`     | no       | Default 0.001 (1 in 1000 messages logged)                                                                                                          |
-| `WS_CHANNELS`            | no       | Comma-separated. Default `flow-alerts`. Shorthand `option_trades_lottery` expands to one `option_trades:<TICKER>` per Lottery Finder ticker (~50). |
+| `WS_CHANNELS`            | no       | Comma-separated. Default `flow-alerts`. Shorthand `option_trades_lottery` expands to one `option_trades:<TICKER>` per Lottery Finder ticker (~86). |
 | `WS_LEASE_ENABLED`       | no       | Default `true`. WS connection lease (deploy-overlap guard, see below). `false` bypasses it. When `true`, BOTH KV vars below are REQUIRED.           |
 | `KV_REST_API_URL`        | cond.    | Upstash REST base URL, same store the main app uses. Required when `WS_LEASE_ENABLED=true`.                                                        |
 | `KV_REST_API_TOKEN`      | cond.    | Upstash REST bearer token. Required when `WS_LEASE_ENABLED=true`.                                                                                  |
