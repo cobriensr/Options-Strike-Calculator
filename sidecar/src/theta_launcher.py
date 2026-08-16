@@ -2,7 +2,7 @@
 
 Runs Theta Terminal (a Java jar) as a co-resident subprocess on the
 Railway sidecar so the existing Python runtime can make local HTTP
-requests against its v2 API at :25503.
+requests against its v2 API at :25510.
 
 Boot sequence:
   1. Abort if THETA_EMAIL or THETA_PASSWORD is unset (matches the
@@ -10,7 +10,7 @@ Boot sequence:
   2. Write creds.txt into THETA_DATA_DIR with 0600 perms.
   3. Popen `java -jar ThetaTerminalv3.jar --creds-file=<dir>/creds.txt`
      with cwd at that dir (the jar does NOT auto-read creds.txt).
-  4. Poll http://127.0.0.1:25503/v2/list/roots/stock for up to 60s until
+  4. Poll http://127.0.0.1:25510/v2/list/roots/stock for up to 60s until
      HTTP 200.
   5. Spawn daemon threads that:
        - Tail stderr and forward lines matching java.*Exception / FATAL /
@@ -43,7 +43,9 @@ from sentry_setup import capture_exception, capture_message
 # THETA_DATA_DIR can override the working dir for tests/local runs.
 _THETA_HOME = Path(os.environ.get("THETA_DATA_DIR", "/app/theta_data/ThetaTerminal"))
 _JAR_PATH = Path(os.environ.get("THETA_JAR_PATH", "/app/ThetaTerminalv3.jar"))
-_HTTP_BASE = "http://127.0.0.1:25503"
+# Verified empirically against the live jar (Theta Terminal v1.8.6 Rev A):
+# HTTP binds :25510 (WS :25520); :25503 is never bound.
+_HTTP_BASE = "http://127.0.0.1:25510"
 _READINESS_PATH = "/v2/list/roots/stock"
 _READINESS_TIMEOUT_S = 60
 _READINESS_POLL_INTERVAL_S = 2

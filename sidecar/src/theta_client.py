@@ -1,6 +1,6 @@
 """HTTP client for the local Theta Data Terminal v2 API.
 
-The Terminal hosts its server at http://127.0.0.1:25503 (see
+The Terminal hosts its server at http://127.0.0.1:25510 (see
 theta_launcher.py). This module wraps the three endpoints we actually
 need for nightly EOD ingest:
 
@@ -41,7 +41,9 @@ from urllib.request import Request, urlopen
 
 from logger_setup import log
 
-DEFAULT_BASE_URL = "http://127.0.0.1:25503"
+# Verified empirically against the live jar (Theta Terminal v1.8.6 Rev A):
+# HTTP binds :25510 (WS :25520); :25503 is never bound.
+DEFAULT_BASE_URL = "http://127.0.0.1:25510"
 DEFAULT_TIMEOUT_S = 15
 DEFAULT_MAX_RETRIES = 3
 

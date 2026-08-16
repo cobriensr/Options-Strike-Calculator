@@ -56,6 +56,24 @@ def _reset_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Module constants — HTTP base URL pin
+# ---------------------------------------------------------------------------
+
+
+def test_http_base_points_at_port_25510() -> None:
+    """Pin the Terminal HTTP port verified empirically against the live jar.
+
+    Theta Terminal v1.8.6 Rev A (ThetaTerminalv3.jar) binds HTTP on
+    :25510 (and WS on :25520); :25503 is NEVER bound. A base URL on
+    25503 means _wait_for_ready() can never succeed, so the launcher
+    times out on every Railway boot.
+    """
+    import theta_launcher
+
+    assert theta_launcher._HTTP_BASE == "http://127.0.0.1:25510"
+
+
+# ---------------------------------------------------------------------------
 # start() — guard conditions
 # ---------------------------------------------------------------------------
 

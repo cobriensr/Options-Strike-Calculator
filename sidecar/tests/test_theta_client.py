@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from theta_client import (  # noqa: E402
+    DEFAULT_BASE_URL,
     EodRow,
     ThetaClient,
     ThetaClientError,
@@ -56,6 +57,21 @@ def _http_response(body: dict | str | bytes, status: int = 200) -> object:
     resp = _Resp(payload)
     resp.status = status
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Module constants — base URL pin
+# ---------------------------------------------------------------------------
+
+
+def test_default_base_url_points_at_port_25510() -> None:
+    """Pin the Terminal HTTP port verified empirically against the live jar.
+
+    Theta Terminal v1.8.6 Rev A (ThetaTerminalv3.jar) binds HTTP on
+    :25510 (and WS on :25520); :25503 is NEVER bound (connection
+    refused). A base URL on 25503 would make every fetch fail.
+    """
+    assert DEFAULT_BASE_URL == "http://127.0.0.1:25510"
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +274,7 @@ def test_fetch_eod_subscription_denial_raises_typed_error() -> None:
     # HTTP 472 = Theta entitlement denial. Distinct exception so the
     # fetcher can skip that root without halting the whole nightly.
     err = HTTPError(
-        url="http://127.0.0.1:25503/v2/hist/option/eod",
+        url="http://127.0.0.1:25510/v2/hist/option/eod",
         code=472,
         msg="Not entitled",
         hdrs=None,  # type: ignore[arg-type]
@@ -279,7 +295,7 @@ def test_fetch_eod_subscription_denial_raises_typed_error() -> None:
 
 def test_fetch_eod_5xx_retries_then_fails() -> None:
     err = HTTPError(
-        url="http://127.0.0.1:25503/v2/hist/option/eod",
+        url="http://127.0.0.1:25510/v2/hist/option/eod",
         code=503,
         msg="Service Unavailable",
         hdrs=None,  # type: ignore[arg-type]
@@ -302,7 +318,7 @@ def test_fetch_eod_5xx_retries_then_fails() -> None:
 
 def _http_error(code: int, msg: str) -> HTTPError:
     return HTTPError(
-        url="http://127.0.0.1:25503/v2/hist/option/eod",
+        url="http://127.0.0.1:25510/v2/hist/option/eod",
         code=code,
         msg=msg,
         hdrs=None,  # type: ignore[arg-type]
