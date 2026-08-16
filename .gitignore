@@ -193,3 +193,4 @@ data/*.parquet
 
 # Git worktrees (isolated workspaces for parallel sessions)
 .worktrees/
+.env*

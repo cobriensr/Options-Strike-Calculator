@@ -1,0 +1,17 @@
+# Upload filter for `railway up`. Railway's CLI does NOT read .gitignore or
+# .dockerignore, so the local .venv/ (272 MB) would otherwise be swept into
+# the build context and blow the ~200 MB upload limit (Cloudflare 413).
+# Keep this in sync with .dockerignore.
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info
+.env
+.env.*
+tests/
