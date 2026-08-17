@@ -131,6 +131,15 @@ def test_list_expirations_empty() -> None:
         assert client.list_expirations("DOESNOTEXIST") == []
 
 
+def test_list_expirations_472_no_data_returns_empty_list() -> None:
+    # HTTP 472 = NO_DATA per the official Theta error-code docs, NOT an
+    # entitlement denial. A 472 on the listing endpoint must read as an
+    # empty listing — not kill the root as "not entitled".
+    with patch("theta_client.urlopen", side_effect=_http_error(472, "No data")):
+        client = ThetaClient(max_retries=3)
+        assert client.list_expirations("SPXW") == []
+
+
 # ---------------------------------------------------------------------------
 # list_strikes
 # ---------------------------------------------------------------------------
@@ -273,12 +282,13 @@ def test_fetch_eod_no_data_returns_empty_list() -> None:
 
 
 def test_fetch_eod_subscription_denial_raises_typed_error() -> None:
-    # HTTP 472 = Theta entitlement denial. Distinct exception so the
-    # fetcher can skip that root without halting the whole nightly.
+    # HTTP 471 = PERMISSION — a real Theta entitlement denial. Distinct
+    # exception so the fetcher can skip that root without halting the
+    # whole nightly.
     err = HTTPError(
         url="http://127.0.0.1:25510/v2/hist/option/eod",
-        code=472,
-        msg="Not entitled",
+        code=471,
+        msg="Permission denied",
         hdrs=None,  # type: ignore[arg-type]
         fp=None,
     )
@@ -392,10 +402,25 @@ def test_fetch_eod_persistent_476_fails_after_max_retries(
     assert mock_urlopen.call_count == 2
 
 
-def test_fetch_eod_472_still_raises_subscription_error_immediately() -> None:
-    # 472 must NOT be swept into the retry set — it's an immediate denial.
+def test_fetch_eod_472_no_data_returns_empty_list_immediately() -> None:
+    # HTTP 472 = NO_DATA ("no data found for the specified request") —
+    # must behave exactly like the plain-text ":No data" body: return []
+    # with no exception and no retries. Production repro: SPXW backfill
+    # died instantly because 472 was misread as an entitlement denial.
     with patch(
-        "theta_client.urlopen", side_effect=_http_error(472, "Not entitled")
+        "theta_client.urlopen", side_effect=_http_error(472, "No data")
+    ) as mock_urlopen:
+        client = ThetaClient(max_retries=3)
+        out = _fetch_eod_single_close(client)
+    assert out == []
+    # Answered on the first try — no-data is not retryable.
+    assert mock_urlopen.call_count == 1
+
+
+def test_fetch_eod_471_denial_raises_immediately_no_retry() -> None:
+    # 471 must NOT be swept into the retry set — it's an immediate denial.
+    with patch(
+        "theta_client.urlopen", side_effect=_http_error(471, "Permission denied")
     ) as mock_urlopen:
         client = ThetaClient(max_retries=3)
         with pytest.raises(ThetaSubscriptionError):
@@ -556,9 +581,22 @@ def test_snapshot_index_price_no_data_returns_none() -> None:
         assert client.snapshot_index_price("VIX1D") is None
 
 
-def test_snapshot_index_price_472_raises_subscription_error() -> None:
+def test_snapshot_index_price_472_no_data_returns_none() -> None:
+    # HTTP 472 = NO_DATA — same semantics as the plain-text ":No data"
+    # body: None, no exception, no retries.
     with patch(
-        "theta_client.urlopen", side_effect=_http_error(472, "Not entitled")
+        "theta_client.urlopen", side_effect=_http_error(472, "No data")
+    ) as mock_urlopen:
+        client = ThetaClient(max_retries=3)
+        assert client.snapshot_index_price("SPX") is None
+    # No-data never retries.
+    assert mock_urlopen.call_count == 1
+
+
+def test_snapshot_index_price_471_raises_subscription_error() -> None:
+    # HTTP 471 = PERMISSION — the real entitlement denial.
+    with patch(
+        "theta_client.urlopen", side_effect=_http_error(471, "Permission denied")
     ) as mock_urlopen:
         client = ThetaClient(max_retries=3)
         with pytest.raises(ThetaSubscriptionError):
@@ -705,8 +743,23 @@ def test_hist_index_ohlc_tolerates_extra_named_columns() -> None:
     assert candles[0].close == Decimal("6401.25")
 
 
-def test_hist_index_ohlc_472_raises_subscription_error() -> None:
-    with patch("theta_client.urlopen", side_effect=_http_error(472, "Not entitled")):
+def test_hist_index_ohlc_472_no_data_returns_empty_list() -> None:
+    # HTTP 472 = NO_DATA — same semantics as the plain-text ":No data"
+    # body: [], no exception, no retries.
+    with patch(
+        "theta_client.urlopen", side_effect=_http_error(472, "No data")
+    ) as mock_urlopen:
+        client = ThetaClient(max_retries=3)
+        assert client.hist_index_ohlc("SPX", date(2026, 8, 14)) == []
+    # No-data never retries.
+    assert mock_urlopen.call_count == 1
+
+
+def test_hist_index_ohlc_471_raises_subscription_error() -> None:
+    # HTTP 471 = PERMISSION — the real entitlement denial.
+    with patch(
+        "theta_client.urlopen", side_effect=_http_error(471, "Permission denied")
+    ):
         client = ThetaClient(max_retries=3)
         with pytest.raises(ThetaSubscriptionError):
             client.hist_index_ohlc("SPX", date(2026, 8, 14))

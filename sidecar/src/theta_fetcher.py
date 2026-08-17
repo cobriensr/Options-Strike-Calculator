@@ -53,9 +53,10 @@ _THETA_TAGS = {"component": "theta"}
 # runtime) so a missed 17:25 ET fire pages instead of silently skipping.
 _NIGHTLY_MONITOR_SLUG = "theta-nightly-eod"
 
-# Expiration horizon. Past window catches late settlements / corrections;
+# Expiration horizon. Expirations that expired before the fetch window
+# start are skipped entirely — EOD for post-expiry trade dates is
+# guaranteed NO_DATA (HTTP 472), so probing them wastes requests. The
 # future window covers all listed chains (SPXW goes out to ~1y forward).
-EXP_HORIZON_PAST_DAYS = 7
 EXP_HORIZON_FUTURE_DAYS = 180
 
 # Memory bound for the batch buffer — tuples of 15 fields × 500 rows is
@@ -229,8 +230,10 @@ def _fetch_root_range(
 
     Returns the total rows written. Never raises for per-contract
     failures — those go to Sentry and the loop continues. A
-    ThetaSubscriptionError terminates the root early since that's a
-    persistent condition, not a transient blip.
+    ThetaSubscriptionError (HTTP 471 entitlement denial) terminates the
+    root early since that's a persistent condition, not a transient
+    blip. Plain no-data responses (HTTP 472 / ":No data" body) are NOT
+    denials — the client returns [] and the loop continues.
     """
     try:
         expirations = client.list_expirations(root)
@@ -243,16 +246,21 @@ def _fetch_root_range(
         )
         return 0
 
+    # exp < start_date means the contract expired before the fetch
+    # window opened — its data lies wholly outside [start_date,
+    # end_date], and requesting post-expiry dates is guaranteed
+    # NO_DATA. Skip those expirations entirely.
     active = [
         e
         for e in expirations
-        if start_date - timedelta(days=EXP_HORIZON_PAST_DAYS)
-        <= e
-        <= end_date + timedelta(days=EXP_HORIZON_FUTURE_DAYS)
+        if start_date <= e <= end_date + timedelta(days=EXP_HORIZON_FUTURE_DAYS)
     ]
 
     total = 0
     for exp in active:
+        # Clamp the fetch range to the expiration — trade dates after
+        # expiry are guaranteed NO_DATA, so never request past exp.
+        exp_end_date = min(end_date, exp)
         try:
             strikes = client.list_strikes(root, exp)
         except Exception as exc:
@@ -272,7 +280,7 @@ def _fetch_root_range(
 
         for strike in strikes:
             pair_rows, denied = _fetch_strike_pair(
-                client, root, exp, strike, start_date, end_date
+                client, root, exp, strike, start_date, exp_end_date
             )
             rows_batch.extend(pair_rows)
             if len(rows_batch) >= BATCH_FLUSH_SIZE:
@@ -304,10 +312,13 @@ def _fetch_strike_pair(
     """Fetch EOD rows for one strike's call+put pair.
 
     Returns ``(rows, denied)`` where ``denied`` is True iff a
-    ThetaSubscriptionError fired — the caller should mark the whole
-    root denied and stop iterating its strikes. Per-contract non-
-    subscription errors are captured to Sentry and the loop continues
-    onto the other side (C or P), matching the prior inline behavior.
+    ThetaSubscriptionError (HTTP 471) fired — the caller should mark
+    the whole root denied and stop iterating its strikes. A no-data
+    response (HTTP 472 / ":No data" body) surfaces as an empty fetch
+    result, not an exception — it never trips ``denied``. Per-contract
+    non-subscription errors are captured to Sentry and the loop
+    continues onto the other side (C or P), matching the prior inline
+    behavior.
 
     Extracted from `_fetch_root_range` so the per-contract retry/skip
     branches are unit-testable in isolation. The orchestrator now

@@ -203,7 +203,9 @@ def test_fetch_root_range_filters_out_of_horizon_expirations(monkeypatch) -> Non
     import theta_fetcher
 
     # Anchor to a fixed target day; horizon window becomes
-    # [2024-04-11, 2024-10-15] for a start_date=2024-04-18.
+    # [2024-04-18, 2024-10-15] for a start_date=2024-04-18 — expirations
+    # before start_date are skipped entirely (post-expiry EOD requests
+    # are guaranteed NO_DATA).
     target_day = date(2024, 4, 18)
 
     fake_client = MagicMock()
@@ -265,6 +267,119 @@ def test_fetch_root_range_stops_root_on_fetch_eod_denial(monkeypatch) -> None:
     # Only one fetch attempt — the P side was skipped.
     assert fake_client.fetch_eod.call_count == 1
     upsert_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _fetch_root_range — expired-expiration skip + per-expiration range clamp
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_root_range_skips_expirations_before_window_start(monkeypatch) -> None:
+    """An expiration that expired before start_date has no data inside
+    the window — post-expiry EOD requests are guaranteed NO_DATA (472).
+    Production repro: the SPXW backfill window [2026-05-16, 2026-08-14]
+    must never probe the 2026-05-11 expiration at all."""
+    import theta_fetcher
+
+    start, end = date(2026, 5, 16), date(2026, 8, 14)
+    fake_client = MagicMock()
+    fake_client.list_expirations.return_value = [
+        date(2026, 5, 11),  # expired before window start — skip entirely
+        date(2026, 6, 19),  # in window
+    ]
+    fake_client.list_strikes.return_value = []  # no strikes -> no fetch_eod
+
+    monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", MagicMock())
+
+    result = theta_fetcher._fetch_root_range(fake_client, "SPXW", start, end)
+
+    assert result == 0
+    # Only the in-window expiration was probed.
+    fake_client.list_strikes.assert_called_once_with("SPXW", date(2026, 6, 19))
+
+
+def test_fetch_root_range_clamps_fetch_end_to_expiration(monkeypatch) -> None:
+    """An in-window expiration earlier than end_date must have its fetch
+    range clamped to [start_date, exp] — trade dates after expiry are
+    guaranteed NO_DATA."""
+    import theta_fetcher
+
+    start, end = date(2026, 5, 16), date(2026, 8, 14)
+    exp = date(2026, 6, 19)
+    fake_client = MagicMock()
+    fake_client.list_expirations.return_value = [exp]
+    fake_client.list_strikes.return_value = [Decimal("5100.00")]
+    fake_client.fetch_eod.return_value = []
+
+    monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", MagicMock())
+
+    theta_fetcher._fetch_root_range(fake_client, "SPXW", start, end)
+
+    # Both rights fetched, each with the clamped range.
+    assert fake_client.fetch_eod.call_count == 2
+    for call in fake_client.fetch_eod.call_args_list:
+        assert call.args[4] == start
+        assert call.args[5] == exp  # min(end_date, exp)
+
+
+def test_fetch_root_range_keeps_full_range_for_future_expiration(monkeypatch) -> None:
+    """An expiration beyond end_date (still inside the future horizon)
+    keeps the full [start_date, end_date] fetch range — no clamping."""
+    import theta_fetcher
+
+    start, end = date(2026, 5, 16), date(2026, 8, 14)
+    exp = date(2026, 9, 18)  # after end_date, within the future horizon
+    fake_client = MagicMock()
+    fake_client.list_expirations.return_value = [exp]
+    fake_client.list_strikes.return_value = [Decimal("5100.00")]
+    fake_client.fetch_eod.return_value = []
+
+    monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", MagicMock())
+
+    theta_fetcher._fetch_root_range(fake_client, "SPXW", start, end)
+
+    assert fake_client.fetch_eod.call_count == 2
+    for call in fake_client.fetch_eod.call_args_list:
+        assert call.args[4] == start
+        assert call.args[5] == end
+
+
+def test_fetch_root_range_no_data_strike_continues_loop(monkeypatch) -> None:
+    """Empty fetch_eod results (Theta NO_DATA, HTTP 472) must not trip
+    the denied flag — later strikes still get fetched. Production repro:
+    VIX died on one illiquid strike after 140 good rows."""
+    import theta_fetcher
+
+    exp = date(2024, 4, 19)
+    fake_client = MagicMock()
+    fake_client.list_expirations.return_value = [exp]
+    fake_client.list_strikes.return_value = [
+        Decimal("5000.00"),  # illiquid — no data on either side
+        Decimal("5100.00"),  # has data
+    ]
+    # Strike 1: C and P both empty. Strike 2: one row per side.
+    fake_client.fetch_eod.side_effect = [
+        [],
+        [],
+        [_make_eod_row("C")],
+        [_make_eod_row("P")],
+    ]
+
+    flushed: list[list[tuple]] = []
+    monkeypatch.setattr(
+        theta_fetcher.db,
+        "upsert_theta_option_eod_batch",
+        lambda rows: flushed.append(rows),
+    )
+
+    result = theta_fetcher._fetch_root_range(
+        fake_client, "VIX", date(2024, 4, 18), date(2024, 4, 18)
+    )
+
+    # All four fetches attempted — no-data never stops the root.
+    assert fake_client.fetch_eod.call_count == 4
+    assert result == 2
+    assert sum(len(batch) for batch in flushed) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +510,31 @@ def test_fetch_strike_pair_per_side_exception_continues_to_other_side() -> None:
     assert len(rows) == 1
     assert rows[0].option_type == "P"
     # Both attempted — C raised, P succeeded.
+    assert fake_client.fetch_eod.call_count == 2
+
+
+def test_fetch_strike_pair_no_data_returns_empty_not_denied() -> None:
+    """Theta NO_DATA (HTTP 472 → [] at the client) must yield
+    ([], denied=False) so the caller keeps iterating strikes instead of
+    killing the root. Only ThetaSubscriptionError (HTTP 471) may trip
+    the denied flag."""
+    from theta_fetcher import _fetch_strike_pair
+
+    fake_client = MagicMock()
+    fake_client.fetch_eod.return_value = []
+
+    rows, denied = _fetch_strike_pair(
+        fake_client,
+        "VIX",
+        date(2024, 4, 19),
+        Decimal("5100.00"),
+        date(2024, 4, 18),
+        date(2024, 4, 18),
+    )
+
+    assert denied is False
+    assert rows == []
+    # Both sides still attempted.
     assert fake_client.fetch_eod.call_count == 2
 
 

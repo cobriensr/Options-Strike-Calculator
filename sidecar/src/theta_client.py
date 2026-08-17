@@ -16,12 +16,13 @@ Theta v2 quirks encoded here:
      sent as 5100000. We normalize to Decimal-in-dollars on the public
      API boundary so callers don't have to care.
   2. Dates are YYYYMMDD integers, not ISO strings.
-  3. When a contract has no data for the requested range, Theta returns
-     a plain-text body like ":No data for the specified timeframe &
-     contract." rather than an empty JSON array. We catch this and
-     surface it as an empty list.
-  4. Free-tier responses can also include HTTP 472 "Not entitled" —
-     we raise ThetaSubscriptionError so the fetcher can skip the root.
+  3. When a contract has no data for the requested range, Theta signals
+     it two ways: a plain-text body like ":No data for the specified
+     timeframe & contract." rather than an empty JSON array, or HTTP
+     472 (NO_DATA per the official error-code docs). Both are coerced
+     to the same empty payload and surface as an empty list / None.
+  4. HTTP 471 (PERMISSION) is a real entitlement denial — we raise
+     ThetaSubscriptionError so the fetcher can skip the root.
 
 Uses urllib.request to stay dep-free (no requests/httpx). Timeouts and
 retries are handled inline; Sentry reporting happens in the caller
@@ -54,8 +55,10 @@ DEFAULT_MAX_RETRIES = 3
 # backoff path as 5xx (FINDING D):
 #   429 — rate limit
 #   476 — Theta MDDS transient disconnect
-# 472 ("Not entitled") is intentionally excluded — it raises
+# 471 (PERMISSION) is intentionally excluded — it raises
 # ThetaSubscriptionError immediately so the fetcher can skip the root.
+# 472 (NO_DATA) is also excluded — it's coerced to the empty no-data
+# payload, exactly like the plain-text ":No data" body.
 _RETRYABLE_THROTTLE_CODES = frozenset({429, 476})
 
 
@@ -81,7 +84,7 @@ class ThetaClientError(Exception):
 
 
 class ThetaSubscriptionError(ThetaClientError):
-    """Raised when Theta denies the request for subscription reasons (HTTP 472)."""
+    """Raised when Theta denies the request for subscription reasons (HTTP 471)."""
 
 
 @dataclass(frozen=True)
@@ -184,8 +187,9 @@ class ThetaClient:
         """Fetch EOD rows for a single contract across [start, end].
 
         Returns [] when Theta has no data for the range (plain-text
-        "No data..." response). Raises ThetaSubscriptionError when the
-        request is denied for entitlement reasons.
+        "No data..." response or HTTP 472 NO_DATA). Raises
+        ThetaSubscriptionError when the request is denied for
+        entitlement reasons (HTTP 471).
         """
         params = {
             "root": root,
@@ -220,7 +224,8 @@ class ThetaClient:
 
         Wraps GET /v2/snapshot/index/price?root=... Returns None when
         Theta has no snapshot for the root (plain-text "No data..."
-        response). Raises ThetaSubscriptionError on entitlement denial.
+        response or HTTP 472 NO_DATA). Raises ThetaSubscriptionError
+        on entitlement denial (HTTP 471).
         """
         body = self._get_json("/v2/snapshot/index/price", {"root": root})
 
@@ -260,9 +265,10 @@ class ThetaClient:
 
         Wraps GET /v2/hist/index/ohlc per-date (start_date == end_date
         == `day`) at `ivl_ms` millisecond intervals (default 1 minute).
-        Returns [] when Theta has no data for the day. Raises
-        ThetaSubscriptionError on entitlement denial. Candles carry no
-        volume — indices don't trade.
+        Returns [] when Theta has no data for the day (plain-text "No
+        data..." response or HTTP 472 NO_DATA). Raises
+        ThetaSubscriptionError on entitlement denial (HTTP 471).
+        Candles carry no volume — indices don't trade.
         """
         params = {
             "root": root,
@@ -298,10 +304,16 @@ class ThetaClient:
                     raw = resp.read()
                 return _parse_body(raw)
             except HTTPError as exc:
-                if exc.code == 472:
+                if exc.code == 471:
                     raise ThetaSubscriptionError(
-                        f"Theta denied request (HTTP 472): {url}"
+                        f"Theta denied request (HTTP 471): {url}"
                     ) from exc
+                if exc.code == 472:
+                    # HTTP 472 = NO_DATA ("no data found for the specified
+                    # request") — same semantics as the plain-text ":No
+                    # data" body. Coerce to the empty payload shape so
+                    # callers take their existing no-data branch.
+                    return _no_data_body()
                 if _is_retryable_http(exc.code) and attempt < self.max_retries:
                     log.warning(
                         "Theta %s returned %d; retrying (%d/%d)",
@@ -341,6 +353,16 @@ class ThetaClient:
 # ---------------------------------------------------------------------------
 
 
+def _no_data_body() -> dict[str, Any]:
+    """The empty payload shape all no-data signals coerce to.
+
+    Two wire signals mean "no data": the plain-text ":No data..." body
+    and HTTP 472 (NO_DATA). Both route here so every caller takes the
+    same empty-response branch (return [] / None per method).
+    """
+    return {"header": {"format": []}, "response": []}
+
+
 def _parse_body(raw: bytes) -> dict[str, Any]:
     """Parse a Theta v2 response body.
 
@@ -351,12 +373,12 @@ def _parse_body(raw: bytes) -> dict[str, Any]:
     """
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
-        return {"header": {"format": []}, "response": []}
+        return _no_data_body()
 
     # Plain-text "no data" response — NOT valid JSON.
     # Example: ":No data for the specified timeframe & contract."
     if text.startswith(":") or text.lower().startswith("no data"):
-        return {"header": {"format": []}, "response": []}
+        return _no_data_body()
 
     try:
         return json.loads(text)
