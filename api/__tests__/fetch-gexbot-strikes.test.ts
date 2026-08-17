@@ -107,7 +107,9 @@ describe('fetch-gexbot-strikes handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('returns 500 when GEXBOT_API_KEY is not set', async () => {
+  it('SKIPS (not 500) when GEXBOT_API_KEY is not set — optional feed', async () => {
+    // See the matching note in fetch-gexbot-fast.test.ts: per-minute cron,
+    // so a throw on a missing optional key floods Sentry and reds the monitor.
     delete process.env.GEXBOT_API_KEY;
     stubFetchHappyPath();
     const req = mockRequest({
@@ -116,7 +118,11 @@ describe('fetch-gexbot-strikes handler', () => {
     });
     const res = mockResponse();
     await handler(req, res);
-    expect(res._status).toBe(500);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      message: expect.stringContaining('GEXBOT_API_KEY not configured'),
+    });
   });
 
   it('stores 128 captures (16 tickers × 8 state categories)', async () => {

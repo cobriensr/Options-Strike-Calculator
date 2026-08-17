@@ -190,7 +190,11 @@ describe('fetch-gexbot-fast handler', () => {
 
   // ── Missing API key ───────────────────────────────────────
 
-  it('returns 500 when GEXBOT_API_KEY is not set', async () => {
+  it('SKIPS (not 500) when GEXBOT_API_KEY is not set — optional feed', async () => {
+    // Regression 2026-08-17: this cron fires every session minute, so
+    // throwing on a missing key produced ~450 Sentry errors/day and a
+    // permanently red cron monitor on any deployment without a Gexbot
+    // subscription, burying real alerts. Unconfigured != broken.
     delete process.env.GEXBOT_API_KEY;
     stubFetchHappyPath();
     const req = mockRequest({
@@ -199,7 +203,11 @@ describe('fetch-gexbot-fast handler', () => {
     });
     const res = mockResponse();
     await handler(req, res);
-    expect(res._status).toBe(500);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      message: expect.stringContaining('GEXBOT_API_KEY not configured'),
+    });
   });
 
   // ── Happy path ────────────────────────────────────────────

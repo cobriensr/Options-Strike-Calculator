@@ -193,7 +193,16 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const apiKey = process.env.GEXBOT_API_KEY;
     if (!apiKey) {
-      throw new Error('GEXBOT_API_KEY is not configured');
+      // Gexbot is an OPTIONAL alternative GEX feed. This cron fires every
+      // minute of the session, so throwing here emitted ~450 Sentry errors
+      // and a red cron monitor per day on any deployment that simply never
+      // configured the key — drowning real failures in noise. Unconfigured
+      // is not broken: skip cleanly (the wrapper maps 'skipped' to an OK
+      // check-in) so the monitor stays green until a key is provisioned.
+      return {
+        status: 'skipped',
+        message: 'GEXBOT_API_KEY not configured — gexbot feed disabled',
+      };
     }
 
     // Full work list: 16 orderflow + 16 classic gex_zero basic +
