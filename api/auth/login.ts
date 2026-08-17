@@ -26,7 +26,6 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import {
   OWNER_COOKIE,
   OWNER_COOKIE_MAX_AGE,
-  checkBot,
   rejectIfRateLimited,
 } from '../_lib/auth-helpers.js';
 
@@ -92,13 +91,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(405).json({ error: 'Method not allowed' });
       }
 
-      // Bot protection first (mirrors other POST endpoints). Owner sessions
-      // short-circuit checkBot internally; anonymous traffic gets challenged.
-      const botCheck = await checkBot(req);
-      if (botCheck.isBot) {
-        done({ status: 403 });
-        return res.status(403).json({ error: 'Access denied' });
-      }
+      // NOTE: deliberately NO checkBot() here. BotID proof is minted by the
+      // SPA's initBotId() client SDK, but this endpoint serves its own login
+      // form as standalone HTML (GET below) — that page never loads the SPA,
+      // so a form POST carries no BotID token and checkBot would 403 every
+      // real submit, not just bots. Brute force is covered by the rate limit
+      // below + the high-entropy OWNER_SECRET, which is the correct posture
+      // for a bootstrap login served outside the app shell.
 
       // Brute-force guard: 5 attempts/minute per IP, same limiter the Schwab
       // callback + guest-key endpoints use. Fails open if Redis is down.

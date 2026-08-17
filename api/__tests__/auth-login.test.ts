@@ -3,24 +3,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-// Mock auth-helpers so bot + rate-limit guards pass by default; keep the real
+// Mock auth-helpers so the rate-limit guard passes by default; keep the real
 // cookie constants. timingSafeEqual is imported from node:crypto in the
-// handler (not from here), so the secret comparison runs for real.
+// handler (not from here), so the secret comparison runs for real. No
+// checkBot: the endpoint deliberately omits BotID (its form is served
+// standalone, outside the SPA that mints BotID proof).
 vi.mock('../_lib/auth-helpers.js', () => ({
   OWNER_COOKIE: 'sc-owner',
   OWNER_COOKIE_MAX_AGE: 604800,
-  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
 }));
 
 import handler from '../auth/login.js';
-import { checkBot, rejectIfRateLimited } from '../_lib/auth-helpers.js';
+import { rejectIfRateLimited } from '../_lib/auth-helpers.js';
 
 const ORIGINAL_ENV = { ...process.env };
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  vi.mocked(checkBot).mockResolvedValue({ isBot: false });
   vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
   process.env = { ...ORIGINAL_ENV };
   delete process.env.OWNER_SECRET;
@@ -145,24 +145,6 @@ describe('POST /api/auth/login', () => {
     ).resolves.not.toThrow();
 
     expect(res._status).toBe(401);
-    expect(res._headers['Set-Cookie']).toBeUndefined();
-  });
-
-  it('returns 403 when the bot check trips', async () => {
-    process.env.OWNER_SECRET = 'right-secret-123';
-    vi.mocked(checkBot).mockResolvedValue({ isBot: true });
-    const res = mockResponse();
-    await handler(
-      mockRequest({
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: { secret: 'right-secret-123' },
-      }),
-      res,
-    );
-
-    expect(res._status).toBe(403);
-    expect(res._json).toEqual({ error: 'Access denied' });
     expect(res._headers['Set-Cookie']).toBeUndefined();
   });
 
