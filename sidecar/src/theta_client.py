@@ -1,12 +1,14 @@
 """HTTP client for the local Theta Data Terminal v2 API.
 
 The Terminal hosts its server at http://127.0.0.1:25510 (see
-theta_launcher.py). This module wraps the three endpoints we actually
-need for nightly EOD ingest:
+theta_launcher.py). This module wraps the endpoints we actually need
+for nightly EOD ingest plus the Index Data PRO proxy routes:
 
   - GET /v2/list/expirations?root=SPXW           — list all expirations
   - GET /v2/list/strikes?root=SPXW&exp=20260418  — list strikes for exp
   - GET /v2/hist/option/eod?...                  — EOD row per contract
+  - GET /v2/snapshot/index/price?root=SPX        — current index value
+  - GET /v2/hist/index/ohlc?...                  — index interval candles
 
 Theta v2 quirks encoded here:
 
@@ -38,6 +40,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from logger_setup import log
 
@@ -60,10 +63,17 @@ def _is_retryable_http(code: int) -> bool:
     """True for HTTP codes that should retry with backoff (5xx + throttles)."""
     return (500 <= code < 600) or (code in _RETRYABLE_THROTTLE_CODES)
 
+
 # Strikes are stored on the wire as integer thousandths of a dollar.
 # 5100000 wire -> $5100.00 human. Divisor lives in one place so tests
 # can assert against it symbolically.
 STRIKE_WIRE_DIVISOR = Decimal(1000)
+
+# Theta's `ms_of_day` fields are milliseconds since 00:00:00.000 Eastern.
+_ET_ZONE = ZoneInfo("America/New_York")
+
+# Default interval for index OHLC candles: 1 minute in milliseconds.
+DEFAULT_INDEX_IVL_MS = 60000
 
 
 class ThetaClientError(Exception):
@@ -98,6 +108,36 @@ class EodRow:
     ask: Decimal | None
     bid_size: int | None
     ask_size: int | None
+
+
+@dataclass(frozen=True)
+class IndexPriceSnapshot:
+    """Current value of a calculated index (SPX / VIX family).
+
+    `ts_ms` is derived from Theta's `date` + `ms_of_day` columns
+    (milliseconds since ET midnight) as epoch milliseconds. Indices
+    have no trades, so there is no volume/size here by design.
+    """
+
+    root: str
+    price: Decimal
+    snapshot_date: date
+    ts_ms: int
+
+
+@dataclass(frozen=True)
+class IndexOhlcCandle:
+    """One interval candle of index values (OHLC of prices).
+
+    Indices have no volume — deliberately NO volume field so callers
+    can't accidentally depend on a fabricated one.
+    """
+
+    ts_ms: int
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
 
 
 class ThetaClient:
@@ -174,6 +214,71 @@ class ThetaClient:
             )
             for row in rows
         ]
+
+    def snapshot_index_price(self, root: str) -> IndexPriceSnapshot | None:
+        """Fetch the current value of an index root (Index Data PRO).
+
+        Wraps GET /v2/snapshot/index/price?root=... Returns None when
+        Theta has no snapshot for the root (plain-text "No data..."
+        response). Raises ThetaSubscriptionError on entitlement denial.
+        """
+        body = self._get_json("/v2/snapshot/index/price", {"root": root})
+
+        header = body.get("header") or {}
+        fmt: list[str] = header.get("format") or []
+        rows: list[list[Any]] = body.get("response") or []
+        if not fmt or not rows:
+            return None
+
+        cells = _zip_row_strict(fmt, rows[0])
+        price = cells.get("price")
+        if price is None:
+            raise ThetaClientError(
+                f"Theta index snapshot missing 'price' field: {rows[0]!r}"
+            )
+        date_value = cells.get("date")
+        if date_value is None:
+            raise ThetaClientError(
+                f"Theta index snapshot missing 'date' field: {rows[0]!r}"
+            )
+        snapshot_date = _parse_yyyymmdd(date_value)
+        ms_of_day = int(cells.get("ms_of_day") or 0)
+        return IndexPriceSnapshot(
+            root=root,
+            price=Decimal(str(price)),
+            snapshot_date=snapshot_date,
+            ts_ms=_et_epoch_ms(snapshot_date, ms_of_day),
+        )
+
+    def hist_index_ohlc(
+        self,
+        root: str,
+        day: date,
+        ivl_ms: int = DEFAULT_INDEX_IVL_MS,
+    ) -> list[IndexOhlcCandle]:
+        """Fetch one day of index OHLC interval candles (Index Data PRO).
+
+        Wraps GET /v2/hist/index/ohlc per-date (start_date == end_date
+        == `day`) at `ivl_ms` millisecond intervals (default 1 minute).
+        Returns [] when Theta has no data for the day. Raises
+        ThetaSubscriptionError on entitlement denial. Candles carry no
+        volume — indices don't trade.
+        """
+        params = {
+            "root": root,
+            "start_date": _format_yyyymmdd(day),
+            "end_date": _format_yyyymmdd(day),
+            "ivl": ivl_ms,
+        }
+        body = self._get_json("/v2/hist/index/ohlc", params)
+
+        header = body.get("header") or {}
+        fmt: list[str] = header.get("format") or []
+        rows: list[list[Any]] = body.get("response") or []
+        if not fmt or not rows:
+            return []
+
+        return [_row_to_index_ohlc(fmt, row, fallback_date=day) for row in rows]
 
     # ------------------------------------------------------------------
     # Transport
@@ -264,6 +369,28 @@ def _parse_yyyymmdd(value: int | str) -> date:
     return datetime.strptime(str(value), "%Y%m%d").date()
 
 
+def _et_epoch_ms(d: date, ms_of_day: int) -> int:
+    """Convert Theta's (date, ms-since-ET-midnight) pair to epoch ms."""
+    midnight_et = datetime(d.year, d.month, d.day, tzinfo=_ET_ZONE)
+    return int(midnight_et.timestamp() * 1000) + int(ms_of_day)
+
+
+def _zip_row_strict(fmt: list[str], row: list[Any]) -> dict[str, Any]:
+    """Zip a v2 row (array of values) with its format header.
+
+    strict=True so a format/row length mismatch (Theta adds or removes a
+    column) fails loudly instead of silently truncating to wrong/null
+    fields (FINDING C). Shared by the option-EOD and index parsers.
+    """
+    try:
+        return dict(zip(fmt, row, strict=True))
+    except ValueError as exc:
+        raise ThetaClientError(
+            f"Theta row/format length mismatch: "
+            f"len(format)={len(fmt)} len(row)={len(row)} row={row!r}"
+        ) from exc
+
+
 def _format_yyyymmdd(d: date) -> str:
     return d.strftime("%Y%m%d")
 
@@ -300,18 +427,9 @@ def _row_to_eod(
     """Zip a v2 row (array of values) with its format header into an EodRow."""
     # The format list names every column in the wire row. The single-
     # contract endpoint doesn't echo symbol/strike/right/exp back — those
-    # are request-side knowns we inject here.
-    #
-    # strict=True so a format/row length mismatch (Theta adds or removes a
-    # column) fails loudly instead of silently truncating to wrong/null
-    # fields (FINDING C).
-    try:
-        cells = dict(zip(fmt, row, strict=True))
-    except ValueError as exc:
-        raise ThetaClientError(
-            f"Theta row/format length mismatch: "
-            f"len(format)={len(fmt)} len(row)={len(row)} row={row!r}"
-        ) from exc
+    # are request-side knowns we inject here. Length drift fails loudly
+    # via the shared strict-zip helper (FINDING C).
+    cells = _zip_row_strict(fmt, row)
 
     def _num(field: str) -> Decimal | None:
         value = cells.get(field)
@@ -345,4 +463,44 @@ def _row_to_eod(
         ask=_num("ask"),
         bid_size=_int("bid_size"),
         ask_size=_int("ask_size"),
+    )
+
+
+def _row_to_index_ohlc(
+    fmt: list[str],
+    row: list[Any],
+    *,
+    fallback_date: date,
+) -> IndexOhlcCandle:
+    """Zip an index OHLC row with its format header into a candle.
+
+    Unknown-but-named extra columns (e.g. a `count` field) are ignored;
+    only an unnamed length drift fails (strict zip). OHLC fields are
+    required — an index interval always has computed values, so a None
+    there means the wire format changed under us and must fail loudly.
+    Indices have no volume; none is read and none is fabricated.
+    """
+    cells = _zip_row_strict(fmt, row)
+
+    ms_of_day = cells.get("ms_of_day")
+    if ms_of_day is None:
+        raise ThetaClientError(f"Theta index ohlc row missing 'ms_of_day': {row!r}")
+
+    date_value = cells.get("date")
+    row_date = _parse_yyyymmdd(date_value) if date_value is not None else fallback_date
+
+    def _req(field: str) -> Decimal:
+        value = cells.get(field)
+        if value is None:
+            raise ThetaClientError(
+                f"Theta index ohlc row missing '{field}' field: {row!r}"
+            )
+        return Decimal(str(value))
+
+    return IndexOhlcCandle(
+        ts_ms=_et_epoch_ms(row_date, int(ms_of_day)),
+        open=_req("open"),
+        high=_req("high"),
+        low=_req("low"),
+        close=_req("close"),
     )

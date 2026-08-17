@@ -14,7 +14,7 @@ import json
 import os
 import re
 import threading
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
@@ -38,6 +38,29 @@ _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # Content-Length before allocating, which is sufficient to prevent the
 # allocation. Configurable via env; default 1 MiB.
 MAX_BODY_BYTES = int(os.environ.get("TAKEIT_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
+
+# Roots the /theta/index/* proxy routes will serve. Matches the Index
+# Data PRO entitlement: SPX + the CBOE calculated VIX family. Anything
+# else is a 400 — the routes exist to feed the Schwab-replacement
+# facade's quotes/pricehistory paths, not as a general Theta proxy.
+_THETA_INDEX_ROOTS = frozenset({"SPX", "VIX", "VIX1D", "VIX9D", "VVIX"})
+
+# Default candle interval for /theta/index/history: 1 minute in ms.
+_THETA_DEFAULT_IVL_MS = 60000
+
+
+def _previous_weekday(d: date) -> date:
+    """Return the closest weekday strictly before `d` (skips Sat/Sun).
+
+    Approximates "previous trading day" for the prev_close lookup on
+    /theta/index/price. Market holidays are NOT modeled — on those days
+    the hist fetch simply returns no candles and prev_close degrades to
+    null, which the response contract explicitly allows.
+    """
+    prev = d - timedelta(days=1)
+    while prev.weekday() >= 5:  # 5=Sat, 6=Sun
+        prev -= timedelta(days=1)
+    return prev
 
 
 def _is_today_or_future_utc(date_str: str) -> bool:
@@ -230,6 +253,16 @@ class HealthHandler(BaseHTTPRequestHandler):
         ("/archive/tbbo-ofi-percentile", "_handle_archive_tbbo_ofi_percentile"),
     )
 
+    # Theta index proxy routes. Cheap localhost calls against the Theta
+    # Terminal — deliberately NOT gated behind archive_query_slot() (that
+    # semaphore bounds DuckDB memory, which these routes never touch).
+    # Both routes require the /takeit bearer: they consume live Terminal
+    # quota/bandwidth, so they are not public like /archive/*.
+    _THETA_ROUTES: tuple[tuple[str, str], ...] = (
+        ("/theta/index/price", "_handle_theta_index_price"),
+        ("/theta/index/history", "_handle_theta_index_history"),
+    )
+
     def do_GET(self) -> None:
         # /archive/* routes all run heavy, unbounded-memory DuckDB queries.
         # Bound their concurrency so N unauthenticated requests can't each
@@ -242,6 +275,11 @@ class HealthHandler(BaseHTTPRequestHandler):
         for prefix, handler_name in self._ARCHIVE_ROUTES:
             if self.path.startswith(prefix):
                 self._dispatch_bounded_archive(handler_name)
+                return
+
+        for prefix, handler_name in self._THETA_ROUTES:
+            if self.path.startswith(prefix):
+                getattr(self, handler_name)()
                 return
 
         if self.path == "/takeit/health":
@@ -460,6 +498,174 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(body, default=str).encode())
+
+    # ------------------------------------------------------------------
+    # /theta/index/* — Theta Terminal index proxy (Index Data PRO)
+    # ------------------------------------------------------------------
+
+    def _theta_bearer_ok(self) -> bool:
+        """Bearer gate for the /theta/index/* routes.
+
+        Same pattern as the /takeit routes: `hmac.compare_digest`
+        against `Bearer <TAKEIT_SIDECAR_SHARED_SECRET>` (constant-time),
+        503 when the env var is unset, 401 on mismatch. Sends the error
+        response itself and returns False so callers can just bail.
+        """
+        shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
+        if not shared_secret:
+            self._send_json(
+                503, {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
+            )
+            return False
+        auth_header = self.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth_header, f"Bearer {shared_secret}"):
+            self._send_json(401, {"error": "unauthorized"})
+            return False
+        return True
+
+    def _theta_root_or_none(self, qs: dict[str, list[str]]) -> str | None:
+        """Validate ?root= against the index allowlist; 400 + None on miss."""
+        root = (qs.get("root") or [""])[0].upper()
+        if root not in _THETA_INDEX_ROOTS:
+            allowed = ", ".join(sorted(_THETA_INDEX_ROOTS))
+            self._send_json(400, {"error": f"root must be one of {allowed}"})
+            return None
+        return root
+
+    @staticmethod
+    def _theta_client() -> Any:
+        """Build an interactive-latency ThetaClient.
+
+        Fast-fail settings (5s timeout, single attempt) instead of the
+        fetcher's nightly-batch defaults (15s x 3 retries with backoff,
+        ~45s+ worst case) — these routes sit on Vercel's request path
+        behind Railway's edge proxy. Lazy import mirrors _aq(): the
+        module object is what tests patch (`theta_client.ThetaClient`).
+        """
+        import theta_client  # noqa: PLC0415
+
+        return theta_client.ThetaClient(timeout_s=5, max_retries=1)
+
+    def _handle_theta_index_price(self) -> None:
+        """GET /theta/index/price?root=SPX → current index value.
+
+        Response: `{root, price, prev_close, ts}` where `prev_close` is
+        the previous trading day's last hist-OHLC close (null when that
+        day has no data — holiday — or its fetch fails; best-effort by
+        contract) and `ts` is the snapshot time in epoch ms.
+        """
+        if not self._theta_bearer_ok():
+            return
+        qs = parse_qs(urlparse(self.path).query)
+        root = self._theta_root_or_none(qs)
+        if root is None:
+            return
+
+        import theta_client  # noqa: PLC0415
+
+        client = self._theta_client()
+        try:
+            snap = client.snapshot_index_price(root)
+        except theta_client.ThetaSubscriptionError:
+            # 472 Not entitled → structured 502, never a raw traceback.
+            self._send_json(502, {"error": "theta_not_entitled", "root": root})
+            return
+        except theta_client.ThetaClientError as exc:
+            # Terminal down (launcher not running → connection refused)
+            # or otherwise erroring → 503 service-unavailable.
+            log.warning("theta index price failed for %s: %s", root, exc)
+            self._send_json(503, {"error": "theta_unavailable"})
+            return
+
+        if snap is None:
+            self._send_json(404, {"error": "no_data", "root": root})
+            return
+
+        prev_close: float | None = None
+        try:
+            candles = client.hist_index_ohlc(
+                root, _previous_weekday(snap.snapshot_date)
+            )
+            if candles:
+                prev_close = float(candles[-1].close)
+        except theta_client.ThetaClientError as exc:
+            # Includes ThetaSubscriptionError (subclass): prev_close is
+            # best-effort — degrade to null rather than sinking the price.
+            log.warning("theta prev-close fetch failed for %s: %s", root, exc)
+
+        self._send_json(
+            200,
+            {
+                "root": root,
+                "price": float(snap.price),
+                "prev_close": prev_close,
+                "ts": snap.ts_ms,
+            },
+        )
+
+    def _handle_theta_index_history(self) -> None:
+        """GET /theta/index/history?root=SPX&date=YYYY-MM-DD&ivl_ms=300000
+
+        Response: `{root, date, ivl_ms, candles: [{ts_ms, open, high,
+        low, close}]}`. Candles carry NO volume — indices don't trade,
+        and fabricating one would let callers depend on a lie.
+        """
+        if not self._theta_bearer_ok():
+            return
+        qs = parse_qs(urlparse(self.path).query)
+        root = self._theta_root_or_none(qs)
+        if root is None:
+            return
+        try:
+            date_str = _parse_date_param(qs, "date")
+            ivl_ms = _parse_optional_int(qs, "ivl_ms", lo=1000)
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        try:
+            day = date.fromisoformat(date_str)
+        except ValueError:
+            # Shape-valid but calendar-invalid (e.g. 2026-13-99).
+            self._send_json(400, {"error": "invalid date"})
+            return
+        if ivl_ms is None:
+            ivl_ms = _THETA_DEFAULT_IVL_MS
+
+        import theta_client  # noqa: PLC0415
+
+        client = self._theta_client()
+        try:
+            candles = client.hist_index_ohlc(root, day, ivl_ms=ivl_ms)
+        except theta_client.ThetaSubscriptionError:
+            self._send_json(502, {"error": "theta_not_entitled", "root": root})
+            return
+        except theta_client.ThetaClientError as exc:
+            log.warning("theta index history failed for %s %s: %s", root, date_str, exc)
+            self._send_json(503, {"error": "theta_unavailable"})
+            return
+
+        if not candles:
+            self._send_json(404, {"error": "no_data", "root": root, "date": date_str})
+            return
+
+        self._send_json(
+            200,
+            {
+                "root": root,
+                "date": date_str,
+                "ivl_ms": ivl_ms,
+                "candles": [
+                    {
+                        "ts_ms": c.ts_ms,
+                        "open": float(c.open),
+                        "high": float(c.high),
+                        "low": float(c.low),
+                        "close": float(c.close),
+                    }
+                    for c in candles
+                ],
+            },
+        )
 
     def _dispatch_bounded_archive(self, handler_name: str) -> None:
         """Run an /archive/* handler under the concurrency-bound slot.
