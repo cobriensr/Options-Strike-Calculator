@@ -79,7 +79,6 @@ import {
   OWNER_COOKIE,
   OWNER_COOKIE_MAX_AGE,
   rejectIfRateLimited,
-  schwabFetch,
   schwabTraderFetch,
   setCacheHeaders,
   isMarketOpen,
@@ -235,12 +234,18 @@ describe('api-helpers', () => {
   // SCHWAB FETCH
   // ============================================================
 
-  describe('schwabFetch', () => {
+  // schwabFetch is now a path dispatcher over the UW/Theta-sidecar
+  // market-data adapters (schwab-replacement-2026-08-16 Phase 2) —
+  // dispatch behavior is covered in schwab-fetch.test.ts and the
+  // adapters in market-data-adapters.test.ts. The token/transport
+  // behaviors below live on in schwabApiFetch, whose only remaining
+  // consumer is schwabTraderFetch — so they're asserted through it.
+  describe('schwabTraderFetch (token + transport behaviors)', () => {
     it('returns error when getAccessToken fails with expired_refresh', async () => {
       vi.mocked(getAccessToken).mockResolvedValue({
         error: { type: 'expired_refresh', message: 'Token expired' },
       });
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({
         ok: false,
         error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
@@ -252,7 +257,7 @@ describe('api-helpers', () => {
       vi.mocked(getAccessToken).mockResolvedValue({
         error: { type: 'token_error', message: 'Something broke' },
       });
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({
         ok: false,
         error: '[SCHWAB_TOKEN_ERROR] Something broke',
@@ -262,7 +267,7 @@ describe('api-helpers', () => {
 
     it('returns data on successful fetch', async () => {
       vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
-      const mockData = { SPY: { quote: { lastPrice: 500 } } };
+      const mockData = { securitiesAccount: { positions: [] } };
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
@@ -270,7 +275,7 @@ describe('api-helpers', () => {
           json: () => Promise.resolve(mockData),
         }),
       );
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({ ok: true, data: mockData });
       vi.unstubAllGlobals();
     });
@@ -285,7 +290,7 @@ describe('api-helpers', () => {
           text: () => Promise.resolve('Forbidden'),
         }),
       );
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({
         ok: false,
         error: '[SCHWAB_API_403] Schwab API error (403): Forbidden',
@@ -304,7 +309,7 @@ describe('api-helpers', () => {
           text: () => Promise.resolve('Unauthorized'),
         }),
       );
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({
         ok: false,
         error: '[SCHWAB_API_REJECTED] Schwab API error (401): Unauthorized',
@@ -314,15 +319,12 @@ describe('api-helpers', () => {
     });
 
     it('retries on AbortSignal timeout and returns data when a later attempt succeeds', async () => {
-      // Schwab's /chains endpoint occasionally exceeds the 30s
-      // AbortController timeout when the payload is large (SPXW with
-      // strikeCount=500 across multiple expiries). The timeout throws a
+      // The 30s AbortController timeout throws a
       // DOMException("aborted", "TimeoutError"); the retry loop must
-      // catch it like a 5xx and try again rather than bubbling it up to
-      // the caller (which was producing Sentry issue 76 — one
-      // TimeoutError captureException per timed-out ticker per minute).
+      // catch it like a 5xx and try again rather than bubbling it up
+      // to the caller.
       vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
-      const mockData = { SPY: { quote: { lastPrice: 500 } } };
+      const mockData = { securitiesAccount: { positions: [] } };
       const timeoutErr = new DOMException(
         'The operation was aborted due to timeout',
         'TimeoutError',
@@ -336,7 +338,7 @@ describe('api-helpers', () => {
         });
       vi.stubGlobal('fetch', fetchMock);
 
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({ ok: true, data: mockData });
       expect(fetchMock).toHaveBeenCalledTimes(2);
       vi.unstubAllGlobals();
@@ -344,10 +346,7 @@ describe('api-helpers', () => {
 
     it('returns a 504 ApiResult error when every attempt times out', async () => {
       // After MAX_RETRIES (2) + initial = 3 consecutive timeouts the
-      // helper surfaces a structured error instead of throwing. The
-      // caller (fetch-strike-iv runTicker) reads `result.ok = false`
-      // and skips the ticker with reason='schwab_error' — no exception
-      // propagates, no Sentry captureException fires.
+      // helper surfaces a structured error instead of throwing.
       vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
       const timeoutErr = new DOMException(
         'The operation was aborted due to timeout',
@@ -356,7 +355,7 @@ describe('api-helpers', () => {
       const fetchMock = vi.fn().mockRejectedValue(timeoutErr);
       vi.stubGlobal('fetch', fetchMock);
 
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.status).toBe(504);
@@ -1433,7 +1432,7 @@ describe('api-helpers', () => {
   // SCHWAB FETCH — RETRY PATH (500 transient → success)
   // ============================================================
 
-  describe('schwabFetch (retry on 500)', () => {
+  describe('schwabTraderFetch (retry on 500)', () => {
     afterEach(() => {
       vi.unstubAllGlobals();
     });
@@ -1453,7 +1452,7 @@ describe('api-helpers', () => {
           json: () => Promise.resolve(mockData),
         });
       vi.stubGlobal('fetch', mockFetch);
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({ ok: true, data: mockData });
       expect(mockFetch).toHaveBeenCalledTimes(2);
     }, 10000);

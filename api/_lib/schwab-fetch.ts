@@ -1,9 +1,17 @@
 /**
- * Authenticated Schwab API call helpers.
+ * Market-data facade + Schwab Trader API helper.
  *
- * Wraps token retrieval, retry-on-5xx, timeout, and metrics for the two
- * Schwab base URLs (Market Data + Trader). Used by the data endpoints
- * (quotes, intraday, yesterday) and the positions endpoint.
+ * `schwabFetch<T>` keeps its historical signature and ApiResult
+ * envelope, but no longer calls Schwab's Market Data API: it dispatches
+ * by path prefix to the UW + Theta-sidecar adapters in
+ * `market-data-adapters.ts`, which assemble byte-compatible Schwab
+ * response shapes (Phase 2 of schwab-replacement-2026-08-16). Callers
+ * are untouched — same paths, same shapes, same `[SCHWAB_*]` error
+ * strings and 401/429/502/504 status mapping.
+ *
+ * `schwabTraderFetch<T>` (positions) is the one surface that remains a
+ * real Schwab call — brokerage positions are inherently Schwab — and
+ * keeps the OAuth token machinery, retry-on-5xx, timeout, and metrics.
  *
  * Split from `api-helpers.ts` (Phase 2 of api-refactor-2026-05-02).
  * Re-exported from `api-helpers.ts` for backward compatibility.
@@ -13,8 +21,14 @@ import { getAccessToken } from './schwab.js';
 import { TIMEOUTS } from './constants.js';
 import logger from './logger.js';
 import { metrics } from './sentry.js';
+import {
+  chainAdapter,
+  historyAdapter,
+  moversAdapter,
+  quotesAdapter,
+  sourceUnavailable,
+} from './market-data-adapters.js';
 
-const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
 
 /**
@@ -136,9 +150,38 @@ async function schwabApiFetch<T>(
   return { ok: true, data };
 }
 
-/** Authenticated GET to the Schwab Market Data API. */
-export function schwabFetch<T>(path: string): Promise<ApiResult<T>> {
-  return schwabApiFetch(SCHWAB_BASE, path);
+/**
+ * Market-data GET in the legacy Schwab path dialect.
+ *
+ * Dispatches on the path prefix to the UW/Theta-sidecar adapters:
+ *   /chains       → chainAdapter
+ *   /pricehistory → historyAdapter
+ *   /quotes       → quotesAdapter
+ *   /movers       → moversAdapter
+ *   anything else → 501 SOURCE_UNAVAILABLE (consumers are fail-open)
+ *
+ * Never throws — always resolves to an ApiResult, exactly like the
+ * legacy Schwab implementation.
+ */
+export async function schwabFetch<T>(path: string): Promise<ApiResult<T>> {
+  const endpoint = path.split('?')[0] ?? path;
+  const done = metrics.schwabCall(endpoint);
+
+  let result: ApiResult<unknown>;
+  if (endpoint.startsWith('/chains')) {
+    result = await chainAdapter(path);
+  } else if (endpoint.startsWith('/pricehistory')) {
+    result = await historyAdapter(path);
+  } else if (endpoint.startsWith('/quotes')) {
+    result = await quotesAdapter(path);
+  } else if (endpoint.startsWith('/movers')) {
+    result = await moversAdapter(path);
+  } else {
+    result = sourceUnavailable(path);
+  }
+
+  done(result.ok);
+  return result as ApiResult<T>;
 }
 
 /** Authenticated GET to the Schwab Trader API (accounts, orders, positions). */

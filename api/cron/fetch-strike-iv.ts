@@ -1,37 +1,50 @@
 /**
  * GET /api/cron/fetch-strike-iv
  *
- * 1-minute cron that snapshots per-strike implied volatility for the
- * tickers in STRIKE_IV_TICKERS (SPXW, NDXP, SPY, QQQ, IWM, SMH, NVDA,
- * TSLA, META, MSFT, SNDK, MSTR, MU — 13 tickers after the 2026-04-25
- * multi-theme expansion) into the `strike_iv_snapshots` table.
+ * 5-minute cron that snapshots per-strike implied volatility for the
+ * tickers in STRIKE_IV_TICKERS (17 tickers after the 2026-04-29
+ * outlier-driven additions) into the `strike_iv_snapshots` table.
  * Foundation for the Strike IV Anomaly Detector (Phase 2 layers
  * detection + context capture on top).
  *
  * Per ticker, per run:
- *   1. Fetch the Schwab option chain for today → next 2 Fridays.
- *      SPXW/NDXP are not separately queryable; the cron queries `$SPX`
- *      and `$NDX` respectively and filters contract symbols to the
- *      desired weekly root after the fetch.
- *   2. Filter to OTM ±3% of spot.
+ *   1. Fetch the option chain (via the schwabFetch facade → UW
+ *      option-contracts) for ONE expiry of the {today, next Fridays}
+ *      rotation — see pickExpiryForFire. SPXW/NDXP are not separately
+ *      queryable; the cron queries `$SPX` and `$NDX` respectively and
+ *      filters contract symbols to the desired weekly root after the
+ *      fetch.
+ *   2. Filter to OTM ±3% of spot (the fetch itself is already
+ *      OTM-only via `range=OTM` — the facade maps it to UW's
+ *      `maybe_otm_only` server-side filter, keeping each expiry to ~1
+ *      UW page).
  *   3. Filter to per-ticker min OI (see minOiFor).
- *   4. Recompute IV from bid/ask/mid price via Black-Scholes — Schwab's
- *      quoted IV may use a different forward/model, and recomputing keeps
- *      the cross-ticker time series consistent.
+ *   4. Recompute IV from bid/ask/mid price via Black-Scholes — the
+ *      source's quoted IV may use a different forward/model, and
+ *      recomputing keeps the cross-ticker time series consistent.
+ *      (This NBBO dependency is why the facade serves this cron from
+ *      UW option-contracts and not /stock/{t}/greeks — the greeks
+ *      endpoint carries no bid/ask.)
  *   5. Batch-insert one row per strike × expiry × side into
  *      strike_iv_snapshots.
  *
- * Fault tolerance: a Schwab auth or fetch failure for one ticker must NOT
- * block the others. Each ticker runs independently and its errors are
- * captured to Sentry but not rethrown to the handler. NDXP in particular
- * may legitimately have no 0DTE listed on some sessions — logged as
+ * Fault tolerance: a fetch failure for one ticker must NOT block the
+ * others. Each ticker runs independently and its errors are captured to
+ * Sentry but not rethrown to the handler. NDXP in particular may
+ * legitimately have no 0DTE listed on some sessions — logged as
  * `empty_chain`, not an error.
  *
- * Cron cadence: `* 13-21 * * 1-5` — every minute during market hours.
- * Volume budget: 13 tickers × 1 request/min = 780 Schwab requests/hour,
- * still well under the per-app rate limit.
+ * Cron cadence: every 5 minutes, 13-21 UTC Mon-Fri (dropped from 1-min
+ * with the Schwab→UW migration — schwab-replacement-2026-08-16, see
+ * vercel.json + cron-schedules.ts for the cron expression). To fit the UW
+ * per-minute budget each fire snapshots ONE expiry: today (0DTE) on
+ * even fires (every 10 min) and the Friday expiries alternating on odd
+ * fires (see pickExpiryForFire). UW budget per fire: ~17 chain requests
+ * (1 OTM page each) + ~16 spot lookups ≈ 33–35 requests bursting in the
+ * fire minute (~7/min amortized) vs the 60–100 an unstaggered
+ * all-expiry fetch produced.
  *
- * Environment: CRON_SECRET (no UW API key — pure Schwab + Neon).
+ * Environment: CRON_SECRET (facade needs UW_API_KEY + SIDECAR_URL).
  */
 
 import { getDb } from '../_lib/db.js';
@@ -172,6 +185,28 @@ function buildExpirySet(today: string): string[] {
   const fridays = nextFridays(today, 3);
   const set = new Set<string>([today, ...fridays]);
   return [...set].sort();
+}
+
+/**
+ * The single expiry this fire snapshots. The 5-min cadence can't afford
+ * the full {today + Fridays} set per fire (UW per-minute budget — see
+ * the header), so fires stagger the set instead:
+ *
+ *   - even fires (minute 0, 10, 20, …) → today (0DTE — the flagship
+ *     series, sampled every 10 min)
+ *   - odd fires (minute 5, 15, 25, …) → the Friday expiries,
+ *     round-robin (each sampled every 10 × N-Fridays minutes)
+ *
+ * Deterministic in minute-of-hour so a delayed fire at worst repeats or
+ * skips one slot (inserts are ON CONFLICT DO NOTHING — repeats are
+ * free; skips leave a one-slot gap in that expiry's series).
+ */
+export function pickExpiryForFire(today: string, minuteOfHour: number): string {
+  const expiries = buildExpirySet(today);
+  const others = expiries.filter((e) => e !== today);
+  const fireIdx = Math.floor(minuteOfHour / 5);
+  if (others.length === 0 || fireIdx % 2 === 0) return today;
+  return others[Math.floor(fireIdx / 2) % others.length]!;
 }
 
 /**
@@ -344,17 +379,20 @@ async function fetchChain(
   toDate: string,
 ): Promise<SchwabChainResponse | null> {
   const symbol = encodeURIComponent(schwabSymbol(ticker));
-  // `strategy=SINGLE&range=ALL&strikeCount=500` pulls the full strike ladder
-  // across the date window — we filter to the ±3% OTM band downstream.
+  // `range=OTM` because the cron only ever keeps strictly-OTM rows —
+  // the facade maps it to UW's `maybe_otm_only` server-side filter so
+  // each expiry stays at ~1 UW page instead of paging the full ladder
+  // (schwab-replacement-2026-08-16 UW budget). `strikeCount=500` keeps
+  // the legacy dialect; the OTM band itself is still applied downstream.
   const path =
     `/chains?symbol=${symbol}&contractType=ALL&includeUnderlyingQuote=true` +
-    `&strategy=SINGLE&range=ALL` +
+    `&strategy=SINGLE&range=OTM` +
     `&fromDate=${fromDate}&toDate=${toDate}&strikeCount=500`;
   const result = await schwabFetch<SchwabChainResponse>(path);
   if (!result.ok) {
     logger.warn(
       { ticker, status: result.status, error: result.error },
-      'fetch-strike-iv: Schwab chain fetch failed',
+      'fetch-strike-iv: chain fetch failed',
     );
     return null;
   }
@@ -532,17 +570,15 @@ interface TickerResult {
 async function runTicker(
   ticker: StrikeIVTicker,
   sql: SqlClient,
-  today: string,
+  expiry: string,
   nowMs: number,
 ): Promise<TickerResult> {
   try {
-    const expiries = buildExpirySet(today);
-    const allowed = new Set(expiries);
-    // Inclusive bounds for the Schwab call.
-    const fromDate = expiries[0]!;
-    const toDate = expiries.at(-1)!;
+    // One expiry per fire (see pickExpiryForFire) — the fetch window
+    // collapses to that single date.
+    const allowed = new Set([expiry]);
 
-    const chain = await fetchChain(ticker, fromDate, toDate);
+    const chain = await fetchChain(ticker, expiry, expiry);
     if (chain == null) {
       return {
         ticker,
@@ -555,7 +591,7 @@ async function runTicker(
     const rows = extractRows(chain, ticker, allowed, nowMs);
     if (rows.length === 0) {
       logger.info(
-        { ticker, expiries, spot: chain.underlying?.last ?? null },
+        { ticker, expiry, spot: chain.underlying?.last ?? null },
         'fetch-strike-iv: no rows after filter',
       );
       return {
@@ -585,7 +621,7 @@ async function runTicker(
       {
         ticker,
         spot: chain.underlying?.last ?? null,
-        expiries,
+        expiry,
         rowsInserted,
         candidateRows: rows.length,
       },
@@ -613,13 +649,19 @@ export default withCronInstrumentation(
     const { today, startTimeMs } = ctx;
     const sql = getDb();
 
+    // One expiry per fire — see pickExpiryForFire for the rotation.
+    const expiry = pickExpiryForFire(
+      today,
+      new Date(startTimeMs).getUTCMinutes(),
+    );
+
     // Run tickers in parallel — they're independent and fault-isolated.
-    // Cap in-flight requests via mapWithConcurrency so the 13-ticker fan-out
-    // never overruns Schwab's per-app concurrency budget.
+    // Cap in-flight requests via mapWithConcurrency so the 17-ticker fan-out
+    // never overruns the UW in-flight concurrency budget.
     const results = await mapWithConcurrency(
       STRIKE_IV_TICKERS,
       STRIKE_IV_TICKER_CONCURRENCY,
-      (t) => runTicker(t, sql, today, startTimeMs),
+      (t) => runTicker(t, sql, expiry, startTimeMs),
     );
 
     const totalInserted = results.reduce((sum, r) => sum + r.rowsInserted, 0);
@@ -627,6 +669,7 @@ export default withCronInstrumentation(
     return {
       status: 'success',
       metadata: {
+        expiry,
         totalInserted,
         results,
       },

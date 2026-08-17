@@ -597,6 +597,90 @@ describe('fetch-market-internals handler', () => {
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
+  // ── SOURCE_UNAVAILABLE quiet degrade (schwab-replacement) ──
+
+  it('treats 501 SOURCE_UNAVAILABLE as a quiet skip: no Sentry, one log, success status', async () => {
+    // The schwabFetch facade has no breadth source — every internals
+    // call returns 501. This must NOT alert (previously ≈960 Sentry
+    // events/day) and must NOT count as a failure.
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
+      status: 501,
+      code: 'SOURCE_UNAVAILABLE',
+      error: '[SOURCE_UNAVAILABLE] No market-data source for /pricehistory',
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body).toMatchObject({
+      job: 'fetch-market-internals',
+      success: true,
+      successCount: 0,
+      failureCount: 0,
+      unavailableCount: 4,
+      stored: 0,
+    });
+
+    // Quiet: zero Sentry events, zero warns, exactly ONE skip log line.
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+    const skipLogs = vi
+      .mocked(logger.info)
+      .mock.calls.filter(([, msg]) =>
+        String(msg).includes('SOURCE_UNAVAILABLE'),
+      );
+    expect(skipLogs).toHaveLength(1);
+    expect(skipLogs[0]![0]).toMatchObject({
+      symbols: ['$TICK', '$TRIN', '$ADD', '$VOLD'],
+    });
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
+  it('mixes quiet 501 skips with genuine results without polluting failure counts', async () => {
+    // pricehistory ($TICK/$TRIN) → 501 quiet skip; quotes ($ADD/$VOLD)
+    // still return values (hypothetical future partial source).
+    vi.mocked(schwabFetch).mockImplementation((url: string) => {
+      if (url.includes('pricehistory')) {
+        return Promise.resolve({
+          ok: false as const,
+          status: 501,
+          code: 'SOURCE_UNAVAILABLE',
+          error: '[SOURCE_UNAVAILABLE] No market-data source for /pricehistory',
+        });
+      }
+      return Promise.resolve(quotesOk(1200, 150_000_000));
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body).toMatchObject({
+      success: true,
+      successCount: 2,
+      failureCount: 0,
+      unavailableCount: 2,
+      stored: 2,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
   // ── Schwab fetch params ────────────────────────────────────
 
   it('sends needExtendedHoursData=false and the 90-minute window for pricehistory', async () => {

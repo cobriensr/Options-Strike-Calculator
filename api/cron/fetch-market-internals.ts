@@ -7,10 +7,18 @@
  * hours.
  *
  * Data source split:
- *   - $TICK, $TRIN → Schwab /pricehistory (returns intraday 1-min bars)
- *   - $ADD, $VOLD  → Schwab /quotes (pricehistory only returns completed
+ *   - $TICK, $TRIN → /pricehistory (returns intraday 1-min bars)
+ *   - $ADD, $VOLD  → /quotes (pricehistory only returns completed
  *     sessions for these symbols). We synthesize a flat bar
  *     (open=high=low=close=lastPrice) from the quote snapshot.
+ *
+ * SOURCE_UNAVAILABLE degrade (schwab-replacement-2026-08-16): the
+ * schwabFetch facade has NO replacement source for NYSE breadth
+ * internals — every call now returns 501 SOURCE_UNAVAILABLE. The cron
+ * treats that as a QUIET skip: no Sentry event, at most one info log
+ * per run, feature columns stay NULL downstream. The job stays
+ * scheduled so a future breadth source only has to light the facade
+ * back up. Genuine errors (network, DB) still alert as before.
  *
  * Why per-minute polling:
  *   - $TICK/$ADD/$VOLD/$TRIN change second-by-second during the session.
@@ -88,6 +96,26 @@ interface SymbolResult {
   stored: number;
   skipped: number;
   error?: string;
+  /**
+   * True when the facade reported 501 SOURCE_UNAVAILABLE (no breadth
+   * source exists). Not an error — the handler logs once per run and
+   * neither Sentry nor the failure count sees these.
+   */
+  unavailable?: boolean;
+}
+
+/** Facade "no source for this path" marker — expected, not an error. */
+class SourceUnavailableError extends Error {}
+
+function unavailableResult(symbol: InternalSymbol): SymbolResult {
+  return {
+    symbol,
+    fetched: 0,
+    filtered: 0,
+    stored: 0,
+    skipped: 0,
+    unavailable: true,
+  };
 }
 
 // Regular-session bounds in ET minutes-of-day.
@@ -128,7 +156,10 @@ async function fetchInternalCandles(
   );
 
   if (!result.ok) {
-    throw new Error(`Schwab pricehistory ${result.status}: ${result.error}`);
+    if (result.status === 501 || result.code === 'SOURCE_UNAVAILABLE') {
+      throw new SourceUnavailableError(result.error);
+    }
+    throw new Error(`pricehistory ${result.status}: ${result.error}`);
   }
   return result.data.candles ?? [];
 }
@@ -235,6 +266,11 @@ async function processSymbol(
       skipped,
     };
   } catch (err) {
+    if (err instanceof SourceUnavailableError) {
+      // Expected degrade — no breadth source behind the facade. The
+      // handler logs this once per run; no Sentry noise.
+      return unavailableResult(symbol);
+    }
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn({ err, symbol }, 'fetch-market-internals: per-symbol failure');
     Sentry.setTag('cron.symbol', symbol);
@@ -270,13 +306,17 @@ async function processQuoteSymbols(
     );
 
     if (!result.ok) {
+      if (result.status === 501 || result.code === 'SOURCE_UNAVAILABLE') {
+        // Expected degrade — quiet skip, handler logs once per run.
+        return symbols.map((symbol) => unavailableResult(symbol));
+      }
       return symbols.map((symbol) => ({
         symbol,
         fetched: 0,
         filtered: 0,
         stored: 0,
         skipped: 0,
-        error: `Schwab quotes ${result.status}: ${result.error}`,
+        error: `quotes ${result.status}: ${result.error}`,
       }));
     }
 
@@ -389,7 +429,18 @@ export default withCronInstrumentation(
     );
 
     const failures = results.filter((r) => r.error);
-    const successes = results.filter((r) => !r.error);
+    const unavailable = results.filter((r) => r.unavailable);
+    const successes = results.filter((r) => !r.error && !r.unavailable);
+
+    if (unavailable.length > 0) {
+      // Single per-run note (NOT Sentry): the facade has no breadth
+      // source, so these symbols are expected to skip every run until
+      // one is added — see schwab-replacement-2026-08-16.
+      ctx.logger.info(
+        { symbols: unavailable.map((u) => u.symbol) },
+        'fetch-market-internals: no market-data source (SOURCE_UNAVAILABLE) — skipping',
+      );
+    }
 
     ctx.logger.info(
       {
@@ -397,6 +448,7 @@ export default withCronInstrumentation(
         ...totals,
         successCount: successes.length,
         failureCount: failures.length,
+        unavailableCount: unavailable.length,
         failures: failures.map((f) => ({ symbol: f.symbol, error: f.error })),
       },
       'fetch-market-internals completed',
@@ -433,6 +485,7 @@ export default withCronInstrumentation(
         ...totals,
         successCount: successes.length,
         failureCount: failures.length,
+        unavailableCount: unavailable.length,
         results,
       },
     };

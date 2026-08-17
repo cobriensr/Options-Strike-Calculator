@@ -135,7 +135,7 @@
     },
     {
       "path": "/api/cron/fetch-strike-iv",
-      "schedule": "* 13-21 * * 1-5"
+      "schedule": "*/5 13-21 * * 1-5"
     },
     {
       "path": "/api/cron/fetch-strike-trade-volume",

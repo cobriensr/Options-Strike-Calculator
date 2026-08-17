@@ -410,7 +410,7 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'fetch-strike-iv': {
-    schedule: '* 13-21 * * 1-5',
+    schedule: '*/5 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
