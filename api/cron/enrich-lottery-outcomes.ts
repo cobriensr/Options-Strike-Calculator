@@ -268,12 +268,22 @@ export default withCronInstrumentation(
 
     // Group ticks by fire id. Rows arrive ordered by (fire_id, executed_at),
     // so each fire's ticks stay chronological as they're pushed in order.
+    //
+    // Keys are Number()-normalized on BOTH sides. The Neon driver returns
+    // lottery_finder_fires.id (bigint) as a STRING ("601"), while the batched
+    // read's u.fire_id comes from `unnest(...::int[])` and arrives as a NUMBER
+    // (601). A Map keyed by one and probed by the other misses every time —
+    // `map.get("601")` does not find `601` — so every fire was recorded as
+    // "no post-entry ticks" and terminally stamped, permanently voiding its
+    // outcome labels (600 fires lost on 2026-08-17 before this was caught).
+    // Do not drop these casts; the tests pin the mixed-type case.
     const ticksByFire = new Map<number, TradeTick[]>();
     for (const row of tickRows) {
-      let arr = ticksByFire.get(row.fireId);
+      const key = Number(row.fireId);
+      let arr = ticksByFire.get(key);
       if (arr === undefined) {
         arr = [];
-        ticksByFire.set(row.fireId, arr);
+        ticksByFire.set(key, arr);
       }
       arr.push({ executedAt: row.executedAt, price: row.price });
     }
@@ -283,7 +293,7 @@ export default withCronInstrumentation(
     const updates: EnrichUpdate[] = [];
 
     for (const fire of fires) {
-      const ticks = ticksByFire.get(fire.id) ?? [];
+      const ticks = ticksByFire.get(Number(fire.id)) ?? [];
 
       if (ticks.length === 0) {
         // No post-entry ticks → nothing to compute. Stamp a TERMINAL marker

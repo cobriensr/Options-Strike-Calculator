@@ -228,6 +228,49 @@ describe('enrich-lottery-outcomes', () => {
     expect(updateText).toContain('realized_flow_inversion_pct = u.inv');
   });
 
+  it('enriches when the driver returns fire.id as a STRING and unnest returns fireId as a NUMBER', async () => {
+    // PRODUCTION REGRESSION (2026-08-17): the Neon driver returns
+    // lottery_finder_fires.id (bigint) as a STRING ("601"), while the batched
+    // read's `u.fire_id` comes from `unnest(...::int[])` and arrives as a
+    // NUMBER (601). The tick Map is built from row.fireId but looked up by
+    // fire.id, so `map.get("601")` missed `601` and EVERY fire was recorded
+    // as "no post-entry ticks" — then terminally stamped, permanently voiding
+    // its outcome labels. 600 fires were written off before this was caught.
+    // Every other test in this file mocks BOTH sides as numbers, which is why
+    // the batched-read refactor shipped green. Mirror production types here.
+    const stringIdFire = { ...baseFire, id: '1' as unknown as number };
+    mockSql.mockResolvedValueOnce([stringIdFire]); // SELECT fires
+    mockSql.mockResolvedValueOnce([
+      { fireId: 1, executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.6 },
+      { fireId: 1, executedAt: new Date('2026-05-02T14:33:00Z'), price: 3.0 },
+    ]); // batched tick read — numeric fireId, as unnest ::int[] yields
+    // No loadMatchedFlow SELECT: mockFetchIntraday returns [] (beforeEach), so
+    // the flow-inversion path short-circuits before touching the DB. Queueing
+    // an extra value here would leak into later tests — vi.clearAllMocks()
+    // does not drain the mockResolvedValueOnce queue.
+    mockSql.mockResolvedValueOnce([]); // batched enriched UPDATE
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // The fire must be ENRICHED, not skipped as tickless.
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: expect.stringContaining('Enriched 1'),
+    });
+    // Belt-and-braces: the old code produced "skipped 1 (no post-entry ticks)".
+    expect(res._json).toMatchObject({
+      message: expect.not.stringContaining('skipped 1'),
+    });
+  });
+
   it('batches a mixed run: one enriched fire + one no-tick fire → both writes fire, fires grouped by id', async () => {
     // The whole point of the N+1 collapse: process MANY fires in one batched
     // read + one enriched UPDATE + one no-tick UPDATE. Fire 1 has ticks (gets
