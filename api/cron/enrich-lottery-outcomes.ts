@@ -233,12 +233,25 @@ export default withCronInstrumentation(
     // matching the prior per-fire `ORDER BY executed_at ASC`. Mirrors the
     // evaluate-round-trip.ts LATERAL pattern; heavy on ws_option_trades, so the
     // longer 30s retry timeout (vs the prior 10s) matches that cron.
-    const ids = fires.map((f) => f.id);
-    const chains = fires.map((f) => f.optionChainId);
-    const entries = fires.map((f) => f.entryTimeCt.toISOString());
+    // Read in CHUNKS of fires, not one 300-fire query. A busy session puts
+    // ~2,900 post-entry ticks on an average fire, so 300 fires is ~880k rows
+    // (~80 MB) in a single Neon HTTP response — that exceeded the 30s
+    // per-attempt budget, burned all 3 withDbRetry attempts (~93s) and threw,
+    // 500ing the whole run once the Map-key fix let it actually read ticks.
+    // Chunking keeps every query small and fast while preserving TICK-LEVEL
+    // fidelity: the exit policies (trailing stop, hard-stop-at-30m, tier hold)
+    // are path-dependent, so aggregating to minute bars would silently change
+    // the realized outcomes that become Takeit training labels.
+    const TICK_READ_CHUNK = 30;
+    const tickRows: BatchedTickRow[] = [];
+    for (let i = 0; i < fires.length; i += TICK_READ_CHUNK) {
+      const slice = fires.slice(i, i + TICK_READ_CHUNK);
+      const ids = slice.map((f) => f.id);
+      const chains = slice.map((f) => f.optionChainId);
+      const entries = slice.map((f) => f.entryTimeCt.toISOString());
 
-    const tickRows = (await withDbRetry(
-      () => db`
+      const chunkRows = (await withDbRetry(
+        () => db`
         SELECT
           u.fire_id AS "fireId",
           t.executed_at AS "executedAt",
@@ -262,9 +275,12 @@ export default withCronInstrumentation(
         ) t ON TRUE
         ORDER BY u.fire_id, t.executed_at ASC
       `,
-      2,
-      30_000,
-    )) as BatchedTickRow[];
+        2,
+        30_000,
+      )) as BatchedTickRow[];
+
+      for (const row of chunkRows) tickRows.push(row);
+    }
 
     // Group ticks by fire id. Rows arrive ordered by (fire_id, executed_at),
     // so each fire's ticks stay chronological as they're pushed in order.

@@ -271,6 +271,38 @@ describe('enrich-lottery-outcomes', () => {
     });
   });
 
+  it('chunks the tick read so one run never issues a single mega-query', async () => {
+    // A busy fire carries ~2,900 post-entry ticks, so reading 300 fires in ONE
+    // query returned ~880k rows (~80 MB), blew the 30s per-attempt budget,
+    // exhausted withDbRetry (~93s) and 500ed the run. The read is chunked at
+    // TICK_READ_CHUNK=30 fires. 70 fires must therefore issue 3 reads, not 1.
+    const many = Array.from({ length: 70 }, (_, i) => ({
+      ...baseFire,
+      id: String(i + 1) as unknown as number, // driver returns bigint as string
+      optionChainId: `SPY260502C0050${String(i).padStart(4, '0')}`,
+    }));
+    mockSql.mockResolvedValueOnce(many); // SELECT fires
+    mockSql.mockResolvedValueOnce([]); // chunk 1 read (fires 1-30)
+    mockSql.mockResolvedValueOnce([]); // chunk 2 read (fires 31-60)
+    mockSql.mockResolvedValueOnce([]); // chunk 3 read (fires 61-70)
+    mockSql.mockResolvedValueOnce([]); // no-tick terminal UPDATE
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const reads = mockSql.mock.calls.filter((c) =>
+      queryText(c).includes('JOIN LATERAL'),
+    );
+    expect(reads).toHaveLength(3);
+  });
+
   it('batches a mixed run: one enriched fire + one no-tick fire → both writes fire, fires grouped by id', async () => {
     // The whole point of the N+1 collapse: process MANY fires in one batched
     // read + one enriched UPDATE + one no-tick UPDATE. Fire 1 has ticks (gets
