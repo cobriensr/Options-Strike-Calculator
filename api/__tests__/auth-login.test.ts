@@ -1,0 +1,208 @@
+// @vitest-environment node
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockRequest, mockResponse } from './helpers';
+
+// Mock auth-helpers so bot + rate-limit guards pass by default; keep the real
+// cookie constants. timingSafeEqual is imported from node:crypto in the
+// handler (not from here), so the secret comparison runs for real.
+vi.mock('../_lib/auth-helpers.js', () => ({
+  OWNER_COOKIE: 'sc-owner',
+  OWNER_COOKIE_MAX_AGE: 604800,
+  checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  rejectIfRateLimited: vi.fn().mockResolvedValue(false),
+}));
+
+import handler from '../auth/login.js';
+import { checkBot, rejectIfRateLimited } from '../_lib/auth-helpers.js';
+
+const ORIGINAL_ENV = { ...process.env };
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.mocked(checkBot).mockResolvedValue({ isBot: false });
+  vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+  process.env = { ...ORIGINAL_ENV };
+  delete process.env.OWNER_SECRET;
+  delete process.env.VERCEL;
+  delete process.env.APP_URL;
+});
+
+afterEach(() => {
+  process.env = { ...ORIGINAL_ENV };
+});
+
+function cookieArray(res: ReturnType<typeof mockResponse>): string[] {
+  const raw = res._headers['Set-Cookie'] as unknown;
+  return Array.isArray(raw) ? (raw as string[]) : [];
+}
+
+describe('POST /api/auth/login', () => {
+  it('sets sc-owner + sc-hint cookies on the correct secret (JSON path)', async () => {
+    process.env.OWNER_SECRET = 'right-secret-123';
+    process.env.APP_URL = 'http://localhost:3000';
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: { secret: 'right-secret-123' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({ ok: true });
+
+    const cookies = cookieArray(res);
+    const ownerCookie = cookies.find((c) => c.startsWith('sc-owner='));
+    const hintCookie = cookies.find((c) => c.startsWith('sc-hint='));
+    expect(ownerCookie).toContain('sc-owner=right-secret-123');
+    expect(ownerCookie).toContain('HttpOnly');
+    expect(ownerCookie).toContain('SameSite=Strict');
+    expect(ownerCookie).toContain('Max-Age=604800');
+    // localhost APP_URL → no Secure flag
+    expect(ownerCookie).not.toContain('Secure');
+    expect(hintCookie).toContain('sc-hint=1');
+    expect(hintCookie).not.toContain('HttpOnly');
+    expect(res._headers['Cache-Control']).toBe('no-store');
+  });
+
+  it('redirects to / on the correct secret (form-encoded browser path)', async () => {
+    process.env.OWNER_SECRET = 'right-secret-123';
+    process.env.APP_URL = 'https://app.example.com';
+    process.env.VERCEL = '1';
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          accept: 'text/html,application/xhtml+xml',
+        },
+        body: { secret: 'right-secret-123' },
+      }),
+      res,
+    );
+
+    expect(res._redirectStatus).toBe(302);
+    expect(res._redirectUrl).toBe('/');
+    const cookies = cookieArray(res);
+    const ownerCookie = cookies.find((c) => c.startsWith('sc-owner='));
+    expect(ownerCookie).toContain('sc-owner=right-secret-123');
+    // production (VERCEL set, https APP_URL) → Secure flag present
+    expect(ownerCookie).toContain('Secure');
+  });
+
+  it('returns 401 and sets NO cookie on a wrong secret', async () => {
+    process.env.OWNER_SECRET = 'right-secret-123';
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: { secret: 'wrong-secret-123' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(401);
+    expect(res._json).toEqual({ error: 'Invalid access key' });
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+    expect(res._headers['Cache-Control']).toBe('no-store');
+  });
+
+  it('returns 401 and NO cookie when OWNER_SECRET is unset (no crash, no leak)', async () => {
+    delete process.env.OWNER_SECRET;
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: { secret: 'anything-at-all' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(401);
+    // Identical response to a wrong secret — must not reveal unset-vs-mismatch.
+    expect(res._json).toEqual({ error: 'Invalid access key' });
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+  });
+
+  it('does not throw when the provided secret differs in length (timingSafeEqual guard)', async () => {
+    process.env.OWNER_SECRET = 'short';
+    const res = mockResponse();
+    await expect(
+      handler(
+        mockRequest({
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: { secret: 'a-much-longer-provided-secret-value' },
+        }),
+        res,
+      ),
+    ).resolves.not.toThrow();
+
+    expect(res._status).toBe(401);
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+  });
+
+  it('returns 403 when the bot check trips', async () => {
+    process.env.OWNER_SECRET = 'right-secret-123';
+    vi.mocked(checkBot).mockResolvedValue({ isBot: true });
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: { secret: 'right-secret-123' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(403);
+    expect(res._json).toEqual({ error: 'Access denied' });
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+  });
+
+  it('returns 429 when rate-limited', async () => {
+    vi.mocked(rejectIfRateLimited).mockImplementation(async (_req, res) => {
+      res.status(429).json({ error: 'rate limited' });
+      return true;
+    });
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: { secret: 'right-secret-123' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(429);
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+  });
+});
+
+describe('GET /api/auth/login', () => {
+  it('returns a dark-themed HTML form with a password input', async () => {
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    expect(res._headers['Content-Type']).toBe('text/html');
+    expect(res._headers['Cache-Control']).toBe('no-store');
+    expect(res._body).toContain('type="password"');
+    expect(res._body).toContain('name="secret"');
+    expect(res._body).toContain('/api/auth/login');
+  });
+});
+
+describe('/api/auth/login method guard', () => {
+  it('returns 405 for methods other than GET/POST', async () => {
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'DELETE' }), res);
+    expect(res._status).toBe(405);
+  });
+});

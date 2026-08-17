@@ -189,6 +189,7 @@ if (import.meta.env.PROD)
       { path: '/api/ticker-candles', method: 'GET' },
       { path: '/api/strike-trade-volume', method: 'GET' },
       { path: '/api/system-status', method: 'GET' },
+      { path: '/api/auth/login', method: 'POST' },
       { path: '/api/auth/guest-key', method: 'POST' },
       { path: '/api/auth/guest-logout', method: 'POST' },
       { path: '/api/panel-prefs', method: 'GET' },
