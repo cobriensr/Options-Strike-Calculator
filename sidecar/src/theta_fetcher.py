@@ -106,7 +106,15 @@ def start_scheduler() -> bool:
         _scheduler = BackgroundScheduler(timezone="America/New_York")
         _scheduler.add_job(
             run_nightly,
-            CronTrigger(hour=17, minute=25),
+            # timezone MUST be on the trigger itself. The scheduler-level
+            # default above only applies to triggers add_job builds from
+            # kwargs; a pre-built CronTrigger freezes its zone at
+            # construction — falling back to the container's local zone
+            # (UTC on Railway) — and add_job never retrofits the default
+            # (verified on apscheduler 3.11.3). Without this, the
+            # "nightly" fired at 17:25 UTC = 1:25 PM ET and ran a
+            # 2.1-hour EOD pull mid-session (observed 2026-08-17).
+            CronTrigger(hour=17, minute=25, timezone="America/New_York"),
             id="theta_nightly_eod",
             max_instances=1,
             # coalesce=True: if we miss a fire (container restart), run

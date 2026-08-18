@@ -413,6 +413,34 @@ def test_start_scheduler_is_idempotent(mock_theta_launcher_running) -> None:
         theta_fetcher.stop_scheduler()
 
 
+def test_start_scheduler_trigger_is_anchored_to_new_york(
+    mock_theta_launcher_running,
+) -> None:
+    """The nightly trigger itself must carry America/New_York.
+
+    PRODUCTION BUG (2026-08-17): `BackgroundScheduler(timezone="America/
+    New_York")` only applies its default to triggers the scheduler builds
+    from kwargs. A PRE-BUILT `CronTrigger(hour=17, minute=25)` freezes its
+    timezone at construction — falling back to the container's local zone,
+    UTC on Railway — and `add_job` never retrofits the scheduler default
+    (verified on apscheduler 3.11.3). The "nightly" EOD job therefore fired
+    at 17:25 UTC = 1:25 PM ET, mid-session, for a 2.1-hour pull against a
+    live Terminal. The boot log claiming "17:25 America/New_York" described
+    a default that never applied. Assert on the JOB's trigger, not the
+    scheduler, so this exact regression cannot ship again.
+    """
+    import theta_fetcher
+
+    theta_fetcher.stop_scheduler()
+    try:
+        assert theta_fetcher.start_scheduler() is True
+        job = theta_fetcher._scheduler.get_job("theta_nightly_eod")
+        assert job is not None
+        assert str(job.trigger.timezone) == "America/New_York"
+    finally:
+        theta_fetcher.stop_scheduler()
+
+
 # ---------------------------------------------------------------------------
 # _fetch_strike_pair — Phase 5b extraction. Per-strike call+put helper.
 # ---------------------------------------------------------------------------
