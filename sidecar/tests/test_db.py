@@ -1314,3 +1314,146 @@ class TestDrainPool:
         fake_pool.closeall.assert_not_called()
         # _pool is left as the closed pool (not reset) — covered by code path.
         assert db._pool is fake_pool
+
+
+# ---------------------------------------------------------------------------
+# dedupe_rows_keep_last — pure guard for multi-row ON CONFLICT DO UPDATE
+# batches. Postgres raises CardinalityViolation ("ON CONFLICT DO UPDATE
+# command cannot affect row a second time") when a single INSERT statement
+# proposes two rows with the same conflict-target key, so every
+# self-collidable batch must be collapsed on its key before execute_values.
+# ---------------------------------------------------------------------------
+
+
+class TestDedupeRowsKeepLast:
+    """The helper is pure: no DB fixtures needed."""
+
+    def test_no_duplicates_returns_batch_unchanged(self) -> None:
+        rows = [(1, "a", 10), (2, "b", 20), (3, "c", 30)]
+        assert db.dedupe_rows_keep_last(rows, key_len=2) == rows
+
+    def test_duplicate_keys_collapse_keeping_last_occurrence(self) -> None:
+        """Stream order = revision order — the later row is the newer
+        value (e.g. a corrected re-send), so keep-last must win."""
+        rows = [(1, "a", 10), (2, "b", 20), (1, "a", 99)]
+        assert db.dedupe_rows_keep_last(rows, key_len=2) == [
+            (1, "a", 99),
+            (2, "b", 20),
+        ]
+
+    def test_relative_order_of_distinct_keys_preserved(self) -> None:
+        rows = [
+            (3, "c", 1),
+            (1, "a", 2),
+            (2, "b", 3),
+            (1, "a", 4),
+            (3, "c", 5),
+        ]
+        assert db.dedupe_rows_keep_last(rows, key_len=2) == [
+            (3, "c", 5),
+            (1, "a", 4),
+            (2, "b", 3),
+        ]
+
+    def test_all_rows_same_key_keeps_only_last(self) -> None:
+        rows = [("k", 1), ("k", 2), ("k", 3)]
+        assert db.dedupe_rows_keep_last(rows, key_len=1) == [("k", 3)]
+
+    def test_empty_batch_returns_empty_list(self) -> None:
+        assert db.dedupe_rows_keep_last([], key_len=2) == []
+
+    def test_input_list_is_not_mutated(self) -> None:
+        rows = [(1, "a", 10), (1, "a", 99)]
+        snapshot = list(rows)
+        db.dedupe_rows_keep_last(rows, key_len=2)
+        assert rows == snapshot
+
+
+# ---------------------------------------------------------------------------
+# upsert_theta_option_eod_batch — the only multi-row ON CONFLICT DO UPDATE
+# in the sidecar, so the only statement that can hit CardinalityViolation
+# when its batch self-collides (same contract/date twice in one flush).
+# ---------------------------------------------------------------------------
+
+
+def _theta_eod_row(
+    *,
+    symbol: str = "SPXW",
+    expiration: date = date(2026, 8, 21),
+    strike: Decimal = Decimal("6400.0"),
+    option_type: str = "C",
+    trade_date: date = date(2026, 8, 14),
+    close: Decimal = Decimal("1.00"),
+) -> tuple:
+    """Build a 15-column theta_option_eod tuple in upsert column order."""
+    return (
+        symbol,
+        expiration,
+        strike,
+        option_type,
+        trade_date,
+        Decimal("1.0"),  # open
+        Decimal("2.0"),  # high
+        Decimal("0.5"),  # low
+        close,
+        10,  # volume
+        5,  # trade_count
+        Decimal("0.9"),  # bid
+        Decimal("1.1"),  # ask
+        3,  # bid_size
+        4,  # ask_size
+    )
+
+
+class TestUpsertThetaOptionEodBatch:
+    def test_sql_targets_theta_table_with_conflict_update(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        """Pin the table + conflict target so drift from migration #70's
+        UNIQUE constraint fails here instead of at runtime."""
+        db.upsert_theta_option_eod_batch([_theta_eod_row()])
+        mock_execute_values.assert_called_once()
+        sql_arg = mock_execute_values.call_args[0][1]
+        assert "INSERT INTO theta_option_eod" in sql_arg
+        assert "ON CONFLICT (symbol, expiration, strike, option_type, date)" in sql_arg
+        assert "DO UPDATE" in sql_arg
+
+    def test_duplicate_conflict_keys_deduped_keeping_last(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        """Production CardinalityViolation (2026-08-17, futures-sidecar):
+        Theta can emit the same contract/date twice within one flush
+        window; a single execute_values statement with both rows raises
+        'ON CONFLICT DO UPDATE command cannot affect row a second time'.
+        The batch must reach execute_values with unique conflict keys,
+        keeping the LAST occurrence (later row = newer revision, matching
+        the upsert's own EXCLUDED.* last-write-wins semantics)."""
+        early = _theta_eod_row(close=Decimal("1.00"))
+        other = _theta_eod_row(strike=Decimal("6500.0"))
+        late = _theta_eod_row(close=Decimal("9.99"))
+
+        db.upsert_theta_option_eod_batch([early, other, late])
+
+        rows_arg = mock_execute_values.call_args[0][2]
+        keys = [r[:5] for r in rows_arg]
+        assert len(keys) == len(set(keys)), "duplicate conflict keys reached SQL"
+        assert late in rows_arg
+        assert early not in rows_arg
+        assert other in rows_arg
+
+    def test_distinct_key_batch_passes_through_unchanged(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        rows = [
+            _theta_eod_row(strike=Decimal("6400.0")),
+            _theta_eod_row(strike=Decimal("6410.0")),
+            _theta_eod_row(strike=Decimal("6420.0")),
+        ]
+        db.upsert_theta_option_eod_batch(rows)
+        assert mock_execute_values.call_args[0][2] == rows
+
+    def test_empty_rows_is_noop(
+        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
+    ) -> None:
+        db.upsert_theta_option_eod_batch([])
+        mock_execute_values.assert_not_called()

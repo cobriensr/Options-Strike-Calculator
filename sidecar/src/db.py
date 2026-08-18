@@ -277,6 +277,36 @@ def _execute_values_batch(
             )
 
 
+def dedupe_rows_keep_last(rows: Sequence[tuple], key_len: int) -> list[tuple]:
+    """Collapse rows sharing a conflict-target key, keeping the LAST one.
+
+    Postgres raises ``CardinalityViolation: ON CONFLICT DO UPDATE command
+    cannot affect row a second time`` when a single ``INSERT ... ON
+    CONFLICT DO UPDATE`` statement proposes two rows with the same
+    conflict-target key (SENTRY 2026-08-17, futures-sidecar). Every
+    multi-row DO UPDATE batch in this module must therefore be collapsed
+    on its conflict key immediately before ``execute_values``. Plain
+    inserts and ``DO NOTHING`` batches are immune and must NOT be run
+    through this (duplicate ticks are intentional appends; DO NOTHING
+    skips within-statement dupes server-side).
+
+    ``key_len`` is the number of LEADING tuple fields forming the
+    conflict target — batch tuples in this module always lead with their
+    key columns. The LAST occurrence wins because batches are appended in
+    stream order, so the later row is the newer revision (e.g. a
+    corrected Theta EOD re-send); this matches the upsert's own
+    ``col = EXCLUDED.col`` last-write-wins semantics. Relative order of
+    distinct keys is preserved (dict insertion order); row order within a
+    single statement has no semantic effect anyway.
+
+    Pure: never mutates ``rows``; always returns a new list.
+    """
+    deduped: dict[tuple, tuple] = {}
+    for row in rows:
+        deduped[row[:key_len]] = row
+    return list(deduped.values())
+
+
 # ---------------------------------------------------------------------------
 # Upsert operations
 # ---------------------------------------------------------------------------
@@ -450,6 +480,12 @@ def batch_insert_trade_ticks(rows: list[tuple]) -> None:
     )
 
 
+# Leading tuple fields forming theta_option_eod's conflict target:
+# (symbol, expiration, strike, option_type, date) — migration #70's
+# UNIQUE constraint. Used to dedupe batches before execute_values.
+_THETA_EOD_CONFLICT_KEY_LEN = 5
+
+
 def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
     """Batch upsert Theta EOD rows into theta_option_eod.
 
@@ -464,6 +500,14 @@ def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
     snapshot — a later fetch for the same contract/day supersedes any
     earlier partial. `created_at` deliberately stays untouched so we
     preserve the first-seen timestamp across revisions.
+
+    This is the sidecar's only multi-row ``ON CONFLICT DO UPDATE``
+    statement, so it is the only one that can raise CardinalityViolation
+    ("cannot affect row a second time") when the batch itself carries two
+    rows for the same contract/day — Theta occasionally re-sends a date
+    within one response. The batch is collapsed keep-last on the conflict
+    key before hitting the wire; keep-last preserves the same
+    full-snapshot-supersedes semantics the DO UPDATE clause implements.
     """
     _execute_values_batch(
         """
@@ -485,7 +529,7 @@ def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
             bid_size    = EXCLUDED.bid_size,
             ask_size    = EXCLUDED.ask_size
         """,
-        rows,
+        dedupe_rows_keep_last(rows, _THETA_EOD_CONFLICT_KEY_LEN),
     )
 
 
