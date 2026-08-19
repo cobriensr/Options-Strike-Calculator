@@ -17,14 +17,24 @@
  * Cache strategy:
  *   - Past dates: cached in Redis for 90 days (data never changes) — but only
  *     when every symbol succeeded AND is populated; a partial or silently
- *     empty result gets the short TTL so the next request self-heals
+ *     empty result is not written at all (the next request refetches) and
+ *     gets the short CDN header so the edge self-heals too
  *   - A cached past-date entry is served as a HIT only when it is internally
  *     consistent (every symbol populated, or every symbol empty); a "some
- *     populated, one blank" entry — the short-TTL partial write above, or any
- *     future malformed write — is treated as a miss, refetched, and
- *     overwritten (see `isConsistent`). Legacy pre-fix entries are retired
- *     wholesale by the `history:v3:` key prefix, not by this guard.
- *   - Today: cached 120s (data is still accumulating)
+ *     populated, one blank" entry — any malformed write — is treated as a
+ *     miss, refetched, and overwritten (see `isConsistent`). Legacy pre-fix
+ *     entries are retired wholesale by the `history:v3:` key prefix, not by
+ *     this guard.
+ *   - All five symbols empty: edge-cached for a day only when the NYSE
+ *     calendar says the date was NOT a session (weekend / holiday — the blank
+ *     is permanent). A blank on a known trading day is the sidecar/Theta
+ *     returning nothing for a session that happened — short header, and one
+ *     alert unless it is today before/just after the open (see
+ *     `isTradingDay` + `OPEN_GRACE_MINUTES`).
+ *   - Today: never written to Redis (no path reads today's key back — the
+ *     HIT path is past-dates only, and by tomorrow a short TTL has lapsed);
+ *     the CDN's 120s max-age is today's cache. Redis is billed per command,
+ *     so dead writes are not written.
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -36,6 +46,7 @@ import {
 } from './_lib/api-helpers.js';
 import { redis } from './_lib/redis.js';
 import { getETTotalMinutes, getETDateStr } from '../src/utils/timezone.js';
+import { isTradingDay } from '../src/data/marketHours.js';
 import logger from './_lib/logger.js';
 
 // ============================================================
@@ -123,6 +134,28 @@ const PAST_CACHE_TTL = 90 * 24 * 60 * 60;
  * against the endpoint's normal multi-second fan-out.
  */
 const RETRY_DELAY_MS = 300;
+
+/** 9:30 AM ET — the RTH open — in minutes-of-day. */
+const RTH_OPEN_ET_MINUTES = 570;
+
+/**
+ * How long after the open a still-empty symbol on TODAY is "the feed warming
+ * up", not a hole. $VIX1D's first 5-minute print can lag $SPX's, so "SPX has
+ * its 9:30 candle, VIX1D has none yet" at 9:36 ET is expected and gets a
+ * breadcrumb instead of a Sentry alert; so does an all-five-empty today
+ * before the open. Past dates, and today once the grace has elapsed, keep
+ * the alert.
+ */
+const OPEN_GRACE_MINUTES = 10;
+
+/**
+ * Is `now` before the open, or within `OPEN_GRACE_MINUTES` of it, in ET?
+ * Callers AND this with `isToday` — the clock only says anything about the
+ * session being fetched when that session is today's.
+ */
+function isEarlySession(now: Date): boolean {
+  return getETTotalMinutes(now) < RTH_OPEN_ET_MINUTES + OPEN_GRACE_MINUTES;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -321,7 +354,10 @@ async function fetchSymbolHistory(
  * Returns the input untouched unless it is ok-but-empty; otherwise retries
  * the symbol exactly once after `RETRY_DELAY_MS` and returns whatever the
  * retry produced. A still-empty retry is logged, breadcrumbed, and captured
- * once per symbol so the path is no longer invisible. (A retry that FAILS
+ * once per symbol so the path is no longer invisible — except when
+ * `earlySession` is set (today, before the open or within
+ * `OPEN_GRACE_MINUTES` of it): a lagging first print is expected there, so
+ * it is breadcrumbed at info level and NOT captured. (A retry that FAILS
  * outright is alerted by `fetchSymbolHistory` itself.)
  */
 async function refetchIfSilentlyEmpty(
@@ -330,6 +366,7 @@ async function refetchIfSilentlyEmpty(
   startMs: number,
   endMs: number,
   targetDate: string,
+  earlySession: boolean,
 ): Promise<SymbolFetchResult> {
   if (!result.ok || result.candles.length > 0) return result;
 
@@ -347,6 +384,19 @@ async function refetchIfSilentlyEmpty(
   const retried = await fetchSymbolHistory(symbol, startMs, endMs, targetDate);
 
   if (retried.ok && retried.candles.length === 0) {
+    if (earlySession) {
+      logger.info(
+        { symbol, targetDate },
+        'History symbol still empty after retry in the early session (first print may lag); not alerting',
+      );
+      Sentry.addBreadcrumb({
+        category: 'history',
+        level: 'info',
+        message: 'History symbol still empty after retry (early session)',
+        data: { symbol, targetDate, earlySession: true },
+      });
+      return retried;
+    }
     logger.warn(
       { symbol, targetDate },
       'History symbol still empty after retry; not caching long',
@@ -373,12 +423,13 @@ async function refetchIfSilentlyEmpty(
  * Is a cached `HistoryResponse` internally consistent — every symbol
  * populated, or every symbol empty (holiday / no session)? A "some populated,
  * one blank" entry is exactly the "$VIX1D empty, other four fine" payload and
- * must NOT be served as a HIT with the day-long CDN max-age. The source is
- * the handler's own 120s short-TTL write for a partial / silently-empty past
- * date (and, defensively, any future malformed entry). Treating it as a miss
- * refetches the date (with the retries above) and overwrites the entry with
- * the correct TTL. Legacy `history:v2:` entries are not healed here — they
- * are retired wholesale by the `REDIS_PREFIX` bump to `history:v3:`.
+ * must NOT be served as a HIT with the day-long CDN max-age. The handler no
+ * longer writes such an entry itself (the 120s short-TTL partial write was
+ * dead — nothing read it back — and was dropped), so this is a defence
+ * against any malformed entry. Treating it as a miss refetches the date
+ * (with the retries above) and overwrites the entry with the correct TTL.
+ * Legacy `history:v2:` entries are not healed here — they are retired
+ * wholesale by the `REDIS_PREFIX` bump to `history:v3:`.
  */
 function isConsistent(r: HistoryResponse): boolean {
   const syms = [r.spx, r.vix, r.vix1d, r.vix9d, r.vvix];
@@ -409,6 +460,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const now = new Date();
       const todayET = getETDateStr(now);
       const isToday = dateParam === todayET;
+      // Today before the open, or within OPEN_GRACE_MINUTES of it: blanks
+      // are the feed warming up, not holes — breadcrumb, don't alert.
+      const earlySession = isToday && isEarlySession(now);
 
       if (dateParam > todayET) {
         done({ status: 400 });
@@ -510,7 +564,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         first: SymbolFetchResult,
       ): Promise<SymbolFetchResult> =>
         sessionExists
-          ? refetchIfSilentlyEmpty(symbol, first, startMs, endMs, dateParam)
+          ? refetchIfSilentlyEmpty(
+              symbol,
+              first,
+              startMs,
+              endMs,
+              dateParam,
+              earlySession,
+            )
           : Promise.resolve(first);
       const spx = await settle('$SPX', spxFirst);
       const vix = await settle('$VIX', vixFirst);
@@ -524,14 +585,60 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // panels for that date forever. Neither may an ok-but-empty symbol
       // ($SPX included) on a date where another symbol proves a session
       // exists. Only a complete, fully-populated result earns the long-TTL
-      // write and the long CDN max-age; anything else falls back to the
-      // short TTL so the next request re-fetches and self-heals.
+      // write and the long CDN max-age; anything else is not written and
+      // gets the short CDN header so the next request re-fetches and
+      // self-heals.
       const vixFamily = [vix, vix1d, vix9d, vvix];
       const allOk = spx.ok && vixFamily.every((s) => s.ok);
       const allPopulated =
         !sessionExists ||
         [spx, ...vixFamily].every((s) => s.candles.length > 0);
-      const cacheable = allOk && allPopulated;
+
+      // All five empty is only a permanent blank (and so edge-cacheable for a
+      // day) when the NYSE calendar says the date was not a session. On a
+      // known trading day it is the sidecar/Theta returning nothing for a
+      // session that happened — or today's open not having printed yet —
+      // and must stay on the short header. `isTradingDay` knows weekends
+      // for any date and holidays for the years in
+      // `src/data/marketHours.ts` (2025–2026 at the time of writing);
+      // outside those years a weekday holiday is treated as a trading day,
+      // which errs towards the short header, never the long one.
+      const knownTradingDay = isTradingDay(dateParam);
+      const silentBlankDay = !sessionExists && knownTradingDay;
+      const cacheable = allOk && allPopulated && !silentBlankDay;
+
+      // Alert the silent all-five blank once — but only when every symbol
+      // came back ok-but-empty (a failed fetch is already alerted per symbol
+      // by `fetchSymbolHistory`) and it is not simply early today.
+      if (silentBlankDay && allOk) {
+        if (earlySession) {
+          logger.info(
+            { date: dateParam },
+            'History: no symbol returned candles yet in the early session',
+          );
+          Sentry.addBreadcrumb({
+            category: 'history',
+            level: 'info',
+            message: 'History: no symbol returned candles (early session)',
+            data: { targetDate: dateParam, earlySession: true },
+          });
+        } else {
+          logger.warn(
+            { date: dateParam },
+            'History: no symbol returned candles on a trading day; not caching long',
+          );
+          Sentry.addBreadcrumb({
+            category: 'history',
+            level: 'warning',
+            message: 'History: no symbol returned candles on a trading day',
+            data: { targetDate: dateParam },
+          });
+          Sentry.captureMessage(
+            'history: no symbol returned candles on a trading day',
+            { level: 'warning', extra: { targetDate: dateParam } },
+          );
+        }
+      }
 
       // Strip the internal `ok` flag so it never leaks into the cached payload
       // or the JSON response (HistoryResponse intentionally omits it).
@@ -556,28 +663,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         asOf: new Date().toISOString(),
       };
 
-      // Cache
+      // Cache — exactly one write, and only the one that is ever read back:
+      // a complete, fully-populated past date for 90 days. Nothing else is
+      // written. Today's key is never read (the HIT path is `!isToday`, and
+      // by tomorrow a short TTL has lapsed), and a partial / silently-empty
+      // past date would be rejected by `isConsistent` on read; both were
+      // billed Redis commands per request for nothing. The next request for
+      // a non-cacheable date simply refetches.
       try {
-        if (isToday) {
-          await redis.set(cacheKey, response, { ex: 120 });
-        } else if (cacheable && spxHasData) {
+        if (!isToday && cacheable && spxHasData) {
           await redis.set(cacheKey, response, { ex: PAST_CACHE_TTL });
-        } else if (spxHasData) {
-          // Past date but at least one symbol failed or stayed empty: short
-          // TTL so the empty panels don't persist for 90 days. Observable via
-          // the per-symbol captureMessage above. The HIT path never serves
-          // this entry with the long CDN header either — `isConsistent`
-          // treats it as a miss and refetches.
-          await redis.set(cacheKey, response, { ex: 120 });
         }
       } catch (err) {
         logger.error({ err }, 'Failed to cache history');
       }
 
-      // Only a complete, fully-populated past-date response earns the long
-      // CDN max-age. Today's data is still accumulating, and a partial or
-      // silently-empty response must not be edge-cached for a day (it mirrors
-      // the short Redis TTL above).
+      // Only a complete, fully-populated past-date response (or a calendar
+      // non-session blank) earns the long CDN max-age. Today's data is still
+      // accumulating, and a partial or silently-empty response must not be
+      // edge-cached for a day (it mirrors the Redis gate above).
       const longLived = !isToday && cacheable;
       setCacheHeaders(res, longLived ? 86400 : 120, longLived ? 3600 : 60);
 

@@ -1,6 +1,7 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { VercelRequest } from '@vercel/node';
 import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -94,15 +95,40 @@ function windowOf(path: string): { startDate: number; endDate: number } {
 
 const PAST_CACHE_TTL = 90 * 24 * 60 * 60;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const ALL_EMPTY_ALERT = 'history: no symbol returned candles on a trading day';
+
+/**
+ * Invoke the handler under fake timers. Both retry paths `sleep(RETRY_DELAY_MS)`
+ * between attempts; `runAllTimersAsync` fires every pending timer (flushing
+ * the microtasks between them) so no test waits real wall-clock time. The
+ * handler's own promise is awaited afterwards so assertions see its final
+ * state. Every test goes through here — including ones that never retry —
+ * so the fake clock is the only clock.
+ */
+async function run(req: VercelRequest) {
+  const res = mockResponse();
+  const pending = handler(req, res);
+  await vi.runAllTimersAsync();
+  await pending;
+  return res;
+}
 
 describe('GET /api/history', () => {
   beforeEach(() => {
+    // Fake timers make the 300ms retry backoffs free (see `run`) and pin
+    // `new Date()` for the "today" cases below; without `setSystemTime` the
+    // clock starts at the real now, so '2026-03-10' stays a past date.
+    vi.useFakeTimers();
     vi.restoreAllMocks();
     // `restoreAllMocks` leaves vi.fn() call history in place; clear it so
     // per-test call-count assertions see only their own run.
     vi.mocked(schwabFetch).mockClear();
     vi.mocked(redis.get).mockResolvedValue(null);
     vi.mocked(redis.set).mockResolvedValue('OK');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('returns 401 for non-owner', async () => {
@@ -112,15 +138,13 @@ describe('GET /api/history', () => {
         return true;
       },
     );
-    const res = mockResponse();
-    await handler(mockRequest(), res);
+    const res = await run(mockRequest());
     expect(res._status).toBe(401);
   });
 
   it('returns 400 when date param is missing', async () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
-    const res = mockResponse();
-    await handler(mockRequest({ query: {} }), res);
+    const res = await run(mockRequest({ query: {} }));
     expect(res._status).toBe(400);
     expect((res._json as { error: string }).error).toContain(
       'Missing or invalid date',
@@ -129,15 +153,13 @@ describe('GET /api/history', () => {
 
   it('returns 400 for invalid date format', async () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: '03-10-2026' } }), res);
+    const res = await run(mockRequest({ query: { date: '03-10-2026' } }));
     expect(res._status).toBe(400);
   });
 
   it('returns 400 for future dates', async () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: '2099-01-01' } }), res);
+    const res = await run(mockRequest({ query: { date: '2099-01-01' } }));
     expect(res._status).toBe(400);
     expect((res._json as { error: string }).error).toContain('future');
   });
@@ -156,8 +178,7 @@ describe('GET /api/history', () => {
     };
     vi.mocked(redis.get).mockResolvedValue(cachedData);
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: '2026-03-10' } }), res);
+    const res = await run(mockRequest({ query: { date: '2026-03-10' } }));
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual(cachedData);
@@ -167,13 +188,14 @@ describe('GET /api/history', () => {
 
   // ── Redis HIT path: an inconsistent entry is a miss, not a HIT ──
   //
-  // A "some symbols populated, one blank" payload reaches Redis via this
-  // handler's own 120s short-TTL write for a partial / silently empty past
-  // date (the observed "$VIX1D empty, other four fine" shape). It must not be
-  // served as a HIT with the day-long CDN max-age — treat it as a miss so it
-  // is refetched (with the retries below) and overwritten with the correct
-  // TTL. (Legacy `history:v2:` entries are retired by the `history:v3:`
-  // prefix bump, not by this guard.)
+  // A "some symbols populated, one blank" payload (the observed "$VIX1D
+  // empty, other four fine" shape) used to reach Redis via the handler's own
+  // 120s short-TTL write for a partial past date. That write is gone —
+  // nothing ever read it back — but the guard stays as a defence against any
+  // malformed entry: it must not be served as a HIT with the day-long CDN
+  // max-age, so it is treated as a miss, refetched (with the retries below),
+  // and overwritten with the correct TTL. (Legacy `history:v2:` entries are
+  // retired by the `history:v3:` prefix bump, not by this guard.)
 
   it('treats an inconsistent cached entry (one symbol blank, others populated) as a miss and refetches', async () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
@@ -207,8 +229,7 @@ describe('GET /api/history', () => {
     vi.mocked(redis.set).mockClear();
     vi.mocked(setCacheHeaders).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     // Refetched, not served from the poisoned entry.
@@ -262,8 +283,7 @@ describe('GET /api/history', () => {
     vi.mocked(redis.get).mockResolvedValue(cachedData);
     vi.mocked(redis.set).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: '2026-03-10' } }), res);
+    const res = await run(mockRequest({ query: { date: '2026-03-10' } }));
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual(cachedData);
@@ -288,8 +308,7 @@ describe('GET /api/history', () => {
       },
     });
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: '2026-03-10' } }), res);
+    const res = await run(mockRequest({ query: { date: '2026-03-10' } }));
 
     expect(res._status).toBe(200);
     const json = res._json as { date: string; candleCount: number };
@@ -324,8 +343,7 @@ describe('GET /api/history', () => {
       },
     });
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     const json = res._json as {
@@ -369,8 +387,7 @@ describe('GET /api/history', () => {
       status: 502,
     });
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: '2026-03-10' } }), res);
+    const res = await run(mockRequest({ query: { date: '2026-03-10' } }));
 
     expect(res._status).toBe(200);
     const json = res._json as {
@@ -409,26 +426,15 @@ describe('GET /api/history', () => {
     // not reset by restoreAllMocks) so the assertions below see only this run.
     vi.mocked(redis.set).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
 
-    // The long-TTL (90-day) write must never happen on a partial failure.
-    const longTtlWrites = vi
-      .mocked(redis.set)
-      .mock.calls.filter(
-        (call) =>
-          (call[2] as { ex?: number } | undefined)?.ex === PAST_CACHE_TTL,
-      );
-    expect(longTtlWrites).toHaveLength(0);
-
-    // It may still write a short-TTL entry so the partial result self-heals.
-    for (const call of vi.mocked(redis.set).mock.calls) {
-      expect((call[2] as { ex?: number } | undefined)?.ex).toBeLessThan(
-        PAST_CACHE_TTL,
-      );
-    }
+    // The long-TTL (90-day) write must never happen on a partial failure —
+    // and no short-TTL "partial" entry is written in its place: nothing
+    // reads that back (`isConsistent` rejects it), so it was a billed Redis
+    // command for nothing. The next request simply refetches.
+    expect(redis.set).not.toHaveBeenCalled();
   });
 
   it('caches past date data in Redis with long TTL', async () => {
@@ -442,8 +448,7 @@ describe('GET /api/history', () => {
       data: { symbol: '$SPX', candles, previousClose: 5380 },
     });
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     // Should cache in Redis with the 90-day TTL (all symbols succeeded).
@@ -488,8 +493,7 @@ describe('GET /api/history', () => {
     vi.mocked(redis.set).mockClear();
     vi.mocked(Sentry.captureMessage).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     expect(vix1dCalls).toBe(2);
@@ -509,7 +513,7 @@ describe('GET /api/history', () => {
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
-  it('gives up after one retry, keeps the short TTL, and alerts', async () => {
+  it('gives up after one retry, writes nothing to Redis, and alerts', async () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
 
     const targetDate = '2026-03-10';
@@ -534,8 +538,7 @@ describe('GET /api/history', () => {
     vi.mocked(redis.set).mockClear();
     vi.mocked(Sentry.captureMessage).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     expect(vix1dCalls).toBe(2);
@@ -543,12 +546,9 @@ describe('GET /api/history', () => {
     const json = res._json as { vix1d: { candles: unknown[] } };
     expect(json.vix1d.candles).toEqual([]);
 
-    // Partial result must never poison the 90-day cache.
-    for (const call of vi.mocked(redis.set).mock.calls) {
-      expect((call[2] as { ex?: number } | undefined)?.ex).toBeLessThan(
-        PAST_CACHE_TTL,
-      );
-    }
+    // A partial result is not cached at all (neither the 90-day entry nor a
+    // dead short-TTL one).
+    expect(redis.set).not.toHaveBeenCalled();
 
     expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
@@ -582,8 +582,7 @@ describe('GET /api/history', () => {
 
     vi.mocked(Sentry.captureMessage).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     // No source exists — a retry can never help, so exactly one call.
@@ -609,8 +608,7 @@ describe('GET /api/history', () => {
 
     vi.mocked(schwabFetch).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: '2026-03-10' } }), res);
+    const res = await run(mockRequest({ query: { date: '2026-03-10' } }));
 
     expect(res._status).toBe(200);
     expect(schwabFetch).toHaveBeenCalledTimes(5);
@@ -638,8 +636,7 @@ describe('GET /api/history', () => {
     });
     vi.mocked(schwabFetch).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     const paths = vi.mocked(schwabFetch).mock.calls.map((c) => c[0]);
@@ -672,8 +669,7 @@ describe('GET /api/history', () => {
       data: { symbol: '$SPX', candles, previousClose: 5425 },
     });
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     const json = res._json as {
@@ -739,8 +735,7 @@ describe('GET /api/history', () => {
     vi.mocked(Sentry.captureMessage).mockClear();
     vi.mocked(setCacheHeaders).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     expect(vix1dCalls).toBe(2);
@@ -787,8 +782,7 @@ describe('GET /api/history', () => {
     vi.mocked(Sentry.captureMessage).mockClear();
     vi.mocked(setCacheHeaders).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     // Exactly one retry for the empty symbol; the other four are untouched.
@@ -798,13 +792,10 @@ describe('GET /api/history', () => {
     const json = res._json as { vix1d: { candles: unknown[] } };
     expect(json.vix1d.candles).toEqual([]);
 
-    // An ok-but-empty symbol must not poison the 90-day cache...
-    expect(redis.set).toHaveBeenCalled();
-    for (const call of vi.mocked(redis.set).mock.calls) {
-      expect((call[2] as { ex?: number } | undefined)?.ex).toBeLessThan(
-        PAST_CACHE_TTL,
-      );
-    }
+    // An ok-but-empty symbol must not poison the 90-day cache — and no
+    // short-TTL "partial" entry is written either (nothing reads it back;
+    // the next request refetches)...
+    expect(redis.set).not.toHaveBeenCalled();
     // ...nor the CDN for a day.
     expect(setCacheHeaders).toHaveBeenCalledWith(expect.anything(), 120, 60);
 
@@ -849,8 +840,7 @@ describe('GET /api/history', () => {
     vi.mocked(Sentry.captureMessage).mockClear();
     vi.mocked(setCacheHeaders).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     // Exactly one retry for $SPX; the four VIX-family symbols are untouched.
@@ -866,14 +856,8 @@ describe('GET /api/history', () => {
     expect(json.vix.candles).toHaveLength(1);
     expect(json.candleCount).toBe(0);
 
-    // Never the 90-day write...
-    const longTtlWrites = vi
-      .mocked(redis.set)
-      .mock.calls.filter(
-        (call) =>
-          (call[2] as { ex?: number } | undefined)?.ex === PAST_CACHE_TTL,
-      );
-    expect(longTtlWrites).toHaveLength(0);
+    // Never a Redis write (no 90-day entry, no dead short-TTL one)...
+    expect(redis.set).not.toHaveBeenCalled();
     // ...and never the day-long CDN max-age for a blank-SPX response.
     expect(setCacheHeaders).toHaveBeenCalledWith(expect.anything(), 120, 60);
 
@@ -884,7 +868,110 @@ describe('GET /api/history', () => {
     );
   });
 
-  it('does not retry empties or alert when $SPX itself is empty (holiday / no session)', async () => {
+  // ── Early session: a still-empty symbol is not yet a hole ───
+  //
+  // $VIX1D's first 5-minute print can lag $SPX's. "SPX has its 9:30 candle,
+  // VIX1D has none yet" at 9:36 ET on today is the feed warming up, not the
+  // silent-empty hole above — breadcrumb it, don't page. Past dates, and
+  // today once the open is 10 minutes old, keep the alert. (2026-08-19 is a
+  // Wednesday in EDT, so 13:36Z = 9:36 ET.)
+
+  it('demotes the still-empty alert to a breadcrumb for today within 10 minutes of the open', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.setSystemTime(new Date('2026-08-19T13:36:00Z'));
+
+    const targetDate = '2026-08-19';
+    const candles = [makeCandleEDT(targetDate, 9, 30, 6450, 6470, 6445, 6460)];
+
+    let vix1dCalls = 0;
+    vi.mocked(schwabFetch).mockImplementation(async (path: string) => {
+      if (path.includes('VIX1D')) {
+        vix1dCalls += 1;
+        return {
+          ok: true as const,
+          data: { symbol: '$VIX1D', candles: [], previousClose: 0 },
+        };
+      }
+      return {
+        ok: true as const,
+        data: { symbol: '$SPX', candles, previousClose: 6380 },
+      };
+    });
+
+    vi.mocked(Sentry.captureMessage).mockClear();
+    vi.mocked(Sentry.addBreadcrumb).mockClear();
+    vi.mocked(setCacheHeaders).mockClear();
+
+    const res = await run(mockRequest({ query: { date: targetDate } }));
+
+    expect(res._status).toBe(200);
+    // Still retried once — the lag is usually over by the second look.
+    expect(vix1dCalls).toBe(2);
+    const json = res._json as { vix1d: { candles: unknown[] } };
+    expect(json.vix1d.candles).toEqual([]);
+
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'history',
+        level: 'info',
+        data: expect.objectContaining({
+          symbol: '$VIX1D',
+          targetDate,
+          earlySession: true,
+        }),
+      }),
+    );
+    // Today is never long-lived anyway.
+    expect(setCacheHeaders).toHaveBeenCalledWith(expect.anything(), 120, 60);
+  });
+
+  it('keeps the still-empty alert for today once the open is 10 minutes old', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.setSystemTime(new Date('2026-08-19T14:00:00Z')); // 10:00 ET
+
+    const targetDate = '2026-08-19';
+    const candles = [makeCandleEDT(targetDate, 9, 30, 6450, 6470, 6445, 6460)];
+
+    let vix1dCalls = 0;
+    vi.mocked(schwabFetch).mockImplementation(async (path: string) => {
+      if (path.includes('VIX1D')) {
+        vix1dCalls += 1;
+        return {
+          ok: true as const,
+          data: { symbol: '$VIX1D', candles: [], previousClose: 0 },
+        };
+      }
+      return {
+        ok: true as const,
+        data: { symbol: '$SPX', candles, previousClose: 6380 },
+      };
+    });
+
+    vi.mocked(Sentry.captureMessage).mockClear();
+
+    const res = await run(mockRequest({ query: { date: targetDate } }));
+
+    expect(res._status).toBe(200);
+    expect(vix1dCalls).toBe(2);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('$VIX1D'),
+      { level: 'warning', extra: { targetDate } },
+    );
+  });
+
+  // ── All five empty ─────────────────────────────────────────
+  //
+  // With no symbol to compare against there is nothing to retry. Whether the
+  // blank day may be edge-cached for a day depends on the NYSE calendar
+  // (`isTradingDay`): a weekend / holiday blank is permanent; a blank on a
+  // day the exchange was open is the sidecar/Theta returning nothing for a
+  // session that happened (or today's open not having printed yet) — it
+  // stays on the short CDN header and, unless it is simply early, alerts
+  // once. Nothing is written to Redis in either case.
+
+  it('does not retry any symbol when every symbol is empty', async () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
 
     vi.mocked(schwabFetch).mockResolvedValue({
@@ -892,14 +979,173 @@ describe('GET /api/history', () => {
       data: { symbol: '$SPX', candles: [], previousClose: 0 },
     });
     vi.mocked(schwabFetch).mockClear();
-    vi.mocked(Sentry.captureMessage).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: '2026-03-10' } }), res);
+    const res = await run(mockRequest({ query: { date: '2026-03-10' } }));
 
     expect(res._status).toBe(200);
     expect(schwabFetch).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([
+    ['2026-04-03', 'Good Friday'],
+    ['2026-03-14', 'a Saturday'],
+  ])(
+    'edge-caches an all-empty %s (%s) for a day without alerting',
+    async (targetDate) => {
+      vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+
+      vi.mocked(schwabFetch).mockResolvedValue({
+        ok: true,
+        data: { symbol: '$SPX', candles: [], previousClose: 0 },
+      });
+      vi.mocked(redis.set).mockClear();
+      vi.mocked(Sentry.captureMessage).mockClear();
+      vi.mocked(setCacheHeaders).mockClear();
+
+      const res = await run(mockRequest({ query: { date: targetDate } }));
+
+      expect(res._status).toBe(200);
+      expect((res._json as { candleCount: number }).candleCount).toBe(0);
+      expect(setCacheHeaders).toHaveBeenCalledWith(
+        expect.anything(),
+        86400,
+        3600,
+      );
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps an all-empty known trading day on the short CDN header and alerts once', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+
+    // Tuesday 2026-03-10 — a weekday that is not in MARKET_CLOSED_DATES.
+    const targetDate = '2026-03-10';
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: { symbol: '$SPX', candles: [], previousClose: 0 },
+    });
+    vi.mocked(redis.set).mockClear();
+    vi.mocked(Sentry.captureMessage).mockClear();
+    vi.mocked(setCacheHeaders).mockClear();
+
+    const res = await run(mockRequest({ query: { date: targetDate } }));
+
+    expect(res._status).toBe(200);
+    expect(setCacheHeaders).toHaveBeenCalledWith(expect.anything(), 120, 60);
+    expect(setCacheHeaders).not.toHaveBeenCalledWith(
+      expect.anything(),
+      86400,
+      3600,
+    );
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(ALL_EMPTY_ALERT, {
+      level: 'warning',
+      extra: { targetDate },
+    });
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it('does not add the all-empty alert when the symbols failed outright (each failure already alerts)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+
+    const targetDate = '2026-03-10';
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
+      error: 'Schwab API error (502): transient',
+      status: 502,
+    });
+    vi.mocked(Sentry.captureMessage).mockClear();
+    vi.mocked(setCacheHeaders).mockClear();
+
+    const res = await run(mockRequest({ query: { date: targetDate } }));
+
+    expect(res._status).toBe(200);
+    // One "fetch failed" alert per symbol, and nothing else.
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(5);
+    expect(Sentry.captureMessage).not.toHaveBeenCalledWith(
+      ALL_EMPTY_ALERT,
+      expect.anything(),
+    );
+    expect(setCacheHeaders).toHaveBeenCalledWith(expect.anything(), 120, 60);
+  });
+
+  it('does not alert an all-empty today before the open', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.setSystemTime(new Date('2026-08-19T12:00:00Z')); // 8:00 ET
+
+    const targetDate = '2026-08-19';
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: { symbol: '$SPX', candles: [], previousClose: 0 },
+    });
+    vi.mocked(Sentry.captureMessage).mockClear();
+    vi.mocked(Sentry.addBreadcrumb).mockClear();
+    vi.mocked(setCacheHeaders).mockClear();
+
+    const res = await run(mockRequest({ query: { date: targetDate } }));
+
+    expect(res._status).toBe(200);
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'history',
+        level: 'info',
+        data: expect.objectContaining({ targetDate, earlySession: true }),
+      }),
+    );
+    expect(setCacheHeaders).toHaveBeenCalledWith(expect.anything(), 120, 60);
+  });
+
+  it('alerts an all-empty today once the open is 10 minutes old', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.setSystemTime(new Date('2026-08-19T14:00:00Z')); // 10:00 ET
+
+    const targetDate = '2026-08-19';
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: { symbol: '$SPX', candles: [], previousClose: 0 },
+    });
+    vi.mocked(Sentry.captureMessage).mockClear();
+
+    const res = await run(mockRequest({ query: { date: targetDate } }));
+
+    expect(res._status).toBe(200);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(ALL_EMPTY_ALERT, {
+      level: 'warning',
+      extra: { targetDate },
+    });
+  });
+
+  // ── Redis writes: only the 90-day entry earns a command ────
+  //
+  // Today's entry was written with a 120s TTL but never read back (the HIT
+  // path is `!isToday`, and by tomorrow the entry has expired), so it was a
+  // billed Redis command per request for nothing. The CDN's 120s max-age is
+  // today's cache.
+
+  it('does not write today to Redis (nothing reads it back)', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.setSystemTime(new Date('2026-08-19T18:00:00Z')); // 2:00 PM ET
+
+    const targetDate = '2026-08-19';
+    const candles = [makeCandleEDT(targetDate, 9, 30, 6450, 6470, 6445, 6460)];
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true,
+      data: { symbol: '$SPX', candles, previousClose: 6380 },
+    });
+    vi.mocked(redis.get).mockClear();
+    vi.mocked(redis.set).mockClear();
+    vi.mocked(setCacheHeaders).mockClear();
+
+    const res = await run(mockRequest({ query: { date: targetDate } }));
+
+    expect(res._status).toBe(200);
+    expect((res._json as { candleCount: number }).candleCount).toBe(1);
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+    expect(setCacheHeaders).toHaveBeenCalledWith(expect.anything(), 120, 60);
   });
 
   // ── isRetryableFailure: deterministic failures are not retried ──
@@ -927,8 +1173,7 @@ describe('GET /api/history', () => {
       };
     });
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     expect(vix1dCalls).toBe(1);
@@ -959,8 +1204,7 @@ describe('GET /api/history', () => {
       };
     });
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     expect(vix1dCalls).toBe(1);
@@ -992,8 +1236,7 @@ describe('GET /api/history', () => {
 
     vi.mocked(Sentry.captureMessage).mockClear();
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: targetDate } }), res);
+    const res = await run(mockRequest({ query: { date: targetDate } }));
 
     expect(res._status).toBe(200);
     expect(vix1dCalls).toBe(2);

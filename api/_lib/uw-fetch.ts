@@ -121,6 +121,15 @@ export async function withRetry<T>(
  * Workers pull from a shared cursor, so they invoke `worker` in
  * input-index order (0, 1, 2 first, then 3, 4, 5 as each slot frees).
  * That preserves call order for tests that rely on `mockResolvedValueOnce`.
+ *
+ * Fail-fast: the first rejection propagates exactly as `Promise.all`
+ * always did (callers see the same error, at the same moment), but it
+ * also flips a shared `failed` flag so the OTHER runners stop pulling
+ * from the cursor. Items already in flight run to completion — nothing
+ * is cancelled or abandoned mid-request — but nothing new is started.
+ * Without this, a 66-date `/pricehistory` fan-out that hit a sidecar
+ * outage on date 2 kept firing the remaining dates at the sidecar for
+ * seconds after the caller had already returned the error.
  */
 export async function mapWithConcurrency<T, R>(
   items: readonly T[],
@@ -130,11 +139,17 @@ export async function mapWithConcurrency<T, R>(
   if (items.length === 0) return [];
   const results = new Array<R>(items.length);
   let cursor = 0;
+  let failed = false;
   const runner = async (): Promise<void> => {
-    while (cursor < items.length) {
+    while (!failed && cursor < items.length) {
       const idx = cursor;
       cursor += 1;
-      results[idx] = await worker(items[idx]!, idx);
+      try {
+        results[idx] = await worker(items[idx]!, idx);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
     }
   };
   const runnerCount = Math.max(1, Math.min(limit, items.length));
