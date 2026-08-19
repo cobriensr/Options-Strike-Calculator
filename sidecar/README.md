@@ -39,7 +39,18 @@ pytest tests/
 make test
 ```
 
-The Makefile wraps the common workflows (`make lint`, `make test`, `make run`).
+### Lint / format
+
+```bash
+make lint     # ruff check --fix src/ tests/ && ruff format src/ tests/
+make review   # lint + tests with coverage
+```
+
+Ruff and pytest are configured in `pyproject.toml` (line-length 100, py312,
+the uw-stream/classifier rule families plus `PL`/`ARG`/`S`/`BLE`/`DTZ`/`D401`;
+test-only relaxations live under `per-file-ignores`). `make lint` must exit 0
+with zero findings; every remaining suppression is a `# noqa: <RULE> — reason`.
+`_vendored_ml/` is excluded — it must stay byte-identical to `ml/src/`.
 
 ## Environment variables
 
@@ -81,24 +92,27 @@ railway up
 
 ```
 src/
-  main.py             # Entry point, FastAPI app
+  main.py             # Entry point (stdlib http.server + Databento loop)
   config.py           # Env vars + settings
   db.py               # psycopg2 pool + helpers
   databento_client.py # Live + historical Databento
   theta_client.py     # Theta Data Terminal HTTP client
   theta_launcher.py   # Manages the co-resident Java jar
-  theta_fetcher.py    # Periodic Theta polls
+  theta_fetcher.py    # Nightly Theta EOD ingest (17:25 ET) + startup backfill
   symbol_manager.py   # Front-month rolling
   front_month.py      # Contract code resolution
   trade_processor.py  # Tick → DB
   quote_processor.py  # NBBO → DB
   batched_writer.py   # Bulk INSERT pipeline
-  options_router.py   # /api/options/* routes
-  multileg_routes.py  # /api/multileg/* routes
-  takeit_server.py    # /api/takeit/* (XGBoost scoring)
-  archive_seeder.py   # /admin/seed-archive
-  archive_query.py    # Read-side of /data/archive
-  health.py           # /health
+  bar_writer.py       # Buffered futures OHLCV-1m writer
+  stat_writer.py      # Buffered ES option stats writer
+  options_router.py   # Databento options record routing (definitions/trades/stats)
+  multileg_routes.py  # POST /takeit/multileg-classify handler
+  takeit_server.py    # POST /takeit/explain, GET /takeit/health (SHAP scoring)
+  archive_seeder.py   # POST /admin/seed-archive
+  archive_query.py    # Read-side of /data/archive (/archive/* routes)
+  session_calendar.py # CME trade-date bucketing
+  health.py           # /health + HTTP route dispatch
   sentry_setup.py     # Sentry tagging
   logger_setup.py     # Pino-style structured logs
 ```

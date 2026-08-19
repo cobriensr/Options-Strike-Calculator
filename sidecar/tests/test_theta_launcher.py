@@ -166,7 +166,7 @@ def test_wait_for_ready_returns_true_and_records_timestamp(
     class _FakeResp:
         status = 200
 
-        def __enter__(self) -> "_FakeResp":
+        def __enter__(self) -> _FakeResp:
             return self
 
         def __exit__(self, *_exc: object) -> None:
@@ -446,9 +446,7 @@ def test_spawn_subprocess_drain_threads_bounded_across_respawns(
     """N respawns never grow _state.drain_threads past two handles."""
     import theta_launcher
 
-    monkeypatch.setattr(
-        theta_launcher.subprocess, "Popen", lambda *_a, **_kw: MagicMock()
-    )
+    monkeypatch.setattr(theta_launcher.subprocess, "Popen", lambda *_a, **_kw: MagicMock())
 
     real_thread = theta_launcher.threading.Thread
 
@@ -646,7 +644,7 @@ def test_stdout_drain_loop_consumes_all_lines() -> None:
         def __init__(self, lines: list[str]) -> None:
             self._lines = iter(lines)
 
-        def __iter__(self) -> "_StdoutTracker":
+        def __iter__(self) -> _StdoutTracker:
             return self
 
         def __next__(self) -> str:
@@ -918,9 +916,7 @@ def test_monitor_loop_returns_after_sleep_if_shutdown_during_backoff(
     monkeypatch.setattr(theta_launcher.time, "sleep", _flip_shutdown)
 
     spawn_calls: list[int] = []
-    monkeypatch.setattr(
-        theta_launcher, "_spawn_subprocess", lambda: spawn_calls.append(1)
-    )
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", lambda: spawn_calls.append(1))
 
     theta_launcher._monitor_loop()
     # _spawn_subprocess should NOT have been called.

@@ -6,11 +6,13 @@ not Vercel serverless. Connection pooling via psycopg2.pool.
 
 from __future__ import annotations
 
+import contextlib
 import time
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Generator, Sequence
+from typing import Any
 
 import psycopg2
 import psycopg2.extras
@@ -55,7 +57,7 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     """Lazy-init a threaded connection pool."""
     global _pool
     if _pool is None or _pool.closed:
-        from config import settings
+        from config import settings  # noqa: PLC0415 — lazy, env-free import
 
         # Strip options from DSN — Neon's pooler rejects startup
         # parameters like statement_timeout. Set timeout per-query instead.
@@ -114,24 +116,24 @@ def _getconn_with_timeout(
                 # sentry_setup optional (e.g., for unit tests that don't
                 # install sentry_sdk).
                 try:
-                    from sentry_setup import capture_message
+                    from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
                     capture_message(
                         "db pool getconn was slow",
                         level="warning",
                         context={"elapsed_ms": round(elapsed_ms, 1)},
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 — observability must never fail the borrow
                     log.warning("db pool getconn slow: %.1fms", elapsed_ms)
             return conn
-        except psycopg2.pool.PoolError:
+        except psycopg2.pool.PoolError as pool_exc:
             # Pool is exhausted. Sleep a bit and retry until the deadline.
             if time.monotonic() >= deadline:
                 elapsed_ms = (time.monotonic() - start) * 1000.0
                 raise PoolTimeoutError(
                     f"db pool saturated: could not borrow a connection "
                     f"within {timeout_s:.1f}s (waited {elapsed_ms:.0f}ms)"
-                )
+                ) from pool_exc
             time.sleep(backoff_s)
             backoff_s = min(backoff_s * 2, 0.2)  # cap at 200ms
 
@@ -162,7 +164,7 @@ def get_conn(
         # SENTRY-EMERALD-DESERT-6S / -2C.
         try:
             conn.rollback()
-        except Exception as rollback_exc:
+        except Exception as rollback_exc:  # noqa: BLE001 — see comment above; original error re-raised
             log.debug(
                 "rollback after error failed (connection likely dead): %s",
                 rollback_exc,
@@ -176,7 +178,7 @@ def get_conn(
         # every borrow until the pool happens to recycle.
         try:
             pool.putconn(conn, close=bool(conn.closed))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — see comment below
             # Don't let putconn failures mask the real exception. During
             # shutdown the pool may already be closed (PoolError) — that's
             # benign and shouldn't replace whatever the caller was raising.
@@ -185,12 +187,11 @@ def get_conn(
 
 def verify_connection() -> None:
     """Verify the database is reachable."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 AS ok")
-            row = cur.fetchone()
-            if not row or row[0] != 1:
-                raise RuntimeError("Database connection verification failed")
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 AS ok")
+        row = cur.fetchone()
+        if not row or row[0] != 1:
+            raise RuntimeError("Database connection verification failed")
     log.info("Database connection verified")
 
 
@@ -209,25 +210,24 @@ def is_db_healthy() -> bool:
     - Any other exception (real connection/query failure) -> False.
     """
     try:
-        with get_conn(timeout_s=HEALTH_PROBE_TIMEOUT_S) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                return True
+        with get_conn(timeout_s=HEALTH_PROBE_TIMEOUT_S) as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            return True
     except PoolTimeoutError:
         # Pool is saturated but the DB is alive — do NOT report unhealthy,
         # or Railway may restart a container that's simply busy ingesting.
         try:
-            from sentry_setup import capture_message
+            from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
             capture_message(
                 "db health probe: pool saturated (healthy but busy)",
                 level="warning",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 — see comment below
             # Observability must never flip the healthy-but-busy verdict.
             log.warning("db health probe: pool saturated (healthy but busy)")
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 — any other failure IS the unhealthy signal
         return False
 
 
@@ -264,9 +264,8 @@ def _execute_values_batch(
         return
     for attempt in (1, 2):
         try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    psycopg2.extras.execute_values(cur, sql, rows, page_size=page_size)
+            with get_conn() as conn, conn.cursor() as cur:
+                psycopg2.extras.execute_values(cur, sql, rows, page_size=page_size)
             return
         except psycopg2.OperationalError:
             if attempt == 2:
@@ -380,9 +379,8 @@ def _execute_with_retry(sql: str, params: tuple) -> None:
     """
     for attempt in (1, 2):
         try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(sql, params)
             return
         except psycopg2.OperationalError:
             if attempt == 2:
@@ -534,20 +532,19 @@ def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
 
 
 def has_theta_option_eod_rows(symbol: str) -> bool:
-    """True when theta_option_eod has at least one row for `symbol`.
+    """Return True when theta_option_eod has at least one row for `symbol`.
 
     Cheap existence check used by the backfill scheduler to skip roots
     that already have data. `LIMIT 1` + the ix_theta_option_eod_symbol_date
     index makes this O(1) even as the table grows into the millions of
     rows over time.
     """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM theta_option_eod WHERE symbol = %s LIMIT 1",
-                (symbol,),
-            )
-            return cur.fetchone() is not None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM theta_option_eod WHERE symbol = %s LIMIT 1",
+            (symbol,),
+        )
+        return cur.fetchone() is not None
 
 
 def load_alert_config() -> dict[str, dict]:
@@ -568,55 +565,52 @@ def load_alert_config() -> dict[str, dict]:
     """
     configs: dict[str, dict] = {}
     try:
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT alert_type, enabled, params, cooldown_minutes FROM alert_config"
-                )
-                for row in cur.fetchall():
-                    configs[row["alert_type"]] = {
-                        "enabled": row["enabled"],
-                        "params": row["params"],
-                        "cooldown_minutes": row["cooldown_minutes"],
-                    }
+        with (
+            get_conn() as conn,
+            conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur,
+        ):
+            cur.execute("SELECT alert_type, enabled, params, cooldown_minutes FROM alert_config")
+            for row in cur.fetchall():
+                configs[row["alert_type"]] = {
+                    "enabled": row["enabled"],
+                    "params": row["params"],
+                    "cooldown_minutes": row["cooldown_minutes"],
+                }
     except psycopg2.errors.UndefinedTable:
         log.warning("alert_config table does not exist yet -- using defaults")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — degrade to defaults, forwarded to Sentry below
         log.error("Failed to load alert_config: %s", exc)
         # Forward to Sentry so config-loading drift surfaces in
         # observability instead of silently degrading to "no alerts."
         # Lazy import to avoid pulling sentry_setup into the db.py
         # import path of every test that touches Postgres.
-        try:
-            from sentry_setup import capture_exception
+        # Sentry path failure must never block the empty-dict
+        # fallback — caller depends on this returning a dict.
+        with contextlib.suppress(Exception):
+            from sentry_setup import capture_exception  # noqa: PLC0415 — lazy optional Sentry
 
             capture_exception(
                 exc,
                 context={"phase": "load_alert_config"},
                 tags={"component": "db"},
             )
-        except Exception:  # noqa: BLE001
-            # Sentry path failure must never block the empty-dict
-            # fallback — caller depends on this returning a dict.
-            pass
     return configs
 
 
 def get_recent_bars(symbol: str, minutes: int = 60) -> list[dict]:
     """Fetch the most recent N minutes of bars for a symbol."""
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
                 SELECT ts, open, high, low, close, volume
                 FROM futures_bars
                 WHERE symbol = %s
                   AND ts >= NOW() - make_interval(mins => %s)
                 ORDER BY ts ASC
                 """,
-                (symbol, minutes),
-            )
-            return [dict(row) for row in cur.fetchall()]
+            (symbol, minutes),
+        )
+        return [dict(row) for row in cur.fetchall()]
 
 
 def drain_pool() -> None:

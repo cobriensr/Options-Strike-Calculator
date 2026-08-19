@@ -24,8 +24,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from health import HealthHandler  # noqa: E402
-from theta_client import (  # noqa: E402
+from health import HealthHandler
+from theta_client import (
     IndexOhlcCandle,
     IndexPriceSnapshot,
     ThetaClientError,
@@ -254,9 +254,7 @@ def test_price_prev_close_null_when_hist_empty() -> None:
 
 def test_price_prev_close_null_when_hist_errors() -> None:
     # prev_close is best-effort: a hist failure must not sink the price.
-    client = _mock_client(
-        snapshot=_snapshot(), candles=ThetaClientError("terminal hiccup")
-    )
+    client = _mock_client(snapshot=_snapshot(), candles=ThetaClientError("terminal hiccup"))
     with patch("theta_client.ThetaClient", return_value=client):
         status, body = _drive("/theta/index/price?root=SPX", headers=_AUTH)
     assert status == 200
@@ -340,29 +338,21 @@ def test_history_happy_path_shape() -> None:
     # Candles carry no volume — indices don't trade.
     assert "volume" not in body["candles"][0]
     mock_cls.assert_called_once_with(timeout_s=5, max_retries=1)
-    client.hist_index_ohlc.assert_called_once_with(
-        "SPX", date(2026, 8, 14), ivl_ms=300000
-    )
+    client.hist_index_ohlc.assert_called_once_with("SPX", date(2026, 8, 14), ivl_ms=300000)
 
 
 def test_history_defaults_to_one_minute_ivl() -> None:
     client = _mock_client(candles=[_candle()])
     with patch("theta_client.ThetaClient", return_value=client):
-        status, body = _drive(
-            "/theta/index/history?root=VIX&date=2026-08-14", headers=_AUTH
-        )
+        status, body = _drive("/theta/index/history?root=VIX&date=2026-08-14", headers=_AUTH)
     assert status == 200
     assert body["ivl_ms"] == 60000
-    client.hist_index_ohlc.assert_called_once_with(
-        "VIX", date(2026, 8, 14), ivl_ms=60000
-    )
+    client.hist_index_ohlc.assert_called_once_with("VIX", date(2026, 8, 14), ivl_ms=60000)
 
 
 def test_history_400_on_malformed_date() -> None:
     with patch("theta_client.ThetaClient") as mock_cls:
-        status, body = _drive(
-            "/theta/index/history?root=SPX&date=20260814", headers=_AUTH
-        )
+        status, body = _drive("/theta/index/history?root=SPX&date=20260814", headers=_AUTH)
     assert status == 400
     assert "YYYY-MM-DD" in body["error"]
     mock_cls.assert_not_called()
@@ -371,9 +361,7 @@ def test_history_400_on_malformed_date() -> None:
 def test_history_400_on_calendar_invalid_date() -> None:
     # Passes the shape regex but is not a real date.
     with patch("theta_client.ThetaClient") as mock_cls:
-        status, body = _drive(
-            "/theta/index/history?root=SPX&date=2026-13-99", headers=_AUTH
-        )
+        status, body = _drive("/theta/index/history?root=SPX&date=2026-13-99", headers=_AUTH)
     assert status == 400
     assert body["error"] == "invalid date"
     mock_cls.assert_not_called()
@@ -393,9 +381,7 @@ def test_history_400_on_bad_ivl_ms() -> None:
 def test_history_404_when_no_candles() -> None:
     client = _mock_client(candles=[])
     with patch("theta_client.ThetaClient", return_value=client):
-        status, body = _drive(
-            "/theta/index/history?root=VIX9D&date=2026-08-14", headers=_AUTH
-        )
+        status, body = _drive("/theta/index/history?root=VIX9D&date=2026-08-14", headers=_AUTH)
     assert status == 404
     assert body["error"] == "no_data"
 
@@ -403,9 +389,7 @@ def test_history_404_when_no_candles() -> None:
 def test_history_502_when_not_entitled() -> None:
     client = _mock_client(candles=ThetaSubscriptionError("HTTP 472"))
     with patch("theta_client.ThetaClient", return_value=client):
-        status, body = _drive(
-            "/theta/index/history?root=SPX&date=2026-08-14", headers=_AUTH
-        )
+        status, body = _drive("/theta/index/history?root=SPX&date=2026-08-14", headers=_AUTH)
     assert status == 502
     assert body == {"error": "theta_not_entitled", "root": "SPX"}
 
@@ -413,8 +397,6 @@ def test_history_502_when_not_entitled() -> None:
 def test_history_503_when_theta_down() -> None:
     client = _mock_client(candles=ThetaClientError("network failure"))
     with patch("theta_client.ThetaClient", return_value=client):
-        status, body = _drive(
-            "/theta/index/history?root=SPX&date=2026-08-14", headers=_AUTH
-        )
+        status, body = _drive("/theta/index/history?root=SPX&date=2026-08-14", headers=_AUTH)
     assert status == 503
     assert body["error"] == "theta_unavailable"

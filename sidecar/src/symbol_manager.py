@@ -11,10 +11,10 @@ Handles:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
 import math
-
+from calendar import monthrange
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 
 QUARTERLY_MONTHS = [3, 6, 9, 12]
 
@@ -81,9 +81,7 @@ class OptionsStrikeSet:
     call_symbols: list[str] = field(default_factory=list)
     put_symbols: list[str] = field(default_factory=list)
     nearest_expiry: date | None = None
-    last_recentered_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    last_recentered_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def all_symbols(self) -> list[str]:
@@ -135,8 +133,6 @@ def get_all_futures_subscriptions() -> dict[str, dict]:
 
 def third_friday(year: int, month: int) -> date:
     """Calculate the third Friday of a given month (options expiry)."""
-    from calendar import monthrange
-
     first_day_weekday = date(year, month, 1).weekday()
     # weekday(): Monday=0, Friday=4
     first_friday = 1 + (4 - first_day_weekday) % 7
@@ -156,7 +152,9 @@ def get_nearest_es_expiry(now: date | None = None) -> date:
     this sidecar we track the quarterly cycle for the main chain.
     """
     if now is None:
-        now = date.today()
+        # UTC date: the container clock is UTC, so this is what date.today()
+        # resolved to in production; now it says so explicitly.
+        now = datetime.now(UTC).date()
 
     year = now.year
     candidates = []

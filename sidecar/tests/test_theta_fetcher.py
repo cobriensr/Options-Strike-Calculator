@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from theta_client import EodRow, ThetaSubscriptionError  # noqa: E402
+from theta_client import EodRow, ThetaSubscriptionError
 
 
 @pytest.fixture
@@ -123,9 +123,7 @@ def test_backfill_skips_root_with_existing_data(monkeypatch) -> None:
     import theta_fetcher
 
     # Pretend both SPXW and VIX already have rows.
-    monkeypatch.setattr(
-        theta_fetcher.db, "has_theta_option_eod_rows", lambda _root: True
-    )
+    monkeypatch.setattr(theta_fetcher.db, "has_theta_option_eod_rows", lambda _root: True)
     # Force a small root list for determinism.
     monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
 
@@ -143,16 +141,14 @@ def test_backfill_skips_root_with_existing_data(monkeypatch) -> None:
 def test_backfill_runs_for_root_with_empty_table(monkeypatch) -> None:
     import theta_fetcher
 
-    monkeypatch.setattr(
-        theta_fetcher.db, "has_theta_option_eod_rows", lambda _root: False
-    )
+    monkeypatch.setattr(theta_fetcher.db, "has_theta_option_eod_rows", lambda _root: False)
     monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW")
     monkeypatch.setattr(theta_fetcher.settings, "theta_backfill_days", 5)
 
     # Use an expiration 30 days from today so it's inside the horizon
     # filter regardless of when the test runs ([today - 7d, today + 180d]).
-    future_exp = date.today() + timedelta(days=30)
-    prior_day = theta_fetcher._prior_trading_day(date.today())
+    future_exp = date.today() + timedelta(days=30)  # noqa: DTZ011 — mirrors run_backfill_if_needed
+    prior_day = theta_fetcher._prior_trading_day(date.today())  # noqa: DTZ011 — mirrors the source
 
     fake_client = MagicMock()
     fake_client.list_expirations.return_value = [future_exp]
@@ -181,7 +177,7 @@ def test_backfill_runs_for_root_with_empty_table(monkeypatch) -> None:
     monkeypatch.setattr(
         theta_fetcher.db,
         "upsert_theta_option_eod_batch",
-        lambda rows: upsert_calls.append(rows),
+        upsert_calls.append,
     )
     with patch("theta_fetcher.ThetaClient", return_value=fake_client):
         theta_fetcher.run_backfill_if_needed()
@@ -219,9 +215,7 @@ def test_fetch_root_range_filters_out_of_horizon_expirations(monkeypatch) -> Non
 
     monkeypatch.setattr(theta_fetcher.db, "upsert_theta_option_eod_batch", MagicMock())
 
-    result = theta_fetcher._fetch_root_range(
-        fake_client, "SPXW", target_day, target_day
-    )
+    result = theta_fetcher._fetch_root_range(fake_client, "SPXW", target_day, target_day)
 
     assert result == 0
     # Only the in-window expiration should have been passed to list_strikes.
@@ -369,7 +363,7 @@ def test_fetch_root_range_no_data_strike_continues_loop(monkeypatch) -> None:
     monkeypatch.setattr(
         theta_fetcher.db,
         "upsert_theta_option_eod_batch",
-        lambda rows: flushed.append(rows),
+        flushed.append,
     )
 
     result = theta_fetcher._fetch_root_range(
@@ -615,7 +609,7 @@ def test_flush_batch_upserts_and_returns_count(monkeypatch) -> None:
     monkeypatch.setattr(
         theta_fetcher.db,
         "upsert_theta_option_eod_batch",
-        lambda rows: upsert_calls.append(rows),
+        upsert_calls.append,
     )
 
     batch = [_make_eod_row("C"), _make_eod_row("P")]
@@ -776,9 +770,11 @@ def test_run_nightly_captures_and_reraises_on_failure(monkeypatch) -> None:
         lambda exc, **kw: capture_calls.append((exc, kw)),
     )
 
-    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
-        with pytest.raises(RuntimeError, match="theta terminal vanished"):
-            theta_fetcher.run_nightly()
+    with (
+        patch("theta_fetcher.ThetaClient", return_value=MagicMock()),
+        pytest.raises(RuntimeError, match="theta terminal vanished"),
+    ):
+        theta_fetcher.run_nightly()
 
     assert len(capture_calls) == 1
     exc, kw = capture_calls[0]
@@ -837,9 +833,7 @@ def test_backfill_per_root_exception_is_captured_and_loop_continues(
 
     monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
     monkeypatch.setattr(theta_fetcher.settings, "theta_backfill_days", 5)
-    monkeypatch.setattr(
-        theta_fetcher.db, "has_theta_option_eod_rows", lambda _root: False
-    )
+    monkeypatch.setattr(theta_fetcher.db, "has_theta_option_eod_rows", lambda _root: False)
 
     processed: list[str] = []
 
@@ -951,9 +945,7 @@ def test_run_nightly_is_decorated_with_slug_and_monitor_config() -> None:
         sentry_mod.monitor = original_monitor
         importlib.reload(theta_fetcher)
 
-    nightly_calls = [
-        c for c in calls if c["kwargs"].get("monitor_slug") == declared_slug
-    ]
+    nightly_calls = [c for c in calls if c["kwargs"].get("monitor_slug") == declared_slug]
     assert len(nightly_calls) == 1
     kwargs = nightly_calls[0]["kwargs"]
     assert kwargs["monitor_slug"] == "theta-nightly-eod"

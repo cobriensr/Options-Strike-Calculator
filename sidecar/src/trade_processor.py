@@ -23,7 +23,7 @@ specific to this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from batched_writer import BatchedWriter
@@ -98,7 +98,7 @@ class TradeProcessor(BatchedWriter[TradeRecord]):
         # UTC event timestamp; ``trade_date`` buckets by the CME session
         # (17:00 CT roll, DST-aware) so an overnight trade at 17:30 CT
         # lands in the next day's session rather than the UTC calendar day.
-        ts_dt = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
+        ts_dt = datetime.fromtimestamp(ts_ns / 1e9, tz=UTC)
         trade_dt = cme_session_date(ts_ns)
 
         strike_decimal = Decimal(str(strike))

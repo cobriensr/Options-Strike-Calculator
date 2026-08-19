@@ -1,0 +1,98 @@
+# Sidecar tooling config. `make lint` runs `ruff check --fix src/ tests/`
+# followed by `ruff format src/ tests/`; both read this file. Mirrors the
+# uw-stream / classifier ruff baseline (line-length 100, py312, same core
+# rule families) and adds the families this codebase's `# noqa` comments
+# already reference so those suppressions stay meaningful instead of being
+# flagged as unused by RUF100.
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# Byte-identical copies of ml/src (see _vendored_ml/README.md). They must
+# drift from ml/src only via `make sync-ml`, so they are never linted or
+# reformatted from here.
+extend-exclude = ["_vendored_ml"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # isort
+    "N",    # pep8-naming (N802/N805 noqa's in tests + src)
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific (incl. RUF100 unused-noqa)
+    "PL",   # pylint (PLC0415 lazy-import noqa's)
+    "ARG",  # flake8-unused-arguments (ARG001/ARG002 noqa's)
+    "S",    # flake8-bandit (S105/S310 noqa's)
+    "BLE",  # flake8-blind-except (BLE001 noqa's)
+    "D401", # pydocstyle: first docstring line in imperative mood (D401 noqa's)
+    "DTZ",  # flake8-datetimez — naive datetimes are a real bug class for an ET/UTC ingest service
+]
+ignore = [
+    "E501",     # line too long — handled by the formatter
+    "B008",     # function call in argument defaults — sibling-service parity (pydantic Field())
+    "PLR2004",  # magic-value comparison — HTTP statuses / hour bounds / Theta codes are documented inline; 300+ named constants would be churn
+    "PLR0911",  # too many returns — route handlers branch per error case by design
+    "PLR0912",  # too many branches — same complexity-budget family as PLR0911
+    "PLR0913",  # too many arguments — DB upsert helpers mirror their column lists; the signature IS the contract
+    "PLR0915",  # too many statements — same complexity-budget family
+    "PLR0917",  # too many positional arguments — same as PLR0913
+    "PLW0603",  # global statement — module-level singletons (_pool, _scheduler, _client) are the sidecar's established pattern
+    "RUF002",   # ambiguous unicode in docstrings — prose deliberately uses ×, –, ρ (correlation); this check targets confusable identifiers
+    "RUF003",   # ambiguous unicode in comments — same as RUF002
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",     # assert is the test idiom
+    "PLC0415",  # imports inside test bodies isolate module state per test
+    "ARG",      # fixtures / stubs / monkeypatched callables carry unused args by contract
+    "S105",     # fake credential strings in fixtures
+    "S106",     # fake credential kwargs in fixtures
+    "S108",     # literal /tmp paths are env fixture values / assertion targets
+    "S608",     # SQL assembled from the fragment under test, run only on in-memory DuckDB fixtures
+]
+
+[tool.ruff.lint.isort]
+# Tests import sidecar modules as bare top-level names (src/ is on sys.path
+# via conftest.py); list them so isort keeps them in the first-party block.
+known-first-party = [
+    "src",
+    "archive_query",
+    "archive_seeder",
+    "bar_writer",
+    "batched_writer",
+    "config",
+    "databento_client",
+    "db",
+    "front_month",
+    "health",
+    "logger_setup",
+    "main",
+    "multileg_routes",
+    "options_router",
+    "quote_processor",
+    "sentry_setup",
+    "session_calendar",
+    "stat_writer",
+    "symbol_manager",
+    "takeit_server",
+    "theta_client",
+    "theta_fetcher",
+    "theta_launcher",
+    "trade_processor",
+    # Vendored ml/src modules imported by multileg_routes.py.
+    "multileg_assembler",
+    "multileg_patterns",
+]
+
+[tool.pytest.ini_options]
+# Matches how the suite runs today (`make test` = `pytest tests/ -v`;
+# sys.path + external-package mocks come from conftest.py).
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

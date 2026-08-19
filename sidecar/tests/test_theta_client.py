@@ -11,19 +11,18 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 import pytest
 
-import sys
-from pathlib import Path
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from theta_client import (  # noqa: E402
+from theta_client import (
     DEFAULT_BASE_URL,
     EodRow,
     IndexOhlcCandle,
@@ -50,7 +49,7 @@ def _http_response(body: dict | str | bytes, status: int = 200) -> object:
     class _Resp(io.BytesIO):
         status = 200
 
-        def __enter__(self) -> "_Resp":  # noqa: D401
+        def __enter__(self) -> _Resp:
             return self
 
         def __exit__(self, *_exc: object) -> None:
@@ -407,9 +406,7 @@ def test_fetch_eod_472_no_data_returns_empty_list_immediately() -> None:
     # must behave exactly like the plain-text ":No data" body: return []
     # with no exception and no retries. Production repro: SPXW backfill
     # died instantly because 472 was misread as an entitlement denial.
-    with patch(
-        "theta_client.urlopen", side_effect=_http_error(472, "No data")
-    ) as mock_urlopen:
+    with patch("theta_client.urlopen", side_effect=_http_error(472, "No data")) as mock_urlopen:
         client = ThetaClient(max_retries=3)
         out = _fetch_eod_single_close(client)
     assert out == []
@@ -467,9 +464,7 @@ def test_fetch_eod_row_shorter_than_format_raises() -> None:
     "option_type,expected",
     [("C", "C"), ("c", "C"), ("CALL", "C"), ("Call", "C"), ("P", "P"), ("put", "P")],
 )
-def test_option_type_normalization_in_fetch_eod(
-    option_type: str, expected: str
-) -> None:
+def test_option_type_normalization_in_fetch_eod(option_type: str, expected: str) -> None:
     with patch(
         "theta_client.urlopen",
         return_value=_http_response({"header": {}, "response": []}),
@@ -539,10 +534,7 @@ def _et_ms(year: int, month: int, day: int, hour: int, minute: int) -> int:
     from zoneinfo import ZoneInfo
 
     return int(
-        _dt(
-            year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")
-        ).timestamp()
-        * 1000
+        _dt(year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000
     )
 
 
@@ -584,9 +576,7 @@ def test_snapshot_index_price_no_data_returns_none() -> None:
 def test_snapshot_index_price_472_no_data_returns_none() -> None:
     # HTTP 472 = NO_DATA — same semantics as the plain-text ":No data"
     # body: None, no exception, no retries.
-    with patch(
-        "theta_client.urlopen", side_effect=_http_error(472, "No data")
-    ) as mock_urlopen:
+    with patch("theta_client.urlopen", side_effect=_http_error(472, "No data")) as mock_urlopen:
         client = ThetaClient(max_retries=3)
         assert client.snapshot_index_price("SPX") is None
     # No-data never retries.
@@ -746,9 +736,7 @@ def test_hist_index_ohlc_tolerates_extra_named_columns() -> None:
 def test_hist_index_ohlc_472_no_data_returns_empty_list() -> None:
     # HTTP 472 = NO_DATA — same semantics as the plain-text ":No data"
     # body: [], no exception, no retries.
-    with patch(
-        "theta_client.urlopen", side_effect=_http_error(472, "No data")
-    ) as mock_urlopen:
+    with patch("theta_client.urlopen", side_effect=_http_error(472, "No data")) as mock_urlopen:
         client = ThetaClient(max_retries=3)
         assert client.hist_index_ohlc("SPX", date(2026, 8, 14)) == []
     # No-data never retries.
@@ -757,9 +745,7 @@ def test_hist_index_ohlc_472_no_data_returns_empty_list() -> None:
 
 def test_hist_index_ohlc_471_raises_subscription_error() -> None:
     # HTTP 471 = PERMISSION — the real entitlement denial.
-    with patch(
-        "theta_client.urlopen", side_effect=_http_error(471, "Permission denied")
-    ):
+    with patch("theta_client.urlopen", side_effect=_http_error(471, "Permission denied")):
         client = ThetaClient(max_retries=3)
         with pytest.raises(ThetaSubscriptionError):
             client.hist_index_ohlc("SPX", date(2026, 8, 14))

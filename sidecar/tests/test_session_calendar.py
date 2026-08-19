@@ -9,17 +9,17 @@ summer/winter pair verifies zoneinfo handling rather than a fixed offset.
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from session_calendar import cme_session_date  # noqa: E402
+from session_calendar import cme_session_date
 
 
 def _ns(year: int, month: int, day: int, hour: int, minute: int) -> int:
     """Nanoseconds since epoch for a UTC wall-clock instant."""
-    dt = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    dt = datetime(year, month, day, hour, minute, tzinfo=UTC)
     return int(dt.timestamp() * 1e9)
 
 

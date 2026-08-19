@@ -13,16 +13,15 @@ import json
 import sys
 import threading
 import urllib.error
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import archive_seeder  # noqa: E402
-
+import archive_seeder
 
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
@@ -40,7 +39,7 @@ class _FakeResp:
         self._body = body
         self._offset = 0
 
-    def __enter__(self) -> "_FakeResp":
+    def __enter__(self) -> _FakeResp:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -92,7 +91,7 @@ def _urlopen_stub(
     corrupt_files = set(corrupt_files or set())
     manifest_url = "https://blob.example/manifest.json"
 
-    def fake(req, *, timeout=None) -> _FakeResp:  # noqa: ARG001
+    def fake(req, *, timeout=None) -> _FakeResp:
         url = req.full_url if hasattr(req, "full_url") else req
         if url == manifest_url:
             return _FakeResp(json.dumps(manifest).encode())
@@ -167,9 +166,7 @@ def test_seed_skips_files_already_present_with_matching_sha(
 
     fake, manifest_url = _urlopen_stub(manifest, files)
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        result = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="test-token"
-        )
+        result = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="test-token")
 
     assert result.downloaded == 0
     assert result.skipped == 2
@@ -190,9 +187,7 @@ def test_sha_mismatch_is_recorded_as_failure_and_leaves_no_tmp(
     fake, manifest_url = _urlopen_stub(manifest, files, corrupt_files={"bad.parquet"})
 
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        result = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="test-token"
-        )
+        result = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="test-token")
 
     assert result.downloaded == 0
     assert result.failed == 1
@@ -215,17 +210,13 @@ def test_transient_errors_retry_and_succeed(
     """Two transient failures then success — should still download."""
     files = {"flaky.parquet": b"eventual-success"}
     manifest = _make_manifest(list(files.items()))
-    fake, manifest_url = _urlopen_stub(
-        manifest, files, transient_errors={"flaky.parquet": 2}
-    )
+    fake, manifest_url = _urlopen_stub(manifest, files, transient_errors={"flaky.parquet": 2})
 
     # Skip real sleep to keep tests fast.
     monkeypatch.setattr(archive_seeder.time, "sleep", lambda _s: None)
 
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        result = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="test-token"
-        )
+        result = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="test-token")
 
     assert result.downloaded == 1
     assert result.failed == 0
@@ -246,9 +237,7 @@ def test_exhausted_retries_become_a_failure(
     monkeypatch.setattr(archive_seeder.time, "sleep", lambda _s: None)
 
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        result = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="test-token"
-        )
+        result = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="test-token")
 
     assert result.failed == 1
     assert result.downloaded == 0
@@ -269,7 +258,7 @@ def test_concurrent_seed_raises_busy_error(tmp_path: Path) -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def slow_fake(req, *, timeout=None):  # noqa: ARG001
+    def slow_fake(req, *, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else req
         if url.endswith("/manifest.json"):
             return _FakeResp(json.dumps(manifest).encode())
@@ -339,9 +328,7 @@ def test_path_traversal_is_rejected(tmp_path: Path, malicious_path: str) -> None
     fake, manifest_url = _urlopen_stub(manifest, files)
 
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        result = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="test-token"
-        )
+        result = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="test-token")
 
     assert result.failed == 1
     assert result.downloaded == 0
@@ -383,9 +370,7 @@ def _ssrf_manifest(blob_url: str) -> dict[str, object]:
         "https://evil.attacker.example/a.parquet",  # non-allowlisted host
     ],
 )
-def test_ssrf_blob_url_is_rejected_without_downloading(
-    tmp_path: Path, blob_url: str
-) -> None:
+def test_ssrf_blob_url_is_rejected_without_downloading(tmp_path: Path, blob_url: str) -> None:
     """A tampered blob_url must be rejected BEFORE any urlopen call, so the
     Blob bearer token is never sent to an attacker host / metadata endpoint."""
     manifest = _ssrf_manifest(blob_url)
@@ -393,7 +378,7 @@ def test_ssrf_blob_url_is_rejected_without_downloading(
 
     blob_requests: list[object] = []
 
-    def fake(req, *, timeout=None):  # noqa: ARG001
+    def fake(req, *, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else req
         if url == manifest_url:
             return _FakeResp(json.dumps(manifest).encode())
@@ -403,16 +388,12 @@ def test_ssrf_blob_url_is_rejected_without_downloading(
         return _FakeResp(b"pwn")
 
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        result = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="secret-token"
-        )
+        result = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="secret-token")
 
     assert result.failed == 1
     assert result.downloaded == 0
     # Critically: the blob URL was never fetched, so the token never left.
-    assert blob_requests == [], (
-        f"SSRF guard failed — token-bearing request issued to {blob_url!r}"
-    )
+    assert blob_requests == [], f"SSRF guard failed — token-bearing request issued to {blob_url!r}"
     # And nothing was written to the volume.
     assert list(tmp_path.rglob("*")) == []
 
@@ -425,9 +406,7 @@ def test_ssrf_valid_https_on_allowlisted_host_passes(tmp_path: Path) -> None:
     fake, manifest_url = _urlopen_stub(manifest, files)
 
     with patch.object(archive_seeder.urllib.request, "urlopen", fake):
-        result = archive_seeder.seed_from_manifest(
-            manifest_url, tmp_path, token="test-token"
-        )
+        result = archive_seeder.seed_from_manifest(manifest_url, tmp_path, token="test-token")
 
     assert result.downloaded == 1
     assert result.failed == 0
@@ -443,7 +422,7 @@ def test_ssrf_extra_allowed_host_env_permits_second_host(
     manifest = _ssrf_manifest(blob_url)
     manifest_url = "https://blob.example/manifest.json"
 
-    def fake(req, *, timeout=None):  # noqa: ARG001
+    def fake(req, *, timeout=None):
         url = req.full_url if hasattr(req, "full_url") else req
         if url == manifest_url:
             return _FakeResp(json.dumps(manifest).encode())
@@ -473,16 +452,14 @@ def test_ssrf_extra_allowed_host_env_permits_second_host(
 def test_malformed_manifest_json_raises(tmp_path: Path) -> None:
     """If the manifest body isn't valid JSON, the seed aborts cleanly."""
 
-    def bad_json_urlopen(_req, *, timeout=None):  # noqa: ARG001
+    def bad_json_urlopen(_req, *, timeout=None):
         return _FakeResp(b"this is not json {")
 
     with (
         patch.object(archive_seeder.urllib.request, "urlopen", bad_json_urlopen),
         pytest.raises(json.JSONDecodeError),
     ):
-        archive_seeder.seed_from_manifest(
-            "https://blob.example/manifest.json", tmp_path, token="t"
-        )
+        archive_seeder.seed_from_manifest("https://blob.example/manifest.json", tmp_path, token="t")
     # And the lock must be released even on manifest-parse failure.
     assert archive_seeder.is_seeding() is False
 
@@ -502,7 +479,7 @@ def test_manifest_entry_missing_sha_is_recorded_as_failure(
         ],
     }
 
-    def stub(_req, *, timeout=None):  # noqa: ARG001
+    def stub(_req, *, timeout=None):
         return _FakeResp(json.dumps(manifest).encode())
 
     with patch.object(archive_seeder.urllib.request, "urlopen", stub):
@@ -517,7 +494,7 @@ def test_manifest_entry_missing_sha_is_recorded_as_failure(
 def test_empty_manifest_is_a_successful_no_op(tmp_path: Path) -> None:
     manifest = {"schema": 1, "files": []}
 
-    def stub(_req, *, timeout=None):  # noqa: ARG001
+    def stub(_req, *, timeout=None):
         return _FakeResp(json.dumps(manifest).encode())
 
     with patch.object(archive_seeder.urllib.request, "urlopen", stub):

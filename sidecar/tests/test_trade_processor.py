@@ -28,9 +28,9 @@ os.environ.setdefault("DATABASE_URL", _FAKE_DB_URL)
 import time  # noqa: E402
 
 import pytest  # noqa: E402
+
 import trade_processor  # noqa: E402
 from trade_processor import BATCH_SIZE, TradeProcessor  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -72,7 +72,7 @@ def _process_one(
     option_type: str = "C",
     price_raw: int = 10_000_000_000,
 ) -> None:
-    """Helper to feed a single trade into the processor."""
+    """Feed a single trade into the processor."""
     proc.process_trade(
         underlying="ES",
         expiry=SAMPLE_EXPIRY,
@@ -227,9 +227,7 @@ class TestBackgroundFlush:
     hits BATCH_SIZE loses every buffered trade.
     """
 
-    def test_background_flush_drains_sub_batch_buffer(
-        self, mock_batch_insert: MagicMock
-    ) -> None:
+    def test_background_flush_drains_sub_batch_buffer(self, mock_batch_insert: MagicMock) -> None:
         """A tick must flush buffered trades even when count < BATCH_SIZE."""
         proc = TradeProcessor(flush_interval_s=0.05)
         proc.start_background_flush()
@@ -243,9 +241,7 @@ class TestBackgroundFlush:
         finally:
             proc.stop()
 
-    def test_background_flush_is_noop_when_buffer_empty(
-        self, mock_batch_insert: MagicMock
-    ) -> None:
+    def test_background_flush_is_noop_when_buffer_empty(self, mock_batch_insert: MagicMock) -> None:
         """A tick with no buffered trades must not call the DB."""
         proc = TradeProcessor(flush_interval_s=0.05)
         proc.start_background_flush()
@@ -256,9 +252,7 @@ class TestBackgroundFlush:
         finally:
             proc.stop()
 
-    def test_start_background_flush_is_idempotent(
-        self, mock_batch_insert: MagicMock
-    ) -> None:
+    def test_start_background_flush_is_idempotent(self, mock_batch_insert: MagicMock) -> None:
         """Double-start must not spawn a second thread or duplicate flushes."""
         proc = TradeProcessor(flush_interval_s=0.05)
         proc.start_background_flush()
@@ -270,9 +264,7 @@ class TestBackgroundFlush:
         finally:
             proc.stop()
 
-    def test_stop_joins_thread_and_performs_final_flush(
-        self, mock_batch_insert: MagicMock
-    ) -> None:
+    def test_stop_joins_thread_and_performs_final_flush(self, mock_batch_insert: MagicMock) -> None:
         """stop() must exit the thread cleanly and commit buffered trades."""
         proc = TradeProcessor(flush_interval_s=10.0)  # long interval — no tick
         proc.start_background_flush()

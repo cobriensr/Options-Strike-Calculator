@@ -112,7 +112,7 @@ def start_scheduler() -> bool:
 
     # Late import: avoid hard circular between theta_launcher and
     # theta_fetcher during pytest collection.
-    import theta_launcher
+    import theta_launcher  # noqa: PLC0415 — see comment
 
     if not theta_launcher.is_running():
         log.info("Theta Terminal not running — scheduler disabled")
@@ -122,8 +122,9 @@ def start_scheduler() -> bool:
         if _scheduler is not None:
             return True
 
-        from apscheduler.schedulers.background import BackgroundScheduler
-        from apscheduler.triggers.cron import CronTrigger
+        # Lazy: APScheduler is only needed once Theta is actually up.
+        from apscheduler.schedulers.background import BackgroundScheduler  # noqa: PLC0415
+        from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
 
         _scheduler = BackgroundScheduler(timezone="America/New_York")
         _scheduler.add_job(
@@ -156,7 +157,7 @@ def stop_scheduler() -> None:
         if _scheduler is not None:
             try:
                 _scheduler.shutdown(wait=False)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — best-effort stop during shutdown
                 log.debug("theta scheduler shutdown failed: %s", exc)
             _scheduler = None
 
@@ -182,7 +183,11 @@ def run_nightly() -> None:
     a cheap no-op.
     """
     start = time.time()
-    trade_day = _prior_trading_day(date.today())
+    # DTZ011: local-clock date on purpose. The container runs in UTC and the
+    # trigger fires at 17:25 ET, so the UTC and ET calendar dates agree at
+    # fire time; pinning an explicit zone would shift trade_day for manual
+    # late-evening runs, which is a behaviour change we do not want here.
+    trade_day = _prior_trading_day(date.today())  # noqa: DTZ011
     log.info("Theta nightly ingest starting (trade_day=%s)", trade_day)
 
     client = ThetaClient()
@@ -223,7 +228,7 @@ def run_backfill_if_needed() -> None:
     to call multiple times — each root short-circuits when its
     theta_option_eod rows already exist.
     """
-    trade_day_end = _prior_trading_day(date.today())
+    trade_day_end = _prior_trading_day(date.today())  # noqa: DTZ011 — see run_nightly
     trade_day_start = trade_day_end - timedelta(days=settings.theta_backfill_days)
 
     client = ThetaClient()
@@ -240,7 +245,7 @@ def run_backfill_if_needed() -> None:
             )
             count = _fetch_root_range(client, root, trade_day_start, trade_day_end)
             log.info("Theta backfill complete for %s: %d rows", root, count)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — see comment below
             # Log + Sentry but continue to the next root. One bad root
             # should never block the others.
             capture_exception(
@@ -298,7 +303,7 @@ def _fetch_root_range(
         exp_end_date = min(end_date, exp)
         try:
             strikes = client.list_strikes(root, exp)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — captured to Sentry; one bad expiry must not stop the chain
             capture_exception(
                 exc,
                 context={
@@ -364,9 +369,7 @@ def _fetch_strike_pair(
     rows: list[EodRow] = []
     for opt_type in ("C", "P"):
         try:
-            fetched = client.fetch_eod(
-                root, exp, strike, opt_type, start_date, end_date
-            )
+            fetched = client.fetch_eod(root, exp, strike, opt_type, start_date, end_date)
         except ThetaSubscriptionError:
             capture_message(
                 "Theta denied fetch_eod — skipping root",
@@ -378,7 +381,7 @@ def _fetch_strike_pair(
                 tags=_THETA_TAGS,
             )
             return rows, True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — captured to Sentry; one bad contract must not stop the chain
             capture_exception(
                 exc,
                 context={

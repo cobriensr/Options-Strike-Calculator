@@ -248,12 +248,8 @@ def shutdown_fixtures(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
         "sys_exit": MagicMock(side_effect=SystemExit(0)),
     }
 
-    monkeypatch.setattr(
-        main.theta_fetcher, "stop_scheduler", mocks["theta_fetcher_stop"]
-    )
-    monkeypatch.setattr(
-        main.theta_launcher, "shutdown", mocks["theta_launcher_shutdown"]
-    )
+    monkeypatch.setattr(main.theta_fetcher, "stop_scheduler", mocks["theta_fetcher_stop"])
+    monkeypatch.setattr(main.theta_launcher, "shutdown", mocks["theta_launcher_shutdown"])
     monkeypatch.setattr(main, "drain_pool", mocks["drain_pool"])
     monkeypatch.setattr(main.time, "sleep", mocks["time_sleep"])
     monkeypatch.setattr(main.sys, "exit", mocks["sys_exit"])

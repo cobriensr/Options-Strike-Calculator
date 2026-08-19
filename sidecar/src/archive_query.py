@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import contextlib
 import glob
+import math
 import os
 import threading
 from collections.abc import Iterator
@@ -353,7 +354,7 @@ def es_day_summary(
         [ohlcv, symbology, top_symbol, date_iso],
     ).fetchone()
 
-    assert summary is not None  # filtered is non-empty by construction
+    assert summary is not None  # noqa: S101 — narrowing; filtered is non-empty by construction
     day_open, day_high, day_low, day_close, day_volume, bar_count = summary
 
     return {
@@ -425,9 +426,7 @@ def analog_days(
     if k < 1 or k > _ANALOG_MAX_K:
         raise ValueError(f"k must be in 1..{_ANALOG_MAX_K}, got {k}")
     if until_minute < _ANALOG_MIN_WINDOW or until_minute > _ANALOG_MAX_WINDOW:
-        raise ValueError(
-            f"until_minute must be in {_ANALOG_MIN_WINDOW}..{_ANALOG_MAX_WINDOW}"
-        )
+        raise ValueError(f"until_minute must be in {_ANALOG_MIN_WINDOW}..{_ANALOG_MAX_WINDOW}")
 
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
@@ -579,9 +578,7 @@ def analog_days(
     if target_row is None or target_row[0] is None:
         raise ValueError(f"No ES bars found for {date_iso}")
 
-    tgt_symbol, tgt_open, tgt_high, tgt_low, tgt_close, tgt_vol, tgt_win, tgt_delta = (
-        target_row
-    )
+    tgt_symbol, tgt_open, tgt_high, tgt_low, tgt_close, tgt_vol, tgt_win, tgt_delta = target_row
 
     analogs = [
         {
@@ -697,7 +694,7 @@ def day_summary_text(
         [ohlcv, symbology, top_symbol, date_iso],
     ).fetchone()
 
-    assert row is not None
+    assert row is not None  # noqa: S101 — narrowing; aggregate query always yields one row
     (
         day_open,
         day_high,
@@ -797,9 +794,7 @@ def day_features_vector(
     ).fetchall()
 
     if len(rows) < 10:
-        raise ValueError(
-            f"Insufficient first-hour bars for {date_iso}: got {len(rows)}"
-        )
+        raise ValueError(f"Insufficient first-hour bars for {date_iso}: got {len(rows)}")
 
     day_open = float(rows[0][2])
     # Build bucket keyed on minute index; forward-fill gaps.
@@ -890,13 +885,11 @@ def day_summary_prediction(
         [ohlcv, symbology, top_symbol, date_iso],
     ).fetchone()
 
-    assert row is not None
+    assert row is not None  # noqa: S101 — narrowing; aggregate query always yields one row
     day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = row
 
     if hour_bars is None or hour_bars < 10:
-        raise ValueError(
-            f"Insufficient first-hour bars for {date_iso}: got {hour_bars}"
-        )
+        raise ValueError(f"Insufficient first-hour bars for {date_iso}: got {hour_bars}")
 
     d1 = float(close_60) - float(day_open)
 
@@ -946,7 +939,7 @@ def day_features_batch(
     # contracts on the same day are vanishingly rare in production data;
     # the determinism guarantee is the win.
     rows = conn.execute(
-        front_month_cte(
+        front_month_cte(  # noqa: S608 — identifiers are module constants; values are bound via `?`
             symbol_like="'ES%'",
             parquet_path_param="?",
             symbology_path_param="?",
@@ -1048,7 +1041,7 @@ def day_summary_batch(
     # contracts now resolve deterministically by `symbol ASC` rather
     # than relying on DuckDB row order — see day_features_batch comment.
     rows = conn.execute(
-        front_month_cte(
+        front_month_cte(  # noqa: S608 — identifiers are module constants; values are bound via `?`
             symbol_like="'ES%'",
             parquet_path_param="?",
             symbology_path_param="?",
@@ -1162,7 +1155,7 @@ def day_summary_prediction_batch(
     # contracts now resolve deterministically by `symbol ASC` rather
     # than relying on DuckDB row order — see day_features_batch comment.
     rows = conn.execute(
-        front_month_cte(
+        front_month_cte(  # noqa: S608 — identifiers are module constants; values are bound via `?`
             symbol_like="'ES%'",
             parquet_path_param="?",
             symbology_path_param="?",
@@ -1210,9 +1203,7 @@ def day_summary_prediction_batch(
 
     out: list[dict[str, Any]] = []
     for row in rows:
-        day, symbol, day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = (
-            row
-        )
+        day, symbol, day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = row
         if hour_bars < 10:
             continue
         d1 = float(close_60) - float(day_open)
@@ -1328,9 +1319,7 @@ def tbbo_day_microstructure(
     """
     symbol_root = symbol.upper()
     if symbol_root not in _TBBO_ALLOWED_SYMBOLS:
-        raise ValueError(
-            f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}"
-        )
+        raise ValueError(f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}")
 
     tbbo = _tbbo_glob(root)
     symbology = _symbology_path(root)
@@ -1428,7 +1417,7 @@ def tbbo_day_microstructure(
         if v is None:
             return None
         fv = float(v)
-        if fv != fv:  # NaN check without `math` import noise
+        if math.isnan(fv):
             return None
         return fv
 
@@ -1483,13 +1472,9 @@ def tbbo_ofi_percentile(
     """
     symbol_root = symbol.upper()
     if symbol_root not in _TBBO_ALLOWED_SYMBOLS:
-        raise ValueError(
-            f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}"
-        )
+        raise ValueError(f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}")
     if window not in _TBBO_OFI_WINDOWS:
-        raise ValueError(
-            f"window must be one of {sorted(_TBBO_OFI_WINDOWS)}, got {window!r}"
-        )
+        raise ValueError(f"window must be one of {sorted(_TBBO_OFI_WINDOWS)}, got {window!r}")
     if horizon_days < 1:
         raise ValueError(f"horizon_days must be >= 1, got {horizon_days}")
     if horizon_days > _TBBO_OFI_MAX_HORIZON_DAYS:
@@ -1502,12 +1487,8 @@ def tbbo_ofi_percentile(
     try:
         current_float = float(current_value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"current_value must be a number, got {current_value!r}"
-        ) from exc
-    import math as _math
-
-    if not _math.isfinite(current_float):
+        raise ValueError(f"current_value must be a number, got {current_value!r}") from exc
+    if not math.isfinite(current_float):
         raise ValueError(f"current_value must be finite, got {current_value!r}")
 
     window_minutes = _TBBO_OFI_WINDOWS[window]
@@ -1564,7 +1545,7 @@ def tbbo_ofi_percentile(
         )
         ORDER BY day DESC
         LIMIT 1 OFFSET ?
-        """,
+        """,  # noqa: S608 — {session_day} is a module-constant SQL expression; values bound via `?`
         [tbbo, symbology, f"{symbol_root}%", horizon_days - 1],
     ).fetchone()
 
@@ -1672,7 +1653,7 @@ def tbbo_ofi_percentile(
         GROUP BY day
         ORDER BY day DESC
         LIMIT ?
-        """,
+        """,  # noqa: S608 — {session_day} is a module-constant SQL expression; values bound via `?`
         [
             tbbo,
             symbology,
@@ -1685,9 +1666,7 @@ def tbbo_ofi_percentile(
 
     values = [float(row[1]) for row in daily if row[1] is not None]
     if not values:
-        raise ValueError(
-            f"No TBBO {symbol_root} OFI history available for window {window}"
-        )
+        raise ValueError(f"No TBBO {symbol_root} OFI history available for window {window}")
 
     below = sum(1 for v in values if v < current_float)
     # Fraction strictly below, scaled 0-100. At the true minimum, zero values

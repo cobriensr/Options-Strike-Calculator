@@ -69,7 +69,9 @@ def _fetch_blob(url: str, token: str) -> bytes:
     # omitted the header and relied on the URL being public; that produced
     # the recurring `HTTPError 403` on cold start each time the in-process
     # bundle cache was empty.
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    req = urllib.request.Request(  # noqa: S310 — https blob URL from our own manifest listing
+        url, headers={"Authorization": f"Bearer {token}"}
+    )
     with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 (trusted)
         return resp.read()
 
@@ -86,9 +88,7 @@ def _load_bundle(alert_type: str) -> dict:
         token = os.environ["BLOB_READ_WRITE_TOKEN"]
         # Manifest → versioned bundle path → blob URL.
         manifest_blobs = _list_blob(MANIFEST_PATH, token)
-        manifest_entry = next(
-            (b for b in manifest_blobs if b["pathname"] == MANIFEST_PATH), None
-        )
+        manifest_entry = next((b for b in manifest_blobs if b["pathname"] == MANIFEST_PATH), None)
         if not manifest_entry:
             raise RuntimeError(f"manifest not found at {MANIFEST_PATH}")
         manifest = json.loads(_fetch_blob(manifest_entry["url"], token).decode("utf-8"))
@@ -96,13 +96,9 @@ def _load_bundle(alert_type: str) -> dict:
         # The Blob does store the JSON form, but for SHAP we need the joblib
         # (which contains the XGBClassifier + IsotonicRegression objects).
         # Convention: the joblib lives alongside the JSON at the same prefix.
-        joblib_path = target_path.replace("_classifier_v", "_joblib_v").replace(
-            ".json", ".joblib"
-        )
+        joblib_path = target_path.replace("_classifier_v", "_joblib_v").replace(".json", ".joblib")
         joblib_blobs = _list_blob(joblib_path, token)
-        joblib_entry = next(
-            (b for b in joblib_blobs if b["pathname"] == joblib_path), None
-        )
+        joblib_entry = next((b for b in joblib_blobs if b["pathname"] == joblib_path), None)
         if not joblib_entry:
             raise RuntimeError(
                 f"joblib bundle missing at {joblib_path}. Re-run "
@@ -141,7 +137,7 @@ def _explain_rows(alert_type: str, rows: list[dict]) -> list[dict]:
     for r in rows:
         feats = r["features"]
         matrix.append([feats.get(c, np.nan) for c in feature_cols])
-    X = pd.DataFrame(matrix, columns=feature_cols).astype(float)
+    X = pd.DataFrame(matrix, columns=feature_cols).astype(float)  # noqa: N806 — ML convention
 
     shap_values = np.asarray(explainer.shap_values(X))
 
@@ -169,9 +165,7 @@ def _explain_rows(alert_type: str, rows: list[dict]) -> list[dict]:
             for j in order_neg
             if contribs[j] < 0
         ]
-        out.append(
-            {"alert_id": r["alert_id"], "top_positive": pos, "top_negative": neg}
-        )
+        out.append({"alert_id": r["alert_id"], "top_positive": pos, "top_negative": neg})
     return out
 
 
@@ -186,7 +180,7 @@ def _json_safe(v):
 
 
 def is_enabled() -> bool:
-    """True iff the takeit server is enabled AND all required ML deps are
+    """Return True iff the takeit server is enabled AND all required ML deps are
     importable. Cached on first call so the import-probe overhead is paid once.
     """
     if os.environ.get("TAKEIT_SERVER_ENABLED", "0") != "1":
@@ -251,7 +245,7 @@ def handle_explain_payload(body_bytes: bytes, auth_header: str) -> tuple[int, di
     except RuntimeError as e:
         logger.exception("takeit explain failed: bundle/model error")
         return 503, {"error": str(e)}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.exception("takeit explain failed: unexpected")
         return 500, {"error": str(e)}
     return 200, {"results": results}

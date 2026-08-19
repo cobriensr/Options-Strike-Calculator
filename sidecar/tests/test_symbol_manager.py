@@ -16,7 +16,6 @@ from symbol_manager import (
     third_friday,
 )
 
-
 # ---------------------------------------------------------------------------
 # compute_atm_strikes
 # ---------------------------------------------------------------------------
@@ -62,12 +61,8 @@ class TestComputeAtmStrikes:
 
     def test_lowest_and_highest_strikes(self):
         strikes = compute_atm_strikes(5850.0)
-        assert strikes[0] == pytest.approx(
-            5850.0 - ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING
-        )
-        assert strikes[-1] == pytest.approx(
-            5850.0 + ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING
-        )
+        assert strikes[0] == pytest.approx(5850.0 - ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING)
+        assert strikes[-1] == pytest.approx(5850.0 + ES_STRIKES_EACH_SIDE * ES_STRIKE_SPACING)
 
     def test_all_values_are_multiples_of_5(self):
         strikes = compute_atm_strikes(5847.3)
@@ -258,9 +253,7 @@ class TestThirdFriday:
         for year in (2025, 2026, 2027):
             for month in range(1, 13):
                 result = third_friday(year, month)
-                assert 15 <= result.day <= 21, (
-                    f"{result} day {result.day} not in [15, 21]"
-                )
+                assert 15 <= result.day <= 21, f"{result} day {result.day} not in [15, 21]"
 
 
 # ---------------------------------------------------------------------------
@@ -293,9 +286,7 @@ class TestGetNearestEsExpiry:
         """November 2025 -> past Sep expiry, before Dec expiry -> Dec 2025."""
         dec_exp = third_friday(2025, 12)
         # Use a date after Dec expiry to force year boundary
-        result = get_nearest_es_expiry(
-            date(dec_exp.year, dec_exp.month, dec_exp.day + 1)
-        )
+        result = get_nearest_es_expiry(date(dec_exp.year, dec_exp.month, dec_exp.day + 1))
         assert result == third_friday(2026, 3)
 
     def test_november_before_dec_expiry(self):

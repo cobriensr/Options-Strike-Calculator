@@ -31,7 +31,6 @@ polars = pytest.importorskip("polars")
 
 import multileg_routes  # noqa: E402
 
-
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 
@@ -116,9 +115,7 @@ def test_two_trade_vertical_returns_vertical_classification() -> None:
     # Both legs classified as vertical and grouped together.
     assert classifications[0]["inferred_structure"] == "vertical"
     assert classifications[1]["inferred_structure"] == "vertical"
-    assert (
-        classifications[0]["pattern_group_id"] == classifications[1]["pattern_group_id"]
-    )
+    assert classifications[0]["pattern_group_id"] == classifications[1]["pattern_group_id"]
     assert classifications[0]["is_isolated_leg"] is False
     assert classifications[1]["is_isolated_leg"] is False
     assert classifications[0]["match_confidence"] >= 0.5
@@ -208,7 +205,7 @@ def test_custom_tolerances_passed_through_to_classify_trades() -> None:
     # patch it on the live module dict if already imported, otherwise
     # the import in _classify_with_polars will pull the real one.
     if "multileg_assembler" not in sys.modules:
-        import multileg_assembler  # noqa: F401, PLC0415
+        import multileg_assembler  # noqa: F401
     with patch.object(
         sys.modules["multileg_assembler"], "classify_trades", side_effect=fake_classify
     ):
@@ -245,7 +242,7 @@ def test_defaults_used_when_tolerances_omitted() -> None:
         )
 
     if "multileg_assembler" not in sys.modules:
-        import multileg_assembler  # noqa: F401, PLC0415
+        import multileg_assembler  # noqa: F401
     with patch.object(
         sys.modules["multileg_assembler"], "classify_trades", side_effect=fake_classify
     ):
@@ -266,14 +263,12 @@ def test_unexpected_matcher_error_returns_500() -> None:
     message in the body. Sentry capture is best-effort and should not
     affect the response."""
     if "multileg_assembler" not in sys.modules:
-        import multileg_assembler  # noqa: F401, PLC0415
+        import multileg_assembler  # noqa: F401
 
     def boom(*_a, **_kw):
         raise RuntimeError("matcher exploded")
 
-    with patch.object(
-        sys.modules["multileg_assembler"], "classify_trades", side_effect=boom
-    ):
+    with patch.object(sys.modules["multileg_assembler"], "classify_trades", side_effect=boom):
         status, body = _post({"trades": [_trade("t1")]})
     assert status == 500
     assert "matcher exploded" in body["error"]
@@ -300,6 +295,4 @@ def test_module_adds_ml_src_to_path() -> None:
     vendored = sidecar_root / "_vendored_ml"
     ml_src = repo_root / "ml" / "src"
     on_path = {str(vendored), str(ml_src)} & set(sys.path)
-    assert on_path, (
-        "expected _vendored_ml/ or ml/src/ on sys.path after importing multileg_routes"
-    )
+    assert on_path, "expected _vendored_ml/ or ml/src/ on sys.path after importing multileg_routes"

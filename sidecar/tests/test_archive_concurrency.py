@@ -29,9 +29,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import archive_query  # noqa: E402
-from health import HealthHandler  # noqa: E402
-
+import archive_query
+from health import HealthHandler
 
 # ---------------------------------------------------------------------------
 # Semaphore-layer tests (archive_query.archive_query_slot)
@@ -62,9 +61,8 @@ def test_slot_admits_up_to_cap() -> None:
     cm2.__enter__()
     try:
         # Both slots held — a third must be refused.
-        with pytest.raises(archive_query.ArchiveBusyError):
-            with archive_query.archive_query_slot():
-                pass
+        with pytest.raises(archive_query.ArchiveBusyError), archive_query.archive_query_slot():
+            pass
     finally:
         cm1.__exit__(None, None, None)
         cm2.__exit__(None, None, None)
@@ -75,24 +73,27 @@ def test_slot_releases_on_exit() -> None:
     with archive_query.archive_query_slot():
         pass
     # Cap is 2; after the above released, two fresh acquisitions must fit.
-    with archive_query.archive_query_slot():
-        with archive_query.archive_query_slot():
-            with pytest.raises(archive_query.ArchiveBusyError):
-                with archive_query.archive_query_slot():
-                    pass
+    with (
+        archive_query.archive_query_slot(),
+        archive_query.archive_query_slot(),
+        pytest.raises(archive_query.ArchiveBusyError),
+        archive_query.archive_query_slot(),
+    ):
+        pass
 
 
 def test_slot_releases_even_when_body_raises() -> None:
     """An exception inside the slot still frees it (no leak)."""
-    with pytest.raises(RuntimeError):
-        with archive_query.archive_query_slot():
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), archive_query.archive_query_slot():
+        raise RuntimeError("boom")
     # If the slot leaked, only one more acquisition would fit. Two must.
-    with archive_query.archive_query_slot():
-        with archive_query.archive_query_slot():
-            with pytest.raises(archive_query.ArchiveBusyError):
-                with archive_query.archive_query_slot():
-                    pass
+    with (
+        archive_query.archive_query_slot(),
+        archive_query.archive_query_slot(),
+        pytest.raises(archive_query.ArchiveBusyError),
+        archive_query.archive_query_slot(),
+    ):
+        pass
 
 
 def test_slot_bounds_concurrency_under_threads() -> None:
@@ -201,9 +202,7 @@ def test_archive_handler_returns_503_when_cap_saturated() -> None:
                 "archive_query.es_day_summary",
                 side_effect=AssertionError("query must not run when saturated"),
             ):
-                status, body, headers = _run_request(
-                    path="/archive/es-range?date=2025-01-15"
-                )
+                status, body, headers = _run_request(path="/archive/es-range?date=2025-01-15")
         finally:
             held1.__exit__(None, None, None)
             held2.__exit__(None, None, None)
@@ -217,10 +216,10 @@ def test_archive_handler_runs_query_when_slot_available() -> None:
     """With slots free, the route dispatches the query normally (200)."""
     sample = {"date": "2025-01-15", "symbol": "ESH5", "open": 1.0}
     sema = threading.BoundedSemaphore(2)
-    with patch.object(archive_query, "_archive_query_semaphore", sema):
-        with patch("archive_query.es_day_summary", return_value=sample):
-            status, body, _ = _run_request(
-                path="/archive/es-range?date=2025-01-15"
-            )
+    with (
+        patch.object(archive_query, "_archive_query_semaphore", sema),
+        patch("archive_query.es_day_summary", return_value=sample),
+    ):
+        status, body, _ = _run_request(path="/archive/es-range?date=2025-01-15")
     assert status == 200
     assert body == sample

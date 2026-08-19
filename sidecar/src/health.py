@@ -17,10 +17,11 @@ import os
 import re
 import threading
 import time
-from collections.abc import Iterator
-from datetime import date, datetime, timedelta, timezone
+import zoneinfo
+from collections.abc import Callable, Iterator
+from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from archive_seeder import SeedBusyError
@@ -298,11 +299,11 @@ def _is_today_or_future_utc(date_str: str) -> bool:
     no rows — ~96 wasted queries per session, each contributing
     memory pressure on an already-strained Railway tier.
     """
-    today_utc = datetime.now(timezone.utc).date().isoformat()
+    today_utc = datetime.now(UTC).date().isoformat()
     return date_str >= today_utc
 
 
-class _BadRequest(Exception):
+class _BadRequest(Exception):  # noqa: N818 — private sentinel, always converted to HTTP 400
     """Raised by parse helpers when an input is missing/malformed.
 
     Internal sentinel — caught by the route dispatch and converted to
@@ -389,7 +390,7 @@ def _aq() -> Any:
     """Return the lazy-loaded `archive_query` module."""
     global _archive_query_module
     if _archive_query_module is None:
-        import archive_query
+        import archive_query  # noqa: PLC0415 — heavy, cached above
 
         _archive_query_module = archive_query
     return _archive_query_module
@@ -414,13 +415,11 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     All other exceptions propagate to the default ``handle_error``.
     """
 
-    def handle_error(self, request: Any, client_address: Any) -> None:  # noqa: D401
+    def handle_error(self, request: Any, client_address: Any) -> None:
         import sys  # noqa: PLC0415
 
         exc_type = sys.exc_info()[0]
-        if exc_type is not None and issubclass(
-            exc_type, (BrokenPipeError, ConnectionResetError)
-        ):
+        if exc_type is not None and issubclass(exc_type, (BrokenPipeError, ConnectionResetError)):
             return
         super().handle_error(request, client_address)
 
@@ -528,10 +527,10 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         try:
             checks["db"] = self.is_db_healthy()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — a probe crash is reported as db=False, not a 500
             # Surface DB-health probe failures so an outage shows up in
             # Sentry before it manifests as a sustained 503 from /health.
-            from sentry_setup import capture_exception
+            from sentry_setup import capture_exception  # noqa: PLC0415 — lazy optional Sentry
 
             capture_exception(
                 exc,
@@ -556,7 +555,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def do_POST(self) -> None:  # noqa: N802 — http.server naming convention
+    def do_POST(self) -> None:
         """Dispatch POST requests."""
         if self.path == "/takeit/explain":
             self._handle_takeit_explain()
@@ -639,9 +638,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(
-                json.dumps(
-                    {"error": "takeit server disabled or missing ML deps"}
-                ).encode()
+                json.dumps({"error": "takeit server disabled or missing ML deps"}).encode()
             )
             return
 
@@ -685,9 +682,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(
-                json.dumps(
-                    {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
-                ).encode()
+                json.dumps({"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}).encode()
             )
             return
         auth_header = self.headers.get("Authorization", "")
@@ -737,9 +732,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         """
         shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
         if not shared_secret:
-            self._send_json(
-                503, {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
-            )
+            self._send_json(503, {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"})
             return False
         auth_header = self.headers.get("Authorization", "")
         if not hmac.compare_digest(auth_header, f"Bearer {shared_secret}"):
@@ -832,9 +825,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         prev_close: float | None = None
         try:
-            candles = client.hist_index_ohlc(
-                root, _previous_weekday(snap.snapshot_date)
-            )
+            candles = client.hist_index_ohlc(root, _previous_weekday(snap.snapshot_date))
             if candles:
                 prev_close = float(candles[-1].close)
         except theta_client.ThetaClientError as exc:
@@ -888,9 +879,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ThetaBusyError:
             self._send_theta_busy()
 
-    def _theta_index_history_locked(
-        self, root: str, date_str: str, day: date, ivl_ms: int
-    ) -> None:
+    def _theta_index_history_locked(self, root: str, date_str: str, day: date, ivl_ms: int) -> None:
         """Body of /theta/index/history, run while holding a Terminal slot."""
         import theta_client  # noqa: PLC0415
 
@@ -948,9 +937,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Retry-After", "1")
             self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": "archive busy, retry shortly"}).encode()
-            )
+            self.wfile.write(json.dumps({"error": "archive busy, retry shortly"}).encode())
 
     def _handle_archive_es_range(self) -> None:
         """GET /archive/es-range?date=YYYY-MM-DD → ES day summary from archive.
@@ -1243,8 +1230,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         describing where ``value`` falls in the last 252 days of historical
         daily-mean OFI at ``window`` for ``symbol`` (front-month only).
         """
-        import math
-
         qs = parse_qs(urlparse(self.path).query)
         symbol = (qs.get("symbol") or [""])[0].upper()
         value_raw = (qs.get("value") or [""])[0]
@@ -1281,12 +1266,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             if horizon > _aq()._TBBO_OFI_MAX_HORIZON_DAYS:
                 self._send_json(
                     400,
-                    {
-                        "error": (
-                            "horizon_days must be <= "
-                            f"{_aq()._TBBO_OFI_MAX_HORIZON_DAYS}"
-                        )
-                    },
+                    {"error": (f"horizon_days must be <= {_aq()._TBBO_OFI_MAX_HORIZON_DAYS}")},
                 )
                 return
             kwargs["horizon_days"] = horizon
@@ -1381,13 +1361,13 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.theta_last_ready_at is not None:
             try:
                 last_ready = self.theta_last_ready_at()
-            except Exception:
+            except Exception:  # noqa: BLE001 — injected callback; /health must still render
                 last_ready = 0.0
         last_error = None
         if self.theta_last_error is not None:
             try:
                 last_error = self.theta_last_error()
-            except Exception:
+            except Exception:  # noqa: BLE001 — injected callback; /health must still render
                 last_error = None
         return {
             "running": self.theta_is_running(),
@@ -1401,7 +1381,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 
 def _now_ts() -> float:
-    return datetime.now(timezone.utc).timestamp()
+    return datetime.now(UTC).timestamp()
 
 
 def _is_data_expected() -> bool:
@@ -1413,8 +1393,6 @@ def _is_data_expected() -> bool:
 
     Simplified: skip weekends and the 5 PM CT hour (maintenance window).
     """
-    import zoneinfo
-
     ct = datetime.now(zoneinfo.ZoneInfo("America/Chicago"))
     weekday = ct.weekday()  # Monday=0, Sunday=6
 
@@ -1428,10 +1406,7 @@ def _is_data_expected() -> bool:
     if weekday == 4 and ct.hour >= 16:
         return False
     # Daily maintenance window
-    if ct.hour == 16:
-        return False
-
-    return True
+    return ct.hour != 16
 
 
 def start_health_server(
@@ -1493,7 +1468,7 @@ def start_health_server(
     # client (or Railway's edge proxy on its behalf) closes the upstream
     # connection before we finish writing. Vercel already records the
     # real failure (sidecar_non_2xx); the Python traceback is just noise.
-    server = _QuietThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    server = _QuietThreadingHTTPServer(("0.0.0.0", port), HealthHandler)  # noqa: S104 — container port, Railway fronts it
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log.info("Health server listening on port %d (threaded)", port)

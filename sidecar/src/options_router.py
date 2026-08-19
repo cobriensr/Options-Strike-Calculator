@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from logger_setup import log
 from session_calendar import cme_session_date
@@ -190,8 +192,6 @@ class OptionsRecordRouter:
 
     def handle_definition(self, record: Any) -> None:
         """Process an InstrumentDefMsg to discover ES option instruments."""
-        from datetime import datetime, timezone
-
         instrument_class = getattr(record, "instrument_class", None)
         if instrument_class not in ("C", "P"):
             # Not a call or put -- could be a future ('F') or other.
@@ -215,7 +215,7 @@ class OptionsRecordRouter:
 
         expiry_ns = getattr(record, "expiration", 0)
         if expiry_ns:
-            expiry = datetime.fromtimestamp(expiry_ns / 1e9, tz=timezone.utc).date()
+            expiry = datetime.fromtimestamp(expiry_ns / 1e9, tz=UTC).date()
         else:
             return
 
@@ -265,7 +265,7 @@ class OptionsRecordRouter:
 
         # Lazy import: matches the original databento_client behavior
         # — keeps cold-start cost off the import path.
-        from databento import Side
+        from databento import Side  # noqa: PLC0415 — see comment
 
         side = getattr(record, "side", None)
         if side == Side.ASK:
@@ -297,10 +297,7 @@ class OptionsRecordRouter:
         # float-representation noise strike (5849.9999999) still matches
         # its clean 5-point-grid window entry (5850). FINDING 4: exact
         # equality silently dropped such strikes with no counter/log.
-        if not any(
-            abs(strike - s) <= STRIKE_MATCH_TOLERANCE
-            for s in self.options_strikes.strikes
-        ):
+        if not any(abs(strike - s) <= STRIKE_MATCH_TOLERANCE for s in self.options_strikes.strikes):
             self.window_filter_drops += 1
             self._maybe_log_window_filter_summary()
             return
@@ -354,7 +351,7 @@ class OptionsRecordRouter:
         # a local-clock date (would reintroduce the bug); skip + capture.
         ts_event = getattr(record, "ts_event", None)
         if not isinstance(ts_event, int) or ts_event <= 0:
-            from sentry_setup import capture_message
+            from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
             capture_message(
                 "Dropped ES option stat with missing/invalid ts_event — "
@@ -480,14 +477,10 @@ class OptionsRecordRouter:
         deleted, to avoid mutating the dict while iterating it. All mutation
         happens under ``self._lock`` (the same guard as the inserts).
         """
-        from datetime import datetime, timezone
-
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         with self._lock:
             stale_iids = [
-                iid
-                for iid, info in self.option_definitions.items()
-                if info["expiry"] < today
+                iid for iid, info in self.option_definitions.items() if info["expiry"] < today
             ]
             for iid in stale_iids:
                 del self.option_definitions[iid]
@@ -518,7 +511,7 @@ class OptionsRecordRouter:
         self.definition_lag_drops = 0
         self.last_lag_summary_ts = now
 
-        from sentry_setup import capture_message
+        from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
         capture_message(
             f"Dropped {drops} ES option trades with no cached Definition "
@@ -562,7 +555,7 @@ class OptionsRecordRouter:
         # Above the stale-window threshold: the ATM window is likely frozen
         # (ES OHLCV bars stalled, so recentering halted) and we are dropping
         # the live near-ATM tape. THIS is the actionable case — page Sentry.
-        from sentry_setup import capture_message
+        from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
         capture_message(
             f"Dropped {drops} ES option trades outside the ATM strike window "
@@ -594,17 +587,14 @@ class OptionsRecordRouter:
         if self.stat_upsert_failures == 0:
             return
         now = time.time()
-        if (
-            now - self.last_stat_failure_summary_ts
-            < STAT_UPSERT_FAILURE_SUMMARY_INTERVAL_S
-        ):
+        if now - self.last_stat_failure_summary_ts < STAT_UPSERT_FAILURE_SUMMARY_INTERVAL_S:
             return
         failures = self.stat_upsert_failures
         last_error = self.last_stat_failure_error
         self.stat_upsert_failures = 0
         self.last_stat_failure_summary_ts = now
 
-        from sentry_setup import capture_message
+        from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
         capture_message(
             f"Failed to upsert {failures} ES option stat(s) into "

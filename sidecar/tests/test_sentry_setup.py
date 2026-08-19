@@ -11,8 +11,8 @@ import sys
 from unittest.mock import MagicMock
 
 import pytest
-import sentry_setup
 
+import sentry_setup
 
 # Shared mock_log that tests inspect. Installed per-test via the
 # _reset_state fixture by monkeypatching sentry_setup.log directly —
@@ -73,9 +73,7 @@ class TestInitSentry:
         sentry_setup.init_sentry()
         assert mock_sentry_sdk.init.call_count == 1
 
-    def test_init_initializes_when_dsn_present(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_init_initializes_when_dsn_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """With a valid DSN, Sentry init is invoked and is_enabled() returns True."""
         monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
         monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
@@ -107,13 +105,10 @@ class TestInitSentry:
         assert sentry_setup.is_enabled() is False
         # And the failure should be logged
         assert any(
-            "Failed to initialize Sentry" in str(call)
-            for call in mock_log.error.call_args_list
+            "Failed to initialize Sentry" in str(call) for call in mock_log.error.call_args_list
         )
 
-    def test_init_environment_defaults_to_production(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_init_environment_defaults_to_production(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """With DSN set but no RAILWAY_ENVIRONMENT, environment defaults to production."""
         monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
 
@@ -137,9 +132,7 @@ class TestCaptureExceptionDisabled:
         sentry_setup.capture_exception(exc, context={"symbol": "ES"})
         # Should still log, with context somewhere in the message
         args, _ = mock_log.error.call_args
-        assert any("context" in str(a) for a in args) or any(
-            "ES" in str(a) for a in args
-        )
+        assert any("context" in str(a) for a in args) or any("ES" in str(a) for a in args)
 
 
 class TestCaptureMessageDisabled:
@@ -148,9 +141,7 @@ class TestCaptureMessageDisabled:
         mock_log.warning.assert_called_once()
 
     def test_logs_with_context_when_disabled(self) -> None:
-        sentry_setup.capture_message(
-            "reconnect gap", level="warning", context={"gap_s": 75}
-        )
+        sentry_setup.capture_message("reconnect gap", level="warning", context={"gap_s": 75})
         mock_log.warning.assert_called_once()
 
 
@@ -188,9 +179,7 @@ class TestApplyScope:
 
 
 class TestCaptureExceptionEnabled:
-    def test_forwards_to_sentry_when_enabled(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_forwards_to_sentry_when_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Set up Sentry as enabled with a mock sentry_sdk
         monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
         mock_sentry_sdk = MagicMock()

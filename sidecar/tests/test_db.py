@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
-from typing import Generator
 from unittest.mock import MagicMock
 
 # Required env vars for config.py's pydantic-settings validation.
@@ -34,8 +34,8 @@ _FAKE_DB_URL = "postgresql://test:" + "fakefixture" + "@localhost/test"
 os.environ.setdefault("DATABASE_URL", _FAKE_DB_URL)
 
 import pytest  # noqa: E402
-import db  # noqa: E402
 
+import db  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -418,9 +418,7 @@ class TestExecuteWithRetry:
 
     def test_success_on_first_attempt(self, mock_conn_pool: MagicMock) -> None:
         db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
-        mock_conn_pool.execute.assert_called_once_with(
-            self.SAMPLE_SQL, self.SAMPLE_PARAMS
-        )
+        mock_conn_pool.execute.assert_called_once_with(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
 
     def test_operational_error_retries_once_and_succeeds(
         self,
@@ -634,9 +632,7 @@ class TestGetConnDeadConnectionHandling:
     """
 
     @pytest.fixture
-    def fake_pool_with_conn(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> tuple[MagicMock, MagicMock]:
+    def fake_pool_with_conn(self, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock]:
         """Install a fake pool whose getconn() returns a controllable conn.
 
         Returns (pool, conn) so each test can configure side effects on
@@ -657,9 +653,8 @@ class TestGetConnDeadConnectionHandling:
         body's exception is what reaches the caller (not the rollback)."""
         _pool, conn = fake_pool_with_conn
 
-        with pytest.raises(RuntimeError, match="body boom"):
-            with db.get_conn() as _:
-                raise RuntimeError("body boom")
+        with pytest.raises(RuntimeError, match="body boom"), db.get_conn() as _:
+            raise RuntimeError("body boom")
 
         conn.rollback.assert_called_once()
 
@@ -672,13 +667,10 @@ class TestGetConnDeadConnectionHandling:
         used to mask the real cause. The OperationalError must reach
         the caller now."""
         _pool, conn = fake_pool_with_conn
-        conn.rollback.side_effect = RuntimeError(
-            "InterfaceError: connection already closed"
-        )
+        conn.rollback.side_effect = RuntimeError("InterfaceError: connection already closed")
 
-        with pytest.raises(RuntimeError, match="ssl drop"):
-            with db.get_conn() as _:
-                raise RuntimeError("ssl drop")
+        with pytest.raises(RuntimeError, match="ssl drop"), db.get_conn() as _:
+            raise RuntimeError("ssl drop")
 
         conn.rollback.assert_called_once()
 
@@ -692,9 +684,8 @@ class TestGetConnDeadConnectionHandling:
         conn.closed = 2  # libpq's "broken connection" state
         conn.rollback.side_effect = RuntimeError("connection already closed")
 
-        with pytest.raises(RuntimeError):
-            with db.get_conn() as _:
-                raise RuntimeError("ssl drop")
+        with pytest.raises(RuntimeError), db.get_conn() as _:
+            raise RuntimeError("ssl drop")
 
         pool.putconn.assert_called_once_with(conn, close=True)
 
@@ -717,12 +708,11 @@ class TestGetConnDeadConnectionHandling:
     ) -> None:
         """During shutdown the pool may already be closed; putconn then
         raises PoolError. That must not replace the body's exception."""
-        pool, conn = fake_pool_with_conn
+        pool, _conn = fake_pool_with_conn
         pool.putconn.side_effect = RuntimeError("connection pool is closed")
 
-        with pytest.raises(RuntimeError, match="body boom"):
-            with db.get_conn() as _:
-                raise RuntimeError("body boom")
+        with pytest.raises(RuntimeError, match="body boom"), db.get_conn() as _:
+            raise RuntimeError("body boom")
 
 
 # ---------------------------------------------------------------------------
@@ -838,9 +828,7 @@ class TestGetPool:
 class TestGetConnWithTimeout:
     """Cover the slow-borrow Sentry warning and the PoolError retry loop."""
 
-    def test_fast_borrow_returns_immediately(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_fast_borrow_returns_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The happy path: getconn returns instantly, no warning fires."""
         # monotonic returns the same value on each call -> elapsed_ms == 0
         monkeypatch.setattr(db.time, "monotonic", lambda: 100.0)
@@ -859,9 +847,7 @@ class TestGetConnWithTimeout:
         assert result is conn
         assert captured == []
 
-    def test_slow_borrow_triggers_sentry_warning(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_slow_borrow_triggers_sentry_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When elapsed_ms > SLOW_GETCONN_WARNING_MS (1000), forward to Sentry."""
         # Two calls to monotonic: start=0, after-getconn=2.5s -> 2500ms
         ticks = iter([0.0, 2.5])
@@ -907,9 +893,7 @@ class TestGetConnWithTimeout:
         result = db._getconn_with_timeout(pool, timeout_s=10.0)
         assert result is conn
 
-    def test_pool_error_retries_then_succeeds(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pool_error_retries_then_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """PoolError on first borrow should sleep+retry, then succeed."""
         import psycopg2.pool
 
@@ -921,7 +905,7 @@ class TestGetConnWithTimeout:
         monkeypatch.setattr(db.time, "monotonic", lambda: next(ticks))
 
         sleeps: list[float] = []
-        monkeypatch.setattr(db.time, "sleep", lambda s: sleeps.append(s))
+        monkeypatch.setattr(db.time, "sleep", sleeps.append)
 
         conn = MagicMock()
         pool = MagicMock()
@@ -972,16 +956,12 @@ class TestVerifyConnection:
 
     def test_no_row_raises_runtime_error(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.fetchone.return_value = None
-        with pytest.raises(
-            RuntimeError, match="Database connection verification failed"
-        ):
+        with pytest.raises(RuntimeError, match="Database connection verification failed"):
             db.verify_connection()
 
     def test_wrong_row_raises_runtime_error(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.fetchone.return_value = (0,)
-        with pytest.raises(
-            RuntimeError, match="Database connection verification failed"
-        ):
+        with pytest.raises(RuntimeError, match="Database connection verification failed"):
             db.verify_connection()
 
 
@@ -998,9 +978,7 @@ class TestIsDbHealthy:
         mock_conn_pool.execute.side_effect = RuntimeError("connection reset")
         assert db.is_db_healthy() is False
 
-    def test_uses_short_timeout_for_fast_fail(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_uses_short_timeout_for_fast_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The probe must borrow with a SHORT timeout so a saturated pool
         fails fast (Finding E) rather than hanging the full default 10s
         and tripping a spurious 503 -> Railway restart."""
@@ -1023,9 +1001,7 @@ class TestIsDbHealthy:
         # Strictly shorter than the default borrow timeout.
         assert timeout < db.DEFAULT_GETCONN_TIMEOUT_S
 
-    def test_pool_saturated_returns_true_and_warns(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_pool_saturated_returns_true_and_warns(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Finding E: a saturated pool (PoolTimeoutError) means the DB is
         alive but busy — the probe must return True (busy != dead) and
         surface a Sentry warning so saturation stays observable."""
@@ -1065,9 +1041,7 @@ class TestIsDbHealthy:
 
         assert db.is_db_healthy() is True
 
-    def test_real_connection_error_returns_false(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_real_connection_error_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A genuine connection/query error (not pool saturation) means
         the DB is actually unreachable — return False so the health
         endpoint reports 503."""
@@ -1086,12 +1060,11 @@ class TestIsDbHealthy:
 
 
 class TestUpsertFuturesBar:
-    def test_execute_called_with_expected_sql_and_params(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_execute_called_with_expected_sql_and_params(self, mock_conn_pool: MagicMock) -> None:
+        from datetime import UTC
         from datetime import datetime as _datetime
 
-        ts = _datetime(2026, 4, 18, 14, 30)
+        ts = _datetime(2026, 4, 18, 14, 30, tzinfo=UTC)
         db.upsert_futures_bar(
             "ES",
             ts,
@@ -1123,9 +1096,7 @@ class TestUpsertFuturesBar:
 
 
 class TestUpsertOptionsDaily:
-    def test_execute_called_with_expected_sql_and_params(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
+    def test_execute_called_with_expected_sql_and_params(self, mock_conn_pool: MagicMock) -> None:
         from datetime import date as _date
 
         trade_date = _date(2026, 4, 5)
@@ -1146,9 +1117,7 @@ class TestUpsertOptionsDaily:
         mock_conn_pool.execute.assert_called_once()
         sql, params = mock_conn_pool.execute.call_args[0]
         assert "INSERT INTO futures_options_daily" in sql
-        assert (
-            "ON CONFLICT (underlying, trade_date, expiry, strike, option_type)" in sql
-        )
+        assert "ON CONFLICT (underlying, trade_date, expiry, strike, option_type)" in sql
         assert params == (
             "ES",
             trade_date,
@@ -1240,11 +1209,12 @@ class TestHasThetaOptionEodRows:
 
 class TestGetRecentBars:
     def test_returns_dict_per_row(self, mock_conn_pool: MagicMock) -> None:
+        from datetime import UTC
         from datetime import datetime as _datetime
 
         rows = [
             {
-                "ts": _datetime(2026, 4, 18, 14, 30),
+                "ts": _datetime(2026, 4, 18, 14, 30, tzinfo=UTC),
                 "open": Decimal("5000.0"),
                 "high": Decimal("5005.0"),
                 "low": Decimal("4995.0"),

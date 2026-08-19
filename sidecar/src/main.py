@@ -17,14 +17,14 @@ Runs 24/7 on Railway as a persistent process.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import signal
 import sys
 import threading
 import time
 
 # Ensure src/ is on the Python path for local imports
-import os
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import archive_seeder
@@ -52,8 +52,8 @@ _quote_processor: QuoteProcessor | None = None
 _shutting_down = False
 
 
-def shutdown(signum: int, frame: object) -> None:
-    """Graceful shutdown handler."""
+def shutdown(signum: int, _frame: object) -> None:
+    """Graceful shutdown handler (signal.signal callback signature)."""
     global _shutting_down
     if _shutting_down:
         return
@@ -90,7 +90,7 @@ def shutdown(signum: int, frame: object) -> None:
 
 
 def main() -> None:
-    """Main entry point: verify env, connect DB, start streaming."""
+    """Run the sidecar: verify env, connect DB, start streaming."""
     global _client
 
     log.info("Futures relay sidecar starting")
@@ -171,8 +171,7 @@ def main() -> None:
         log.info("Archive seed endpoint enabled (root=%s)", archive_root)
     else:
         log.info(
-            "Archive seed endpoint disabled "
-            "(ARCHIVE_MANIFEST_URL or BLOB_READ_WRITE_TOKEN missing)"
+            "Archive seed endpoint disabled (ARCHIVE_MANIFEST_URL or BLOB_READ_WRITE_TOKEN missing)"
         )
 
     # Start health check server. Theta reporters are always passed —
@@ -231,13 +230,11 @@ def connect_with_retry(client: DatabentoClient) -> None:
 
         except KeyboardInterrupt:
             break
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — the reconnect loop must survive any stream error
             capture_exception(exc, context={"backoff_s": backoff})
-            # Clean up on error too
-            try:
+            # Clean up on error too; a failing stop() must not abort the reconnect.
+            with contextlib.suppress(Exception):
                 client.stop()
-            except Exception:
-                pass
 
         if _shutting_down:
             break

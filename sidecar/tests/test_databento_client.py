@@ -53,7 +53,6 @@ import pytest  # noqa: E402
 import sentry_setup  # noqa: E402
 from databento_client import DatabentoClient  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -154,9 +153,7 @@ class TestShutdownBarrier:
             client.start()
         assert client._shutting_down is False
 
-    def test_handle_ohlcv_early_returns_when_shutting_down(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_handle_ohlcv_early_returns_when_shutting_down(self, client: DatabentoClient) -> None:
         client._shutting_down = True
         rec = _make_bar_record()
         # Patch the lazy-imported upsert_futures_bar at the point where
@@ -167,9 +164,7 @@ class TestShutdownBarrier:
             client._handle_ohlcv(rec)
             upsert_mock.assert_not_called()
 
-    def test_handle_ohlcv_runs_when_not_shutting_down(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_handle_ohlcv_runs_when_not_shutting_down(self, client: DatabentoClient) -> None:
         client._shutting_down = False
         rec = _make_bar_record()
         with patch("db.upsert_futures_bar") as upsert_mock:
@@ -181,9 +176,7 @@ class TestShutdownBarrier:
             client._bar_writer.flush()
             upsert_mock.assert_called_once()
 
-    def test_handle_trade_early_returns_when_shutting_down(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_handle_trade_early_returns_when_shutting_down(self, client: DatabentoClient) -> None:
         client._shutting_down = True
         # Preload a definition so we'd normally dispatch to trade_processor
         client._option_definitions[99] = {
@@ -198,9 +191,7 @@ class TestShutdownBarrier:
         client._handle_trade(rec)
         client._trade_processor.process_trade.assert_not_called()
 
-    def test_handle_stat_early_returns_when_shutting_down(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_handle_stat_early_returns_when_shutting_down(self, client: DatabentoClient) -> None:
         client._shutting_down = True
         rec = MagicMock()
         rec.stat_type = 9  # STAT_TYPE_OPEN_INTEREST
@@ -239,7 +230,7 @@ class TestDefinitionLagDrops:
         client._option_definitions[99] = {
             "strike": 5800.0,
             "option_type": "C",
-            "expiry": date.today(),
+            "expiry": date.today(),  # noqa: DTZ011 — opaque fixture value, never clock-compared
         }
         client._options_strikes = MagicMock()
         client._options_strikes.strikes = [5800.0]
@@ -310,9 +301,7 @@ class TestReconnectGap:
         assert "gap_s" in call.kwargs.get("context", {})
         assert call.kwargs["context"]["gap_s"] == pytest.approx(120.0)
 
-    def test_reconnect_arms_sanity_check_for_tracked_symbols(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_reconnect_arms_sanity_check_for_tracked_symbols(self, client: DatabentoClient) -> None:
         """Symbols with a recorded last-close should be armed for the
         next-bar sanity check after reconnect."""
         client._last_close_before_disconnect = {"ES": 5800.0, "NQ": 20000.0}
@@ -328,9 +317,7 @@ class TestReconnectGap:
         assert "ES" in client._last_close_before_disconnect
         assert client._last_close_before_disconnect["ES"] == pytest.approx(5800.0)
 
-    def test_last_close_updates_even_if_db_upsert_raises(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_last_close_updates_even_if_db_upsert_raises(self, client: DatabentoClient) -> None:
         """Reviewer follow-up: a transient DB blip must NOT leave the
         baseline stale. The in-memory _last_close_before_disconnect
         invariant ("the most recent close we observed for this symbol")
@@ -383,9 +370,7 @@ class TestFirstBarAfterReconnectSanity:
         assert ctx.get("new_close") == pytest.approx(5950.0)
         assert ctx.get("pct_move") == pytest.approx(2.59, abs=0.01)
 
-    def test_sanity_check_is_one_shot_per_reconnect(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_sanity_check_is_one_shot_per_reconnect(self, client: DatabentoClient) -> None:
         """After the first bar post-reconnect, subsequent bars for the
         same symbol do NOT re-trigger the sanity check."""
         client._last_close_before_disconnect["ES"] = 5800.0
@@ -494,9 +479,7 @@ class TestHandleTbboRouting:
 
 
 class TestSubscribeL1:
-    def test_issues_single_tbbo_subscription_for_es_and_nq(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_issues_single_tbbo_subscription_for_es_and_nq(self, client: DatabentoClient) -> None:
         """_subscribe_l1 must issue exactly ONE subscribe call, for
         ``tbbo`` on both ES.FUT and NQ.FUT. Subscribing to both
         ``mbp-1`` and ``tbbo`` would double-deliver every trade (TBBO
@@ -519,8 +502,7 @@ class TestSubscribeL1:
         client._subscribe_l1()
 
         schemas_subscribed = [
-            call.kwargs.get("schema")
-            for call in client._client.subscribe.call_args_list
+            call.kwargs.get("schema") for call in client._client.subscribe.call_args_list
         ]
         assert "mbp-1" not in schemas_subscribed
 
@@ -574,9 +556,7 @@ class TestOptionsPipelineDiagnostics:
         with caplog.at_level("INFO"):
             client._handle_system(_make_system_record("End of interval for ohlcv-1m"))
 
-        diagnostic_lines = [
-            r.message for r in caplog.records if "Options pipeline:" in r.message
-        ]
+        diagnostic_lines = [r.message for r in caplog.records if "Options pipeline:" in r.message]
         assert len(diagnostic_lines) == 1
         assert "definitions_cached=2" in diagnostic_lines[0]
         assert "ATM_strikes=3" in diagnostic_lines[0]
@@ -593,13 +573,9 @@ class TestOptionsPipelineDiagnostics:
 
         with caplog.at_level("INFO"):
             client._handle_system(_make_system_record("End of interval for tbbo"))
-            client._handle_system(
-                _make_system_record("Subscription request 0 for tbbo succeeded")
-            )
+            client._handle_system(_make_system_record("Subscription request 0 for tbbo succeeded"))
 
-        diagnostic_lines = [
-            r.message for r in caplog.records if "Options pipeline:" in r.message
-        ]
+        diagnostic_lines = [r.message for r in caplog.records if "Options pipeline:" in r.message]
         assert diagnostic_lines == []
 
     def test_diagnostic_reports_zero_when_cache_empty(
@@ -615,9 +591,7 @@ class TestOptionsPipelineDiagnostics:
         with caplog.at_level("INFO"):
             client._handle_system(_make_system_record("End of interval for ohlcv-1m"))
 
-        diagnostic_lines = [
-            r.message for r in caplog.records if "Options pipeline:" in r.message
-        ]
+        diagnostic_lines = [r.message for r in caplog.records if "Options pipeline:" in r.message]
         assert len(diagnostic_lines) == 1
         assert "definitions_cached=0" in diagnostic_lines[0]
 
@@ -728,9 +702,7 @@ class TestVersionedRecordRouting:
 
 
 class TestSubscribeEsOptionsStreams:
-    def test_definition_subscribe_passes_start_zero(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_definition_subscribe_passes_start_zero(self, client: DatabentoClient) -> None:
         """Definition records are delivered as a snapshot at session
         start, and Databento rejects ``start`` after the session has
         started. Subscribing to the definition schema with start=0 is
@@ -756,10 +728,7 @@ class TestSubscribeEsOptionsStreams:
 
         client._subscribe_es_options_streams()
 
-        schemas = [
-            call.kwargs.get("schema")
-            for call in client._client.subscribe.call_args_list
-        ]
+        schemas = [call.kwargs.get("schema") for call in client._client.subscribe.call_args_list]
         assert sorted(schemas) == ["definition", "statistics", "trades"]
 
     def test_noop_without_client(self, client: DatabentoClient) -> None:
@@ -777,10 +746,7 @@ class TestUpdateAtmStrikes:
         assert client._options_strikes.center_price == 5800.0
         assert len(client._options_strikes.strikes) == 21
         # 5-pt spacing, ATM ±10 → range should be 100 pts wide
-        assert (
-            max(client._options_strikes.strikes) - min(client._options_strikes.strikes)
-            == 100
-        )
+        assert max(client._options_strikes.strikes) - min(client._options_strikes.strikes) == 100
 
     def test_does_not_call_subscribe(self, client: DatabentoClient) -> None:
         """Re-center logic must NOT re-subscribe — subscriptions are
@@ -833,9 +799,7 @@ class TestDefinitionOptionTypeCoercion:
         rec.expiration = expiration_ns
         return rec
 
-    def test_enum_instrument_class_stored_as_string(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_enum_instrument_class_stored_as_string(self, client: DatabentoClient) -> None:
         """An InstrumentClass-like enum must land in _option_definitions
         as a bare 'C' or 'P', not the enum instance."""
 
@@ -853,9 +817,7 @@ class TestDefinitionOptionTypeCoercion:
                 return hash(self.value)
 
         call_enum = FakeEnum("C")
-        client._handle_definition(
-            self._make_def_record(instrument_class=call_enum, iid=42)
-        )
+        client._handle_definition(self._make_def_record(instrument_class=call_enum, iid=42))
 
         stored = client._option_definitions.get(42)
         assert stored is not None, "Definition was not cached"
@@ -965,9 +927,7 @@ class TestStatTypeToKwargTable:
                 f"got kwargs={list(call_kwargs)}"
             )
 
-    def test_unknown_stat_type_is_silently_dropped(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_unknown_stat_type_is_silently_dropped(self, client: DatabentoClient) -> None:
         """A stat_type not in the dict (e.g. STAT_TYPE_OPENING_PRICE = 1,
         which we don't persist) must early-return without dispatching."""
         client._option_definitions[7] = {
@@ -1028,9 +988,7 @@ class TestPropertiesAndShims:
         client._last_bar_ts = 1234.5
         assert client.last_bar_ts == 1234.5
 
-    def test_definition_lag_drops_setter_round_trips(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_definition_lag_drops_setter_round_trips(self, client: DatabentoClient) -> None:
         """Exercise the setter on the property shim that proxies to the
         OptionsRecordRouter (line 178)."""
         client._definition_lag_drops = 17
@@ -1038,9 +996,7 @@ class TestPropertiesAndShims:
         # Reset to keep counter invariant for any later assertions
         client._definition_lag_drops = 0
 
-    def test_last_lag_summary_ts_setter_round_trips(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_last_lag_summary_ts_setter_round_trips(self, client: DatabentoClient) -> None:
         client._last_lag_summary_ts = 99.0
         assert client._last_lag_summary_ts == pytest.approx(99.0)
 
@@ -1073,9 +1029,7 @@ class TestStart:
         # Live ctor was called with the expected reconnect policy
         assert live_ctor.call_count == 1
         ctor_kwargs = live_ctor.call_args.kwargs
-        assert (
-            ctor_kwargs["reconnect_policy"] == "reconnect"
-        )  # ReconnectPolicy.RECONNECT sentinel
+        assert ctor_kwargs["reconnect_policy"] == "reconnect"  # ReconnectPolicy.RECONNECT sentinel
         assert ctor_kwargs["heartbeat_interval_s"] == 30
         assert ctor_kwargs["ts_out"] is True
 
@@ -1123,9 +1077,7 @@ class TestStart:
 
 
 class TestSubscribeFuturesOhlcv:
-    def test_subscribe_uses_cme_dataset_and_parent_symbols(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_subscribe_uses_cme_dataset_and_parent_symbols(self, client: DatabentoClient) -> None:
         """_subscribe_futures_ohlcv collects every CME-dataset config from
         get_all_futures_subscriptions, passes the parent symbols to
         client.subscribe, and populates _prefix_to_internal."""
@@ -1220,9 +1172,7 @@ class TestOnError:
 
 
 class TestOnReconnectExceptions:
-    def test_bad_timestamps_capture_exception_and_clamp_zero(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_bad_timestamps_capture_exception_and_clamp_zero(self, client: DatabentoClient) -> None:
         """If a future SDK signature drift passes non-Timestamp args, the
         narrow guard must (a) clamp gap_s to 0.0, (b) NOT fire the gap
         warning, and (c) report the drift to Sentry via capture_exception
@@ -1420,9 +1370,7 @@ class TestGetOptionInfoShim:
 
 
 class TestSymbolMappingHandler:
-    def test_handle_symbol_mapping_logs_without_raising(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_handle_symbol_mapping_logs_without_raising(self, client: DatabentoClient) -> None:
         """Symbol mapping handler reads three attributes off the record
         and emits a debug log. Must tolerate missing attrs via getattr
         defaults and never raise."""
@@ -1433,9 +1381,7 @@ class TestSymbolMappingHandler:
         # Must not raise
         client._handle_symbol_mapping(rec)
 
-    def test_handle_symbol_mapping_with_missing_attrs(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_handle_symbol_mapping_with_missing_attrs(self, client: DatabentoClient) -> None:
         """Even a record missing all three attributes must be handled by
         the getattr defaults without raising."""
         rec = object()  # bare object — no attributes
@@ -1480,10 +1426,7 @@ class TestHandleSystemErrorBranch:
         with caplog.at_level("ERROR"):
             client._handle_system(rec)
 
-        assert any(
-            "auth failure" in r.message and r.levelname == "ERROR"
-            for r in caplog.records
-        )
+        assert any("auth failure" in r.message and r.levelname == "ERROR" for r in caplog.records)
 
     def test_first_end_of_interval_logs_symbology_summary(
         self, client: DatabentoClient, caplog: pytest.LogCaptureFixture
@@ -1504,9 +1447,7 @@ class TestHandleSystemErrorBranch:
         with caplog.at_level("INFO"):
             client._handle_system(_make_system_record("End of interval for ohlcv-1m"))
         # The summary log line contains "Symbology map:"
-        summary_lines = [
-            r.message for r in caplog.records if "Symbology map:" in r.message
-        ]
+        summary_lines = [r.message for r in caplog.records if "Symbology map:" in r.message]
         assert len(summary_lines) == 1
 
 
@@ -1587,9 +1528,7 @@ class TestBlockForClose:
 
 
 class TestAudM27BarEnqueue:
-    def test_bar_is_buffered_not_synchronously_upserted(
-        self, client: DatabentoClient
-    ) -> None:
+    def test_bar_is_buffered_not_synchronously_upserted(self, client: DatabentoClient) -> None:
         """_handle_ohlcv must enqueue the bar to the BarWriter buffer and
         NOT call upsert_futures_bar on the callback thread. The buffer holds
         the row until a flush/background-drain fires."""

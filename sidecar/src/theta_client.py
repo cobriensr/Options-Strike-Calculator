@@ -63,7 +63,7 @@ _RETRYABLE_THROTTLE_CODES = frozenset({429, 476})
 
 
 def _is_retryable_http(code: int) -> bool:
-    """True for HTTP codes that should retry with backoff (5xx + throttles)."""
+    """Return True for HTTP codes that should retry with backoff (5xx + throttles)."""
     return (500 <= code < 600) or (code in _RETRYABLE_THROTTLE_CODES)
 
 
@@ -238,14 +238,10 @@ class ThetaClient:
         cells = _zip_row_strict(fmt, rows[0])
         price = cells.get("price")
         if price is None:
-            raise ThetaClientError(
-                f"Theta index snapshot missing 'price' field: {rows[0]!r}"
-            )
+            raise ThetaClientError(f"Theta index snapshot missing 'price' field: {rows[0]!r}")
         date_value = cells.get("date")
         if date_value is None:
-            raise ThetaClientError(
-                f"Theta index snapshot missing 'date' field: {rows[0]!r}"
-            )
+            raise ThetaClientError(f"Theta index snapshot missing 'date' field: {rows[0]!r}")
         snapshot_date = _parse_yyyymmdd(date_value)
         ms_of_day = int(cells.get("ms_of_day") or 0)
         return IndexPriceSnapshot(
@@ -299,15 +295,13 @@ class ThetaClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                req = Request(url, headers={"Accept": "application/json"})
+                req = Request(url, headers={"Accept": "application/json"})  # noqa: S310 — localhost Terminal
                 with urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310
                     raw = resp.read()
                 return _parse_body(raw)
             except HTTPError as exc:
                 if exc.code == 471:
-                    raise ThetaSubscriptionError(
-                        f"Theta denied request (HTTP 471): {url}"
-                    ) from exc
+                    raise ThetaSubscriptionError(f"Theta denied request (HTTP 471): {url}") from exc
                 if exc.code == 472:
                     # HTTP 472 = NO_DATA ("no data found for the specified
                     # request") — same semantics as the plain-text ":No
@@ -326,9 +320,7 @@ class ThetaClient:
                     time.sleep(backoff_s)
                     backoff_s = min(backoff_s * 2, 10.0)
                     continue
-                raise ThetaClientError(
-                    f"Theta {path} failed with HTTP {exc.code}: {url}"
-                ) from exc
+                raise ThetaClientError(f"Theta {path} failed with HTTP {exc.code}: {url}") from exc
             except (URLError, TimeoutError, OSError) as exc:
                 if attempt < self.max_retries:
                     log.warning(
@@ -354,7 +346,7 @@ class ThetaClient:
 
 
 def _no_data_body() -> dict[str, Any]:
-    """The empty payload shape all no-data signals coerce to.
+    """Return the empty payload shape all no-data signals coerce to.
 
     Two wire signals mean "no data": the plain-text ":No data..." body
     and HTTP 472 (NO_DATA). Both route here so every caller takes the
@@ -388,7 +380,8 @@ def _parse_body(raw: bytes) -> dict[str, Any]:
 
 def _parse_yyyymmdd(value: int | str) -> date:
     """Parse Theta's integer YYYYMMDD date into datetime.date."""
-    return datetime.strptime(str(value), "%Y%m%d").date()
+    # DTZ007: calendar date only — .date() discards the (irrelevant) time part.
+    return datetime.strptime(str(value), "%Y%m%d").date()  # noqa: DTZ007
 
 
 def _et_epoch_ms(d: date, ms_of_day: int) -> int:
@@ -514,9 +507,7 @@ def _row_to_index_ohlc(
     def _req(field: str) -> Decimal:
         value = cells.get(field)
         if value is None:
-            raise ThetaClientError(
-                f"Theta index ohlc row missing '{field}' field: {row!r}"
-            )
+            raise ThetaClientError(f"Theta index ohlc row missing '{field}' field: {row!r}")
         return Decimal(str(value))
 
     return IndexOhlcCandle(

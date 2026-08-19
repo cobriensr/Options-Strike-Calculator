@@ -141,7 +141,7 @@ _seed_lock = threading.Lock()
 
 
 def is_seeding() -> bool:
-    """True while a seed run is in progress in this process."""
+    """Return True while a seed run is in progress in this process."""
     # Non-blocking acquire probe — immediately releases if it succeeds.
     acquired = _seed_lock.acquire(blocking=False)
     if acquired:
@@ -156,7 +156,10 @@ def is_seeding() -> bool:
 
 
 def _build_request(url: str, token: str) -> urllib.request.Request:
-    return urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    # S310: `url` is either the operator-configured ARCHIVE_MANIFEST_URL or a
+    # manifest blob_url that `_validate_blob_url` has already pinned to https
+    # + the Blob host allowlist before we get here.
+    return urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})  # noqa: S310
 
 
 def _sha256_of_file(path: Path) -> str:
@@ -181,15 +184,17 @@ def _download_to_tmp(url: str, token: str, tmp_path: Path) -> tuple[int, str]:
     tmp_path.parent.mkdir(parents=True, exist_ok=True)
 
     req = _build_request(url, token)
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
-        with tmp_path.open("wb") as fh:
-            while True:
-                chunk = resp.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                hasher.update(chunk)
-                fh.write(chunk)
-                bytes_written += len(chunk)
+    with (
+        urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp,  # noqa: S310 — https + host allowlist enforced upstream
+        tmp_path.open("wb") as fh,
+    ):
+        while True:
+            chunk = resp.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            fh.write(chunk)
+            bytes_written += len(chunk)
 
     return bytes_written, hasher.hexdigest()
 
@@ -197,7 +202,7 @@ def _download_to_tmp(url: str, token: str, tmp_path: Path) -> tuple[int, str]:
 def _fetch_manifest(manifest_url: str, token: str) -> dict[str, Any]:
     """GET the manifest JSON from Blob."""
     req = _build_request(manifest_url, token)
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:  # noqa: S310 — operator-configured https URL
         body = resp.read()
     return json.loads(body)
 
@@ -219,14 +224,12 @@ def _safe_dest_path(dest_root: Path, rel_path: str) -> Path:
     root_resolved = dest_root.resolve()
     candidate = (dest_root / rel_path).resolve()
     if not candidate.is_relative_to(root_resolved):
-        raise SeedPathError(
-            f"Path resolves outside dest_root: {rel_path!r} -> {candidate}"
-        )
+        raise SeedPathError(f"Path resolves outside dest_root: {rel_path!r} -> {candidate}")
     return candidate
 
 
 def _allowed_blob_hosts(manifest_url: str) -> frozenset[str]:
-    """The set of hostnames a `blob_url` may target.
+    """Return the set of hostnames a `blob_url` may target.
 
     Always includes the manifest URL's own host (manifest + blobs live on
     the same Vercel Blob host). Additional hosts can be supplied via the
@@ -246,7 +249,7 @@ def _allowed_blob_hosts(manifest_url: str) -> frozenset[str]:
 
 
 def _is_blocked_address(host: str) -> bool:
-    """True if `host` is a literal loopback / link-local / metadata /
+    """Return True if `host` is a literal loopback / link-local / metadata /
     private IP address.
 
     Catches the obvious SSRF targets when the manifest hands us a raw IP
@@ -283,17 +286,14 @@ def _validate_blob_url(blob_url: str, manifest_url: str) -> None:
     """
     parts = urllib.parse.urlsplit(blob_url)
     if parts.scheme.lower() != "https":
-        raise SeedUrlError(
-            f"blob_url scheme must be https, got {parts.scheme!r}: {blob_url!r}"
-        )
+        raise SeedUrlError(f"blob_url scheme must be https, got {parts.scheme!r}: {blob_url!r}")
     host = parts.hostname
     if not host:
         raise SeedUrlError(f"blob_url has no host: {blob_url!r}")
     host_lower = host.lower()
     if _is_blocked_address(host_lower):
         raise SeedUrlError(
-            f"blob_url host is a blocked (loopback/link-local/private) "
-            f"address: {host!r}"
+            f"blob_url host is a blocked (loopback/link-local/private) address: {host!r}"
         )
     allowed = _allowed_blob_hosts(manifest_url)
     if host_lower not in allowed:
@@ -358,8 +358,7 @@ def _seed_one_file(
                 # Wipe the bad .tmp so resume doesn't see it.
                 tmp.unlink(missing_ok=True)
                 raise SeedIntegrityError(
-                    f"SHA mismatch for {rel_path}: got {got_sha[:12]}, "
-                    f"expected {expected_sha[:12]}"
+                    f"SHA mismatch for {rel_path}: got {got_sha[:12]}, expected {expected_sha[:12]}"
                 )
             tmp.replace(dest)  # Atomic rename within the same filesystem.
             return (rel_path, bytes_written, False)
@@ -382,7 +381,7 @@ def _seed_one_file(
                 time.sleep(backoff)
 
     # Exhausted retries.
-    assert last_err is not None
+    assert last_err is not None  # noqa: S101 — narrowing; loop always ran ≥1 attempt
     raise last_err
 
 
@@ -427,9 +426,7 @@ def seed_from_manifest(
         # Use a small pool — Blob is bandwidth-bound, not concurrency-bound.
         with ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = {
-                pool.submit(
-                    _seed_one_file, entry, dest, token, manifest_url
-                ): entry["path"]
+                pool.submit(_seed_one_file, entry, dest, token, manifest_url): entry["path"]
                 for entry in files
             }
             for fut in as_completed(futures):

@@ -39,11 +39,9 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 from logger_setup import log
-
-T = TypeVar("T")
 
 
 def _capture_exception(exc: BaseException, *, context: dict[str, Any]) -> None:
@@ -55,7 +53,7 @@ def _capture_exception(exc: BaseException, *, context: dict[str, Any]) -> None:
     or block the re-queue.
     """
     try:
-        from sentry_setup import capture_exception
+        from sentry_setup import capture_exception  # noqa: PLC0415 — lazy optional Sentry
 
         capture_exception(exc, context=context, tags={"component": "batched_writer"})
     except Exception:  # noqa: BLE001
@@ -65,7 +63,7 @@ def _capture_exception(exc: BaseException, *, context: dict[str, Any]) -> None:
 def _capture_message(message: str, *, context: dict[str, Any]) -> None:
     """Forward a non-exception event (overflow drop) to Sentry, guarded."""
     try:
-        from sentry_setup import capture_message
+        from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
         capture_message(
             message,
@@ -77,7 +75,7 @@ def _capture_message(message: str, *, context: dict[str, Any]) -> None:
         log.warning("%s (context=%s)", message, context)
 
 
-class BatchedWriter(ABC, Generic[T]):
+class BatchedWriter[T](ABC):
     """Abstract base for buffered, batch-flushed DB writers.
 
     Subclasses override :meth:`_write` to send the captured rows to the
@@ -107,9 +105,7 @@ class BatchedWriter(ABC, Generic[T]):
         self._lock = threading.Lock()
         self._batch_size = batch_size
         self._max_buffer_size = (
-            max_buffer_size
-            if max_buffer_size is not None
-            else max(batch_size * 10, 1000)
+            max_buffer_size if max_buffer_size is not None else max(batch_size * 10, 1000)
         )
         self._thread_name = thread_name
         self._stop_event = threading.Event()
@@ -259,7 +255,7 @@ class BatchedWriter(ABC, Generic[T]):
 
     def _flush_loop(self) -> None:
         """Thread body: flush periodically until ``_stop_event`` is set."""
-        assert self._flush_interval_s is not None  # set by start_background_flush
+        assert self._flush_interval_s is not None  # noqa: S101 — narrowing; set by start_background_flush
         while True:
             # Event.wait returns True when the event is set, False on
             # timeout. Flush only on timeout (steady-state tick); exit
@@ -269,5 +265,5 @@ class BatchedWriter(ABC, Generic[T]):
                 return
             try:
                 self.flush()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — the flush thread must survive any tick failure
                 log.error("Background flush tick failed: %s", exc)
