@@ -1,6 +1,6 @@
 # Schwab Replacement — UW + Theta-Sidecar Facade
 
-**Date:** 2026-08-16 · **Status:** Phase 1–2 implementing · **Owner:** soonerdude28 fork
+**Date:** 2026-08-16 · **Status:** Phases 1, 2, 4 shipped (cc840645, 930c9585, 1f467516+618cb16b); Phase 3 live-validated 2026-08-17/18 (chain 98.2% OK over 384 calls, all crons green, full-day ingest); Schwab Trader API access restored 2026-08-18 → real-Schwab passthrough for facade gaps, see readiness-loose-ends-2026-08-18.md phase G · **Owner:** soonerdude28 fork
 
 ## Goal
 
@@ -25,9 +25,9 @@ treadmill — the single biggest operational pain of Schwab.
 | `/chains` (17 tickers, every min) | fetch-strike-iv | UW `GET /api/stock/{t}/option-contracts?expiry=&maybe_otm_only=true` (cron sends `range=OTM`; facade maps it) — **cadence drops to */5 min AND each fire snapshots ONE expiry** (0DTE on even fires = 10-min series; Fridays alternate on odd fires = 20-min series; `pickExpiryForFire`) | **`/greeks` ruled out during implementation review (2026-08-16):** its per-strike rows carry greeks/IV/OI/volume/last but **no NBBO bid/ask and no mark** — the cron recomputes IV from bid/ask/mid via Black-Scholes and gates on bid≤mid≤ask, so option-contracts (which carries `nbbo_bid/ask`) is the only viable source. Budget per fire: 17 chain requests (~1 OTM page each) + ~16 UW spot lookups ≈ **33–35 req in the fire minute, ~7/min amortized** (vs 60–100 unstaggered full-ladder). 10-min 0DTE / 20-min Friday granularity accepted — no UW budget supports denser sampling. |
 | `/pricehistory` $SPX/$VIX/$VIX1D/$VIX9D/$VVIX (5-min candles) | history.ts, intraday.ts, yesterday.ts, compute-es-overnight, fetch-outcomes | **Sidecar** `GET /theta/index/history?root=&date=` (Theta `/v2/hist/index/ohlc`, Index PRO entitled) | Indices have no volume — shape emits `volume: 0` (recon: no caller reads candle volume). VIX-family coverage is the whole reason Theta Index PRO matters here; UW has none of VIX1D/VIX9D/VVIX. |
 | `/pricehistory` equity tickers | ticker-candles.ts | UW `/api/stock/{t}/ohlc/1m` (already used elsewhere in repo) | Same helper pattern as `spx-candles.ts`. |
-| `/quotes` ($SPX,$VIX,$VIX1D,…) | quotes.ts, fetch-outcomes, fetch-spx-candles-1m, fetch-market-internals ($ADD part) | **Sidecar** `GET /theta/index/price?root=` (Theta `/v2/snapshot/index/price`) for the sidecar allowlist (SPX + VIX family); **$NDX/$RUT → UW stock-state** (not on the sidecar `_THETA_INDEX_ROOTS` allowlist — a sidecar call 400s); UW stock-state is also the fallback for SPX/VIX when the sidecar is down | Sidecar price route returns `{root, price, prev_close, ts}` only — the TS adapter derives openPrice/highPrice/lowPrice from today's `/theta/index/history` RTH candles (quote survives with 0s pre-open / on history failure). |
+| `/quotes` ($SPX,$VIX,$VIX1D,…) | quotes.ts, fetch-outcomes, fetch-spx-candles-1m, fetch-market-internals ($ADD part) | **Sidecar** `GET /theta/index/price?root=` (Theta `/v2/snapshot/index/price`) for the sidecar allowlist (SPX + VIX family); **$NDX/$RUT → UW stock-state** (not on the sidecar `_THETA_INDEX_ROOTS` allowlist — a sidecar call 400s); UW stock-state is also the fallback for SPX/VIX when the sidecar is down | Sidecar price route returns `{root, price, prev_close, ts}` only — the TS adapter derives openPrice/highPrice/lowPrice from today's `/theta/index/history` RTH candles (quote survives with 0s pre-open / on history failure). **Updated 2026-08-18 (H1):** UW `stock-state` returns HTTP 422 for EVERY index ticker (SPX/VIX/NDX/RUT — deterministic, not transient), so the fallback is now the UW stock screener `/screener/stocks?ticker=SPY,{ROOT}` (SPY companion required — index-only requests return NULL close). NDX → screener as primary; RUT → 501 SOURCE_UNAVAILABLE (UW prices RUT nowhere) → Schwab passthrough when configured. |
 | `/movers/$SPX` | movers.ts | UW stock screener `is_s_p_500=true&order=perc_change` (2 calls) | Percent-change derived from close vs prev_close; semantic drift accepted. |
-| `/pricehistory`+`/quotes` $TICK/$ADD/$VOLD/$TRIN | fetch-market-internals | **NOT COVERABLE** by UW or Theta | Consumers are fail-open (NULL feature columns). Facade returns `{ok:false, status:501, code:'SOURCE_UNAVAILABLE'}`; cron logs once, columns stay NULL. Revisit if a breadth source is added. |
+| `/pricehistory`+`/quotes` $TICK/$ADD/$VOLD/$TRIN | fetch-market-internals | **NOT COVERABLE** by UW or Theta | Consumers are fail-open (NULL feature columns). Facade returns `{ok:false, status:501, code:'SOURCE_UNAVAILABLE'}`; cron logs once, columns stay NULL. Revisit if a breadth source is added. **Updated 2026-08-18 (G):** when `SCHWAB_CLIENT_ID/SECRET` are set, `schwabFetch` passes SOURCE_UNAVAILABLE paths through to real Schwab Market Data (`/marketdata/v1`), so breadth internals return once the owner completes `/api/auth/init`. |
 | Trader API (positions) | positions.ts (`schwabTraderFetch`) | **Kept as-is** | Real brokerage positions are inherently Schwab; dormant without creds, untouched. |
 
 ## Phases
@@ -44,9 +44,13 @@ treadmill — the single biggest operational pain of Schwab.
 3. **Rollout**: env plumbing already live (SIDECAR_URL, SIDECAR_TAKEIT_SECRET,
    UW_API_KEY); deploy; verify weekend-testable paths (history/yesterday vs
    known EOD values); Monday 13:30 UTC live validation of quotes/chain/candles.
-4. **(separate approval) Schwab OAuth removal**: owner login page setting the
-   `OWNER_SECRET` cookie directly; delete token machinery + `/api/health` schwab
-   check. Not started until user signs off.
+4. **Owner login (shipped 1f467516 + 618cb16b)**: `GET/POST /api/auth/login`
+   sets the `OWNER_SECRET` cookie directly (no Schwab). The originally planned
+   deletion of the token machinery + `/api/health` schwab check is **dropped**:
+   Schwab Trader API access was restored on 2026-08-18, so `schwabTraderFetch`
+   (positions) and the real-Schwab passthrough for breadth internals keep the
+   OAuth machinery. `/api/auth/init` now 302s to `/api/auth/login` when Schwab
+   creds are unset (readiness-loose-ends-2026-08-18.md phase B).
 
 ## Data dependencies
 

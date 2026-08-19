@@ -16,7 +16,7 @@ src/              React 19 SPA (Tailwind CSS 4, no router)
 api/              Vercel Serverless Functions
   _lib/           21+ shared modules (see "Backend Modules" below)
   auth/           Schwab OAuth flow (init.ts, callback.ts)
-  cron/           35 scheduled jobs (market data fetching, feature building, lesson curation)
+  cron/           ~80 scheduled jobs (85 vercel.json cron entries; market data fetching, feature building, lesson curation)
   journal/        Journal CRUD + DB init/migrate
   ml/             ML data export endpoint
 
@@ -163,7 +163,7 @@ Everything else gets the full loop.
 - **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()`. 40+ tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
 - **Input validation** — Zod schemas in `api/_lib/validation.ts` validate at system boundaries before data reaches Anthropic or Postgres.
-- **Cron jobs** — 35 jobs in `vercel.json`, all verify `CRON_SECRET`. Market data fetches run every 5 min during market hours (13-21 UTC, Mon-Fri).
+- **Cron jobs** — 85 cron entries in `vercel.json` (some paths have several schedules), all verify `CRON_SECRET`. Market data fetches run every 1–5 min during market hours (13-21 UTC, Mon-Fri).
 - **Bot protection** — `botid` checks on production endpoints, skipped in local dev. **When adding a new endpoint that calls `checkBot(req)`, also add its path to the `protect` array in `src/main.tsx`'s `initBotId()` call.**
 - **Logging** — `pino` logger in `api/_lib/logger.ts`.
 - **Sentry** — error tracking + metrics via `@sentry/node`.

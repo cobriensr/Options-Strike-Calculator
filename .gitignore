@@ -53,6 +53,8 @@ __snapshots__/
 .claude/*
 !.claude/skills
 .claude/skills/*
+# skills.sh lockfile for the (ignored) upstash skill dirs above
+skills-lock.json
 !.claude/skills/charm-pressure
 !.claude/skills/delta-pressure
 !.claude/skills/gamma
