@@ -82,6 +82,28 @@ const PER_CHAIN_MIN_PRINTS = 5;
 // pulling it would just be wasted bytes.
 const PRIOR_FIRE_LOOKBACK_MIN = 10;
 
+/**
+ * Wall-clock budget for the per-group / per-fire work, in ms. vercel.json
+ * gives this function `maxDuration: 60` and it runs every minute, so a
+ * run must finish inside one cadence — 45s leaves headroom for the
+ * in-flight fire's remaining awaits (macro / candles / multileg / gexbot
+ * / INSERT) plus the post-loop feed-tier monitor query.
+ *
+ * Checked between Pass 1 chain groups and between Pass 2 fires, so an
+ * overrun is bounded by one unit of work. When it trips the run returns a
+ * PARTIAL-but-valid result (status 'success', `truncated: true`,
+ * `unevaluatedGroups` / `unevaluatedFires` counts, one warn log) instead
+ * of Vercel killing the function with a 504 ("Task timed out after 60
+ * seconds", 2026-08-19 13:48Z at the open — the serial per-fire Pass 2
+ * work is what stacks up during the 8:30–9:00 CT volume spike). Fires
+ * evaluated before the trip are written normally; anything after it rolls
+ * to the next minute's run: the 7-min scan window re-detects the same
+ * trigger, the cooldown seed (priorByChain) only covers fires that were
+ * actually INSERTed, and the (option_chain_id, trigger_time_ct) unique
+ * index + ON CONFLICT DO NOTHING keep the write idempotent either way.
+ */
+export const DETECT_WALL_BUDGET_MS = 45_000;
+
 // Cluster bonus constants — V2.2 Phase C.4
 // (spec: docs/tmp/v22-co-fire-analysis-2026-05-22.md).
 // Non-monotonic: peak lift at 2-4 tickers; 5+ dilutes back toward baseline.
@@ -209,6 +231,14 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const db = getDb();
 
+    // Wall-clock budget — see DETECT_WALL_BUDGET_MS. Anchored on the
+    // wrapper's start stamp so the whole run (tick reads included) counts
+    // against the budget, not just the loops below.
+    const deadlineMs = ctx.startTimeMs + DETECT_WALL_BUDGET_MS;
+    const pastDeadline = (): boolean => Date.now() > deadlineMs;
+    let unevaluatedGroups = 0;
+    let unevaluatedFires = 0;
+
     // Pull every tick in the scan window, ordered for chain-grouping.
     // expiry is cast to ::text so the wire value is a stable YYYY-MM-DD
     // string — bypasses any driver-side Date<->TZ round-trip that could
@@ -217,14 +247,17 @@ export default withCronInstrumentation(
     // Hash-partitioned into TICK_QUERY_BATCHES parallel queries by
     // ticker. The single-shot SELECT used to hit Neon's HTTP 64MB
     // response cap during the 8:30-9:00 CT volume spike — see
-    // SENTRY-EMERALD-DESERT-CB (2026-05-22). hashtext is deterministic
-    // so every chain lands in exactly one batch; cross-batch ordering
-    // doesn't matter because the downstream chain-keyed Map only
-    // requires executed_at ordering WITHIN each chain, which the
-    // per-batch ORDER BY preserves. Gamma extracted from raw_payload
-    // JSONB (migration #168) — uw-stream only promotes delta to a
-    // typed column; NULLIF guards against UW's literal empty-string
-    // payloads (~0.3%) before the ::numeric cast.
+    // SENTRY-EMERALD-DESERT-CB (2026-05-22). The fan-out is FIXED at
+    // TICK_QUERY_BATCHES concurrent reads (not one per ticker) — that
+    // constant IS the concurrency cap; bump it only together with a
+    // mapWithConcurrency-style limiter (the test file pins the peak).
+    // hashtext is deterministic so every chain lands in exactly one
+    // batch; cross-batch ordering doesn't matter because the downstream
+    // chain-keyed Map only requires executed_at ordering WITHIN each
+    // chain, which the per-batch ORDER BY preserves. Gamma extracted
+    // from raw_payload JSONB (migration #168) — uw-stream only promotes
+    // delta to a typed column; NULLIF guards against UW's literal
+    // empty-string payloads (~0.3%) before the ::numeric cast.
     //
     // withDbRetry covers transient Neon HTTP failures (ECONNRESET /
     // fetch failed / socket hang up) — see SENTRY-EMERALD-DESERT-8X
@@ -506,7 +539,16 @@ export default withCronInstrumentation(
     const preparedFires: PreparedFire[] = [];
 
     // ── Pass 1: detect + score every in-universe fire ──────────────────
+    let groupsEvaluated = 0;
     for (const g of groups.values()) {
+      // Wall-clock budget (DETECT_WALL_BUDGET_MS): stop evaluating chain
+      // groups once it trips. The remainder rolls to the next minute's
+      // run — the 7-min scan window re-detects the same trigger.
+      if (pastDeadline()) {
+        unevaluatedGroups = groups.size - groupsEvaluated;
+        break;
+      }
+      groupsEvaluated += 1;
       if (g.ticks.length < PER_CHAIN_MIN_PRINTS) {
         skippedShort += 1;
         continue;
@@ -638,7 +680,18 @@ export default withCronInstrumentation(
     }));
 
     // ── Pass 2: macro / multileg / gexbot / takeit + INSERT ────────────
+    let firesEvaluated = 0;
     for (const prepared of preparedFires) {
+      // Wall-clock budget (DETECT_WALL_BUDGET_MS): this is the serial,
+      // per-fire hot path (macro + candles + multileg + gexbot + INSERT)
+      // that stacks up at the open. Once the budget trips, defer the
+      // remaining fires — they were never INSERTed, so the next minute's
+      // run re-detects them with no cooldown seed and writes them once.
+      if (pastDeadline()) {
+        unevaluatedFires = preparedFires.length - firesEvaluated;
+        break;
+      }
+      firesEvaluated += 1;
       const { rec, score, cumNcpAtFire, cumNppAtFire } = prepared;
       {
         // A transient flow_data / spot_exposures issue must not drop
@@ -1029,6 +1082,26 @@ export default withCronInstrumentation(
       });
     }
 
+    // Wall-budget trip → one warn log (not Sentry: this is a graceful,
+    // expected degradation at the open, and the un-evaluated work rolls to
+    // the next minute's run). The counts also ride in the completed-log /
+    // response metadata below so a run-over-run pattern is queryable.
+    const truncated = unevaluatedGroups > 0 || unevaluatedFires > 0;
+    if (truncated) {
+      ctx.logger.warn(
+        {
+          budgetMs: DETECT_WALL_BUDGET_MS,
+          elapsedMs: Date.now() - ctx.startTimeMs,
+          chains: groups.size,
+          preparedFires: preparedFires.length,
+          inserted,
+          unevaluatedGroups,
+          unevaluatedFires,
+        },
+        'detect-lottery-fires: wall budget hit — returning partial result; un-evaluated chains roll to the next run',
+      );
+    }
+
     // Phase 6: per-tier counts live in the structured log payload below.
     // Sentry alert for "zero tier1 fires for N consecutive trading days"
     // MUST be (re)configured in the Sentry UI to query
@@ -1057,6 +1130,9 @@ export default withCronInstrumentation(
         gexOutOfUniverse,
         multilegHits,
         multilegMisses,
+        truncated,
+        unevaluatedGroups,
+        unevaluatedFires,
       },
       'detect-lottery-fires completed',
     );
@@ -1080,6 +1156,9 @@ export default withCronInstrumentation(
         gexOutOfUniverse,
         multilegHits,
         multilegMisses,
+        truncated,
+        unevaluatedGroups,
+        unevaluatedFires,
       },
     };
   },

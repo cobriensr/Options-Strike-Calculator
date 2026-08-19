@@ -1,12 +1,15 @@
 // @vitest-environment node
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { mockRequest, mockResponse } from './helpers';
 import {
   expectAllGexBindsNull,
   extractAllInsertBinds,
   extractInsertBinds,
 } from './insert-binds';
+import logger from '../_lib/logger.js';
 
 const mockSql = vi.fn();
 
@@ -135,7 +138,9 @@ vi.mock('../_lib/lottery-score-weights-v2.js', async (importOriginal) => {
   };
 });
 
-import handler from '../cron/detect-lottery-fires.js';
+import handler, {
+  DETECT_WALL_BUDGET_MS,
+} from '../cron/detect-lottery-fires.js';
 
 const GUARD = { apiKey: '', today: '2026-05-01' };
 
@@ -1781,5 +1786,214 @@ describe('detect-lottery-fires handler', () => {
     // independent of Map iteration order.
     expect(allBinds[0]!.get('cluster_bonus')).toBe(1);
     expect(allBinds[1]!.get('cluster_bonus')).toBe(1);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Wall-clock budget + bounded tick-read fan-out (2026-08-19). The cron
+  // runs every minute under maxDuration 60. At the open (8:30–9:00 CT) the
+  // serial per-fire Pass 2 work (macro + candles + multileg + gexbot +
+  // INSERT) pushed one run past 60s and Vercel killed it mid-flight
+  // ("Task timed out after 60 seconds", 2026-08-19 13:48Z). The handler
+  // now checks DETECT_WALL_BUDGET_MS between Pass 1 chain groups and
+  // between Pass 2 fires and returns a PARTIAL-but-valid result (status
+  // 'success', truncated=true, un-evaluated counts, one warn log) instead
+  // of a 504. Un-evaluated chains roll to the next minute's run: the 7-min
+  // scan window re-detects them and the (option_chain_id, trigger_time_ct)
+  // unique index + ON CONFLICT keep the write idempotent.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Controllable clock. The handler reads Date.now() (ctx.startTimeMs at
+   * wrap entry + the per-group / per-fire budget check); tests advance
+   * `nowMs` from inside a mocked DB/UW call to simulate a slow step
+   * without sleeping. Restored per test.
+   */
+  function fakeClock() {
+    const state = { nowMs: 1_700_000_000_000 };
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => state.nowMs);
+    return {
+      advancePastBudget: () => {
+        state.nowMs += DETECT_WALL_BUDGET_MS + 1;
+      },
+      restore: () => spy.mockRestore(),
+    };
+  }
+
+  /** Warn-log calls that carry the wall-budget truncation message. */
+  function budgetWarnCalls() {
+    return vi
+      .mocked(logger.warn)
+      .mock.calls.filter((c) => String(c[1] ?? c[0]).includes('wall budget'));
+  }
+
+  it('pins the wall budget under the Vercel maxDuration for this function', () => {
+    expect(DETECT_WALL_BUDGET_MS).toBe(45_000);
+    const cfg = JSON.parse(
+      readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
+    ) as { functions?: Record<string, { maxDuration?: number }> };
+    const maxDuration =
+      cfg.functions?.['api/cron/detect-lottery-fires.ts']?.maxDuration;
+    expect(maxDuration).toBeDefined();
+    // Headroom for the in-flight fire's remaining awaits (macro / candles /
+    // multileg / gexbot / INSERT) + the post-loop feed-tier monitor query
+    // once the budget trips.
+    expect(DETECT_WALL_BUDGET_MS).toBeLessThanOrEqual(
+      maxDuration! * 1000 - 10_000,
+    );
+  });
+
+  it('bounds the ws_option_trades tick-read fan-out to the 3 hash partitions (never one query per ticker)', async () => {
+    // Instrument the mock: count in-flight ws_option_trades reads so a
+    // future bump of the partition count (or a per-ticker fan-out) that
+    // is not paired with a concurrency cap trips this test. The three
+    // hash partitions are INTENDED to run in parallel (splitting the
+    // 64MB-cap read three ways must not triple latency), so the peak is
+    // pinned to exactly 3.
+    let inFlight = 0;
+    let peak = 0;
+    let tickCalls = 0;
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      if (!strings[0]?.includes('FROM ws_option_trades')) {
+        return Promise.resolve([]);
+      }
+      tickCalls += 1;
+      const rows = tickCalls === 1 ? fireableSndkStream() : [];
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      return new Promise((resolveRows) => {
+        setTimeout(() => {
+          inFlight -= 1;
+          resolveRows(rows);
+        }, 0);
+      });
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      scanned: 6,
+      chains: 1,
+      totalFires: 1,
+      // Normal (non-truncated) run: the budget fields are present and zero.
+      truncated: false,
+      unevaluatedGroups: 0,
+      unevaluatedFires: 0,
+    });
+    expect(tickCalls).toBe(3);
+    expect(peak).toBe(3);
+    expect(budgetWarnCalls()).toHaveLength(0);
+  });
+
+  it('returns a PARTIAL-but-valid result (no 504) when the budget trips between Pass 2 fires', async () => {
+    const clock = fakeClock();
+    try {
+      // Two SNDK chains → two fires. The UW candle fetch is cached per
+      // (ticker, date) so it runs once, on fire 1 — make THAT the slow
+      // step so the clock is past the budget before fire 2 is reached.
+      mockFetchStockCandles1m.mockImplementationOnce(() => {
+        clock.advancePastBudget();
+        return Promise.resolve([]);
+      });
+      mockTicks(manyFireableSndkStreams(2))
+        .mockResolvedValueOnce([]) // prior fires
+        .mockResolvedValueOnce([]) // ticker_flow_snapshot (Pass 1, once for SNDK)
+        .mockResolvedValueOnce([]) // flow_data (fire 1)
+        .mockResolvedValueOnce([]) // spot_exposures (fire 1)
+        .mockResolvedValueOnce([{ id: 1 }]); // INSERT (fire 1)
+      // Fire 2 is never evaluated; the feed-tier monitor gets the default [].
+
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      // Valid 200 / 'success' envelope — NOT a thrown error / 504.
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        rows: 1,
+        chains: 2,
+        totalFires: 2,
+        inserted: 1,
+        truncated: true,
+        unevaluatedGroups: 0,
+        unevaluatedFires: 1,
+      });
+      // Fire 1 was written normally; the deferred fire 2 is NOT written —
+      // it re-detects on the next minute's run.
+      expect(
+        extractAllInsertBinds(mockSql, 'lottery_finder_fires'),
+      ).toHaveLength(1);
+      expect(mockClassifyAlertMultileg).toHaveBeenCalledTimes(1);
+      // Exactly one warn log carries the truncation counts.
+      const warns = budgetWarnCalls();
+      expect(warns).toHaveLength(1);
+      expect(warns[0]![0]).toMatchObject({
+        unevaluatedGroups: 0,
+        unevaluatedFires: 1,
+      });
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it('stops evaluating chain groups once the budget trips in Pass 1 and reports the un-evaluated count', async () => {
+    const clock = fakeClock();
+    try {
+      const sndk = fireableSndkStream();
+      const rklb = fireableSndkStream().map((t) => ({
+        ...t,
+        ticker: 'RKLB',
+        option_chain: 'RKLB260501C01175000',
+      }));
+      mockTicks([...sndk, ...rklb])
+        .mockResolvedValueOnce([]) // prior fires
+        // SNDK ticker_flow_snapshot (Pass 1, group 1) is the slow step.
+        .mockImplementationOnce(() => {
+          clock.advancePastBudget();
+          return Promise.resolve([]);
+        });
+
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        rows: 0,
+        chains: 2,
+        // SNDK was detected in Pass 1 before the clock jumped; RKLB was
+        // never evaluated. Pass 2 then sees the exhausted budget and
+        // defers the SNDK fire too — nothing is half-written.
+        totalFires: 1,
+        inserted: 0,
+        truncated: true,
+        unevaluatedGroups: 1,
+        unevaluatedFires: 1,
+      });
+      expect(
+        extractAllInsertBinds(mockSql, 'lottery_finder_fires'),
+      ).toHaveLength(0);
+      // ticks×3 + prior-fires + SNDK flow series + feed-tier monitor = 6.
+      // No macro / multileg / INSERT work after the budget trips.
+      expect(mockSql).toHaveBeenCalledTimes(6);
+      expect(mockClassifyAlertMultileg).not.toHaveBeenCalled();
+      expect(budgetWarnCalls()).toHaveLength(1);
+    } finally {
+      clock.restore();
+    }
   });
 });
