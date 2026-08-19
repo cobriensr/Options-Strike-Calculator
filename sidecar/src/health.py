@@ -712,7 +712,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # Known "no data for this date" — return 404 with message.
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "es-range", exc, "es-range query failed for %s: %s", d, exc, date=d
             )
 
@@ -741,7 +741,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # surface as ValueError; the message is user-facing either way.
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "analog-days",
                 exc,
                 "analog-days query failed for %s: %s",
@@ -778,7 +778,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-summary",
                 exc,
                 "day-summary query failed for %s: %s",
@@ -819,7 +819,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-features",
                 exc,
                 "day-features query failed for %s: %s",
@@ -848,7 +848,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_features_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-features-batch",
                 exc,
                 "day-features-batch failed for %s..%s: %s",
@@ -871,7 +871,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_summary_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-summary-batch",
                 exc,
                 "day-summary-batch failed for %s..%s: %s",
@@ -902,7 +902,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-summary-prediction",
                 exc,
                 "day-summary-prediction failed for %s: %s",
@@ -924,7 +924,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_summary_prediction_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-summary-prediction-batch",
                 exc,
                 "day-summary-prediction-batch failed %s..%s: %s",
@@ -964,7 +964,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # is a missing-data case.
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "tbbo-day-microstructure",
                 exc,
                 "tbbo-day-microstructure failed for %s/%s: %s",
@@ -1039,7 +1039,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # the query layer after the validation above).
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "tbbo-ofi-percentile",
                 exc,
                 "tbbo-ofi-percentile failed for %s/%s: %s",
@@ -1050,7 +1050,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                 window=window,
             )
 
-    def _archive_500(
+    def _archive_query_error(
         self,
         route: str,
         exc: Exception,
@@ -1058,13 +1058,39 @@ class HealthHandler(BaseHTTPRequestHandler):
         *log_args: object,
         **tags: object,
     ) -> None:
-        """Log + Sentry-capture an archive query failure, then 500.
+        """Map a non-ValueError archive query failure to an HTTP response.
 
-        DRY helper for the archive read handlers. Mirrors the /health
-        DB-probe pattern (capture_exception alongside log.error) so
-        archive 500s surface in Sentry instead of dying in logs only.
-        The 500 JSON response shape is unchanged.
+        DRY helper for the archive read handlers (the `except Exception`
+        arm of each). Two outcomes:
+
+        - `ArchiveUnavailableError` — the dataset is not seeded on this
+          sidecar (empty/missing ARCHIVE_ROOT, or ohlcv/tbbo/symbology
+          Parquet absent). Unconfigured != broken: answer 503
+          `{error: "archive_unavailable", dataset}` with NO Sentry event
+          and no error-level log (the query layer already warned once
+          per missing path). No Retry-After either — unlike the busy-cap
+          503 this is not transient; it clears only after
+          POST /admin/seed-archive. Vercel consumers treat it as
+          "archive context unavailable, skip" (archive-sidecar.ts →
+          null; fetch-day-ohlc → Postgres fallback / skipped).
+        - anything else — genuine failure. Mirrors the /health DB-probe
+          pattern (capture_exception alongside log.error) so archive
+          500s surface in Sentry instead of dying in logs only. The 500
+          JSON response shape is unchanged.
         """
+        if isinstance(exc, _aq().ArchiveUnavailableError):
+            log.debug("%s: archive unavailable (%s)", route, exc)
+            message = f"archive dataset {exc.dataset!r} is not seeded on this sidecar"
+            self._send_json(
+                503,
+                {
+                    "error": "archive_unavailable",
+                    "dataset": exc.dataset,
+                    "message": message,
+                },
+            )
+            return
+
         log.error(log_msg, *log_args)
         from sentry_setup import capture_exception  # noqa: PLC0415
 

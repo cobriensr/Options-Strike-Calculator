@@ -38,8 +38,10 @@ class _FakeRequest:
         return io.BytesIO()
 
 
-def _run_request(path: str = "/health") -> tuple[int, dict]:
-    """Drive HealthHandler for one request; return (status, body_obj)."""
+def _run_request_raw(path: str = "/health") -> str:
+    """Drive HealthHandler for one GET; return the raw HTTP response text
+    (status line + headers + body). Use when a test needs to inspect
+    headers; `_run_request` wraps this for the common (status, body) case."""
     req = _FakeRequest(path=path)
     # Write buffer lives on the instance as `wfile` once BaseHTTPRequestHandler
     # runs setup(). We capture everything it writes for later parsing.
@@ -57,7 +59,12 @@ def _run_request(path: str = "/health") -> tuple[int, dict]:
             pass
 
     _H(req, ("127.0.0.1", 0), None)  # type: ignore[arg-type]
-    raw = output.getvalue().decode()
+    return output.getvalue().decode()
+
+
+def _run_request(path: str = "/health") -> tuple[int, dict]:
+    """Drive HealthHandler for one request; return (status, body_obj)."""
+    raw = _run_request_raw(path)
     # First line: HTTP/1.x <status> <reason>
     status_line, *rest = raw.split("\r\n", 1)
     status = int(status_line.split()[1])
@@ -1632,3 +1639,203 @@ class TestArchive500Sentry:
         _args, kwargs = cap.call_args
         assert kwargs["tags"]["route"] == "tbbo-day-microstructure"
         assert kwargs["tags"]["symbol"] == "ES"
+
+
+# ---------------------------------------------------------------------------
+# Unseeded archive → 503 archive_unavailable (never a bare 500)
+# ---------------------------------------------------------------------------
+#
+# Readiness audit 2026-08-18: fetch-day-ohlc got HTTP 500 from
+# GET /archive/day-summary-batch?from=2026-08-18&to=2026-08-18 on a
+# deployment whose Railway volume was never seeded. The query layer now
+# raises `ArchiveUnavailableError`; the HTTP layer must map that to a
+# quiet 503 `{error: "archive_unavailable"}` — no Sentry capture, no
+# log.error — for every /archive/* route.
+
+
+def _past_date_iso(days: int = 45) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+
+
+# (route path, archive_query attribute the handler dispatches to)
+_ARCHIVE_ROUTES_FOR_UNAVAILABLE = [
+    (f"/archive/es-range?date={_past_date_iso()}", "es_day_summary"),
+    (f"/archive/analog-days?date={_past_date_iso()}", "analog_days"),
+    (f"/archive/day-summary?date={_past_date_iso()}", "day_summary_text"),
+    (f"/archive/day-features?date={_past_date_iso()}", "day_features_vector"),
+    (
+        f"/archive/day-summary-prediction?date={_past_date_iso()}",
+        "day_summary_prediction",
+    ),
+    (
+        "/archive/day-summary-batch?from=2026-08-18&to=2026-08-18",
+        "day_summary_batch",
+    ),
+    (
+        "/archive/day-features-batch?from=2026-08-18&to=2026-08-18",
+        "day_features_batch",
+    ),
+    (
+        "/archive/day-summary-prediction-batch?from=2026-08-18&to=2026-08-18",
+        "day_summary_prediction_batch",
+    ),
+    (
+        f"/archive/tbbo-day-microstructure?date={_past_date_iso()}&symbol=ES",
+        "tbbo_day_microstructure",
+    ),
+    (
+        "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h",
+        "tbbo_ofi_percentile",
+    ),
+]
+
+
+class TestArchiveUnavailable:
+    def test_route_table_covers_every_archive_route(self) -> None:
+        """Completeness guard: a new /archive/* route must be added to
+        `_ARCHIVE_ROUTES_FOR_UNAVAILABLE` so it gets the 503 mapping test."""
+        covered = {path.split("?", 1)[0] for path, _ in _ARCHIVE_ROUTES_FOR_UNAVAILABLE}
+        registered = {prefix for prefix, _ in HealthHandler._ARCHIVE_ROUTES}
+        assert covered == registered
+
+    @pytest.mark.parametrize(
+        ("path", "query_attr"),
+        _ARCHIVE_ROUTES_FOR_UNAVAILABLE,
+        ids=[attr for _, attr in _ARCHIVE_ROUTES_FOR_UNAVAILABLE],
+    )
+    def test_every_archive_route_maps_unavailable_to_503(
+        self, configure_base_callables, path: str, query_attr: str
+    ) -> None:
+        import archive_query
+
+        exc = archive_query.ArchiveUnavailableError(
+            "archive dataset 'ohlcv_1m' not found", dataset="ohlcv_1m"
+        )
+        with (
+            patch(f"archive_query.{query_attr}", side_effect=exc),
+            patch("sentry_setup.capture_exception") as cap,
+            patch("health.log") as mock_log,
+        ):
+            status, body = _run_request(path)
+
+        assert status == 503
+        assert body["error"] == "archive_unavailable"
+        assert body["dataset"] == "ohlcv_1m"
+        # Unconfigured != broken: no Sentry event, no error-level log.
+        cap.assert_not_called()
+        mock_log.error.assert_not_called()
+
+    def test_503_unavailable_is_distinct_from_busy(
+        self, configure_base_callables
+    ) -> None:
+        """The busy-cap 503 carries Retry-After (transient); unseeded does
+        not — a caller must not spin retrying an archive that will not
+        appear until someone runs the seed."""
+        import archive_query
+
+        exc = archive_query.ArchiveUnavailableError("nope", dataset="ohlcv_1m")
+        with patch("archive_query.day_summary_batch", side_effect=exc):
+            raw = _run_request_raw(
+                "/archive/day-summary-batch?from=2026-08-18&to=2026-08-18"
+            )
+        head, _, _body = raw.partition("\r\n\r\n")
+        assert " 503 " in head.split("\r\n", 1)[0]
+        assert "Retry-After" not in head
+
+    def test_genuine_failures_still_500_and_capture(
+        self, configure_base_callables
+    ) -> None:
+        """Regression guard: the new branch must not swallow real bugs."""
+        with (
+            patch(
+                "archive_query.day_summary_batch",
+                side_effect=RuntimeError("duckdb crashed"),
+            ),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request(
+                "/archive/day-summary-batch?from=2026-08-18&to=2026-08-18"
+            )
+        assert status == 500
+        assert body["error"] == "query failed"
+        cap.assert_called_once()
+
+    # -- End-to-end against the real query layer (no mocks) ---------------
+
+    def test_batch_route_503_on_empty_archive_root(
+        self, configure_base_callables, tmp_path: Path
+    ) -> None:
+        """Reproduces the 2026-08-18 production failure: ARCHIVE_ROOT
+        exists (volume mounted) but was never seeded."""
+        import archive_query
+
+        root = tmp_path / "archive"
+        root.mkdir()
+        with (
+            patch.object(archive_query, "_ROOT", root),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request(
+                "/archive/day-summary-batch?from=2026-08-18&to=2026-08-18"
+            )
+        assert status == 503
+        assert body["error"] == "archive_unavailable"
+        cap.assert_not_called()
+
+    def test_batch_route_503_on_missing_archive_root(
+        self, configure_base_callables, tmp_path: Path
+    ) -> None:
+        import archive_query
+
+        root = tmp_path / "no-such-dir"
+        with (
+            patch.object(archive_query, "_ROOT", root),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request(
+                "/archive/day-features-batch?from=2026-08-18&to=2026-08-18"
+            )
+        assert status == 503
+        assert body["error"] == "archive_unavailable"
+        cap.assert_not_called()
+
+    @pytest.mark.parametrize("route", ["day-summary", "day-features"])
+    def test_single_day_routes_503_on_unseeded_archive(
+        self, configure_base_callables, tmp_path: Path, route: str
+    ) -> None:
+        """Past date + unseeded archive → 503 archive_unavailable (NOT the
+        404 'No ES bars found' that a seeded-but-missing date returns —
+        the operator needs to be able to tell the two apart)."""
+        import archive_query
+
+        root = tmp_path / "archive"
+        root.mkdir()
+        with (
+            patch.object(archive_query, "_ROOT", root),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request(f"/archive/{route}?date={_past_date_iso()}")
+        assert status == 503
+        assert body["error"] == "archive_unavailable"
+        cap.assert_not_called()
+
+    @pytest.mark.parametrize("route", ["day-summary", "day-features"])
+    def test_single_day_routes_keep_404_for_today_even_when_unseeded(
+        self, configure_base_callables, tmp_path: Path, route: str
+    ) -> None:
+        """The SIDE-017 today/future short-circuit still wins — it runs
+        before any archive access, so refresh-current-snapshot's existing
+        404 handling is unchanged."""
+        from datetime import datetime, timezone
+
+        import archive_query
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        root = tmp_path / "archive"
+        root.mkdir()
+        with patch.object(archive_query, "_ROOT", root):
+            status, body = _run_request(f"/archive/{route}?date={today}")
+        assert status == 404
+        assert body["error"].startswith("date not yet in archive")

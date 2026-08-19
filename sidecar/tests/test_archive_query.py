@@ -1505,3 +1505,278 @@ def test_day_summary_prediction_batch_tied_volume_resolves_deterministically(
     # to ESM4.
     assert len(batch) == 1
     assert batch[0]["symbol"] == "ESM4"
+
+
+# ---------------------------------------------------------------------------
+# Unseeded / partially-seeded archive → ArchiveUnavailableError
+# ---------------------------------------------------------------------------
+#
+# Readiness audit 2026-08-18: on a deployment where the Railway volume was
+# never seeded (ARCHIVE_MANIFEST_URL / BLOB_READ_WRITE_TOKEN unset, so
+# /data/archive exists but is empty) every /archive/* route 500'd because
+# DuckDB raised `IOException: No files found that match the pattern` from
+# inside the query and the HTTP layer treated it as an unexpected failure
+# (log.error + Sentry capture per call). "Unconfigured != broken": the
+# query layer must surface that state as its own exception type so the
+# HTTP layer can map it to a quiet 503 `archive_unavailable`.
+
+
+def _empty_root(tmp_path: Path) -> Path:
+    """Archive root that exists but was never seeded (Railway volume mounted,
+    seed never run)."""
+    root = tmp_path / "empty"
+    root.mkdir()
+    return root
+
+
+def _missing_root(tmp_path: Path) -> Path:
+    """Archive root that does not exist at all (no volume, bad ARCHIVE_ROOT)."""
+    return tmp_path / "does-not-exist"
+
+
+_OHLCV_QUERIES = [
+    (
+        "es_day_summary",
+        lambda root: archive_query.es_day_summary("2024-06-03", root=root),
+    ),
+    ("analog_days", lambda root: archive_query.analog_days("2024-06-03", root=root)),
+    (
+        "day_summary_text",
+        lambda root: archive_query.day_summary_text("2024-06-03", root=root),
+    ),
+    (
+        "day_features_vector",
+        lambda root: archive_query.day_features_vector("2024-06-03", root=root),
+    ),
+    (
+        "day_summary_prediction",
+        lambda root: archive_query.day_summary_prediction("2024-06-03", root=root),
+    ),
+    (
+        "day_features_batch",
+        lambda root: archive_query.day_features_batch(
+            "2024-06-03", "2024-06-04", root=root
+        ),
+    ),
+    (
+        "day_summary_batch",
+        lambda root: archive_query.day_summary_batch(
+            "2024-06-03", "2024-06-04", root=root
+        ),
+    ),
+    (
+        "day_summary_prediction_batch",
+        lambda root: archive_query.day_summary_prediction_batch(
+            "2024-06-03", "2024-06-04", root=root
+        ),
+    ),
+]
+
+_TBBO_QUERIES = [
+    (
+        "tbbo_day_microstructure",
+        lambda root: archive_query.tbbo_day_microstructure(
+            "2024-06-03", "ES", root=root
+        ),
+    ),
+    (
+        "tbbo_ofi_percentile",
+        lambda root: archive_query.tbbo_ofi_percentile(
+            "ES", 0.1, window="1h", root=root
+        ),
+    ),
+]
+
+
+def test_archive_unavailable_error_is_not_a_value_error() -> None:
+    """The HTTP layer maps ValueError → 404/400 ("no data for that date").
+    Unseeded-archive must NOT masquerade as that — it is a distinct
+    condition (503) so it stays visible to operators."""
+    assert issubclass(archive_query.ArchiveUnavailableError, Exception)
+    assert not issubclass(archive_query.ArchiveUnavailableError, ValueError)
+
+
+@pytest.mark.parametrize(
+    ("name", "call"), _OHLCV_QUERIES, ids=[n for n, _ in _OHLCV_QUERIES]
+)
+def test_ohlcv_queries_raise_archive_unavailable_on_empty_root(
+    tmp_path: Path, name: str, call
+) -> None:
+    root = _empty_root(tmp_path)
+    with pytest.raises(archive_query.ArchiveUnavailableError):
+        call(root)
+
+
+@pytest.mark.parametrize(
+    ("name", "call"), _OHLCV_QUERIES, ids=[n for n, _ in _OHLCV_QUERIES]
+)
+def test_ohlcv_queries_raise_archive_unavailable_on_missing_root(
+    tmp_path: Path, name: str, call
+) -> None:
+    root = _missing_root(tmp_path)
+    with pytest.raises(archive_query.ArchiveUnavailableError):
+        call(root)
+
+
+@pytest.mark.parametrize(
+    ("name", "call"), _TBBO_QUERIES, ids=[n for n, _ in _TBBO_QUERIES]
+)
+def test_tbbo_queries_raise_archive_unavailable_on_empty_root(
+    tmp_path: Path, name: str, call
+) -> None:
+    root = _empty_root(tmp_path)
+    with pytest.raises(archive_query.ArchiveUnavailableError):
+        call(root)
+
+
+@pytest.mark.parametrize(
+    ("name", "call"), _TBBO_QUERIES, ids=[n for n, _ in _TBBO_QUERIES]
+)
+def test_tbbo_queries_raise_archive_unavailable_on_missing_root(
+    tmp_path: Path, name: str, call
+) -> None:
+    root = _missing_root(tmp_path)
+    with pytest.raises(archive_query.ArchiveUnavailableError):
+        call(root)
+
+
+def test_ohlcv_query_raises_archive_unavailable_when_symbology_missing(
+    tmp_path: Path,
+) -> None:
+    """Partial seed: ohlcv Parquet landed but symbology.parquet did not.
+    Every ohlcv query joins symbology, so this is equally unseeded."""
+    from datetime import datetime, timezone
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    _build_archive(
+        tmp_path,
+        [(d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000)],
+        [(101, "ESU4", d0, d0)],
+    )
+    (tmp_path / "symbology.parquet").unlink()
+
+    with pytest.raises(archive_query.ArchiveUnavailableError):
+        archive_query.day_summary_batch("2024-06-03", "2024-06-03", root=tmp_path)
+
+
+def test_datasets_are_checked_independently(tmp_path: Path) -> None:
+    """An ohlcv-only seed must not make TBBO look available (and vice
+    versa) — production can legitimately have one without the other."""
+    from datetime import datetime, timezone
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    ohlcv_root = tmp_path / "ohlcv-only"
+    ohlcv_root.mkdir()
+    _build_archive(
+        ohlcv_root,
+        [(d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000)],
+        [(101, "ESU4", d0, d0)],
+    )
+    # ohlcv query works; tbbo query reports unavailable.
+    assert (
+        archive_query.es_day_summary("2024-06-03", root=ohlcv_root)["symbol"] == "ESU4"
+    )
+    with pytest.raises(archive_query.ArchiveUnavailableError):
+        archive_query.tbbo_day_microstructure("2024-06-03", "ES", root=ohlcv_root)
+
+    tbbo_root = tmp_path / "tbbo-only"
+    tbbo_root.mkdir()
+    bars = _tbbo_day_trades((2024, 6, 3), 101, "ESU4", [(0, "B", 10)])
+    _build_tbbo_archive(
+        tbbo_root,
+        bars,
+        [
+            (
+                101,
+                "ESU4",
+                datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc),
+                datetime(2024, 6, 3, 20, 0, tzinfo=timezone.utc),
+            )
+        ],
+    )
+    # tbbo query works; ohlcv query reports unavailable.
+    out = archive_query.tbbo_day_microstructure("2024-06-03", "ES", root=tbbo_root)
+    assert out["front_month_contract"] == "ESU4"
+    with pytest.raises(archive_query.ArchiveUnavailableError):
+        archive_query.es_day_summary("2024-06-03", root=tbbo_root)
+
+
+def test_seeded_archive_with_no_rows_in_range_returns_empty_batch(
+    tmp_path: Path,
+) -> None:
+    """Contrast case: the archive IS seeded but the requested range has no
+    trading days (weekend / holiday / not-yet-dropped date). That is a
+    legitimate empty result (→ HTTP 200 `rows: []`), NOT unavailable."""
+    from datetime import datetime, timezone
+
+    d0 = datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc)
+    _build_archive(
+        tmp_path,
+        [(d0, 101, 5300.0, 5305.0, 5299.0, 5300.0, 1_000)],
+        [(101, "ESU4", d0, d0)],
+    )
+    assert (
+        archive_query.day_summary_batch("2026-08-18", "2026-08-18", root=tmp_path) == []
+    )
+    assert (
+        archive_query.day_features_batch("2026-08-18", "2026-08-18", root=tmp_path)
+        == []
+    )
+    assert (
+        archive_query.day_summary_prediction_batch(
+            "2026-08-18", "2026-08-18", root=tmp_path
+        )
+        == []
+    )
+
+
+def test_archive_unavailable_warns_once_per_missing_path(tmp_path: Path) -> None:
+    """The unseeded state is logged at WARNING exactly once per missing
+    path per process — the routes get polled every 5 min all session, and
+    a warning per hit would be the very alert noise this guards against."""
+    from unittest.mock import patch
+
+    root = _empty_root(tmp_path)
+    with (
+        patch.object(archive_query, "_unavailable_warned", set()),
+        patch.object(archive_query, "log") as mock_log,
+    ):
+        for _ in range(3):
+            with pytest.raises(archive_query.ArchiveUnavailableError):
+                archive_query.day_summary_batch("2024-06-03", "2024-06-04", root=root)
+        for _ in range(2):
+            with pytest.raises(archive_query.ArchiveUnavailableError):
+                archive_query.day_summary_text("2024-06-03", root=root)
+
+    # Same missing ohlcv path across all 5 calls → one warning.
+    assert mock_log.warning.call_count == 1
+    assert mock_log.error.call_count == 0
+
+
+def test_archive_unavailable_error_message_names_the_missing_path(
+    tmp_path: Path,
+) -> None:
+    root = _missing_root(tmp_path)
+    with pytest.raises(archive_query.ArchiveUnavailableError) as excinfo:
+        archive_query.day_summary_batch("2024-06-03", "2024-06-04", root=root)
+    assert "ohlcv_1m" in str(excinfo.value)
+    assert excinfo.value.dataset == "ohlcv_1m"
+
+
+def test_unseeded_guard_runs_before_duckdb_connection(tmp_path: Path) -> None:
+    """The guard must fire before `_connection()` — an unseeded sidecar
+    polled every 5 min should not open (and pay SET-up for) a DuckDB
+    connection per request just to bail out."""
+    from unittest.mock import patch
+
+    root = _empty_root(tmp_path)
+    with patch.object(
+        archive_query,
+        "_connection",
+        side_effect=AssertionError("DuckDB connection must not be opened"),
+    ) as conn:
+        with pytest.raises(archive_query.ArchiveUnavailableError):
+            archive_query.day_summary_batch("2024-06-03", "2024-06-04", root=root)
+        with pytest.raises(archive_query.ArchiveUnavailableError):
+            archive_query.tbbo_ofi_percentile("ES", 0.1, window="1h", root=root)
+    conn.assert_not_called()
