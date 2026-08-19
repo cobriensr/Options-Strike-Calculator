@@ -276,9 +276,18 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'enrich-lottery-outcomes': {
-    schedule: '40 21 * * 1-5',
+    // Post-close drain, every 5 min 21:40-23:55 UTC. vercel.json carries
+    // TWO windows for this path (`40-59/5 21` + `*/5 22-23`) because one
+    // crontab can't start at :40 in one hour and :00 in the next. A Sentry
+    // monitor holds ONE crontab, so pin the larger 22-23 window here; the
+    // four 21:40-21:55 check-ins arrive as early extras (no missed signal).
+    // Every-5-min cadence → high-frequency failure threshold. Each run
+    // loops batches until the 240s wall budget under the 300s maxDuration,
+    // so a run can legitimately last ~4.5 min → long-runner max runtime.
+    schedule: '*/5 22-23 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: DEFAULT_MAX_RUNTIME,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
   'enrich-silent-boom-outcomes': {
     schedule: '45 21 * * 1-5',

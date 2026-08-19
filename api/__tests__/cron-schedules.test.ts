@@ -30,13 +30,21 @@ interface VercelConfig {
   crons?: { path: string; schedule: string }[];
 }
 
-function loadVercelCrons(): Map<string, string> {
+/**
+ * job name → EVERY vercel.json crontab for that path, in file order.
+ *
+ * A path may appear more than once (multi-window crons: fetch-gexbot-*,
+ * populate-periscope-from-gexbot, enrich-lottery-outcomes). A Sentry
+ * monitor carries ONE crontab, so a multi-window SCHEDULE_MAP entry pins
+ * one of its windows and the other windows' check-ins land as extras.
+ */
+function loadVercelCrons(): Map<string, string[]> {
   const path = resolve(process.cwd(), 'vercel.json');
   const cfg = JSON.parse(readFileSync(path, 'utf8')) as VercelConfig;
-  const map = new Map<string, string>();
+  const map = new Map<string, string[]>();
   for (const c of cfg.crons ?? []) {
     const m = /^\/api\/cron\/([^/]+)$/.exec(c.path);
-    if (m?.[1]) map.set(m[1], c.schedule);
+    if (m?.[1]) map.set(m[1], [...(map.get(m[1]) ?? []), c.schedule]);
   }
   return map;
 }
@@ -119,11 +127,14 @@ describe('cron-schedules SCHEDULE_MAP', () => {
   );
 
   it.each(utcEntries)(
-    'UTC schedule for %s matches vercel.json verbatim',
+    'UTC schedule for %s matches a vercel.json window verbatim',
     (jobName) => {
-      const want = vercelCrons.get(jobName);
+      const windows = vercelCrons.get(jobName);
       const got = SCHEDULE_MAP[jobName]?.schedule;
-      expect(got).toBe(want);
+      expect(windows, `${jobName} present in vercel.json`).toBeDefined();
+      // Single-window crons: exactly one crontab, must match verbatim.
+      // Multi-window crons: the monitor pins ONE of the windows verbatim.
+      expect(windows).toContain(got);
     },
   );
 
@@ -131,8 +142,13 @@ describe('cron-schedules SCHEDULE_MAP', () => {
     'every ET-anchored tick for %s is served by vercel.json AND market-open in BOTH DST regimes',
     (jobName) => {
       const cfg = SCHEDULE_MAP[jobName];
-      const vercel = vercelCrons.get(jobName);
-      expect(vercel, `${jobName} present in vercel.json`).toBeDefined();
+      const windows = vercelCrons.get(jobName);
+      expect(windows, `${jobName} present in vercel.json`).toBeDefined();
+      // The ET reconciliation below assumes one UTC window per job (true
+      // for every ET-anchored entry today). A multi-window ET cron would
+      // need the served set unioned across windows — extend here if added.
+      expect(windows, `${jobName}: single vercel.json window`).toHaveLength(1);
+      const vercel = windows?.[0];
       if (!cfg || !vercel) return;
 
       const et = parseCron(cfg.schedule);
@@ -208,6 +224,38 @@ describe('cron-schedules SCHEDULE_MAP', () => {
       'refresh-tracker-contracts',
     ].sort();
     expect([...etEntries].sort()).toEqual(expectedEt);
+  });
+
+  // ── Post-close drain cadence (readiness-loose-ends-2026-08-18, phase A) ──
+  // enrich-lottery-outcomes runs every 5 min from 21:40 to 23:55 UTC as TWO
+  // vercel.json windows (a single crontab can't start at :40 in one hour and
+  // :00 in the next). The first tick must stay >= 21:40 UTC — the original
+  // close buffer, valid in both EST and EDT — and the windows must be
+  // contiguous on the 5-min grid so the drain has no gap.
+  it('enrich-lottery-outcomes fires every 5 min from 21:40 to 23:55 UTC across two windows', () => {
+    const windows = vercelCrons.get('enrich-lottery-outcomes');
+    expect(windows).toEqual(['40-59/5 21 * * 1-5', '*/5 22-23 * * 1-5']);
+
+    const ticks = new Set<number>();
+    for (const w of windows ?? []) {
+      const parsed = parseCron(w);
+      expect(parsed.rest, `${w}: weekday tail`).toBe('* * 1-5');
+      for (const t of utcTickSet(parsed)) ticks.add(t);
+    }
+    const sorted = [...ticks].sort((a, b) => a - b);
+    expect(sorted[0]).toBe(21 * 60 + 40);
+    expect(sorted.at(-1)).toBe(23 * 60 + 55);
+    // 21:40..23:55 inclusive on a 5-min grid = 28 ticks, no gaps.
+    expect(sorted).toHaveLength(28);
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i]! - sorted[i - 1]!).toBe(5);
+    }
+
+    // The Sentry monitor pins the second (larger) window with the
+    // high-frequency failure threshold — every-5-min cadence.
+    const cfg = SCHEDULE_MAP['enrich-lottery-outcomes'];
+    expect(cfg?.schedule).toBe('*/5 22-23 * * 1-5');
+    expect(cfg?.failureIssueThreshold).toBe(3);
   });
 
   it('every SCHEDULE_MAP timezone is a valid IANA zone (finding #7)', () => {
