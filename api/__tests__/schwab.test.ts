@@ -33,6 +33,7 @@ import {
   storeInitialTokens,
   getAuthUrl,
   isSchwabConfigured,
+  invalidateSchwabTokenCache,
 } from '../_lib/schwab.js';
 
 describe('schwab', () => {
@@ -45,6 +46,9 @@ describe('schwab', () => {
     mockRedisGet.mockReset();
     mockRedisSet.mockReset();
     mockRedisDel.mockReset();
+    // The module-scoped access-token cache would otherwise leak a token
+    // cached by one test into the next and mask the Redis read under test.
+    invalidateSchwabTokenCache();
   });
 
   afterEach(() => {
@@ -290,13 +294,12 @@ describe('schwab', () => {
       mockRedisGet.mockRejectedValue(new Error('redis down'));
 
       const result = await getAccessToken();
-      // After earlier tests refresh tokens, the in-memory cache may
-      // be populated — getAccessToken falls back to it. Either outcome
-      // is valid: in-memory fallback returns { token }, or cold start
-      // returns { error: expired_refresh }.
-      if ('token' in result) {
-        expect(result.token).toBeTruthy();
-      } else {
+      // Cold start (the in-memory cache is reset in beforeEach) + Redis
+      // failing → no token anywhere → expired_refresh, not a throw. The
+      // warm-instance case (cached token served through a Redis outage)
+      // is covered in the "in-memory token cache" block below.
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
         expect(result.error.type).toBe('expired_refresh');
       }
     });
@@ -624,6 +627,217 @@ describe('schwab', () => {
       }
 
       vi.unstubAllGlobals();
+    });
+  });
+
+  // ============================================================
+  // getAccessToken — in-memory token cache (Redis cost control)
+  // ============================================================
+
+  describe('getAccessToken (in-memory token cache)', () => {
+    const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+    function setCreds() {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+    }
+
+    function tokenResponse(access: string) {
+      return {
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            access_token: access,
+            refresh_token: 'ref-new',
+            expires_in: 1800,
+            token_type: 'Bearer',
+            scope: 'api',
+            id_token: '',
+          }),
+      };
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it('reads Redis once, then serves repeat calls from memory with ZERO Redis reads', async () => {
+      setCreds();
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'cached-tok',
+        refreshToken: 'ref',
+        expiresAt: Date.now() + 600_000,
+        refreshExpiresAt: Date.now() + WEEK_MS,
+      });
+
+      const first = await getAccessToken();
+      expect(first).toEqual({ token: 'cached-tok' });
+      expect(mockRedisGet).toHaveBeenCalledTimes(1);
+
+      // A warm lambda serving fetch-market-internals (1/min × 4 symbols)
+      // must not touch Redis between refreshes.
+      for (let i = 0; i < 4; i++) {
+        expect(await getAccessToken()).toEqual({ token: 'cached-tok' });
+      }
+      expect(mockRedisGet).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops serving from memory inside the 60s pre-expiry buffer and re-reads Redis', async () => {
+      vi.useFakeTimers({ now: new Date('2026-08-19T14:00:00Z') });
+      setCreds();
+      const now = Date.now();
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'short-tok',
+        refreshToken: 'ref',
+        expiresAt: now + 120_000, // valid for 2 min
+        refreshExpiresAt: now + WEEK_MS,
+      });
+
+      expect(await getAccessToken()).toEqual({ token: 'short-tok' });
+      expect(mockRedisGet).toHaveBeenCalledTimes(1);
+
+      // 59s later: still > 60s before expiry → memory hit.
+      vi.setSystemTime(now + 59_000);
+      expect(await getAccessToken()).toEqual({ token: 'short-tok' });
+      expect(mockRedisGet).toHaveBeenCalledTimes(1);
+
+      // 61s later: inside the buffer → cache is stale → Redis is consulted
+      // again (and, here, Redis holds a freshly refreshed token written by
+      // another lambda instance).
+      vi.setSystemTime(now + 61_000);
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'other-lambda-tok',
+        refreshToken: 'ref',
+        expiresAt: now + 61_000 + 1_800_000,
+        refreshExpiresAt: now + WEEK_MS,
+      });
+      expect(await getAccessToken()).toEqual({ token: 'other-lambda-tok' });
+      expect(mockRedisGet).toHaveBeenCalledTimes(2);
+    });
+
+    it('a refresh repopulates the cache with the NEW token', async () => {
+      setCreds();
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'old-tok',
+        refreshToken: 'ref-tok',
+        expiresAt: Date.now() + 30_000, // inside buffer → refresh
+        refreshExpiresAt: Date.now() + WEEK_MS,
+      });
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+      const fetchMock = vi.fn().mockResolvedValue(tokenResponse('refreshed'));
+      vi.stubGlobal('fetch', fetchMock);
+
+      expect(await getAccessToken()).toEqual({ token: 'refreshed' });
+      const redisReadsAfterRefresh = mockRedisGet.mock.calls.length;
+
+      // Next call: memory hit on the refreshed token — no Redis read, and
+      // Schwab is not called again.
+      expect(await getAccessToken()).toEqual({ token: 'refreshed' });
+      expect(mockRedisGet).toHaveBeenCalledTimes(redisReadsAfterRefresh);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('storeInitialTokens replaces a previously cached token', async () => {
+      setCreds();
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'pre-login-tok',
+        refreshToken: 'ref',
+        expiresAt: Date.now() + 600_000,
+        refreshExpiresAt: Date.now() + WEEK_MS,
+      });
+      expect(await getAccessToken()).toEqual({ token: 'pre-login-tok' });
+
+      mockRedisSet.mockResolvedValue('OK');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenResponse('post-login-tok')),
+      );
+      expect(await storeInitialTokens('code', 'http://x/cb')).toEqual({
+        success: true,
+      });
+
+      // The stale pre-login token must NOT be served from memory.
+      mockRedisGet.mockClear();
+      expect(await getAccessToken()).toEqual({ token: 'post-login-tok' });
+      expect(mockRedisGet).not.toHaveBeenCalled();
+    });
+
+    it('invalidateSchwabTokenCache forces the next call back to Redis', async () => {
+      setCreds();
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok-a',
+        refreshToken: 'ref',
+        expiresAt: Date.now() + 600_000,
+        refreshExpiresAt: Date.now() + WEEK_MS,
+      });
+      expect(await getAccessToken()).toEqual({ token: 'tok-a' });
+      expect(mockRedisGet).toHaveBeenCalledTimes(1);
+
+      invalidateSchwabTokenCache();
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok-b',
+        refreshToken: 'ref',
+        expiresAt: Date.now() + 600_000,
+        refreshExpiresAt: Date.now() + WEEK_MS,
+      });
+      expect(await getAccessToken()).toEqual({ token: 'tok-b' });
+      expect(mockRedisGet).toHaveBeenCalledTimes(2);
+    });
+
+    it('does NOT cache an error outcome (no tokens / expired refresh)', async () => {
+      setCreds();
+      mockRedisGet.mockResolvedValue(null);
+      expect('error' in (await getAccessToken())).toBe(true);
+      expect('error' in (await getAccessToken())).toBe(true);
+      // Both calls went to Redis — nothing was memoized.
+      expect(mockRedisGet).toHaveBeenCalledTimes(2);
+    });
+
+    it('serves a cached token even when Redis is down (the old in-memory fallback)', async () => {
+      setCreds();
+      mockRedisGet.mockResolvedValueOnce({
+        accessToken: 'resilient-tok',
+        refreshToken: 'ref',
+        expiresAt: Date.now() + 600_000,
+        refreshExpiresAt: Date.now() + WEEK_MS,
+      });
+      expect(await getAccessToken()).toEqual({ token: 'resilient-tok' });
+
+      mockRedisGet.mockRejectedValue(
+        new Error('ERR max requests limit exceeded. Limit: 500000'),
+      );
+      expect(await getAccessToken()).toEqual({ token: 'resilient-tok' });
+    });
+
+    it('lost-race path caches the fresh token read after the lock is released', async () => {
+      setCreds();
+      mockRedisGet
+        // getStoredTokens: stale
+        .mockResolvedValueOnce({
+          accessToken: 'old-tok',
+          refreshToken: 'ref-tok',
+          expiresAt: Date.now() + 30_000,
+          refreshExpiresAt: Date.now() + WEEK_MS,
+        })
+        // waitForLockRelease: released
+        .mockResolvedValueOnce(null)
+        // getStoredTokens after release: fresh (written by the winner)
+        .mockResolvedValueOnce({
+          accessToken: 'winner-tok',
+          refreshToken: 'ref-tok',
+          expiresAt: Date.now() + 1_800_000,
+          refreshExpiresAt: Date.now() + WEEK_MS,
+        });
+      mockRedisSet.mockResolvedValue(null); // lock NOT acquired
+      mockRedisDel.mockResolvedValue(1);
+      vi.stubGlobal('fetch', vi.fn());
+
+      expect(await getAccessToken()).toEqual({ token: 'winner-tok' });
+      const reads = mockRedisGet.mock.calls.length;
+      expect(await getAccessToken()).toEqual({ token: 'winner-tok' });
+      expect(mockRedisGet).toHaveBeenCalledTimes(reads);
     });
   });
 

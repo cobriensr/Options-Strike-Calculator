@@ -3,10 +3,29 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
+// The handler reads/writes the day-scoped cache through `safeRedis` /
+// `safeRedisVoid` so a Redis failure (outage OR Upstash over-quota) degrades
+// to a cache miss instead of surfacing. These stubs mirror the real wrappers'
+// swallow semantics (the real ones are asserted end-to-end in redis.test.ts)
+// so the test can drive failures through `redis.get` / `redis.set` directly.
 vi.mock('../_lib/redis.js', () => ({
   redis: {
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
+  },
+  safeRedis: async <T>(op: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await op();
+    } catch {
+      return fallback;
+    }
+  },
+  safeRedisVoid: async (op: () => Promise<void>): Promise<void> => {
+    try {
+      await op();
+    } catch {
+      /* swallowed, like the real wrapper */
+    }
   },
 }));
 
@@ -514,6 +533,37 @@ describe('GET /api/events', () => {
     expect((res._json as { error: string }).error).toBe(
       'Internal server error',
     );
+
+    vi.unstubAllGlobals();
+  });
+
+  it('degrades to a cache MISS (still 200 with events) when the cache read hits the Upstash quota error', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(redis.get).mockRejectedValue(
+      new Error('ERR max requests limit exceeded. Limit: 500000'),
+    );
+    // The write after a fresh fetch fails the same way — must not matter.
+    vi.mocked(redis.set).mockRejectedValue(
+      new Error('ERR max requests limit exceeded. Limit: 500000'),
+    );
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ release_dates: [] }),
+      }),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
+
+    expect(res._status).toBe(200);
+    expect(res._headers['X-Cache']).toBe('MISS');
+    const json = res._json as { events: unknown[]; cached: boolean };
+    expect(json.cached).toBe(false);
+    expect(Array.isArray(json.events)).toBe(true);
+    // A quota hit is NOT an exception — no Sentry capture, no 500.
+    expect(Sentry.captureException).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();
   });

@@ -28,8 +28,18 @@ vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: vi.fn(),
 }));
 
+// The write goes through `safeRedis` so a Redis failure (outage OR Upstash
+// over-quota) is a controlled error response, not an unhandled 500. Stub
+// mirrors the real swallow (asserted end-to-end in redis.test.ts).
 vi.mock('../_lib/redis.js', () => ({
   redis: { set: vi.fn().mockResolvedValue('OK') },
+  safeRedis: async <T>(op: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await op();
+    } catch {
+      return fallback;
+    }
+  },
 }));
 
 vi.mock('../_lib/axiom.js', () => ({
@@ -40,6 +50,8 @@ import handler, { parseCboeCsv } from '../cron/refresh-vix1d.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { redis } from '../_lib/redis.js';
 import { Sentry } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
+import logger from '../_lib/logger.js';
 
 // ── Fixture CSV ───────────────────────────────────────────────
 
@@ -174,6 +186,35 @@ describe('refresh-vix1d handler', () => {
     const res = mockResponse();
     await handler(req, res);
     expect(res._status).toBe(500);
+  });
+
+  it('returns a controlled 503 + reports error (no unhandled 500, no Sentry capture) when the Redis write fails', async () => {
+    vi.mocked(Sentry.captureException).mockClear();
+    vi.mocked(reportCronRun).mockClear();
+    vi.mocked(redis.set).mockRejectedValueOnce(
+      new Error('ERR max requests limit exceeded. Limit: 500000'),
+    );
+    const req = makeCronReq();
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({
+      job: 'refresh-vix1d',
+      success: false,
+      dayCount: 3,
+    });
+    expect((res._json as { error: string }).error).toMatch(/Redis/);
+    // Not the generic unhandled-500 path.
+    expect((res._json as { error: string }).error).not.toBe(
+      'Internal server error',
+    );
+    expect(vi.mocked(Sentry.captureException)).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.error)).toHaveBeenCalled();
+    expect(vi.mocked(reportCronRun)).toHaveBeenCalledWith(
+      'refresh-vix1d',
+      expect.objectContaining({ status: 'error' }),
+    );
   });
 
   it('returns 500 on network error', async () => {

@@ -9,18 +9,22 @@ vi.mock('botid/server', () => ({
   checkBotId: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
-// Mock schwab module before importing api-helpers
-const mockPipeline = {
-  incr: vi.fn().mockReturnThis(),
-  expire: vi.fn().mockReturnThis(),
-  exec: vi.fn().mockResolvedValue([0]),
-};
+// Mock the Redis singleton before importing api-helpers. The rate limiter
+// issues INCR, a conditional EXPIRE (first hit of the window), and on the
+// rejection path a TTL self-heal — all plain commands, no pipeline.
+// `recordRedisError` is the classifier the limiter uses to decide whether a
+// Redis failure is worth a Sentry capture ('error') or is the Upstash
+// over-quota rejection ('quota').
+const { mockRecordRedisError } = vi.hoisted(() => ({
+  mockRecordRedisError: vi.fn(() => 'error' as 'error' | 'quota'),
+}));
 vi.mock('../_lib/redis.js', () => ({
   redis: {
     incr: vi.fn(),
     expire: vi.fn(),
-    pipeline: vi.fn(() => mockPipeline),
+    ttl: vi.fn(),
   },
+  recordRedisError: mockRecordRedisError,
 }));
 
 vi.mock('../_lib/schwab.js', () => ({
@@ -97,6 +101,8 @@ import {
 } from '../_lib/api-helpers.js';
 import { z } from 'zod';
 import { getAccessToken } from '../_lib/schwab.js';
+import { redis } from '../_lib/redis.js';
+import { Sentry as mockedSentry } from '../_lib/sentry.js';
 import { checkBotId } from 'botid/server';
 import { getETDayOfWeek, getETTime } from '../../src/utils/timezone.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
@@ -211,8 +217,21 @@ describe('api-helpers', () => {
   // ============================================================
 
   describe('rejectIfRateLimited', () => {
+    beforeEach(() => {
+      vi.mocked(redis.incr).mockReset();
+      vi.mocked(redis.expire).mockReset();
+      vi.mocked(redis.ttl).mockReset();
+      mockRecordRedisError.mockReset();
+      mockRecordRedisError.mockReturnValue('error');
+      // Default: key already has a live TTL so the self-heal is a no-op.
+      vi.mocked(redis.ttl).mockResolvedValue(42);
+      vi.mocked(redis.expire).mockResolvedValue(1);
+      delete process.env.CRON_SECRET;
+      delete process.env.OWNER_SECRET;
+    });
+
     it('sends 429 when rate limited', async () => {
-      mockPipeline.exec.mockResolvedValue([100]);
+      vi.mocked(redis.incr).mockResolvedValue(100);
       const req = mockRequest({ headers: {} });
       const res = mockResponse();
       const rejected = await rejectIfRateLimited(req, res, 'test', 5);
@@ -222,11 +241,129 @@ describe('api-helpers', () => {
     });
 
     it('returns false when not rate limited', async () => {
-      mockPipeline.exec.mockResolvedValue([1]);
+      vi.mocked(redis.incr).mockResolvedValue(1);
       const req = mockRequest({ headers: {} });
       const res = mockResponse();
       const rejected = await rejectIfRateLimited(req, res, 'test', 5);
       expect(rejected).toBe(false);
+    });
+
+    // ── Command budget (Upstash bills per command) ──────────────
+
+    it('issues INCR + EXPIRE 60 on the FIRST hit of a window (count === 1)', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(1);
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      await rejectIfRateLimited(req, res, 'test', 5);
+      expect(redis.incr).toHaveBeenCalledTimes(1);
+      expect(redis.incr).toHaveBeenCalledWith('ratelimit:test:1.2.3.4');
+      expect(redis.expire).toHaveBeenCalledTimes(1);
+      expect(redis.expire).toHaveBeenCalledWith('ratelimit:test:1.2.3.4', 60);
+      // Under the limit → no TTL self-heal read.
+      expect(redis.ttl).not.toHaveBeenCalled();
+    });
+
+    it('issues ONLY INCR (no EXPIRE) on later hits inside the window (count > 1)', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(3);
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+      expect(redis.incr).toHaveBeenCalledTimes(1);
+      expect(redis.expire).not.toHaveBeenCalled();
+      expect(redis.ttl).not.toHaveBeenCalled();
+    });
+
+    it('on the rejection path re-arms a stuck key (TTL -1) with EXPIRE 60', async () => {
+      // INCR succeeded but the follow-up EXPIRE failed on a previous first
+      // hit → the key has no TTL and would 429 this caller forever. The
+      // limiter self-heals when it next rejects.
+      vi.mocked(redis.incr).mockResolvedValue(6);
+      vi.mocked(redis.ttl).mockResolvedValue(-1);
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(true);
+      expect(redis.ttl).toHaveBeenCalledWith('ratelimit:test:1.2.3.4');
+      expect(redis.expire).toHaveBeenCalledWith('ratelimit:test:1.2.3.4', 60);
+    });
+
+    it('on the rejection path leaves a key with a live TTL alone', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(6);
+      vi.mocked(redis.ttl).mockResolvedValue(30);
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(true);
+      expect(redis.expire).not.toHaveBeenCalled();
+    });
+
+    it('still rejects when the TTL self-heal itself throws (verdict already known)', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(6);
+      vi.mocked(redis.ttl).mockRejectedValue(new Error('boom'));
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(true);
+      expect(res._status).toBe(429);
+    });
+
+    // ── Trusted callers skip the limiter entirely (zero commands) ──
+
+    it('skips the limiter (no Redis commands) for a valid sc-owner cookie', async () => {
+      process.env.OWNER_SECRET = 'owner-secret';
+      const req = mockRequest({
+        headers: { cookie: `${OWNER_COOKIE}=owner-secret` },
+      });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+      expect(redis.incr).not.toHaveBeenCalled();
+      expect(redis.expire).not.toHaveBeenCalled();
+    });
+
+    it('does NOT skip for a wrong sc-owner cookie', async () => {
+      process.env.OWNER_SECRET = 'owner-secret';
+      vi.mocked(redis.incr).mockResolvedValue(100);
+      const req = mockRequest({
+        headers: { cookie: `${OWNER_COOKIE}=not-the-secret` },
+      });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(true);
+      expect(redis.incr).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the limiter (no Redis commands) for Authorization: Bearer <CRON_SECRET>', async () => {
+      process.env.CRON_SECRET = 'cron-secret';
+      const req = mockRequest({
+        headers: { authorization: 'Bearer cron-secret' },
+      });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+      expect(redis.incr).not.toHaveBeenCalled();
+    });
+
+    it('does NOT skip for a wrong bearer, and not at all when CRON_SECRET is unset', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(100);
+      process.env.CRON_SECRET = 'cron-secret';
+      const wrong = mockRequest({
+        headers: { authorization: 'Bearer nope' },
+      });
+      expect(await rejectIfRateLimited(wrong, mockResponse(), 'test', 5)).toBe(
+        true,
+      );
+      expect(redis.incr).toHaveBeenCalledTimes(1);
+
+      delete process.env.CRON_SECRET;
+      const unset = mockRequest({
+        headers: { authorization: 'Bearer cron-secret' },
+      });
+      expect(await rejectIfRateLimited(unset, mockResponse(), 'test', 5)).toBe(
+        true,
+      );
+      expect(redis.incr).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -1466,8 +1603,18 @@ describe('api-helpers', () => {
   // ============================================================
 
   describe('rejectIfRateLimited (Redis error path)', () => {
-    it('fails open when Redis pipeline throws', async () => {
-      mockPipeline.exec.mockRejectedValueOnce(
+    beforeEach(() => {
+      vi.mocked(redis.incr).mockReset();
+      vi.mocked(redis.expire).mockReset();
+      vi.mocked(mockedSentry.captureException).mockClear();
+      mockRecordRedisError.mockReset();
+      delete process.env.CRON_SECRET;
+      delete process.env.OWNER_SECRET;
+    });
+
+    it('fails open when INCR throws and captures the (non-quota) error to Sentry', async () => {
+      mockRecordRedisError.mockReturnValue('error');
+      vi.mocked(redis.incr).mockRejectedValueOnce(
         new Error('Redis connection refused'),
       );
       const req = mockRequest({ headers: {} });
@@ -1475,6 +1622,31 @@ describe('api-helpers', () => {
       // Fails open — should not block the request
       const rejected = await rejectIfRateLimited(req, res, 'test', 5);
       expect(rejected).toBe(false);
+      expect(mockRecordRedisError).toHaveBeenCalledTimes(1);
+      expect(mockedSentry.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails open when the first-hit EXPIRE throws', async () => {
+      mockRecordRedisError.mockReturnValue('error');
+      vi.mocked(redis.incr).mockResolvedValueOnce(1);
+      vi.mocked(redis.expire).mockRejectedValueOnce(new Error('boom'));
+      const req = mockRequest({ headers: {} });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+    });
+
+    it('fails open on the Upstash quota error WITHOUT a Sentry capture', async () => {
+      mockRecordRedisError.mockReturnValue('quota');
+      vi.mocked(redis.incr).mockRejectedValueOnce(
+        new Error('ERR max requests limit exceeded. Limit: 500000'),
+      );
+      const req = mockRequest({ headers: {} });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+      expect(mockRecordRedisError).toHaveBeenCalledTimes(1);
+      expect(mockedSentry.captureException).not.toHaveBeenCalled();
     });
   });
 

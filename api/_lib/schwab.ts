@@ -8,6 +8,10 @@
  *   - Access token: expires every 30 minutes → auto-refreshed
  *   - Refresh token: expires every 7 days → requires manual re-auth
  *
+ * The decoded access token is additionally cached in module memory (see
+ * `tokenCache`) so a warm lambda does zero Redis reads between refreshes —
+ * Upstash bills per command.
+ *
  * Environment variables required:
  *   SCHWAB_CLIENT_ID        — App Key from developer.schwab.com
  *   SCHWAB_CLIENT_SECRET     — App Secret from developer.schwab.com
@@ -18,12 +22,12 @@
 import { randomBytes } from 'node:crypto';
 
 import logger from './logger.js';
-import { Sentry, metrics } from './sentry.js';
+import { Sentry } from './sentry.js';
 import { requireEnvGroup } from './env.js';
 // The Redis singleton lives in the neutral lower-layer `redis.ts` so this
 // auth module isn't the source of the shared KV client (avoids inverting the
 // layering). Re-exported below for back-compat with existing importers.
-import { redis } from './redis.js';
+import { redis, recordRedisError } from './redis.js';
 
 export { redis };
 
@@ -100,7 +104,7 @@ async function getStoredTokens(): Promise<SchwabTokens | null> {
     return await redis.get<SchwabTokens>(KV_KEY);
   } catch (err) {
     logger.warn({ err }, 'Redis getStoredTokens failed');
-    metrics.increment('redis.error');
+    recordRedisError(err);
     return null;
   }
 }
@@ -115,7 +119,7 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
       return;
     } catch (err) {
       logger.error({ err, attempt }, 'storeTokens: Redis write failed');
-      metrics.increment('redis.error');
+      recordRedisError(err);
       if (attempt < 2)
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }
@@ -138,15 +142,49 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
 let refreshInFlight: Promise<SchwabTokens> | null = null;
 
 /**
- * Last-resort in-memory token cache. Only helps within the same
- * serverless invocation (module-scoped variables don't survive cold
- * starts). During a Redis blip inside an active invocation it
- * prevents cascading auth failure.
+ * Module-scoped in-memory access-token cache (Redis cost control).
+ *
+ * Upstash bills per command, and the single largest steady-state reader
+ * was `getAccessToken()` hitting `GET schwab:tokens` on EVERY Schwab call —
+ * e.g. `fetch-market-internals` every minute × 4 symbols. The decoded
+ * token is valid for ~30 min, so a warm lambda can serve it from memory
+ * and only go back to Redis when it is within `BUFFER_MS` of expiry (the
+ * same threshold that triggers a refresh).
+ *
+ * Population / invalidation points:
+ *   - a Redis read that yields a still-valid token      → populate
+ *   - a successful refresh (lock winner)                 → replace
+ *   - the lost-race re-read of the winner's fresh token  → replace
+ *   - `storeInitialTokens()` (OAuth callback re-login)   → replace
+ *   - `invalidateSchwabTokenCache()`                     → clear (tests,
+ *     or a caller that just saw Schwab reject the token)
+ *
+ * Error outcomes are never cached. Module-scoped state does not survive
+ * cold starts — each new instance pays exactly one Redis read, and other
+ * warm instances keep their own copy until its expiry (≤ 30 min), which is
+ * the same window the old Redis-only flow already tolerated between a
+ * refresh and the next read.
+ *
+ * This also subsumes the previous "last-resort in-memory fallback": a
+ * still-valid cached token is served even if Redis is down or over quota.
  */
-let inMemoryTokenCache: {
+let tokenCache: {
   accessToken: string;
   expiresAt: number;
 } | null = null;
+
+function cacheToken(tokens: SchwabTokens): void {
+  tokenCache = { accessToken: tokens.accessToken, expiresAt: tokens.expiresAt };
+}
+
+/**
+ * Drop the in-memory access token so the next `getAccessToken()` re-reads
+ * Redis. Exported for tests and for callers that observe Schwab rejecting
+ * the bearer (401) before its expiry.
+ */
+export function invalidateSchwabTokenCache(): void {
+  tokenCache = null;
+}
 
 /**
  * Redis distributed lock: when separate serverless invocations
@@ -164,7 +202,7 @@ async function acquireLock(): Promise<boolean> {
       return result === 'OK';
     } catch (err) {
       logger.warn({ err, attempt }, 'Redis acquireLock attempt failed');
-      metrics.increment('redis.error');
+      recordRedisError(err);
       if (attempt < 2)
         await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
     }
@@ -178,7 +216,7 @@ async function releaseLock(): Promise<void> {
     await redis.del(LOCK_KEY);
   } catch (err) {
     logger.warn({ err }, 'Redis releaseLock failed');
-    metrics.increment('redis.error');
+    recordRedisError(err);
   }
 }
 
@@ -191,7 +229,7 @@ async function waitForLockRelease(maxWaitMs = 30_000): Promise<void> {
       if (!held) return;
     } catch (err) {
       logger.warn({ err }, 'Redis lock check failed, proceeding');
-      metrics.increment('redis.error');
+      recordRedisError(err);
       return;
     }
   }
@@ -287,10 +325,7 @@ async function refreshAccessTokenOnce(
             clientSecret,
           );
           await storeTokens(tokens);
-          inMemoryTokenCache = {
-            accessToken: tokens.accessToken,
-            expiresAt: tokens.expiresAt,
-          };
+          cacheToken(tokens);
           return tokens;
         } finally {
           await releaseLock();
@@ -302,6 +337,7 @@ async function refreshAccessTokenOnce(
       await waitForLockRelease();
       const fresh = await getStoredTokens();
       if (fresh && Date.now() < fresh.expiresAt - BUFFER_MS) {
+        cacheToken(fresh);
         return fresh;
       }
 
@@ -343,17 +379,15 @@ export async function getAccessToken(): Promise<
     };
   }
 
+  // Memory first: zero Redis commands while the cached token is still
+  // outside the refresh buffer.
+  if (tokenCache && Date.now() < tokenCache.expiresAt - BUFFER_MS) {
+    return { token: tokenCache.accessToken };
+  }
+
   const stored = await getStoredTokens();
 
   if (!stored) {
-    // Redis read returned null — check in-memory cache as last resort
-    if (
-      inMemoryTokenCache &&
-      inMemoryTokenCache.expiresAt > Date.now() + BUFFER_MS
-    ) {
-      logger.warn('Using in-memory token fallback — Redis read failed');
-      return { token: inMemoryTokenCache.accessToken };
-    }
     return {
       error: {
         type: 'expired_refresh',
@@ -375,6 +409,7 @@ export async function getAccessToken(): Promise<
 
   // Check if access token is still valid (with buffer)
   if (Date.now() < stored.expiresAt - BUFFER_MS) {
+    cacheToken(stored);
     return { token: stored.accessToken };
   }
 
@@ -452,6 +487,10 @@ export async function storeInitialTokens(
     };
 
     await storeTokens(tokens);
+    // Replace (not just drop) the in-memory copy so this instance serves
+    // the post-login token without a Redis read; other warm instances age
+    // out their old copy at its expiry.
+    cacheToken(tokens);
     return { success: true };
   } catch (err) {
     return {

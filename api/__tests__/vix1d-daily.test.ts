@@ -13,8 +13,18 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { request: vi.fn(() => vi.fn()) },
 }));
 
+// The read goes through `safeRedis` so a Redis failure (outage OR Upstash
+// over-quota) degrades to "not populated" (404) — the SPA falls back to the
+// static baseline — instead of a 500. Stub mirrors the real swallow.
 vi.mock('../_lib/redis.js', () => ({
   redis: { get: vi.fn() },
+  safeRedis: async <T>(op: () => Promise<T>, fallback: T): Promise<T> => {
+    try {
+      return await op();
+    } catch {
+      return fallback;
+    }
+  },
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -74,12 +84,30 @@ describe('GET /api/vix1d-daily', () => {
     expect(res._status).toBe(404);
   });
 
-  it('returns 500 and captures exception on Redis error', async () => {
+  it('degrades to 404 (not 500, no Sentry capture) when the Redis read fails', async () => {
+    vi.mocked(Sentry.captureException).mockClear();
     vi.mocked(redis.get).mockRejectedValueOnce(new Error('Redis timeout'));
     const req = mockRequest({ method: 'GET' });
     const res = mockResponse();
     await handler(req, res);
-    expect(res._status).toBe(500);
-    expect(vi.mocked(Sentry.captureException)).toHaveBeenCalled();
+    expect(res._status).toBe(404);
+    expect(vi.mocked(Sentry.captureException)).not.toHaveBeenCalled();
+  });
+
+  it('degrades to 404 on the Upstash over-quota error', async () => {
+    vi.mocked(Sentry.captureException).mockClear();
+    vi.mocked(setCacheHeaders).mockClear();
+    vi.mocked(redis.get).mockRejectedValueOnce(
+      new Error('ERR max requests limit exceeded. Limit: 500000'),
+    );
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(404);
+    expect((res._json as { error: string }).error).toMatch(/not yet populated/);
+    // No CDN caching of the degraded response — the next probe should
+    // retry once Redis is back.
+    expect(vi.mocked(setCacheHeaders)).not.toHaveBeenCalled();
+    expect(vi.mocked(Sentry.captureException)).not.toHaveBeenCalled();
   });
 });

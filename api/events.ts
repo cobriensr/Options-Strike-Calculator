@@ -9,7 +9,9 @@
  * Public endpoint — no owner gate. All data is publicly available.
  * Results cached in Upstash Redis for 7 days (key is date-scoped), but only
  * when every source returned OK — a FRED error skips the cache write so a
- * later request can retry (AUD-M2).
+ * later request can retry (AUD-M2). The cache is best-effort via
+ * `safeRedis`: a Redis outage or Upstash over-quota rejection degrades to
+ * a cache miss (fresh fetch, 200) rather than a 500.
  *
  * Query params:
  *   ?days=30  — how many days ahead to return (default 30, max 90)
@@ -25,7 +27,7 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import { checkBot, setCacheHeaders } from './_lib/api-helpers.js';
 import { withRequestScope } from './_lib/request-scope.js';
-import { redis } from './_lib/redis.js';
+import { redis, safeRedis, safeRedisVoid } from './_lib/redis.js';
 import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -559,36 +561,37 @@ export default withRequestScope(
       }
       const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
 
-      // Try Redis cache first
+      // Try Redis cache first. `safeRedis` turns ANY Redis failure (outage
+      // or Upstash over-quota) into a cache miss — the endpoint still
+      // answers from FRED/Finnhub; the failure is counted in `redis.error`
+      // / `redis.quota_exceeded` rather than surfacing here.
       const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;
-      try {
-        const raw = await redis.get<
-          { data: EventItem[]; cachedAt: number } | EventItem[]
-        >(cacheKey);
-        if (raw) {
-          metrics.cacheResult('/api/events', true);
-          setCacheHeaders(res, 300, 120);
-          res.setHeader('X-Cache', 'HIT');
-          // Support both new wrapper format and legacy plain array
-          const cachedEvents = Array.isArray(raw) ? raw : raw.data;
-          const cachedAt = Array.isArray(raw) ? null : raw.cachedAt;
-          if (cachedAt) {
-            res.setHeader(
-              'X-Cache-Age',
-              Math.round((Date.now() - cachedAt) / 1000),
-            );
-          }
-          done({ status: 200 });
-          return res.status(200).json({
-            events: cachedEvents,
-            startDate,
-            endDate,
-            cached: true,
-            asOf: new Date().toISOString(),
-          });
+      type CachedEvents = { data: EventItem[]; cachedAt: number } | EventItem[];
+      const raw = await safeRedis<CachedEvents | null>(
+        () => redis.get<CachedEvents>(cacheKey),
+        null,
+      );
+      if (raw) {
+        metrics.cacheResult('/api/events', true);
+        setCacheHeaders(res, 300, 120);
+        res.setHeader('X-Cache', 'HIT');
+        // Support both new wrapper format and legacy plain array
+        const cachedEvents = Array.isArray(raw) ? raw : raw.data;
+        const cachedAt = Array.isArray(raw) ? null : raw.cachedAt;
+        if (cachedAt) {
+          res.setHeader(
+            'X-Cache-Age',
+            Math.round((Date.now() - cachedAt) / 1000),
+          );
         }
-      } catch {
-        // Redis unavailable — fetch fresh
+        done({ status: 200 });
+        return res.status(200).json({
+          events: cachedEvents,
+          startDate,
+          endDate,
+          cached: true,
+          asOf: new Date().toISOString(),
+        });
       }
 
       // Fetch from all sources
@@ -604,16 +607,17 @@ export default withRequestScope(
       // would serve a missing CPI/NFP flag all day (AUD-M2). Skipping the
       // write lets the next request retry FRED.
       if (complete) {
-        // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
-        try {
+        // Cache in Redis for 7 days (key is date-scoped, stale keys
+        // auto-expire). Best-effort: a failed write (outage / quota) is a
+        // metric, not an error log per request — the next request simply
+        // misses and retries the write.
+        await safeRedisVoid(async () => {
           await redis.set(
             cacheKey,
             { data: events, cachedAt: Date.now() },
             { ex: CACHE_TTL_SEC },
           );
-        } catch (err) {
-          logger.error({ err }, 'Failed to cache events in Redis');
-        }
+        });
       }
 
       setCacheHeaders(res, 300, 120);

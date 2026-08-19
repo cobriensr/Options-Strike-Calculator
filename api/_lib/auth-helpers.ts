@@ -16,7 +16,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { ZodSafeParseResult, ZodSafeParseError } from 'zod';
 import { checkBotId } from 'botid/server';
 
-import { redis } from './redis.js';
+import { redis, recordRedisError } from './redis.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 
@@ -226,6 +226,9 @@ export function respondIfInvalid<T>(
 // RATE LIMITING
 // ============================================================
 
+/** Fixed-window length for the per-IP rate limiter. */
+const RATE_LIMIT_WINDOW_SEC = 60;
+
 /**
  * Check if a request should be rate-limited.
  * Uses Upstash Redis to track request counts per key per minute.
@@ -233,6 +236,25 @@ export function respondIfInvalid<T>(
  * Used on auth endpoints to prevent brute-force and abuse.
  * Fails open (returns false) if Redis is unavailable — don't block
  * legitimate requests if the rate limiter itself is down.
+ *
+ * COMMAND BUDGET (Upstash bills per command): the original implementation
+ * pipelined `INCR` + `EXPIRE` on every gated request — 2 commands, 1 round
+ * trip. This version issues `INCR` alone and only follows up with `EXPIRE`
+ * when the returned count is `1` (the first hit of a fresh window), so the
+ * steady state is 1 command per request. Trade-offs, deliberately taken:
+ *
+ *   - The first hit of each window costs 2 round trips instead of 1 (a
+ *     conditional cannot be expressed in a REST pipeline; `EVAL` would fold
+ *     it back into one call but is a different command with its own
+ *     semantics and was not adopted here). A few ms once per minute per key.
+ *   - The two commands are no longer in one HTTP request, so `INCR` can
+ *     succeed and `EXPIRE` fail (Redis blip, or the quota tripping exactly
+ *     between them). That leaves a key with NO TTL, which would 429 that
+ *     caller forever. `healStuckWindow` covers it: on the rejection path
+ *     (already over the limit — the only path where it matters) we `TTL`
+ *     the key and, if it reports `-1`, re-arm `EXPIRE`. Rejections are rare
+ *     and belong to abusive anonymous callers, so the extra command there
+ *     is a cost we accept for the self-heal.
  *
  * @param key - Unique identifier (e.g. IP address, endpoint name)
  * @param maxPerMinute - Maximum requests allowed per 60-second window
@@ -242,20 +264,71 @@ async function isRateLimited(
   key: string,
   maxPerMinute: number = 5,
 ): Promise<boolean> {
+  const redisKey = `ratelimit:${key}`;
   try {
-    const redisKey = `ratelimit:${key}`;
-    const pipe = redis.pipeline();
-    pipe.incr(redisKey);
-    pipe.expire(redisKey, 60);
-    const results = await pipe.exec();
-    const count = results[0] as number;
-    return count > maxPerMinute;
+    const count = await redis.incr(redisKey);
+    if (count === 1) {
+      // First hit of the window — start the TTL. Hits 2..N skip this.
+      await redis.expire(redisKey, RATE_LIMIT_WINDOW_SEC);
+    }
+    if (count <= maxPerMinute) return false;
+    await healStuckWindow(redisKey);
+    return true;
   } catch (err) {
     logger.warn({ err }, 'Rate limiter Redis call failed; failing open');
     metrics.increment('api_helpers.rate_limit_redis_error');
-    Sentry.captureException(err);
+    // The Upstash over-quota rejection is already counted + warned once per
+    // process by recordRedisError; a Sentry exception per gated request on
+    // top would be a storm that says nothing new. Genuine outages still
+    // get captured.
+    if (recordRedisError(err) !== 'quota') Sentry.captureException(err);
     return false; // fail open
   }
+}
+
+/**
+ * Re-arm the window TTL on a rate-limit key that lost it (see the
+ * INCR/EXPIRE split discussion on {@link isRateLimited}). Only called on the
+ * rejection path. Never throws — the verdict (limited) is already known and
+ * a failure here must not flip it to fail-open.
+ */
+async function healStuckWindow(redisKey: string): Promise<void> {
+  try {
+    const ttl = await redis.ttl(redisKey);
+    if (ttl !== -1) return; // -2 = gone, >=0 = live window
+    await redis.expire(redisKey, RATE_LIMIT_WINDOW_SEC);
+    logger.warn({ redisKey }, 'Rate limiter re-armed a stuck key (no TTL)');
+    metrics.increment('api_helpers.rate_limit_window_healed');
+  } catch (err) {
+    logger.warn({ err, redisKey }, 'Rate limiter TTL self-heal failed');
+  }
+}
+
+/**
+ * True when the request carries `Authorization: Bearer <CRON_SECRET>` —
+ * the same constant-time check `cronGuard` performs. Used to exempt cron
+ * invocations from the per-IP limiter (they share one egress IP and would
+ * otherwise throttle each other while eating Redis commands).
+ */
+function hasCronBearer(req: VercelRequest): boolean {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return false;
+  const header = req.headers.authorization;
+  if (typeof header !== 'string' || !header) return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(`Bearer ${secret}`);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Trusted callers bypass the rate limiter entirely (zero Redis commands):
+ * a valid `sc-owner` cookie (already the strongest auth gate in the app) or
+ * the cron bearer. Brute-force protection is for anonymous callers; the
+ * owner's own SPA / cron traffic is the steady-state caller and was paying
+ * 2 Redis commands per request for a check that exists to stop strangers.
+ */
+function isTrustedCaller(req: VercelRequest): boolean {
+  return isOwner(req) || hasCronBearer(req);
 }
 
 /**
@@ -277,6 +350,9 @@ function getRateLimitKey(req: VercelRequest, endpoint: string): string {
 /**
  * Guard an endpoint with rate limiting.
  * Returns true if the request was rejected (response already sent).
+ *
+ * Skipped outright for trusted callers (valid `sc-owner` cookie or the
+ * `CRON_SECRET` bearer) — see {@link isTrustedCaller}.
  */
 export async function rejectIfRateLimited(
   req: VercelRequest,
@@ -284,6 +360,7 @@ export async function rejectIfRateLimited(
   endpoint: string,
   maxPerMinute: number = 5,
 ): Promise<boolean> {
+  if (isTrustedCaller(req)) return false;
   const key = getRateLimitKey(req, endpoint);
   const limited = await isRateLimited(key, maxPerMinute);
   if (limited) {
