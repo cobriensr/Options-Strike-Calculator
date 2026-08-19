@@ -868,3 +868,95 @@ def test_backfill_per_root_exception_is_captured_and_loop_continues(
     _exc, kw = capture_calls[0]
     assert kw["context"]["phase"] == "theta_backfill"
     assert kw["context"]["root"] == "SPXW"
+
+
+# ---------------------------------------------------------------------------
+# Nightly observability constants — duration cap + declared Sentry monitor
+# ---------------------------------------------------------------------------
+
+
+def test_max_job_duration_is_three_hours() -> None:
+    """The 2026-08-18 nightly took ~99 min (SPXW 55 min + VIX/VIXW + NDXP
+    25 min) against the old 30 min cap, so every run fired the
+    "exceeded max duration" warning. The cap is now 3h — comfortably above
+    the observed steady-state so the warning means something again."""
+    import theta_fetcher
+
+    assert theta_fetcher.MAX_JOB_DURATION_S == 3 * 60 * 60
+    assert theta_fetcher.MAX_JOB_DURATION_S == 10800
+
+
+def test_nightly_monitor_config_declares_schedule_in_code() -> None:
+    """The Sentry cron monitor is declared in code (monitor_config on the
+    decorator) so the schedule/timezone/thresholds ship with the sidecar
+    instead of living only in the Sentry UI. The crontab is the SAME 17:25
+    the APScheduler trigger fires at, in the SAME zone — Sentry pages on a
+    missed check-in relative to this schedule, so drift between the two
+    would either page spuriously or never page."""
+    import theta_fetcher
+
+    cfg = theta_fetcher._NIGHTLY_MONITOR_CONFIG
+    assert cfg["schedule"] == {"type": "crontab", "value": "25 17 * * *"}
+    assert cfg["timezone"] == "America/New_York"
+    assert cfg["checkin_margin"] == 10
+    assert cfg["max_runtime"] == 180
+    assert cfg["max_runtime"] >= 120
+    assert cfg["failure_issue_threshold"] == 1
+    assert cfg["recovery_threshold"] == 1
+
+
+def test_nightly_monitor_max_runtime_covers_local_duration_cap() -> None:
+    """Sentry's max_runtime (minutes) must be at least the local
+    MAX_JOB_DURATION_S cap, otherwise Sentry marks the check-in timed-out
+    (a failure) before our own "exceeded max duration" warning would fire,
+    and the two signals disagree about what "too slow" means."""
+    import theta_fetcher
+
+    max_runtime_s = theta_fetcher._NIGHTLY_MONITOR_CONFIG["max_runtime"] * 60
+    assert max_runtime_s >= theta_fetcher.MAX_JOB_DURATION_S
+
+
+def test_run_nightly_is_decorated_with_slug_and_monitor_config() -> None:
+    """run_nightly must be wrapped by ``sentry_sdk.monitor`` carrying BOTH
+    the slug and the declared monitor_config — the constants alone prove
+    nothing if the decorator call doesn't pass them.
+
+    conftest.py installs an identity ``sentry_sdk.monitor`` (the SDK is a
+    session-wide mock), so the decoration is only observable at module
+    import. Swap in a recording decorator, reload the module to re-run
+    the decoration, assert, then restore the identity decorator and
+    reload again so sibling tests see the same module shape as before.
+    """
+    import importlib
+
+    import theta_fetcher
+
+    # A live scheduler would be orphaned by the reload's `_scheduler = None`.
+    theta_fetcher.stop_scheduler()
+
+    sentry_mod = sys.modules["sentry_sdk"]
+    original_monitor = sentry_mod.monitor
+    calls: list[dict] = []
+
+    def recording_monitor(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return lambda fn: fn
+
+    sentry_mod.monitor = recording_monitor
+    try:
+        importlib.reload(theta_fetcher)
+        declared_cfg = theta_fetcher._NIGHTLY_MONITOR_CONFIG
+        declared_slug = theta_fetcher._NIGHTLY_MONITOR_SLUG
+    finally:
+        sentry_mod.monitor = original_monitor
+        importlib.reload(theta_fetcher)
+
+    nightly_calls = [
+        c for c in calls if c["kwargs"].get("monitor_slug") == declared_slug
+    ]
+    assert len(nightly_calls) == 1
+    kwargs = nightly_calls[0]["kwargs"]
+    assert kwargs["monitor_slug"] == "theta-nightly-eod"
+    assert kwargs["monitor_config"] is declared_cfg
+    assert kwargs["monitor_config"]["schedule"]["value"] == "25 17 * * *"
+    assert kwargs["monitor_config"]["timezone"] == "America/New_York"

@@ -48,10 +48,28 @@ from theta_client import EodRow, ThetaClient, ThetaSubscriptionError
 # filter this feature independently from Databento / the Vercel backend.
 _THETA_TAGS = {"component": "theta"}
 
-# Sentry cron monitor slug. Configure the matching Monitor in the
-# Sentry UI with schedule `25 22 * * *` UTC (10 min grace, 30 min max
-# runtime) so a missed 17:25 ET fire pages instead of silently skipping.
+# Sentry cron monitor for the nightly job. The monitor is declared IN
+# CODE via `monitor_config` on the @sentry_sdk.monitor decorator (Sentry
+# upserts the Monitor from the first check-in that carries a config), so
+# the schedule ships with the sidecar instead of living only in the UI.
+#
+# The crontab MUST match the APScheduler trigger in start_scheduler():
+# 17:25 America/New_York (= 21:25Z during EDT, 22:25Z during EST — hence
+# the explicit IANA zone rather than a UTC crontab, which would drift by
+# an hour across DST). Sentry pages when no in-progress check-in arrives
+# within `checkin_margin` minutes of 17:25 ET, and marks the run failed
+# when it hasn't finished within `max_runtime` minutes. max_runtime is
+# kept equal to MAX_JOB_DURATION_S below so Sentry's "timed out" and our
+# own "exceeded max duration" warning agree on what "too slow" means.
 _NIGHTLY_MONITOR_SLUG = "theta-nightly-eod"
+_NIGHTLY_MONITOR_CONFIG: dict[str, Any] = {
+    "schedule": {"type": "crontab", "value": "25 17 * * *"},
+    "timezone": "America/New_York",
+    "checkin_margin": 10,  # minutes late before "missed"
+    "max_runtime": 180,  # minutes running before "timed out"
+    "failure_issue_threshold": 1,
+    "recovery_threshold": 1,
+}
 
 # Expiration horizon. Expirations that expired before the fetch window
 # start are skipped entirely — EOD for post-expiry trade dates is
@@ -63,9 +81,13 @@ EXP_HORIZON_FUTURE_DAYS = 180
 # still small (~1MB) but avoids pathological growth on large backfills.
 BATCH_FLUSH_SIZE = 500
 
-# If a job runs longer than this we fire a Sentry warning — the nightly
-# should complete well inside 30min in steady state.
-MAX_JOB_DURATION_S = 30 * 60
+# If a job runs longer than this we fire a Sentry warning. The per-contract
+# (non-bulk) loop is slow: the 2026-08-18 nightly took ~99 min end to end
+# (SPXW ~55 min + VIX/VIXW + NDXP ~25 min), so the old 30 min cap tripped
+# on every healthy run. 3h leaves headroom above steady state while still
+# flagging a stuck Terminal / runaway chain well before the next fire.
+# Keep in sync with _NIGHTLY_MONITOR_CONFIG["max_runtime"] (minutes).
+MAX_JOB_DURATION_S = 3 * 60 * 60
 
 # Module-level scheduler handle (stopped via shutdown()). APScheduler's
 # BackgroundScheduler runs jobs in its own thread pool, so this doesn't
@@ -139,7 +161,10 @@ def stop_scheduler() -> None:
             _scheduler = None
 
 
-@sentry_sdk.monitor(monitor_slug=_NIGHTLY_MONITOR_SLUG)
+@sentry_sdk.monitor(
+    monitor_slug=_NIGHTLY_MONITOR_SLUG,
+    monitor_config=_NIGHTLY_MONITOR_CONFIG,
+)
 def run_nightly() -> None:
     """Fetch prior trading day's EOD for every configured root.
 
@@ -148,11 +173,13 @@ def run_nightly() -> None:
     already be inside a try/except wrapper.
 
     The @sentry_sdk.monitor decorator sends an in-progress check-in
-    on entry and ok/error on exit. A missing check-in at the scheduled
-    time (container crashed before 17:25 ET, Railway outage, scheduler
-    dead) triggers a Sentry alert — this is the only signal for the
-    "scheduler never fired" failure mode that exception-capture misses.
-    When SENTRY_DSN is unset the decorator is a cheap no-op.
+    on entry and ok/error on exit, each carrying _NIGHTLY_MONITOR_CONFIG
+    so Sentry knows the expected schedule without UI setup. A missing
+    check-in at the scheduled time (container crashed before 17:25 ET,
+    Railway outage, scheduler dead) triggers a Sentry alert — this is
+    the only signal for the "scheduler never fired" failure mode that
+    exception-capture misses. When SENTRY_DSN is unset the decorator is
+    a cheap no-op.
     """
     start = time.time()
     trade_day = _prior_trading_day(date.today())
