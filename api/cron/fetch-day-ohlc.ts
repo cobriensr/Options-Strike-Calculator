@@ -40,6 +40,30 @@ interface SummaryRow {
   down_excursion?: number;
 }
 
+/** Sidecar /archive/day-summary-batch body (success or error envelope). */
+interface SidecarBatchBody {
+  rows?: SummaryRow[];
+  code?: string;
+  error?: string;
+}
+
+/**
+ * Sidecar statuses that mean "no archive data for this date" rather than
+ * a bug: 404 (parquet not dropped yet), 503 (archive volume unseeded /
+ * unmounted — the sidecar's `archive_unavailable` code).
+ */
+const ARCHIVE_UNAVAILABLE_STATUSES = new Set([404, 503]);
+const ARCHIVE_UNAVAILABLE_CODE = 'archive_unavailable';
+
+/** True when the sidecar body explicitly flags the archive as unavailable. */
+function isArchiveUnavailableBody(body: SidecarBatchBody | null): boolean {
+  if (!body || typeof body !== 'object') return false;
+  return (
+    body.code === ARCHIVE_UNAVAILABLE_CODE ||
+    body.error === ARCHIVE_UNAVAILABLE_CODE
+  );
+}
+
 function yesterdayEt(): string {
   // ET-aware "yesterday" — a 6 PM CT cron still resolves to "today" in
   // ET terms, so back up by one calendar day for the trading-date key.
@@ -75,17 +99,40 @@ export default withCronInstrumentation(
       signal: AbortSignal.timeout(15_000),
     });
     // 404 means the archive parquet for `targetDate` hasn't been
-    // dropped yet (Databento batch ran late). That's the same semantic
-    // as `rows: []` — fall through to the Postgres fallback which
-    // reads the streaming index_candles_1m feed. 5xx and other non-ok
-    // statuses still escalate.
-    if (!sidecarRes.ok && sidecarRes.status !== 404) {
-      throw new Error(`sidecar ${sidecarRes.status}`);
+    // dropped yet (Databento batch ran late); 503 — or any body carrying
+    // code `archive_unavailable` — means the archive volume itself is
+    // unseeded/unmounted (2026-08-18). Both are the same semantic as
+    // `rows: []`: no archive data for this date, NOT an application
+    // error. Fall through to the Postgres fallback which reads the
+    // streaming index_candles_1m feed; if that is empty too the run is a
+    // clean skip. Any OTHER non-ok status (a genuine 500 etc.) still
+    // escalates.
+    let sidecarRow: SummaryRow | undefined;
+    let archiveUnavailable = false;
+    if (sidecarRes.ok) {
+      const body = (await sidecarRes.json()) as SidecarBatchBody;
+      if (isArchiveUnavailableBody(body)) {
+        archiveUnavailable = true;
+      } else {
+        sidecarRow = body.rows?.[0];
+      }
+    } else {
+      const body = (await sidecarRes
+        .json()
+        .catch(() => null)) as SidecarBatchBody | null;
+      archiveUnavailable =
+        ARCHIVE_UNAVAILABLE_STATUSES.has(sidecarRes.status) ||
+        isArchiveUnavailableBody(body);
+      if (!archiveUnavailable) {
+        throw new Error(`sidecar ${sidecarRes.status}`);
+      }
     }
-    const body = sidecarRes.ok
-      ? ((await sidecarRes.json()) as { rows?: SummaryRow[] })
-      : { rows: [] as SummaryRow[] };
-    const sidecarRow = body.rows?.[0];
+    if (archiveUnavailable) {
+      logger.info(
+        { targetDate, sidecarStatus: sidecarRes.status },
+        'fetch-day-ohlc: sidecar archive unavailable — trying Postgres fallback',
+      );
+    }
 
     interface ResolvedOhlc {
       open: number;
@@ -125,17 +172,21 @@ export default withCronInstrumentation(
       // up, a future cron run will overwrite these values.
       const pg = await fetchDayOhlcFromPostgres(targetDate);
       if (!pg) {
+        const reason = archiveUnavailable
+          ? 'archive unavailable'
+          : 'no rows from sidecar';
         logger.info(
-          { targetDate },
-          'fetch-day-ohlc: no rows from sidecar or Postgres (holiday/weekend/halt)',
+          { targetDate, reason },
+          'fetch-day-ohlc: no rows from sidecar or Postgres (holiday/weekend/halt/archive unavailable)',
         );
         return {
           status: 'skipped',
-          message: 'no rows from sidecar',
+          message: reason,
           metadata: {
             targetDate,
             skipped: true,
-            reason: 'no rows from sidecar',
+            reason,
+            ...(archiveUnavailable ? { sidecarStatus: sidecarRes.status } : {}),
           },
         };
       }

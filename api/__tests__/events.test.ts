@@ -15,6 +15,14 @@ vi.mock('../_lib/api-helpers.js', () => ({
   setCacheHeaders: vi.fn(),
 }));
 
+vi.mock('../_lib/logger.js', () => ({
+  default: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     captureMessage: vi.fn(),
@@ -33,8 +41,9 @@ vi.mock('../_lib/sentry.js', () => ({
 
 import handler from '../events.js';
 import { redis } from '../_lib/redis.js';
-import { checkBot } from '../_lib/api-helpers.js';
+import { checkBot, setCacheHeaders } from '../_lib/api-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
 
 describe('GET /api/events', () => {
   const originalEnv = process.env;
@@ -51,14 +60,136 @@ describe('GET /api/events', () => {
     process.env = originalEnv;
   });
 
-  it('returns 500 when FRED_API_KEY is missing', async () => {
+  it('returns 200 with the static FOMC events + configured:false when FRED_API_KEY is missing', async () => {
+    // Regression 2026-08-18: FRED is an OPTIONAL feed. On a deployment
+    // that never provisioned the key, /api/events 500'd on every SPA poll
+    // — an error-level log per request and a red endpoint for a state no
+    // operator can act on. Unconfigured != broken (commit 331e915c): serve
+    // the normal response shape, flag `configured: false`, and cache like
+    // the success path so the SPA doesn't hammer it.
+    //
+    // H2 follow-up: the FOMC + early-close warnings (EventDayWarning) come
+    // from the static tables and need NO external key, so the unconfigured
+    // branch must still serve them — only the FRED/Finnhub feeds go dark.
     delete process.env.FRED_API_KEY;
+    // Finnhub is only fetched alongside FRED — must stay untouched here.
+    process.env.FINNHUB_API_KEY = 'finnhub-key';
+    vi.stubGlobal('fetch', vi.fn());
+
+    // 2026-09-01 + 30d → window [2026-09-01, 2026-10-01]: contains the
+    // 2026-09-16 FOMC + SEP; excludes 2026-07-29 (past) and 2026-10-28.
+    vi.useFakeTimers({ now: new Date('2026-09-01T12:00:00Z') });
+
     const res = mockResponse();
-    await handler(mockRequest({ method: 'GET' }), res);
-    expect(res._status).toBe(500);
-    expect((res._json as { error: string }).error).toBe(
-      'Service temporarily unavailable',
-    );
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
+
+    vi.useRealTimers();
+
+    expect(res._status).toBe(200);
+    const json = res._json as {
+      events: {
+        date: string;
+        event: string;
+        description: string;
+        time: string;
+        severity: string;
+        source: string;
+      }[];
+      startDate: string;
+      endDate: string;
+      cached: boolean;
+      configured: boolean;
+      asOf: string;
+    };
+    expect(json.configured).toBe(false);
+    expect(json.cached).toBe(false);
+    expect(json.startDate).toBe('2026-09-01');
+    expect(json.endDate).toBe('2026-10-01');
+    expect(typeof json.asOf).toBe('string');
+
+    // Same event object shape as the configured path (source: 'static').
+    expect(json.events).toContainEqual({
+      date: '2026-09-16',
+      event: 'FOMC + SEP',
+      description:
+        'Fed rate decision + Summary of Economic Projections (dot plot)',
+      time: '2:00 PM',
+      severity: 'high',
+      source: 'static',
+    });
+    // Nothing outside the requested window.
+    const dates = json.events.map((e) => e.date);
+    expect(dates).not.toContain('2026-07-29');
+    expect(dates).not.toContain('2026-10-28');
+    for (const d of dates) {
+      expect(d >= json.startDate && d <= json.endDate).toBe(true);
+    }
+    // Only static sources — no FRED / Finnhub entries can exist.
+    expect(json.events.every((e) => e.source === 'static')).toBe(true);
+
+    // Same edge/browser caching as the success path.
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, 300, 120);
+    // Quiet: one warn, no error, no upstream call (FRED or Finnhub).
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    // Static events need no cache: the day-scoped redis key is neither
+    // read nor written in this branch (a configured-era cache must not
+    // leak FRED entries here, and an unconfigured result must not pin the
+    // key for the day once the operator adds FRED_API_KEY).
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('serves the static early-close / holiday events when FRED_API_KEY is missing', async () => {
+    delete process.env.FRED_API_KEY;
+    vi.stubGlobal('fetch', vi.fn());
+
+    // 2026-11-15 + 30d → window [2026-11-15, 2026-12-15]: contains the
+    // 2026-11-27 Black Friday early close and the 2026-12-09 FOMC + SEP;
+    // excludes the 2026-12-24 Christmas Eve early close.
+    vi.useFakeTimers({ now: new Date('2026-11-15T12:00:00Z') });
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
+
+    vi.useRealTimers();
+
+    expect(res._status).toBe(200);
+    const json = res._json as {
+      events: { date: string; event: string; time: string; source: string }[];
+      configured: boolean;
+    };
+    expect(json.configured).toBe(false);
+
+    const blackFriday = json.events.find((e) => e.date === '2026-11-27');
+    expect(blackFriday).toMatchObject({
+      event: 'EARLY CLOSE',
+      time: '1:00 PM',
+      source: 'static',
+    });
+    expect(json.events.some((e) => e.date === '2026-12-09')).toBe(true);
+    expect(json.events.some((e) => e.date === '2026-12-24')).toBe(false);
+    // Sorted by date like the configured path.
+    const dates = json.events.map((e) => e.date);
+    expect(dates).toEqual([...dates].sort((a, b) => a.localeCompare(b)));
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('still 403s bots before the FRED_API_KEY check', async () => {
+    delete process.env.FRED_API_KEY;
+    vi.mocked(checkBot).mockResolvedValueOnce({ isBot: true });
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
+
+    expect(res._status).toBe(403);
   });
 
   it('returns cached events from Redis', async () => {
