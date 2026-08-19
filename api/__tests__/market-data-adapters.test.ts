@@ -17,11 +17,26 @@ vi.mock('../_lib/uw-fetch.js', () => ({
     const m = /^UW API (\d+):/.exec(message);
     return m ? Number.parseInt(m[1]!, 10) : null;
   },
+  // Real worker-pool semantics (a copy of uw-fetch's implementation) so
+  // the per-branch fan-out ceiling is observable from the fetch mocks.
   mapWithConcurrency: async <T, R>(
     items: readonly T[],
-    _limit: number,
+    limit: number,
     worker: (item: T, idx: number) => Promise<R>,
-  ) => Promise.all(items.map((it, i) => worker(it, i))),
+  ): Promise<R[]> => {
+    const results = new Array<R>(items.length);
+    let cursor = 0;
+    const runner = async (): Promise<void> => {
+      while (cursor < items.length) {
+        const idx = cursor;
+        cursor += 1;
+        results[idx] = await worker(items[idx]!, idx);
+      }
+    };
+    const runners = Math.max(1, Math.min(limit, items.length));
+    await Promise.all(Array.from({ length: runners }, runner));
+    return results;
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -43,13 +58,64 @@ const uwFetchMock = vi.mocked(uwFetch);
 
 const SIDECAR = 'https://sidecar.example';
 
-function jsonRes(body: unknown, status = 200): Response {
+function jsonRes(
+  body: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
+  const lower = Object.fromEntries(
+    Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]),
+  );
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: { get: (name: string) => lower[name.toLowerCase()] ?? null },
     json: async () => body,
     text: async () => JSON.stringify(body),
   } as unknown as Response;
+}
+
+/**
+ * The sidecar's load-shed answer when a /theta/index/* request waited
+ * out its Terminal-slot budget (health.py `_send_theta_busy`): 503 +
+ * `Retry-After: 1` + `{"error":"theta_busy"}`. Distinct from
+ * `theta_unavailable` (Terminal down), which must NOT be retried.
+ */
+function thetaBusyRes(retryAfter: string | null = '1'): Response {
+  return jsonRes(
+    { error: 'theta_busy' },
+    503,
+    retryAfter == null ? {} : { 'Retry-After': retryAfter },
+  );
+}
+
+/** A fetch mock that records its peak in-flight count. */
+function concurrencyProbe(respond: (url: string) => Response): {
+  spy: ReturnType<typeof vi.spyOn>;
+  peak: () => number;
+} {
+  let inFlight = 0;
+  let peak = 0;
+  const spy = vi.spyOn(globalThis, 'fetch');
+  spy.mockImplementation(async (input) => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    // Hold the slot across a real macrotask so siblings can pile up.
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    inFlight -= 1;
+    return respond(String(input));
+  });
+  return { spy, peak: () => peak };
+}
+
+/**
+ * Re-install fake timers with `setTimeout` faked too (the suite default
+ * fakes only `Date`), keeping the suite's pinned clock, so a retry
+ * backoff can be driven deterministically with advanceTimersByTimeAsync.
+ */
+function fakeRetryTimers(): void {
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+  vi.setSystemTime(new Date('2026-08-14T15:00:00Z'));
 }
 
 /**
@@ -592,9 +658,9 @@ describe('chainAdapter', () => {
     // Prod on 08-18: sidecar Theta blipped 503 → the old UW stock-state
     // fallback 422'd deterministically → /api/chain 502 [SCHWAB_API_422]
     // ×7. The screener fallback must turn that into an ok chain.
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      jsonRes({ error: 'theta_unavailable' }, 503),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonRes({ error: 'theta_unavailable' }, 503));
     uwFetchMock.mockImplementation(async (_key, path) => {
       if (path === screenerPath('SPX')) {
         return screenerRows('SPX', {
@@ -618,6 +684,45 @@ describe('chainAdapter', () => {
       close: 7745.06,
       change: -53.3,
     });
+    // Terminal down is NOT retried — one sidecar call, straight to UW.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries the sidecar spot once on a 503 theta_busy shed instead of falling back', async () => {
+    fakeRetryTimers();
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockImplementation(async () => {
+      calls += 1;
+      return calls === 1
+        ? thetaBusyRes('1')
+        : jsonRes({
+            root: 'SPX',
+            price: 6465.25,
+            prev_close: 6450.25,
+            ts: '2026-08-14T15:00:00Z',
+          });
+    });
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('SPX')) {
+        return screenerRows('SPX', { close: '1', prev_close: '1' });
+      }
+      return [];
+    });
+    const pending = chainAdapter(SPX_0DTE_PATH);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await pending;
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const chain = result.data as {
+      underlying: { last: number; close: number };
+    };
+    // Sidecar spot won on the retry — the screener was never consulted.
+    expect(chain.underlying).toMatchObject({ last: 6465.25, close: 6450.25 });
+    expect(
+      uwFetchMock.mock.calls.some(([, p]) => p.includes('/screener/stocks')),
+    ).toBe(false);
   });
 
   it('is a 502 (transient), never 501, when the sidecar is down and the screener row has no price', async () => {
@@ -1031,7 +1136,7 @@ describe('historyAdapter', () => {
   });
 
   it('treats all-404 sidecar days as an empty (ok) result', async () => {
-    mockSidecar({}); // everything 404s
+    const fetchSpy = mockSidecar({}); // everything 404s
     const result = await historyAdapter(
       `/pricehistory?symbol=%24SPX&periodType=day&period=1&frequencyType=minute&frequency=5`,
     );
@@ -1040,6 +1145,576 @@ describe('historyAdapter', () => {
     const data = result.data as { empty: boolean; candles: unknown[] };
     expect(data.empty).toBe(true);
     expect(data.candles).toEqual([]);
+    // 404 is an authoritative "no data" — exactly one call for the one
+    // trading date, never a retry.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Sidecar fan-out + theta_busy shed handling ──────────────
+  //
+  // The sidecar serialises /theta/index/* to cap 2 with a 5s wait
+  // budget and sheds `503 theta_busy` + `Retry-After: 1` past it
+  // (sidecar/src/health.py theta_index_slot). /api/history fans ~4-5
+  // trading dates × 5 symbols (in pairs) through this adapter, so the
+  // per-date client concurrency is the only knob that keeps arrivals
+  // inside that budget, and a single shed date must not blank the
+  // symbol.
+
+  const SEVEN_DATES = {
+    // Thu 2026-08-06 → Fri 2026-08-14 (today) = 7 trading dates.
+    startMs: Date.UTC(2026, 7, 6, 15, 0),
+    endMs: Date.UTC(2026, 7, 14, 15, 0),
+  };
+
+  function indexHistoryPath(symbol = '%24VIX1D'): string {
+    return (
+      `/pricehistory?symbol=${symbol}&periodType=day&frequencyType=minute` +
+      `&frequency=5&startDate=${SEVEN_DATES.startMs}&endDate=${SEVEN_DATES.endMs}`
+    );
+  }
+
+  const ONE_BAR = (date: string) => ({
+    root: 'VIX1D',
+    date,
+    candles: [
+      {
+        ts_ms: Date.parse(`${date}T13:30:00Z`),
+        open: 13.1,
+        high: 13.2,
+        low: 13,
+        close: 13.15,
+      },
+    ],
+  });
+
+  function dateOf(url: string): string {
+    return /date=(\d{4}-\d{2}-\d{2})/.exec(url)?.[1] ?? '';
+  }
+
+  it('maps a [D-5d noon, D noon] window to exactly the trading dates through D, with previousClose from the session before D', async () => {
+    // /api/history's window contract: Mon 2026-08-17 → Wed 08-12, Thu
+    // 08-13, Fri 08-14, Mon 08-17 — no weekend, no look-ahead past D, and
+    // D is the LAST session in range so `previousClose` is Friday's close
+    // (the old +2d look-ahead made it TOMORROW's close for a backtest of D).
+    vi.setSystemTime(new Date('2026-08-18T15:00:00Z'));
+    const targetMs = Date.UTC(2026, 7, 17, 12, 0);
+    const startMs = targetMs - 5 * 24 * 60 * 60 * 1000;
+    const bar = (date: string, close: number) => ({
+      root: 'SPX',
+      date,
+      candles: [
+        {
+          ts_ms: Date.parse(`${date}T13:30:00Z`),
+          open: close - 1,
+          high: close + 1,
+          low: close - 2,
+          close,
+        },
+      ],
+    });
+    const fetchSpy = mockSidecar({
+      'date=2026-08-11': bar('2026-08-11', 6300),
+      'date=2026-08-12': bar('2026-08-12', 6310),
+      'date=2026-08-13': bar('2026-08-13', 6320),
+      'date=2026-08-14': bar('2026-08-14', 6330),
+      'date=2026-08-17': bar('2026-08-17', 6340),
+      'date=2026-08-18': bar('2026-08-18', 6350),
+    });
+
+    const result = await historyAdapter(
+      `/pricehistory?symbol=%24SPX&periodType=day&frequencyType=minute` +
+        `&frequency=5&startDate=${startMs}&endDate=${targetMs}`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const fetched = (fetchSpy.mock.calls as unknown[][])
+      .map((c) => dateOf(String(c[0])))
+      .sort((a, b) => a.localeCompare(b));
+    expect(fetched).toEqual([
+      '2026-08-12',
+      '2026-08-13',
+      '2026-08-14',
+      '2026-08-17',
+    ]);
+
+    const data = result.data as {
+      candles: { datetime: number; close: number }[];
+      previousClose: number;
+    };
+    expect(data.candles).toHaveLength(4);
+    expect(data.candles.at(-1)?.close).toBe(6340);
+    expect(data.previousClose).toBe(6330);
+  });
+
+  it('fans an index root out at most 3 dates wide (INDEX_HISTORY_CONCURRENCY), not 6', async () => {
+    const probe = concurrencyProbe((url) => jsonRes(ONE_BAR(dateOf(url))));
+    const result = await historyAdapter(indexHistoryPath());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as { candles: unknown[] };
+    expect(data.candles).toHaveLength(7);
+    expect(probe.spy).toHaveBeenCalledTimes(7);
+    expect(probe.peak()).toBe(3);
+  });
+
+  it('keeps the UW equity fan-out at 6 wide (HISTORY_CONCURRENCY; UW has its own semaphore)', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      inFlight -= 1;
+      const date = dateOf(path);
+      return [
+        {
+          start_time: `${date}T13:30:00Z`,
+          open: '180',
+          high: '181',
+          low: '179',
+          close: '180.5',
+          volume: 100,
+          market_time: 'r',
+        },
+      ];
+    });
+    const result = await historyAdapter(indexHistoryPath('NVDA'));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as { candles: unknown[] };
+    expect(data.candles).toHaveLength(7);
+    expect(uwFetchMock).toHaveBeenCalledTimes(7);
+    expect(peak).toBe(6);
+  });
+
+  it('retries a shed date once after Retry-After (503 theta_busy) and keeps the symbol', async () => {
+    fakeRetryTimers();
+    let shed = 0;
+    const spy = vi.spyOn(globalThis, 'fetch');
+    spy.mockImplementation(async (input) => {
+      const url = String(input);
+      // The first arrival for 08-12 loses the Terminal-slot race.
+      if (url.includes('date=2026-08-12') && shed === 0) {
+        shed += 1;
+        return thetaBusyRes('1');
+      }
+      return jsonRes(ONE_BAR(dateOf(url)));
+    });
+
+    const pending = historyAdapter(indexHistoryPath());
+    // Every date has been tried once; the shed one is parked on its
+    // backoff and has NOT been re-sent before Retry-After elapses.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(spy).toHaveBeenCalledTimes(7);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(spy).toHaveBeenCalledTimes(8);
+    expect(
+      spy.mock.calls.filter(([u]) => String(u).includes('date=2026-08-12')),
+    ).toHaveLength(2);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as { empty: boolean; candles: unknown[] };
+    expect(data.empty).toBe(false);
+    // All seven sessions present — the shed date came back on retry.
+    expect(data.candles).toHaveLength(7);
+  });
+
+  it('waits ~1s by default when the theta_busy 503 has no Retry-After, and caps a long one at 2s', async () => {
+    fakeRetryTimers();
+    const spy = vi.spyOn(globalThis, 'fetch');
+    let calls = 0;
+    spy.mockImplementation(async (input) => {
+      calls += 1;
+      // 1st call: busy, no header → default backoff. 2nd: data.
+      // 3rd call (second adapter call): busy, Retry-After: 30 → capped.
+      if (calls === 1) return thetaBusyRes(null);
+      if (calls === 3) return thetaBusyRes('30');
+      return jsonRes(ONE_BAR(dateOf(String(input))));
+    });
+    const oneDay =
+      `/pricehistory?symbol=%24VIX1D&periodType=day&period=1` +
+      `&frequencyType=minute&frequency=5`;
+
+    const first = historyAdapter(oneDay);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(spy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await first).ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    const second = historyAdapter(oneDay);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(spy).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await second).ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(4);
+  });
+
+  it('gives up after ONE retry when the sidecar sheds twice — the original 503 surfaces, no loop', async () => {
+    fakeRetryTimers();
+    const spy = vi.spyOn(globalThis, 'fetch');
+    spy.mockImplementation(async () => thetaBusyRes('1'));
+    const pending = historyAdapter(
+      `/pricehistory?symbol=%24VIX1D&periodType=day&period=1&frequencyType=minute&frequency=5`,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await pending;
+    // One date → first try + exactly one retry.
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(502);
+    expect(result.error).toContain('[SCHWAB_API_503]');
+    expect(result.error).toContain('theta_busy');
+  });
+
+  it('does NOT retry a 503 theta_unavailable (Terminal down — a second call cannot help)', async () => {
+    fakeRetryTimers();
+    const spy = vi.spyOn(globalThis, 'fetch');
+    spy.mockImplementation(async () =>
+      jsonRes({ error: 'theta_unavailable' }, 503, { 'Retry-After': '1' }),
+    );
+    const pending = historyAdapter(
+      `/pricehistory?symbol=%24VIX1D&periodType=day&period=1&frequencyType=minute&frequency=5`,
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await pending;
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(502);
+    expect(result.error).toContain('[SCHWAB_API_503]');
+    expect(result.error).toContain('theta_unavailable');
+  });
+
+  it('lets a retry that answers 404 stand as "no data" instead of re-raising the shed', async () => {
+    fakeRetryTimers();
+    const spy = vi.spyOn(globalThis, 'fetch');
+    let calls = 0;
+    spy.mockImplementation(async () => {
+      calls += 1;
+      return calls === 1
+        ? thetaBusyRes('1')
+        : jsonRes({ error: 'no_data' }, 404);
+    });
+    const pending = historyAdapter(
+      `/pricehistory?symbol=%24VIX1D&periodType=day&period=1&frequencyType=minute&frequency=5`,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await pending;
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect((result.data as { empty: boolean }).empty).toBe(true);
+  });
+
+  // ── Zero-price sanitizing (Theta "no print this minute") ────
+  //
+  // Real payload, 2026-08-19: GET /theta/index/history?root=VIX
+  // returned 312 one-minute bars, 70 of them all-zero (the session's
+  // FIRST bar among them) plus PARTIAL bars like
+  // `{open:0, high:15.13, low:0, close:15.12}`. A `0` is Theta's
+  // "no print" marker for index roots, never a price — letting one
+  // through poisons every downstream min/range (VIX session low, the
+  // running OHLC low, term structure).
+
+  it('drops all-zero index bars and rebuilds partial ones from the fields that are present', async () => {
+    const d14 = (h: number, m: number) => Date.UTC(2026, 7, 14, h, m);
+    mockSidecar({
+      'date=2026-08-14': {
+        root: 'VIX',
+        date: '2026-08-14',
+        candles: [
+          // No print this minute — dropped entirely.
+          { ts_ms: d14(13, 30), open: 0, high: 0, low: 0, close: 0 },
+          // Partial — survives with open=close=low=15.12 / high=15.13.
+          { ts_ms: d14(13, 31), open: 0, high: 15.13, low: 0, close: 15.12 },
+          // Normal — untouched (regression).
+          {
+            ts_ms: d14(13, 32),
+            open: 15.12,
+            high: 15.2,
+            low: 15.05,
+            close: 15.18,
+          },
+        ],
+      },
+    });
+
+    const startMs = Date.UTC(2026, 7, 14, 13, 0);
+    const endMs = Date.UTC(2026, 7, 14, 15, 0);
+    const result = await historyAdapter(
+      `/pricehistory?symbol=%24VIX&periodType=day&frequencyType=minute` +
+        `&frequency=1&startDate=${startMs}&endDate=${endMs}`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as {
+      candles: {
+        datetime: number;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+      }[];
+    };
+    expect(data.candles).toEqual([
+      // A no-print open is best approximated by the bar's close (not
+      // its high): {open:0, high:15.13, low:0, close:15.12} → open 15.12.
+      {
+        datetime: d14(13, 31),
+        open: 15.12,
+        high: 15.13,
+        low: 15.12,
+        close: 15.12,
+        volume: 0,
+      },
+      {
+        datetime: d14(13, 32),
+        open: 15.12,
+        high: 15.2,
+        low: 15.05,
+        close: 15.18,
+        volume: 0,
+      },
+    ]);
+  });
+
+  it('drops an all-zero 5-minute bucket and takes the minimum POSITIVE low in a mixed one', async () => {
+    const d14 = (h: number, m: number) => Date.UTC(2026, 7, 14, h, m);
+    mockSidecar({
+      'date=2026-08-14': {
+        root: 'VIX',
+        date: '2026-08-14',
+        candles: [
+          // 9:30–9:34 ET: nothing printed all window → no bucket.
+          { ts_ms: d14(13, 30), open: 0, high: 0, low: 0, close: 0 },
+          { ts_ms: d14(13, 31), open: 0, high: 0, low: 0, close: 0 },
+          { ts_ms: d14(13, 34), open: 0, high: 0, low: 0, close: 0 },
+          // 9:35–9:39 ET: partial + no-print + normal.
+          { ts_ms: d14(13, 35), open: 0, high: 15.13, low: 0, close: 15.12 },
+          { ts_ms: d14(13, 36), open: 0, high: 0, low: 0, close: 0 },
+          {
+            ts_ms: d14(13, 37),
+            open: 15.12,
+            high: 15.3,
+            low: 15.02,
+            close: 15.28,
+          },
+        ],
+      },
+    });
+
+    const startMs = Date.UTC(2026, 7, 14, 13, 0);
+    const endMs = Date.UTC(2026, 7, 14, 15, 0);
+    const result = await historyAdapter(
+      `/pricehistory?symbol=%24VIX&periodType=day&frequencyType=minute` +
+        `&frequency=5&startDate=${startMs}&endDate=${endMs}`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as {
+      candles: {
+        datetime: number;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+      }[];
+    };
+    expect(data.candles).toEqual([
+      {
+        datetime: d14(13, 35),
+        // Bucket opens on the partial bar's reconstructed open (= its close).
+        open: 15.12,
+        high: 15.3,
+        low: 15.02,
+        close: 15.28,
+        volume: 0,
+      },
+    ]);
+  });
+
+  it('keeps previousClose on the last REAL close when the prior session ends on a no-print minute', async () => {
+    const d13 = (h: number, m: number) => Date.UTC(2026, 7, 13, h, m);
+    const d14 = (h: number, m: number) => Date.UTC(2026, 7, 14, h, m);
+    mockSidecar({
+      'date=2026-08-13': {
+        root: 'VIX',
+        date: '2026-08-13',
+        candles: [
+          {
+            ts_ms: d13(19, 58),
+            open: 15.4,
+            high: 15.46,
+            low: 15.38,
+            close: 15.44,
+          },
+          // 15:59 ET — no print; must not become previousClose 0.
+          { ts_ms: d13(19, 59), open: 0, high: 0, low: 0, close: 0 },
+        ],
+      },
+      'date=2026-08-14': {
+        root: 'VIX',
+        date: '2026-08-14',
+        candles: [
+          {
+            ts_ms: d14(13, 30),
+            open: 15.5,
+            high: 15.55,
+            low: 15.45,
+            close: 15.52,
+          },
+        ],
+      },
+    });
+
+    const startMs = Date.UTC(2026, 7, 13, 15, 0);
+    const endMs = Date.UTC(2026, 7, 14, 15, 0);
+    const result = await historyAdapter(
+      `/pricehistory?symbol=%24VIX&periodType=day&frequencyType=minute` +
+        `&frequency=5&startDate=${startMs}&endDate=${endMs}`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as { previousClose: number };
+    expect(data.previousClose).toBe(15.44);
+  });
+
+  it('applies the same zero guard to UW equity 1-min bars (volume preserved)', async () => {
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === '/stock/NVDA/ohlc/1m?date=2026-08-14') {
+        return [
+          {
+            start_time: '2026-08-14T13:30:00Z',
+            open: '0',
+            high: '0',
+            low: '0',
+            close: '0',
+            volume: 0,
+            market_time: 'r',
+          },
+          {
+            start_time: '2026-08-14T13:31:00Z',
+            open: '0',
+            high: '181.5',
+            low: '0',
+            close: '181.2',
+            volume: 300,
+            market_time: 'r',
+          },
+        ];
+      }
+      return [];
+    });
+
+    const startMs = Date.UTC(2026, 7, 14, 13, 0);
+    const endMs = Date.UTC(2026, 7, 14, 15, 0);
+    const result = await historyAdapter(
+      `/pricehistory?symbol=NVDA&periodType=day&frequencyType=minute` +
+        `&frequency=1&startDate=${startMs}&endDate=${endMs}`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as {
+      candles: {
+        datetime: number;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+      }[];
+    };
+    expect(data.candles).toEqual([
+      {
+        datetime: Date.parse('2026-08-14T13:31:00Z'),
+        open: 181.2,
+        high: 181.5,
+        low: 181.2,
+        close: 181.2,
+        volume: 300,
+      },
+    ]);
+  });
+
+  it('omits an all-no-print session from the daily rollup and keeps the positive low', async () => {
+    mockSidecar({
+      'date=2026-08-13': {
+        root: 'VIX',
+        date: '2026-08-13',
+        candles: [
+          {
+            ts_ms: Date.UTC(2026, 7, 13, 13, 30),
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+          },
+          {
+            ts_ms: Date.UTC(2026, 7, 13, 19, 59),
+            open: 0,
+            high: 0,
+            low: 0,
+            close: 0,
+          },
+        ],
+      },
+      'date=2026-08-14': {
+        root: 'VIX',
+        date: '2026-08-14',
+        candles: [
+          {
+            ts_ms: Date.UTC(2026, 7, 14, 13, 30),
+            open: 0,
+            high: 15.13,
+            low: 0,
+            close: 15.12,
+          },
+          {
+            ts_ms: Date.UTC(2026, 7, 14, 13, 31),
+            open: 15.12,
+            high: 15.3,
+            low: 15.02,
+            close: 15.28,
+          },
+        ],
+      },
+    });
+
+    const startMs = Date.UTC(2026, 7, 13, 15, 0);
+    const endMs = Date.UTC(2026, 7, 14, 15, 0);
+    const result = await historyAdapter(
+      `/pricehistory?symbol=%24VIX&periodType=day&frequencyType=daily` +
+        `&frequency=1&startDate=${startMs}&endDate=${endMs}`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as {
+      candles: {
+        datetime: number;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume: number;
+      }[];
+    };
+    expect(data.candles).toEqual([
+      {
+        datetime: Date.UTC(2026, 7, 14, 12, 0),
+        open: 15.12,
+        high: 15.3,
+        low: 15.02,
+        close: 15.28,
+        volume: 0,
+      },
+    ]);
   });
 });
 
@@ -1302,9 +1977,9 @@ describe('quotesAdapter', () => {
   });
 
   it('falls back to the UW screener for $VIX on a sidecar 503 (fetch-outcomes path)', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      jsonRes({ error: 'theta_unavailable' }, 503),
-    );
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(jsonRes({ error: 'theta_unavailable' }, 503));
     uwFetchMock.mockImplementation(async (_key, path) => {
       if (path === screenerPath('VIX')) {
         return screenerRows('VIX', {
@@ -1331,6 +2006,47 @@ describe('quotesAdapter', () => {
       lastPrice: 15.84,
       closePrice: 15.19,
       netChange: 0.65,
+    });
+    // theta_unavailable is never retried: one price call per symbol.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries /theta/index/price once on a 503 theta_busy shed (sidecar-only root)', async () => {
+    fakeRetryTimers();
+    let priceCalls = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/theta/index/price?root=VIX1D')) {
+        priceCalls += 1;
+        return priceCalls === 1
+          ? thetaBusyRes('1')
+          : jsonRes({
+              root: 'VIX1D',
+              price: 13.4,
+              prev_close: 12.9,
+              ts: '2026-08-14T15:00:00Z',
+            });
+      }
+      // History (OHL derivation) — pre-open style 404, OHL stay 0.
+      return jsonRes({ error: 'no_data' }, 404);
+    });
+    const pending = quotesAdapter('/quotes?symbols=%24VIX1D&fields=quote');
+    await vi.advanceTimersByTimeAsync(999);
+    expect(priceCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(priceCalls).toBe(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as Record<
+      string,
+      { quote: Record<string, number> }
+    >;
+    expect(data['$VIX1D']!.quote).toMatchObject({
+      lastPrice: 13.4,
+      closePrice: 12.9,
+      netChange: 0.5,
     });
   });
 

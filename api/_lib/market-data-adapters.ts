@@ -29,8 +29,12 @@
  *           (1-min OHLC of index values; indices have no volume)
  *
  *     Auth: `Authorization: Bearer ${SIDECAR_TAKEIT_SECRET}` (same
- *     shared secret as the /takeit routes), 8s timeout, 404 = no data
- *     for that date (holiday / not yet open).
+ *     shared secret as the /takeit routes), 8s timeout per call, 404 =
+ *     no data for that date (holiday / not yet open). The sidecar
+ *     serialises these routes (cap 2, 5s wait) and sheds
+ *     `503 theta_busy` + Retry-After past that — retried ONCE here
+ *     (thetaIndexGetJson); `503 theta_unavailable` (Terminal down) is
+ *     not retried and falls to the UW screener where UW carries the root.
  *
  *   - Index spot on UW (sidecar fallback for SPX/VIX, primary for NDX)
  *     is the stock SCREENER row (`/screener/stocks?ticker=SPY,{ROOT}`
@@ -69,8 +73,38 @@ const CHAIN_MAX_PAGES = 3;
 const CHAIN_MAX_EXPIRIES = 4;
 /** Max trading days fanned out per /pricehistory request (~3 months). */
 const MAX_HISTORY_DATES = 66;
-/** Concurrency for per-date history fan-out. */
+/**
+ * Per-date fan-out for the UW equity history branch
+ * (fetchEquityDayCandles). UW calls are already bounded by uw-fetch's
+ * own concurrency semaphore + per-minute budget, so this only shapes
+ * how many dates one request has in flight.
+ */
 const HISTORY_CONCURRENCY = 6;
+/**
+ * Per-date fan-out for the sidecar index history branch
+ * (fetchIndexDayCandles). The sidecar serialises /theta/index/* to cap
+ * 2 with a 5s wait budget (sidecar/src/health.py theta_index_slot) and
+ * sheds `503 theta_busy` past it, so client concurrency above ~3 buys
+ * ZERO throughput — it only converts into sidecar queue wait, and when
+ * /api/history's symbol pairs × 6 dates stacked 12 arrivals at once
+ * the tail of that queue waited out the budget and came back empty
+ * (the 2026-08-19 "$VIX1D n/a" blank). 3 rather than 2 hides the
+ * Vercel→Railway RTT: one call is always on the wire while the other
+ * two hold the Terminal slots.
+ */
+const INDEX_HISTORY_CONCURRENCY = 3;
+/**
+ * Backoff before the single retry of a `503 theta_busy` shed when the
+ * sidecar sent no usable Retry-After (it always sends `1`; this is
+ * the belt-and-braces default).
+ */
+const THETA_BUSY_RETRY_DEFAULT_MS = 1_000;
+/**
+ * Ceiling for an honoured Retry-After. The retry is a second
+ * SIDECAR_TIMEOUT_MS-bounded call, so the wait must stay well inside
+ * an interactive budget rather than following an arbitrary header.
+ */
+const THETA_BUSY_RETRY_MAX_MS = 2_000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -137,7 +171,9 @@ class ConfigError extends Error {}
 class SidecarHttpError extends Error {
   constructor(
     readonly status: number,
-    body: string,
+    readonly body: string,
+    /** Parsed `Retry-After` header in seconds, when the sidecar sent one. */
+    readonly retryAfterSec: number | null = null,
   ) {
     super(`Sidecar API ${status}: ${body.slice(0, 200)}`);
     this.name = 'SidecarHttpError';
@@ -251,6 +287,13 @@ function sidecarBase(): string {
   return url;
 }
 
+/** `Retry-After: <seconds>` → seconds, or null when absent/unparseable. */
+function parseRetryAfterSec(header: string | null): number | null {
+  if (header == null) return null;
+  const sec = Number.parseFloat(header);
+  return Number.isFinite(sec) && sec >= 0 ? sec : null;
+}
+
 async function sidecarGetJson<T>(pathAndQuery: string): Promise<T> {
   const base = sidecarBase();
   const secret = process.env.SIDECAR_TAKEIT_SECRET;
@@ -263,9 +306,66 @@ async function sidecarGetJson<T>(pathAndQuery: string): Promise<T> {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new SidecarHttpError(res.status, body);
+    throw new SidecarHttpError(
+      res.status,
+      body,
+      parseRetryAfterSec(res.headers.get('Retry-After')),
+    );
   }
   return (await res.json()) as T;
+}
+
+/**
+ * Backoff (ms) before retrying a sidecar failure once, or null when the
+ * failure is not a load shed. The sidecar's /theta/index/* routes
+ * serialise Terminal access and answer `503 {"error":"theta_busy"}` +
+ * `Retry-After: 1` when a request waits out its slot budget — a
+ * transient "too many of us", worth exactly one retry. `503
+ * theta_unavailable` is the Terminal being DOWN (the UW screener
+ * fallback owns that for SPX/VIX), and 404 (NoDataError) is an
+ * authoritative "no data" — neither is retried. A 503 with some other
+ * body is treated as busy (same shed contract as the archive routes).
+ * Mirrors multileg-client's Retry-After handling: body/header hint
+ * first, a fixed default otherwise, always capped.
+ */
+function thetaBusyRetryDelayMs(err: unknown): number | null {
+  if (!(err instanceof SidecarHttpError) || err.status !== 503) return null;
+  if (err.body.includes('theta_unavailable')) return null;
+  if (err.retryAfterSec == null) return THETA_BUSY_RETRY_DEFAULT_MS;
+  return Math.min(err.retryAfterSec * 1000, THETA_BUSY_RETRY_MAX_MS);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * GET a sidecar /theta/index/* route, retrying ONCE after a
+ * `theta_busy` shed (see thetaBusyRetryDelayMs). Each attempt is its
+ * own SIDECAR_TIMEOUT_MS-bounded call, so the worst case is two
+ * timeouts plus the (≤2s) backoff — acceptable for the interactive
+ * callers, and far better than blanking a whole symbol because one
+ * date lost the Terminal-slot race. If the retry is shed again the
+ * ORIGINAL error surfaces (no loop); anything more specific the retry
+ * learns — 404 no-data, Terminal down — is thrown as-is.
+ */
+async function thetaIndexGetJson<T>(pathAndQuery: string): Promise<T> {
+  try {
+    return await sidecarGetJson<T>(pathAndQuery);
+  } catch (err) {
+    const delayMs = thetaBusyRetryDelayMs(err);
+    if (delayMs == null) throw err;
+    logger.warn(
+      { pathAndQuery, delayMs },
+      'market-data-adapters: sidecar theta_busy shed, retrying once',
+    );
+    await sleep(delayMs);
+    try {
+      return await sidecarGetJson<T>(pathAndQuery);
+    } catch (retryErr) {
+      throw thetaBusyRetryDelayMs(retryErr) == null ? retryErr : err;
+    }
+  }
 }
 
 // ── Small parsing helpers ────────────────────────────────────
@@ -483,7 +583,7 @@ async function fetchUnderlyingSpot(
   if (indexRoot) {
     if (SIDECAR_INDEX_ROOTS.has(indexRoot)) {
       try {
-        const p = await sidecarGetJson<SidecarIndexPrice>(
+        const p = await thetaIndexGetJson<SidecarIndexPrice>(
           `/theta/index/price?root=${encodeURIComponent(indexRoot)}`,
         );
         const last = num(p.price);
@@ -800,6 +900,64 @@ interface UwOhlcRow {
 }
 
 /**
+ * A price field of `0` (or negative / non-finite) is NEVER data.
+ * Theta marks a minute with no print on an index root by zeroing the
+ * field, so a bar arrives either ALL-zero (no print at all — 70 of
+ * VIX's 312 bars on 2026-08-19, the session's first among them) or
+ * PARTIAL, e.g. `{open:0, high:15.13, low:0, close:15.12}`. Letting a
+ * `0` through poisons every downstream min/range (VIX session low,
+ * the running OHLC low, term structure), so treat it as missing.
+ */
+function priceOrNull(v: UwNum): number | null {
+  const n = num(v);
+  return n != null && n > 0 ? n : null;
+}
+
+/**
+ * Rebuild a bar's four price fields from whichever are present, or
+ * null when NONE are (drop the bar). A no-print `open` is best
+ * approximated by the bar's `close` (the level the minute actually
+ * settled at — not its high, which would bias every reconstructed
+ * open upward); a no-print `close` by the last present field; and
+ * `high`/`low` are the max/min over PRESENT fields only — a bar with
+ * one real price survives with all four fields positive. The real
+ * Theta partial `{open:0, high:15.13, low:0, close:15.12}` therefore
+ * yields open 15.12, high 15.13, low 15.12, close 15.12.
+ */
+function sanitizePrices(raw: {
+  open?: UwNum;
+  high?: UwNum;
+  low?: UwNum;
+  close?: UwNum;
+}): Pick<MinuteCandle, 'open' | 'high' | 'low' | 'close'> | null {
+  const open = priceOrNull(raw.open);
+  const high = priceOrNull(raw.high);
+  const low = priceOrNull(raw.low);
+  const close = priceOrNull(raw.close);
+  const present = [open, high, low, close].filter((v) => v != null);
+  if (present.length === 0) return null;
+  return {
+    open: open ?? close ?? present[0]!,
+    high: Math.max(...present),
+    low: Math.min(...present),
+    close: close ?? present.at(-1)!,
+  };
+}
+
+/**
+ * Time-sorted copy with every no-print bar dropped and every partial
+ * bar rebuilt (see sanitizePrices).
+ */
+function sanitizeCandles(candles: MinuteCandle[]): MinuteCandle[] {
+  const out: MinuteCandle[] = [];
+  for (const c of candles) {
+    const prices = sanitizePrices(c);
+    if (prices) out.push({ ...c, ...prices });
+  }
+  return out.sort((a, b) => a.datetime - b.datetime);
+}
+
+/**
  * ET trading dates (Mon–Fri, ≤ today) covered by [startMs, endMs],
  * capped to the most recent MAX_HISTORY_DATES.
  */
@@ -828,7 +986,7 @@ async function fetchIndexDayCandles(
 ): Promise<MinuteCandle[]> {
   let day: SidecarIndexHistory;
   try {
-    day = await sidecarGetJson<SidecarIndexHistory>(
+    day = await thetaIndexGetJson<SidecarIndexHistory>(
       `/theta/index/history?root=${encodeURIComponent(root)}&date=${date}`,
     );
   } catch (err) {
@@ -838,21 +996,11 @@ async function fetchIndexDayCandles(
   const out: MinuteCandle[] = [];
   for (const c of day.candles ?? []) {
     const datetime = num(c.ts_ms);
-    const open = num(c.open);
-    const high = num(c.high);
-    const low = num(c.low);
-    const close = num(c.close);
-    if (
-      datetime == null ||
-      open == null ||
-      high == null ||
-      low == null ||
-      close == null
-    ) {
-      continue;
-    }
+    if (datetime == null) continue;
     if (!isRegularHours(datetime)) continue;
-    out.push({ datetime, open, high, low, close, volume: 0 });
+    const prices = sanitizePrices(c);
+    if (!prices) continue;
+    out.push({ datetime, ...prices, volume: 0 });
   }
   return out;
 }
@@ -868,48 +1016,34 @@ async function fetchEquityDayCandles(
   const out: MinuteCandle[] = [];
   for (const r of rows) {
     const datetime = r.start_time ? Date.parse(r.start_time) : Number.NaN;
-    const open = num(r.open);
-    const high = num(r.high);
-    const low = num(r.low);
-    const close = num(r.close);
-    if (
-      !Number.isFinite(datetime) ||
-      open == null ||
-      high == null ||
-      low == null ||
-      close == null
-    ) {
-      continue;
-    }
+    if (!Number.isFinite(datetime)) continue;
     // Regular session only (Schwab needExtendedHoursData=false parity):
     // trust UW's market_time tag when present, ET wall-clock otherwise.
     const rth = r.market_time
       ? r.market_time === 'r'
       : isRegularHours(datetime);
     if (!rth) continue;
-    out.push({
-      datetime,
-      open,
-      high,
-      low,
-      close,
-      volume: num(r.volume) ?? 0,
-    });
+    const prices = sanitizePrices(r);
+    if (!prices) continue;
+    out.push({ datetime, ...prices, volume: num(r.volume) ?? 0 });
   }
   return out;
 }
 
-/** Aggregate 1-min candles into N-minute buckets (wall-clock aligned). */
+/**
+ * Aggregate 1-min candles into N-minute buckets (wall-clock aligned).
+ * Sanitizing BEFORE bucketing is what keeps `Math.min` off a no-print
+ * `0`: a window whose bars all lack prices produces NO bucket (not a
+ * row of zeros), and a mixed one keeps the minimum POSITIVE low.
+ */
 function aggregateMinutes(
   candles: MinuteCandle[],
   freqMinutes: number,
 ): MinuteCandle[] {
-  if (freqMinutes <= 1) {
-    return [...candles].sort((a, b) => a.datetime - b.datetime);
-  }
+  const sorted = sanitizeCandles(candles);
+  if (freqMinutes <= 1) return sorted;
   const bucketMs = freqMinutes * 60_000;
   const buckets = new Map<number, MinuteCandle>();
-  const sorted = [...candles].sort((a, b) => a.datetime - b.datetime);
   for (const c of sorted) {
     const start = c.datetime - (c.datetime % bucketMs);
     const b = buckets.get(start);
@@ -929,12 +1063,17 @@ function aggregateMinutes(
  * Aggregate a day's minute candles into one daily candle. `datetime`
  * is NOON UTC of the trading date so BOTH consumer conventions —
  * UTC date parts (yesterday.ts) and ET conversion (fetch-outcomes
- * backfill) — resolve to the trading date.
+ * backfill) — resolve to the trading date. Null when every bar of the
+ * session was a no-print minute (the day has no candle at all).
  */
-function toDailyCandle(date: string, candles: MinuteCandle[]): MinuteCandle {
-  const sorted = [...candles].sort((a, b) => a.datetime - b.datetime);
-  const first = sorted[0]!;
-  const last = sorted.at(-1)!;
+function toDailyCandle(
+  date: string,
+  candles: MinuteCandle[],
+): MinuteCandle | null {
+  const sorted = sanitizeCandles(candles);
+  const first = sorted[0];
+  const last = sorted.at(-1);
+  if (!first || !last) return null;
   let high = -Infinity;
   let low = Infinity;
   let volume = 0;
@@ -1003,7 +1142,7 @@ export async function historyAdapter(
       if (!root) return sourceUnavailable(path);
       perDay = await mapWithConcurrency(
         dates,
-        HISTORY_CONCURRENCY,
+        INDEX_HISTORY_CONCURRENCY,
         async (date) => ({
           date,
           candles: await fetchIndexDayCandles(root, date),
@@ -1026,7 +1165,9 @@ export async function historyAdapter(
 
     let candles: MinuteCandle[];
     if (frequencyType === 'daily') {
-      candles = daysWithData.map((d) => toDailyCandle(d.date, d.candles));
+      candles = daysWithData
+        .map((d) => toDailyCandle(d.date, d.candles))
+        .filter((c) => c != null);
       if (symbol.startsWith('$')) {
         for (const c of candles) c.volume = 0;
       }
@@ -1041,9 +1182,7 @@ export async function historyAdapter(
     let previousClose = 0;
     if (daysWithData.length >= 2) {
       const prevDay = daysWithData.at(-2)!;
-      const sortedPrev = [...prevDay.candles].sort(
-        (a, b) => a.datetime - b.datetime,
-      );
+      const sortedPrev = sanitizeCandles(prevDay.candles);
       previousClose = sortedPrev.at(-1)?.close ?? 0;
     }
 
@@ -1114,7 +1253,7 @@ async function fetchSidecarIndexQuote(
   root: string,
   symbol: string,
 ): Promise<SchwabShapedQuote> {
-  const p = await sidecarGetJson<SidecarIndexPrice>(
+  const p = await thetaIndexGetJson<SidecarIndexPrice>(
     `/theta/index/price?root=${encodeURIComponent(root)}`,
   );
   const last = num(p.price);
@@ -1130,8 +1269,8 @@ async function fetchSidecarIndexQuote(
         root,
         getETDateStr(new Date()),
       );
-      if (candles.length > 0) {
-        const sorted = [...candles].sort((a, b) => a.datetime - b.datetime);
+      const sorted = sanitizeCandles(candles);
+      if (sorted.length > 0) {
         open ??= sorted[0]!.open;
         high ??= Math.max(...sorted.map((c) => c.high));
         low ??= Math.min(...sorted.map((c) => c.low));
