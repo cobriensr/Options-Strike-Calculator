@@ -9,11 +9,15 @@ resume) and guarded by a single-flight lock in `archive_seeder`.
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
+import math
 import os
 import re
 import threading
+import time
+from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any, Callable
@@ -21,6 +25,7 @@ from urllib.parse import parse_qs, urlparse
 
 from archive_seeder import SeedBusyError
 from logger_setup import log
+from sentry_setup import capture_message
 
 # 3-year window cap on /archive/*-batch range queries. A 3-year range
 # is ~750 trading dates × ~370k instruments — well within the 8 vCPU
@@ -47,6 +52,223 @@ _THETA_INDEX_ROOTS = frozenset({"SPX", "VIX", "VIX1D", "VIX9D", "VVIX"})
 
 # Default candle interval for /theta/index/history: 1 minute in ms.
 _THETA_DEFAULT_IVL_MS = 60000
+
+
+# ---------------------------------------------------------------------------
+# Concurrency bound for the /theta/index/* routes (Terminal burst choke)
+# ---------------------------------------------------------------------------
+#
+# Theta Terminal v1.8.6 (the co-resident jar, HTTP on 127.0.0.1:25510)
+# answers sequential requests reliably and drops them under a burst.
+# Two failures traced to it:
+#
+#   * `/api/history` on Vercel fans out 5 symbols x up to 6 concurrent
+#     days = ~30 simultaneous GET /theta/index/history calls. On
+#     2026-08-19 18:31 UTC $VIX1D came back empty while the other four
+#     roots succeeded, so the UI showed "n/a (no history)".
+#   * On 2026-08-18 /api/chain returned 502 seven times, each preceded
+#     by a sidecar `503 theta_unavailable` for $SPX.
+#
+# So bound how many requests may be inside the Terminal at once. This
+# mirrors `archive_query.archive_query_slot()` with ONE deliberate
+# difference: the archive slot sheds instantly (each admitted query
+# costs ~500 MB of DuckDB memory, so queueing would just OOM later),
+# whereas a queued Theta call costs nothing but a parked thread. The
+# callers here are Vercel Functions with an 8s client timeout
+# (`SIDECAR_TIMEOUT_MS` in api/_lib/market-data-adapters.ts), and they
+# would much rather wait a couple of seconds for the Terminal than take
+# an instant 503. The health server is a ThreadingHTTPServer (one
+# thread per request — see `_QuietThreadingHTTPServer` and `start()`),
+# so a blocking acquire parks only that request's own thread.
+#
+# 2 is deliberate: the Terminal is reliable sequentially, and 2 halves
+# queue latency without bursting it. Override via env for ops tuning.
+#
+# Both knobs are read at import. An exception here would take the whole
+# health server down (and Railway would then roll the deploy back in a
+# loop), so a bad value must DEGRADE to the documented default rather
+# than raise — see `_env_int` / `_env_float`. Concurrency is clamped to
+# >= 1 because a cap of 0 would permanently shed every request.
+_THETA_INDEX_CONCURRENCY_DEFAULT = 2
+
+
+def _env_int(name: str, default: int, *, minimum: int) -> int:
+    """Parse an integer tuning knob from the environment without raising.
+
+    Unset or blank → `default` silently. Unparseable → `default` with a
+    warning. Below `minimum` → `minimum` with a warning. Module-level
+    callers run at import time, where raising would be fatal.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("%s=%r is not an integer; using default %d", name, raw, default)
+        return default
+    if value < minimum:
+        log.warning(
+            "%s=%d is below the minimum %d; clamping to %d",
+            name,
+            value,
+            minimum,
+            minimum,
+        )
+        return minimum
+    return value
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    """Parse a float tuning knob from the environment without raising.
+
+    Same contract as `_env_int`, plus: non-finite values (`nan`, `inf`)
+    fall back to `default` — `float()` accepts them but a NaN timeout
+    makes the semaphore wait forever and `inf` overflows the lock — and
+    values above `maximum` clamp down with a warning.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("%s=%r is not a number; using default %.1f", name, raw, default)
+        return default
+    if not math.isfinite(value):
+        log.warning("%s=%r is not finite; using default %.1f", name, raw, default)
+        return default
+    if value < minimum:
+        log.warning(
+            "%s=%r is below the minimum %.1fs; clamping to %.1fs",
+            name,
+            raw,
+            minimum,
+            minimum,
+        )
+        return minimum
+    if value > maximum:
+        log.warning(
+            "%s=%r is above the maximum %.1fs; clamping to %.1fs",
+            name,
+            raw,
+            maximum,
+            maximum,
+        )
+        return maximum
+    return value
+
+
+_THETA_INDEX_CONCURRENCY = _env_int(
+    "THETA_INDEX_CONCURRENCY", _THETA_INDEX_CONCURRENCY_DEFAULT, minimum=1
+)
+_theta_index_semaphore = threading.BoundedSemaphore(_THETA_INDEX_CONCURRENCY)
+
+# How long a request may queue for a slot before it gives up with 503
+# `theta_busy`. 5s sits inside the caller's 8s budget and still leaves
+# ~3s for the Terminal round-trip the slot then performs (a warm index
+# snapshot is well under 1s; the client itself is built with
+# timeout_s=5, max_retries=1). Expiring here is strictly better than
+# letting the caller time out: it returns a structured, retryable
+# answer with Retry-After instead of a dead socket.
+#
+# Clamped to [0.5s, 60s]: anything shorter is a shed in disguise (a warm
+# Terminal round-trip is a few hundred ms), and anything longer cannot
+# help a caller whose own budget is 8s — while an astronomically large
+# value makes `Semaphore.acquire(timeout=…)` raise OverflowError at
+# contention time, a latent 500 on the very path this bound protects.
+_THETA_INDEX_WAIT_S_DEFAULT = 5.0
+_THETA_INDEX_WAIT_S_MIN = 0.5
+_THETA_INDEX_WAIT_S_MAX = 60.0
+_THETA_INDEX_WAIT_S = _env_float(
+    "THETA_INDEX_WAIT_S",
+    _THETA_INDEX_WAIT_S_DEFAULT,
+    minimum=_THETA_INDEX_WAIT_S_MIN,
+    maximum=_THETA_INDEX_WAIT_S_MAX,
+)
+
+# Latch for the "wait expired" warning — see `_warn_theta_wait_expired`.
+_theta_index_wait_expired = False
+_theta_index_latch_lock = threading.Lock()
+
+
+class ThetaBusyError(Exception):
+    """Raised when a request waited out `_THETA_INDEX_WAIT_S` for a slot.
+
+    The HTTP layer maps this to 503 `theta_busy` + Retry-After. Distinct
+    from ThetaClientError (Terminal down → 503 `theta_unavailable`) so a
+    caller can tell "too many of us" from "it's broken".
+    """
+
+
+def _warn_theta_wait_expired() -> None:
+    """Warn once per process that a request never got a Terminal slot.
+
+    The first expiry is the signal that `THETA_INDEX_CONCURRENCY` (or
+    `THETA_INDEX_WAIT_S`) is too low for the offered load. Repeating it
+    per shed request during a burst would be pure alert noise, so the
+    warning is latched and later expiries drop to debug.
+
+    The sidecar's Sentry has no logging integration, so the log line
+    alone is invisible outside the Railway log drain. The first expiry
+    therefore ALSO goes out as a `capture_message` (same precedent as
+    db.py's slow-getconn and batched_writer's overflow-drop events),
+    behind the same latch — one Sentry event per process. The capture
+    is guarded: observability must never turn a 503 `theta_busy` into
+    an unhandled exception on the request thread.
+    """
+    global _theta_index_wait_expired
+    with _theta_index_latch_lock:
+        first = not _theta_index_wait_expired
+        _theta_index_wait_expired = True
+    if not first:
+        log.debug("theta index slot wait expired after %.1fs", _THETA_INDEX_WAIT_S)
+        return
+    log.warning(
+        "theta index slot wait expired after %.1fs at cap %d — raise "
+        "THETA_INDEX_CONCURRENCY if this repeats",
+        _THETA_INDEX_WAIT_S,
+        _THETA_INDEX_CONCURRENCY,
+    )
+    try:
+        capture_message(
+            "theta index slot wait expired",
+            level="warning",
+            context={"cap": _THETA_INDEX_CONCURRENCY, "wait_s": _THETA_INDEX_WAIT_S},
+            tags={"component": "health", "route": "theta-index"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("failed to forward theta busy warning to Sentry: %s", exc)
+
+
+@contextlib.contextmanager
+def theta_index_slot() -> Iterator[None]:
+    """Bound concurrent Theta Terminal calls to `_THETA_INDEX_CONCURRENCY`.
+
+    Blocking acquire with a `_THETA_INDEX_WAIT_S` deadline: a burst
+    queues (which the Terminal handles fine) instead of stampeding it.
+    Only when the deadline passes do we raise `ThetaBusyError` so the
+    HTTP layer can answer 503 `theta_busy`. The slot is released on exit
+    even if the wrapped call raises.
+    """
+    if not _theta_index_semaphore.acquire(blocking=False):
+        log.debug(
+            "theta index slots busy (cap %d); waiting up to %.1fs",
+            _THETA_INDEX_CONCURRENCY,
+            _THETA_INDEX_WAIT_S,
+        )
+        started = time.monotonic()
+        if not _theta_index_semaphore.acquire(timeout=_THETA_INDEX_WAIT_S):
+            _warn_theta_wait_expired()
+            raise ThetaBusyError("theta index concurrency limit reached")
+        log.debug(
+            "theta index slot acquired after waiting %.2fs",
+            time.monotonic() - started,
+        )
+    try:
+        yield
+    finally:
+        _theta_index_semaphore.release()
 
 
 def _previous_weekday(d: date) -> date:
@@ -253,9 +475,11 @@ class HealthHandler(BaseHTTPRequestHandler):
         ("/archive/tbbo-ofi-percentile", "_handle_archive_tbbo_ofi_percentile"),
     )
 
-    # Theta index proxy routes. Cheap localhost calls against the Theta
+    # Theta index proxy routes. Localhost calls against the Theta
     # Terminal — deliberately NOT gated behind archive_query_slot() (that
-    # semaphore bounds DuckDB memory, which these routes never touch).
+    # semaphore bounds DuckDB memory, which these routes never touch);
+    # they carry their own `theta_index_slot()` bound instead, applied
+    # inside each handler after auth/validation.
     # Both routes require the /takeit bearer: they consume live Terminal
     # quota/bandwidth, so they are not public like /archive/*.
     _THETA_ROUTES: tuple[tuple[str, str], ...] = (
@@ -546,6 +770,19 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         return theta_client.ThetaClient(timeout_s=5, max_retries=1)
 
+    def _send_theta_busy(self) -> None:
+        """503 + Retry-After for a request that never got a Terminal slot.
+
+        Same wire shape as the archive busy response (`Retry-After: 1`),
+        distinct body so the caller can tell a saturated Terminal from a
+        broken one (`theta_unavailable`) or a saturated archive.
+        """
+        self.send_response(503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Retry-After", "1")
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": "theta_busy"}).encode())
+
     def _handle_theta_index_price(self) -> None:
         """GET /theta/index/price?root=SPX → current index value.
 
@@ -553,6 +790,11 @@ class HealthHandler(BaseHTTPRequestHandler):
         the previous trading day's last hist-OHLC close (null when that
         day has no data — holiday — or its fetch fails; best-effort by
         contract) and `ts` is the snapshot time in epoch ms.
+
+        The bearer gate and root allowlist run OUTSIDE `theta_index_slot()`
+        so 401/400 stay instant and byte-identical however busy the
+        Terminal is; only the part that actually talks to the Terminal
+        is bounded.
         """
         if not self._theta_bearer_ok():
             return
@@ -560,7 +802,14 @@ class HealthHandler(BaseHTTPRequestHandler):
         root = self._theta_root_or_none(qs)
         if root is None:
             return
+        try:
+            with theta_index_slot():
+                self._theta_index_price_locked(root)
+        except ThetaBusyError:
+            self._send_theta_busy()
 
+    def _theta_index_price_locked(self, root: str) -> None:
+        """Body of /theta/index/price, run while holding a Terminal slot."""
         import theta_client  # noqa: PLC0415
 
         client = self._theta_client()
@@ -609,6 +858,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         Response: `{root, date, ivl_ms, candles: [{ts_ms, open, high,
         low, close}]}`. Candles carry NO volume — indices don't trade,
         and fabricating one would let callers depend on a lie.
+
+        As with /theta/index/price, auth + input validation run outside
+        `theta_index_slot()`; only the Terminal call is bounded.
         """
         if not self._theta_bearer_ok():
             return
@@ -630,7 +882,16 @@ class HealthHandler(BaseHTTPRequestHandler):
             return
         if ivl_ms is None:
             ivl_ms = _THETA_DEFAULT_IVL_MS
+        try:
+            with theta_index_slot():
+                self._theta_index_history_locked(root, date_str, day, ivl_ms)
+        except ThetaBusyError:
+            self._send_theta_busy()
 
+    def _theta_index_history_locked(
+        self, root: str, date_str: str, day: date, ivl_ms: int
+    ) -> None:
+        """Body of /theta/index/history, run while holding a Terminal slot."""
         import theta_client  # noqa: PLC0415
 
         client = self._theta_client()

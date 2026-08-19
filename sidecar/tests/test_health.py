@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import sys
+import threading
+import time
 import types
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -28,9 +31,14 @@ from health import HealthHandler  # noqa: E402
 class _FakeRequest:
     """Minimal request stub BaseHTTPRequestHandler expects."""
 
-    def __init__(self, path: str = "/health") -> None:
+    def __init__(
+        self, path: str = "/health", headers: dict[str, str] | None = None
+    ) -> None:
         self.path = path
-        self.raw = f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+        header_lines = "Host: localhost\r\n"
+        for key, value in (headers or {}).items():
+            header_lines += f"{key}: {value}\r\n"
+        self.raw = f"GET {path} HTTP/1.1\r\n{header_lines}\r\n".encode()
 
     def makefile(self, mode: str, *_args: object) -> io.BytesIO:
         if "r" in mode:
@@ -38,11 +46,14 @@ class _FakeRequest:
         return io.BytesIO()
 
 
-def _run_request_raw(path: str = "/health") -> str:
+def _run_request_raw(
+    path: str = "/health", headers: dict[str, str] | None = None
+) -> str:
     """Drive HealthHandler for one GET; return the raw HTTP response text
     (status line + headers + body). Use when a test needs to inspect
-    headers; `_run_request` wraps this for the common (status, body) case."""
-    req = _FakeRequest(path=path)
+    headers; `_run_request` wraps this for the common (status, body) case.
+    `headers` are request headers (e.g. the /theta/index bearer)."""
+    req = _FakeRequest(path=path, headers=headers)
     # Write buffer lives on the instance as `wfile` once BaseHTTPRequestHandler
     # runs setup(). We capture everything it writes for later parsing.
     output = io.BytesIO()
@@ -62,9 +73,11 @@ def _run_request_raw(path: str = "/health") -> str:
     return output.getvalue().decode()
 
 
-def _run_request(path: str = "/health") -> tuple[int, dict]:
+def _run_request(
+    path: str = "/health", headers: dict[str, str] | None = None
+) -> tuple[int, dict]:
     """Drive HealthHandler for one request; return (status, body_obj)."""
-    raw = _run_request_raw(path)
+    raw = _run_request_raw(path, headers=headers)
     # First line: HTTP/1.x <status> <reason>
     status_line, *rest = raw.split("\r\n", 1)
     status = int(status_line.split()[1])
@@ -76,6 +89,17 @@ def _run_request(path: str = "/health") -> tuple[int, dict]:
         return status, json.loads(body_text)
     except json.JSONDecodeError:
         return status, {"_raw": body_text}
+
+
+def _response_headers(raw: str) -> dict[str, str]:
+    """Parse the response headers out of a raw HTTP response string."""
+    head, _, _body = raw.partition("\r\n\r\n")
+    headers: dict[str, str] = {}
+    for line in head.split("\r\n")[1:]:
+        key, _, value = line.partition(":")
+        if value:
+            headers[key.strip()] = value.strip()
+    return headers
 
 
 @pytest.fixture(autouse=True)
@@ -1839,3 +1863,624 @@ class TestArchiveUnavailable:
             status, body = _run_request(f"/archive/{route}?date={today}")
         assert status == 404
         assert body["error"].startswith("date not yet in archive")
+
+
+# ---------------------------------------------------------------------------
+# /theta/index/* concurrency bound — bursts queue instead of failing
+# ---------------------------------------------------------------------------
+#
+# Theta Terminal v1.8.6 (co-resident jar, HTTP on 127.0.0.1:25510) answers
+# sequential requests reliably and drops them under a burst. Two observed
+# failures: `/api/history` fans out 5 symbols x up to 6 days = ~30 concurrent
+# /theta/index/history calls and on 2026-08-19 $VIX1D came back empty while
+# the other four roots succeeded; on 2026-08-18 /api/chain 502'd seven times,
+# each preceded by a sidecar `503 theta_unavailable` for $SPX.
+#
+# These tests pin the bound: at most `_THETA_INDEX_CONCURRENCY` requests
+# inside the Terminal at once, and — unlike the archive slot, which sheds
+# instantly — the rest QUEUE for up to `_THETA_INDEX_WAIT_S` before a 503.
+
+_THETA_SECRET = "theta-concurrency-secret"
+_THETA_AUTH = {"Authorization": f"Bearer {_THETA_SECRET}"}
+_THETA_PRICE_PATH = "/theta/index/price?root=SPX"
+_THETA_HISTORY_PATH = "/theta/index/history?root=SPX&date=2026-08-14"
+
+
+def _stub_theta_client(hook: Any = None) -> Any:
+    """Build a ThetaClient stand-in; `hook` runs inside every Terminal call."""
+    from datetime import date as _date
+    from decimal import Decimal
+
+    from theta_client import IndexOhlcCandle, IndexPriceSnapshot
+
+    class _StubClient:
+        def snapshot_index_price(self, root: str) -> Any:
+            if hook is not None:
+                hook()
+            return IndexPriceSnapshot(
+                root=root,
+                price=Decimal("6423.53"),
+                snapshot_date=_date(2026, 8, 14),
+                ts_ms=1786462200000,
+            )
+
+        def hist_index_ohlc(
+            self, root: str, day: Any, ivl_ms: int | None = None
+        ) -> Any:
+            if hook is not None:
+                hook()
+            return [
+                IndexOhlcCandle(
+                    ts_ms=1786455000000,
+                    open=Decimal("6388.00"),
+                    high=Decimal("6391.50"),
+                    low=Decimal("6387.25"),
+                    close=Decimal("6390.00"),
+                )
+            ]
+
+    return _StubClient()
+
+
+@pytest.fixture
+def theta_secret() -> Any:
+    """Install the bearer secret the /theta/index/* routes require."""
+    saved = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET")
+    os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = _THETA_SECRET
+    yield
+    if saved is None:
+        os.environ.pop("TAKEIT_SIDECAR_SHARED_SECRET", None)
+    else:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = saved
+
+
+@pytest.fixture
+def theta_slots() -> Any:
+    """Swap in a fresh cap-2 Theta semaphore and clear the warn latch.
+
+    The bound is process-global: a slot leaked by one test would
+    otherwise poison every later one.
+    """
+    import health
+
+    sema = threading.BoundedSemaphore(2)
+    saved_latch = health._theta_index_wait_expired
+    health._theta_index_wait_expired = False
+    with patch("health._theta_index_semaphore", sema):
+        yield sema
+    health._theta_index_wait_expired = saved_latch
+
+
+class TestThetaIndexConcurrency:
+    def test_documented_defaults(self) -> None:
+        """Cap 2 with a 5s queue budget. The Terminal is reliable
+        sequentially, 2 keeps queue latency down without bursting it, and
+        5s leaves headroom inside the caller's 8s SIDECAR_TIMEOUT_MS."""
+        import health
+
+        if {"THETA_INDEX_CONCURRENCY", "THETA_INDEX_WAIT_S"} & set(os.environ):
+            pytest.skip("env override active")
+        assert health._THETA_INDEX_CONCURRENCY == 2
+        assert health._THETA_INDEX_WAIT_S == 5.0
+
+    # -- (a) a free slot changes nothing -------------------------------
+
+    def test_price_route_unaffected_when_slots_free(
+        self, theta_secret, theta_slots
+    ) -> None:
+        with patch("theta_client.ThetaClient", return_value=_stub_theta_client()):
+            status, body = _run_request(_THETA_PRICE_PATH, headers=_THETA_AUTH)
+        assert status == 200
+        assert body == {
+            "root": "SPX",
+            "price": 6423.53,
+            "prev_close": 6390.0,
+            "ts": 1786462200000,
+        }
+
+    def test_history_route_unaffected_when_slots_free(
+        self, theta_secret, theta_slots
+    ) -> None:
+        with patch("theta_client.ThetaClient", return_value=_stub_theta_client()):
+            status, body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+        assert status == 200
+        assert body == {
+            "root": "SPX",
+            "date": "2026-08-14",
+            "ivl_ms": 60000,
+            "candles": [
+                {
+                    "ts_ms": 1786455000000,
+                    "open": 6388.0,
+                    "high": 6391.5,
+                    "low": 6387.25,
+                    "close": 6390.0,
+                }
+            ],
+        }
+
+    def test_slot_released_after_a_successful_request(
+        self, theta_secret, theta_slots
+    ) -> None:
+        with patch("theta_client.ThetaClient", return_value=_stub_theta_client()):
+            status, _body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+        assert status == 200
+        # Both slots free again — the handler leaked nothing.
+        assert theta_slots.acquire(blocking=False)
+        assert theta_slots.acquire(blocking=False)
+        theta_slots.release()
+        theta_slots.release()
+
+    def test_401_and_400_stay_instant_while_saturated(
+        self, theta_secret, theta_slots
+    ) -> None:
+        """Auth + root validation run OUTSIDE the slot, so a saturated
+        Terminal never turns a 401/400 into a queued 503."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_WAIT_S", 5.0),
+                patch("theta_client.ThetaClient") as mock_cls,
+            ):
+                started = time.monotonic()
+                unauth, unauth_body = _run_request(
+                    _THETA_PRICE_PATH, headers={"Authorization": "Bearer wrong"}
+                )
+                bad_root, bad_root_body = _run_request(
+                    "/theta/index/price?root=TICK", headers=_THETA_AUTH
+                )
+                elapsed = time.monotonic() - started
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        assert (unauth, unauth_body) == (401, {"error": "unauthorized"})
+        assert bad_root == 400
+        assert "root" in bad_root_body["error"]
+        assert elapsed < 1.0, "validation must not queue behind the Terminal"
+        mock_cls.assert_not_called()
+
+    # -- (b) exhausted cap: wait, then 503 theta_busy -------------------
+
+    @pytest.mark.parametrize(
+        "path", [_THETA_PRICE_PATH, _THETA_HISTORY_PATH], ids=["price", "history"]
+    )
+    def test_503_theta_busy_with_retry_after_when_wait_expires(
+        self, theta_secret, theta_slots, path: str
+    ) -> None:
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_WAIT_S", 0.05),
+                patch("theta_client.ThetaClient") as mock_cls,
+            ):
+                started = time.monotonic()
+                raw = _run_request_raw(path, headers=_THETA_AUTH)
+                elapsed = time.monotonic() - started
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        assert raw.split("\r\n", 1)[0].split()[1] == "503"
+        _, _, body_text = raw.partition("\r\n\r\n")
+        assert json.loads(body_text) == {"error": "theta_busy"}
+        assert _response_headers(raw)["Retry-After"] == "1"
+        # It queued for the whole budget before shedding...
+        assert elapsed >= 0.05
+        # ...and never reached the Terminal.
+        mock_cls.assert_not_called()
+
+    def test_queued_request_succeeds_once_a_slot_frees(
+        self, theta_secret, theta_slots
+    ) -> None:
+        """The whole point of the bound: a burst QUEUES instead of failing."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        freed = threading.Timer(0.15, theta_slots.release)
+        freed.start()
+        with (
+            patch("health._THETA_INDEX_WAIT_S", 5.0),
+            patch("theta_client.ThetaClient", return_value=_stub_theta_client()),
+            patch("health.log") as mock_log,
+        ):
+            started = time.monotonic()
+            status, body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+            elapsed = time.monotonic() - started
+        freed.join()
+        theta_slots.release()
+
+        assert status == 200
+        assert body["root"] == "SPX"
+        assert elapsed >= 0.15, "request should have waited, not failed fast"
+        # Waiting is a debug-level event, not a warning.
+        assert [c for c in mock_log.debug.call_args_list if "wait" in str(c)]
+        mock_log.warning.assert_not_called()
+
+    def test_wait_expiry_warns_once_per_process(
+        self, theta_secret, theta_slots
+    ) -> None:
+        """The latched warning is the 'cap is too low' signal — one per
+        process, not one per shed request."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_WAIT_S", 0.01),
+                patch("theta_client.ThetaClient"),
+                patch("health.log") as mock_log,
+            ):
+                for _ in range(3):
+                    status, body = _run_request(
+                        _THETA_HISTORY_PATH, headers=_THETA_AUTH
+                    )
+                    assert status == 503
+                    assert body == {"error": "theta_busy"}
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        warnings = [c for c in mock_log.warning.call_args_list if "theta" in str(c)]
+        assert len(warnings) == 1, mock_log.warning.call_args_list
+
+    # -- (c) real threads never exceed the cap -------------------------
+
+    def test_concurrent_requests_are_serialised_to_the_cap(
+        self, theta_secret, theta_slots
+    ) -> None:
+        """8 threads, cap 2: never more than 2 inside the Terminal at
+        once, and nothing is shed — they queue and all get 200."""
+        cap = 2
+        lock = threading.Lock()
+        current = 0
+        peak = 0
+
+        def hook() -> None:
+            nonlocal current, peak
+            with lock:
+                current += 1
+                peak = max(peak, current)
+            time.sleep(0.05)
+            with lock:
+                current -= 1
+
+        statuses: list[int] = []
+
+        def worker() -> None:
+            status, _body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+            with lock:
+                statuses.append(status)
+
+        with patch(
+            "theta_client.ThetaClient",
+            side_effect=lambda **_kw: _stub_theta_client(hook),
+        ):
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+
+        assert peak <= cap, f"peak concurrency {peak} exceeded cap {cap}"
+        assert peak >= 2, "cap 2 should admit two callers concurrently"
+        assert statuses == [200] * 8
+
+
+# ---------------------------------------------------------------------------
+# (c') a shed is VISIBLE — latched Sentry capture, once per process
+# ---------------------------------------------------------------------------
+#
+# The sidecar's Sentry has no logging integration, so the latched
+# `log.warning` in `_warn_theta_wait_expired` alone is invisible outside
+# the Railway log drain. The first shed must also go out as a
+# `capture_message` (same precedent as db.py's slow-getconn and
+# batched_writer's overflow-drop events) — exactly once per process.
+
+
+class TestThetaWaitExpiredSentry:
+    def test_first_shed_captures_to_sentry_once_with_context(
+        self, theta_secret, theta_slots
+    ) -> None:
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_CONCURRENCY", 2),
+                patch("health._THETA_INDEX_WAIT_S", 0.01),
+                patch("theta_client.ThetaClient"),
+                patch("health.capture_message") as cap,
+            ):
+                for _ in range(3):
+                    status, body = _run_request(
+                        _THETA_HISTORY_PATH, headers=_THETA_AUTH
+                    )
+                    assert (status, body) == (503, {"error": "theta_busy"})
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        # Latched alongside the log warning: 3 sheds → ONE Sentry event.
+        cap.assert_called_once()
+        args, kwargs = cap.call_args
+        assert args == ("theta index slot wait expired",)
+        assert kwargs["level"] == "warning"
+        assert kwargs["context"] == {"cap": 2, "wait_s": 0.01}
+        assert kwargs["tags"] == {"component": "health", "route": "theta-index"}
+
+    def test_capture_failure_does_not_mask_the_503(
+        self, theta_secret, theta_slots
+    ) -> None:
+        """Observability must never turn a shed into a 500 / dead socket."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_WAIT_S", 0.01),
+                patch("theta_client.ThetaClient"),
+                patch(
+                    "health.capture_message",
+                    side_effect=RuntimeError("sentry exploded"),
+                ),
+            ):
+                raw = _run_request_raw(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        assert raw.split("\r\n", 1)[0].split()[1] == "503"
+        _, _, body_text = raw.partition("\r\n\r\n")
+        assert json.loads(body_text) == {"error": "theta_busy"}
+        assert _response_headers(raw)["Retry-After"] == "1"
+
+    def test_queued_then_served_request_captures_nothing(
+        self, theta_secret, theta_slots
+    ) -> None:
+        """Waiting is normal operation; only an EXPIRED wait is an event."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        freed = threading.Timer(0.1, theta_slots.release)
+        freed.start()
+        with (
+            patch("health._THETA_INDEX_WAIT_S", 5.0),
+            patch("theta_client.ThetaClient", return_value=_stub_theta_client()),
+            patch("health.capture_message") as cap,
+        ):
+            status, _body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+        freed.join()
+        theta_slots.release()
+
+        assert status == 200
+        cap.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# (c'') THETA_INDEX_* env knobs degrade, never raise at import
+# ---------------------------------------------------------------------------
+#
+# The knobs are read when `health` is imported. An exception there takes
+# the whole health server down with it, and Railway then rolls the deploy
+# back in a loop — so a fat-fingered value must fall back to the documented
+# default (with a warning), and out-of-range values clamp: concurrency 0
+# would permanently shed every request, a sub-half-second wait is a shed
+# in disguise, and an astronomically large one overflows Python's lock
+# timeout at contention time.
+
+
+@pytest.fixture
+def reload_health(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Reload `health` under env overrides; restore the module afterwards.
+
+    `importlib.reload` re-executes the module in the SAME module dict, so
+    the handler methods (which look `theta_index_slot` / the semaphore up
+    by name at call time) and every other test's `patch("health.…")` keep
+    working. The teardown undoes the env and reloads once more so later
+    tests see the documented defaults.
+    """
+    import importlib
+
+    import health
+
+    def _reload(**env: str) -> Any:
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        return importlib.reload(health)
+
+    yield _reload
+    monkeypatch.undo()
+    importlib.reload(health)
+
+
+def _admitted(sema: threading.Semaphore) -> int:
+    """Count how many non-blocking acquires a fresh semaphore admits."""
+    count = 0
+    while sema.acquire(blocking=False):
+        count += 1
+    for _ in range(count):
+        sema.release()
+    return count
+
+
+class TestThetaIndexEnvParsing:
+    # -- concurrency ---------------------------------------------------
+
+    def test_non_numeric_concurrency_falls_back_to_default(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_CONCURRENCY="abc")
+        assert mod._THETA_INDEX_CONCURRENCY == 2
+        assert _admitted(mod._theta_index_semaphore) == 2
+        assert any(
+            "THETA_INDEX_CONCURRENCY" in r.getMessage() and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), caplog.records
+
+    @pytest.mark.parametrize("raw", ["0", "-3"])
+    def test_concurrency_below_one_clamps_to_one(
+        self, reload_health, caplog: pytest.LogCaptureFixture, raw: str
+    ) -> None:
+        """0 would permanently shed (every acquire times out); a negative
+        value raises inside BoundedSemaphore. Both clamp to 1."""
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_CONCURRENCY=raw)
+        assert mod._THETA_INDEX_CONCURRENCY == 1
+        assert _admitted(mod._theta_index_semaphore) == 1
+        assert any("THETA_INDEX_CONCURRENCY" in r.getMessage() for r in caplog.records)
+
+    def test_concurrency_zero_does_not_permanently_shed(
+        self, reload_health, theta_secret
+    ) -> None:
+        """End to end: after the clamp a request still reaches the Terminal."""
+        reload_health(THETA_INDEX_CONCURRENCY="0")
+        with patch("theta_client.ThetaClient", return_value=_stub_theta_client()):
+            status, body = _run_request(_THETA_PRICE_PATH, headers=_THETA_AUTH)
+        assert status == 200
+        assert body["root"] == "SPX"
+
+    def test_valid_concurrency_is_honoured_without_warning(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_CONCURRENCY="3")
+        assert mod._THETA_INDEX_CONCURRENCY == 3
+        assert _admitted(mod._theta_index_semaphore) == 3
+        assert not [r for r in caplog.records if "THETA_INDEX" in r.getMessage()]
+
+    def test_blank_concurrency_is_treated_as_unset(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_CONCURRENCY="   ")
+        assert mod._THETA_INDEX_CONCURRENCY == 2
+        assert not [r for r in caplog.records if "THETA_INDEX" in r.getMessage()]
+
+    # -- wait budget ---------------------------------------------------
+
+    @pytest.mark.parametrize("raw", ["nope", "nan", "inf", "-inf"])
+    def test_unusable_wait_falls_back_to_default(
+        self, reload_health, caplog: pytest.LogCaptureFixture, raw: str
+    ) -> None:
+        """Non-numeric AND non-finite: `float("nan")` parses but makes the
+        semaphore wait forever, `inf` overflows the lock timeout."""
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_WAIT_S=raw)
+        assert mod._THETA_INDEX_WAIT_S == 5.0
+        assert any(
+            "THETA_INDEX_WAIT_S" in r.getMessage() and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), caplog.records
+
+    @pytest.mark.parametrize("raw", ["0", "0.1", "-2"])
+    def test_wait_below_minimum_clamps_up(
+        self, reload_health, caplog: pytest.LogCaptureFixture, raw: str
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_WAIT_S=raw)
+        assert mod._THETA_INDEX_WAIT_S == 0.5
+        assert any("THETA_INDEX_WAIT_S" in r.getMessage() for r in caplog.records)
+
+    def test_wait_above_ceiling_clamps_down(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """1e12s would raise OverflowError from the lock at contention
+        time — a latent 500 on the very path this bound protects."""
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_WAIT_S="1e12")
+        assert mod._THETA_INDEX_WAIT_S == 60.0
+        assert any("THETA_INDEX_WAIT_S" in r.getMessage() for r in caplog.records)
+
+    def test_valid_wait_is_honoured_without_warning(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_WAIT_S="2.5")
+        assert mod._THETA_INDEX_WAIT_S == 2.5
+        assert not [r for r in caplog.records if "THETA_INDEX" in r.getMessage()]
+
+    # -- restoration ---------------------------------------------------
+
+    def test_fixture_restores_documented_defaults(
+        self, reload_health, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Guard for the fixture itself: a sibling test's override must not
+        leak into `test_documented_defaults` or the slot tests."""
+        import importlib
+
+        import health
+
+        reload_health(THETA_INDEX_CONCURRENCY="7", THETA_INDEX_WAIT_S="9")
+        assert health._THETA_INDEX_CONCURRENCY == 7
+        assert health._THETA_INDEX_WAIT_S == 9.0
+        # Mimic the teardown (env restored + reload) inline.
+        monkeypatch.delenv("THETA_INDEX_CONCURRENCY", raising=False)
+        monkeypatch.delenv("THETA_INDEX_WAIT_S", raising=False)
+        importlib.reload(health)
+        assert health._THETA_INDEX_CONCURRENCY == 2
+        assert health._THETA_INDEX_WAIT_S == 5.0
+
+
+# ---------------------------------------------------------------------------
+# (d) the archive slot is untouched by the Theta bound
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveSlotUnchangedByThetaBound:
+    def test_archive_busy_503_still_fails_fast(self, configure_base_callables) -> None:
+        """Archive keeps its own shape: `archive busy, retry shortly` +
+        Retry-After, returned IMMEDIATELY — it must not inherit the
+        Theta queue (each admitted archive query costs ~500 MB)."""
+        import archive_query
+
+        sema = threading.BoundedSemaphore(1)
+        sema.acquire()
+        with (
+            patch.object(archive_query, "_archive_query_semaphore", sema),
+            patch(
+                "archive_query.es_day_summary",
+                side_effect=AssertionError("query must not run when saturated"),
+            ),
+        ):
+            started = time.monotonic()
+            raw = _run_request_raw("/archive/es-range?date=2025-01-15")
+            elapsed = time.monotonic() - started
+        sema.release()
+
+        assert raw.split("\r\n", 1)[0].split()[1] == "503"
+        _, _, body_text = raw.partition("\r\n\r\n")
+        assert json.loads(body_text) == {"error": "archive busy, retry shortly"}
+        assert _response_headers(raw)["Retry-After"] == "1"
+        assert elapsed < 1.0, "archive must shed instantly, not queue"
+
+    def test_archive_unavailable_503_still_has_no_retry_after(
+        self, configure_base_callables
+    ) -> None:
+        import archive_query
+
+        exc = archive_query.ArchiveUnavailableError("nope", dataset="ohlcv_1m")
+        with (
+            patch("archive_query.es_day_summary", side_effect=exc),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            raw = _run_request_raw("/archive/es-range?date=2025-01-15")
+
+        assert raw.split("\r\n", 1)[0].split()[1] == "503"
+        _, _, body_text = raw.partition("\r\n\r\n")
+        assert json.loads(body_text)["error"] == "archive_unavailable"
+        assert "Retry-After" not in _response_headers(raw)
+        cap.assert_not_called()
+
+    def test_theta_saturation_does_not_block_archive_routes(
+        self, configure_base_callables, theta_slots
+    ) -> None:
+        sample = {"date": "2025-01-15", "symbol": "ESH5", "open": 1.0}
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with patch("archive_query.es_day_summary", return_value=sample):
+                status, body = _run_request("/archive/es-range?date=2025-01-15")
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+        assert status == 200
+        assert body == sample
