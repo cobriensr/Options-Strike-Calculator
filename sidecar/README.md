@@ -59,6 +59,9 @@ Sidecar is the canonical owner of these in **Railway**, not Vercel. `.env.exampl
 | `RAILWAY_RUN_UID`       | yes       | `0` on Railway so the container can write to the volume       |
 | `PORT`                  | optional  | Default 8080                                                  |
 | `LOG_LEVEL`             | optional  | Default INFO                                                  |
+| `THETA_INDEX_CONCURRENCY` | optional | Cap on concurrent `/theta/index/*` calls into the Terminal (default 2, min 1). Theta Terminal v1.8.6 drops calls under bursts; excess callers queue for a slot. |
+| `THETA_INDEX_WAIT_S`    | optional  | How long a caller waits for a slot before `503 {"error":"theta_busy"}` + `Retry-After: 1` (default 5.0, clamped 0.5–60). Vercel's client allows 8s per call. |
+| `ARCHIVE_QUERY_CONCURRENCY` | optional | Cap on concurrent `/archive/*` DuckDB queries (sheds `503 archive busy` immediately when full). |
 
 ## Deployment
 

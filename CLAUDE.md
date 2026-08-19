@@ -263,6 +263,8 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)     |
 | `ARCHIVE_ROOT`                             | Volume path; default /data/archive |
 | `RAILWAY_RUN_UID`                          | `0` on Railway for volume write    |
+| `THETA_INDEX_CONCURRENCY`                  | Sidecar /theta/index/* slot cap (default 2, min 1) |
+| `THETA_INDEX_WAIT_S`                       | Sidecar slot wait before 503 theta_busy (default 5.0) |
 
 Never edit `.env*` files with Claude. Never commit secrets.
 
