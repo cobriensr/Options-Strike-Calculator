@@ -32,6 +32,7 @@ import {
   getAccessToken,
   storeInitialTokens,
   getAuthUrl,
+  isSchwabConfigured,
 } from '../_lib/schwab.js';
 
 describe('schwab', () => {
@@ -48,6 +49,36 @@ describe('schwab', () => {
 
   afterEach(() => {
     process.env = originalEnv;
+  });
+
+  // ============================================================
+  // isSchwabConfigured
+  // ============================================================
+
+  describe('isSchwabConfigured', () => {
+    it('returns false when both credentials are missing', () => {
+      delete process.env.SCHWAB_CLIENT_ID;
+      delete process.env.SCHWAB_CLIENT_SECRET;
+      expect(isSchwabConfigured()).toBe(false);
+    });
+
+    it('returns false when only one credential is set', () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      delete process.env.SCHWAB_CLIENT_SECRET;
+      expect(isSchwabConfigured()).toBe(false);
+    });
+
+    it('returns false when a credential is an empty string', () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = '';
+      expect(isSchwabConfigured()).toBe(false);
+    });
+
+    it('returns true when both credentials are set', () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      expect(isSchwabConfigured()).toBe(true);
+    });
   });
 
   // ============================================================

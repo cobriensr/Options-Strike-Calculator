@@ -16,6 +16,12 @@
  * On mismatch OR unset OWNER_SECRET the response is identical (401
  * {error:'Invalid access key'}, no cookie) so it never leaks whether the
  * secret was wrong versus unconfigured.
+ *
+ * When Schwab OAuth creds ARE configured the GET form also renders a small
+ * "Connect Schwab account instead" link to /api/auth/init — Schwab is only
+ * needed for positions + NYSE breadth internals, so it's offered, not forced.
+ * When unconfigured, nothing extra is rendered (/api/auth/init would just
+ * bounce back here anyway).
  */
 
 import { timingSafeEqual } from 'node:crypto';
@@ -28,14 +34,29 @@ import {
   OWNER_COOKIE_MAX_AGE,
   rejectIfRateLimited,
 } from '../_lib/auth-helpers.js';
+import { isSchwabConfigured } from '../_lib/schwab.js';
 
-const LOGIN_FORM_HTML = `
+/**
+ * Optional footer under the owner form, rendered only when Schwab OAuth is
+ * configured. Kept as a standalone constant (not a nested template) so the
+ * outer form template stays a single interpolation.
+ */
+const SCHWAB_LINK_HTML = `
+    <p style="margin: 12px 0 0; font-size: 12px; color: #a3a3a3; line-height: 1.5;">
+      <a href="/api/auth/init">Connect Schwab account instead</a><br />
+      Schwab is only needed for positions and NYSE breadth internals.
+    </p>`;
+
+function renderLoginForm(schwabConfigured: boolean): string {
+  const schwabBlock = schwabConfigured ? SCHWAB_LINK_HTML : '';
+  return `
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>Owner Login</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>a { color: #60a5fa; }</style>
 </head>
 <body style="font-family: system-ui; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #0a0a0a; color: #e5e5e5;">
   <form method="POST" action="/api/auth/login" style="display: flex; flex-direction: column; gap: 12px; width: 280px;">
@@ -46,11 +67,12 @@ const LOGIN_FORM_HTML = `
     <button type="submit"
       style="padding: 10px 12px; border: none; border-radius: 6px; background: #2563eb; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;">
       Sign in
-    </button>
+    </button>${schwabBlock}
   </form>
 </body>
 </html>
 `;
+}
 
 /**
  * Length-guarded constant-time comparison, mirroring `isOwner` in
@@ -83,7 +105,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         done({ status: 200 });
         res.setHeader('Content-Type', 'text/html');
         res.setHeader('Cache-Control', 'no-store');
-        return res.status(200).send(LOGIN_FORM_HTML);
+        return res.status(200).send(renderLoginForm(isSchwabConfigured()));
       }
 
       if (req.method !== 'POST') {

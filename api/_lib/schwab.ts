@@ -72,6 +72,20 @@ function getCredentials(): { clientId: string; clientSecret: string } | null {
   }
 }
 
+/**
+ * True when both `SCHWAB_CLIENT_ID` and `SCHWAB_CLIENT_SECRET` are set.
+ *
+ * Schwab is an OPTIONAL integration (positions + NYSE breadth internals);
+ * the UW + Theta facade serves everything else. Entry points that would
+ * otherwise 500 on missing creds (`/api/auth/init`) or want to offer the
+ * Schwab OAuth flow only when it can succeed (`/api/auth/login` form) use
+ * this predicate. Deliberately shares `getCredentials()` with `getAuthUrl`
+ * so the two can never disagree about "configured".
+ */
+export function isSchwabConfigured(): boolean {
+  return getCredentials() !== null;
+}
+
 function basicAuthHeader(clientId: string, clientSecret: string): string {
   const encoded = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
   return `Basic ${encoded}`;

@@ -14,14 +14,23 @@ vi.mock('../_lib/auth-helpers.js', () => ({
   rejectIfRateLimited: vi.fn().mockResolvedValue(false),
 }));
 
+// The GET form conditionally renders a "Connect Schwab account instead" link
+// when Schwab OAuth creds are present. Mock the predicate so the test doesn't
+// depend on the real env-group parser (and doesn't pull in the Redis client).
+vi.mock('../_lib/schwab.js', () => ({
+  isSchwabConfigured: vi.fn().mockReturnValue(false),
+}));
+
 import handler from '../auth/login.js';
 import { rejectIfRateLimited } from '../_lib/auth-helpers.js';
+import { isSchwabConfigured } from '../_lib/schwab.js';
 
 const ORIGINAL_ENV = { ...process.env };
 
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+  vi.mocked(isSchwabConfigured).mockReturnValue(false);
   process.env = { ...ORIGINAL_ENV };
   delete process.env.OWNER_SECRET;
   delete process.env.VERCEL;
@@ -178,6 +187,33 @@ describe('GET /api/auth/login', () => {
     expect(res._body).toContain('type="password"');
     expect(res._body).toContain('name="secret"');
     expect(res._body).toContain('/api/auth/login');
+  });
+
+  it('omits the Connect-Schwab link when Schwab is not configured', async () => {
+    vi.mocked(isSchwabConfigured).mockReturnValue(false);
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    expect(res._body).not.toContain('/api/auth/init');
+    expect(res._body).not.toContain('Connect Schwab account instead');
+  });
+
+  it('renders the Connect-Schwab link + note when Schwab is configured', async () => {
+    vi.mocked(isSchwabConfigured).mockReturnValue(true);
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(200);
+    expect(res._body).toContain(
+      '<a href="/api/auth/init">Connect Schwab account instead</a>',
+    );
+    // One-line note that Schwab is only needed for positions + breadth.
+    expect(res._body).toMatch(/positions/i);
+    expect(res._body).toMatch(/breadth/i);
+    // The owner login form itself is unchanged.
+    expect(res._body).toContain('type="password"');
+    expect(res._body).toContain('name="secret"');
   });
 });
 
