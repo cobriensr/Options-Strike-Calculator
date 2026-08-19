@@ -362,6 +362,7 @@
     "api/cron/wave2-confirmation.ts": { "maxDuration": 60 },
     "api/cron/audit-takeit-calibration.ts": { "maxDuration": 60 },
     "api/cron/enrich-lottery-outcomes.ts": { "maxDuration": 300 },
+    "api/cron/capture-flow-regime-daily.ts": { "maxDuration": 300 },
     "api/cron/fetch-gex-strike-expiry-etfs.ts": { "maxDuration": 60 },
     "api/cron/rollup-ws-gex-strike-expiry.ts": { "maxDuration": 120 },
     "api/cron/fetch-gexbot-strikes.ts": { "maxDuration": 60 },
