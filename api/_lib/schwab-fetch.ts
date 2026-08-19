@@ -2,16 +2,31 @@
  * Market-data facade + Schwab Trader API helper.
  *
  * `schwabFetch<T>` keeps its historical signature and ApiResult
- * envelope, but no longer calls Schwab's Market Data API: it dispatches
- * by path prefix to the UW + Theta-sidecar adapters in
- * `market-data-adapters.ts`, which assemble byte-compatible Schwab
- * response shapes (Phase 2 of schwab-replacement-2026-08-16). Callers
- * are untouched — same paths, same shapes, same `[SCHWAB_*]` error
- * strings and 401/429/502/504 status mapping.
+ * envelope, but no longer calls Schwab's Market Data API for covered
+ * paths: it dispatches by path prefix to the UW + Theta-sidecar
+ * adapters in `market-data-adapters.ts`, which assemble byte-compatible
+ * Schwab response shapes (Phase 2 of schwab-replacement-2026-08-16).
+ * Callers are untouched — same paths, same shapes, same `[SCHWAB_*]`
+ * error strings and 401/429/502/504 status mapping.
  *
- * `schwabTraderFetch<T>` (positions) is the one surface that remains a
- * real Schwab call — brokerage positions are inherently Schwab — and
- * keeps the OAuth token machinery, retry-on-5xx, timeout, and metrics.
+ * Passthrough for facade gaps (readiness-loose-ends-2026-08-18, phase
+ * G): when an adapter reports `501 SOURCE_UNAVAILABLE` (NYSE breadth
+ * internals `$TICK/$TRIN/$ADD/$VOLD`, or any path with no adapter at
+ * all) AND Schwab is configured (`SCHWAB_CLIENT_ID` +
+ * `SCHWAB_CLIENT_SECRET` both set), the request falls through to the
+ * real Schwab Market Data API via the legacy `schwabApiFetch` path —
+ * OAuth token machinery, retries, timeout, metrics and `[SCHWAB_*]`
+ * error strings included. Unconfigured deployments see the unchanged
+ * 501. Configured-but-not-yet-connected deployments see the token
+ * envelope (`401 SCHWAB_TOKEN_EXPIRED` / `500 SCHWAB_TOKEN_ERROR`,
+ * with `code` set so consumers can skip quietly). Transient adapter
+ * failures (UW 5xx, 429, …) are NOT passed through — the facade stays
+ * primary and predictable; only the explicit no-source code triggers
+ * the passthrough.
+ *
+ * `schwabTraderFetch<T>` (positions) is the one surface that is always
+ * a real Schwab call — brokerage positions are inherently Schwab — and
+ * shares the OAuth token machinery, retry-on-5xx, timeout, and metrics.
  *
  * Split from `api-helpers.ts` (Phase 2 of api-refactor-2026-05-02).
  * Re-exported from `api-helpers.ts` for backward compatibility.
@@ -30,6 +45,7 @@ import {
 } from './market-data-adapters.js';
 
 const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
+const SCHWAB_MARKET_BASE = 'https://api.schwabapi.com/marketdata/v1';
 
 /**
  * Discriminated union for internal API call results.
@@ -38,6 +54,36 @@ const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
 export type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string; status: number; code?: string };
+
+/**
+ * Cheap config gate for the Market Data passthrough: both Schwab OAuth
+ * env vars present and non-empty. Reads `process.env` directly (no
+ * validated-env cache) so it is a pure per-call check; the token
+ * machinery in `schwab.ts` re-validates via `requireEnvGroup('schwab')`
+ * before any real call. Kept private here to avoid coupling to
+ * `schwab.ts` — unify with an `isSchwabConfigured()` there later.
+ */
+function hasSchwabConfig(): boolean {
+  return (
+    Boolean(process.env.SCHWAB_CLIENT_ID) &&
+    Boolean(process.env.SCHWAB_CLIENT_SECRET)
+  );
+}
+
+/** The facade's explicit "no source for this path/symbol" marker. */
+function isSourceUnavailable(result: ApiResult<unknown>): boolean {
+  return (
+    !result.ok &&
+    (result.status === 501 || result.code === 'SOURCE_UNAVAILABLE')
+  );
+}
+
+/**
+ * Module-level latch so the "passthrough active" notice lands once per
+ * process (cold start), not once per call — the cron that hits the
+ * gap runs every minute across four symbols.
+ */
+let passthroughAnnounced = false;
 
 /**
  * Make an authenticated GET request to a Schwab API endpoint.
@@ -56,10 +102,15 @@ async function schwabApiFetch<T>(
       authResult.error.type === 'expired_refresh'
         ? 'SCHWAB_TOKEN_EXPIRED'
         : 'SCHWAB_TOKEN_ERROR';
+    // `code` is set so facade consumers can tell "Schwab configured but
+    // OAuth not completed" apart from a genuine upstream failure and
+    // skip quietly (fetch-market-internals) — same string prefix as
+    // before, so the `[SCHWAB_TOKEN_*]` error contract is unchanged.
     return {
       ok: false,
       error: `[${code}] ${authResult.error.message}`,
       status,
+      code,
     };
   }
 
@@ -160,6 +211,11 @@ async function schwabApiFetch<T>(
  *   /movers       → moversAdapter
  *   anything else → 501 SOURCE_UNAVAILABLE (consumers are fail-open)
  *
+ * When the adapter result is 501 SOURCE_UNAVAILABLE and Schwab is
+ * configured, the call passes through to the real Schwab Market Data
+ * API (`SCHWAB_MARKET_BASE` + path). Only the explicit no-source code
+ * triggers this — transient adapter failures are returned as-is.
+ *
  * Never throws — always resolves to an ApiResult, exactly like the
  * legacy Schwab implementation.
  */
@@ -178,6 +234,20 @@ export async function schwabFetch<T>(path: string): Promise<ApiResult<T>> {
     result = await moversAdapter(path);
   } else {
     result = sourceUnavailable(path);
+  }
+
+  if (isSourceUnavailable(result) && hasSchwabConfig()) {
+    if (!passthroughAnnounced) {
+      passthroughAnnounced = true;
+      logger.info(
+        { endpoint },
+        'schwabFetch: Schwab Market Data passthrough active for facade gaps (SOURCE_UNAVAILABLE → api.schwabapi.com)',
+      );
+    }
+    // schwabApiFetch owns its own schwabCall metric + done() for the
+    // real call, so the facade-side timer is dropped here rather than
+    // double-counting the endpoint.
+    return schwabApiFetch<T>(SCHWAB_MARKET_BASE, path);
   }
 
   done(result.ok);

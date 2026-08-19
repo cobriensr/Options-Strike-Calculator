@@ -250,6 +250,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
         status: 401,
+        code: 'SCHWAB_TOKEN_EXPIRED',
       });
     });
 
@@ -262,6 +263,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_TOKEN_ERROR] Something broke',
         status: 500,
+        code: 'SCHWAB_TOKEN_ERROR',
       });
     });
 
@@ -1267,6 +1269,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
         status: 401,
+        code: 'SCHWAB_TOKEN_EXPIRED',
       });
     });
 

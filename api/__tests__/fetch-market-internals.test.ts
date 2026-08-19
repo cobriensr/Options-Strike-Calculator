@@ -681,6 +681,151 @@ describe('fetch-market-internals handler', () => {
     expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
+  // ── Schwab configured but not connected (readiness-loose-ends phase G) ──
+
+  it.each([
+    [
+      401,
+      'SCHWAB_TOKEN_EXPIRED',
+      '[SCHWAB_TOKEN_EXPIRED] No tokens found. Run /api/auth/init to authenticate.',
+    ],
+    [500, 'SCHWAB_TOKEN_ERROR', '[SCHWAB_TOKEN_ERROR] Token refresh failed'],
+  ])(
+    'treats %s %s as a quiet skip: no Sentry, no throw, ONE warn per run',
+    async (status, code, error) => {
+      // Window between "SCHWAB_CLIENT_ID/SECRET added" and "owner completed
+      // OAuth": the passthrough returns the token envelope for every symbol.
+      // Must NOT emit a per-symbol error every minute.
+      vi.mocked(schwabFetch).mockResolvedValue({
+        ok: false,
+        status,
+        code,
+        error,
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer test-secret' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as Record<string, unknown>;
+      expect(body).toMatchObject({
+        job: 'fetch-market-internals',
+        success: true,
+        successCount: 0,
+        failureCount: 0,
+        unavailableCount: 4,
+        notConnectedCount: 4,
+        stored: 0,
+      });
+
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(mockTransaction).not.toHaveBeenCalled();
+
+      // Exactly ONE warn, naming the fix, listing all four symbols.
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      const [meta, msg] = vi.mocked(logger.warn).mock.calls[0]!;
+      expect(String(msg)).toContain(
+        'schwab configured but not connected — visit /api/auth/init',
+      );
+      expect(meta).toMatchObject({
+        symbols: ['$TICK', '$TRIN', '$ADD', '$VOLD'],
+      });
+
+      // The SOURCE_UNAVAILABLE skip line is for the no-source case only.
+      const sourceSkips = vi
+        .mocked(logger.info)
+        .mock.calls.filter(([, m]) => String(m).includes('SOURCE_UNAVAILABLE'));
+      expect(sourceSkips).toHaveLength(0);
+    },
+  );
+
+  it('mixes not-connected skips with SOURCE_UNAVAILABLE skips: one warn + one info', async () => {
+    // pricehistory ($TICK/$TRIN) → token expired (Schwab configured, no
+    // OAuth yet); quotes ($ADD/$VOLD) → 501 no source.
+    vi.mocked(schwabFetch).mockImplementation((url: string) => {
+      if (url.includes('pricehistory')) {
+        return Promise.resolve({
+          ok: false as const,
+          status: 401,
+          code: 'SCHWAB_TOKEN_EXPIRED',
+          error: '[SCHWAB_TOKEN_EXPIRED] Run /api/auth/init',
+        });
+      }
+      return Promise.resolve({
+        ok: false as const,
+        status: 501,
+        code: 'SOURCE_UNAVAILABLE',
+        error: '[SOURCE_UNAVAILABLE] No market-data source for /quotes',
+      });
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body).toMatchObject({
+      success: true,
+      successCount: 0,
+      failureCount: 0,
+      unavailableCount: 4,
+      notConnectedCount: 2,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logger.warn).mock.calls[0]![0]).toMatchObject({
+      symbols: ['$TICK', '$TRIN'],
+    });
+    const sourceSkips = vi
+      .mocked(logger.info)
+      .mock.calls.filter(([, m]) => String(m).includes('SOURCE_UNAVAILABLE'));
+    expect(sourceSkips).toHaveLength(1);
+    expect(sourceSkips[0]![0]).toMatchObject({ symbols: ['$ADD', '$VOLD'] });
+  });
+
+  it('still counts a genuine 401 without a token code as a failure', async () => {
+    // A rejected bearer ([SCHWAB_API_REJECTED], no SCHWAB_TOKEN_* code) is
+    // a real problem — must not be swallowed by the not-connected skip.
+    vi.mocked(schwabFetch).mockImplementation((url: string) => {
+      if (url.includes('pricehistory')) {
+        return Promise.resolve(schwabOk([makeCandle()]));
+      }
+      return Promise.resolve(
+        quotesError(401, '[SCHWAB_API_REJECTED] Schwab API error (401)'),
+      );
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body).toMatchObject({
+      successCount: 2,
+      failureCount: 2,
+      unavailableCount: 0,
+    });
+  });
+
   // ── Schwab fetch params ────────────────────────────────────
 
   it('sends needExtendedHoursData=false and the 90-minute window for pricehistory', async () => {
