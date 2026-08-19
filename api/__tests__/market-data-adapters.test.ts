@@ -70,6 +70,32 @@ function mockSidecar(
   return spy;
 }
 
+/**
+ * UW stock-screener path the adapters use for index spot (recon
+ * 2026-08-18): index rows only carry close/high/low when an equity
+ * ticker rides along in the same request, so the adapter always pairs
+ * the root with SPY.
+ */
+function screenerPath(root: string): string {
+  return `/screener/stocks?ticker=SPY%2C${root}`;
+}
+
+const SPY_SCREENER_ROW = {
+  ticker: 'SPY',
+  close: '644.4',
+  prev_close: '642.2',
+  high: '646',
+  low: '640.9',
+};
+
+/** Screener response body: SPY companion row + the index row. */
+function screenerRows(
+  root: string,
+  row: Record<string, unknown>,
+): Record<string, unknown>[] {
+  return [SPY_SCREENER_ROW, { ticker: root, ...row }];
+}
+
 const ENV_KEYS = ['UW_API_KEY', 'SIDECAR_URL', 'SIDECAR_TAKEIT_SECRET'];
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -301,11 +327,16 @@ describe('chainAdapter', () => {
     expect(paths.every((p) => !p.includes('maybe_otm_only'))).toBe(true);
   });
 
-  it('routes $NDX chain spot straight to UW stock-state (sidecar allowlist excludes NDX/RUT)', async () => {
+  it('routes $NDX chain spot straight to the UW screener (sidecar allowlist excludes NDX; UW has no index stock-state)', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     uwFetchMock.mockImplementation(async (_key, path) => {
-      if (path === '/stock/NDX/stock-state') {
-        return [{ close: '23985.5', prev_close: '23900.1' }];
+      if (path === screenerPath('NDX')) {
+        return screenerRows('NDX', {
+          close: '23985.5',
+          prev_close: '23900.1',
+          high: '24010.5',
+          low: '23880',
+        });
       }
       return [];
     });
@@ -325,6 +356,31 @@ describe('chainAdapter', () => {
     });
     // No sidecar call — it would 400 (NDX not in _THETA_INDEX_ROOTS).
     expect(fetchSpy).not.toHaveBeenCalled();
+    // UW stock-state 422s deterministically for index roots — must
+    // never be requested for one.
+    expect(
+      uwFetchMock.mock.calls.some(([, p]) => p.includes('/stock-state')),
+    ).toBe(false);
+  });
+
+  it('returns 501 SOURCE_UNAVAILABLE (not 502) for $RUT — no UW index price exists', async () => {
+    // Recon 2026-08-18: UW screener/max-pain/iv-rank all carry NULL for
+    // RUT and stock-state 422s. Report the honest no-source code so the
+    // schwab-fetch passthrough can serve it when Schwab is configured,
+    // instead of the old deterministic 502 [SCHWAB_API_422].
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const path =
+      `/chains?symbol=$RUT&contractType=ALL&fromDate=2026-08-14` +
+      `&toDate=2026-08-14&strikeCount=500`;
+    const result = await chainAdapter(path);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(501);
+    expect(result.code).toBe('SOURCE_UNAVAILABLE');
+    expect(result.error).toContain('/chains');
+    // Known-unavailable roots must not burn sidecar or UW budget.
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(uwFetchMock).not.toHaveBeenCalled();
   });
 
   it('falls back to the midpoint weekday when a ranged window has no Friday (14-DTE on a Monday)', async () => {
@@ -510,20 +566,79 @@ describe('chainAdapter', () => {
     ).toBe(true);
   });
 
-  it('falls back to UW stock-state when the sidecar spot fails', async () => {
+  it('falls back to the UW screener when the sidecar spot times out', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(
       Object.assign(new Error('timeout'), { name: 'TimeoutError' }),
     );
     uwFetchMock.mockImplementation(async (_key, path) => {
-      if (path.includes('/stock-state'))
-        return [{ close: 6465.25, prev_close: 6450.25 }];
+      if (path === screenerPath('SPX')) {
+        return screenerRows('SPX', { close: 6465.25, prev_close: 6450.25 });
+      }
       return [];
     });
     const result = await chainAdapter(SPX_0DTE_PATH);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const chain = result.data as { underlying: { last: number } };
-    expect(chain.underlying.last).toBe(6465.25);
+    const chain = result.data as {
+      underlying: { last: number; close: number };
+    };
+    expect(chain.underlying).toMatchObject({ last: 6465.25, close: 6450.25 });
+    expect(
+      uwFetchMock.mock.calls.some(([, p]) => p.includes('/stock-state')),
+    ).toBe(false);
+  });
+
+  it('falls back to the UW screener on a sidecar 503 theta_unavailable (the 2026-08-18 prod blip)', async () => {
+    // Prod on 08-18: sidecar Theta blipped 503 → the old UW stock-state
+    // fallback 422'd deterministically → /api/chain 502 [SCHWAB_API_422]
+    // ×7. The screener fallback must turn that into an ok chain.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonRes({ error: 'theta_unavailable' }, 503),
+    );
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('SPX')) {
+        return screenerRows('SPX', {
+          close: '7691.76',
+          prev_close: '7745.06',
+          high: '7713.95',
+          low: '7688.63',
+        });
+      }
+      return [];
+    });
+    const result = await chainAdapter(SPX_0DTE_PATH);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const chain = result.data as {
+      underlying: { symbol: string; last: number; close: number };
+    };
+    expect(chain.underlying).toEqual({
+      symbol: '$SPX',
+      last: 7691.76,
+      close: 7745.06,
+      change: -53.3,
+    });
+  });
+
+  it('is a 502 (transient), never 501, when the sidecar is down and the screener row has no price', async () => {
+    // A UW-carried root that momentarily comes back without a close is
+    // a transient upstream failure, not "no source" — it must NOT be
+    // reported as SOURCE_UNAVAILABLE (that code triggers the Schwab
+    // passthrough, which is reserved for genuinely uncovered symbols).
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonRes({}, 500));
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('SPX')) {
+        return screenerRows('SPX', { close: null, prev_close: '7745.06' });
+      }
+      return [];
+    });
+    const result = await chainAdapter(SPX_0DTE_PATH);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(502);
+    expect(result.code).toBeUndefined();
+    expect(result.error).toContain('[SCHWAB_API_502]');
+    expect(result.error).toContain('SPX');
   });
 
   it('maps UW 429s to status 429 with a [SCHWAB_API_429] prefix', async () => {
@@ -1071,25 +1186,21 @@ describe('quotesAdapter', () => {
     expect(result.error.startsWith('[SCHWAB_API_NETWORK]')).toBe(true);
   });
 
-  it('serves $NDX/$RUT from UW stock-state without touching the sidecar', async () => {
-    // NDX/RUT are NOT in the sidecar Theta allowlist — a sidecar call
-    // would 400 every time, and quotesAdapter has no per-symbol retry.
-    // They must route straight to UW stock-state (UW carries both).
+  it('serves $NDX from the UW screener without touching the sidecar; $RUT (no UW price) is omitted', async () => {
+    // NDX is NOT in the sidecar Theta allowlist — a sidecar call would
+    // 400 every time, and quotesAdapter has no per-symbol retry. It
+    // routes straight to the UW screener. UW has no RUT index price at
+    // all (recon 2026-08-18), so $RUT is a per-symbol failure that is
+    // omitted from an otherwise-ok mixed response.
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     uwFetchMock.mockImplementation(async (_key, path) => {
-      if (path === '/stock/NDX/stock-state') {
-        return [
-          {
-            open: '23920',
-            high: '24010.5',
-            low: '23880',
-            close: '23985.5',
-            prev_close: '23900.1',
-          },
-        ];
-      }
-      if (path === '/stock/RUT/stock-state') {
-        return [{ close: '2310.4', prev_close: '2300' }];
+      if (path === screenerPath('NDX')) {
+        return screenerRows('NDX', {
+          close: '23985.5',
+          prev_close: '23900.1',
+          high: '24010.5',
+          low: '23880',
+        });
       }
       return [];
     });
@@ -1104,28 +1215,69 @@ describe('quotesAdapter', () => {
       { quote: Record<string, number> }
     >;
     // fetch-spx-candles-1m reads data['$NDX'].quote.lastPrice every
-    // minute — this path must keep working.
+    // minute — this path must keep working (it was permanently dead
+    // on the 422ing stock-state route).
+    expect(Object.keys(data)).toEqual(['$NDX']);
     expect(data['$NDX']!.quote).toMatchObject({
       lastPrice: 23985.5,
-      openPrice: 23920,
+      // The screener carries no open — 0 like the sidecar's pre-open
+      // degrade; lastPrice is the load-bearing field.
+      openPrice: 0,
       highPrice: 24010.5,
       lowPrice: 23880,
       closePrice: 23900.1,
-    });
-    expect(data['$RUT']!.quote).toMatchObject({
-      lastPrice: 2310.4,
-      closePrice: 2300,
+      netChange: 85.4,
     });
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(
+      uwFetchMock.mock.calls.some(([, p]) => p.includes('/stock-state')),
+    ).toBe(false);
+    // RUT is known-unavailable — no UW call is spent on it.
+    expect(uwFetchMock.mock.calls.some(([, p]) => p.includes('RUT'))).toBe(
+      false,
+    );
   });
 
-  it('falls back to UW stock-state when the sidecar quote fails for a UW-carried root', async () => {
+  it('returns 501 SOURCE_UNAVAILABLE (not 502) when only no-source index symbols are requested', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const result = await quotesAdapter('/quotes?symbols=%24RUT&fields=quote');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(501);
+    expect(result.code).toBe('SOURCE_UNAVAILABLE');
+    expect(result.error).toContain('/quotes');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(uwFetchMock).not.toHaveBeenCalled();
+  });
+
+  it('lets a transient failure win over a no-source symbol in an all-failed mixed request', async () => {
+    // $RUT has no source (would be 501); $VVIX is sidecar-only and the
+    // sidecar timed out (504). The transient must surface — 501 is
+    // reserved for "every failure is a genuine no-source".
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      Object.assign(new Error('sidecar timed out'), { name: 'TimeoutError' }),
+    );
+    const result = await quotesAdapter(
+      '/quotes?symbols=%24RUT%2C%24VVIX&fields=quote',
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(504);
+    expect(result.error.startsWith('[SCHWAB_API_NETWORK]')).toBe(true);
+  });
+
+  it('falls back to the UW screener when the sidecar quote fails for a UW-carried root', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(
       Object.assign(new Error('sidecar timed out'), { name: 'TimeoutError' }),
     );
     uwFetchMock.mockImplementation(async (_key, path) => {
-      if (path === '/stock/SPX/stock-state') {
-        return [{ close: 6465.25, prev_close: 6450.25 }];
+      if (path === screenerPath('SPX')) {
+        return screenerRows('SPX', {
+          close: 6465.25,
+          prev_close: 6450.25,
+          high: 6470,
+          low: 6440,
+        });
       }
       return [];
     });
@@ -1138,7 +1290,47 @@ describe('quotesAdapter', () => {
     >;
     expect(data['$SPX']!.quote).toMatchObject({
       lastPrice: 6465.25,
+      openPrice: 0,
+      highPrice: 6470,
+      lowPrice: 6440,
       closePrice: 6450.25,
+      netChange: 15,
+    });
+    expect(
+      uwFetchMock.mock.calls.some(([, p]) => p.includes('/stock-state')),
+    ).toBe(false);
+  });
+
+  it('falls back to the UW screener for $VIX on a sidecar 503 (fetch-outcomes path)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonRes({ error: 'theta_unavailable' }, 503),
+    );
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('VIX')) {
+        return screenerRows('VIX', {
+          close: '15.84',
+          prev_close: '15.19',
+          high: '16.09',
+          low: '15.6',
+        });
+      }
+      return [];
+    });
+    // $VIX1D is sidecar-only → omitted; $VIX survives via the screener.
+    const result = await quotesAdapter(
+      '/quotes?symbols=$VIX,$VIX1D&fields=quote',
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as Record<
+      string,
+      { quote: Record<string, number> }
+    >;
+    expect(Object.keys(data)).toEqual(['$VIX']);
+    expect(data['$VIX']!.quote).toMatchObject({
+      lastPrice: 15.84,
+      closePrice: 15.19,
+      netChange: 0.65,
     });
   });
 

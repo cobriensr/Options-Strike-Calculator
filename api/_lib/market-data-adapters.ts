@@ -17,8 +17,8 @@
  *     (uw-concurrency) exactly like every other UW consumer.
  *   - Railway sidecar Theta index routes for the Cboe index values the
  *     sidecar's allowlist serves ($SPX/$VIX/$VIX1D/$VIX9D/$VVIX — see
- *     SIDECAR_INDEX_ROOTS; $NDX/$RUT are NOT on the sidecar allowlist
- *     and route to UW stock-state instead):
+ *     SIDECAR_INDEX_ROOTS; $NDX is NOT on the sidecar allowlist and
+ *     routes to the UW stock screener instead, see UW_INDEX_ROOTS):
  *
  *       GET {SIDECAR_URL}/theta/index/price?root=SPX
  *         → { root, price, prev_close, ts }
@@ -32,9 +32,19 @@
  *     shared secret as the /takeit routes), 8s timeout, 404 = no data
  *     for that date (holiday / not yet open).
  *
- *   - NYSE breadth internals ($TICK/$ADD/$VOLD/$TRIN) have NO
- *     replacement source → `SOURCE_UNAVAILABLE` (501). Consumers are
- *     fail-open (fetch-market-internals stores NULL feature columns).
+ *   - Index spot on UW (sidecar fallback for SPX/VIX, primary for NDX)
+ *     is the stock SCREENER row (`/screener/stocks?ticker=SPY,{ROOT}`
+ *     → close/prev_close/high/low). UW's `/stock/{t}/stock-state`
+ *     returns 422 "not available for index ticker" for EVERY index
+ *     root and `/stock/{t}/ohlc/*` 422s on plan permissions, so neither
+ *     can serve indices (recon 2026-08-18; see fetchUwIndexState).
+ *
+ *   - NYSE breadth internals ($TICK/$ADD/$VOLD/$TRIN) and $RUT (UW has
+ *     no RUT index price anywhere) have NO replacement source →
+ *     `SOURCE_UNAVAILABLE` (501). Consumers are fail-open
+ *     (fetch-market-internals stores NULL feature columns) and
+ *     schwab-fetch passes 501 through to real Schwab Market Data when
+ *     Schwab is configured.
  *
  * Error semantics: failures keep the `[SCHWAB_*]`-prefixed error
  * strings and the 401/429/502/504 status mapping of the legacy fetch
@@ -78,17 +88,44 @@ const INDEX_ROOT_BY_SYMBOL: Record<string, string> = {
 /**
  * Index roots the sidecar's Theta allowlist actually serves — MUST
  * mirror `_THETA_INDEX_ROOTS` in sidecar/src/health.py. Roots outside
- * this set (NDX, RUT) would 400 on every sidecar call, so they route
- * straight to UW stock-state instead.
+ * this set (NDX, RUT) would 400 on every sidecar call, so they never
+ * touch the sidecar and go to UW (NDX) or SOURCE_UNAVAILABLE (RUT).
  */
 const SIDECAR_INDEX_ROOTS = new Set(['SPX', 'VIX', 'VIX1D', 'VIX9D', 'VVIX']);
 
 /**
- * Index roots UW carries as stock-state tickers (recon 2026-08-16).
+ * Index roots whose spot UW carries — as stock SCREENER rows, not
+ * stock-state (recon 2026-08-18, markets closed, verified per root):
+ *
+ *   endpoint                          SPX     VIX     NDX     RUT
+ *   /stock/{t}/stock-state            422     422     422     422
+ *     ("Stock state data is not available for index ticker …" —
+ *      deterministic, so the pre-08-18 fallback could never succeed
+ *      and NDX/RUT quotes were permanently dead)
+ *   /stock/{t}/ohlc/1m | /ohlc/1d      422     422     422     422
+ *     ("You do not have permissions to retrieve OHLC data for index
+ *      ticker …" — plan permission)
+ *   /stock/{t}/spot-exposures/strike   200     200     200     200
+ *     but `price` is the ATM STRIKE bucket (7 distinct SPX values over
+ *     a full session, VIX only 15.5/16) — unusable as a spot
+ *   /screener/stocks?ticker=SPY,{t}    close   close   close   NULL
+ *     + prev_close/high/low (precise, e.g. SPX 7691.76 / prev 7745.06)
+ *
  * Used as the sidecar fallback for SPX/VIX and as the primary source
- * for NDX/RUT. VIX1D/VIX9D/VVIX are sidecar-only — UW has no data.
+ * for NDX. RUT is NULL on the screener, max-pain, iv-rank AND realized
+ * → not carried → SOURCE_UNAVAILABLE. VIX1D/VIX9D/VVIX are
+ * sidecar-only — the screener has no rows for them.
  */
-const UW_INDEX_ROOTS = new Set(['SPX', 'NDX', 'RUT', 'VIX']);
+const UW_INDEX_ROOTS = new Set(['SPX', 'NDX', 'VIX']);
+
+/**
+ * Equity ticker paired with every index screener request. UW quirk
+ * (recon 2026-08-18, deterministic across SPY/QQQ/AAPL/IWM): a screener
+ * request whose ticker set is index-only returns the index rows with
+ * NULL close/high/low (prev_close still set); adding any equity/ETF to
+ * the same request populates them. One extra row, same single call.
+ */
+const UW_SCREENER_COMPANION = 'SPY';
 
 /** NYSE breadth internals with no UW/Theta source. */
 const INTERNALS_SYMBOLS = new Set(['$TICK', '$ADD', '$VOLD', '$TRIN']);
@@ -109,6 +146,15 @@ class SidecarHttpError extends Error {
 
 /** Sidecar 404 — "no data for this date" (holiday, pre-open, etc.). */
 class NoDataError extends Error {}
+
+/**
+ * Thrown deep in a per-symbol fetch when the symbol has NO source at
+ * all (e.g. $RUT — see UW_INDEX_ROOTS). `mapError` turns it into the
+ * 501 SOURCE_UNAVAILABLE envelope instead of a 502, so schwab-fetch's
+ * Schwab passthrough can pick the request up. Deliberately NOT thrown
+ * for transient failures of a covered symbol — those stay 502/504.
+ */
+class NoSourceError extends Error {}
 
 /**
  * `{ok:false}` for a path with no replacement source (breadth internals,
@@ -142,9 +188,15 @@ function isTimeoutish(err: unknown): boolean {
  *   - other HTTP    → 502 `[SCHWAB_API_<status>]`
  *   - network/timeout → 504 `[SCHWAB_API_NETWORK]`
  *   - missing env   → 500 `[SCHWAB_TOKEN_ERROR]`
+ *   - no source     → 501 `[SOURCE_UNAVAILABLE]` (NoSourceError; `path`
+ *                     names the endpoint in the message)
  */
-function mapError(err: unknown): ApiResult<never> {
+function mapError(err: unknown, path: string): ApiResult<never> {
   const message = err instanceof Error ? err.message : String(err);
+
+  if (err instanceof NoSourceError) {
+    return sourceUnavailable(path);
+  }
 
   if (err instanceof ConfigError) {
     return { ok: false, status: 500, error: `[SCHWAB_TOKEN_ERROR] ${message}` };
@@ -358,6 +410,57 @@ async function fetchUwStockState(ticker: string): Promise<UwStockState> {
   return row;
 }
 
+/**
+ * UW stock-screener row (`/screener/stocks`). Shared by the index-spot
+ * path (ticker filter) and the movers adapter (S&P 500 filter).
+ */
+interface UwScreenerRow {
+  ticker?: string;
+  full_name?: string;
+  close?: UwNum;
+  prev_close?: UwNum;
+  high?: UwNum;
+  low?: UwNum;
+  stock_volume?: UwNum;
+}
+
+interface UwIndexState {
+  last: number;
+  prevClose: number;
+  high: number;
+  low: number;
+}
+
+/**
+ * Index spot from the UW stock screener — the only UW endpoint that
+ * carries a precise index last + prev close (see UW_INDEX_ROOTS for
+ * the per-endpoint recon). The root is always paired with
+ * UW_SCREENER_COMPANION because index-only requests come back with
+ * NULL close/high/low. No `open` on the screener → callers use 0.
+ *
+ * A row without a usable close is a plain Error (→ 502): the root IS
+ * carried, so an empty close is a transient upstream hiccup, not a
+ * missing source.
+ */
+async function fetchUwIndexState(root: string): Promise<UwIndexState> {
+  const tickers = encodeURIComponent(`${UW_SCREENER_COMPANION},${root}`);
+  const rows = await uwFetch<UwScreenerRow>(
+    uwKey(),
+    `/screener/stocks?ticker=${tickers}`,
+  );
+  const row = rows.find((r) => r.ticker?.toUpperCase() === root);
+  const last = num(row?.close);
+  if (last == null || last <= 0) {
+    throw new Error(`UW screener: no price for index ${root}`);
+  }
+  return {
+    last,
+    prevClose: num(row?.prev_close) ?? 0,
+    high: num(row?.high) ?? 0,
+    low: num(row?.low) ?? 0,
+  };
+}
+
 interface UnderlyingSpot {
   last: number;
   close: number;
@@ -365,32 +468,48 @@ interface UnderlyingSpot {
 
 /**
  * Underlying spot + prev close. Sidecar-served index roots hit the
- * sidecar first (Theta index snapshot) with a UW stock-state fallback;
- * NDX/RUT skip the sidecar entirely (not on its allowlist — a call
- * would just burn a 400 + warn log every time) and equities go straight
- * to UW stock-state.
+ * sidecar first (Theta index snapshot); on failure the UW-carried ones
+ * (SPX/VIX) fall back to the UW screener while sidecar-only roots
+ * (VIX1D/VIX9D/VVIX) rethrow. NDX skips the sidecar entirely (not on
+ * its allowlist — a call would just burn a 400 + warn log every time)
+ * and goes straight to the screener; RUT has no source at all
+ * (NoSourceError → 501). Equities go to UW stock-state.
  */
 async function fetchUnderlyingSpot(
   schwabSymbol: string,
   uwTicker: string,
 ): Promise<UnderlyingSpot> {
   const indexRoot = INDEX_ROOT_BY_SYMBOL[schwabSymbol];
-  if (indexRoot && SIDECAR_INDEX_ROOTS.has(indexRoot)) {
-    try {
-      const p = await sidecarGetJson<SidecarIndexPrice>(
-        `/theta/index/price?root=${encodeURIComponent(indexRoot)}`,
-      );
-      const last = num(p.price);
-      if (last != null && last > 0) {
-        return { last, close: num(p.prev_close) ?? 0 };
+  if (indexRoot) {
+    if (SIDECAR_INDEX_ROOTS.has(indexRoot)) {
+      try {
+        const p = await sidecarGetJson<SidecarIndexPrice>(
+          `/theta/index/price?root=${encodeURIComponent(indexRoot)}`,
+        );
+        const last = num(p.price);
+        if (last != null && last > 0) {
+          return { last, close: num(p.prev_close) ?? 0 };
+        }
+        throw new Error(`Sidecar index price missing for ${schwabSymbol}`);
+      } catch (err) {
+        if (!UW_INDEX_ROOTS.has(indexRoot)) throw err;
+        logger.warn(
+          {
+            schwabSymbol,
+            err: err instanceof Error ? err.message : String(err),
+          },
+          'market-data-adapters: sidecar spot failed, falling back to UW screener',
+        );
       }
-    } catch (err) {
-      logger.warn(
-        { schwabSymbol, err: err instanceof Error ? err.message : String(err) },
-        'market-data-adapters: sidecar spot failed, falling back to UW',
+    } else if (!UW_INDEX_ROOTS.has(indexRoot)) {
+      throw new NoSourceError(
+        `No market-data source for index ${schwabSymbol}`,
       );
     }
+    const s = await fetchUwIndexState(indexRoot);
+    return { last: s.last, close: s.prevClose };
   }
+
   const state = await fetchUwStockState(uwTicker);
   const last =
     num(state.close) ?? num(state.last) ?? num(state.price) ?? Number.NaN;
@@ -643,7 +762,7 @@ export async function chainAdapter(path: string): Promise<ApiResult<unknown>> {
       },
     };
   } catch (err) {
-    return mapError(err);
+    return mapError(err, path);
   }
 }
 
@@ -939,7 +1058,7 @@ export async function historyAdapter(
       },
     };
   } catch (err) {
-    return mapError(err);
+    return mapError(err, path);
   }
 }
 
@@ -1052,12 +1171,25 @@ async function fetchUwStockStateQuote(
 }
 
 /**
+ * Index quote from the UW screener row. The screener has no `open`
+ * (0, like the sidecar's pre-open degrade); high/low are today's
+ * session values; lastPrice is the load-bearing field.
+ */
+async function fetchUwIndexQuote(root: string): Promise<SchwabShapedQuote> {
+  const s = await fetchUwIndexState(root);
+  return buildQuote(s.last, 0, s.high, s.low, s.prevClose);
+}
+
+/**
  * One symbol's quote. Routing:
  *   - sidecar-allowlisted index roots (SPX/VIX family) → sidecar,
- *     falling back to UW stock-state for the roots UW carries;
- *   - NDX/RUT → UW stock-state directly (NOT on the sidecar allowlist —
- *     calling it would 400 every time and quotesAdapter previously had
- *     no fallback, permanently killing the $NDX/$RUT quote consumers);
+ *     falling back to the UW screener for the roots UW carries
+ *     (SPX/VIX); VIX1D/VIX9D/VVIX are sidecar-only and rethrow;
+ *   - NDX → UW screener directly (NOT on the sidecar allowlist —
+ *     calling it would 400 every time and quotesAdapter has no
+ *     per-symbol retry);
+ *   - RUT → NoSourceError (UW has no RUT index price; the old
+ *     stock-state route 422'd deterministically);
  *   - equities → UW stock-state.
  */
 async function fetchQuoteForSymbol(symbol: string): Promise<SchwabShapedQuote> {
@@ -1070,13 +1202,13 @@ async function fetchQuoteForSymbol(symbol: string): Promise<SchwabShapedQuote> {
         if (!UW_INDEX_ROOTS.has(indexRoot)) throw err;
         logger.warn(
           { symbol, err: err instanceof Error ? err.message : String(err) },
-          'market-data-adapters: sidecar quote failed, falling back to UW',
+          'market-data-adapters: sidecar quote failed, falling back to UW screener',
         );
       }
     } else if (!UW_INDEX_ROOTS.has(indexRoot)) {
-      throw new Error(`No market-data source for index ${symbol}`);
+      throw new NoSourceError(`No market-data source for index ${symbol}`);
     }
-    return fetchUwStockStateQuote(indexRoot);
+    return fetchUwIndexQuote(indexRoot);
   }
   return fetchUwStockStateQuote(symbol);
 }
@@ -1085,7 +1217,10 @@ async function fetchQuoteForSymbol(symbol: string): Promise<SchwabShapedQuote> {
  * `/quotes` → `Record<symbol, {quote}>` keyed by the exact requested
  * symbols. Per-symbol failures OMIT the key (consumers already map a
  * missing symbol to null); the call only fails when every requested
- * symbol fails. Internals-only requests are SOURCE_UNAVAILABLE.
+ * symbol fails. Internals-only requests are SOURCE_UNAVAILABLE, and so
+ * is an all-failed request whose every failure is a no-source symbol
+ * (e.g. `$RUT` alone) — but one transient failure among them wins, so
+ * a sidecar blip is never mis-reported as "no source".
  */
 export async function quotesAdapter(path: string): Promise<ApiResult<unknown>> {
   try {
@@ -1103,12 +1238,16 @@ export async function quotesAdapter(path: string): Promise<ApiResult<unknown>> {
 
     const data: Record<string, SchwabShapedQuote> = {};
     let firstFailure: unknown = null;
+    let firstTransient: unknown = null;
     settled.forEach((res, i) => {
       const sym = fetchable[i]!;
       if (res.status === 'fulfilled') {
         data[sym] = res.value;
       } else {
         firstFailure ??= res.reason;
+        if (!(res.reason instanceof NoSourceError)) {
+          firstTransient ??= res.reason;
+        }
         logger.warn(
           {
             symbol: sym,
@@ -1123,23 +1262,15 @@ export async function quotesAdapter(path: string): Promise<ApiResult<unknown>> {
     });
 
     if (Object.keys(data).length === 0 && firstFailure != null) {
-      return mapError(firstFailure);
+      return mapError(firstTransient ?? firstFailure, path);
     }
     return { ok: true, data };
   } catch (err) {
-    return mapError(err);
+    return mapError(err, path);
   }
 }
 
 // ── /movers adapter ──────────────────────────────────────────
-
-interface UwScreenerRow {
-  ticker?: string;
-  full_name?: string;
-  close?: UwNum;
-  prev_close?: UwNum;
-  stock_volume?: UwNum;
-}
 
 /**
  * `/movers/$SPX` → `{screeners: [...]}` from the UW stock screener
@@ -1175,6 +1306,6 @@ export async function moversAdapter(path: string): Promise<ApiResult<unknown>> {
 
     return { ok: true, data: { screeners } };
   } catch (err) {
-    return mapError(err);
+    return mapError(err, path);
   }
 }
