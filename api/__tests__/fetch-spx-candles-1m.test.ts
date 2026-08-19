@@ -803,6 +803,56 @@ describe('fetch-spx-candles-1m handler', () => {
     expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
+  it('RTH shape: when the facade OMITS $NDX (per-symbol failure → key absent), NDX is skipped with one warn and no error, SPX still stores', async () => {
+    // 2026-08-19 production: quotesAdapter drops a failed symbol's key
+    // entirely (not `{quote: {}}`), so the cron saw {SPY,$SPX,QQQ} every
+    // RTH minute. That is a known-unavailable skip, not a crash: exactly
+    // one warn line per run, nothing at error level, nothing to Sentry,
+    // the per-symbol reason in the 200 body, SPX untouched.
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: true as const,
+      data: {
+        $SPX: { quote: { lastPrice: 7721.82 } },
+        SPY: { quote: { lastPrice: 770.19 } },
+        QQQ: { quote: { lastPrice: 718.61 } },
+      },
+    });
+    vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as Record<string, unknown>;
+    expect(body.success).toBe(true);
+    expect(body.stored).toBe(1);
+    expect(body.totalStored).toBe(1);
+    const ndx = body.ndx as Record<string, unknown>;
+    expect(ndx).toMatchObject({
+      symbol: 'NDX',
+      stored: 0,
+      skipped: 0,
+      reason: 'NDX/QQQ ratio unavailable from Schwab',
+    });
+    // Exactly one warn for the NDX skip, at warn (not error) level.
+    const ndxWarns = vi
+      .mocked(logger.warn)
+      .mock.calls.filter(([, msg]) => /NDX\/QQQ/.test(String(msg)));
+    expect(ndxWarns).toHaveLength(1);
+    expect(ndxWarns[0]![0]).toMatchObject({ symbol: 'NDX', etfTicker: 'QQQ' });
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    // Only the SPX UW candle fetch + SPX storage ran.
+    expect(vi.mocked(uwFetch)).toHaveBeenCalledTimes(1);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it('isolates SPX failure — NDX still stores when SPX/SPY price is missing', async () => {
     // SPX nullifies, NDX completes
     vi.mocked(schwabFetch).mockResolvedValue({

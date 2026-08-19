@@ -16,6 +16,18 @@
  * ratio self-corrects regardless of index level and tracks dividend
  * basis drift over time.
  *
+ * "Schwab" here is the `schwabFetch` facade (api/_lib/schwab-fetch.ts):
+ * `$SPX` is the Railway sidecar's Theta index snapshot (UW screener
+ * fallback), `$NDX` the UW screener row — whose index `close` is missing
+ * through RTH — with UW's strike-grid-rounded spot-exposures spot (5-pt
+ * grid, ±0.0085% on NDX) as the intraday lastPrice. Before that
+ * fallback landed (2026-08-19) the NDX leg skipped every RTH minute
+ * with "NDX/QQQ ratio unavailable" and index_candles_1m had NDX rows
+ * only up to 13:29Z; it now stores every minute like SPX. Known
+ * limitation (both legs): pre-open the index side of the ratio is the
+ * prior close while the ETF side is live, so `pr` candles carry the
+ * overnight gap — readers that care use `market_time = 'r'`.
+ *
  * The cron file name remains `fetch-spx-candles-1m` for cron-schedule
  * stability; despite the name it now ingests both symbols. The two
  * symbol flows run sequentially (SPX, then NDX) with per-symbol error
@@ -36,6 +48,8 @@
  *     SPX rows, ndx_schwab_price for NDX rows) is best-effort UPDATEd
  *     to the live Schwab close so reads can prefer the verified close
  *     over the SPY/QQQ-derived approximation for the current minute.
+ *     Through RTH the NDX anchor is the strike-grid spot described
+ *     above (a multiple of 5), not a tick-precise print.
  *
  * Environment: UW_API_KEY, CRON_SECRET
  */

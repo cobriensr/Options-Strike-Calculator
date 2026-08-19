@@ -162,6 +162,46 @@ function screenerRows(
   return [SPY_SCREENER_ROW, { ticker: root, ...row }];
 }
 
+/**
+ * UW spot-exposures strike row the adapter reads the strike-grid-rounded
+ * live index spot from when the screener has no close (prod 2026-08-19:
+ * "UW screener: no price for index NDX" on every RTH minute, while the
+ * same row carried the prior close pre-open and today's close after the
+ * bell — the screener's index `close` is the last OFFICIAL close). Same
+ * always-live preflight fetch-gex-0dte uses for SPX.
+ */
+function spotBucketPath(root: string): string {
+  return `/stock/${root}/spot-exposures/strike?limit=1`;
+}
+
+/** Real shape (trimmed): `price` is the spot bucket, `strike` the row's. */
+function spotBucketRows(price: string): Record<string, unknown>[] {
+  return [
+    {
+      ticker: 'NDX',
+      date: '2026-08-14',
+      time: '2026-08-14T15:00:07.653000Z',
+      price,
+      strike: '4000',
+      call_gamma_oi: '210.9',
+      put_delta_oi: '-2541958.59',
+    },
+  ];
+}
+
+/**
+ * NDX screener row with the intraday shape: no close, prev close / high
+ * / low present (values from the 2026-08-19 after-hours row). The
+ * 08-19 warn line could not tell a NULL close from a missing row, so
+ * the row-absent variant is covered separately.
+ */
+const NDX_RTH_SCREENER_ROW = {
+  close: null,
+  prev_close: '29490.957',
+  high: '29652.2949',
+  low: '29288.7539',
+};
+
 const ENV_KEYS = ['UW_API_KEY', 'SIDECAR_URL', 'SIDECAR_TAKEIT_SECRET'];
 const savedEnv: Record<string, string | undefined> = {};
 
@@ -427,6 +467,96 @@ describe('chainAdapter', () => {
     expect(
       uwFetchMock.mock.calls.some(([, p]) => p.includes('/stock-state')),
     ).toBe(false);
+    // The screener carried a close — the spot-exposures bucket is a
+    // fallback only, never an extra call on the happy path.
+    expect(
+      uwFetchMock.mock.calls.some(([, p]) => p.includes('/spot-exposures')),
+    ).toBe(false);
+  });
+
+  it('falls back to the UW spot-exposures strike bucket for $NDX when the screener row has no close (the 2026-08-19 RTH blank)', async () => {
+    // Prod 2026-08-19: every fetch-strike-iv NDXP chain and every
+    // fetch-spx-candles-1m NDX leg failed 13:30→16:00 ET with
+    // "UW screener: no price for index NDX" — the screener's index
+    // `close` is the last OFFICIAL close (prior close pre-open, today's
+    // after the bell) and missing intraday. The strike-grid-rounded spot
+    // on /spot-exposures/strike (5-pt grid, ±2.5 on ~29,400 = ±0.0085%)
+    // is the live source that keeps the chain (and the candle ratio)
+    // alive through the session.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('NDX')) {
+        return screenerRows('NDX', NDX_RTH_SCREENER_ROW);
+      }
+      if (path === spotBucketPath('NDX')) return spotBucketRows('29425');
+      return [];
+    });
+    const result = await chainAdapter(
+      `/chains?symbol=$NDX&contractType=ALL&fromDate=2026-08-14` +
+        `&toDate=2026-08-14&strikeCount=500`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const chain = result.data as {
+      underlying: { symbol: string; last: number; close: number };
+    };
+    expect(chain.underlying).toEqual({
+      symbol: '$NDX',
+      last: 29425,
+      close: 29490.957,
+      change: -65.957,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // Screener first (prev close / high / low), bucket second, then the
+    // chain's own option-contracts page.
+    expect(uwFetchMock.mock.calls.map(([, p]) => p)).toEqual([
+      screenerPath('NDX'),
+      spotBucketPath('NDX'),
+      expect.stringContaining('/stock/NDX/option-contracts'),
+    ]);
+  });
+
+  it('keeps the $NDX chain spot alive from the bucket even when the screener row is absent entirely', async () => {
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      // Companion SPY row only — no NDX row at all.
+      if (path === screenerPath('NDX')) return [SPY_SCREENER_ROW];
+      if (path === spotBucketPath('NDX')) return spotBucketRows('29425');
+      return [];
+    });
+    const result = await chainAdapter(
+      `/chains?symbol=$NDX&contractType=ALL&fromDate=2026-08-14` +
+        `&toDate=2026-08-14&strikeCount=500`,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const chain = result.data as {
+      underlying: { symbol: string; last: number; close: number };
+    };
+    // No prev close to be had → 0, exactly like the screener's own
+    // missing-field degrade; `last` is the load-bearing field.
+    expect(chain.underlying).toMatchObject({ last: 29425, close: 0 });
+  });
+
+  it('is still a 502 naming the root when both the screener close and the bucket are empty for $NDX', async () => {
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('NDX')) {
+        return screenerRows('NDX', NDX_RTH_SCREENER_ROW);
+      }
+      return [];
+    });
+    const result = await chainAdapter(
+      `/chains?symbol=$NDX&contractType=ALL&fromDate=2026-08-14` +
+        `&toDate=2026-08-14&strikeCount=500`,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(502);
+    expect(result.code).toBeUndefined();
+    expect(result.error).toContain('NDX');
+    expect(uwFetchMock.mock.calls.map(([, p]) => p)).toEqual([
+      screenerPath('NDX'),
+      spotBucketPath('NDX'),
+    ]);
   });
 
   it('returns 501 SOURCE_UNAVAILABLE (not 502) for $RUT — no UW index price exists', async () => {
@@ -688,41 +818,38 @@ describe('chainAdapter', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('retries the sidecar spot once on a 503 theta_busy shed instead of falling back', async () => {
-    fakeRetryTimers();
-    let calls = 0;
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    fetchSpy.mockImplementation(async () => {
-      calls += 1;
-      return calls === 1
-        ? thetaBusyRes('1')
-        : jsonRes({
-            root: 'SPX',
-            price: 6465.25,
-            prev_close: 6450.25,
-            ts: '2026-08-14T15:00:00Z',
-          });
-    });
+  it('does NOT retry the chain spot on a 503 theta_busy shed for a UW-carried root — it falls straight to the screener', async () => {
+    // A shed means the Terminal slots are saturated (history burst). For
+    // SPX the screener carries a live close, so the ≥6s a retry would
+    // cost (Retry-After + a second slot wait) buys nothing the screener
+    // doesn't already give us — one sidecar call, then UW. Real timers
+    // on purpose: a regression that sleeps the backoff shows up as a
+    // second sidecar call, not as a hung test.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(thetaBusyRes('1'));
     uwFetchMock.mockImplementation(async (_key, path) => {
       if (path === screenerPath('SPX')) {
-        return screenerRows('SPX', { close: '1', prev_close: '1' });
+        return screenerRows('SPX', {
+          close: '7713.45',
+          prev_close: '7691.76',
+          high: '7743.93',
+          low: '7700.07',
+        });
       }
       return [];
     });
-    const pending = chainAdapter(SPX_0DTE_PATH);
-    await vi.advanceTimersByTimeAsync(1_000);
-    const result = await pending;
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const result = await chainAdapter(SPX_0DTE_PATH);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const chain = result.data as {
       underlying: { last: number; close: number };
     };
-    // Sidecar spot won on the retry — the screener was never consulted.
-    expect(chain.underlying).toMatchObject({ last: 6465.25, close: 6450.25 });
+    expect(chain.underlying).toMatchObject({ last: 7713.45, close: 7691.76 });
     expect(
-      uwFetchMock.mock.calls.some(([, p]) => p.includes('/screener/stocks')),
-    ).toBe(false);
+      uwFetchMock.mock.calls.some(([, p]) => p === screenerPath('SPX')),
+    ).toBe(true);
   });
 
   it('is a 502 (transient), never 501, when the sidecar is down and the screener row has no price', async () => {
@@ -744,6 +871,12 @@ describe('chainAdapter', () => {
     expect(result.code).toBeUndefined();
     expect(result.error).toContain('[SCHWAB_API_502]');
     expect(result.error).toContain('SPX');
+    // The spot-exposures bucket is an NDX-only fallback: a 5-pt grid is
+    // ±0.03% on SPX — too coarse for the 0DTE spot /api/chain shows —
+    // and the screener carries a live SPX close intraday anyway.
+    expect(
+      uwFetchMock.mock.calls.some(([, p]) => p.includes('/spot-exposures')),
+    ).toBe(false);
   });
 
   it('maps UW 429s to status 429 with a [SCHWAB_API_429] prefix', async () => {
@@ -1911,6 +2044,98 @@ describe('quotesAdapter', () => {
     expect(uwFetchMock.mock.calls.some(([, p]) => p.includes('RUT'))).toBe(
       false,
     );
+    // Screener close present → the bucket is never consulted.
+    expect(
+      uwFetchMock.mock.calls.some(([, p]) => p.includes('/spot-exposures')),
+    ).toBe(false);
+  });
+
+  it('serves the $NDX quote from the spot-exposures bucket when the screener close is missing intraday (fetch-spx-candles-1m RTH ratio)', async () => {
+    // The exact production failure of 2026-08-19: pre-open the NDX
+    // screener row carried the prior close (so the 13:25–13:29Z cron
+    // runs stored candles), then from the 13:30Z open every run logged
+    // "UW screener: no price for index NDX" and NDX candles stopped
+    // while SPX (sidecar-priced) ran to the bell. The quotes map must
+    // keep a `$NDX` entry all session: lastPrice from the live bucket,
+    // prev close / high / low from the screener row.
+    const fetchSpy = mockSidecar({
+      '/theta/index/price?root=SPX': {
+        root: 'SPX',
+        price: 7721.82,
+        prev_close: 7691.76,
+        ts: '2026-08-14T15:00:00Z',
+      },
+    });
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('NDX')) {
+        return screenerRows('NDX', NDX_RTH_SCREENER_ROW);
+      }
+      if (path === spotBucketPath('NDX')) return spotBucketRows('29425');
+      if (path === '/stock/SPY/stock-state') {
+        return [{ close: '770.19', prev_close: '767.45' }];
+      }
+      if (path === '/stock/QQQ/stock-state') {
+        return [{ close: '718.61', prev_close: '716.9' }];
+      }
+      return [];
+    });
+    // The cron's exact request (fetchSchwabRatios).
+    const result = await quotesAdapter(
+      '/quotes?symbols=SPY%2C%24SPX%2CQQQ%2C%24NDX&fields=quote',
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as Record<
+      string,
+      { quote: Record<string, number> }
+    >;
+    expect(Object.keys(data).sort()).toEqual(['$NDX', '$SPX', 'QQQ', 'SPY']);
+    expect(data['$NDX']!.quote).toEqual({
+      lastPrice: 29425,
+      openPrice: 0,
+      highPrice: 29652.2949,
+      lowPrice: 29288.7539,
+      closePrice: 29490.957,
+      netChange: -65.957,
+      netPercentChange: -0.2237,
+      tradeTime: 0,
+    });
+    // NDX never touches the sidecar (not on its allowlist); the bucket
+    // is the second and last NDX call.
+    expect(
+      fetchSpy.mock.calls.some(([input]: unknown[]) =>
+        String(input).includes('NDX'),
+      ),
+    ).toBe(false);
+    expect(
+      uwFetchMock.mock.calls
+        .filter(([, p]) => p.includes('NDX'))
+        .map(([, p]) => p),
+    ).toEqual([screenerPath('NDX'), spotBucketPath('NDX')]);
+  });
+
+  it('omits $NDX (no throw, no extra calls) when the screener AND the bucket come back empty', async () => {
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('NDX')) return [SPY_SCREENER_ROW];
+      if (path === '/stock/QQQ/stock-state') {
+        return [{ close: '718.61', prev_close: '716.9' }];
+      }
+      return [];
+    });
+    const result = await quotesAdapter(
+      '/quotes?symbols=QQQ%2C%24NDX&fields=quote',
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // fetch-spx-candles-1m reads data['$NDX']?.quote?.lastPrice and
+    // turns the missing key into its "ratio unavailable" skip — the
+    // per-symbol failure must stay an omission, never a whole-call 502.
+    expect(Object.keys(result.data as object)).toEqual(['QQQ']);
+    expect(
+      uwFetchMock.mock.calls
+        .filter(([, p]) => p.includes('NDX'))
+        .map(([, p]) => p),
+    ).toEqual([screenerPath('NDX'), spotBucketPath('NDX')]);
   });
 
   it('returns 501 SOURCE_UNAVAILABLE (not 502) when only no-source index symbols are requested', async () => {
@@ -2079,6 +2304,184 @@ describe('quotesAdapter', () => {
       highPrice: 0,
       lowPrice: 0,
       closePrice: 6450.25,
+    });
+  });
+
+  // ── /api/quotes shed budget ───────────────────────────────
+  //
+  // The UI aborts /api/quotes at FETCH_TIMEOUT_MS = 10s
+  // (useMarketData.fetchers.ts) and the adapter runs 5–6 symbols via
+  // Promise.allSettled, so the SLOWEST symbol's sidecar work bounds the
+  // whole response. A theta_busy shed arrives after the sidecar's 5s
+  // slot wait; the old unconditional retry (5s + 1s + ≤5s = 11s) blew
+  // the UI budget by itself. New contract per symbol:
+  //   - UW-carried roots (SPX/VIX): no retry, straight to the screener
+  //     → shed 5.3s + UW ≈ 6s;
+  //   - sidecar-only roots (VIX1D/VIX9D/VVIX): one retry, but every
+  //     sidecar call is clipped to an 8.5s per-symbol budget → ≤ 8.5s;
+  //   - the OHL derivation never retries and is skipped when the budget
+  //     is spent (lastPrice is the load-bearing field).
+
+  it('$SPX: a theta_busy shed on /theta/index/price is NOT retried — the quote falls straight to the screener with one sidecar call', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(thetaBusyRes('1'));
+    uwFetchMock.mockImplementation(async (_key, path) => {
+      if (path === screenerPath('SPX')) {
+        return screenerRows('SPX', {
+          close: '7713.45',
+          prev_close: '7691.76',
+          high: '7743.93',
+          low: '7700.07',
+        });
+      }
+      return [];
+    });
+    const result = await quotesAdapter('/quotes?symbols=%24SPX&fields=quote');
+    // One price call — no retry, and no history call either (the
+    // screener carries high/low).
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as Record<
+      string,
+      { quote: Record<string, number> }
+    >;
+    expect(data['$SPX']!.quote).toMatchObject({
+      lastPrice: 7713.45,
+      highPrice: 7743.93,
+      lowPrice: 7700.07,
+      closePrice: 7691.76,
+      netChange: 21.69,
+    });
+  });
+
+  it('sidecar-only root: the theta_busy retry is skipped when the first attempt already spent the quote budget — the original shed surfaces after ONE call', async () => {
+    fakeRetryTimers();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockImplementation(async () => {
+      // A slot wait that ran the full 8s client timeout's worth before
+      // the sidecar shed it: 8s + 1s backoff would leave nothing of the
+      // 8.5s per-symbol budget for a second attempt.
+      await new Promise((resolve) => setTimeout(resolve, 8_000));
+      return thetaBusyRes('1');
+    });
+    const pending = quotesAdapter('/quotes?symbols=%24VIX1D&fields=quote');
+    await vi.advanceTimersByTimeAsync(8_000);
+    const result = await pending;
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(502);
+    expect(result.error).toContain('[SCHWAB_API_503]');
+    expect(result.error).toContain('theta_busy');
+  });
+
+  it('sidecar-only root: the retry still runs when the budget has room after the backoff', async () => {
+    fakeRetryTimers();
+    let priceCalls = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/theta/index/price?root=VVIX')) {
+        priceCalls += 1;
+        if (priceCalls === 1) {
+          // Shed at 6s: 6s + 1s backoff = 7s, 1.5s of the 8.5s budget
+          // left — above the floor, so the retry is attempted.
+          await new Promise((resolve) => setTimeout(resolve, 6_000));
+          return thetaBusyRes('1');
+        }
+        return jsonRes({
+          root: 'VVIX',
+          price: 98.7,
+          prev_close: 97.2,
+          ts: '2026-08-14T15:00:00Z',
+        });
+      }
+      return jsonRes({ error: 'no_data' }, 404);
+    });
+    const pending = quotesAdapter('/quotes?symbols=%24VVIX&fields=quote');
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(priceCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await pending;
+    expect(priceCalls).toBe(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as Record<
+      string,
+      { quote: Record<string, number> }
+    >;
+    expect(data['$VVIX']!.quote).toMatchObject({
+      lastPrice: 98.7,
+      closePrice: 97.2,
+      netChange: 1.5,
+    });
+  });
+
+  it('does not retry the OHL derivation on a shed — the quote keeps lastPrice with OHL 0s after exactly two sidecar calls', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/theta/index/price?root=VIX9D')) {
+        return jsonRes({
+          root: 'VIX9D',
+          price: 16.1,
+          prev_close: 15.8,
+          ts: '2026-08-14T15:00:00Z',
+        });
+      }
+      return thetaBusyRes('1');
+    });
+    const result = await quotesAdapter('/quotes?symbols=%24VIX9D&fields=quote');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as Record<
+      string,
+      { quote: Record<string, number> }
+    >;
+    expect(data['$VIX9D']!.quote).toMatchObject({
+      lastPrice: 16.1,
+      openPrice: 0,
+      highPrice: 0,
+      lowPrice: 0,
+      closePrice: 15.8,
+    });
+  });
+
+  it('skips the OHL derivation entirely when the price call used up the quote budget (one sidecar call)', async () => {
+    fakeRetryTimers();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockImplementation(async () => {
+      // Price answered at 7.8s (a long slot wait that did NOT shed):
+      // 0.7s of budget left is below the 1s floor — a history call
+      // now would only be aborted client-side while still burning a
+      // Terminal slot server-side.
+      await new Promise((resolve) => setTimeout(resolve, 7_800));
+      return jsonRes({
+        root: 'VIX1D',
+        price: 13.4,
+        prev_close: 12.9,
+        ts: '2026-08-14T15:00:00Z',
+      });
+    });
+    const pending = quotesAdapter('/quotes?symbols=%24VIX1D&fields=quote');
+    await vi.advanceTimersByTimeAsync(7_800);
+    const result = await pending;
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const data = result.data as Record<
+      string,
+      { quote: Record<string, number> }
+    >;
+    expect(data['$VIX1D']!.quote).toMatchObject({
+      lastPrice: 13.4,
+      openPrice: 0,
+      highPrice: 0,
+      lowPrice: 0,
+      closePrice: 12.9,
     });
   });
 });

@@ -32,9 +32,14 @@
  *     shared secret as the /takeit routes), 8s timeout per call, 404 =
  *     no data for that date (holiday / not yet open). The sidecar
  *     serialises these routes (cap 2, 5s wait) and sheds
- *     `503 theta_busy` + Retry-After past that — retried ONCE here
- *     (thetaIndexGetJson); `503 theta_unavailable` (Terminal down) is
- *     not retried and falls to the UW screener where UW carries the root.
+ *     `503 theta_busy` + Retry-After past that. The /pricehistory path
+ *     retries a shed ONCE (thetaIndexGetJson default); the interactive
+ *     quote/chain-spot paths do NOT retry roots the UW screener carries
+ *     (SPX/VIX fall straight to it) and clip every sidecar call for a
+ *     quote symbol to QUOTE_SIDECAR_BUDGET_MS so /api/quotes stays under
+ *     the UI's 10s abort (see the "/api/quotes shed budget" section).
+ *     `503 theta_unavailable` (Terminal down) is never retried and falls
+ *     to the UW screener where UW carries the root.
  *
  *   - Index spot on UW (sidecar fallback for SPX/VIX, primary for NDX)
  *     is the stock SCREENER row (`/screener/stocks?ticker=SPY,{ROOT}`
@@ -42,6 +47,13 @@
  *     returns 422 "not available for index ticker" for EVERY index
  *     root and `/stock/{t}/ohlc/*` 422s on plan permissions, so neither
  *     can serve indices (recon 2026-08-18; see fetchUwIndexState).
+ *     The screener's index `close` is the last OFFICIAL close — prior
+ *     close pre-open, today's after the bell, missing through RTH for NDX
+ *     (2026-08-19: every NDX chain/candle-ratio call failed 13:30→16:00
+ *     ET) — so NDX's live intraday spot comes from UW's always-live
+ *     `/stock/NDX/spot-exposures/strike?limit=1` `price`, the underlying
+ *     rounded to the 5-pt strike grid (±2.5 on ~29,400 ≈ ±0.0085%; see
+ *     UW_SPOT_BUCKET_ROOTS / fetchUwSpotBucket).
  *
  *   - NYSE breadth internals ($TICK/$ADD/$VOLD/$TRIN) and $RUT (UW has
  *     no RUT index price anywhere) have NO replacement source →
@@ -105,6 +117,28 @@ const THETA_BUSY_RETRY_DEFAULT_MS = 1_000;
  * an interactive budget rather than following an arbitrary header.
  */
 const THETA_BUSY_RETRY_MAX_MS = 2_000;
+/**
+ * Wall-clock budget for ONE quote symbol's sidecar work on the
+ * /quotes path (price call, an optional theta_busy retry, the OHL
+ * history derivation). The UI aborts /api/quotes at 10s
+ * (useMarketData.fetchers.ts FETCH_TIMEOUT_MS) and the adapter runs
+ * 5–6 symbols through Promise.allSettled, so the slowest symbol bounds
+ * the whole response. Arithmetic for the shed case: the sidecar holds a
+ * request up to 5s for a Terminal slot before shedding (≈5.3s with
+ * RTT), +1s Retry-After, and the retry is then clipped to what is left
+ * (≤2.2s) → ≤8.5s; the old unclipped retry was 5s + 1s + ≤5s = 11s and
+ * blew the UI budget by itself. 8.5s leaves ~1.5s for the function's
+ * own overhead (guard, JSON) under the 10s abort.
+ */
+const QUOTE_SIDECAR_BUDGET_MS = 8_500;
+/**
+ * Never start a sidecar call with less than this much budget left. A
+ * client-side abort does NOT cancel the sidecar's work — the handler
+ * still queues for a Terminal slot and runs the Theta call for nobody —
+ * so a call that cannot plausibly finish (Vercel→Railway RTT + Terminal
+ * ≈ 0.3–0.5s healthy) only deepens the saturation that shed us.
+ */
+const SIDECAR_MIN_CALL_MS = 1_000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -140,10 +174,15 @@ const SIDECAR_INDEX_ROOTS = new Set(['SPX', 'VIX', 'VIX1D', 'VIX9D', 'VVIX']);
  *     ("You do not have permissions to retrieve OHLC data for index
  *      ticker …" — plan permission)
  *   /stock/{t}/spot-exposures/strike   200     200     200     200
- *     but `price` is the ATM STRIKE bucket (7 distinct SPX values over
- *     a full session, VIX only 15.5/16) — unusable as a spot
+ *     but `price` is the spot rounded to the STRIKE grid (7 distinct
+ *     SPX values over a full session, VIX only 15.5/16) — not a
+ *     precise spot; see UW_SPOT_BUCKET_ROOTS for where it IS good enough
  *   /screener/stocks?ticker=SPY,{t}    close   close   close   NULL
  *     + prev_close/high/low (precise, e.g. SPX 7691.76 / prev 7745.06)
+ *     — but `close` is the last OFFICIAL close: live through RTH for
+ *     SPX (observed 7713.45 at 14:23 ET on 2026-08-19 when the sidecar
+ *     blipped), missing (NULL close or no row) through RTH for NDX —
+ *     the whole 2026-08-19 session
  *
  * Used as the sidecar fallback for SPX/VIX and as the primary source
  * for NDX. RUT is NULL on the screener, max-pain, iv-rank AND realized
@@ -151,6 +190,21 @@ const SIDECAR_INDEX_ROOTS = new Set(['SPX', 'VIX', 'VIX1D', 'VIX9D', 'VVIX']);
  * sidecar-only — the screener has no rows for them.
  */
 const UW_INDEX_ROOTS = new Set(['SPX', 'NDX', 'VIX']);
+
+/**
+ * Index roots whose intraday spot falls back to UW's spot-exposures
+ * strike row (`/stock/{root}/spot-exposures/strike?limit=1` → `price`)
+ * when the screener row has no close. That `price` is the underlying
+ * rounded to the option strike grid, refreshed every minute through
+ * the session (the same always-live preflight fetch-gex-0dte uses for
+ * SPX). NDX's grid is 5 pts on a ~29,400 level (±2.5 ≈ ±0.0085%) —
+ * plenty for the QQQ→NDX candle ratio, the chain's ITM flag and a
+ * quote board. Deliberately NDX-only: SPX/VIX have the sidecar plus a
+ * live screener close, and a 5-pt grid on SPX (±0.03%) is too coarse
+ * for the 0DTE spot /api/chain shows, let alone VIX's 0.5-pt grid on
+ * a ~15 level (±1.7%). See fetchUwSpotBucket.
+ */
+const UW_SPOT_BUCKET_ROOTS = new Set(['NDX']);
 
 /**
  * Equity ticker paired with every index screener request. UW quirk
@@ -184,6 +238,21 @@ class SidecarHttpError extends Error {
 class NoDataError extends Error {}
 
 /**
+ * The interactive per-symbol budget (QUOTE_SIDECAR_BUDGET_MS) left no
+ * room for another sidecar call — the call is skipped rather than
+ * started-and-aborted (see SIDECAR_MIN_CALL_MS). It IS the client-side
+ * deadline firing early, so `mapError` treats it like a timeout (504).
+ */
+class SidecarDeadlineError extends Error {
+  constructor(pathAndQuery: string, remainingMs: number) {
+    super(
+      `Sidecar call skipped: quote budget exhausted (${Math.max(0, Math.round(remainingMs))}ms left) for ${pathAndQuery}`,
+    );
+    this.name = 'SidecarDeadlineError';
+  }
+}
+
+/**
  * Thrown deep in a per-symbol fetch when the symbol has NO source at
  * all (e.g. $RUT — see UW_INDEX_ROOTS). `mapError` turns it into the
  * 501 SOURCE_UNAVAILABLE envelope instead of a 502, so schwab-fetch's
@@ -207,6 +276,7 @@ export function sourceUnavailable(path: string): ApiResult<never> {
 }
 
 function isTimeoutish(err: unknown): boolean {
+  if (err instanceof SidecarDeadlineError) return true;
   if (err instanceof Error) {
     if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
     return /timeout|timed out|ECONNREFUSED|ECONNRESET|ENOTFOUND|fetch failed|socket hang up|network/i.test(
@@ -294,12 +364,15 @@ function parseRetryAfterSec(header: string | null): number | null {
   return Number.isFinite(sec) && sec >= 0 ? sec : null;
 }
 
-async function sidecarGetJson<T>(pathAndQuery: string): Promise<T> {
+async function sidecarGetJson<T>(
+  pathAndQuery: string,
+  timeoutMs: number = SIDECAR_TIMEOUT_MS,
+): Promise<T> {
   const base = sidecarBase();
   const secret = process.env.SIDECAR_TAKEIT_SECRET;
   const res = await fetch(`${base}${pathAndQuery}`, {
     headers: secret ? { Authorization: `Bearer ${secret}` } : {},
-    signal: AbortSignal.timeout(SIDECAR_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (res.status === 404) {
     throw new NoDataError(`Sidecar 404 for ${pathAndQuery}`);
@@ -339,31 +412,81 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Per-call-site shed policy for thetaIndexGetJson. */
+interface ThetaIndexGetOptions {
+  /**
+   * Retry a `503 theta_busy` shed once after Retry-After. Default
+   * true — the /pricehistory path, where a shed date would blank a
+   * whole symbol. The quote/chain-spot paths pass false for roots the
+   * UW screener carries (UW_INDEX_ROOTS): a shed means the Terminal
+   * slots are saturated, and the ≥6s a retry costs (Retry-After + a
+   * second slot wait) buys nothing the screener doesn't already give.
+   */
+  retryBusy?: boolean;
+  /**
+   * Absolute wall-clock deadline (epoch ms) for this call and its
+   * retry. Every attempt's timeout is clipped to the time left; an
+   * attempt that could not get SIDECAR_MIN_CALL_MS is skipped
+   * (SidecarDeadlineError) instead of started-and-aborted, and a retry
+   * that would not fit surfaces the ORIGINAL shed. Unset = each attempt
+   * gets the full SIDECAR_TIMEOUT_MS (the /pricehistory path).
+   */
+  deadlineMs?: number;
+}
+
+/** Timeout for a sidecar call that must finish by `deadlineMs`. */
+function clippedTimeoutMs(deadlineMs: number | undefined, after = 0): number {
+  if (deadlineMs == null) return SIDECAR_TIMEOUT_MS;
+  return Math.min(SIDECAR_TIMEOUT_MS, deadlineMs - Date.now() - after);
+}
+
 /**
  * GET a sidecar /theta/index/* route, retrying ONCE after a
- * `theta_busy` shed (see thetaBusyRetryDelayMs). Each attempt is its
- * own SIDECAR_TIMEOUT_MS-bounded call, so the worst case is two
- * timeouts plus the (≤2s) backoff — acceptable for the interactive
- * callers, and far better than blanking a whole symbol because one
- * date lost the Terminal-slot race. If the retry is shed again the
- * ORIGINAL error surfaces (no loop); anything more specific the retry
- * learns — 404 no-data, Terminal down — is thrown as-is.
+ * `theta_busy` shed (see thetaBusyRetryDelayMs) unless the call site
+ * opted out or the deadline leaves no room. Without a deadline each
+ * attempt is its own SIDECAR_TIMEOUT_MS-bounded call, so the worst
+ * case is two timeouts plus the (≤2s) backoff — fine for /pricehistory,
+ * and far better than blanking a whole symbol because one date lost
+ * the Terminal-slot race. With a deadline (the /quotes path) both
+ * attempts are clipped to it. If the retry is shed again — or the
+ * clipped retry is cut off, which is the same saturation seen from our
+ * side — the ORIGINAL error surfaces (no loop); anything more specific
+ * the retry learns — 404 no-data, Terminal down — is thrown as-is.
  */
-async function thetaIndexGetJson<T>(pathAndQuery: string): Promise<T> {
+async function thetaIndexGetJson<T>(
+  pathAndQuery: string,
+  opts: ThetaIndexGetOptions = {},
+): Promise<T> {
+  const { retryBusy = true, deadlineMs } = opts;
+  const timeoutMs = clippedTimeoutMs(deadlineMs);
+  if (timeoutMs < SIDECAR_MIN_CALL_MS) {
+    throw new SidecarDeadlineError(pathAndQuery, timeoutMs);
+  }
   try {
-    return await sidecarGetJson<T>(pathAndQuery);
+    return await sidecarGetJson<T>(pathAndQuery, timeoutMs);
   } catch (err) {
     const delayMs = thetaBusyRetryDelayMs(err);
-    if (delayMs == null) throw err;
+    if (delayMs == null || !retryBusy) throw err;
+    const retryTimeoutMs = clippedTimeoutMs(deadlineMs, delayMs);
+    if (retryTimeoutMs < SIDECAR_MIN_CALL_MS) {
+      logger.warn(
+        { pathAndQuery, delayMs, retryTimeoutMs },
+        'market-data-adapters: sidecar theta_busy shed, no budget left to retry',
+      );
+      throw err;
+    }
     logger.warn(
       { pathAndQuery, delayMs },
       'market-data-adapters: sidecar theta_busy shed, retrying once',
     );
     await sleep(delayMs);
     try {
-      return await sidecarGetJson<T>(pathAndQuery);
+      return await sidecarGetJson<T>(pathAndQuery, retryTimeoutMs);
     } catch (retryErr) {
-      throw thetaBusyRetryDelayMs(retryErr) == null ? retryErr : err;
+      const stillBusy =
+        thetaBusyRetryDelayMs(retryErr) != null ||
+        (deadlineMs != null && isTimeoutish(retryErr));
+      throw stillBusy ? err : retryErr;
     }
   }
 }
@@ -532,15 +655,51 @@ interface UwIndexState {
 }
 
 /**
+ * UW spot-exposures strike row — only `price` (the underlying rounded
+ * to the strike grid) and the snapshot `time` are read here.
+ */
+interface UwSpotExposureStrikeRow {
+  price?: UwNum;
+  time?: string;
+  date?: string;
+}
+
+/**
+ * Strike-grid-rounded live index spot from
+ * `/stock/{root}/spot-exposures/strike?limit=1` (see
+ * UW_SPOT_BUCKET_ROOTS). `price` is identical on every row of that
+ * response — it is the spot bucket, not the row's strike — so one row
+ * is enough (fetch-gex-0dte's SPX preflight reads it the same way).
+ * Null when the row is missing or unpriced.
+ */
+async function fetchUwSpotBucket(
+  root: string,
+): Promise<{ price: number; time: string | null } | null> {
+  const rows = await uwFetch<UwSpotExposureStrikeRow>(
+    uwKey(),
+    `/stock/${encodeURIComponent(root)}/spot-exposures/strike?limit=1`,
+  );
+  const price = num(rows[0]?.price);
+  if (price == null || price <= 0) return null;
+  return { price, time: rows[0]?.time ?? null };
+}
+
+/**
  * Index spot from the UW stock screener — the only UW endpoint that
  * carries a precise index last + prev close (see UW_INDEX_ROOTS for
  * the per-endpoint recon). The root is always paired with
  * UW_SCREENER_COMPANION because index-only requests come back with
  * NULL close/high/low. No `open` on the screener → callers use 0.
  *
- * A row without a usable close is a plain Error (→ 502): the root IS
- * carried, so an empty close is a transient upstream hiccup, not a
- * missing source.
+ * The screener's index `close` is the last OFFICIAL close and is missing
+ * through RTH for NDX (2026-08-19: every NDX call failed 13:30→16:00
+ * ET while SPX's close stayed live). For UW_SPOT_BUCKET_ROOTS the live
+ * spot then comes from the spot-exposures strike bucket, with prev
+ * close / high / low still taken from the screener row when present.
+ *
+ * A root that ends up without a usable last is a plain Error (→ 502):
+ * the root IS carried, so an empty close is a transient upstream
+ * hiccup, not a missing source.
  */
 async function fetchUwIndexState(root: string): Promise<UwIndexState> {
   const tickers = encodeURIComponent(`${UW_SCREENER_COMPANION},${root}`);
@@ -549,9 +708,32 @@ async function fetchUwIndexState(root: string): Promise<UwIndexState> {
     `/screener/stocks?ticker=${tickers}`,
   );
   const row = rows.find((r) => r.ticker?.toUpperCase() === root);
-  const last = num(row?.close);
+  let last = num(row?.close);
+  if ((last == null || last <= 0) && UW_SPOT_BUCKET_ROOTS.has(root)) {
+    const bucket = await fetchUwSpotBucket(root);
+    if (bucket) {
+      last = bucket.price;
+      // Expected every RTH minute for NDX — info, not warn, and never
+      // more than once per call.
+      logger.info(
+        {
+          root,
+          price: bucket.price,
+          bucketTime: bucket.time,
+          screenerRowPresent: row != null,
+        },
+        'market-data-adapters: screener close missing, using spot-exposures strike bucket',
+      );
+    }
+  }
   if (last == null || last <= 0) {
-    throw new Error(`UW screener: no price for index ${root}`);
+    const why = row ? 'close null' : 'row absent';
+    const bucketNote = UW_SPOT_BUCKET_ROOTS.has(root)
+      ? ', spot-exposures bucket empty'
+      : '';
+    throw new Error(
+      `UW screener: no price for index ${root} (${why}${bucketNote})`,
+    );
   }
   return {
     last,
@@ -570,9 +752,12 @@ interface UnderlyingSpot {
  * Underlying spot + prev close. Sidecar-served index roots hit the
  * sidecar first (Theta index snapshot); on failure the UW-carried ones
  * (SPX/VIX) fall back to the UW screener while sidecar-only roots
- * (VIX1D/VIX9D/VVIX) rethrow. NDX skips the sidecar entirely (not on
- * its allowlist — a call would just burn a 400 + warn log every time)
- * and goes straight to the screener; RUT has no source at all
+ * (VIX1D/VIX9D/VVIX) rethrow. A theta_busy shed is NOT retried for the
+ * UW-carried roots — the screener answers in the time the retry's
+ * backoff alone would take (see ThetaIndexGetOptions.retryBusy). NDX
+ * skips the sidecar entirely (not on its allowlist — a call would just
+ * burn a 400 + warn log every time) and goes straight to the screener
+ * (+ the spot-exposures bucket through RTH); RUT has no source at all
  * (NoSourceError → 501). Equities go to UW stock-state.
  */
 async function fetchUnderlyingSpot(
@@ -585,6 +770,7 @@ async function fetchUnderlyingSpot(
       try {
         const p = await thetaIndexGetJson<SidecarIndexPrice>(
           `/theta/index/price?root=${encodeURIComponent(indexRoot)}`,
+          { retryBusy: !UW_INDEX_ROOTS.has(indexRoot) },
         );
         const last = num(p.price);
         if (last != null && last > 0) {
@@ -980,14 +1166,22 @@ function tradingDatesInRange(
     .slice(-MAX_HISTORY_DATES);
 }
 
+/**
+ * One trading date of RTH index minute candles from the sidecar. The
+ * /pricehistory fan-out uses the default shed policy (retry once, full
+ * per-attempt timeout); the /quotes OHL derivation passes its own
+ * (no retry, clipped to the symbol's budget) — see fetchSidecarIndexQuote.
+ */
 async function fetchIndexDayCandles(
   root: string,
   date: string,
+  opts?: ThetaIndexGetOptions,
 ): Promise<MinuteCandle[]> {
   let day: SidecarIndexHistory;
   try {
     day = await thetaIndexGetJson<SidecarIndexHistory>(
       `/theta/index/history?root=${encodeURIComponent(root)}&date=${date}`,
+      opts,
     );
   } catch (err) {
     if (err instanceof NoDataError) return [];
@@ -1248,13 +1442,26 @@ function buildQuote(
  * RTH-filtered 1-min history. A missing/404 history (pre-open,
  * holiday) degrades to 0s without failing the quote — `lastPrice` is
  * the load-bearing field.
+ *
+ * Shed budget (/api/quotes must answer inside the UI's 10s abort; the
+ * slowest of 5–6 allSettled symbols bounds the response): every
+ * sidecar call for this symbol is clipped to QUOTE_SIDECAR_BUDGET_MS
+ * from entry. The price call retries a theta_busy shed only for
+ * sidecar-only roots (VIX1D/VIX9D/VVIX — the quote is otherwise lost;
+ * SPX/VIX fall straight to the UW screener), and that retry is clipped
+ * to the budget left after the backoff. The OHL derivation never
+ * retries and is skipped outright when less than SIDECAR_MIN_CALL_MS
+ * remains — a shed or a tight budget costs this poll its OHL, never
+ * its lastPrice. Worst case: 5.3s shed + 1s + ≤2.2s retry = 8.5s.
  */
 async function fetchSidecarIndexQuote(
   root: string,
   symbol: string,
 ): Promise<SchwabShapedQuote> {
+  const deadlineMs = Date.now() + QUOTE_SIDECAR_BUDGET_MS;
   const p = await thetaIndexGetJson<SidecarIndexPrice>(
     `/theta/index/price?root=${encodeURIComponent(root)}`,
+    { retryBusy: !UW_INDEX_ROOTS.has(root), deadlineMs },
   );
   const last = num(p.price);
   if (last == null || last <= 0) {
@@ -1268,6 +1475,7 @@ async function fetchSidecarIndexQuote(
       const candles = await fetchIndexDayCandles(
         root,
         getETDateStr(new Date()),
+        { retryBusy: false, deadlineMs },
       );
       const sorted = sanitizeCandles(candles);
       if (sorted.length > 0) {
@@ -1326,7 +1534,8 @@ async function fetchUwIndexQuote(root: string): Promise<SchwabShapedQuote> {
  *     (SPX/VIX); VIX1D/VIX9D/VVIX are sidecar-only and rethrow;
  *   - NDX → UW screener directly (NOT on the sidecar allowlist —
  *     calling it would 400 every time and quotesAdapter has no
- *     per-symbol retry);
+ *     per-symbol retry), with the spot-exposures strike bucket as the
+ *     intraday lastPrice while the screener close is missing (RTH);
  *   - RUT → NoSourceError (UW has no RUT index price; the old
  *     stock-state route 422'd deterministically);
  *   - equities → UW stock-state.
