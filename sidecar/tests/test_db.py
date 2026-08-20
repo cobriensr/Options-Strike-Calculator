@@ -716,6 +716,166 @@ class TestGetConnDeadConnectionHandling:
 
 
 # ---------------------------------------------------------------------------
+# get_conn — per-transaction server-side statement cap (2026-08-20 freezes)
+# ---------------------------------------------------------------------------
+
+
+class TestGetConnStatementTimeout:
+    """The server-side statement cap must ride along on every borrow.
+
+    Applied as `SET LOCAL statement_timeout` inside the transaction that
+    psycopg2 implicitly opens on first execute — NOT as the `options`
+    startup parameter, which Neon's pooler rejects (commit 7def3bce
+    reverted exactly that). SET LOCAL is transaction-scoped, so it also
+    survives PgBouncer transaction pooling, where session-level SET
+    would land on an arbitrary backend.
+    """
+
+    @pytest.fixture
+    def fake_pool_with_conn(self, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock]:
+        """Install a fake pool whose getconn() returns a controllable conn."""
+        conn = MagicMock()
+        conn.closed = 0
+        pool = MagicMock()
+        pool.getconn.return_value = conn
+        monkeypatch.setattr(db, "get_pool", lambda: pool)
+        return pool, conn
+
+    def test_borrow_applies_set_local_statement_timeout(
+        self, fake_pool_with_conn: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """Every borrowed connection gets the cap before the caller's
+        first statement runs."""
+        _pool, conn = fake_pool_with_conn
+        cur = conn.cursor.return_value.__enter__.return_value
+
+        with db.get_conn() as _:
+            # The cap must already be in place while the body runs.
+            cur.execute.assert_called_once_with(
+                "SET LOCAL statement_timeout = %s",
+                (db.STATEMENT_TIMEOUT_MS,),
+            )
+
+    def test_statement_timeout_constant_value(self) -> None:
+        """30s: the largest sidecar statement is a 500-row execute_values
+        page (single-digit seconds worst case on Neon) — >5x headroom.
+        Pin it so a future change is deliberate."""
+        assert db.STATEMENT_TIMEOUT_MS == 30_000
+
+    def test_set_local_failure_on_dead_conn_discards_and_propagates(
+        self,
+        fake_pool_with_conn: tuple[MagicMock, MagicMock],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stale borrow now fails fast AT the SET LOCAL instead of
+        inside the caller's batch. The dead socket must be discarded
+        (putconn close=True) and the error must propagate so the retry
+        helpers can re-borrow fresh."""
+        import psycopg2
+
+        fake_op_error = type("OperationalError", (Exception,), {})
+        monkeypatch.setattr(psycopg2, "OperationalError", fake_op_error)
+
+        pool, conn = fake_pool_with_conn
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.execute.side_effect = fake_op_error("SSL connection has been closed unexpectedly")
+        conn.closed = 2  # libpq marks the connection broken
+
+        with pytest.raises(fake_op_error), db.get_conn() as _:
+            pytest.fail("body must not run when SET LOCAL fails")
+
+        pool.putconn.assert_called_once_with(conn, close=True)
+
+
+# ---------------------------------------------------------------------------
+# QueryCanceled (SQLSTATE 57014, raised by statement_timeout) — must ride
+# the existing retry-once-on-fresh-connection path, not crash a writer
+# thread and not loop forever.
+# ---------------------------------------------------------------------------
+
+
+class TestQueryCanceledRetry:
+    """statement_timeout kills a stalled statement server-side as
+    QueryCanceled. In real psycopg2 (verified against 2.9.12:
+    QueryCanceled -> QueryCanceledError -> OperationalError) it is an
+    OperationalError subclass, so the retry helpers' single
+    `except psycopg2.OperationalError` covers it. conftest mocks
+    psycopg2 session-wide, so these tests install a fake hierarchy that
+    mirrors the real MRO."""
+
+    @pytest.fixture
+    def fake_query_canceled(self, monkeypatch: pytest.MonkeyPatch) -> type[Exception]:
+        """Install FakeQueryCanceled(FakeOperationalError) — the real MRO shape."""
+        import psycopg2
+
+        fake_op_error = type("OperationalError", (Exception,), {})
+        fake_query_canceled = type("QueryCanceled", (fake_op_error,), {})
+        monkeypatch.setattr(psycopg2, "OperationalError", fake_op_error)
+        monkeypatch.setattr(psycopg2.errors, "QueryCanceled", fake_query_canceled)
+        return fake_query_canceled
+
+    def test_batch_query_canceled_retries_once_and_succeeds(
+        self,
+        mock_conn_pool: MagicMock,
+        mock_execute_values: MagicMock,
+        fake_query_canceled: type[Exception],
+    ) -> None:
+        """A one-off server-side cancel (e.g. transient Neon stall) must
+        not drop the in-flight 500-row batch — retry once on a fresh
+        borrow, exactly like the SSL-drop path."""
+        mock_execute_values.side_effect = [
+            fake_query_canceled("canceling statement due to statement timeout"),
+            None,
+        ]
+
+        db._execute_values_batch("INSERT INTO some_table (a) VALUES %s", [(1,)])
+
+        assert mock_execute_values.call_count == 2
+
+    def test_batch_query_canceled_twice_surfaces_no_infinite_loop(
+        self,
+        mock_conn_pool: MagicMock,
+        mock_execute_values: MagicMock,
+        fake_query_canceled: type[Exception],
+    ) -> None:
+        """Two consecutive cancels mean the statement genuinely cannot
+        complete — surface via the existing failure path (caller's
+        capture_exception) after exactly two attempts."""
+        mock_execute_values.side_effect = fake_query_canceled("canceling statement")
+
+        with pytest.raises(fake_query_canceled, match="canceling statement"):
+            db._execute_values_batch("INSERT INTO some_table (a) VALUES %s", [(1,)])
+
+        assert mock_execute_values.call_count == 2
+
+    def test_single_statement_query_canceled_retries_once_and_succeeds(
+        self,
+        mock_conn_pool: MagicMock,
+        fake_query_canceled: type[Exception],
+    ) -> None:
+        mock_conn_pool.execute.side_effect = [
+            fake_query_canceled("canceling statement due to statement timeout"),
+            None,
+        ]
+
+        db._execute_with_retry("INSERT INTO some_table (a) VALUES (%s)", (1,))
+
+        assert mock_conn_pool.execute.call_count == 2
+
+    def test_single_statement_query_canceled_twice_surfaces_no_infinite_loop(
+        self,
+        mock_conn_pool: MagicMock,
+        fake_query_canceled: type[Exception],
+    ) -> None:
+        mock_conn_pool.execute.side_effect = fake_query_canceled("canceling statement")
+
+        with pytest.raises(fake_query_canceled, match="canceling statement"):
+            db._execute_with_retry("INSERT INTO some_table (a) VALUES (%s)", (1,))
+
+        assert mock_conn_pool.execute.call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # get_pool — lazy init + re-init when closed
 # ---------------------------------------------------------------------------
 
@@ -782,13 +942,62 @@ class TestGetPool:
         Without these, Neon idling the pooled connection over the
         Fri-4pm-to-Sun-5pm-CT futures gap raises
         ``OperationalError: SSL connection has been closed unexpectedly``
-        on the first batch after open. See SENTRY-EMERALD-DESERT-6X."""
+        on the first batch after open. See SENTRY-EMERALD-DESERT-6X.
+
+        count=3 (was 5) after the 2026-08-20 consume-loop freezes: a
+        dead peer on an IDLE socket is now declared in ~30 + 10*3 = 60s."""
         db.get_pool()
         kwargs = fake_threaded_pool.call_args.kwargs
         assert kwargs["keepalives"] == 1
-        assert kwargs["keepalives_idle"] == 30
-        assert kwargs["keepalives_interval"] == 10
-        assert kwargs["keepalives_count"] == 5
+        assert kwargs["keepalives_idle"] == db.KEEPALIVES_IDLE_S == 30
+        assert kwargs["keepalives_interval"] == db.KEEPALIVES_INTERVAL_S == 10
+        assert kwargs["keepalives_count"] == db.KEEPALIVES_COUNT == 3
+
+    def test_lazy_init_sets_connect_timeout(
+        self,
+        fake_threaded_pool: MagicMock,
+        fake_settings: None,
+    ) -> None:
+        """2026-08-20 freeze hardening: connection ESTABLISHMENT must be
+        bounded too — without connect_timeout, libpq can block a writer
+        thread indefinitely on a SYN that never gets answered."""
+        db.get_pool()
+        kwargs = fake_threaded_pool.call_args.kwargs
+        assert kwargs["connect_timeout"] == db.CONNECT_TIMEOUT_S == 10
+
+    def test_lazy_init_sets_tcp_user_timeout(
+        self,
+        fake_threaded_pool: MagicMock,
+        fake_settings: None,
+    ) -> None:
+        """The root-cause fix for the 2026-08-20 consume-loop freezes.
+
+        Keepalive probes are only sent on an IDLE socket. Once a query
+        has been written but not ACKed (Neon LB/NAT silently reset the
+        connection), the kernel is in the TCP retransmission path and
+        keepalives never fire — the write blocks for ~15 min (Linux
+        tcp_retries2 default), which matches freeze #1's >=14 min
+        duration. TCP_USER_TIMEOUT is the only knob that caps how long
+        transmitted-but-unACKed data may go unacknowledged before the
+        kernel kills the socket, turning the silent freeze into an
+        OperationalError that the retry helpers already recover from."""
+        db.get_pool()
+        kwargs = fake_threaded_pool.call_args.kwargs
+        assert kwargs["tcp_user_timeout"] == db.TCP_USER_TIMEOUT_MS == 30_000
+
+    def test_lazy_init_never_passes_options_startup_param(
+        self,
+        fake_threaded_pool: MagicMock,
+        fake_settings: None,
+    ) -> None:
+        """Neon's pooler rejects libpq's `options` startup parameter —
+        commit 7def3bce had to revert `options='-c statement_timeout'`
+        in production. The server-side statement cap is applied via
+        `SET LOCAL` per transaction in get_conn instead. Pin that the
+        broken form never sneaks back into the connect kwargs."""
+        db.get_pool()
+        kwargs = fake_threaded_pool.call_args.kwargs
+        assert "options" not in kwargs
 
     def test_returns_same_pool_on_repeated_calls(
         self,

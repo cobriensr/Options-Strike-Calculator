@@ -48,6 +48,50 @@ HEALTH_PROBE_TIMEOUT_S = 2.0
 # stable value across all four batch-insert call sites since SIDE-003.
 _DEFAULT_BATCH_PAGE_SIZE = 500
 
+# --- Dead-connection hardening (2026-08-20 consume-loop freezes) -----------
+#
+# The Databento consume loop froze twice in 13 hours (2026-08-20 01:31Z
+# for >=14 min, losslessly resumed; again ~14:04Z, caught by the
+# watchdog at 306s). Signature both times: no bars written, no heartbeat,
+# no exception, health thread alive, client "connected". Root cause: the
+# psycopg2 connection to Neon died silently (LB/NAT idle reset) and the
+# next synchronous write from the consume loop blocked inside TCP
+# retransmission for ~15 min — the Linux tcp_retries2 default, which
+# matches freeze #1's duration almost exactly. Three bounds, layered:
+#
+# - CONNECT_TIMEOUT_S: caps connection ESTABLISHMENT (libpq, seconds).
+# - KEEPALIVES_*: detect a dead peer while the socket is IDLE. Probes
+#   start after 30s idle; 3 failed probes 10s apart => declared dead in
+#   ~60s (count was 5 / ~80s before the freezes).
+# - TCP_USER_TIMEOUT_MS: the actual fix for the freeze. Keepalive
+#   probes are only sent on an idle socket — once a query has been
+#   written but not ACKed, the kernel is in the retransmission path and
+#   keepalives never fire. TCP_USER_TIMEOUT (libpq >= 12; ms) caps how
+#   long transmitted-but-unACKed data may go unacknowledged before the
+#   kernel kills the socket, turning a 15-minute silent hang into an
+#   OperationalError after 30s that `_execute_with_retry` /
+#   `_execute_values_batch` already recover from on a fresh borrow.
+CONNECT_TIMEOUT_S = 10
+KEEPALIVES_IDLE_S = 30
+KEEPALIVES_INTERVAL_S = 10
+KEEPALIVES_COUNT = 3
+TCP_USER_TIMEOUT_MS = 30_000
+
+# Server-side statement cap, applied per-transaction by `get_conn` via
+# ``SET LOCAL`` — NOT via the ``options`` startup parameter, which
+# Neon's pooler rejects (commit 7def3bce had to revert exactly that
+# form). SET LOCAL is transaction-scoped, so it is also correct under
+# PgBouncer transaction pooling, where a session-level SET would stick
+# to an arbitrary backend. This bounds a statement that reached the
+# server but stalled there (lock wait, pathological plan); the
+# client-side network hang is bounded by TCP_USER_TIMEOUT_MS above.
+# Sizing: the largest sidecar statement is a 500-row execute_values
+# page (Theta EOD upsert / TBBO batch) — single-digit seconds worst
+# case on Neon — so 30s is >5x headroom, and a spurious QueryCanceled
+# is retried once on a fresh connection anyway (it subclasses
+# OperationalError; verified against psycopg2 2.9.12).
+STATEMENT_TIMEOUT_MS = 30_000
+
 
 class PoolTimeoutError(RuntimeError):
     """Raised when `get_conn` fails to borrow a connection in time."""
@@ -68,20 +112,29 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
         # futures gap when the sidecar's pool sits quiet); without
         # keepalives, the first borrow after that gap raises
         # ``OperationalError: SSL connection has been closed unexpectedly``
-        # mid-batch and the in-flight rows are lost. With these settings
-        # the kernel probes every 30s + 10s*5 = ~80s after each idle window,
-        # so the broken socket is detected and the pool's
-        # ``putconn(close=True)`` path can discard it before the next batch.
-        # See SENTRY-EMERALD-DESERT-6X / -2C.
+        # mid-batch and the in-flight rows are lost. Idle death is now
+        # declared in ~30s + 10s*3 = 60s so the pool's
+        # ``putconn(close=True)`` path can discard the broken socket
+        # before the next batch. See SENTRY-EMERALD-DESERT-6X / -2C.
+        #
+        # connect_timeout and tcp_user_timeout bound the two remaining
+        # silent-hang windows (connection establishment; a write already
+        # in flight when the peer died) — the 2026-08-20 freeze fix.
+        # See the constants block above. All of these are CLIENT-side
+        # libpq parameters: they configure the local socket and are
+        # never sent as server startup parameters, so Neon's pooler
+        # (which rejects e.g. ``options``) never sees them.
         _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1,
             maxconn=5,
             dsn=dsn,
             sslmode="require",
+            connect_timeout=CONNECT_TIMEOUT_S,
             keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=5,
+            keepalives_idle=KEEPALIVES_IDLE_S,
+            keepalives_interval=KEEPALIVES_INTERVAL_S,
+            keepalives_count=KEEPALIVES_COUNT,
+            tcp_user_timeout=TCP_USER_TIMEOUT_MS,
         )
         log.info("Database pool created")
     return _pool
@@ -153,6 +206,18 @@ def get_conn(
     pool = get_pool()
     conn = _getconn_with_timeout(pool, timeout_s)
     try:
+        # Server-side statement cap, scoped to this borrow's transaction.
+        # psycopg2 implicitly opens the transaction on this first execute,
+        # so SET LOCAL covers every statement the caller runs before the
+        # commit below — and being transaction-scoped it survives
+        # PgBouncer transaction pooling, unlike the ``options`` startup
+        # parameter Neon's pooler rejects (commit 7def3bce). A stale
+        # borrow also fails fast HERE (OperationalError on a dead
+        # socket) instead of inside the caller's batch, which the
+        # retry helpers treat as a normal reconnect. See the
+        # STATEMENT_TIMEOUT_MS constant for sizing rationale.
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
         yield conn
         conn.commit()
     except Exception:
@@ -259,6 +324,15 @@ def _execute_values_batch(
     the in-flight batch (typically 500 TBBO rows) is lost — only
     ``capture_exception`` is called by the caller, no recovery. See
     SENTRY-EMERALD-DESERT-6X.
+
+    The OperationalError catch deliberately also covers
+    ``psycopg2.errors.QueryCanceled`` (SQLSTATE 57014, raised when
+    ``get_conn``'s statement_timeout kills a stalled statement) and the
+    connection death forced by TCP_USER_TIMEOUT — both subclass
+    OperationalError (verified against psycopg2 2.9.12), so a
+    timeout-killed statement is retried exactly once on a fresh borrow
+    and then surfaces; never an infinite loop, never a crashed writer
+    thread.
     """
     if not rows:
         return
@@ -376,6 +450,11 @@ def _execute_with_retry(sql: str, params: tuple) -> None:
     a stale socket, raises ``OperationalError: SSL connection has been
     closed unexpectedly``, and the in-flight upsert is lost. See
     SENTRY-EMERALD-DESERT-6W.
+
+    Like :func:`_execute_values_batch`, the catch also covers
+    ``psycopg2.errors.QueryCanceled`` (statement_timeout) and
+    TCP_USER_TIMEOUT-killed connections — both OperationalError
+    subclasses — giving them the same retry-once-then-surface shape.
     """
     for attempt in (1, 2):
         try:
