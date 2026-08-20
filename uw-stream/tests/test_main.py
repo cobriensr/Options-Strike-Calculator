@@ -209,6 +209,133 @@ async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "acquire_exc",
+    [
+        # The literal 2026-08-19 incident: Upstash free-tier quota exhausted →
+        # every REST call returns HTTP 400 → acquire raises WsLeaseError → the
+        # daemon crashed, Railway's restarts hit the same error and gave up →
+        # 24h of lost ingestion.
+        ws_lease.WsLeaseError("HTTP 400: ERR max requests limit exceeded"),
+        # Defense in depth: even an UNEXPECTED exception type out of acquire
+        # must fail open — an optional safety net must never kill ingestion.
+        RuntimeError("unexpected lease bug"),
+    ],
+    ids=["ws_lease_error", "unexpected_error"],
+)
+async def test_run_fails_open_when_lease_acquire_hits_infra_error(
+    monkeypatch, acquire_exc
+):
+    """FAIL-OPEN: the lease exists only to guard deploy overlap — it is an
+    optional safety net (the service ran for days with WS_LEASE_ENABLED=false).
+    A lease-INFRASTRUCTURE failure on acquire (quota, HTTP, network — i.e. the
+    call RAISES, as opposed to returning False for "held by another instance")
+    must warn once + Sentry-capture once at WARNING level, then start ingestion
+    anyway: connectors built, no renewal task, no release attempt, and a normal
+    SIGTERM still exits 0.
+    """
+    monkeypatch.setattr(main, "init_sentry", lambda: None)
+
+    async def _noop_pool() -> None:
+        return None
+
+    monkeypatch.setattr(main, "init_pool", _noop_pool)
+    monkeypatch.setattr(main, "close_pool", _noop_pool)
+
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", True, raising=False)
+    monkeypatch.setattr(main.settings, "kv_rest_api_url", "https://t.upstash.io", raising=False)
+    monkeypatch.setattr(main.settings, "kv_rest_api_token", "tok", raising=False)
+
+    fake_session = _FakeLeaseSession()
+    monkeypatch.setattr(main.aiohttp, "ClientSession", lambda *a, **k: fake_session)
+
+    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
+
+    built_connectors: list[object] = []
+
+    class _ForeverConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs.get("name", "conn")
+            built_connectors.append(self)
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    class _ForeverRouter:
+        def __init__(self, *_a, **_k) -> None: ...
+
+        async def run(self, _q) -> None:
+            await asyncio.sleep(3600)
+
+    async def _forever_bg() -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "Connector", _ForeverConnector)
+    monkeypatch.setattr(main, "Router", _ForeverRouter)
+    monkeypatch.setattr(main, "run_server", _forever_bg)
+    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
+
+    renewal_started = {"n": 0}
+    released = {"n": 0}
+
+    class _InfraDeadLease:
+        def __init__(self, **_k) -> None: ...
+
+        async def acquire(self, _t: float) -> bool:
+            raise acquire_exc
+
+        async def run_renewal(self, on_lost) -> None:
+            renewal_started["n"] += 1
+
+        async def release(self) -> bool:
+            released["n"] += 1
+            return False
+
+    monkeypatch.setattr(main, "WsLease", _InfraDeadLease)
+
+    messages: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        main, "capture_message", lambda msg, **kw: messages.append((msg, kw))
+    )
+
+    # Fire the stop Event once _run reaches its asyncio.wait (deterministic
+    # SIGTERM stand-in — same pattern as test_run_exits_zero_on_normal_sigterm).
+    created_events: list[asyncio.Event] = []
+    real_event = asyncio.Event
+
+    def _tracking_event() -> asyncio.Event:
+        ev = real_event()
+        created_events.append(ev)
+        return ev
+
+    monkeypatch.setattr(main.asyncio, "Event", _tracking_event)
+
+    real_wait = asyncio.wait
+
+    async def _wait_then_sigterm(tasks, **kwargs):
+        created_events[-1].set()
+        return await real_wait(tasks, **kwargs)
+
+    monkeypatch.setattr(main.asyncio, "wait", _wait_then_sigterm)
+
+    # No SystemExit: ingestion ran leaseless and the SIGTERM exit is clean (0).
+    await main._run()
+
+    # CRITICAL: ingestion started despite the lease infra failure.
+    assert len(built_connectors) > 0
+    # Fully leaseless run: no renewal task, no release attempt.
+    assert renewal_started["n"] == 0
+    assert released["n"] == 0
+    # The lease's dedicated session was still closed (no leaked pool).
+    assert fake_session.closed is True
+    # Exactly ONE Sentry capture, at WARNING level — an unavailable optional
+    # safety net must not page as an error (the 331e915c principle).
+    assert len(messages) == 1
+    _msg, kw = messages[0]
+    assert kw.get("level") == "warning"
+
+
+@pytest.mark.asyncio
 async def test_run_wires_renewal_task_with_lease_lost_callback(monkeypatch):
     """_run must start the lease renewal task and pass an ``on_lost`` callback
     that sets BOTH the lease_lost flag and the stop Event — so a confirmed

@@ -284,6 +284,25 @@ async def test_release_tolerates_transport_error_does_not_raise() -> None:
     assert lease.owns() is False
 
 
+@pytest.mark.asyncio
+async def test_release_swallows_unexpected_exception() -> None:
+    # Best-effort must mean best-effort for ANY failure, not just the
+    # normalized WsLeaseError: an unexpected exception type (a bug, an
+    # unnormalized runtime error) must also be swallowed — release runs on
+    # the shutdown path and the TTL expires the lease on its own anyway.
+    # (_RaisingSession is defined in the transport-faults section below.)
+    session = _RaisingSession(
+        exceptions=[None, ValueError("unexpected")],
+        ok_payloads=[{"result": "OK"}],
+    )
+    lease = _make_lease(session)
+
+    await lease.acquire(timeout_s=5)
+    assert lease.owns() is True
+    assert await lease.release() is False  # swallowed, no raise
+    assert lease.owns() is False
+
+
 # ----------------------------------------------------------------------
 # run_renewal — fence-on-loss
 # ----------------------------------------------------------------------
@@ -366,58 +385,100 @@ async def test_run_renewal_tolerates_transient_error_then_fences_on_confirmed_lo
     assert len(session.sent) == 4
 
 
-@pytest.mark.asyncio
-async def test_run_renewal_fences_after_ttl_worth_of_consecutive_faults(
+async def _drive_renewal_to_latch(
     monkeypatch,
-) -> None:
-    # If Upstash is unreachable for a full TTL worth of renewals, the lease has
-    # surely lapsed (we couldn't PEXPIRE it) → fence. ttl_ms//renew_ms = 30000//
-    # 10000 = 3 consecutive faults trips it. Two faults alone must NOT fence.
-    errors = [({"error": "down"}, 503)] * 3
-    session = FakeSession(errors)
-    lease = _make_lease(session, renew_ms=10_000)  # ttl 30_000 → 3 faults to fence
+    lease: WsLease,
+) -> tuple[asyncio.Task, list[tuple[str, dict[str, Any]]], dict[str, int]]:
+    """Start ``run_renewal`` with fast sleeps + captured Sentry, spin the loop.
 
-    async def _no_sleep(_d: float) -> None:
-        return None
+    Returns (task, captured capture_message calls, on_lost fire counter).
+    The caller asserts the latch invariants and then cancels the task.
+    """
+    real_sleep = asyncio.sleep
 
-    monkeypatch.setattr("ws_lease.asyncio.sleep", _no_sleep)
+    async def _fast(_d: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr("ws_lease.asyncio.sleep", _fast)
+
+    captured: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "ws_lease.capture_message",
+        lambda msg, **kw: captured.append((msg, kw)),
+    )
 
     fired = {"n": 0}
 
     def _on_lost() -> None:
         fired["n"] += 1
 
-    await lease.run_renewal(_on_lost)
-
-    # Fenced exactly once, after the 3rd consecutive fault (not the 1st or 2nd).
-    assert fired["n"] == 1
-    assert len(session.sent) == 3
+    task = asyncio.create_task(lease.run_renewal(_on_lost))
+    for _ in range(50):
+        await real_sleep(0)
+    return task, captured, fired
 
 
 @pytest.mark.asyncio
-async def test_run_renewal_fault_threshold_clamps_to_one_when_renew_exceeds_ttl(
+async def test_run_renewal_latches_leaseless_after_ttl_worth_of_consecutive_faults(
+    monkeypatch,
+) -> None:
+    # 2026-08-19 incident: the Upstash quota exhausted mid-run ("ERR max
+    # requests limit exceeded") and the ensuing shutdown→restart→acquire-crash
+    # loop lost 24h of ingestion. A lease-INFRASTRUCTURE failure must never
+    # stop consumption: after ttl_ms//renew_ms (=3) consecutive faults the
+    # loop LATCHES leaseless — one Sentry warning, NO on_lost (on_lost =
+    # shutdown trigger), no further Upstash commands — and PARKS (stays
+    # pending: main treats a completed background task as an unexpected
+    # death). Only cancellation at shutdown ends it.
+    errors = [({"error": "ERR max requests limit exceeded"}, 400)] * 3
+    session = FakeSession(errors)  # a 4th POST would IndexError on pop
+    lease = _make_lease(session, renew_ms=10_000)  # ttl 30_000 → 3 faults
+    lease._owns = True  # we held the lease before the outage
+
+    task, captured, fired = await _drive_renewal_to_latch(monkeypatch, lease)
+
+    # All three faulting renewals were attempted, then no more commands.
+    assert len(session.sent) == 3
+    # Parked — neither returned (unexpected-death signal to main) nor crashed.
+    assert task.done() is False
+    # on_lost would route into graceful shutdown — must NOT fire.
+    assert fired["n"] == 0
+    # Exactly one Sentry capture, at WARNING level (an unavailable optional
+    # safety net must not page as an error — the 331e915c principle).
+    assert len(captured) == 1
+    _msg, kw = captured[0]
+    assert kw.get("level") == "warning"
+    # We can no longer claim ownership → release at shutdown must no-op.
+    assert lease.owns() is False
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # Still exactly one capture and zero on_lost after cancellation.
+    assert len(captured) == 1
+    assert fired["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_renewal_latch_threshold_clamps_to_one_when_renew_exceeds_ttl(
     monkeypatch,
 ) -> None:
     # When renew_ms > ttl_ms, ttl_ms // renew_ms == 0; max(1, …) clamps the
-    # fault threshold to 1 so a SINGLE transport fault fences (one missed renew
-    # already means the lease lapsed). Guards the load-bearing max(1, …) clamp.
+    # fault threshold to 1 so a SINGLE transport fault already spans the TTL
+    # → latch leaseless immediately. Guards the load-bearing max(1, …) clamp.
     session = FakeSession([({"error": "down"}, 503)])
     lease = _make_lease(session, renew_ms=40_000)  # > ttl_ms (30_000) → max=1
 
-    async def _no_sleep(_d: float) -> None:
-        return None
+    task, captured, fired = await _drive_renewal_to_latch(monkeypatch, lease)
 
-    monkeypatch.setattr("ws_lease.asyncio.sleep", _no_sleep)
+    assert len(session.sent) == 1  # latched on the very first fault
+    assert task.done() is False  # parked, not returned/crashed
+    assert fired["n"] == 0
+    assert len(captured) == 1
 
-    fired = {"n": 0}
-
-    def _on_lost() -> None:
-        fired["n"] += 1
-
-    await lease.run_renewal(_on_lost)
-
-    assert fired["n"] == 1
-    assert len(session.sent) == 1  # fenced on the very first fault
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.asyncio
