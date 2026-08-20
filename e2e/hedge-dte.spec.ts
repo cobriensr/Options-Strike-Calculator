@@ -1,10 +1,16 @@
 import { test, expect, type Page } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 async function fillAndOpenHedge(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  // VIX Value lives in the default-collapsed Implied Volatility
+  // section — SectionBox unmounts children while collapsed.
+  await expandSection(page, 'Implied Volatility');
+
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('00');
+  await selectMeridiem(page, 'AM');
+  await selectTimezone(page, 'ET');
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
@@ -38,9 +44,9 @@ test.describe('Hedge DTE', () => {
     // DTE label
     await expect(results.getByText('DTE', { exact: true })).toBeVisible();
     // Default is 7d
-    const chip7d = results.getByRole('radio', { name: '7d' });
+    const chip7d = results.getByRole('button', { name: '7d', exact: true });
     await expect(chip7d).toBeVisible();
-    await expect(chip7d).toHaveAttribute('aria-checked', 'true');
+    await expect(chip7d).toHaveAttribute('aria-pressed', 'true');
   });
 
   test('DTE options include 1d, 7d, 14d, 21d', async ({ page }) => {
@@ -48,7 +54,7 @@ test.describe('Hedge DTE', () => {
 
     for (const dte of ['1d', '7d', '14d', '21d']) {
       await expect(
-        results.getByRole('radio', { name: dte, exact: true }),
+        results.getByRole('button', { name: dte, exact: true }),
       ).toBeVisible();
     }
   });
@@ -57,7 +63,7 @@ test.describe('Hedge DTE', () => {
     const results = await fillAndOpenHedge(page);
 
     // Switch to 1d
-    await results.getByRole('radio', { name: '1d', exact: true }).click();
+    await results.getByRole('button', { name: '1d', exact: true }).click();
 
     // 1DTE should not show the recovery breakdown
     await expect(results.getByText(/sell to close at EOD/)).not.toBeVisible();
@@ -76,7 +82,7 @@ test.describe('Hedge DTE', () => {
   test('switching to 14d shows 14DTE in recovery text', async ({ page }) => {
     const results = await fillAndOpenHedge(page);
 
-    await results.getByRole('radio', { name: '14d' }).click();
+    await results.getByRole('button', { name: '14d', exact: true }).click();
     await expect(results.getByText(/14DTE hedge/)).toBeVisible({
       timeout: 2000,
     });
@@ -94,7 +100,7 @@ test.describe('Hedge DTE', () => {
   test('switching to 1d shows "Daily Hedge Cost" label', async ({ page }) => {
     const results = await fillAndOpenHedge(page);
 
-    await results.getByRole('radio', { name: '1d', exact: true }).click();
+    await results.getByRole('button', { name: '1d', exact: true }).click();
     await expect(results.getByText('Daily Hedge Cost')).toBeVisible({
       timeout: 2000,
     });

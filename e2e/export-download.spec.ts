@@ -1,11 +1,17 @@
 import { test, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 async function fillAndGetResults(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  // VIX Value lives in the default-collapsed Implied Volatility
+  // section — SectionBox unmounts children while collapsed.
+  await expandSection(page, 'Implied Volatility');
+
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('00');
+  await selectMeridiem(page, 'AM');
+  await selectTimezone(page, 'ET');
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
@@ -31,7 +37,7 @@ test.describe('Export Download', () => {
 
     const downloadPromise = page.waitForEvent('download');
     await page
-      .getByRole('button', { name: 'Export P&L comparison to Excel' })
+      .getByRole('button', { name: 'Export All Wing Widths to Excel' })
       .click();
     const download = await downloadPromise;
 
@@ -43,7 +49,7 @@ test.describe('Export Download', () => {
 
     const downloadPromise = page.waitForEvent('download');
     await page
-      .getByRole('button', { name: 'Export P&L comparison to Excel' })
+      .getByRole('button', { name: 'Export All Wing Widths to Excel' })
       .click();
     const download = await downloadPromise;
 
@@ -58,7 +64,7 @@ test.describe('Export Download', () => {
 
     const downloadPromise = page.waitForEvent('download');
     await page
-      .getByRole('button', { name: 'Export P&L comparison to Excel' })
+      .getByRole('button', { name: 'Export All Wing Widths to Excel' })
       .click();
     const download = await downloadPromise;
 

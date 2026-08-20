@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 const MOCK_YESTERDAY = {
   yesterday: {
@@ -62,10 +64,14 @@ test.describe('Accessibility with Live Data', () => {
     });
 
     // Set explicit entry time so results render regardless of wall-clock
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
+
+    // Term Structure renders inside the default-collapsed Implied
+    // Volatility section — expand it so the scan covers live-data UI.
+    await expandSection(page, 'Implied Volatility');
 
     // Wait for live-data components to render (Term Structure appears when
     // VIX is set, which auto-fill handles from mock quotes)
@@ -112,6 +118,9 @@ test.describe('Accessibility with Live Data', () => {
   test('IVTooltip is keyboard dismissible', async ({ page }) => {
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
+
+    // The tooltip lives in the default-collapsed Implied Volatility section
+    await expandSection(page, 'Implied Volatility');
 
     // Find the tooltip trigger button (the "?" button for 0DTE adjustment)
     const tooltipTrigger = page.getByRole('button', {

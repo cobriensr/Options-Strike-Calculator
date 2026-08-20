@@ -1,10 +1,16 @@
 import { test, expect, type Page } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 async function fillCalculatorInputs(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  // VIX Value lives in the default-collapsed Implied Volatility
+  // section — SectionBox unmounts children while collapsed.
+  await expandSection(page, 'Implied Volatility');
+
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('00');
+  await selectMeridiem(page, 'AM');
+  await selectTimezone(page, 'ET');
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
@@ -116,11 +122,13 @@ test.describe('Delta Strikes Table', () => {
   });
 
   test('higher VIX produces wider strikes', async ({ page }) => {
+    await expandSection(page, 'Implied Volatility');
+
     // Set entry time first
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     // First: calculate with VIX 15
     await page.getByLabel('SPY Price').fill('679');
@@ -168,7 +176,7 @@ test.describe('Delta Strikes Table', () => {
     await fillCalculatorInputs(page);
 
     await expect(
-      page.getByRole('button', { name: 'Export P&L comparison to Excel' }),
+      page.getByRole('button', { name: 'Export All Wing Widths to Excel' }),
     ).toBeVisible();
   });
 });

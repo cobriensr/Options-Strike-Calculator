@@ -50,9 +50,9 @@ test.describe('Pre-Market Input', () => {
     await expect(section.getByLabel('Globex Close')).toBeVisible();
     await expect(section.getByLabel('Globex VWAP')).toBeVisible();
 
-    // Straddle cone inputs
-    await expect(section.getByLabel('Cone Upper')).toBeVisible();
-    await expect(section.getByLabel('Cone Lower')).toBeVisible();
+    // NOTE: the manual straddle-cone inputs (Cone Upper / Cone Lower)
+    // were removed from PreMarketInput — the cone is now auto-derived by
+    // the compute-cone cron (see src/components/PreMarketInput.tsx docs).
 
     // Save button
     await expect(section.getByRole('button', { name: 'Save' })).toBeVisible();
@@ -134,20 +134,11 @@ test.describe('Pre-Market Input', () => {
     ).toBeVisible({ timeout: 3000 });
   });
 
-  test('cone inputs show range as percentage of cone', async ({ page }) => {
-    const section = page.locator('section[aria-label="Pre-Market Futures"]');
-    await expect(section).toBeVisible({ timeout: 15000 });
-
-    await section.getByLabel('Globex High').fill('6555');
-    await section.getByLabel('Globex Low').fill('6520');
-    await section.getByLabel('Globex Close').fill('6540');
-
-    // Add cone data
-    await section.getByLabel('Cone Upper').fill('6600');
-    await section.getByLabel('Cone Lower').fill('6500');
-
-    // Range = 35 pts, cone = 100 pts, so 35% of cone
-    await expect(section.getByText('O/N Range')).toBeVisible({ timeout: 3000 });
-    await expect(section.getByText(/35.*pts.*35%.*cone/)).toBeVisible();
-  });
+  // The 'cone inputs show range as percentage of cone' test was removed:
+  // manual cone entry (Cone Upper / Cone Lower) no longer exists in the
+  // product — the 0DTE straddle cone is auto-derived by the compute-cone
+  // cron (9:32 ET) and persisted to cone_levels server-side (see the doc
+  // header in src/components/PreMarketInput.tsx). The O/N range preview
+  // itself is still covered by 'entering globex data shows overnight
+  // range preview' above.
 });

@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 /**
  * Tests for input validation: invalid prices, out-of-range VIX,
@@ -8,6 +10,9 @@ test.describe('Input Validation', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
+
+    // VIX Value lives in the default-collapsed Implied Volatility section
+    await expandSection(page, 'Implied Volatility');
   });
 
   test('negative SPY price shows error', async ({ page }) => {
@@ -62,10 +67,10 @@ test.describe('Input Validation', () => {
   test('results appear only when all required fields are valid', async ({
     page,
   }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     const results = page.locator('#results');
 
@@ -86,10 +91,10 @@ test.describe('Input Validation', () => {
   });
 
   test('clearing SPY price removes results', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     // First produce results
     await page.getByLabel('SPY Price').fill('679');

@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { meridiemChip, selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 test.describe('Keyboard Navigation & Accessibility', () => {
   test.beforeEach(async ({ page }) => {
@@ -35,13 +37,17 @@ test.describe('Keyboard Navigation & Accessibility', () => {
   });
 
   test('tab order flows through all input sections', async ({ page }) => {
-    // Tab past the skip link first
-    await page.keyboard.press('Tab');
-    // Skip link is focused; tab again to move into inputs
-    await page.keyboard.press('Tab');
+    // Start the walk at the first input directly. The sidebar nav
+    // (18 section links) plus the header buttons come first in tab
+    // order, so a fixed tab budget from the top of the page never
+    // reaches the inputs; focusing #spot-price keeps the walk
+    // deterministic while still verifying natural Tab flow from SPY
+    // through the Date & Time section to SPX.
+    await page.locator('#spot-price').focus();
+    await expect(page.locator('#spot-price')).toBeFocused();
 
     // Collect ids/labels of focused elements as we tab through
-    // Use 40 tabs to cover date picker + radio chips + inputs
+    // Use 40 tabs to cover date picker + toggle chips + inputs
     const focusedElements: string[] = [];
     for (let i = 0; i < 40; i++) {
       const info = await page.evaluate(() => {
@@ -81,37 +87,41 @@ test.describe('Keyboard Navigation & Accessibility', () => {
     await expect(page.locator('html.dark')).not.toBeAttached();
   });
 
-  test('radio chips respond to keyboard', async ({ page }) => {
-    // The AM/PM radio group in the Entry Time section
-    const amRadio = page.getByRole('radio', { name: 'AM' });
-    const pmRadio = page.getByRole('radio', { name: 'PM' });
+  test('toggle chips respond to keyboard', async ({ page }) => {
+    // The AM/PM toggle chips in the Entry Time section are
+    // <button aria-pressed> toggles (see e2e/helpers/time.ts)
+    const amChip = meridiemChip(page, 'AM');
+    const pmChip = meridiemChip(page, 'PM');
 
     // Explicitly click AM first (don't assume default)
-    await amRadio.click();
-    await expect(amRadio).toHaveAttribute('aria-checked', 'true');
-    await expect(pmRadio).toHaveAttribute('aria-checked', 'false');
+    await selectMeridiem(page, 'AM');
+    await expect(pmChip).toHaveAttribute('aria-pressed', 'false');
 
-    // Click PM to select it via keyboard simulation
-    await pmRadio.focus();
+    // Select PM via keyboard
+    await pmChip.focus();
     await page.keyboard.press('Enter');
-    await expect(pmRadio).toHaveAttribute('aria-checked', 'true');
-    await expect(amRadio).toHaveAttribute('aria-checked', 'false');
+    await expect(pmChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(amChip).toHaveAttribute('aria-pressed', 'false');
 
-    // Click AM back
-    await amRadio.focus();
+    // Select AM back via keyboard
+    await amChip.focus();
     await page.keyboard.press('Enter');
-    await expect(amRadio).toHaveAttribute('aria-checked', 'true');
-    await expect(pmRadio).toHaveAttribute('aria-checked', 'false');
+    await expect(amChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(pmChip).toHaveAttribute('aria-pressed', 'false');
   });
 
   test('input fields have proper labels', async ({ page }) => {
+    // VIX Value / contracts live in default-collapsed sections
+    await expandSection(page, 'Implied Volatility');
+    await expandSection(page, 'Advanced');
+
     // All of these should be findable via getByLabel, which verifies
     // that the inputs have proper associated labels
     await expect(page.getByLabel('SPY Price')).toBeVisible();
     await expect(page.getByLabel(/SPX Price/)).toBeVisible();
     await expect(page.getByLabel('VIX Value')).toBeVisible();
-    await expect(page.getByLabel('Hour')).toBeAttached();
-    await expect(page.getByLabel('Minute')).toBeAttached();
+    await expect(page.getByLabel('Hour', { exact: true })).toBeAttached();
+    await expect(page.getByLabel('Minute', { exact: true })).toBeAttached();
     await expect(
       page
         .locator('section[aria-label="Advanced"]')
@@ -132,10 +142,11 @@ test.describe('Keyboard Navigation & Accessibility', () => {
   });
 
   test('results section has proper ARIA landmarks', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await expandSection(page, 'Implied Volatility');
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     // Fill in valid inputs to produce results
     await page.getByLabel('SPY Price').fill('679');
@@ -148,14 +159,16 @@ test.describe('Keyboard Navigation & Accessibility', () => {
       timeout: 5000,
     });
 
-    // Verify the strike table has role="table" and an aria-label
-    const strikeTable = resultsSection.locator(
-      'table[role="table"][aria-label="Strike prices by delta"]',
-    );
+    // Verify the strike table exposes an accessible name. The name now
+    // comes from an sr-only <caption> ("Strike prices by delta — ...")
+    // inside the labelled 'Delta strikes' section, not an aria-label.
+    const strikeTable = resultsSection
+      .locator('section[aria-label="Delta strikes"]')
+      .getByRole('table', { name: /Strike prices by delta/ });
     await expect(strikeTable).toBeVisible();
-    await expect(strikeTable).toHaveAttribute(
-      'aria-label',
-      'Strike prices by delta',
-    );
+    // The caption itself must be present for screen readers.
+    await expect(
+      strikeTable.locator('caption', { hasText: 'Strike prices by delta' }),
+    ).toBeAttached();
   });
 });

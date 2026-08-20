@@ -38,6 +38,9 @@ const SPIKE_SPY = {
   fwdReturn5m: 0.0018,
   fwdReturn15m: 0.0041,
   fwdReturn30m: 0.0062,
+  // validateSpike (src/hooks/useVegaSpikes.ts) requires fwdReturnEoD to
+  // be present (nullable) — rows without it are silently dropped.
+  fwdReturnEoD: null,
   insertedAt: '2026-04-27T17:00:48.700Z',
 };
 
@@ -56,6 +59,7 @@ const SPIKE_QQQ = {
   fwdReturn5m: null,
   fwdReturn15m: null,
   fwdReturn30m: null,
+  fwdReturnEoD: null,
   insertedAt: '2026-04-27T17:00:18.412Z',
 };
 

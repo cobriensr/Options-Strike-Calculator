@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+import { expandSection } from './helpers/sections';
 
 const SAMPLE_CSV = `\ufeffThis document was exported from the paperMoney platform.
 
@@ -68,6 +69,10 @@ test.describe('PaperMoney Position Upload', () => {
   });
 
   async function uploadChartImage(page: import('@playwright/test').Page) {
+    // Chart Analysis is default-collapsed; the hidden file input only
+    // exists while the section is expanded.
+    await expandSection(page, 'Chart Analysis');
+
     const pngBuffer = createMinimalPNG();
     const tmpImg = path.join(
       os.tmpdir(),
