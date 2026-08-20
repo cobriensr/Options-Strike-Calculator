@@ -799,3 +799,60 @@ describe('PriceChart: ResizeObserver guard', () => {
     globalThis.ResizeObserver = original;
   });
 });
+
+describe('PriceChart: previousClose undefined guard (crash regression)', () => {
+  // Regression: `if (previousClose !== null)` let `undefined` through into
+  // `createPriceLine({ price: undefined })`, which throws inside
+  // lightweight-charts. The guard must be `!= null` per the CLAUDE.md
+  // optional-props policy so undefined and null both mean "no line".
+
+  it('renders with previousClose undefined without creating a price line', () => {
+    // Simulate the real library: createPriceLine throws on a non-finite
+    // price. The guard must prevent the call from ever happening.
+    mockCreatePriceLine.mockImplementation((opts: { price?: number }) => {
+      if (typeof opts.price !== 'number' || !Number.isFinite(opts.price)) {
+        throw new TypeError('Value is undefined');
+      }
+      return {};
+    });
+
+    try {
+      expect(() =>
+        render(
+          <PriceChart
+            candles={[makeCandle()]}
+            previousClose={undefined}
+            score={null}
+            openingCallStrike={null}
+            openingPutStrike={null}
+          />,
+        ),
+      ).not.toThrow();
+
+      // No overlay inputs at all → zero candle-series price lines.
+      expect(mockCreatePriceLine).not.toHaveBeenCalled();
+    } finally {
+      // Restore the shared spy's default behavior for subsequent tests
+      // (vi.clearAllMocks in beforeEach clears calls, not implementations).
+      mockCreatePriceLine.mockReset();
+      mockCreatePriceLine.mockReturnValue({});
+    }
+  });
+
+  it('still draws the prev-close line for a real number alongside undefined-safe guards', () => {
+    render(
+      <PriceChart
+        candles={[makeCandle()]}
+        previousClose={5200}
+        score={null}
+        openingCallStrike={null}
+        openingPutStrike={null}
+      />,
+    );
+
+    expect(mockCreatePriceLine).toHaveBeenCalledTimes(1);
+    expect(mockCreatePriceLine).toHaveBeenCalledWith(
+      expect.objectContaining({ price: 5200, title: 'Prev Close' }),
+    );
+  });
+});

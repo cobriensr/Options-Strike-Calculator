@@ -157,7 +157,19 @@ const GexLandscape = memo(function GexLandscape({
   // landed during a scrub).
   useEffect(() => {
     if (scrubTimestamp != null) return;
-    setLiveTimestamps(timestamps);
+    // Content-equality guard: returning `prev` bails out of the state
+    // update entirely. This is the loop-breaker's second layer — if the
+    // data hook ever hands back a referentially-fresh-but-equal array
+    // again (the pre-fix behavior on a shapeless payload was a new `[]`
+    // every render), this effect must NOT setState → re-render → re-fire
+    // itself until React throws "Maximum update depth exceeded" and the
+    // section ErrorBoundary remounts the panel into the same crash.
+    setLiveTimestamps((prev) =>
+      prev.length === timestamps.length &&
+      prev.every((ts, i) => ts === timestamps[i])
+        ? prev
+        : timestamps,
+    );
   }, [scrubTimestamp, timestamps]);
 
   const timestamp = scrubTimestamp ?? liveTimestamps.at(-1) ?? null;

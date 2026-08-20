@@ -611,3 +611,141 @@ describe('useGexLandscapeData — edge cases', () => {
     expect('naiveDelta30mMap' in result.current).toBe(false);
   });
 });
+
+describe('useGexLandscapeData — malformed payloads (crash regression)', () => {
+  // Regression: a shapeless /api/gex-landscape body (e.g. `{}`, a loosely
+  // parsed HTML error page, or a 5xx JSON blob) used to fabricate a fresh
+  // `[]` for `timestamps` on every render, which re-fired GexLandscape's
+  // liveTimestamps mirror effect each pass → setState loop → "Maximum
+  // update depth exceeded" → ErrorBoundary remount → crash again, forever.
+  // The hook must instead settle into a stable error/empty state.
+
+  it('treats a shapeless {} payload as a stable error state (no throw)', async () => {
+    mockFetch(() => jsonResponse({}));
+
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.timestamps).toEqual([]);
+    expect(result.current.error).toBe(
+      'gex-landscape: unexpected response shape',
+    );
+  });
+
+  it('rejects a payload whose data.strikes is not an array', async () => {
+    mockFetch(() =>
+      jsonResponse(
+        makeResponse({
+          data: { strikes: 'not-an-array', spot: 7340 } as never,
+        }),
+      ),
+    );
+
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.strikes).toEqual([]);
+    expect(result.current.error).toBe(
+      'gex-landscape: unexpected response shape',
+    );
+  });
+
+  it('rejects a payload with no availableMinutes array', async () => {
+    mockFetch(() =>
+      jsonResponse({
+        marketOpen: true,
+        asOf: '2026-05-26T18:40:00.000Z',
+        data: null,
+      }),
+    );
+
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBe(
+      'gex-landscape: unexpected response shape',
+    );
+  });
+
+  it('drops malformed strike rows but keeps valid ones', async () => {
+    mockFetch(() =>
+      jsonResponse(
+        makeResponse({
+          data: {
+            spot: 7340,
+            strikes: [
+              makeRow({ strike: 7350, gamma: 5000 }),
+              { strike: 'oops' } as never,
+              null as never,
+              { strike: 7375 } as never, // missing gamma/charm/vanna
+            ],
+          },
+        }),
+      ),
+    );
+
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.strikes[0]?.strike).toBe(7350);
+  });
+
+  it('returns referentially stable outputs across rerenders after a malformed payload (loop guard)', async () => {
+    mockFetch(() => jsonResponse({}));
+
+    const { result, rerender } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const timestamps1 = result.current.timestamps;
+    const strikes1 = result.current.strikes;
+    const map1 = result.current.gexDelta1mMap;
+
+    rerender();
+
+    // Same references — a consumer effect keyed on these must NOT re-fire.
+    expect(result.current.timestamps).toBe(timestamps1);
+    expect(result.current.strikes).toBe(strikes1);
+    expect(result.current.gexDelta1mMap).toBe(map1);
+  });
+
+  it('returns referentially stable outputs across rerenders on the happy path', async () => {
+    mockFetch(() =>
+      jsonResponse(
+        makeResponse({
+          data: {
+            spot: 7340,
+            strikes: [makeRow({ strike: 7350, gamma: 5000 })],
+          },
+        }),
+      ),
+    );
+
+    const { result, rerender } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const timestamps1 = result.current.timestamps;
+    const strikes1 = result.current.strikes;
+    const map1 = result.current.gexDelta5mMap;
+
+    rerender();
+
+    expect(result.current.timestamps).toBe(timestamps1);
+    expect(result.current.strikes).toBe(strikes1);
+    expect(result.current.gexDelta5mMap).toBe(map1);
+  });
+});
