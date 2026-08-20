@@ -201,4 +201,80 @@ describe('useGammaSetups', () => {
     await waitFor(() => expect(result.current.error).toBeNull());
     expect(result.current.data?.today).toBe('2026-05-21');
   });
+
+  // ── Malformed payloads (client shape hardening) ───────────────
+
+  it('rejects a shapeless {} envelope as an error without throwing', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    const { result } = renderHook(() => useGammaSetups(false));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('unexpected response shape');
+    expect(result.current.data).toBeNull();
+  });
+
+  it('rejects a garbage string body as an error without throwing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse('<!doctype html><h1>502</h1>'),
+    );
+    const { result } = renderHook(() => useGammaSetups(false));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('unexpected response shape');
+    expect(result.current.data).toBeNull();
+  });
+
+  it('drops malformed fire rows and keeps the valid ones', async () => {
+    const validFire = {
+      id: 1,
+      fired_at: '2026-05-21T14:30:00Z',
+      signal_type: 'e1_long_call',
+      dow_label: 'Thursday',
+      confidence_tier: 'MEDIUM',
+      spot_at_fire: 7401,
+      node_strike: 7400,
+      node_gex: 300_000,
+      bar_open: 7395,
+      bar_high: 7402,
+      bar_low: 7394,
+      bar_close: 7401,
+      bar_range: 8,
+      es_basis_change_5m: 0.5,
+      ret_15m: null,
+      ret_30m: null,
+      ret_60m: null,
+      ret_eod: null,
+      trade_taken: false,
+      trade_pnl_dollars: null,
+    };
+    const fires = [
+      validFire,
+      { unexpected: true },
+      { ...validFire, id: 2, node_strike: 'not-a-number' },
+    ] as unknown as GammaSetupsResponse['fires'];
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeResponse({ fires })));
+
+    const { result } = renderHook(() => useGammaSetups(false));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.fires).toHaveLength(1);
+    expect(result.current.data?.fires[0]?.id).toBe(1);
+  });
+
+  it('keeps prior data when a refresh returns a malformed envelope', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(makeResponse()))
+      .mockResolvedValueOnce(jsonResponse({}));
+
+    const { result } = renderHook(() => useGammaSetups(false));
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+    await waitFor(() =>
+      expect(result.current.error).toBe('unexpected response shape'),
+    );
+    // Last-known-good data stays on screen (matches the non-2xx behavior).
+    expect(result.current.data?.today).toBe('2026-05-21');
+  });
 });

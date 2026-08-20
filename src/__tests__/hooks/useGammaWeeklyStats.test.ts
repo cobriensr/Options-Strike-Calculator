@@ -205,4 +205,41 @@ describe('useGammaWeeklyStats', () => {
     await waitFor(() => expect(result.current.error).toBeNull());
     expect(result.current.data?.n_total).toBe(99);
   });
+
+  // ── Malformed payloads (client shape hardening) ───────────────
+
+  it('rejects a shapeless {} envelope as an error without throwing', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    const { result } = renderHook(() => useGammaWeeklyStats(30, false));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('unexpected response shape');
+    expect(result.current.data).toBeNull();
+  });
+
+  it('rejects a garbage string body as an error without throwing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse('<!doctype html><h1>502</h1>'),
+    );
+    const { result } = renderHook(() => useGammaWeeklyStats(30, false));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('unexpected response shape');
+    expect(result.current.data).toBeNull();
+  });
+
+  it('drops malformed by_signal rows and keeps the valid ones', async () => {
+    const valid = makeStats();
+    const by_signal = [
+      valid.by_signal[0],
+      { bogus: 1 },
+      { ...valid.by_signal[1], n_total: 'x' },
+    ] as unknown as AggregateStats['by_signal'];
+    fetchMock.mockResolvedValueOnce(jsonResponse(makeStats({ by_signal })));
+
+    const { result } = renderHook(() => useGammaWeeklyStats(30, false));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.by_signal).toHaveLength(1);
+    expect(result.current.data?.by_signal[0]?.signal_type).toBe('e1_long_call');
+  });
 });

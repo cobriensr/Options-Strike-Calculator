@@ -209,4 +209,66 @@ describe('usePeriscopeLotteryFeed', () => {
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
+
+  // ── Malformed payloads (client shape hardening) ───────────────
+
+  it('rejects a shapeless {} envelope as an error without throwing', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    const { result } = renderHook(() =>
+      usePeriscopeLotteryFeed({ date: '2026-05-18', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('unexpected response shape');
+    expect(result.current.fires).toEqual([]);
+  });
+
+  it('rejects a garbage string body as an error without throwing', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse('<!doctype html><h1>502</h1>'),
+    );
+    const { result } = renderHook(() =>
+      usePeriscopeLotteryFeed({ date: '2026-05-18', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBe('unexpected response shape');
+    expect(result.current.fires).toEqual([]);
+  });
+
+  it('drops malformed fire rows and keeps the valid ones', async () => {
+    const fires = [
+      sampleFire(),
+      { unexpected: true },
+      { ...sampleFire({ id: 2 }), tradeStrike: 'not-a-number' },
+    ] as unknown as PeriscopeLotteryFire[];
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(emptyFeed({ count: fires.length, fires })),
+    );
+
+    const { result } = renderHook(() =>
+      usePeriscopeLotteryFeed({ date: '2026-05-18', marketOpen: false }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.fires).toHaveLength(1);
+    expect(result.current.fires[0]?.id).toBe(1);
+  });
+
+  it('keeps the fires reference stable across rerenders', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(emptyFeed({ count: 1, fires: [sampleFire()] })),
+    );
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) =>
+        usePeriscopeLotteryFeed({ date: '2026-05-18', marketOpen: open }),
+      { initialProps: { open: false } },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const first = result.current.fires;
+    rerender({ open: false });
+    // No new fetch, no fabricated array — the same reference survives the
+    // rerender (the GexLandscape render-loop lesson).
+    expect(result.current.fires).toBe(first);
+  });
 });

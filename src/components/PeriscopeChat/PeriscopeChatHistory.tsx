@@ -60,6 +60,113 @@ interface DateEntry {
 type ModeFilter = 'all' | 'pre_trade' | 'intraday' | 'debrief';
 
 // ============================================================
+// Response validation
+// ============================================================
+//
+// Mirrors the `validateSpike` pattern in useVegaSpikes: each row is
+// validated individually (a malformed row is dropped, never fatal),
+// while a malformed envelope (`{}`, a 5xx JSON blob, a loosely-parsed
+// HTML error body) collapses to an empty list so the panel settles
+// into its normal empty state instead of throwing `undefined.length`
+// into the section ErrorBoundary.
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function isNullableFiniteNumber(v: unknown): v is number | null {
+  return v === null || isFiniteNumber(v);
+}
+
+const ROW_MODES: ReadonlySet<string> = new Set([
+  'pre_trade',
+  'intraday',
+  'debrief',
+]);
+
+/** Validate one date-aggregation entry; null on any shape mismatch. */
+function validateDateEntry(raw: unknown): DateEntry | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.date !== 'string' ||
+    !isFiniteNumber(r.total) ||
+    !isFiniteNumber(r.reads) ||
+    !isFiniteNumber(r.debriefs)
+  ) {
+    return null;
+  }
+  return {
+    date: r.date,
+    total: r.total,
+    reads: r.reads,
+    // Optional per-mode counts — a legacy envelope may omit them
+    // (dateCount falls back to 0), but a present-and-garbage value
+    // degrades to absent rather than poisoning the dropdown.
+    pre_trades: isFiniteNumber(r.pre_trades) ? r.pre_trades : undefined,
+    intradays: isFiniteNumber(r.intradays) ? r.intradays : undefined,
+    debriefs: r.debriefs,
+  };
+}
+
+/** Validate one history summary row; null on any shape mismatch. */
+function validateSummaryRow(raw: unknown): PeriscopeChatSummary | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.id) ||
+    typeof r.trading_date !== 'string' ||
+    typeof r.captured_at !== 'string' ||
+    typeof r.mode !== 'string' ||
+    !ROW_MODES.has(r.mode) ||
+    !isNullableFiniteNumber(r.parent_id) ||
+    !isNullableFiniteNumber(r.spot) ||
+    !isNullableFiniteNumber(r.long_trigger) ||
+    !isNullableFiniteNumber(r.short_trigger) ||
+    (r.regime_tag !== null && typeof r.regime_tag !== 'string') ||
+    !isNullableFiniteNumber(r.calibration_quality) ||
+    typeof r.prose_excerpt !== 'string' ||
+    !isNullableFiniteNumber(r.duration_ms)
+  ) {
+    return null;
+  }
+  return {
+    id: r.id,
+    trading_date: r.trading_date,
+    captured_at: r.captured_at,
+    mode: r.mode as PeriscopeRowMode,
+    parent_id: r.parent_id,
+    spot: r.spot,
+    long_trigger: r.long_trigger,
+    short_trigger: r.short_trigger,
+    regime_tag: r.regime_tag,
+    calibration_quality: r.calibration_quality,
+    prose_excerpt: r.prose_excerpt,
+    duration_ms: r.duration_ms,
+  };
+}
+
+/**
+ * Pull `envelope[key]` as an array and validate each row, dropping
+ * the malformed ones. A malformed envelope returns `[]`.
+ */
+function validateListEnvelope<T>(
+  raw: unknown,
+  key: string,
+  validateRow: (row: unknown) => T | null,
+): T[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const list = (raw as Record<string, unknown>)[key];
+  if (!Array.isArray(list)) return [];
+  const out: T[] = [];
+  for (const row of list) {
+    const valid = validateRow(row);
+    if (valid != null) out.push(valid);
+  }
+  return out;
+}
+
+// ============================================================
 // Formatters & style maps
 // ============================================================
 
@@ -219,9 +326,12 @@ export default function PeriscopeChatHistory() {
           if (!ac.signal.aborted) setDatesError('Failed to load dates');
           return;
         }
-        const data = (await res.json()) as { dates: DateEntry[] };
+        const data: unknown = await res.json();
         if (ac.signal.aborted) return;
-        setDates(data.dates);
+        // Envelope + row validation — a malformed body ({} from a 5xx,
+        // an HTML error page parsed loosely) becomes the empty state,
+        // and a bad row is dropped rather than poisoning the dropdown.
+        setDates(validateListEnvelope(data, 'dates', validateDateEntry));
         // Date is left unselected by default — the dropdown shows
         // "Select a date..." and the user picks. Mirrors the analysis-
         // history pattern so both panels behave the same.
@@ -254,9 +364,10 @@ export default function PeriscopeChatHistory() {
           };
           throw new Error(body.error ?? `HTTP ${res.status}`);
         }
-        const data = (await res.json()) as { items: PeriscopeChatSummary[] };
+        const data: unknown = await res.json();
         if (ac.signal.aborted) return;
-        setItems(data.items);
+        // Same envelope + row validation as the dates fetch above.
+        setItems(validateListEnvelope(data, 'items', validateSummaryRow));
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
         setError(err instanceof Error ? err.message : 'Failed to load');

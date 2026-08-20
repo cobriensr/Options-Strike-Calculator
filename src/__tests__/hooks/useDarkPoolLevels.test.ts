@@ -866,3 +866,145 @@ describe('useDarkPoolLevels: abort', () => {
     expect(abortRef.signal?.aborted).toBe(true);
   });
 });
+
+// ============================================================
+// MALFORMED PAYLOADS (client shape hardening 2026-08-20)
+// ============================================================
+
+describe('useDarkPoolLevels: malformed payloads', () => {
+  it('treats a shapeless {} payload as a grace-counted failure (levels stay an array)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // First miss is grace-swallowed — no error banner, levels still [].
+    expect(result.current.levels).toEqual([]);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('surfaces the error banner after FAIL_GRACE_COUNT consecutive shapeless payloads', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL);
+    });
+
+    await waitFor(() =>
+      expect(result.current.error).toBe('Failed to load dark pool data'),
+    );
+    expect(result.current.levels).toEqual([]);
+  });
+
+  it('treats a non-array `levels` field as a malformed envelope', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ levels: 'nope', date: '2026-04-02' }),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.levels).toEqual([]);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('drops malformed rows and keeps valid ones', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        levels: [
+          makeLevel(),
+          // level arrives as a string — dropped.
+          { ...makeLevel({ level: 6590 }), level: '6590' },
+          null,
+          42,
+          makeLevel({ level: 6600 }),
+          // Price levels can never be 0 — dropped.
+          makeLevel({ level: 0 }),
+        ],
+        date: '2026-04-02',
+      }),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+
+    await waitFor(() => expect(result.current.levels).toHaveLength(2));
+    expect(result.current.levels.map((l) => l.level)).toEqual([6575, 6600]);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('keeps previously loaded levels (same reference) when a poll returns a bad envelope', async () => {
+    const todayET = new Date().toLocaleDateString('en-CA', {
+      timeZone: 'America/New_York',
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        levels: [makeLevel()],
+        date: todayET,
+      }),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await waitFor(() => expect(result.current.levels).toHaveLength(1));
+    const before = result.current.levels;
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL);
+    });
+    await waitFor(() => expect(mockFetch.mock.calls.length).toBeGreaterThan(1));
+
+    // Stale-but-rendered beats clobbered: the prior payload survives.
+    expect(result.current.levels).toBe(before);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('ignores a non-string meta.lastUpdated and falls back to levels[0].updatedAt', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        levels: [makeLevel({ updatedAt: '2026-04-02T17:00:00Z' })],
+        date: '2026-04-02',
+        meta: { lastUpdated: 12345 },
+      }),
+    });
+
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+
+    await waitFor(() =>
+      expect(result.current.fetchedAt).toBe(Date.parse('2026-04-02T17:00:00Z')),
+    );
+  });
+
+  it('returns the same levels reference across rerenders (no per-render fabrication)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ levels: [makeLevel()], date: '2026-04-02' }),
+    });
+
+    const { result, rerender } = renderHook(() => useDarkPoolLevels(true));
+    await waitFor(() => expect(result.current.levels).toHaveLength(1));
+    const before = result.current.levels;
+
+    rerender();
+
+    expect(result.current.levels).toBe(before);
+  });
+});
