@@ -59,11 +59,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         DB_RETRY_ATTEMPTS,
         DB_RETRY_TIMEOUT_MS,
       );
-      setCacheHeaders(res, 120, 60);
       if (rows.length > 0 && rows[0]?.pre_market_data) {
+        setCacheHeaders(res, 120, 60);
         done({ status: 200 });
         return res.status(200).json({ data: rows[0].pre_market_data });
       }
+      // No row yet (pre-open). Do NOT edge-cache the null response: the
+      // auto-prefill cron writes at the 8:30 AM CT open, and a cached
+      // `{ data: null }` would keep the panel empty for minutes after
+      // the data exists.
+      res.setHeader('Cache-Control', 'no-store');
       done({ status: 200 });
       return res.status(200).json({ data: null });
     } catch (err) {
