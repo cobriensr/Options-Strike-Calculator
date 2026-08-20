@@ -326,3 +326,115 @@ describe('usePeriscopeStrikes', () => {
     await waitFor(() => expect(aborts[0]?.aborted).toBe(true));
   });
 });
+
+// ── Malformed payload validation ─────────────────────────────
+// Both parses used to be `(await res.json()) as PeriscopeStrikesResponse`,
+// so a shapeless body reached the GexTarget MM-overlay memo and threw
+// "strikes is not iterable" (src/components/GexTarget/index.tsx:134).
+
+describe('usePeriscopeStrikes: malformed payloads', () => {
+  it('reports a shape error on a {} latest-slot body', async () => {
+    mockFetch(() => jsonResponse({}));
+
+    const { result } = renderHook(() =>
+      usePeriscopeStrikes(false, '2026-05-12'),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+    expect(result.current.latest).toBeNull();
+  });
+
+  it('reports a shape error when strikes arrives as a non-iterable object', async () => {
+    mockFetch(() => jsonResponse(makeResponse({ strikes: { a: 1 } } as never)));
+
+    const { result } = renderHook(() =>
+      usePeriscopeStrikes(false, '2026-05-12'),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+    expect(result.current.latest).toBeNull();
+  });
+
+  it('reports a shape error on an HTML-ish string body', async () => {
+    mockFetch(() => jsonResponse('<!doctype html><html>oops</html>'));
+
+    const { result } = renderHook(() =>
+      usePeriscopeStrikes(false, '2026-05-12'),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+    expect(result.current.latest).toBeNull();
+  });
+
+  it('drops malformed strike rows and keeps the valid ones', async () => {
+    mockFetch(() =>
+      jsonResponse(
+        makeResponse({
+          strikes: [
+            { strike: 7350, gamma: 5000, charm: -400_000 },
+            'garbage',
+            { strike: 'oops', gamma: 1, charm: 1 },
+            { strike: 7375, gamma: null, charm: 1 },
+          ],
+        } as never),
+      ),
+    );
+
+    const { result } = renderHook(() =>
+      usePeriscopeStrikes(false, '2026-05-12'),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.latest?.strikes).toEqual([
+      { strike: 7350, gamma: 5000, charm: -400_000 },
+    ]);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('keeps the valid latest slot when only a lookback slot is malformed', async () => {
+    mockFetch((url) =>
+      url.includes('time=') ? jsonResponse({}) : jsonResponse(makeResponse()),
+    );
+
+    const { result } = renderHook(() =>
+      usePeriscopeStrikes(false, '2026-05-12'),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    // `setLatest` already ran before the lookbacks were requested, so the
+    // MM overlay keeps its data; only the Δ% maps are unavailable.
+    expect(result.current.latest?.strikes).toHaveLength(2);
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+    expect(result.current.prior10m).toBeNull();
+    expect(result.current.prior30m).toBeNull();
+  });
+
+  it('accepts the no-slot 200 payload (empty strikes, slot list present)', async () => {
+    // Faithfulness guard: the handler's `slot == null` branch returns
+    // `strikes: []` with a populated `availableSlots` — validation must not
+    // treat that legitimate quiet-period payload as a shape error.
+    mockFetch(() =>
+      jsonResponse({
+        marketOpen: false,
+        asOf: '2026-05-12T18:45:00.000Z',
+        capturedAt: null,
+        priorCapturedAt: null,
+        spot: 7340,
+        strikes: [],
+        availableSlots: ['2026-05-12T18:10:00.000Z'],
+      }),
+    );
+
+    const { result } = renderHook(() =>
+      usePeriscopeStrikes(false, '2026-05-12'),
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.latest?.strikes).toEqual([]);
+    expect(result.current.prior10m).toBeNull();
+  });
+});

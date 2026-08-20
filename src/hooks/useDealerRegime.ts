@@ -43,6 +43,100 @@ export interface UseDealerRegimeReturn {
   refresh: () => void;
 }
 
+// ── Validation ─────────────────────────────────────────────
+//
+// Row-level validation at the parse (client-shape-hardening-2026-08-20,
+// follow-up sweep). The previous `(await res.json()) as
+// DealerRegimeResponse` identity cast let a malformed envelope reach the
+// tile's classification loop, which died two ways:
+//   - `rows` a non-array object → "object is not iterable" at
+//     DealerRegimeTile/index.tsx `for (const r of data.rows)`
+//   - a null/garbage element   → "Cannot read properties of null
+//     (reading 'ticker')" one line later
+// Invalid rows are now dropped; an invalid envelope throws into the
+// hook's existing catch, which sets `error` and keeps the last-known-good
+// `data` — the same behaviour as a non-2xx response.
+//
+// Field policy, checked against api/_lib/db-dealer-regime.ts `mapRow`
+// and the `zero_gamma_levels` DDL (migration 82):
+//   REQUIRED  ticker (TEXT NOT NULL, and the endpoint's WHERE clause
+//             restricts it to ZERO_GAMMA_TICKERS = the union below),
+//             ts (TIMESTAMPTZ NOT NULL → `toIso` always yields a string),
+//             spot (NUMERIC NOT NULL → `Number(...)` always finite)
+//   DEGRADED  zeroGamma / confidence / netGammaAtSpot — all nullable
+//             columns run through `parseNumOrNull`, so anything that
+//             isn't a finite number is normalized to null (the shape
+//             `classify` and `Cell` already render as "—" / uncertain)
+//   COERCED   date / at — echo the query params and are absent entirely
+//             when unset; asOf is informational and unread by the tile
+
+const DEALER_REGIME_TICKERS: readonly DealerRegimeRow['ticker'][] = [
+  'SPX',
+  'SPY',
+  'QQQ',
+];
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/** Nullable numeric column: finite number passes through, else null. */
+function toNullableNumber(v: unknown): number | null {
+  return isFiniteNumber(v) ? v : null;
+}
+
+function isDealerRegimeTicker(v: unknown): v is DealerRegimeRow['ticker'] {
+  return (DEALER_REGIME_TICKERS as readonly unknown[]).includes(v);
+}
+
+function validateRow(raw: unknown): DealerRegimeRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isDealerRegimeTicker(r.ticker) ||
+    typeof r.ts !== 'string' ||
+    !isFiniteNumber(r.spot)
+  ) {
+    return null;
+  }
+  return {
+    ticker: r.ticker,
+    ts: r.ts,
+    spot: r.spot,
+    zeroGamma: toNullableNumber(r.zeroGamma),
+    confidence: toNullableNumber(r.confidence),
+    netGammaAtSpot: toNullableNumber(r.netGammaAtSpot),
+  };
+}
+
+/**
+ * Validate the full envelope. Returns the typed response on success, or
+ * `null` when the body is not an object or `rows` is not an array — the
+ * caller turns that into the hook's error path. Invalid rows are
+ * dropped, never fatal.
+ */
+function validateDealerRegimeResponse(
+  raw: unknown,
+): DealerRegimeResponse | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.rows)) return null;
+
+  const rows: DealerRegimeRow[] = [];
+  for (const candidate of r.rows) {
+    const row = validateRow(candidate);
+    if (row) rows.push(row);
+  }
+  return {
+    date: typeof r.date === 'string' ? r.date : null,
+    at: typeof r.at === 'string' ? r.at : null,
+    rows,
+    asOf: typeof r.asOf === 'string' ? r.asOf : '',
+  };
+}
+
 async function fetchDealerRegime(
   date: string | null,
   at: string | null,
@@ -62,7 +156,15 @@ async function fetchDealerRegime(
     if (res.status === 401) return null;
     throw new Error(`dealer-regime: HTTP ${res.status}`);
   }
-  return (await res.json()) as DealerRegimeResponse;
+  const parsed = validateDealerRegimeResponse(await res.json());
+  if (parsed == null) {
+    // Shapeless body ({} / loosely-parsed HTML / 5xx JSON blob). Throwing
+    // routes it through the same catch a non-2xx uses, so the tile keeps
+    // whatever it last rendered and surfaces the error instead of
+    // crashing into the section ErrorBoundary.
+    throw new Error('dealer-regime: unexpected response shape');
+  }
+  return parsed;
 }
 
 export function useDealerRegime(

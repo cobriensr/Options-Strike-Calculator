@@ -44,6 +44,85 @@ interface ApiResponse {
   history: ZeroGammaRow[];
 }
 
+// ── Validation ─────────────────────────────────────────────
+//
+// Row-level validation at the parse (client-shape-hardening-2026-08-20,
+// follow-up sweep). The previous `(await res.json()) as ApiResponse`
+// identity cast handed `latest` / `history` straight to TickerCard,
+// which died two ways:
+//   - `latest` a shapeless object → "Cannot read properties of undefined
+//     (reading 'toLocaleString')" in TickerCard's `fmtNumber(spot)`
+//   - a null/garbage history element → "Cannot read properties of null
+//     (reading 'ts')" in the sparkline's `.sort()` comparator
+// Invalid history rows are now dropped and an invalid `latest` degrades
+// to null (the "No data yet" state the card already renders). An invalid
+// envelope takes the hook's existing non-2xx path: set `error`, keep the
+// last-known-good rows.
+//
+// Field policy, checked against api/zero-gamma.ts `mapRow` and the
+// `zero_gamma_levels` DDL (migration 82):
+//   REQUIRED  ticker (TEXT NOT NULL), ts (TIMESTAMPTZ NOT NULL → `toIso`
+//             always yields a string, and the sparkline sorts on it),
+//             spot (NUMERIC NOT NULL → `Number(...)` always finite, and
+//             it is both plotted and formatted unguarded)
+//   DEGRADED  zeroGamma / confidence / netGammaAtSpot — nullable columns
+//             run through `parseNumOrNull`, so non-finite → null
+//   PASSTHRU  gammaCurve — a JSONB column typed `unknown` here; it is
+//             deliberately NOT shape-checked, since any JSON value
+//             (including null) is legitimate
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/** Nullable numeric column: finite number passes through, else null. */
+function toNullableNumber(v: unknown): number | null {
+  return isFiniteNumber(v) ? v : null;
+}
+
+function validateRow(raw: unknown): ZeroGammaRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.ticker !== 'string' ||
+    typeof r.ts !== 'string' ||
+    !isFiniteNumber(r.spot)
+  ) {
+    return null;
+  }
+  return {
+    ticker: r.ticker,
+    spot: r.spot,
+    zeroGamma: toNullableNumber(r.zeroGamma),
+    confidence: toNullableNumber(r.confidence),
+    netGammaAtSpot: toNullableNumber(r.netGammaAtSpot),
+    gammaCurve: r.gammaCurve,
+    ts: r.ts,
+  };
+}
+
+/**
+ * Validate the full envelope. Returns the typed response on success, or
+ * `null` when the body is not an object or `history` is not an array —
+ * the caller turns that into the hook's error path. A malformed `latest`
+ * degrades to null rather than failing the envelope, because `latest:
+ * null` is a legitimate server state (no rows for the ticker yet).
+ */
+function validateZeroGammaResponse(raw: unknown): ApiResponse | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.history)) return null;
+
+  const history: ZeroGammaRow[] = [];
+  for (const candidate of r.history) {
+    const row = validateRow(candidate);
+    if (row) history.push(row);
+  }
+  return { latest: validateRow(r.latest), history };
+}
+
 export function useZeroGamma(
   ticker: string,
   marketOpen: boolean,
@@ -83,9 +162,17 @@ export function useZeroGamma(
         return;
       }
 
-      const data = (await res.json()) as ApiResponse;
+      const data = validateZeroGammaResponse(await res.json());
       if (!mountedRef.current) return;
       if (ctrl.signal.aborted) return;
+
+      if (data == null) {
+        // Shapeless body ({} / loosely-parsed HTML / 5xx JSON blob) —
+        // same treatment as a non-2xx: surface the error, keep whatever
+        // rows the cards are already showing.
+        setError('Failed to load zero-gamma data');
+        return;
+      }
 
       setLatest(data.latest);
       setHistory(data.history);

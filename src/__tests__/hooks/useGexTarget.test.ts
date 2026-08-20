@@ -1298,3 +1298,211 @@ describe('useGexTarget: hoisted CT session formatter', () => {
     expect(result.current.candles.map((c) => c.close)).toEqual([2, 3]);
   });
 });
+
+// ============================================================
+// MALFORMED PAYLOAD VALIDATION
+// ============================================================
+// Both parses used to be identity casts, so a shapeless body reached the
+// render pass and threw inside `selectTarget` / `useScrubController`.
+
+describe('useGexTarget: malformed bulk payload', () => {
+  it('reports a shape error on a {} bulk body without clobbering state', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+    expect(result.current.oi).toBeNull();
+    expect(result.current.timestamps).toEqual([]);
+    expect(result.current.availableDates).toEqual([]);
+  });
+
+  it('reports a shape error when the envelope arrays arrive as objects', async () => {
+    // The pre-fix crash: `timestamps.at(-1)` inside useScrubController.
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        availableDates: { a: 1 },
+        date: '2026-04-02',
+        timestamps: { b: 2 },
+        candles: [],
+        previousClose: null,
+        snapshots: [],
+      }),
+    });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+    expect(result.current.timestamps).toEqual([]);
+  });
+
+  it('reports a shape error on an HTML-ish string body', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => '<!doctype html><html>oops</html>',
+    });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+  });
+
+  it('accepts a bulk payload with no `snapshots` key', async () => {
+    // Faithfulness guard: the handler's empty-DB and no-rows-for-date
+    // branches return the SINGLE-snapshot shape even for `?all=true`, so
+    // requiring `snapshots` would show an error banner every quiet day.
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        availableDates: ['2026-04-01'],
+        date: '2026-04-02',
+        timestamps: [],
+        timestamp: null,
+        spot: null,
+        oi: null,
+        vol: null,
+        dir: null,
+        candles: [],
+        previousClose: null,
+      }),
+    });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.availableDates).toEqual(['2026-04-01']);
+    expect(result.current.timestamps).toEqual([]);
+  });
+
+  it('nulls a mode whose TargetScore is shapeless, keeping the others', async () => {
+    // The pre-fix crash: selectTarget(raw.leaderboard) with no leaderboard.
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        oi: { target: null } as unknown as TargetScore,
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.oi).toBeNull();
+    expect(result.current.vol?.leaderboard).toHaveLength(1);
+    expect(result.current.dir?.leaderboard).toHaveLength(1);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('drops leaderboard rows with no features and keeps the valid ones', async () => {
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        oi: {
+          target: null,
+          leaderboard: [
+            makeStrike({ strike: 5800 }),
+            { strike: 5850, finalScore: 0.1 },
+            'garbage',
+          ],
+        } as unknown as TargetScore,
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.oi?.leaderboard).toHaveLength(1);
+    expect(result.current.oi?.leaderboard[0]?.strike).toBe(5800);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('drops snapshots with no addressable timestamp', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        availableDates: ['2026-04-02'],
+        date: '2026-04-02',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        candles: [],
+        previousClose: null,
+        snapshots: [
+          { spot: 5795, oi: null, vol: null, dir: null },
+          {
+            timestamp: '2026-04-02T19:59:00Z',
+            spot: 5795,
+            oi: makeTargetScore(),
+            vol: null,
+            dir: null,
+          },
+        ],
+      }),
+    });
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.timestamp).toBe('2026-04-02T19:59:00Z');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('drops candles that are not fully numeric', async () => {
+    mockFetch.mockResolvedValue(
+      mockBulkSnapshot({
+        timestamp: '2026-04-02T19:59:00Z',
+        timestamps: ['2026-04-02T19:59:00Z'],
+        candles: [
+          makeCandle({ datetime: new Date('2026-04-02T13:30:00Z').getTime() }),
+          { open: 1, high: 2, low: 3, close: 4 },
+          'garbage',
+        ] as unknown as SPXCandle[],
+      }),
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.candles).toHaveLength(1);
+    expect(result.current.error).toBeNull();
+  });
+});
+
+describe('useGexTarget: malformed single (poll) payload', () => {
+  it('graces the first bad poll and surfaces the error on the second', async () => {
+    // A shapeless poll body must not wipe a good display — same
+    // FAIL_GRACE_COUNT path as an HTTP failure.
+    const good = mockBulkSnapshot({
+      timestamp: '2026-04-02T19:59:00Z',
+      timestamps: ['2026-04-02T19:58:00Z', '2026-04-02T19:59:00Z'],
+    });
+    mockFetch.mockImplementation(async (url: string) =>
+      url.includes('all=true')
+        ? good
+        : { ok: true, json: async () => ({ nope: true }) },
+    );
+
+    const { result } = renderHook(() => useGexTarget(true));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const goodOi = result.current.oi;
+    expect(goodOi).not.toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVALS.GEX_TARGET + 10);
+    });
+    // First bad poll: graced, last-known-good preserved.
+    expect(result.current.error).toBeNull();
+    expect(result.current.oi).toBe(goodOi);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVALS.GEX_TARGET + 10);
+    });
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+    // Still last-known-good — the bad payload never reached state.
+    expect(result.current.oi).toBe(goodOi);
+  });
+});

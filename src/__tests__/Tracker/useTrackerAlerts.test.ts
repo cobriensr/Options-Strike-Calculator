@@ -253,4 +253,65 @@ describe('useTrackerAlerts — toast onClick wiring', () => {
     );
     expect(ackCall?.[0]).toBe('/api/tracker/alerts/1/ack');
   });
+  it('normalizes an ISO-timestamp expiry to YYYY-MM-DD', async () => {
+    // /api/tracker/alerts/unread does NOT TO_CHAR its `expiry` (unlike
+    // /api/tracker/contracts), so the DATE column arrives hydrated by
+    // the Neon driver and JSON-serialized as an ISO timestamp. Left
+    // raw, `formatExpiryMD` (splits on '-') renders the toast label
+    // `05/22T00:00:00.000Z`.
+    const show = vi.fn();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ alerts: [], count: 0 }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          alerts: [makeAlert({ expiry: '2026-05-22T00:00:00.000Z' as string })],
+          count: 1,
+        }),
+      );
+    const { result } = renderHook(() => useTrackerAlerts({ enabled: true }), {
+      wrapper: makeWrapper(show),
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.data[0]?.expiry).toBe('2026-05-22');
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(String(show.mock.calls[0]?.[0])).toContain('05/22');
+    expect(String(show.mock.calls[0]?.[0])).not.toContain('T00:00:00');
+  });
+
+  it('drops malformed alert rows without discarding the valid ones', async () => {
+    // One unusable row used to abort the seed/toast loop before
+    // `setData`, silently discarding every healthy unread alert in the
+    // same response.
+    const show = vi.fn();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        alerts: [makeAlert(), null, 'garbage', { id: 'nope' }],
+        count: 4,
+      }),
+    );
+    const { result } = renderHook(() => useTrackerAlerts({ enabled: true }), {
+      wrapper: makeWrapper(show),
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data).toHaveLength(1);
+    expect(result.current.data[0]?.id).toBe(1);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('surfaces a shapeless envelope as an error instead of throwing', async () => {
+    const show = vi.fn();
+    fetchMock.mockResolvedValueOnce(jsonResponse({}));
+    const { result } = renderHook(() => useTrackerAlerts({ enabled: true }), {
+      wrapper: makeWrapper(show),
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data).toEqual([]);
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+  });
 });

@@ -158,10 +158,58 @@ export interface PanelPrefs {
   isLoaded: boolean;
 }
 
+// ── Response validation ────────────────────────────────────
+// Mirrors `validateSpike` (useVegaSpikes) / the per-ticker envelope
+// validator in useGexStrikeExpiry: validate at the parse, drop bad
+// entries, and send a bad envelope down the hook's existing no-data
+// path. This axis has the widest blast radius in the app — `order` and
+// `groupOrder` are iterated by `resolvePanelOrder` / `resolveGroupOrder`
+// (`for (const id of stored)`) inside App.tsx's render pass, so a
+// non-iterable value there throws during render and blanks the ENTIRE
+// page rather than one panel. `hidden` is safer (a Set is built from it)
+// but a non-array still yields a character-keyed Set that the
+// `[hidden, order, groupOrder]` effect then mirrors into localStorage,
+// persisting the corruption across reloads.
+
+/**
+ * Coerce one axis of the GET response into panel ids. Returns `null`
+ * when the value isn't an array at all (→ skip that axis, keep the
+ * localStorage-seeded state); non-string entries inside an array are
+ * dropped individually, matching `readStoredPrefs()`'s coercion of the
+ * localStorage copy of the same three axes.
+ */
+function toIdArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((v): v is string => typeof v === 'string');
+}
+
 interface PanelPrefsResponse {
   hiddenPanels: string[];
-  panelOrder?: string[];
-  groupOrder?: string[];
+  /** `null` = axis malformed → don't apply, keep current state. */
+  panelOrder: string[] | null;
+  groupOrder: string[] | null;
+}
+
+/**
+ * Validate the GET /api/panel-prefs envelope. `api/panel-prefs.ts`
+ * always answers with all three axes coerced through `asStringArray`,
+ * so a body without a `hiddenPanels` array isn't a prefs payload at all
+ * (`{}`, an HTML error page parsed loosely, a 5xx JSON blob) — reject it
+ * wholesale and let the caller fall through to `setIsLoaded(true)` with
+ * the localStorage seed untouched. An absent order axis keeps the prior
+ * `?? []` semantics; a PRESENT-but-non-array one is skipped so a partly
+ * corrupt payload still applies the axes that are intact.
+ */
+function validatePanelPrefsResponse(raw: unknown): PanelPrefsResponse | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const hiddenPanels = toIdArray(r.hiddenPanels);
+  if (hiddenPanels == null) return null;
+  return {
+    hiddenPanels,
+    panelOrder: r.panelOrder == null ? [] : toIdArray(r.panelOrder),
+    groupOrder: r.groupOrder == null ? [] : toIdArray(r.groupOrder),
+  };
 }
 
 /**
@@ -226,7 +274,14 @@ export function usePanelPrefs(): PanelPrefs {
           setIsLoaded(true);
           return;
         }
-        const data = (await res.json()) as PanelPrefsResponse;
+        const data = validatePanelPrefsResponse(await res.json());
+        if (data === null) {
+          // Not a prefs payload — keep the localStorage-seeded layout
+          // rather than feeding a shapeless value to the order
+          // resolvers (which would throw mid-render and blank the app).
+          setIsLoaded(true);
+          return;
+        }
         // Only apply axes the user HASN'T touched since mount —
         // otherwise the GET overwrites the user's pre-load toggle /
         // drag with stored state. Touched-axis presence is encoded as
@@ -236,8 +291,8 @@ export function usePanelPrefs(): PanelPrefs {
         // why (keepalive PUT loss across cmd+shift+r).
         const pending = pendingBodyRef.current;
         const serverHidden = data.hiddenPanels;
-        const serverOrder = data.panelOrder ?? [];
-        const serverGroupOrder = data.groupOrder ?? [];
+        const serverOrder = data.panelOrder;
+        const serverGroupOrder = data.groupOrder;
         if (
           !('hiddenPanels' in pending) &&
           shouldApplyServerAxis(serverHidden, cached.hiddenPanels)
@@ -245,12 +300,14 @@ export function usePanelPrefs(): PanelPrefs {
           setHidden(new Set(serverHidden));
         }
         if (
+          serverOrder !== null &&
           !('panelOrder' in pending) &&
           shouldApplyServerAxis(serverOrder, cached.panelOrder)
         ) {
           setOrderState(serverOrder);
         }
         if (
+          serverGroupOrder !== null &&
           !('groupOrder' in pending) &&
           shouldApplyServerAxis(serverGroupOrder, cached.groupOrder)
         ) {

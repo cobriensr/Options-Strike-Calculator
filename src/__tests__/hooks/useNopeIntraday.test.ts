@@ -208,3 +208,111 @@ describe('useNopeIntraday: unmount guards', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Malformed payload validation ─────────────────────────────
+// The parse used to be `(await res.json()) as NopeIntradayResponse`, so a
+// shapeless body put a non-array into `points` and PriceChart's NOPE
+// overlay died at `nopePoints.map`. Validation now happens at the parse.
+
+describe('useNopeIntraday: malformed payloads', () => {
+  it('reports a shape error and keeps an empty overlay on a {} body', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    const { result } = renderHook(() => useNopeIntraday({ marketOpen: true }));
+
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    expect(result.current.error).toMatch(/unexpected response shape/i);
+    expect(result.current.points).toEqual([]);
+    expect(result.current.date).toBeNull();
+  });
+
+  it('keeps the last-known-good overlay when a later poll goes malformed', async () => {
+    // Matches the hook's existing network-failure behavior: surface the
+    // error, keep showing the last points the chart successfully drew.
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => SAMPLE_RESPONSE,
+    });
+
+    const { result } = renderHook(() => useNopeIntraday({ marketOpen: true }));
+    await waitFor(() => expect(result.current.points).toHaveLength(2));
+    const goodPoints = result.current.points;
+
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.NOPE + 10);
+    });
+
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    expect(result.current.points).toBe(goodPoints);
+    expect(result.current.date).toBe('2026-04-14');
+  });
+
+  it('reports a shape error when points is a non-array scalar', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ ...SAMPLE_RESPONSE, points: 'garbage' }),
+    });
+
+    const { result } = renderHook(() => useNopeIntraday({ marketOpen: true }));
+
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    expect(result.current.points).toEqual([]);
+  });
+
+  it('reports a shape error on an HTML-ish string body', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => '<!doctype html><html>oops</html>',
+    });
+
+    const { result } = renderHook(() => useNopeIntraday({ marketOpen: true }));
+
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    expect(result.current.points).toEqual([]);
+  });
+
+  it('drops malformed points and keeps the valid ones', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ...SAMPLE_RESPONSE,
+        points: [
+          SAMPLE_RESPONSE.points[0],
+          'garbage',
+          { timestamp: 'not-a-date', nope: 1, nope_fill: 1 },
+          { timestamp: '2026-04-14T13:32:00.000Z', nope: null, nope_fill: 0 },
+          SAMPLE_RESPONSE.points[1],
+        ],
+      }),
+    });
+
+    const { result } = renderHook(() => useNopeIntraday({ marketOpen: true }));
+
+    await waitFor(() => expect(result.current.points).toHaveLength(2));
+    expect(result.current.points).toEqual(SAMPLE_RESPONSE.points);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('keeps a referentially stable empty array across repeated bad polls', async () => {
+    // PriceChart mirrors `points` into a setData effect keyed on the array
+    // reference; a fresh [] each poll would re-fire it forever (the
+    // GexLandscape render-loop lesson).
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    const { result } = renderHook(() => useNopeIntraday({ marketOpen: true }));
+
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    const firstPoints = result.current.points;
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.NOPE + 10);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.NOPE + 10);
+    });
+
+    expect(mockFetch.mock.calls.length).toBeGreaterThan(1);
+    expect(result.current.points).toBe(firstPoints);
+  });
+});

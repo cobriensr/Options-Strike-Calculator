@@ -60,6 +60,73 @@ export interface UsePeriscopeStrikesReturn {
   refresh: () => void;
 }
 
+// ── Response validation ────────────────────────────────────────
+//
+// The two parses here used to be identity casts. A shapeless body (a 5xx
+// JSON blob, a loosely-parsed HTML error page) then reached the GexTarget
+// panel's MM-overlay memo and threw at
+// `for (const s of periscopeStrikes.latest?.strikes ?? [])` — "not
+// iterable" when `strikes` arrived as a plain object
+// (src/components/GexTarget/index.tsx:134) — while the lookback path threw
+// inside `rowsToGammaMap` at `resp.strikes.length`. Validation now happens
+// at the parse (the `validateSpike` pattern in src/hooks/useVegaSpikes.ts):
+// bad strike rows are dropped, a bad envelope throws into `fetchAll`'s
+// existing catch, which surfaces `error` and leaves the last-known-good
+// `latest` in place.
+//
+// Faithfulness to `api/periscope-strikes.ts`: `strikes` and
+// `availableSlots` are present on BOTH of the handler's 200 return paths
+// (the no-slot early return sends `strikes: []` plus the slot list), so
+// requiring them cannot reject a legitimate payload. The remaining fields
+// are cosmetic for every current consumer and degrade to a default rather
+// than rejecting the envelope.
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function validateStrikeRow(raw: unknown): PeriscopeStrikeRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.strike) ||
+    !isFiniteNumber(r.gamma) ||
+    !isFiniteNumber(r.charm)
+  ) {
+    return null;
+  }
+  return { strike: r.strike, gamma: r.gamma, charm: r.charm };
+}
+
+function validateStrikesResponse(
+  raw: unknown,
+): PeriscopeStrikesResponse | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.strikes) || !Array.isArray(r.availableSlots)) {
+    return null;
+  }
+  const strikes: PeriscopeStrikeRow[] = [];
+  for (const row of r.strikes) {
+    const strike = validateStrikeRow(row);
+    if (strike) strikes.push(strike);
+  }
+  return {
+    marketOpen: r.marketOpen === true,
+    asOf: typeof r.asOf === 'string' ? r.asOf : '',
+    capturedAt: typeof r.capturedAt === 'string' ? r.capturedAt : null,
+    priorCapturedAt:
+      typeof r.priorCapturedAt === 'string' ? r.priorCapturedAt : null,
+    spot: isFiniteNumber(r.spot) ? r.spot : null,
+    strikes,
+    availableSlots: r.availableSlots.filter(
+      (s): s is string => typeof s === 'string',
+    ),
+  };
+}
+
 /**
  * ISO timestamp → CT HH:MM (24h). The endpoint takes CT wall-clock for
  * the `?time` param; we round seconds away to match its end-of-minute
@@ -104,7 +171,11 @@ async function fetchLatest(
     if (res.status === 401) return null;
     throw new Error(`periscope-strikes: HTTP ${res.status}`);
   }
-  return (await res.json()) as PeriscopeStrikesResponse;
+  const parsed = validateStrikesResponse(await res.json());
+  if (parsed == null) {
+    throw new Error('periscope-strikes: unexpected response shape');
+  }
+  return parsed;
 }
 
 /**
@@ -129,7 +200,11 @@ async function fetchSlot(
     if (res.status === 401) return null;
     throw new Error(`periscope-strikes lookback: HTTP ${res.status}`);
   }
-  return (await res.json()) as PeriscopeStrikesResponse;
+  const parsed = validateStrikesResponse(await res.json());
+  if (parsed == null) {
+    throw new Error('periscope-strikes lookback: unexpected response shape');
+  }
+  return parsed;
 }
 
 function rowsToGammaMap(

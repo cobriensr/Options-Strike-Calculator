@@ -28,16 +28,60 @@ export interface TickerNetFlowSnapshot {
   asOfTs: string;
 }
 
-interface TickerNetFlowCurrentResponse {
-  date: string;
-  requestedTickers: string[];
-  count: number;
-  snapshots: Array<{
-    ticker: string;
-    asOfTs: string;
-    cumNcp: number;
-    cumNpp: number;
-  }>;
+// ── Response validation ────────────────────────────────────
+// Mirrors the per-ticker validation model in useGexStrikeExpiry: a
+// malformed entry for ONE ticker is dropped and the healthy tickers in
+// the same response survive; a body that isn't a snapshots payload at
+// all (`{}`, an HTML error page parsed loosely, a 5xx JSON blob) goes
+// down the hook's existing error path, which preserves the last-known-
+// good Map rather than blanking every badge.
+//
+// Cumulative net-flow values are legitimately zero or negative (puts
+// outrunning calls), so entries are validated on TYPE and FINITENESS
+// only — never magnitude. `api/ticker-net-flow-current.ts` runs every
+// value through `Number(...)`, so a finite number is exactly what the
+// server sends.
+
+/**
+ * Validate one entry of `snapshots`. Returns `[ticker, snapshot]` for
+ * the Map, or `null` when the entry can't be trusted — the caller skips
+ * it without discarding the rest of the batch.
+ */
+function validateSnapshot(
+  raw: unknown,
+): [string, TickerNetFlowSnapshot] | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const s = raw as Record<string, unknown>;
+  if (
+    typeof s.ticker !== 'string' ||
+    s.ticker.length === 0 ||
+    typeof s.asOfTs !== 'string' ||
+    typeof s.cumNcp !== 'number' ||
+    !Number.isFinite(s.cumNcp) ||
+    typeof s.cumNpp !== 'number' ||
+    !Number.isFinite(s.cumNpp)
+  ) {
+    return null;
+  }
+  return [s.ticker, { cumNcp: s.cumNcp, cumNpp: s.cumNpp, asOfTs: s.asOfTs }];
+}
+
+/**
+ * Validate the batch envelope. Returns the surviving per-ticker Map, or
+ * `null` when the body isn't a snapshots payload at all.
+ */
+function validateNetFlowBatch(
+  raw: unknown,
+): Map<string, TickerNetFlowSnapshot> | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.snapshots)) return null;
+  const next = new Map<string, TickerNetFlowSnapshot>();
+  for (const entry of r.snapshots) {
+    const valid = validateSnapshot(entry);
+    if (valid) next.set(valid[0], valid[1]);
+  }
+  return next;
 }
 
 interface UseTickerNetFlowBatchArgs {
@@ -115,19 +159,12 @@ export function useTickerNetFlowBatch({
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
-      const json = (await res.json()) as TickerNetFlowCurrentResponse;
+      const next = validateNetFlowBatch(await res.json());
       // Superseded by a newer fetch between resolve and parse — bail
       // before clobbering newer state.
       if (ctrl.signal.aborted) return;
+      if (next === null) throw new Error('Unexpected response shape');
 
-      const next = new Map<string, TickerNetFlowSnapshot>();
-      for (const s of json.snapshots) {
-        next.set(s.ticker, {
-          cumNcp: s.cumNcp,
-          cumNpp: s.cumNpp,
-          asOfTs: s.asOfTs,
-        });
-      }
       setData(next);
       setFetchedAt(Date.now());
     } catch (err) {
