@@ -85,6 +85,7 @@ known-first-party = [
     "theta_fetcher",
     "theta_launcher",
     "trade_processor",
+    "watchdog",
     # Vendored ml/src modules imported by multileg_routes.py.
     "multileg_assembler",
     "multileg_patterns",

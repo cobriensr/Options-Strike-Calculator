@@ -38,6 +38,7 @@ from logger_setup import log
 from quote_processor import QuoteProcessor
 from sentry_setup import capture_exception, init_sentry
 from trade_processor import TradeProcessor
+from watchdog import start_watchdog
 
 # A reconnect that survives at least this long is treated as a "healthy"
 # session and resets the backoff to 1.0s. Shorter sessions are flaps:
@@ -192,6 +193,20 @@ def main() -> None:
     # Register signal handlers
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+
+    # Stale-data watchdog (incident 2026-08-20: the consume loop froze
+    # silently while is_connected stayed True and /health kept
+    # answering — Railway only restarts on crash, so nothing acted).
+    # If data is expected, the client says connected, and no bar has
+    # landed for WATCHDOG_STALE_EXIT_S, it os._exit(1)s so Railway
+    # brings up a fresh container and the replay subscription
+    # backfills the gap. Reads the same client state the health server
+    # reads. Started before the blocking connect loop below; the boot
+    # grace (WATCHDOG_BOOT_GRACE_S) covers Theta boot + connect time.
+    start_watchdog(
+        is_connected=lambda: _client.is_connected if _client else False,
+        last_bar_at=lambda: _client.last_bar_ts if _client else 0.0,
+    )
 
     # Connect with retry loop
     connect_with_retry(_client)
