@@ -503,6 +503,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     maxRuntime: DEFAULT_MAX_RUNTIME,
     failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
   },
+  'monitor-ws-freshness': {
+    schedule: '*/5 13-21 * * 1-5',
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: HIGH_FREQ_FAILURE_THRESHOLD,
+  },
   'monitor-flow-ratio': {
     schedule: '* 13-21 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
