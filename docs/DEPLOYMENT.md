@@ -77,40 +77,47 @@ api/__tests__/     311 test files — API endpoints, cron jobs, _lib modules
 
 39 spec files covering user workflows, accessibility, and cross-browser compatibility. See [e2e/README.md](../e2e/README.md) for run + convention details. Coverage includes:
 
-| File                          | Coverage                                                     |
-| ----------------------------- | ------------------------------------------------------------ |
-| `calculator-flow.spec.ts`     | Full calculation flow, mode switching, dark mode             |
-| `strike-table.spec.ts`        | Delta rows, ordering invariants, VIX sensitivity             |
-| `iron-condor.spec.ts`         | IC legs, hedge toggle, contracts, hide/show                  |
-| `hedge-dte.spec.ts`           | DTE selector, EOD recovery, net cost labels, scenarios       |
-| `iv-acceleration.spec.ts`     | σ multiplier at different times, late session warning        |
-| `fat-tail-pop.spec.ts`        | Adjusted PoP display, struck-through log-normal              |
-| `market-regime-new.spec.ts`   | Clustering, term structure shapes (contango/fear-spike/flat) |
-| `entry-time.spec.ts`          | Time selects, AM/PM, timezone, recalculation                 |
-| `advanced-section.spec.ts`    | Skew slider, wing width, contracts counter                   |
-| `chart-analysis.spec.ts`      | Mode selector, drop zone, mocked analysis                    |
-| `chart-analysis-flow.spec.ts` | Full chart analysis flow with rendering                      |
-| `risk-calculator.spec.ts`     | Risk tiers, buy/sell modes, position sizing                  |
-| `pnl-profile.spec.ts`         | P&L diagram rendering                                        |
-| `positions-upload.spec.ts`    | PaperMoney CSV upload and position parsing                   |
-| `export-download.spec.ts`     | CSV and Excel export/download verification                   |
-| `validation-errors.spec.ts`   | Input validation, error states, clearing                     |
-| `extreme-inputs.spec.ts`      | Edge cases: extreme values, boundary inputs                  |
-| `responsive.spec.ts`          | iPhone, iPad, desktop viewports                              |
-| `theme-persistence.spec.ts`   | Dark mode persistence across page reloads                    |
-| `error-recovery.spec.ts`      | Error handling and recovery                                  |
-| `a11y-automated.spec.ts`      | Axe-core WCAG 2.1 AA scans (home, results, dark mode)        |
-| `accessibility.spec.ts`       | Keyboard navigation, ARIA attributes, focus management       |
-| `a11y-live-data.spec.ts`      | Live region testing for dynamic content                      |
-| `cross-section.spec.ts`       | Cross-section interaction flows                              |
-| `date-lookup.spec.ts`         | Date picker with event day integration                       |
-| `delta-regime-guide.spec.ts`  | Delta guide ceiling and regime badges                        |
-| `opening-range.spec.ts`       | Opening range check signals                                  |
-| `parameter-summary.spec.ts`   | Parameter summary display                                    |
-| `pre-market.spec.ts`          | Pre-market data analysis                                     |
-| `pre-trade-signals.spec.ts`   | Signal validation                                            |
-| `vix-range-analysis.spec.ts`  | VIX/range analysis with fine-grained bars                    |
-| `event-day-warning.spec.ts`   | Event day alerts and severity coding                         |
+| File                                | Coverage                                                     |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `calculator-flow.spec.ts`           | Full calculation flow, mode switching, dark mode             |
+| `strike-table.spec.ts`              | Delta rows, ordering invariants, VIX sensitivity             |
+| `iron-condor.spec.ts`               | IC legs, hedge toggle, contracts, hide/show                  |
+| `hedge-dte.spec.ts`                 | DTE selector, EOD recovery, net cost labels, scenarios       |
+| `iv-acceleration.spec.ts`           | σ multiplier at different times, late session warning        |
+| `fat-tail-pop.spec.ts`              | Adjusted PoP display, struck-through log-normal              |
+| `market-regime-new.spec.ts`         | Clustering, term structure shapes (contango/fear-spike/flat) |
+| `entry-time.spec.ts`                | Time selects, AM/PM, timezone, recalculation                 |
+| `advanced-section.spec.ts`          | Skew slider, wing width, contracts counter                   |
+| `chart-analysis.spec.ts`            | Mode selector, drop zone, mocked analysis                    |
+| `chart-analysis-flow.spec.ts`       | Full chart analysis flow with rendering                      |
+| `risk-calculator.spec.ts`           | Risk tiers, buy/sell modes, position sizing                  |
+| `pnl-profile.spec.ts`               | P&L diagram rendering                                        |
+| `positions-upload.spec.ts`          | PaperMoney CSV upload and position parsing                   |
+| `export-download.spec.ts`           | CSV and Excel export/download verification                   |
+| `validation-errors.spec.ts`         | Input validation, error states, clearing                     |
+| `extreme-inputs.spec.ts`            | Edge cases: extreme values, boundary inputs                  |
+| `responsive.spec.ts`                | iPhone, iPad, desktop viewports                              |
+| `theme-persistence.spec.ts`         | Dark mode persistence across page reloads                    |
+| `error-recovery.spec.ts`            | Error handling and recovery                                  |
+| `a11y-automated.spec.ts`            | Axe-core WCAG 2.1 AA scans (home, results, dark mode)        |
+| `accessibility.spec.ts`             | Keyboard navigation, ARIA attributes, focus management       |
+| `a11y-live-data.spec.ts`            | Live region testing for dynamic content                      |
+| `cross-section.spec.ts`             | Cross-section interaction flows                              |
+| `date-lookup.spec.ts`               | Date picker with event day integration                       |
+| `delta-regime-guide.spec.ts`        | Delta guide ceiling and regime badges                        |
+| `opening-range.spec.ts`             | Opening range check signals                                  |
+| `parameter-summary.spec.ts`         | Parameter summary display                                    |
+| `pre-market.spec.ts`                | Pre-market data analysis                                     |
+| `pre-trade-signals.spec.ts`         | Signal validation                                            |
+| `vix-range-analysis.spec.ts`        | VIX/range analysis with fine-grained bars                    |
+| `event-day-warning.spec.ts`         | Event day alerts and severity coding                         |
+| `options-alerts.spec.ts`            | Options Alerts view (Lottery Finder, Silent Boom)            |
+| `options-alerts-responsive.spec.ts` | Options Alerts responsive layout                             |
+| `tracker.spec.ts`                   | Contract Tracker watchlist, alerts, archive stats            |
+| `regime-0dte.spec.ts`               | 0DTE Gamma Regime panel + a11y scan                          |
+| `vega-spike-feed.spec.ts`           | VegaSpikeFeed panel + a11y scan                              |
+| `panel-reorder.spec.ts`             | Panel reorder modal + a11y scan                              |
+| `toolbar-export-row.spec.ts`        | Toolbar export row stays on one line                         |
 
 ### ML Tests (pytest)
 
