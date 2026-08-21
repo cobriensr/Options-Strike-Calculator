@@ -254,11 +254,11 @@ describe('useTrackerAlerts — toast onClick wiring', () => {
     expect(ackCall?.[0]).toBe('/api/tracker/alerts/1/ack');
   });
   it('normalizes an ISO-timestamp expiry to YYYY-MM-DD', async () => {
-    // /api/tracker/alerts/unread does NOT TO_CHAR its `expiry` (unlike
-    // /api/tracker/contracts), so the DATE column arrives hydrated by
-    // the Neon driver and JSON-serialized as an ISO timestamp. Left
-    // raw, `formatExpiryMD` (splits on '-') renders the toast label
-    // `05/22T00:00:00.000Z`.
+    // /api/tracker/alerts/unread now TO_CHARs its `expiry` (matching
+    // /api/tracker/contracts), so this is the defense-in-depth path: if
+    // an un-TO_CHARed DATE column ever comes back hydrated by the Neon
+    // driver and JSON-serialized as an ISO timestamp, `formatExpiryMD`
+    // (splits on '-') would render the toast label `05/22T00:00:00.000Z`.
     const show = vi.fn();
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ alerts: [], count: 0 }))

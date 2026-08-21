@@ -109,13 +109,13 @@ function validateAlert(raw: unknown): TrackerAlert | null {
     acknowledged: r.acknowledged === true,
     occ_symbol: r.occ_symbol,
     ticker: r.ticker,
-    // Normalize to the YYYY-MM-DD the type documents. Unlike
-    // /api/tracker/contracts, the unread endpoint does NOT TO_CHAR its
-    // `expiry`, so the DATE column arrives as a JS Date hydrated by the
-    // Neon driver and JSON-serialized to `2026-05-08T00:00:00.000Z` —
-    // which `formatExpiryMD` (splits on '-') renders as the garbage
-    // toast label `05/08T00:00:00.000Z`. Slicing here is a no-op for an
-    // already-plain date.
+    // Normalize to the YYYY-MM-DD the type documents. The server-side
+    // fix landed in /api/tracker/alerts/unread (it now TO_CHARs `expiry`
+    // like /api/tracker/contracts), so this slice is a no-op today and
+    // is kept as defense in depth: an un-TO_CHARed DATE column arrives
+    // hydrated by the Neon driver as a JS Date, JSON-serializes to
+    // `2026-05-08T00:00:00.000Z`, and `formatExpiryMD` (splits on '-')
+    // renders it as the garbage toast label `05/08T00:00:00.000Z`.
     expiry: r.expiry.slice(0, 10),
     strike,
     side: r.side,
