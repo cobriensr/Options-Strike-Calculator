@@ -8,11 +8,23 @@ subscription-denial handling.
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+import threading
+import time
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+# Required env vars for config.py's pydantic-settings validation, which
+# theta_fetcher imports transitively. Throwaway values — psycopg2 is
+# mocked in conftest.py so no connection is ever attempted. Without
+# these the file cannot be run on its own (it only passed as part of the
+# full suite, where an earlier test file happened to set them first).
+os.environ.setdefault("DATABENTO_API_KEY", "test-key")
+os.environ.setdefault("DATABASE_URL", "postgresql://test:" + "fakefixture" + "@localhost/test")
 
 import pytest
 
@@ -1182,3 +1194,414 @@ def test_run_root_nightly_lets_keyboard_interrupt_through(monkeypatch) -> None:
 
     with pytest.raises(KeyboardInterrupt):
         theta_fetcher._run_root_nightly(MagicMock(), "SPXW", date(2026, 8, 19))
+
+
+# ---------------------------------------------------------------------------
+# start_targeted_backfill / targeted_backfill_status — (root, range) repair
+# ---------------------------------------------------------------------------
+#
+# The nightly's sibling. `run_backfill_if_needed` short-circuits on
+# `db.has_theta_option_eod_rows(root)`, so a root that already holds SOME
+# rows can never be repaired by it — SPXW on trade date 2026-08-19 landed
+# 15 of ~38 expirations and was permanently skipped. These tests pin the
+# targeted path: every rule is checked BEFORE any Terminal work, roots
+# stay isolated from each other, the job is single-flight, and the status
+# snapshot is safe (and JSON-serializable) while the worker runs.
+
+
+@pytest.fixture
+def clean_backfill_state():
+    """Reset the module-level single-flight lock + status between tests."""
+    import theta_fetcher
+
+    theta_fetcher._clear_backfill_state_for_tests()
+    yield
+    theta_fetcher._clear_backfill_state_for_tests()
+
+
+def _await_backfill_finish(timeout: float = 5.0) -> dict:
+    """Block until the worker thread leaves the running state."""
+    import theta_fetcher
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        snapshot = theta_fetcher.targeted_backfill_status()
+        if snapshot["state"] != theta_fetcher.BACKFILL_RUNNING:
+            return snapshot
+        time.sleep(0.01)
+    raise AssertionError(f"targeted backfill did not finish within {timeout}s")
+
+
+def _past(days_ago: int) -> date:
+    """Return a date `days_ago` before today (requests must end before today)."""
+    return date.today() - timedelta(days=days_ago)  # noqa: DTZ011 — mirrors the source
+
+
+def test_max_targeted_backfill_days_is_31() -> None:
+    """The span cap keeps a mistyped year from launching a multi-day job."""
+    import theta_fetcher
+
+    assert theta_fetcher.MAX_TARGETED_BACKFILL_DAYS == 31
+
+
+def test_targeted_backfill_status_starts_idle(clean_backfill_state) -> None:
+    import theta_fetcher
+
+    snapshot = theta_fetcher.targeted_backfill_status()
+
+    assert snapshot["state"] == theta_fetcher.BACKFILL_IDLE
+    assert snapshot["roots"] == []
+    assert snapshot["results"] == []
+    assert snapshot["rows"] == 0
+    assert snapshot["start"] is None
+    assert snapshot["end"] is None
+    assert snapshot["started_at"] is None
+    assert snapshot["finished_at"] is None
+    assert snapshot["elapsed_s"] is None
+    assert snapshot["error"] is None
+    # The HTTP layer json.dumps() this straight into the response body.
+    json.dumps(snapshot)
+
+
+@pytest.mark.parametrize(
+    ("roots", "start_days_ago", "end_days_ago", "needle"),
+    [
+        ([], 3, 2, "non-empty"),
+        ([""], 3, 2, "non-empty"),
+        (["SPY"], 3, 2, "unknown root"),
+        (["VIX", "SPY"], 3, 2, "unknown root"),
+        (["VIX"], 2, 3, "before start"),
+        (["VIX"], 40, 1, "cap"),
+        (["VIX"], 1, 0, "before today"),
+        (["VIX"], 0, -1, "before today"),
+    ],
+)
+def test_targeted_backfill_rejects_invalid_requests(
+    monkeypatch, clean_backfill_state, roots, start_days_ago, end_days_ago, needle
+) -> None:
+    """Every rule is enforced before the Terminal is touched at all."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX,VIXW,NDXP")
+    fetch = MagicMock()
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", fetch)
+
+    with (
+        patch("theta_fetcher.ThetaClient") as client_cls,
+        pytest.raises(theta_fetcher.ThetaBackfillRequestError) as excinfo,
+    ):
+        theta_fetcher.start_targeted_backfill(roots, _past(start_days_ago), _past(end_days_ago))
+
+    assert needle in str(excinfo.value)
+    client_cls.assert_not_called()
+    fetch.assert_not_called()
+    # A rejected request leaves the job idle — nothing to poll, nothing to
+    # unlock. (A validation error that consumed the single-flight lock
+    # would wedge the endpoint until the next deploy.)
+    assert theta_fetcher.targeted_backfill_status()["state"] == theta_fetcher.BACKFILL_IDLE
+
+
+def test_targeted_backfill_span_of_exactly_the_cap_is_allowed(
+    monkeypatch, clean_backfill_state
+) -> None:
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", lambda _c, _r, _s, _e: 1)
+
+    # 31 days inclusive: [today-31, today-1].
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        plan = theta_fetcher.start_targeted_backfill(["VIX"], _past(31), _past(1))
+        _await_backfill_finish()
+
+    assert plan["days"] == theta_fetcher.MAX_TARGETED_BACKFILL_DAYS
+
+
+def test_targeted_backfill_normalizes_and_dedupes_roots(monkeypatch, clean_backfill_state) -> None:
+    """Case/whitespace are normalized and duplicates collapse — a repeated
+    root would otherwise re-walk the whole chain for no new rows."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX,VIXW,NDXP")
+    fetched: list[str] = []
+    monkeypatch.setattr(
+        theta_fetcher,
+        "_fetch_root_range",
+        lambda _c, root, _s, _e: (fetched.append(root), 1)[1],
+    )
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        plan = theta_fetcher.start_targeted_backfill([" vix ", "VIX", "vixw"], _past(3), _past(2))
+        snapshot = _await_backfill_finish()
+
+    assert plan["roots"] == ["VIX", "VIXW"]
+    assert fetched == ["VIX", "VIXW"]
+    assert snapshot["roots"] == ["VIX", "VIXW"]
+
+
+def test_targeted_backfill_fetches_each_root_over_the_full_range(
+    monkeypatch, clean_backfill_state
+) -> None:
+    """The happy path: one _fetch_root_range call per root, spanning the
+    WHOLE requested range (not per-day), and a status that adds up."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX,VIXW,NDXP")
+    start_date, end_date = _past(3), _past(2)
+    calls: list[tuple[str, date, date]] = []
+    rows_by_root = {"VIX": 10, "VIXW": 20, "NDXP": 30}
+
+    def fake_fetch(_client, root, start, end) -> int:
+        calls.append((root, start, end))
+        return rows_by_root[root]
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", fake_fetch)
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        plan = theta_fetcher.start_targeted_backfill(["VIX", "VIXW", "NDXP"], start_date, end_date)
+        snapshot = _await_backfill_finish()
+
+    assert plan == {
+        "roots": ["VIX", "VIXW", "NDXP"],
+        "start": start_date.isoformat(),
+        "end": end_date.isoformat(),
+        "days": 2,
+    }
+    assert calls == [
+        ("VIX", start_date, end_date),
+        ("VIXW", start_date, end_date),
+        ("NDXP", start_date, end_date),
+    ]
+    assert snapshot["state"] == theta_fetcher.BACKFILL_DONE
+    assert snapshot["rows"] == 60
+    assert snapshot["results"] == [
+        {"root": "VIX", "rows": 10, "status": theta_fetcher.ROOT_OK, "error": None},
+        {"root": "VIXW", "rows": 20, "status": theta_fetcher.ROOT_OK, "error": None},
+        {"root": "NDXP", "rows": 30, "status": theta_fetcher.ROOT_OK, "error": None},
+    ]
+    assert snapshot["error"] is None
+    assert snapshot["started_at"] is not None
+    assert snapshot["finished_at"] is not None
+    assert snapshot["elapsed_s"] >= 0
+    json.dumps(snapshot)
+
+
+def test_targeted_backfill_zero_row_root_is_no_data_not_an_error(
+    monkeypatch, clean_backfill_state
+) -> None:
+    """Same split the nightly makes: wrote nothing != blew up."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", lambda _c, _r, _s, _e: 0)
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        theta_fetcher.start_targeted_backfill(["VIX"], _past(3), _past(2))
+        snapshot = _await_backfill_finish()
+
+    assert snapshot["state"] == theta_fetcher.BACKFILL_DONE
+    assert snapshot["results"][0]["status"] == theta_fetcher.ROOT_NO_DATA
+    assert snapshot["error"] is None
+
+
+def test_targeted_backfill_one_root_error_does_not_stop_the_others(
+    monkeypatch, clean_backfill_state
+) -> None:
+    """Per-root isolation, same contract as the nightly: the failing root
+    is classified ROOT_ERROR and captured, the rest still run, and the
+    overall job reports the failure."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX,VIXW,NDXP")
+    processed: list[str] = []
+
+    def fake_fetch(_client, root, _start, _end) -> int:
+        processed.append(root)
+        if root == "VIXW":
+            raise RuntimeError("terminal vanished")
+        return 7
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", fake_fetch)
+    capture_exc = MagicMock()
+    monkeypatch.setattr(theta_fetcher, "capture_exception", capture_exc)
+    monkeypatch.setattr(theta_fetcher, "capture_message", MagicMock())
+
+    start_date, end_date = _past(3), _past(2)
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        theta_fetcher.start_targeted_backfill(["VIX", "VIXW", "NDXP"], start_date, end_date)
+        snapshot = _await_backfill_finish()
+
+    assert processed == ["VIX", "VIXW", "NDXP"]
+    assert snapshot["state"] == theta_fetcher.BACKFILL_FAILED
+    assert {r["root"]: r["status"] for r in snapshot["results"]} == {
+        "VIX": theta_fetcher.ROOT_OK,
+        "VIXW": theta_fetcher.ROOT_ERROR,
+        "NDXP": theta_fetcher.ROOT_OK,
+    }
+    # The healthy roots' rows still counted.
+    assert snapshot["rows"] == 14
+    assert "VIXW" in snapshot["error"]
+    assert "terminal vanished" in snapshot["error"]
+    json.dumps(snapshot)
+
+    # The per-root Sentry capture carries the targeted phase + the range,
+    # so an operator can tell a repair failure from a nightly failure.
+    assert capture_exc.call_count == 1
+    context = capture_exc.call_args.kwargs["context"]
+    assert context["phase"] == "theta_targeted_backfill"
+    assert context["root"] == "VIXW"
+    assert context["start"] == start_date.isoformat()
+    assert context["end"] == end_date.isoformat()
+
+
+def test_targeted_backfill_client_construction_failure_fails_the_job(
+    monkeypatch, clean_backfill_state
+) -> None:
+    """A blow-up outside the root loop still finishes the job (and frees
+    the single-flight lock) instead of leaving it 'running' forever."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+    monkeypatch.setattr(theta_fetcher, "capture_exception", MagicMock())
+
+    with patch("theta_fetcher.ThetaClient", side_effect=RuntimeError("no credentials")):
+        theta_fetcher.start_targeted_backfill(["VIX"], _past(3), _past(2))
+        snapshot = _await_backfill_finish()
+
+    assert snapshot["state"] == theta_fetcher.BACKFILL_FAILED
+    assert "no credentials" in snapshot["error"]
+
+    # Lock released — the operator can retry without a redeploy.
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        monkeypatch.setattr(theta_fetcher, "_fetch_root_range", lambda _c, _r, _s, _e: 3)
+        theta_fetcher.start_targeted_backfill(["VIX"], _past(3), _past(2))
+        retry = _await_backfill_finish()
+
+    assert retry["state"] == theta_fetcher.BACKFILL_DONE
+    assert retry["rows"] == 3
+
+
+def test_targeted_backfill_is_single_flight(monkeypatch, clean_backfill_state) -> None:
+    """A second start while one is running is rejected and must NOT
+    clobber the running job's plan."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX,VIXW,NDXP")
+    gate = threading.Event()
+
+    def blocking_fetch(_client, _root, _start, _end) -> int:
+        gate.wait(timeout=5)
+        return 4
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", blocking_fetch)
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        try:
+            theta_fetcher.start_targeted_backfill(["VIX"], _past(3), _past(2))
+
+            with pytest.raises(theta_fetcher.ThetaBackfillBusyError):
+                theta_fetcher.start_targeted_backfill(["NDXP"], _past(9), _past(8))
+
+            running = theta_fetcher.targeted_backfill_status()
+            assert running["state"] == theta_fetcher.BACKFILL_RUNNING
+            assert running["roots"] == ["VIX"]
+            assert running["finished_at"] is None
+            assert running["elapsed_s"] >= 0
+            json.dumps(running)
+        finally:
+            gate.set()
+
+        finished = _await_backfill_finish()
+        assert finished["state"] == theta_fetcher.BACKFILL_DONE
+
+        # Lock released on completion — the next repair can start.
+        theta_fetcher.start_targeted_backfill(["NDXP"], _past(3), _past(2))
+        second = _await_backfill_finish()
+
+    assert second["roots"] == ["NDXP"]
+    assert second["state"] == theta_fetcher.BACKFILL_DONE
+
+
+def test_targeted_backfill_unwinds_when_the_worker_thread_cannot_start(
+    monkeypatch, clean_backfill_state
+) -> None:
+    """If Thread.start() fails, nothing ever reaches the worker's
+    `finally` — so start_targeted_backfill must release the lock itself
+    or the endpoint answers 423 until the next deploy."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", lambda _c, _r, _s, _e: 2)
+
+    class _DeadThread:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    with (
+        patch("theta_fetcher.threading.Thread", _DeadThread),
+        pytest.raises(RuntimeError, match="can't start new thread"),
+    ):
+        theta_fetcher.start_targeted_backfill(["VIX"], _past(3), _past(2))
+
+    failed = theta_fetcher.targeted_backfill_status()
+    assert failed["state"] == theta_fetcher.BACKFILL_FAILED
+    assert "failed to start worker thread" in failed["error"]
+
+    # Lock released — the operator can retry immediately.
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        theta_fetcher.start_targeted_backfill(["VIX"], _past(3), _past(2))
+        retry = _await_backfill_finish()
+
+    assert retry["state"] == theta_fetcher.BACKFILL_DONE
+    assert retry["rows"] == 2
+
+
+def test_targeted_backfill_status_is_a_snapshot_not_the_live_dict(
+    monkeypatch, clean_backfill_state
+) -> None:
+    """Callers must not be able to mutate the worker's shared state (and
+    must never see a half-written result list)."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", lambda _c, _r, _s, _e: 5)
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        theta_fetcher.start_targeted_backfill(["VIX"], _past(3), _past(2))
+        _await_backfill_finish()
+
+    snapshot = theta_fetcher.targeted_backfill_status()
+    snapshot["roots"].append("HACKED")
+    snapshot["results"].append({"root": "HACKED"})
+    snapshot["state"] = "bogus"
+
+    fresh = theta_fetcher.targeted_backfill_status()
+    assert fresh["roots"] == ["VIX"]
+    assert [r["root"] for r in fresh["results"]] == ["VIX"]
+    assert fresh["state"] == theta_fetcher.BACKFILL_DONE
+
+
+def test_run_root_isolated_is_shared_with_the_nightly(monkeypatch) -> None:
+    """The nightly delegates to the same isolation helper the targeted
+    backfill uses — one classification + capture pattern, not two."""
+    import theta_fetcher
+
+    seen: list[dict] = []
+
+    def fake_isolated(_client, root, start, end, **kwargs):
+        seen.append({"root": root, "start": start, "end": end, **kwargs})
+        return theta_fetcher.RootOutcome(root=root, rows=1, status=theta_fetcher.ROOT_OK)
+
+    monkeypatch.setattr(theta_fetcher, "_run_root_isolated", fake_isolated)
+
+    outcome = theta_fetcher._run_root_nightly(MagicMock(), "SPXW", date(2026, 8, 19))
+
+    assert outcome.status == theta_fetcher.ROOT_OK
+    assert seen[0]["root"] == "SPXW"
+    # The nightly's range is the single trade day, unchanged.
+    assert seen[0]["start"] == date(2026, 8, 19)
+    assert seen[0]["end"] == date(2026, 8, 19)
+    assert seen[0]["phase"] == "theta_nightly"

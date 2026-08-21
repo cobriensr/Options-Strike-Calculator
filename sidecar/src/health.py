@@ -1,10 +1,18 @@
 """HTTP server on port 8080 — health check + admin endpoints.
 
-Serves `GET /health` for liveness/readiness monitoring and
-`POST /admin/seed-archive` for one-shot seeding of the persistent
-volume from Vercel Blob. The admin endpoint is gated on a shared token
-and is safe to leave deployed — subsequent calls are cheap (SHA-based
-resume) and guarded by a single-flight lock in `archive_seeder`.
+Serves `GET /health` for liveness/readiness monitoring plus two
+token-gated admin endpoints:
+
+  - `POST /admin/seed-archive` — one-shot seeding of the persistent
+    volume from Vercel Blob. Safe to leave deployed: subsequent calls
+    are cheap (SHA-based resume) and guarded by a single-flight lock in
+    `archive_seeder`.
+  - `POST|GET /admin/theta-backfill` — start / poll a targeted
+    `(roots, date-range)` Theta EOD repair (see `theta_fetcher`).
+
+Both share the `X-Admin-Token` vs `ARCHIVE_SEED_TOKEN` gate, and both
+answer a flat 401 on EVERY rejection so the admin surface is not an
+enumeration oracle — see `_reject_admin_unauthorized`.
 """
 
 from __future__ import annotations
@@ -372,6 +380,33 @@ def _parse_date_range(
     return start, end
 
 
+def _parse_theta_backfill_fields(payload: dict[str, Any]) -> tuple[list[str], date, date]:
+    """Validate the POST /admin/theta-backfill body's SHAPE.
+
+    Returns ``(roots, start_date, end_date)``; raises _BadRequest with an
+    operator-facing message. Only shape is checked here — the domain
+    rules (root allowlist, span cap, "before today") belong to
+    theta_fetcher, which owns the configured root list and the fetch.
+    """
+    roots = payload.get("roots")
+    if not isinstance(roots, list) or not all(isinstance(r, str) for r in roots):
+        raise _BadRequest("roots must be a list of strings")
+
+    parsed: list[date] = []
+    for name in ("start", "end"):
+        raw = payload.get(name)
+        if not isinstance(raw, str):
+            raise _BadRequest(f"{name} is required and must be a YYYY-MM-DD string")
+        if not _DATE_RE.fullmatch(raw):
+            raise _BadRequest(f"{name} must be YYYY-MM-DD")
+        try:
+            parsed.append(date.fromisoformat(raw))
+        except ValueError:
+            raise _BadRequest(f"{name} must be a real YYYY-MM-DD date") from None
+
+    return roots, parsed[0], parsed[1]
+
+
 # Lazy-loaded reference to the `archive_query` module. DuckDB import
 # cost (~12 MB) is real, so we defer until the first archive request
 # rather than paying it at sidecar startup. The holder pattern (vs.
@@ -486,6 +521,23 @@ class HealthHandler(BaseHTTPRequestHandler):
         ("/theta/index/history", "_handle_theta_index_history"),
     )
 
+    # Admin routes, dispatched on an EXACT path match rather than the
+    # prefix match the two tables above use: they take no query string,
+    # and a prefix would route `/admin/theta-backfill-typo` straight into
+    # the admin handler. Every entry gates itself on X-Admin-Token.
+    _ADMIN_GET_ROUTES: tuple[tuple[str, str], ...] = (
+        ("/admin/theta-backfill", "_handle_theta_backfill_status"),
+    )
+
+    # All POST routes, exact-match. A table rather than an if-chain so a
+    # new endpoint is one line and the 404 fallback stays in one place.
+    _POST_ROUTES: tuple[tuple[str, str], ...] = (
+        ("/takeit/explain", "_handle_takeit_explain"),
+        ("/takeit/multileg-classify", "_handle_takeit_multileg_classify"),
+        ("/admin/seed-archive", "_handle_seed_archive"),
+        ("/admin/theta-backfill", "_handle_theta_backfill_start"),
+    )
+
     def do_GET(self) -> None:
         # /archive/* routes all run heavy, unbounded-memory DuckDB queries.
         # Bound their concurrency so N unauthenticated requests can't each
@@ -502,6 +554,11 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         for prefix, handler_name in self._THETA_ROUTES:
             if self.path.startswith(prefix):
+                getattr(self, handler_name)()
+                return
+
+        for admin_path, handler_name in self._ADMIN_GET_ROUTES:
+            if self.path == admin_path:
                 getattr(self, handler_name)()
                 return
 
@@ -556,40 +613,48 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(body.encode())
 
     def do_POST(self) -> None:
-        """Dispatch POST requests."""
-        if self.path == "/takeit/explain":
-            self._handle_takeit_explain()
-            return
-        if self.path == "/takeit/multileg-classify":
-            self._handle_takeit_multileg_classify()
-            return
-        if self.path != "/admin/seed-archive":
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Not found")
-            return
+        """Dispatch POST requests by exact path."""
+        for path, handler_name in self._POST_ROUTES:
+            if self.path == path:
+                getattr(self, handler_name)()
+                return
 
-        # Unify all auth-rejection paths to 401 so an external probe can't
-        # distinguish "endpoint disabled" from "wrong token" — that
-        # distinction is an enumeration oracle for the admin surface.
-        # Operators can still tell the two states apart via server logs.
-        if self.seed_archive is None:
-            log.warning("seed endpoint not configured (seed_archive is None)")
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
-            return
+        self.send_response(404)
+        self.end_headers()
+        self.wfile.write(b"Not found")
 
-        # Auth gate — single-owner token from env. `hmac.compare_digest`
-        # prevents timing-based token guessing (constant-time comparison).
+    def _admin_token_ok(self) -> bool:
+        """Constant-time X-Admin-Token check against ARCHIVE_SEED_TOKEN.
+
+        `hmac.compare_digest` prevents timing-based token guessing. An
+        unset env var means the admin surface is disabled, so it fails
+        closed rather than matching an empty header.
+        """
         expected = os.environ.get("ARCHIVE_SEED_TOKEN", "")
         got = self.headers.get("X-Admin-Token", "")
-        if not expected or not hmac.compare_digest(got, expected):
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
+        return bool(expected) and hmac.compare_digest(got, expected)
+
+    def _reject_admin_unauthorized(self, reason: str) -> None:
+        """Answer the flat admin 401, logging the real reason server-side.
+
+        EVERY rejection an /admin/* route can produce — feature not
+        configured on this sidecar, ARCHIVE_SEED_TOKEN unset, wrong or
+        missing token — returns this byte-identical body. Distinguishing
+        them would hand an external prober an enumeration oracle for the
+        admin surface ("this deployment HAS a seeder, keep guessing").
+        Operators recover the distinction from the log line below.
+        """
+        log.warning("admin request rejected: %s", reason)
+        self._send_json(401, {"error": "unauthorized"})
+
+    def _handle_seed_archive(self) -> None:
+        """POST /admin/seed-archive — pull the archive from Vercel Blob."""
+        if self.seed_archive is None:
+            self._reject_admin_unauthorized("seed endpoint not configured (seed_archive is None)")
+            return
+
+        if not self._admin_token_ok():
+            self._reject_admin_unauthorized("seed-archive: bad or missing X-Admin-Token")
             return
 
         # Busy gate — the `seed_is_busy` probe is advisory (it can race
@@ -616,6 +681,164 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(exc)}).encode())
+
+    def _theta_backfill_authorized(self, route: str) -> bool:
+        """Gate an /admin/theta-backfill request; 401 (and False) on refusal.
+
+        Two rejection reasons, one response. `theta_is_running is None`
+        means this health server was started without the Theta reporters
+        — `start_health_server`'s default — so the process isn't running
+        Theta at all and a Theta repair endpoint is meaningless. The
+        sidecar's own main.py always passes them, so in production the
+        real switch is ARCHIVE_SEED_TOKEN; this branch keeps a partial
+        wiring (tests, an embedded server) from exposing the endpoint.
+        """
+        if self.theta_is_running is None:
+            self._reject_admin_unauthorized(f"{route}: Theta reporters not wired on this server")
+            return False
+        if not self._admin_token_ok():
+            self._reject_admin_unauthorized(f"{route}: bad or missing X-Admin-Token")
+            return False
+        return True
+
+    def _theta_fetcher_module(self) -> Any | None:
+        """Return the lazily-imported `theta_fetcher`, or answer 500 and None.
+
+        Lazy so the Theta stack never lands on a cold start that doesn't
+        need it; in practice main.py has already imported it, making this
+        a sys.modules lookup. The guard exists so a broken deploy answers
+        500 instead of raising out of the handler, which would drop the
+        connection with no response at all.
+        """
+        try:
+            import theta_fetcher  # noqa: PLC0415 — see docstring
+        except ImportError as exc:
+            log.error("theta-backfill: theta_fetcher import failed: %s", exc)
+            self._send_json(500, {"error": f"theta_fetcher unavailable: {exc}"})
+            return None
+        return theta_fetcher
+
+    def _handle_theta_backfill_start(self) -> None:
+        """POST /admin/theta-backfill — start a targeted EOD gap repair.
+
+        Body::
+
+            {"roots": ["VIX","VIXW","NDXP"],
+             "start": "2026-08-18", "end": "2026-08-19"}
+
+        Answers **202** with the accepted plan the moment the worker
+        thread is spawned. It MUST NOT wait on the job: the crawl runs
+        ~1.5-2 h (NDXP alone is ~25 min per trade date) and this is a
+        ThreadingHTTPServer, so a blocking admin request would pin one of
+        its threads for hours and time out at every proxy in between.
+        Poll `GET /admin/theta-backfill` for progress.
+
+        Other outcomes: 400 (malformed body, or any rule in
+        `theta_fetcher._validate_backfill_request` — the message is
+        returned verbatim), 401 (see `_theta_backfill_authorized`), 413
+        (over the body cap), 423 (a repair is already running — the job
+        is single-flight), 500 (unexpected).
+
+        OPERATIONAL NOTE: this and the 17:25 ET nightly both drive the
+        one co-resident Theta Terminal, and they do NOT share a lock. Run
+        repairs OUTSIDE 21:25Z-23:30Z (the nightly's window during EDT)
+        or the two will contend for the Terminal and both will crawl.
+        """
+        if not self._theta_backfill_authorized("theta-backfill"):
+            return
+
+        payload = self._read_json_object_body()
+        if payload is None:
+            return  # 400/413 already sent
+
+        try:
+            roots, start_date, end_date = _parse_theta_backfill_fields(payload)
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+
+        fetcher = self._theta_fetcher_module()
+        if fetcher is None:
+            return  # 500 already sent
+
+        try:
+            plan = fetcher.start_targeted_backfill(roots, start_date, end_date)
+        except fetcher.ThetaBackfillRequestError as exc:
+            # Domain rules (root allowlist, span cap, not-today) live in
+            # the fetcher; surface its message so curl output is actionable.
+            self._send_json(400, {"error": str(exc)})
+            return
+        except fetcher.ThetaBackfillBusyError:
+            self._send_json(423, {"error": "a targeted backfill is already in progress"})
+            return
+        except Exception as exc:  # noqa: BLE001 — never leave the request unanswered
+            log.error("theta-backfill start failed: %s", exc)
+            self._send_json(500, {"error": str(exc)})
+            return
+
+        log.info(
+            "theta-backfill accepted: roots=%s range=[%s, %s]",
+            ",".join(plan["roots"]),
+            plan["start"],
+            plan["end"],
+        )
+        self._send_json(202, {"accepted": True, **plan})
+
+    def _handle_theta_backfill_status(self) -> None:
+        """GET /admin/theta-backfill — snapshot of the targeted backfill.
+
+        Cheap and safe to poll while the job runs (the fetcher copies its
+        state under a lock). Reports `idle` until the first POST of this
+        process's lifetime — job state is deliberately NOT persisted
+        across a restart, since re-POSTing is idempotent.
+        """
+        if not self._theta_backfill_authorized("theta-backfill-status"):
+            return
+
+        fetcher = self._theta_fetcher_module()
+        if fetcher is None:
+            return  # 500 already sent
+
+        try:
+            self._send_json(200, fetcher.targeted_backfill_status())
+        except Exception as exc:  # noqa: BLE001 — never leave the request unanswered
+            log.error("theta-backfill status failed: %s", exc)
+            self._send_json(500, {"error": str(exc)})
+
+    def _read_json_object_body(self) -> dict[str, Any] | None:
+        """Read + parse a JSON object body, or answer 4xx and return None.
+
+        Mirrors the /takeit handlers' size discipline: reject by DECLARED
+        Content-Length before allocating, because the server binds
+        0.0.0.0 and an unbounded `rfile.read` is a remote-OOM vector. A
+        missing, oversized, malformed, or non-object body is a 400/413 —
+        never an unhandled 500.
+        """
+        raw_length = self.headers.get("Content-Length", "0") or "0"
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            self._send_json(400, {"error": "invalid Content-Length header"})
+            return None
+
+        if content_length <= 0:
+            self._send_json(400, {"error": "empty body"})
+            return None
+        if content_length > MAX_BODY_BYTES:
+            # Do NOT read the body — that is the whole point of the cap.
+            self._send_json(413, {"error": "payload too large"})
+            return None
+
+        body_bytes = self.rfile.read(content_length)
+        try:
+            parsed = json.loads(body_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            self._send_json(400, {"error": f"invalid JSON body: {exc}"})
+            return None
+        if not isinstance(parsed, dict):
+            self._send_json(400, {"error": "body must be a JSON object"})
+            return None
+        return parsed
 
     def _handle_takeit_health(self) -> None:
         """GET /takeit/health — cheap liveness + readiness probe for the
