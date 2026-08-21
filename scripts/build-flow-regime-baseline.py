@@ -11,8 +11,9 @@ live ~50-ticker `ws_option_trades` stream), and computes per (ET day,
 
 For each slot it then builds the historical DISTRIBUTION as a compact
 percentile grid (1,5,10,...,90,95,99) across all days for that slot, and
-writes `api/_lib/flow-regime-baseline.json` (small, committed artifact
-consumed by the pure TS evaluator in api/_lib/flow-regime.ts).
+writes `src/data/flow-regime-baseline.json` (small, committed artifact
+consumed by the pure TS evaluator in api/_lib/flow-regime.ts and by the
+frontend classifier in src/components/FlowRegimeBadge/classify.ts).
 
 VALIDATION: the same per-(day,slot) metrics are recomputed from Neon
 `ws_option_trades` for the overlapping days (the WS stream began
@@ -89,7 +90,7 @@ def _resolve_tape_glob() -> str:
 
 
 TAPE_GLOB = _resolve_tape_glob()
-OUT_JSON = REPO_ROOT / "api" / "_lib" / "flow-regime-baseline.json"
+OUT_JSON = REPO_ROOT / "src" / "data" / "flow-regime-baseline.json"
 VALIDATION_TXT = REPO_ROOT / "docs" / "tmp" / "flow-regime-baseline-validation.txt"
 ENV_LOCAL = REPO_ROOT / ".env.local"
 

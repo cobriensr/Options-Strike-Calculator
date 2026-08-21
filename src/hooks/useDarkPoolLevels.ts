@@ -51,6 +51,78 @@ export interface DarkPoolLevel {
   updatedAt: string;
 }
 
+// ── Validation ──────────────────────────────────────────────────────
+// Mirrors the `validateSpike` pattern in useVegaSpikes: each level row is
+// validated individually (a malformed row is dropped, never fatal), while
+// a payload whose envelope doesn't match — `{}`, an HTML error body parsed
+// loosely, a 5xx JSON blob — is rejected wholesale and degrades exactly
+// like a non-ok response (grace-counted, previous levels kept) instead of
+// leaking `undefined` into `setLevels` and crashing the widget.
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/**
+ * Validate one level row from `data.levels`. Returns the typed row on
+ * success (nullish `latestTime` normalized to `null`) or `null` on any
+ * field-shape mismatch — the caller drops it so one bad row can't poison
+ * the whole panel. `level` is a price level, so 0 (or negative) is
+ * impossible and rejected; the remaining numerics are only checked for
+ * type/finiteness because 0 is legitimate for them.
+ */
+function validateLevel(raw: unknown): DarkPoolLevel | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.level) ||
+    r.level <= 0 ||
+    !isFiniteNumber(r.totalPremium) ||
+    !isFiniteNumber(r.tradeCount) ||
+    !isFiniteNumber(r.totalShares) ||
+    !(r.latestTime == null || typeof r.latestTime === 'string') ||
+    typeof r.updatedAt !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    level: r.level,
+    totalPremium: r.totalPremium,
+    tradeCount: r.tradeCount,
+    totalShares: r.totalShares,
+    latestTime: r.latestTime ?? null,
+    updatedAt: r.updatedAt,
+  };
+}
+
+interface ParsedDarkPoolResponse {
+  levels: DarkPoolLevel[];
+  /** `meta.lastUpdated` when present AND a string; null otherwise. */
+  lastUpdated: string | null;
+}
+
+/**
+ * Validate the /api/darkpool-levels envelope. Returns the parsed payload
+ * on success or `null` on any mismatch — the caller treats that like a
+ * failed fetch (grace-counted) rather than clobbering rendered state.
+ */
+function parseDarkPoolResponse(raw: unknown): ParsedDarkPoolResponse | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.levels)) return null;
+  const levels: DarkPoolLevel[] = [];
+  for (const row of r.levels) {
+    const valid = validateLevel(row);
+    if (valid) levels.push(valid);
+  }
+  let lastUpdated: string | null = null;
+  if (typeof r.meta === 'object' && r.meta !== null) {
+    const lu = (r.meta as Record<string, unknown>).lastUpdated;
+    if (typeof lu === 'string') lastUpdated = lu;
+  }
+  return { levels, lastUpdated };
+}
+
 export interface UseDarkPoolLevelsReturn {
   levels: DarkPoolLevel[];
   loading: boolean;
@@ -171,14 +243,23 @@ export function useDarkPoolLevels(
         return;
       }
 
-      const data = (await res.json()) as {
-        levels: DarkPoolLevel[];
-        date: string;
-        meta?: { lastUpdated: string | null };
-      };
+      const raw: unknown = await res.json();
 
       if (!mountedRef.current) return;
       if (ctrl.signal.aborted) return;
+
+      const data = parseDarkPoolResponse(raw);
+      if (data == null) {
+        // Shapeless body ({} / loosely-parsed HTML / error JSON) — same
+        // degradation path as a non-ok response: grace-counted, and the
+        // previously rendered levels survive instead of being clobbered
+        // by a payload we can't trust.
+        failCountRef.current += 1;
+        if (failCountRef.current >= FAIL_GRACE_COUNT) {
+          setError('Failed to load dark pool data');
+        }
+        return;
+      }
 
       setLevels(data.levels);
       failCountRef.current = 0;
@@ -190,7 +271,7 @@ export function useDarkPoolLevels(
       // when the server omits meta). Date.parse yields NaN on bad input;
       // coerce via Number.isFinite so consumers can show a clean empty
       // state instead of a NaN-flavored timestamp.
-      const sourceIso = data.meta?.lastUpdated ?? data.levels[0]?.updatedAt;
+      const sourceIso = data.lastUpdated ?? data.levels[0]?.updatedAt;
       if (sourceIso != null) {
         const parsed = Date.parse(sourceIso);
         setFetchedAt(Number.isFinite(parsed) ? parsed : null);

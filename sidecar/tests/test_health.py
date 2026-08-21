@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import sys
+import threading
+import time
 import types
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -22,15 +25,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from health import HealthHandler  # noqa: E402
+from datetime import UTC
+
+from health import HealthHandler
 
 
 class _FakeRequest:
     """Minimal request stub BaseHTTPRequestHandler expects."""
 
-    def __init__(self, path: str = "/health") -> None:
+    def __init__(self, path: str = "/health", headers: dict[str, str] | None = None) -> None:
         self.path = path
-        self.raw = f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode()
+        header_lines = "Host: localhost\r\n"
+        for key, value in (headers or {}).items():
+            header_lines += f"{key}: {value}\r\n"
+        self.raw = f"GET {path} HTTP/1.1\r\n{header_lines}\r\n".encode()
 
     def makefile(self, mode: str, *_args: object) -> io.BytesIO:
         if "r" in mode:
@@ -38,9 +46,12 @@ class _FakeRequest:
         return io.BytesIO()
 
 
-def _run_request(path: str = "/health") -> tuple[int, dict]:
-    """Drive HealthHandler for one request; return (status, body_obj)."""
-    req = _FakeRequest(path=path)
+def _run_request_raw(path: str = "/health", headers: dict[str, str] | None = None) -> str:
+    """Drive HealthHandler for one GET; return the raw HTTP response text
+    (status line + headers + body). Use when a test needs to inspect
+    headers; `_run_request` wraps this for the common (status, body) case.
+    `headers` are request headers (e.g. the /theta/index bearer)."""
+    req = _FakeRequest(path=path, headers=headers)
     # Write buffer lives on the instance as `wfile` once BaseHTTPRequestHandler
     # runs setup(). We capture everything it writes for later parsing.
     output = io.BytesIO()
@@ -57,9 +68,14 @@ def _run_request(path: str = "/health") -> tuple[int, dict]:
             pass
 
     _H(req, ("127.0.0.1", 0), None)  # type: ignore[arg-type]
-    raw = output.getvalue().decode()
+    return output.getvalue().decode()
+
+
+def _run_request(path: str = "/health", headers: dict[str, str] | None = None) -> tuple[int, dict]:
+    """Drive HealthHandler for one request; return (status, body_obj)."""
+    raw = _run_request_raw(path, headers=headers)
     # First line: HTTP/1.x <status> <reason>
-    status_line, *rest = raw.split("\r\n", 1)
+    status_line, *_rest = raw.split("\r\n", 1)
     status = int(status_line.split()[1])
     # Body is everything after the empty separator line.
     _, _, body_text = raw.partition("\r\n\r\n")
@@ -69,6 +85,17 @@ def _run_request(path: str = "/health") -> tuple[int, dict]:
         return status, json.loads(body_text)
     except json.JSONDecodeError:
         return status, {"_raw": body_text}
+
+
+def _response_headers(raw: str) -> dict[str, str]:
+    """Parse the response headers out of a raw HTTP response string."""
+    head, _, _body = raw.partition("\r\n\r\n")
+    headers: dict[str, str] = {}
+    for line in head.split("\r\n")[1:]:
+        key, _, value = line.partition(":")
+        if value:
+            headers[key.strip()] = value.strip()
+    return headers
 
 
 @pytest.fixture(autouse=True)
@@ -113,7 +140,7 @@ def test_health_returns_503_when_db_down(configure_base_callables) -> None:
 
 
 def test_health_returns_404_for_unknown_path(configure_base_callables) -> None:
-    status, body = _run_request(path="/foo")
+    status, _body = _run_request(path="/foo")
     assert status == 404
 
 
@@ -143,9 +170,7 @@ def test_health_theta_never_downgrades_overall_status(
     # overall status stays 'ok' / 200.
     HealthHandler.theta_is_running = staticmethod(lambda: False)
     HealthHandler.theta_last_ready_at = staticmethod(lambda: 0.0)
-    HealthHandler.theta_last_error = staticmethod(
-        lambda: "Theta HTTP server failed to come up"
-    )
+    HealthHandler.theta_last_error = staticmethod(lambda: "Theta HTTP server failed to come up")
 
     with patch("health._is_data_expected", return_value=False):
         status, body = _run_request()
@@ -186,9 +211,7 @@ def test_health_handles_theta_reporter_exceptions(
 def test_tbbo_day_microstructure_400_on_malformed_date(
     configure_base_callables,
 ) -> None:
-    status, body = _run_request(
-        path="/archive/tbbo-day-microstructure?date=bad&symbol=ES"
-    )
+    status, body = _run_request(path="/archive/tbbo-day-microstructure?date=bad&symbol=ES")
     assert status == 400
     assert "YYYY-MM-DD" in body["error"]
 
@@ -196,9 +219,7 @@ def test_tbbo_day_microstructure_400_on_malformed_date(
 def test_tbbo_day_microstructure_400_on_unknown_symbol(
     configure_base_callables,
 ) -> None:
-    status, body = _run_request(
-        path="/archive/tbbo-day-microstructure?date=2025-01-15&symbol=CL"
-    )
+    status, body = _run_request(path="/archive/tbbo-day-microstructure?date=2025-01-15&symbol=CL")
     assert status == 400
     assert "ES" in body["error"]
 
@@ -240,27 +261,21 @@ def test_tbbo_day_microstructure_404_on_missing_data(
 def test_tbbo_ofi_percentile_400_on_missing_value(
     configure_base_callables,
 ) -> None:
-    status, _body = _run_request(
-        path="/archive/tbbo-ofi-percentile?symbol=ES&window=1h"
-    )
+    status, _body = _run_request(path="/archive/tbbo-ofi-percentile?symbol=ES&window=1h")
     assert status == 400
 
 
 def test_tbbo_ofi_percentile_400_on_bad_window(
     configure_base_callables,
 ) -> None:
-    status, _body = _run_request(
-        path="/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1d"
-    )
+    status, _body = _run_request(path="/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1d")
     assert status == 400
 
 
 def test_tbbo_ofi_percentile_400_on_non_finite_value(
     configure_base_callables,
 ) -> None:
-    status, _body = _run_request(
-        path="/archive/tbbo-ofi-percentile?symbol=ES&value=nan&window=1h"
-    )
+    status, _body = _run_request(path="/archive/tbbo-ofi-percentile?symbol=ES&value=nan&window=1h")
     assert status == 400
 
 
@@ -310,10 +325,7 @@ def test_tbbo_ofi_percentile_400_on_horizon_days_over_cap(
 
     over_cap = archive_query._TBBO_OFI_MAX_HORIZON_DAYS + 1
     status, body = _run_request(
-        path=(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
-            f"&window=1h&horizon_days={over_cap}"
-        )
+        path=(f"/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h&horizon_days={over_cap}")
     )
     assert status == 400
     assert "horizon_days" in body["error"]
@@ -329,32 +341,32 @@ def test_tbbo_ofi_percentile_400_on_horizon_days_over_cap(
 class TestArchiveDateGuards:
     def _future_date(self) -> str:
         """Return a date string far in the future — always 'today or future'."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        return (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
+        return (datetime.now(UTC).date() + timedelta(days=30)).isoformat()
 
     def _today_utc(self) -> str:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        return datetime.now(timezone.utc).date().isoformat()
+        return datetime.now(UTC).date().isoformat()
 
     def _past_date(self) -> str:
         """Return a date 45 days in the past — always a valid archive target."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        return (datetime.now(timezone.utc).date() - timedelta(days=45)).isoformat()
+        return (datetime.now(UTC).date() - timedelta(days=45)).isoformat()
 
     def test_day_summary_short_circuits_today(self) -> None:
         """Today's date must 404 immediately without invoking DuckDB."""
         import health
 
-        with patch.object(
-            health, "_is_today_or_future_utc", wraps=health._is_today_or_future_utc
-        ) as guard_spy:
-            with patch("archive_query.day_summary_text") as mock_query:
-                status, body = _run_request(
-                    f"/archive/day-summary?date={self._today_utc()}"
-                )
+        with (
+            patch.object(
+                health, "_is_today_or_future_utc", wraps=health._is_today_or_future_utc
+            ) as guard_spy,
+            patch("archive_query.day_summary_text") as mock_query,
+        ):
+            status, body = _run_request(f"/archive/day-summary?date={self._today_utc()}")
 
         assert status == 404
         assert body.get("error", "").startswith("date not yet in archive")
@@ -366,21 +378,15 @@ class TestArchiveDateGuards:
     def test_day_summary_short_circuits_future(self) -> None:
         """Future dates must 404 immediately (no DuckDB)."""
         with patch("archive_query.day_summary_text") as mock_query:
-            status, body = _run_request(
-                f"/archive/day-summary?date={self._future_date()}"
-            )
+            status, body = _run_request(f"/archive/day-summary?date={self._future_date()}")
         assert status == 404
         assert body.get("error", "").startswith("date not yet in archive")
         mock_query.assert_not_called()
 
     def test_day_summary_past_date_hits_duckdb(self) -> None:
         """Past dates must still reach the DuckDB query path (normal flow)."""
-        with patch(
-            "archive_query.day_summary_text", return_value="sample summary"
-        ) as mock_query:
-            status, body = _run_request(
-                f"/archive/day-summary?date={self._past_date()}"
-            )
+        with patch("archive_query.day_summary_text", return_value="sample summary") as mock_query:
+            status, body = _run_request(f"/archive/day-summary?date={self._past_date()}")
         assert status == 200
         assert body["summary"] == "sample summary"
         mock_query.assert_called_once()
@@ -388,21 +394,15 @@ class TestArchiveDateGuards:
     def test_day_features_short_circuits_today(self) -> None:
         """Today's date must 404 immediately for /archive/day-features too."""
         with patch("archive_query.day_features_vector") as mock_query:
-            status, body = _run_request(
-                f"/archive/day-features?date={self._today_utc()}"
-            )
+            status, body = _run_request(f"/archive/day-features?date={self._today_utc()}")
         assert status == 404
         assert body.get("error", "").startswith("date not yet in archive")
         mock_query.assert_not_called()
 
     def test_day_features_past_date_hits_duckdb(self) -> None:
         """Past dates still run the DuckDB feature-vector computation."""
-        with patch(
-            "archive_query.day_features_vector", return_value=[0.0] * 60
-        ) as mock_query:
-            status, body = _run_request(
-                f"/archive/day-features?date={self._past_date()}"
-            )
+        with patch("archive_query.day_features_vector", return_value=[0.0] * 60) as mock_query:
+            status, body = _run_request(f"/archive/day-features?date={self._past_date()}")
         assert status == 200
         assert body["dim"] == 60
         mock_query.assert_called_once()
@@ -421,10 +421,11 @@ class TestIsTodayOrFutureUtc:
     """Pure helper — exercised independently from the HTTP layer."""
 
     def test_today_returns_true(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
+
         import health
 
-        today = datetime.now(timezone.utc).date().isoformat()
+        today = datetime.now(UTC).date().isoformat()
         assert health._is_today_or_future_utc(today) is True
 
     def test_future_returns_true(self) -> None:
@@ -559,9 +560,7 @@ class _FakePostRequest:
         header_lines = "Host: localhost\r\n"
         for k, v in (headers or {}).items():
             header_lines += f"{k}: {v}\r\n"
-        self.raw = (
-            f"POST {path} HTTP/1.1\r\n{header_lines}Content-Length: 0\r\n\r\n"
-        ).encode()
+        self.raw = (f"POST {path} HTTP/1.1\r\n{header_lines}Content-Length: 0\r\n\r\n").encode()
 
     def makefile(self, mode: str, *_args: object) -> io.BytesIO:
         if "r" in mode:
@@ -734,9 +733,7 @@ class TestArchiveEsRange:
         assert status == 404
         assert body["error"] == "no data"
 
-    def test_es_range_500_on_unexpected_exception(
-        self, configure_base_callables
-    ) -> None:
+    def test_es_range_500_on_unexpected_exception(self, configure_base_callables) -> None:
         with patch(
             "archive_query.es_day_summary",
             side_effect=RuntimeError("duckdb crashed"),
@@ -757,9 +754,7 @@ class TestArchiveAnalogDays:
         assert status == 400
         assert "YYYY-MM-DD" in body["error"]
 
-    def test_analog_days_400_on_bad_optional_int(
-        self, configure_base_callables
-    ) -> None:
+    def test_analog_days_400_on_bad_optional_int(self, configure_base_callables) -> None:
         status, body = _run_request("/archive/analog-days?date=2024-01-15&k=notanint")
         assert status == 400
         assert "k must be an integer" in body["error"]
@@ -767,9 +762,7 @@ class TestArchiveAnalogDays:
     def test_analog_days_200_passes_kwargs(self, configure_base_callables) -> None:
         sample = {"neighbors": [{"date": "2023-05-01", "distance": 0.1}]}
         with patch("archive_query.analog_days", return_value=sample) as mock_q:
-            status, body = _run_request(
-                "/archive/analog-days?date=2024-01-15&until_minute=60&k=20"
-            )
+            status, body = _run_request("/archive/analog-days?date=2024-01-15&until_minute=60&k=20")
         assert status == 200
         assert body == sample
         mock_q.assert_called_once_with("2024-01-15", until_minute=60, k=20)
@@ -783,9 +776,7 @@ class TestArchiveAnalogDays:
         assert status == 400
         assert "k must be" in body["error"]
 
-    def test_analog_days_500_on_unexpected_exception(
-        self, configure_base_callables
-    ) -> None:
+    def test_analog_days_500_on_unexpected_exception(self, configure_base_callables) -> None:
         with patch("archive_query.analog_days", side_effect=RuntimeError("oops")):
             status, body = _run_request("/archive/analog-days?date=2024-01-15")
         assert status == 500
@@ -799,18 +790,16 @@ class TestArchiveAnalogDays:
 
 class TestArchiveDaySummaryExceptions:
     def _past_date(self) -> str:
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        return (datetime.now(timezone.utc).date() - timedelta(days=45)).isoformat()
+        return (datetime.now(UTC).date() - timedelta(days=45)).isoformat()
 
     def test_day_summary_404_on_value_error(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_summary_text",
             side_effect=ValueError("no rows for date"),
         ):
-            status, body = _run_request(
-                f"/archive/day-summary?date={self._past_date()}"
-            )
+            status, body = _run_request(f"/archive/day-summary?date={self._past_date()}")
         assert status == 404
         assert body["error"] == "no rows for date"
 
@@ -819,9 +808,7 @@ class TestArchiveDaySummaryExceptions:
             "archive_query.day_summary_text",
             side_effect=RuntimeError("boom"),
         ):
-            status, body = _run_request(
-                f"/archive/day-summary?date={self._past_date()}"
-            )
+            status, body = _run_request(f"/archive/day-summary?date={self._past_date()}")
         assert status == 500
         assert body["error"] == "query failed"
 
@@ -839,9 +826,7 @@ class TestArchiveDaySummaryExceptions:
             "archive_query.day_features_vector",
             side_effect=ValueError("no rows"),
         ):
-            status, body = _run_request(
-                f"/archive/day-features?date={self._past_date()}"
-            )
+            status, body = _run_request(f"/archive/day-features?date={self._past_date()}")
         assert status == 404
         assert body["error"] == "no rows"
 
@@ -850,9 +835,7 @@ class TestArchiveDaySummaryExceptions:
             "archive_query.day_features_vector",
             side_effect=RuntimeError("boom"),
         ):
-            status, body = _run_request(
-                f"/archive/day-features?date={self._past_date()}"
-            )
+            status, body = _run_request(f"/archive/day-features?date={self._past_date()}")
         assert status == 500
         assert body["error"] == "query failed"
 
@@ -865,18 +848,14 @@ class TestArchiveDaySummaryExceptions:
 
 class TestArchiveBatchHandlers:
     def test_features_batch_400_on_bad_range(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/day-features-batch?from=bad&to=2024-01-02"
-        )
+        status, body = _run_request("/archive/day-features-batch?from=bad&to=2024-01-02")
         assert status == 400
         assert "YYYY-MM-DD" in body["error"]
 
     def test_features_batch_200(self, configure_base_callables) -> None:
         rows = [{"date": "2024-01-01", "vector": [0.1] * 60}]
         with patch("archive_query.day_features_batch", return_value=rows) as mock_q:
-            status, body = _run_request(
-                "/archive/day-features-batch?from=2024-01-01&to=2024-01-02"
-            )
+            status, body = _run_request("/archive/day-features-batch?from=2024-01-01&to=2024-01-02")
         assert status == 200
         assert body["from"] == "2024-01-01"
         assert body["to"] == "2024-01-02"
@@ -888,24 +867,18 @@ class TestArchiveBatchHandlers:
             "archive_query.day_features_batch",
             side_effect=RuntimeError("boom"),
         ):
-            status, body = _run_request(
-                "/archive/day-features-batch?from=2024-01-01&to=2024-01-02"
-            )
+            status, body = _run_request("/archive/day-features-batch?from=2024-01-01&to=2024-01-02")
         assert status == 500
         assert body["error"] == "query failed"
 
     def test_summary_batch_400_on_bad_range(self, configure_base_callables) -> None:
-        status, _body = _run_request(
-            "/archive/day-summary-batch?from=bad&to=2024-01-02"
-        )
+        status, _body = _run_request("/archive/day-summary-batch?from=bad&to=2024-01-02")
         assert status == 400
 
     def test_summary_batch_200(self, configure_base_callables) -> None:
         rows = [{"date": "2024-01-01", "summary": "x"}]
         with patch("archive_query.day_summary_batch", return_value=rows) as mock_q:
-            status, body = _run_request(
-                "/archive/day-summary-batch?from=2024-01-01&to=2024-01-02"
-            )
+            status, body = _run_request("/archive/day-summary-batch?from=2024-01-01&to=2024-01-02")
         assert status == 200
         assert body["rows"] == rows
         mock_q.assert_called_once_with("2024-01-01", "2024-01-02")
@@ -915,9 +888,7 @@ class TestArchiveBatchHandlers:
             "archive_query.day_summary_batch",
             side_effect=RuntimeError("boom"),
         ):
-            status, _body = _run_request(
-                "/archive/day-summary-batch?from=2024-01-01&to=2024-01-02"
-            )
+            status, _body = _run_request("/archive/day-summary-batch?from=2024-01-01&to=2024-01-02")
         assert status == 500
 
     def test_summary_prediction_400_on_bad_date(self, configure_base_callables) -> None:
@@ -930,50 +901,36 @@ class TestArchiveBatchHandlers:
             "archive_query.day_summary_prediction",
             return_value="leakage-free text",
         ):
-            status, body = _run_request(
-                "/archive/day-summary-prediction?date=2024-01-15"
-            )
+            status, body = _run_request("/archive/day-summary-prediction?date=2024-01-15")
         assert status == 200
         assert body["date"] == "2024-01-15"
         assert body["summary"] == "leakage-free text"
 
-    def test_summary_prediction_404_on_value_error(
-        self, configure_base_callables
-    ) -> None:
+    def test_summary_prediction_404_on_value_error(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_summary_prediction",
             side_effect=ValueError("missing"),
         ):
-            status, body = _run_request(
-                "/archive/day-summary-prediction?date=2024-01-15"
-            )
+            status, body = _run_request("/archive/day-summary-prediction?date=2024-01-15")
         assert status == 404
         assert body["error"] == "missing"
 
-    def test_summary_prediction_500_on_unexpected(
-        self, configure_base_callables
-    ) -> None:
+    def test_summary_prediction_500_on_unexpected(self, configure_base_callables) -> None:
         with patch(
             "archive_query.day_summary_prediction",
             side_effect=RuntimeError("boom"),
         ):
-            status, body = _run_request(
-                "/archive/day-summary-prediction?date=2024-01-15"
-            )
+            status, body = _run_request("/archive/day-summary-prediction?date=2024-01-15")
         assert status == 500
         assert body["error"] == "query failed"
 
     def test_summary_prediction_batch_400(self, configure_base_callables) -> None:
-        status, _body = _run_request(
-            "/archive/day-summary-prediction-batch?from=bad&to=2024-01-02"
-        )
+        status, _body = _run_request("/archive/day-summary-prediction-batch?from=bad&to=2024-01-02")
         assert status == 400
 
     def test_summary_prediction_batch_200(self, configure_base_callables) -> None:
         rows = [{"date": "2024-01-01", "summary": "x"}]
-        with patch(
-            "archive_query.day_summary_prediction_batch", return_value=rows
-        ) as mock_q:
+        with patch("archive_query.day_summary_prediction_batch", return_value=rows) as mock_q:
             status, body = _run_request(
                 "/archive/day-summary-prediction-batch?from=2024-01-01&to=2024-01-02"
             )
@@ -1017,30 +974,22 @@ class TestTbboDayMicrostructureMore:
 
 class TestTbboOfiPercentileBranches:
     def test_400_on_bad_symbol(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=CL&value=0.1&window=1h"
-        )
+        status, body = _run_request("/archive/tbbo-ofi-percentile?symbol=CL&value=0.1&window=1h")
         assert status == 400
         assert "ES" in body["error"]
 
     def test_400_on_bad_window(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=999"
-        )
+        status, body = _run_request("/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=999")
         assert status == 400
         assert "window" in body["error"]
 
     def test_400_on_value_unparseable(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=abc&window=1h"
-        )
+        status, body = _run_request("/archive/tbbo-ofi-percentile?symbol=ES&value=abc&window=1h")
         assert status == 400
         assert "finite" in body["error"]
 
     def test_400_on_value_inf(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=inf&window=1h"
-        )
+        status, body = _run_request("/archive/tbbo-ofi-percentile?symbol=ES&value=inf&window=1h")
         assert status == 400
         assert "finite" in body["error"]
 
@@ -1062,9 +1011,7 @@ class TestTbboOfiPercentileBranches:
         assert status == 500
         assert body["error"] == "query failed"
 
-    def test_horizon_kwarg_passed_when_within_cap(
-        self, configure_base_callables
-    ) -> None:
+    def test_horizon_kwarg_passed_when_within_cap(self, configure_base_callables) -> None:
         sample = {
             "symbol": "ES",
             "window": "1h",
@@ -1076,8 +1023,7 @@ class TestTbboOfiPercentileBranches:
         }
         with patch("archive_query.tbbo_ofi_percentile", return_value=sample) as mock_q:
             status, body = _run_request(
-                "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
-                "&window=1h&horizon_days=100"
+                "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h&horizon_days=100"
             )
         assert status == 200
         assert body == sample
@@ -1096,7 +1042,7 @@ class TestHealthFreshness:
         # last_bar_at returns "now" — staleness < 120s → fresh.
         import time
 
-        HealthHandler.last_bar_at = staticmethod(lambda: time.time())
+        HealthHandler.last_bar_at = staticmethod(time.time)
         with patch("health._is_data_expected", return_value=True):
             status, body = _run_request()
         assert status == 200
@@ -1130,9 +1076,7 @@ class TestHealthFreshness:
 
 
 class TestBuildThetaBlock:
-    def test_returns_none_when_running_callable_unset(
-        self, configure_base_callables
-    ) -> None:
+    def test_returns_none_when_running_callable_unset(self, configure_base_callables) -> None:
         # Default reset: theta_is_running is None → block omitted entirely.
         with patch("health._is_data_expected", return_value=False):
             _status, body = _run_request()
@@ -1172,14 +1116,13 @@ class TestIsDataExpected:
 
     def _patched_dt(self, weekday: int, hour: int):
         """Build a context manager that patches datetime.now to a fixed CT time."""
-        from datetime import datetime
-        from unittest.mock import patch as mpatch
-
         # Pick a Wednesday base date (2024-01-03 was a Wednesday).
         # Adjust by weekday delta. weekday(): Mon=0..Sun=6
-        from datetime import timedelta
+        from datetime import datetime, timedelta
+        from unittest.mock import patch as mpatch
 
-        wed = datetime(2024, 1, 3, hour, 0, 0)  # Wed (weekday=2)
+        # Naive on purpose: the fake now() below attaches whatever tz is requested.
+        wed = datetime(2024, 1, 3, hour, 0, 0)  # noqa: DTZ001  (Wed, weekday=2)
         delta = weekday - 2
         target = wed + timedelta(days=delta)
 
@@ -1346,12 +1289,10 @@ class TestQuietThreadingHTTPServer:
     """
 
     def _make_server(self) -> Any:
-        import health  # noqa: PLC0415
+        import health
 
         # Allocate without __init__ — we don't want a real socket.
-        return health._QuietThreadingHTTPServer.__new__(
-            health._QuietThreadingHTTPServer
-        )
+        return health._QuietThreadingHTTPServer.__new__(health._QuietThreadingHTTPServer)
 
     def test_swallows_broken_pipe(self) -> None:
         server = self._make_server()
@@ -1613,9 +1554,7 @@ class TestArchive500Sentry:
         assert kwargs["tags"]["route"] == "es-range"
         assert kwargs["tags"]["component"] == "archive"
 
-    def test_tbbo_microstructure_500_captures_to_sentry(
-        self, configure_base_callables
-    ) -> None:
+    def test_tbbo_microstructure_500_captures_to_sentry(self, configure_base_callables) -> None:
         with (
             patch(
                 "archive_query.tbbo_day_microstructure",
@@ -1632,3 +1571,786 @@ class TestArchive500Sentry:
         _args, kwargs = cap.call_args
         assert kwargs["tags"]["route"] == "tbbo-day-microstructure"
         assert kwargs["tags"]["symbol"] == "ES"
+
+
+# ---------------------------------------------------------------------------
+# Unseeded archive → 503 archive_unavailable (never a bare 500)
+# ---------------------------------------------------------------------------
+#
+# Readiness audit 2026-08-18: fetch-day-ohlc got HTTP 500 from
+# GET /archive/day-summary-batch?from=2026-08-18&to=2026-08-18 on a
+# deployment whose Railway volume was never seeded. The query layer now
+# raises `ArchiveUnavailableError`; the HTTP layer must map that to a
+# quiet 503 `{error: "archive_unavailable"}` — no Sentry capture, no
+# log.error — for every /archive/* route.
+
+
+def _past_date_iso(days: int = 45) -> str:
+    from datetime import datetime, timedelta
+
+    return (datetime.now(UTC).date() - timedelta(days=days)).isoformat()
+
+
+# (route path, archive_query attribute the handler dispatches to)
+_ARCHIVE_ROUTES_FOR_UNAVAILABLE = [
+    (f"/archive/es-range?date={_past_date_iso()}", "es_day_summary"),
+    (f"/archive/analog-days?date={_past_date_iso()}", "analog_days"),
+    (f"/archive/day-summary?date={_past_date_iso()}", "day_summary_text"),
+    (f"/archive/day-features?date={_past_date_iso()}", "day_features_vector"),
+    (
+        f"/archive/day-summary-prediction?date={_past_date_iso()}",
+        "day_summary_prediction",
+    ),
+    (
+        "/archive/day-summary-batch?from=2026-08-18&to=2026-08-18",
+        "day_summary_batch",
+    ),
+    (
+        "/archive/day-features-batch?from=2026-08-18&to=2026-08-18",
+        "day_features_batch",
+    ),
+    (
+        "/archive/day-summary-prediction-batch?from=2026-08-18&to=2026-08-18",
+        "day_summary_prediction_batch",
+    ),
+    (
+        f"/archive/tbbo-day-microstructure?date={_past_date_iso()}&symbol=ES",
+        "tbbo_day_microstructure",
+    ),
+    (
+        "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h",
+        "tbbo_ofi_percentile",
+    ),
+]
+
+
+class TestArchiveUnavailable:
+    def test_route_table_covers_every_archive_route(self) -> None:
+        """Completeness guard: a new /archive/* route must be added to
+        `_ARCHIVE_ROUTES_FOR_UNAVAILABLE` so it gets the 503 mapping test."""
+        covered = {path.split("?", 1)[0] for path, _ in _ARCHIVE_ROUTES_FOR_UNAVAILABLE}
+        registered = {prefix for prefix, _ in HealthHandler._ARCHIVE_ROUTES}
+        assert covered == registered
+
+    @pytest.mark.parametrize(
+        ("path", "query_attr"),
+        _ARCHIVE_ROUTES_FOR_UNAVAILABLE,
+        ids=[attr for _, attr in _ARCHIVE_ROUTES_FOR_UNAVAILABLE],
+    )
+    def test_every_archive_route_maps_unavailable_to_503(
+        self, configure_base_callables, path: str, query_attr: str
+    ) -> None:
+        import archive_query
+
+        exc = archive_query.ArchiveUnavailableError(
+            "archive dataset 'ohlcv_1m' not found", dataset="ohlcv_1m"
+        )
+        with (
+            patch(f"archive_query.{query_attr}", side_effect=exc),
+            patch("sentry_setup.capture_exception") as cap,
+            patch("health.log") as mock_log,
+        ):
+            status, body = _run_request(path)
+
+        assert status == 503
+        assert body["error"] == "archive_unavailable"
+        assert body["dataset"] == "ohlcv_1m"
+        # Unconfigured != broken: no Sentry event, no error-level log.
+        cap.assert_not_called()
+        mock_log.error.assert_not_called()
+
+    def test_503_unavailable_is_distinct_from_busy(self, configure_base_callables) -> None:
+        """The busy-cap 503 carries Retry-After (transient); unseeded does
+        not — a caller must not spin retrying an archive that will not
+        appear until someone runs the seed."""
+        import archive_query
+
+        exc = archive_query.ArchiveUnavailableError("nope", dataset="ohlcv_1m")
+        with patch("archive_query.day_summary_batch", side_effect=exc):
+            raw = _run_request_raw("/archive/day-summary-batch?from=2026-08-18&to=2026-08-18")
+        head, _, _body = raw.partition("\r\n\r\n")
+        assert " 503 " in head.split("\r\n", 1)[0]
+        assert "Retry-After" not in head
+
+    def test_genuine_failures_still_500_and_capture(self, configure_base_callables) -> None:
+        """Regression guard: the new branch must not swallow real bugs."""
+        with (
+            patch(
+                "archive_query.day_summary_batch",
+                side_effect=RuntimeError("duckdb crashed"),
+            ),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request("/archive/day-summary-batch?from=2026-08-18&to=2026-08-18")
+        assert status == 500
+        assert body["error"] == "query failed"
+        cap.assert_called_once()
+
+    # -- End-to-end against the real query layer (no mocks) ---------------
+
+    def test_batch_route_503_on_empty_archive_root(
+        self, configure_base_callables, tmp_path: Path
+    ) -> None:
+        """Reproduces the 2026-08-18 production failure: ARCHIVE_ROOT
+        exists (volume mounted) but was never seeded."""
+        import archive_query
+
+        root = tmp_path / "archive"
+        root.mkdir()
+        with (
+            patch.object(archive_query, "_ROOT", root),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request("/archive/day-summary-batch?from=2026-08-18&to=2026-08-18")
+        assert status == 503
+        assert body["error"] == "archive_unavailable"
+        cap.assert_not_called()
+
+    def test_batch_route_503_on_missing_archive_root(
+        self, configure_base_callables, tmp_path: Path
+    ) -> None:
+        import archive_query
+
+        root = tmp_path / "no-such-dir"
+        with (
+            patch.object(archive_query, "_ROOT", root),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request("/archive/day-features-batch?from=2026-08-18&to=2026-08-18")
+        assert status == 503
+        assert body["error"] == "archive_unavailable"
+        cap.assert_not_called()
+
+    @pytest.mark.parametrize("route", ["day-summary", "day-features"])
+    def test_single_day_routes_503_on_unseeded_archive(
+        self, configure_base_callables, tmp_path: Path, route: str
+    ) -> None:
+        """Past date + unseeded archive → 503 archive_unavailable (NOT the
+        404 'No ES bars found' that a seeded-but-missing date returns —
+        the operator needs to be able to tell the two apart)."""
+        import archive_query
+
+        root = tmp_path / "archive"
+        root.mkdir()
+        with (
+            patch.object(archive_query, "_ROOT", root),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            status, body = _run_request(f"/archive/{route}?date={_past_date_iso()}")
+        assert status == 503
+        assert body["error"] == "archive_unavailable"
+        cap.assert_not_called()
+
+    @pytest.mark.parametrize("route", ["day-summary", "day-features"])
+    def test_single_day_routes_keep_404_for_today_even_when_unseeded(
+        self, configure_base_callables, tmp_path: Path, route: str
+    ) -> None:
+        """The SIDE-017 today/future short-circuit still wins — it runs
+        before any archive access, so refresh-current-snapshot's existing
+        404 handling is unchanged."""
+        from datetime import datetime
+
+        import archive_query
+
+        today = datetime.now(UTC).date().isoformat()
+        root = tmp_path / "archive"
+        root.mkdir()
+        with patch.object(archive_query, "_ROOT", root):
+            status, body = _run_request(f"/archive/{route}?date={today}")
+        assert status == 404
+        assert body["error"].startswith("date not yet in archive")
+
+
+# ---------------------------------------------------------------------------
+# /theta/index/* concurrency bound — bursts queue instead of failing
+# ---------------------------------------------------------------------------
+#
+# Theta Terminal v1.8.6 (co-resident jar, HTTP on 127.0.0.1:25510) answers
+# sequential requests reliably and drops them under a burst. Two observed
+# failures: `/api/history` fans out 5 symbols x up to 6 days = ~30 concurrent
+# /theta/index/history calls and on 2026-08-19 $VIX1D came back empty while
+# the other four roots succeeded; on 2026-08-18 /api/chain 502'd seven times,
+# each preceded by a sidecar `503 theta_unavailable` for $SPX.
+#
+# These tests pin the bound: at most `_THETA_INDEX_CONCURRENCY` requests
+# inside the Terminal at once, and — unlike the archive slot, which sheds
+# instantly — the rest QUEUE for up to `_THETA_INDEX_WAIT_S` before a 503.
+
+_THETA_SECRET = "theta-concurrency-secret"
+_THETA_AUTH = {"Authorization": f"Bearer {_THETA_SECRET}"}
+_THETA_PRICE_PATH = "/theta/index/price?root=SPX"
+_THETA_HISTORY_PATH = "/theta/index/history?root=SPX&date=2026-08-14"
+
+
+def _stub_theta_client(hook: Any = None) -> Any:
+    """Build a ThetaClient stand-in; `hook` runs inside every Terminal call."""
+    from datetime import date as _date
+    from decimal import Decimal
+
+    from theta_client import IndexOhlcCandle, IndexPriceSnapshot
+
+    class _StubClient:
+        def snapshot_index_price(self, root: str) -> Any:
+            if hook is not None:
+                hook()
+            return IndexPriceSnapshot(
+                root=root,
+                price=Decimal("6423.53"),
+                snapshot_date=_date(2026, 8, 14),
+                ts_ms=1786462200000,
+            )
+
+        def hist_index_ohlc(self, root: str, day: Any, ivl_ms: int | None = None) -> Any:
+            if hook is not None:
+                hook()
+            return [
+                IndexOhlcCandle(
+                    ts_ms=1786455000000,
+                    open=Decimal("6388.00"),
+                    high=Decimal("6391.50"),
+                    low=Decimal("6387.25"),
+                    close=Decimal("6390.00"),
+                )
+            ]
+
+    return _StubClient()
+
+
+@pytest.fixture
+def theta_secret() -> Any:
+    """Install the bearer secret the /theta/index/* routes require."""
+    saved = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET")
+    os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = _THETA_SECRET
+    yield
+    if saved is None:
+        os.environ.pop("TAKEIT_SIDECAR_SHARED_SECRET", None)
+    else:
+        os.environ["TAKEIT_SIDECAR_SHARED_SECRET"] = saved
+
+
+@pytest.fixture
+def theta_slots() -> Any:
+    """Swap in a fresh cap-2 Theta semaphore and clear the warn latch.
+
+    The bound is process-global: a slot leaked by one test would
+    otherwise poison every later one.
+    """
+    import health
+
+    sema = threading.BoundedSemaphore(2)
+    saved_latch = health._theta_index_wait_expired
+    health._theta_index_wait_expired = False
+    with patch("health._theta_index_semaphore", sema):
+        yield sema
+    health._theta_index_wait_expired = saved_latch
+
+
+class TestThetaIndexConcurrency:
+    def test_documented_defaults(self) -> None:
+        """Cap 2 with a 5s queue budget. The Terminal is reliable
+        sequentially, 2 keeps queue latency down without bursting it, and
+        5s leaves headroom inside the caller's 8s SIDECAR_TIMEOUT_MS."""
+        import health
+
+        if {"THETA_INDEX_CONCURRENCY", "THETA_INDEX_WAIT_S"} & set(os.environ):
+            pytest.skip("env override active")
+        assert health._THETA_INDEX_CONCURRENCY == 2
+        assert health._THETA_INDEX_WAIT_S == 5.0
+
+    # -- (a) a free slot changes nothing -------------------------------
+
+    def test_price_route_unaffected_when_slots_free(self, theta_secret, theta_slots) -> None:
+        with patch("theta_client.ThetaClient", return_value=_stub_theta_client()):
+            status, body = _run_request(_THETA_PRICE_PATH, headers=_THETA_AUTH)
+        assert status == 200
+        assert body == {
+            "root": "SPX",
+            "price": 6423.53,
+            "prev_close": 6390.0,
+            "ts": 1786462200000,
+        }
+
+    def test_history_route_unaffected_when_slots_free(self, theta_secret, theta_slots) -> None:
+        with patch("theta_client.ThetaClient", return_value=_stub_theta_client()):
+            status, body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+        assert status == 200
+        assert body == {
+            "root": "SPX",
+            "date": "2026-08-14",
+            "ivl_ms": 60000,
+            "candles": [
+                {
+                    "ts_ms": 1786455000000,
+                    "open": 6388.0,
+                    "high": 6391.5,
+                    "low": 6387.25,
+                    "close": 6390.0,
+                }
+            ],
+        }
+
+    def test_slot_released_after_a_successful_request(self, theta_secret, theta_slots) -> None:
+        with patch("theta_client.ThetaClient", return_value=_stub_theta_client()):
+            status, _body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+        assert status == 200
+        # Both slots free again — the handler leaked nothing.
+        assert theta_slots.acquire(blocking=False)
+        assert theta_slots.acquire(blocking=False)
+        theta_slots.release()
+        theta_slots.release()
+
+    def test_401_and_400_stay_instant_while_saturated(self, theta_secret, theta_slots) -> None:
+        """Auth + root validation run OUTSIDE the slot, so a saturated
+        Terminal never turns a 401/400 into a queued 503."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_WAIT_S", 5.0),
+                patch("theta_client.ThetaClient") as mock_cls,
+            ):
+                started = time.monotonic()
+                unauth, unauth_body = _run_request(
+                    _THETA_PRICE_PATH, headers={"Authorization": "Bearer wrong"}
+                )
+                bad_root, bad_root_body = _run_request(
+                    "/theta/index/price?root=TICK", headers=_THETA_AUTH
+                )
+                elapsed = time.monotonic() - started
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        assert (unauth, unauth_body) == (401, {"error": "unauthorized"})
+        assert bad_root == 400
+        assert "root" in bad_root_body["error"]
+        assert elapsed < 1.0, "validation must not queue behind the Terminal"
+        mock_cls.assert_not_called()
+
+    # -- (b) exhausted cap: wait, then 503 theta_busy -------------------
+
+    @pytest.mark.parametrize(
+        "path", [_THETA_PRICE_PATH, _THETA_HISTORY_PATH], ids=["price", "history"]
+    )
+    def test_503_theta_busy_with_retry_after_when_wait_expires(
+        self, theta_secret, theta_slots, path: str
+    ) -> None:
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_WAIT_S", 0.05),
+                patch("theta_client.ThetaClient") as mock_cls,
+            ):
+                started = time.monotonic()
+                raw = _run_request_raw(path, headers=_THETA_AUTH)
+                elapsed = time.monotonic() - started
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        assert raw.split("\r\n", 1)[0].split()[1] == "503"
+        _, _, body_text = raw.partition("\r\n\r\n")
+        assert json.loads(body_text) == {"error": "theta_busy"}
+        assert _response_headers(raw)["Retry-After"] == "1"
+        # It queued for the whole budget before shedding...
+        assert elapsed >= 0.05
+        # ...and never reached the Terminal.
+        mock_cls.assert_not_called()
+
+    def test_queued_request_succeeds_once_a_slot_frees(self, theta_secret, theta_slots) -> None:
+        """The whole point of the bound: a burst QUEUES instead of failing."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        freed = threading.Timer(0.15, theta_slots.release)
+        freed.start()
+        with (
+            patch("health._THETA_INDEX_WAIT_S", 5.0),
+            patch("theta_client.ThetaClient", return_value=_stub_theta_client()),
+            patch("health.log") as mock_log,
+        ):
+            started = time.monotonic()
+            status, body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+            elapsed = time.monotonic() - started
+        freed.join()
+        theta_slots.release()
+
+        assert status == 200
+        assert body["root"] == "SPX"
+        assert elapsed >= 0.15, "request should have waited, not failed fast"
+        # Waiting is a debug-level event, not a warning.
+        assert [c for c in mock_log.debug.call_args_list if "wait" in str(c)]
+        mock_log.warning.assert_not_called()
+
+    def test_wait_expiry_warns_once_per_process(self, theta_secret, theta_slots) -> None:
+        """The latched warning is the 'cap is too low' signal — one per
+        process, not one per shed request."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_WAIT_S", 0.01),
+                patch("theta_client.ThetaClient"),
+                patch("health.log") as mock_log,
+            ):
+                for _ in range(3):
+                    status, body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+                    assert status == 503
+                    assert body == {"error": "theta_busy"}
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        warnings = [c for c in mock_log.warning.call_args_list if "theta" in str(c)]
+        assert len(warnings) == 1, mock_log.warning.call_args_list
+
+    # -- (c) real threads never exceed the cap -------------------------
+
+    def test_concurrent_requests_are_serialised_to_the_cap(self, theta_secret, theta_slots) -> None:
+        """8 threads, cap 2: never more than 2 inside the Terminal at
+        once, and nothing is shed — they queue and all get 200."""
+        cap = 2
+        lock = threading.Lock()
+        current = 0
+        peak = 0
+
+        def hook() -> None:
+            nonlocal current, peak
+            with lock:
+                current += 1
+                peak = max(peak, current)
+            time.sleep(0.05)
+            with lock:
+                current -= 1
+
+        statuses: list[int] = []
+
+        def worker() -> None:
+            status, _body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+            with lock:
+                statuses.append(status)
+
+        with patch(
+            "theta_client.ThetaClient",
+            side_effect=lambda **_kw: _stub_theta_client(hook),
+        ):
+            threads = [threading.Thread(target=worker) for _ in range(8)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+
+        assert peak <= cap, f"peak concurrency {peak} exceeded cap {cap}"
+        assert peak >= 2, "cap 2 should admit two callers concurrently"
+        assert statuses == [200] * 8
+
+
+# ---------------------------------------------------------------------------
+# (c') a shed is VISIBLE — latched Sentry capture, once per process
+# ---------------------------------------------------------------------------
+#
+# The sidecar's Sentry has no logging integration, so the latched
+# `log.warning` in `_warn_theta_wait_expired` alone is invisible outside
+# the Railway log drain. The first shed must also go out as a
+# `capture_message` (same precedent as db.py's slow-getconn and
+# batched_writer's overflow-drop events) — exactly once per process.
+
+
+class TestThetaWaitExpiredSentry:
+    def test_first_shed_captures_to_sentry_once_with_context(
+        self, theta_secret, theta_slots
+    ) -> None:
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_CONCURRENCY", 2),
+                patch("health._THETA_INDEX_WAIT_S", 0.01),
+                patch("theta_client.ThetaClient"),
+                patch("health.capture_message") as cap,
+            ):
+                for _ in range(3):
+                    status, body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+                    assert (status, body) == (503, {"error": "theta_busy"})
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        # Latched alongside the log warning: 3 sheds → ONE Sentry event.
+        cap.assert_called_once()
+        args, kwargs = cap.call_args
+        assert args == ("theta index slot wait expired",)
+        assert kwargs["level"] == "warning"
+        assert kwargs["context"] == {"cap": 2, "wait_s": 0.01}
+        assert kwargs["tags"] == {"component": "health", "route": "theta-index"}
+
+    def test_capture_failure_does_not_mask_the_503(self, theta_secret, theta_slots) -> None:
+        """Observability must never turn a shed into a 500 / dead socket."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with (
+                patch("health._THETA_INDEX_WAIT_S", 0.01),
+                patch("theta_client.ThetaClient"),
+                patch(
+                    "health.capture_message",
+                    side_effect=RuntimeError("sentry exploded"),
+                ),
+            ):
+                raw = _run_request_raw(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+
+        assert raw.split("\r\n", 1)[0].split()[1] == "503"
+        _, _, body_text = raw.partition("\r\n\r\n")
+        assert json.loads(body_text) == {"error": "theta_busy"}
+        assert _response_headers(raw)["Retry-After"] == "1"
+
+    def test_queued_then_served_request_captures_nothing(self, theta_secret, theta_slots) -> None:
+        """Waiting is normal operation; only an EXPIRED wait is an event."""
+        theta_slots.acquire()
+        theta_slots.acquire()
+        freed = threading.Timer(0.1, theta_slots.release)
+        freed.start()
+        with (
+            patch("health._THETA_INDEX_WAIT_S", 5.0),
+            patch("theta_client.ThetaClient", return_value=_stub_theta_client()),
+            patch("health.capture_message") as cap,
+        ):
+            status, _body = _run_request(_THETA_HISTORY_PATH, headers=_THETA_AUTH)
+        freed.join()
+        theta_slots.release()
+
+        assert status == 200
+        cap.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# (c'') THETA_INDEX_* env knobs degrade, never raise at import
+# ---------------------------------------------------------------------------
+#
+# The knobs are read when `health` is imported. An exception there takes
+# the whole health server down with it, and Railway then rolls the deploy
+# back in a loop — so a fat-fingered value must fall back to the documented
+# default (with a warning), and out-of-range values clamp: concurrency 0
+# would permanently shed every request, a sub-half-second wait is a shed
+# in disguise, and an astronomically large one overflows Python's lock
+# timeout at contention time.
+
+
+@pytest.fixture
+def reload_health(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Reload `health` under env overrides; restore the module afterwards.
+
+    `importlib.reload` re-executes the module in the SAME module dict, so
+    the handler methods (which look `theta_index_slot` / the semaphore up
+    by name at call time) and every other test's `patch("health.…")` keep
+    working. The teardown undoes the env and reloads once more so later
+    tests see the documented defaults.
+    """
+    import importlib
+
+    import health
+
+    def _reload(**env: str) -> Any:
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        return importlib.reload(health)
+
+    yield _reload
+    monkeypatch.undo()
+    importlib.reload(health)
+
+
+def _admitted(sema: threading.Semaphore) -> int:
+    """Count how many non-blocking acquires a fresh semaphore admits."""
+    count = 0
+    while sema.acquire(blocking=False):
+        count += 1
+    for _ in range(count):
+        sema.release()
+    return count
+
+
+class TestThetaIndexEnvParsing:
+    # -- concurrency ---------------------------------------------------
+
+    def test_non_numeric_concurrency_falls_back_to_default(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_CONCURRENCY="abc")
+        assert mod._THETA_INDEX_CONCURRENCY == 2
+        assert _admitted(mod._theta_index_semaphore) == 2
+        assert any(
+            "THETA_INDEX_CONCURRENCY" in r.getMessage() and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), caplog.records
+
+    @pytest.mark.parametrize("raw", ["0", "-3"])
+    def test_concurrency_below_one_clamps_to_one(
+        self, reload_health, caplog: pytest.LogCaptureFixture, raw: str
+    ) -> None:
+        """0 would permanently shed (every acquire times out); a negative
+        value raises inside BoundedSemaphore. Both clamp to 1."""
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_CONCURRENCY=raw)
+        assert mod._THETA_INDEX_CONCURRENCY == 1
+        assert _admitted(mod._theta_index_semaphore) == 1
+        assert any("THETA_INDEX_CONCURRENCY" in r.getMessage() for r in caplog.records)
+
+    def test_concurrency_zero_does_not_permanently_shed(self, reload_health, theta_secret) -> None:
+        """End to end: after the clamp a request still reaches the Terminal."""
+        reload_health(THETA_INDEX_CONCURRENCY="0")
+        with patch("theta_client.ThetaClient", return_value=_stub_theta_client()):
+            status, body = _run_request(_THETA_PRICE_PATH, headers=_THETA_AUTH)
+        assert status == 200
+        assert body["root"] == "SPX"
+
+    def test_valid_concurrency_is_honoured_without_warning(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_CONCURRENCY="3")
+        assert mod._THETA_INDEX_CONCURRENCY == 3
+        assert _admitted(mod._theta_index_semaphore) == 3
+        assert not [r for r in caplog.records if "THETA_INDEX" in r.getMessage()]
+
+    def test_blank_concurrency_is_treated_as_unset(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_CONCURRENCY="   ")
+        assert mod._THETA_INDEX_CONCURRENCY == 2
+        assert not [r for r in caplog.records if "THETA_INDEX" in r.getMessage()]
+
+    # -- wait budget ---------------------------------------------------
+
+    @pytest.mark.parametrize("raw", ["nope", "nan", "inf", "-inf"])
+    def test_unusable_wait_falls_back_to_default(
+        self, reload_health, caplog: pytest.LogCaptureFixture, raw: str
+    ) -> None:
+        """Non-numeric AND non-finite: `float("nan")` parses but makes the
+        semaphore wait forever, `inf` overflows the lock timeout."""
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_WAIT_S=raw)
+        assert mod._THETA_INDEX_WAIT_S == 5.0
+        assert any(
+            "THETA_INDEX_WAIT_S" in r.getMessage() and r.levelno == logging.WARNING
+            for r in caplog.records
+        ), caplog.records
+
+    @pytest.mark.parametrize("raw", ["0", "0.1", "-2"])
+    def test_wait_below_minimum_clamps_up(
+        self, reload_health, caplog: pytest.LogCaptureFixture, raw: str
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_WAIT_S=raw)
+        assert mod._THETA_INDEX_WAIT_S == 0.5
+        assert any("THETA_INDEX_WAIT_S" in r.getMessage() for r in caplog.records)
+
+    def test_wait_above_ceiling_clamps_down(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """1e12s would raise OverflowError from the lock at contention
+        time — a latent 500 on the very path this bound protects."""
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_WAIT_S="1e12")
+        assert mod._THETA_INDEX_WAIT_S == 60.0
+        assert any("THETA_INDEX_WAIT_S" in r.getMessage() for r in caplog.records)
+
+    def test_valid_wait_is_honoured_without_warning(
+        self, reload_health, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="sidecar"):
+            mod = reload_health(THETA_INDEX_WAIT_S="2.5")
+        assert mod._THETA_INDEX_WAIT_S == 2.5
+        assert not [r for r in caplog.records if "THETA_INDEX" in r.getMessage()]
+
+    # -- restoration ---------------------------------------------------
+
+    def test_fixture_restores_documented_defaults(
+        self, reload_health, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Guard for the fixture itself: a sibling test's override must not
+        leak into `test_documented_defaults` or the slot tests."""
+        import importlib
+
+        import health
+
+        reload_health(THETA_INDEX_CONCURRENCY="7", THETA_INDEX_WAIT_S="9")
+        assert health._THETA_INDEX_CONCURRENCY == 7
+        assert health._THETA_INDEX_WAIT_S == 9.0
+        # Mimic the teardown (env restored + reload) inline.
+        monkeypatch.delenv("THETA_INDEX_CONCURRENCY", raising=False)
+        monkeypatch.delenv("THETA_INDEX_WAIT_S", raising=False)
+        importlib.reload(health)
+        assert health._THETA_INDEX_CONCURRENCY == 2
+        assert health._THETA_INDEX_WAIT_S == 5.0
+
+
+# ---------------------------------------------------------------------------
+# (d) the archive slot is untouched by the Theta bound
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveSlotUnchangedByThetaBound:
+    def test_archive_busy_503_still_fails_fast(self, configure_base_callables) -> None:
+        """Archive keeps its own shape: `archive busy, retry shortly` +
+        Retry-After, returned IMMEDIATELY — it must not inherit the
+        Theta queue (each admitted archive query costs ~500 MB)."""
+        import archive_query
+
+        sema = threading.BoundedSemaphore(1)
+        sema.acquire()
+        with (
+            patch.object(archive_query, "_archive_query_semaphore", sema),
+            patch(
+                "archive_query.es_day_summary",
+                side_effect=AssertionError("query must not run when saturated"),
+            ),
+        ):
+            started = time.monotonic()
+            raw = _run_request_raw("/archive/es-range?date=2025-01-15")
+            elapsed = time.monotonic() - started
+        sema.release()
+
+        assert raw.split("\r\n", 1)[0].split()[1] == "503"
+        _, _, body_text = raw.partition("\r\n\r\n")
+        assert json.loads(body_text) == {"error": "archive busy, retry shortly"}
+        assert _response_headers(raw)["Retry-After"] == "1"
+        assert elapsed < 1.0, "archive must shed instantly, not queue"
+
+    def test_archive_unavailable_503_still_has_no_retry_after(
+        self, configure_base_callables
+    ) -> None:
+        import archive_query
+
+        exc = archive_query.ArchiveUnavailableError("nope", dataset="ohlcv_1m")
+        with (
+            patch("archive_query.es_day_summary", side_effect=exc),
+            patch("sentry_setup.capture_exception") as cap,
+        ):
+            raw = _run_request_raw("/archive/es-range?date=2025-01-15")
+
+        assert raw.split("\r\n", 1)[0].split()[1] == "503"
+        _, _, body_text = raw.partition("\r\n\r\n")
+        assert json.loads(body_text)["error"] == "archive_unavailable"
+        assert "Retry-After" not in _response_headers(raw)
+        cap.assert_not_called()
+
+    def test_theta_saturation_does_not_block_archive_routes(
+        self, configure_base_callables, theta_slots
+    ) -> None:
+        sample = {"date": "2025-01-15", "symbol": "ESH5", "open": 1.0}
+        theta_slots.acquire()
+        theta_slots.acquire()
+        try:
+            with patch("archive_query.es_day_summary", return_value=sample):
+                status, body = _run_request("/archive/es-range?date=2025-01-15")
+        finally:
+            theta_slots.release()
+            theta_slots.release()
+        assert status == 200
+        assert body == sample

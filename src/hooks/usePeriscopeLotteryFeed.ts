@@ -14,7 +14,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants/index.js';
 import type {
   LotteryFireTypeFilter,
-  PeriscopeLotteryFeedResponse,
   PeriscopeLotteryFire,
 } from '../components/PeriscopeLottery/types.js';
 import { getErrorMessage } from '../utils/error.js';
@@ -47,6 +46,123 @@ const INITIAL_STATE: State = {
   fetchedAt: null,
 };
 
+// ── Validation ─────────────────────────────────────────────
+// Mirrors the `validateSpike` pattern in useVegaSpikes: each fire row is
+// validated individually (a malformed row is dropped, never fatal), while a
+// payload whose envelope doesn't match — `{}`, an HTML error body parsed
+// loosely, a 5xx JSON blob — throws into the existing catch and surfaces as
+// a stable error state. Without this the hook stored `undefined` as `fires`
+// and the panel's `fires.filter(...)` crashed into its ErrorBoundary.
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/**
+ * `null` and `undefined` coalesce per the optional-props policy (both mean
+ * "no value"); anything else must be a finite number.
+ */
+function isNullishOrFiniteNumber(v: unknown): v is number | null | undefined {
+  return v == null || isFiniteNumber(v);
+}
+
+function isNullishOrString(v: unknown): v is string | null | undefined {
+  return v == null || typeof v === 'string';
+}
+
+/**
+ * Validate one fire row from `fires`. Returns the typed fire on success
+ * (nullish nullable fields normalized to `null`) or `null` on any
+ * field-shape mismatch — the caller drops it so one bad row can't poison
+ * the whole feed.
+ */
+function validateLotteryFire(raw: unknown): PeriscopeLotteryFire | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.id) ||
+    (r.fireType !== 'call_lottery' && r.fireType !== 'put_lottery') ||
+    typeof r.fireTime !== 'string' ||
+    typeof r.expiry !== 'string' ||
+    !isFiniteNumber(r.eventStrike) ||
+    !isFiniteNumber(r.tradeStrike) ||
+    !isFiniteNumber(r.spotAtEvent) ||
+    !isFiniteNumber(r.strikeDist) ||
+    !isFiniteNumber(r.greekPost) ||
+    !isFiniteNumber(r.greekDelta) ||
+    !isNullishOrFiniteNumber(r.greekLvlRank) ||
+    !isNullishOrFiniteNumber(r.greekChgRank) ||
+    !isNullishOrFiniteNumber(r.gexDollars) ||
+    !isNullishOrFiniteNumber(r.callRatio) ||
+    !isNullishOrFiniteNumber(r.qqqNetPremBalance30m) ||
+    !isNullishOrFiniteNumber(r.entryPx) ||
+    !isNullishOrFiniteNumber(r.vix) ||
+    typeof r.v3StrictPass !== 'boolean' ||
+    typeof r.v4Badge !== 'boolean' ||
+    !isNullishOrFiniteNumber(r.peakPx) ||
+    !isNullishOrFiniteNumber(r.peakPct) ||
+    !isNullishOrString(r.peakTime) ||
+    !isNullishOrFiniteNumber(r.eodClosePx) ||
+    !isNullishOrFiniteNumber(r.realizedRPeak) ||
+    !isNullishOrFiniteNumber(r.realizedREod) ||
+    typeof r.outcomeLocked !== 'boolean' ||
+    typeof r.createdAt !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    id: r.id,
+    fireType: r.fireType,
+    fireTime: r.fireTime,
+    expiry: r.expiry,
+    eventStrike: r.eventStrike,
+    tradeStrike: r.tradeStrike,
+    spotAtEvent: r.spotAtEvent,
+    strikeDist: r.strikeDist,
+    greekPost: r.greekPost,
+    greekDelta: r.greekDelta,
+    greekLvlRank: r.greekLvlRank ?? null,
+    greekChgRank: r.greekChgRank ?? null,
+    gexDollars: r.gexDollars ?? null,
+    callRatio: r.callRatio ?? null,
+    qqqNetPremBalance30m: r.qqqNetPremBalance30m ?? null,
+    entryPx: r.entryPx ?? null,
+    vix: r.vix ?? null,
+    v3StrictPass: r.v3StrictPass,
+    v4Badge: r.v4Badge,
+    peakPx: r.peakPx ?? null,
+    peakPct: r.peakPct ?? null,
+    peakTime: r.peakTime ?? null,
+    eodClosePx: r.eodClosePx ?? null,
+    realizedRPeak: r.realizedRPeak ?? null,
+    realizedREod: r.realizedREod ?? null,
+    outcomeLocked: r.outcomeLocked,
+    createdAt: r.createdAt,
+  };
+}
+
+/**
+ * Validate the feed envelope and return the validated fires (malformed
+ * rows dropped). Throws on a shapeless envelope so the caller's existing
+ * catch turns it into the normal error state.
+ */
+function parseFeedFires(raw: unknown): PeriscopeLotteryFire[] {
+  if (
+    typeof raw !== 'object' ||
+    raw === null ||
+    !Array.isArray((raw as Record<string, unknown>).fires)
+  ) {
+    throw new Error('unexpected response shape');
+  }
+  const rawFires = (raw as Record<string, unknown>).fires as unknown[];
+  const fires: PeriscopeLotteryFire[] = [];
+  for (const rawFire of rawFires) {
+    const fire = validateLotteryFire(rawFire);
+    if (fire) fires.push(fire);
+  }
+  return fires;
+}
+
 export function usePeriscopeLotteryFeed({
   date,
   marketOpen,
@@ -76,10 +192,11 @@ export function usePeriscopeLotteryFeed({
         },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as PeriscopeLotteryFeedResponse;
+      const raw: unknown = await res.json();
       if (ctrl.signal.aborted) return;
+      const fires = parseFeedFires(raw);
       setState({
-        fires: json.fires,
+        fires,
         loading: false,
         error: null,
         fetchedAt: Date.now(),

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -39,7 +39,6 @@ from quote_processor import (  # noqa: E402
     TradeTickRow,
     classify_aggressor,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -111,44 +110,19 @@ def _tbbo_record(
 
 class TestClassifyAggressor:
     def test_trade_at_ask_is_buyer_initiated(self) -> None:
-        assert (
-            classify_aggressor(
-                Decimal("5000.50"), Decimal("5000.00"), Decimal("5000.50")
-            )
-            == "B"
-        )
+        assert classify_aggressor(Decimal("5000.50"), Decimal("5000.00"), Decimal("5000.50")) == "B"
 
     def test_trade_above_ask_is_buyer_initiated(self) -> None:
-        assert (
-            classify_aggressor(
-                Decimal("5001.00"), Decimal("5000.00"), Decimal("5000.50")
-            )
-            == "B"
-        )
+        assert classify_aggressor(Decimal("5001.00"), Decimal("5000.00"), Decimal("5000.50")) == "B"
 
     def test_trade_at_bid_is_seller_initiated(self) -> None:
-        assert (
-            classify_aggressor(
-                Decimal("5000.00"), Decimal("5000.00"), Decimal("5000.50")
-            )
-            == "S"
-        )
+        assert classify_aggressor(Decimal("5000.00"), Decimal("5000.00"), Decimal("5000.50")) == "S"
 
     def test_trade_below_bid_is_seller_initiated(self) -> None:
-        assert (
-            classify_aggressor(
-                Decimal("4999.50"), Decimal("5000.00"), Decimal("5000.50")
-            )
-            == "S"
-        )
+        assert classify_aggressor(Decimal("4999.50"), Decimal("5000.00"), Decimal("5000.50")) == "S"
 
     def test_trade_mid_spread_is_unclassifiable(self) -> None:
-        assert (
-            classify_aggressor(
-                Decimal("5000.25"), Decimal("5000.00"), Decimal("5000.50")
-            )
-            == "N"
-        )
+        assert classify_aggressor(Decimal("5000.25"), Decimal("5000.00"), Decimal("5000.50")) == "N"
 
     def test_crossed_book_uses_ask_first(self) -> None:
         """When bid > ask (crossed/locked), we still classify by ask first.
@@ -156,12 +130,7 @@ class TestClassifyAggressor:
         The `>= ask` check wins on trade == bid == ask. Rare edge case —
         pinning this explicitly so a refactor doesn't silently flip it.
         """
-        assert (
-            classify_aggressor(
-                Decimal("5000.00"), Decimal("5000.00"), Decimal("5000.00")
-            )
-            == "B"
-        )
+        assert classify_aggressor(Decimal("5000.00"), Decimal("5000.00"), Decimal("5000.00")) == "B"
 
 
 # ---------------------------------------------------------------------------
@@ -189,15 +158,15 @@ class TestProcessTbboDualWrite:
         self,
         processor: QuoteProcessor,
         mock_tob_insert: MagicMock,
-        mock_trade_insert: MagicMock,  # noqa: ARG002 — fixture suppresses real write
+        mock_trade_insert: MagicMock,
     ) -> None:
         processor.process_tbbo("ES", _tbbo_record())
         processor.flush()
         rows = mock_tob_insert.call_args[0][0]
         symbol, ts, bid, bid_sz, ask, ask_sz = rows[0]
         assert symbol == "ES"
-        assert ts.tzinfo == timezone.utc
-        assert ts == datetime.fromtimestamp(SAMPLE_TS_NS / 1e9, tz=timezone.utc)
+        assert ts.tzinfo == UTC
+        assert ts == datetime.fromtimestamp(SAMPLE_TS_NS / 1e9, tz=UTC)
         assert bid == Decimal("4999.5")
         assert bid_sz == SAMPLE_BID_SZ
         assert ask == Decimal("5000.5")
@@ -206,18 +175,16 @@ class TestProcessTbboDualWrite:
     def test_trade_row_shape_buyer_aggressor(
         self,
         processor: QuoteProcessor,
-        mock_tob_insert: MagicMock,  # noqa: ARG002
+        mock_tob_insert: MagicMock,
         mock_trade_insert: MagicMock,
     ) -> None:
         """Trade at ask with bid 4999.50, ask 5000.50 → aggressor 'B'."""
-        processor.process_tbbo(
-            "ES", _tbbo_record(trade_price_raw=SAMPLE_ASK_RAW, size=42)
-        )
+        processor.process_tbbo("ES", _tbbo_record(trade_price_raw=SAMPLE_ASK_RAW, size=42))
         processor.flush()
         rows = mock_trade_insert.call_args[0][0]
         symbol, ts, price, size, agg = rows[0]
         assert symbol == "ES"
-        assert ts.tzinfo == timezone.utc
+        assert ts.tzinfo == UTC
         assert price == Decimal("5000.5")
         assert size == 42
         assert agg == "B"
@@ -225,7 +192,7 @@ class TestProcessTbboDualWrite:
     def test_seller_aggressor_at_bid(
         self,
         processor: QuoteProcessor,
-        mock_tob_insert: MagicMock,  # noqa: ARG002
+        mock_tob_insert: MagicMock,
         mock_trade_insert: MagicMock,
     ) -> None:
         processor.process_tbbo("ES", _tbbo_record(trade_price_raw=SAMPLE_BID_RAW))
@@ -236,7 +203,7 @@ class TestProcessTbboDualWrite:
     def test_mid_spread_trade_is_none(
         self,
         processor: QuoteProcessor,
-        mock_tob_insert: MagicMock,  # noqa: ARG002
+        mock_tob_insert: MagicMock,
         mock_trade_insert: MagicMock,
     ) -> None:
         mid_raw = (SAMPLE_BID_RAW + SAMPLE_ASK_RAW) // 2
@@ -430,18 +397,14 @@ class TestFlushOutsideLock:
         observed_tob_locked: list[bool] = []
         observed_trade_locked: list[bool] = []
 
-        def fake_tob_writer(rows: list[tuple]) -> None:  # noqa: ARG001
+        def fake_tob_writer(rows: list[tuple]) -> None:
             observed_tob_locked.append(processor._lock.locked())
 
-        def fake_trade_writer(rows: list[tuple]) -> None:  # noqa: ARG001
+        def fake_trade_writer(rows: list[tuple]) -> None:
             observed_trade_locked.append(processor._lock.locked())
 
-        monkeypatch.setattr(
-            quote_processor, "batch_insert_top_of_book", fake_tob_writer
-        )
-        monkeypatch.setattr(
-            quote_processor, "batch_insert_trade_ticks", fake_trade_writer
-        )
+        monkeypatch.setattr(quote_processor, "batch_insert_top_of_book", fake_tob_writer)
+        monkeypatch.setattr(quote_processor, "batch_insert_trade_ticks", fake_trade_writer)
 
         for _ in range(BATCH_SIZE):
             processor.process_tbbo("ES", _tbbo_record())
@@ -457,18 +420,14 @@ class TestFlushOutsideLock:
         observed_tob_locked: list[bool] = []
         observed_trade_locked: list[bool] = []
 
-        def fake_tob_writer(rows: list[tuple]) -> None:  # noqa: ARG001
+        def fake_tob_writer(rows: list[tuple]) -> None:
             observed_tob_locked.append(processor._lock.locked())
 
-        def fake_trade_writer(rows: list[tuple]) -> None:  # noqa: ARG001
+        def fake_trade_writer(rows: list[tuple]) -> None:
             observed_trade_locked.append(processor._lock.locked())
 
-        monkeypatch.setattr(
-            quote_processor, "batch_insert_top_of_book", fake_tob_writer
-        )
-        monkeypatch.setattr(
-            quote_processor, "batch_insert_trade_ticks", fake_trade_writer
-        )
+        monkeypatch.setattr(quote_processor, "batch_insert_top_of_book", fake_tob_writer)
+        monkeypatch.setattr(quote_processor, "batch_insert_trade_ticks", fake_trade_writer)
 
         # Half a batch — flush will run through the manual path.
         for _ in range(5):
@@ -491,12 +450,10 @@ class TestFlushOutsideLock:
 
         import time as real_time
 
-        def slow_tob_writer(rows: list[tuple]) -> None:  # noqa: ARG001
+        def slow_tob_writer(rows: list[tuple]) -> None:
             real_time.sleep(0.2)
 
-        monkeypatch.setattr(
-            quote_processor, "batch_insert_top_of_book", slow_tob_writer
-        )
+        monkeypatch.setattr(quote_processor, "batch_insert_top_of_book", slow_tob_writer)
         monkeypatch.setattr(quote_processor, "batch_insert_trade_ticks", MagicMock())
 
         # Fill the buffer to BATCH_SIZE - 1 so the next call triggers
@@ -601,7 +558,7 @@ class TestRowDataclasses:
     def test_top_of_book_row_fields(self) -> None:
         row = TopOfBookRow(
             symbol="ES",
-            ts=datetime.now(tz=timezone.utc),
+            ts=datetime.now(tz=UTC),
             bid=Decimal("5000"),
             bid_size=1,
             ask=Decimal("5001"),
@@ -612,7 +569,7 @@ class TestRowDataclasses:
     def test_trade_tick_row_fields(self) -> None:
         row = TradeTickRow(
             symbol="ES",
-            ts=datetime.now(tz=timezone.utc),
+            ts=datetime.now(tz=UTC),
             price=Decimal("5000"),
             size=1,
             aggressor_side="B",

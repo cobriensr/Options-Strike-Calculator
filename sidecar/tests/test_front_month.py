@@ -11,13 +11,13 @@ in code review surfaces as a clear text-diff.
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import duckdb
 import pytest
 
 from front_month import front_month_cte
-
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -344,23 +344,23 @@ def _build_roll_archive(root: Path) -> None:
     UTC-day bucket would wrongly fold it into 2024-06-03 and let the
     daytime ESM4 volume win.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     iid_m4, iid_u4 = 1, 2
     # (ts_event, instrument_id, open, high, low, close, volume)
     bars = [
         # 2024-06-03 daytime: ESM4 dominates this session.
-        (datetime(2024, 6, 3, 14, 30, tzinfo=timezone.utc), iid_m4, 1, 1, 1, 1, 1000),
-        (datetime(2024, 6, 3, 20, 0, tzinfo=timezone.utc), iid_u4, 1, 1, 1, 1, 10),
+        (datetime(2024, 6, 3, 14, 30, tzinfo=UTC), iid_m4, 1, 1, 1, 1, 1000),
+        (datetime(2024, 6, 3, 20, 0, tzinfo=UTC), iid_u4, 1, 1, 1, 1, 10),
         # 2024-06-03 22:30 UTC = 17:30 CT -> belongs to 2024-06-04 session.
         # ESU4 dominates here.
-        (datetime(2024, 6, 3, 22, 30, tzinfo=timezone.utc), iid_u4, 1, 1, 1, 1, 5000),
-        (datetime(2024, 6, 3, 23, 0, tzinfo=timezone.utc), iid_m4, 1, 1, 1, 1, 5),
+        (datetime(2024, 6, 3, 22, 30, tzinfo=UTC), iid_u4, 1, 1, 1, 1, 5000),
+        (datetime(2024, 6, 3, 23, 0, tzinfo=UTC), iid_m4, 1, 1, 1, 1, 5),
         # 2024-06-04 daytime continues the new session.
-        (datetime(2024, 6, 4, 14, 30, tzinfo=timezone.utc), iid_u4, 1, 1, 1, 1, 2000),
+        (datetime(2024, 6, 4, 14, 30, tzinfo=UTC), iid_u4, 1, 1, 1, 1, 2000),
     ]
-    sym_open = datetime(2024, 5, 1, 0, 0, tzinfo=timezone.utc)
-    sym_close = datetime(2024, 7, 1, 0, 0, tzinfo=timezone.utc)
+    sym_open = datetime(2024, 5, 1, 0, 0, tzinfo=UTC)
+    sym_close = datetime(2024, 7, 1, 0, 0, tzinfo=UTC)
     symbology = [
         (iid_m4, "ESM4", sym_open, sym_close),
         (iid_u4, "ESU4", sym_open, sym_close),

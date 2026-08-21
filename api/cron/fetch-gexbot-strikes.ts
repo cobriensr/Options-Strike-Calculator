@@ -62,7 +62,13 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const apiKey = process.env.GEXBOT_API_KEY;
     if (!apiKey) {
-      throw new Error('GEXBOT_API_KEY is not configured');
+      // Optional feed — see the matching note in fetch-gexbot-fast.ts. Runs
+      // every session minute, so a throw here is a per-minute Sentry error +
+      // red monitor on any deployment without a Gexbot key. Skip instead.
+      return {
+        status: 'skipped',
+        message: 'GEXBOT_API_KEY not configured — gexbot feed disabled',
+      };
     }
 
     // 16 × 8 = 128 (ticker, category) pairs

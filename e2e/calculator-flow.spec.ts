@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 test.describe('Calculator Flow', () => {
   test.beforeEach(async ({ page }) => {
@@ -7,6 +9,10 @@ test.describe('Calculator Flow', () => {
 
     await page.goto('/');
     await expect(page.locator('h1')).toHaveText('Strike Calculator');
+
+    // IVInputSection is default-collapsed; its inputs (VIX Value,
+    // #direct-iv) don't exist in the DOM until expanded.
+    await expandSection(page, 'Implied Volatility');
   });
 
   test('renders header and core input sections', async ({ page }) => {
@@ -37,10 +43,10 @@ test.describe('Calculator Flow', () => {
 
   test('full calculation flow produces strike results', async ({ page }) => {
     // 0. Set entry time
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     // 1. Enter spot price
     await page.getByLabel('SPY Price').fill('679');
@@ -50,8 +56,11 @@ test.describe('Calculator Flow', () => {
     await page.getByLabel('VIX Value').fill('19');
 
     // 3. Entry time defaults are pre-set (10:00 AM CT)
-    //    Just verify the time section is visible
-    await expect(page.getByText('Date & Time', { exact: true })).toBeVisible();
+    //    Just verify the time section is visible (nav links share the
+    //    'Date & Time' text, so target the section element itself)
+    await expect(
+      page.locator('section[aria-label="Date & Time"]'),
+    ).toBeVisible();
 
     // 4. Wait for results to appear (the populated section, not the empty state)
     const resultsSection = page.locator('#results');
@@ -65,36 +74,50 @@ test.describe('Calculator Flow', () => {
     await expect(resultsSection.getByText('6790')).toBeVisible();
 
     // 6. Verify strike table has delta rows
-    // The table should show deltas: 5, 8, 10, 12, 15, 20
+    // The table should show deltas: 5, 8, 10, 12, 15, 20. Scope to the
+    // desktop Delta strikes table (`section`, not the mobile `div`
+    // card layout, which is display:none at the desktop viewport) —
+    // the IC legs and P&L profile tables have matching 'NΔ' cells too.
+    const deltaTable = resultsSection.locator(
+      'section[aria-label="Delta strikes"]',
+    );
     for (const delta of ['5\u0394', '8\u0394', '10\u0394']) {
-      await expect(resultsSection.getByText(delta).first()).toBeVisible();
+      await expect(
+        deltaTable.getByRole('cell', { name: delta, exact: true }),
+      ).toBeVisible();
     }
 
     // 7. Verify put strikes are below spot and call strikes are above
-    //    by checking the results section has both Put and Call headers
-    await expect(resultsSection.getByText('Put').first()).toBeVisible();
-    await expect(resultsSection.getByText('Call').first()).toBeVisible();
+    //    by checking the strikes table has both Put and Call headers
+    //    (column headers on the visible desktop table — plain
+    //    getByText('Put').first() lands on the hidden mobile cards)
+    await expect(
+      deltaTable.getByRole('columnheader', { name: /Put \(SPX\)/ }),
+    ).toBeVisible();
+    await expect(
+      deltaTable.getByRole('columnheader', { name: /Call \(SPX\)/ }),
+    ).toBeVisible();
   });
 
   test('switching to Direct IV mode shows sigma input', async ({ page }) => {
     // Click the "Direct IV" chip
-    await page.getByRole('radio', { name: 'Direct IV' }).click();
+    await page.getByRole('button', { name: 'Direct IV', exact: true }).click();
 
     await expect(page.locator('#direct-iv')).toBeVisible();
     await expect(page.getByLabel('VIX (regime only)')).toBeVisible();
   });
 
   test('direct IV mode calculation produces results', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
 
     // Switch to Direct IV mode
-    await page.getByRole('radio', { name: 'Direct IV' }).click();
+    await page.getByRole('button', { name: 'Direct IV', exact: true }).click();
     await page.locator('#direct-iv').fill('0.2185');
     await page.getByLabel('VIX (regime only)').fill('19');
 
@@ -127,10 +150,10 @@ test.describe('Calculator Flow', () => {
   test('iron condor section renders when results are present', async ({
     page,
   }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
@@ -146,10 +169,10 @@ test.describe('Calculator Flow', () => {
   });
 
   test('VIX regime card appears with valid VIX input', async ({ page }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');

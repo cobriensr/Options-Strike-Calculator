@@ -22,7 +22,7 @@ Theta free tier yields ~14 years of SPX option EOD chains (OHLC + NBBO + volume)
 ## Architecture
 
 - **Sidecar container** gains a `openjdk-21-jre-headless` layer and ships `ThetaTerminalv3.jar`
-- **Python startup** writes `creds.txt` from env vars, launches the jar as a background subprocess, waits for `:25503` to open
+- **Python startup** writes `creds.txt` from env vars, launches the jar as a background subprocess, waits for `:25510` to open
 - **APScheduler** (new dep) runs a single job nightly at `17:25 America/New_York`
 - **Fetcher** pulls `/v2/hist/option/eod` per (root, expiration) pair via the local Theta HTTP server, upserts to Postgres
 - **Health endpoint** reports Theta subprocess liveness + last-fetch freshness
@@ -32,17 +32,17 @@ Theta free tier yields ~14 years of SPX option EOD chains (OHLC + NBBO + volume)
 
 All events tagged `component:theta` via `sentry_sdk.new_scope().set_tag()`. Uses existing `sidecar/src/sentry_setup.py` helpers — no new Sentry init code.
 
-| Surface                                       | Detection                                                | Severity          | Payload context                                                                       |
-| --------------------------------------------- | -------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------- |
-| Subprocess fails to start                     | `Popen(...)` raises                                      | error (exception) | `{phase: "launch", java_version, jar_path}`                                           |
-| Subprocess exits unexpectedly                 | monitor thread sees `proc.poll() is not None` after boot | error (message)   | `{exit_code, uptime_s, stderr_tail (last 50 lines)}` — then auto-restart with backoff |
-| HTTP readiness timeout                        | poll `:25503` for 60s, no response                       | error (message)   | `{stderr_tail, stdout_tail, elapsed_s}`                                               |
-| Java stack trace on stderr                    | regex match `java\..*Exception\|FATAL` in stderr stream  | error (message)   | `{line, surrounding_lines}` — rate-limited to 1 event per minute per signature        |
-| Theta auth rejected                           | HTTP 401/403 on any fetch                                | error (message)   | `{endpoint, response_body}`                                                           |
-| Nightly job uncaught exception                | try/except wrapper around `fetcher.run()`                | error (exception) | `{phase: "nightly_fetch", current_root, current_expiration, rows_so_far}`             |
-| Schema drift (KeyError/TypeError on response) | caught by above wrapper                                  | error (exception) | includes raw response sample                                                          |
-| Nightly job slow                              | elapsed > 30min                                          | warning (message) | `{elapsed_s, rows_written, roots_completed}`                                          |
-| Nightly job never ran                         | Sentry cron check-in missed                              | error (automated) | see below                                                                             |
+| Surface                                       | Detection                                                    | Severity          | Payload context                                                                       |
+| --------------------------------------------- | ------------------------------------------------------------ | ----------------- | ------------------------------------------------------------------------------------- |
+| Subprocess fails to start                     | `Popen(...)` raises                                          | error (exception) | `{phase: "launch", java_version, jar_path}`                                           |
+| Subprocess exits unexpectedly                 | monitor thread sees `proc.poll() is not None` after boot     | error (message)   | `{exit_code, uptime_s, stderr_tail (last 50 lines)}` — then auto-restart with backoff |
+| HTTP readiness timeout                        | poll `:25510` for 60s, no response                           | error (message)   | `{stderr_tail, stdout_tail, elapsed_s}`                                               |
+| Java stack trace on stderr                    | regex match `java\..*Exception\|FATAL` in stderr stream      | error (message)   | `{line, surrounding_lines}` — rate-limited to 1 event per minute per signature        |
+| Theta auth rejected                           | HTTP 401/403 on any fetch                                    | error (message)   | `{endpoint, response_body}`                                                           |
+| Nightly job uncaught exception                | try/except wrapper around `fetcher.run()`                    | error (exception) | `{phase: "nightly_fetch", current_root, current_expiration, rows_so_far}`             |
+| Schema drift (KeyError/TypeError on response) | caught by above wrapper                                      | error (exception) | includes raw response sample                                                          |
+| Nightly job slow                              | elapsed > 3h (`MAX_JOB_DURATION_S`, = monitor `max_runtime`) | warning (message) | `{elapsed_s, rows_written}`                                                           |
+| Nightly job never ran                         | Sentry cron check-in missed                                  | error (automated) | see below                                                                             |
 
 ### Explicitly NOT sent to Sentry (would cause fatigue):
 
@@ -53,15 +53,23 @@ All events tagged `component:theta` via `sentry_sdk.new_scope().set_tag()`. Uses
 
 ### Cron check-in monitoring
 
-Sentry's cron monitor catches the "scheduler never fired" case (container crash before 17:25 ET, Railway outage, etc.) that exception tracking misses. Wire via `sentry_sdk.monitor(...)` decorator on the nightly job:
+Sentry's cron monitor catches the "scheduler never fired" case (container crash before 17:25 ET, Railway outage, etc.) that exception tracking misses. The monitor is declared **in code** — `sidecar/src/theta_fetcher.py` passes `monitor_config` to the `@sentry_sdk.monitor` decorator on `run_nightly()`, and Sentry upserts the Monitor from the first check-in that carries a config, so there is no one-time UI setup and the schedule ships with the sidecar:
 
 ```python
-@sentry_sdk.monitor(monitor_slug="theta-nightly-eod")
-def run_nightly():
-    fetcher.run()
+_NIGHTLY_MONITOR_CONFIG = {
+    "schedule": {"type": "crontab", "value": "25 17 * * *"},
+    "timezone": "America/New_York",   # same IANA zone as the APScheduler trigger — no DST drift
+    "checkin_margin": 10,             # minutes late before "missed"
+    "max_runtime": 180,               # minutes running before "timed out" (= MAX_JOB_DURATION_S)
+    "failure_issue_threshold": 1,
+    "recovery_threshold": 1,
+}
+
+@sentry_sdk.monitor(monitor_slug="theta-nightly-eod", monitor_config=_NIGHTLY_MONITOR_CONFIG)
+def run_nightly() -> None: ...
 ```
 
-One-time setup: create the monitor in Sentry UI with schedule `25 22 * * *` (UTC — 17:25 ET standard / 18:25 ET DST; use fixed UTC to avoid DST drift), checkin_margin 10min, max_runtime 30min.
+The crontab is anchored to `America/New_York` (17:25 ET = 21:25Z during EDT, 22:25Z during EST) rather than a fixed UTC crontab, which would drift by an hour across DST. `max_runtime` is kept equal to `MAX_JOB_DURATION_S` (3h) so Sentry's "timed out" and the fetcher's own "exceeded max duration" warning agree on what "too slow" means. When `SENTRY_DSN` is unset the decorator is a no-op.
 
 ## Phases (each independently shippable, ≤5 files)
 
@@ -106,14 +114,14 @@ Note: `option_type` not `right` — `right` is a SQL reserved word (RIGHT JOIN) 
 
 ### Phase 2 — Dockerfile + Theta Terminal launch (3 files)
 
-Adds Java + jar + startup subprocess. No ingest yet — just proves Theta serves on `:25503` inside the container.
+Adds Java + jar + startup subprocess. No ingest yet — just proves Theta serves on `:25510` inside the container.
 
 - `sidecar/Dockerfile` — add openjdk-21-jre-headless layer, COPY the jar
 - `sidecar/ThetaTerminalv3.jar` — commit the jar (check size — 11MB, git-ok)
-- `sidecar/src/theta_launcher.py` — new module: write creds.txt from env, `subprocess.Popen`, poll `:25503` until ready, surface status via a module-level flag
+- `sidecar/src/theta_launcher.py` — new module: write creds.txt from env, `subprocess.Popen`, poll `:25510` until ready, surface status via a module-level flag
 - `sidecar/src/main.py` — call `theta_launcher.start()` on startup, before existing Databento init
 
-**Verify Phase 2:** `docker build` succeeds locally. Container boots, `curl http://localhost:25503/v2/list/roots/index` inside container returns data. Railway deploy green.
+**Verify Phase 2:** `docker build` succeeds locally. Container boots, `curl http://localhost:25510/v2/list/roots/stock` inside container returns data. Railway deploy green.
 
 ---
 
@@ -153,9 +161,9 @@ Production readiness.
 
 ## Thresholds / constants
 
-- Theta HTTP base: `http://127.0.0.1:25503`
-- Startup readiness probe: `GET /v2/list/roots/index` until HTTP 200 or 60s timeout
-- Nightly job max duration: 30min (log warning if longer)
+- Theta HTTP base: `http://127.0.0.1:25510` (Terminal v3 binds HTTP on `:25510` and WS on `:25520`; `:25503` is never bound)
+- Startup readiness probe: `GET /v2/list/roots/stock` until HTTP 200 or 60s timeout
+- Nightly job max duration: 3h / 180min (`MAX_JOB_DURATION_S`; Sentry warning if longer, matches the monitor's `max_runtime`)
 - Per-request timeout: 15s
 
 ## Data dependencies
@@ -175,6 +183,6 @@ Production readiness.
 ## Done when
 
 - [ ] Phase 1 merged, migration runs clean on dev Neon
-- [ ] Phase 2 merged, Railway container starts Theta subprocess and `:25503` responds
+- [ ] Phase 2 merged, Railway container starts Theta subprocess and `:25510` responds
 - [ ] Phase 3 merged, `SELECT COUNT(*) FROM theta_option_eod WHERE symbol = 'SPXW'` returns >10,000 after 24h
 - [ ] Phase 4 merged, health endpoint reports Theta status, README documents env vars

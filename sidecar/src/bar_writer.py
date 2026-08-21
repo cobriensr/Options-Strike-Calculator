@@ -75,12 +75,10 @@ class BarWriter(BatchedWriter[BarRow]):
         GREATEST/LEAST merges), so the re-queue cannot duplicate or
         corrupt a bar. Do NOT catch here — that would defeat the retry.
         """
-        from db import upsert_futures_bar
+        from db import upsert_futures_bar  # noqa: PLC0415 — lazy, patched in tests
 
         for r in rows:
-            upsert_futures_bar(
-                r.symbol, r.ts, r.open, r.high, r.low, r.close, r.volume
-            )
+            upsert_futures_bar(r.symbol, r.ts, r.open, r.high, r.low, r.close, r.volume)
 
     def start_background_flush(  # type: ignore[override]
         self, interval_s: float | None = None

@@ -8,7 +8,7 @@ Databento streams are long-lived TCP connections; Theta Data Terminal is a Java 
 
 ## What it does
 
-- **Databento ingestion** — OHLCV-1m for 7 futures symbols (ES, NQ, ZN, RTY, CL, GC, DX). VX is deferred pending Databento availability.
+- **Databento ingestion** — OHLCV-1m for 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) (DX would require the ICE IFUS.IMPACT dataset and is not implemented; VX deferred pending Databento availability).
 - **ES options chain** — Front-month polled from Databento.
 - **Theta Data Terminal** — Co-resident Java service (Eclipse Temurin 21) for additional options data not in Databento.
 - **Archive volume** — Persistent `/data/archive` on Railway, SHA-resumable seed from Vercel Blob via `POST /admin/seed-archive`. See `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
@@ -29,7 +29,7 @@ cp .env.example .env
 python -m src.main
 ```
 
-Health check: `curl http://localhost:8080/healthz`.
+Health check: `curl http://localhost:8080/health`.
 
 ### Tests
 
@@ -39,7 +39,18 @@ pytest tests/
 make test
 ```
 
-The Makefile wraps the common workflows (`make lint`, `make test`, `make run`).
+### Lint / format
+
+```bash
+make lint     # ruff check --fix src/ tests/ && ruff format src/ tests/
+make review   # lint + tests with coverage
+```
+
+Ruff and pytest are configured in `pyproject.toml` (line-length 100, py312,
+the uw-stream/classifier rule families plus `PL`/`ARG`/`S`/`BLE`/`DTZ`/`D401`;
+test-only relaxations live under `per-file-ignores`). `make lint` must exit 0
+with zero findings; every remaining suppression is a `# noqa: <RULE> — reason`.
+`_vendored_ml/` is excluded — it must stay byte-identical to `ml/src/`.
 
 ## Environment variables
 
@@ -59,6 +70,11 @@ Sidecar is the canonical owner of these in **Railway**, not Vercel. `.env.exampl
 | `RAILWAY_RUN_UID`       | yes       | `0` on Railway so the container can write to the volume       |
 | `PORT`                  | optional  | Default 8080                                                  |
 | `LOG_LEVEL`             | optional  | Default INFO                                                  |
+| `THETA_INDEX_CONCURRENCY` | optional | Cap on concurrent `/theta/index/*` calls into the Terminal (default 2, min 1). Theta Terminal v1.8.6 drops calls under bursts; excess callers queue for a slot. |
+| `THETA_INDEX_WAIT_S`    | optional  | How long a caller waits for a slot before `503 {"error":"theta_busy"}` + `Retry-After: 1` (default 5.0, clamped 0.5–60). Vercel's client allows 8s per call. |
+| `ARCHIVE_QUERY_CONCURRENCY` | optional | Cap on concurrent `/archive/*` DuckDB queries (sheds `503 archive busy` immediately when full). |
+| `WATCHDOG_STALE_EXIT_S` | optional  | Stale-data watchdog: if connected + data expected + no bar for this many seconds, the process exits 1 so Railway restarts it (default 300, min 180). |
+| `WATCHDOG_BOOT_GRACE_S` | optional  | Watchdog holds off this many seconds after boot (default 600). |
 
 ## Deployment
 
@@ -78,24 +94,27 @@ railway up
 
 ```
 src/
-  main.py             # Entry point, FastAPI app
+  main.py             # Entry point (stdlib http.server + Databento loop)
   config.py           # Env vars + settings
   db.py               # psycopg2 pool + helpers
   databento_client.py # Live + historical Databento
   theta_client.py     # Theta Data Terminal HTTP client
   theta_launcher.py   # Manages the co-resident Java jar
-  theta_fetcher.py    # Periodic Theta polls
+  theta_fetcher.py    # Nightly Theta EOD ingest (17:25 ET) + startup backfill
   symbol_manager.py   # Front-month rolling
   front_month.py      # Contract code resolution
   trade_processor.py  # Tick → DB
   quote_processor.py  # NBBO → DB
   batched_writer.py   # Bulk INSERT pipeline
-  options_router.py   # /api/options/* routes
-  multileg_routes.py  # /api/multileg/* routes
-  takeit_server.py    # /api/takeit/* (XGBoost scoring)
-  archive_seeder.py   # /admin/seed-archive
-  archive_query.py    # Read-side of /data/archive
-  health.py           # /healthz
+  bar_writer.py       # Buffered futures OHLCV-1m writer
+  stat_writer.py      # Buffered ES option stats writer
+  options_router.py   # Databento options record routing (definitions/trades/stats)
+  multileg_routes.py  # POST /takeit/multileg-classify handler
+  takeit_server.py    # POST /takeit/explain, GET /takeit/health (SHAP scoring)
+  archive_seeder.py   # POST /admin/seed-archive
+  archive_query.py    # Read-side of /data/archive (/archive/* routes)
+  session_calendar.py # CME trade-date bucketing
+  health.py           # /health + HTTP route dispatch
   sentry_setup.py     # Sentry tagging
   logger_setup.py     # Pino-style structured logs
 ```

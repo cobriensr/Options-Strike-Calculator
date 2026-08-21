@@ -59,10 +59,7 @@ def session_date_expr(ts_column: TsColumn = "ts_event") -> str:
     ``archive_query.tbbo_ofi_percentile``) MUST use this expression so the
     day grouping can never drift between the cutoff scan and the main query.
     """
-    return (
-        f"CAST((bars.{ts_column} AT TIME ZONE 'America/Chicago') "
-        f"+ INTERVAL 7 HOUR AS DATE)"
-    )
+    return f"CAST((bars.{ts_column} AT TIME ZONE 'America/Chicago') + INTERVAL 7 HOUR AS DATE)"
 
 
 def front_month_cte(
@@ -179,9 +176,7 @@ def front_month_cte(
     else:
         order_by = "ORDER BY total_vol DESC"
 
-    hyphen_clause = (
-        "\n              AND strpos(sym.symbol, '-') = 0" if exclude_hyphenated else ""
-    )
+    hyphen_clause = "\n              AND strpos(sym.symbol, '-') = 0" if exclude_hyphenated else ""
 
     return f"""WITH filtered AS (
             SELECT {select_list},
@@ -214,4 +209,4 @@ def front_month_cte(
             SELECT f.*
             FROM filtered f
             JOIN front_contract fc USING (day, {contract_col})
-        ),"""
+        ),"""  # noqa: S608 — every placeholder is a Literal-typed identifier or a `?` bind token

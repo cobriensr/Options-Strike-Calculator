@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+import { expandSection } from './helpers/sections';
 
 function createMinimalPNG(): Buffer {
   return Buffer.from(
@@ -102,6 +103,9 @@ test.describe('Chart Analysis Flow', () => {
     await expect(
       page.locator('section[aria-label="Chart Analysis"]'),
     ).toBeVisible({ timeout: 15000 });
+    // The section is default-collapsed; its drop zone / file input only
+    // exist while expanded.
+    await expandSection(page, 'Chart Analysis');
   });
 
   async function uploadChartImage(page: import('@playwright/test').Page) {
@@ -221,6 +225,7 @@ test.describe('Chart Analysis Flow', () => {
     await expect(
       errorPage.locator('section[aria-label="Chart Analysis"]'),
     ).toBeVisible({ timeout: 15000 });
+    await expandSection(errorPage, 'Chart Analysis');
 
     // Upload an image on the error page
     const pngBuffer = createMinimalPNG();

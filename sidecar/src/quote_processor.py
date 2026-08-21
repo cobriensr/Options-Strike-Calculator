@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -125,7 +125,7 @@ def classify_aggressor(
 
 def _ns_to_datetime(ts_ns: int) -> datetime:
     """Convert Databento ts_event (nanoseconds since epoch) to aware UTC."""
-    return datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
+    return datetime.fromtimestamp(ts_ns / 1e9, tz=UTC)
 
 
 def _extract_top_level(record: Any) -> Any | None:
@@ -165,8 +165,7 @@ def _parse_top_of_book(symbol: str, record: Any) -> TopOfBookRow | None:
             or bid_sz is None
             or ask_sz is None
             or ts_ns is None
-            or bid_px == UNDEF_PRICE
-            or ask_px == UNDEF_PRICE
+            or UNDEF_PRICE in (bid_px, ask_px)
         ):
             return None
 
@@ -204,9 +203,7 @@ def _parse_trade_tick(symbol: str, record: Any) -> TradeTickRow | None:
             or ts_ns is None
             or bid_px is None
             or ask_px is None
-            or price_raw == UNDEF_PRICE
-            or bid_px == UNDEF_PRICE
-            or ask_px == UNDEF_PRICE
+            or UNDEF_PRICE in (price_raw, bid_px, ask_px)
         ):
             return None
 

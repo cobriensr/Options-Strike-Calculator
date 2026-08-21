@@ -27,7 +27,7 @@ The dev server is auto-managed by Playwright (`webServer` block in [playwright.c
 - **`chart-analysis-*.spec.ts`** — Anthropic analyze endpoint (mocked).
 - **`responsive.spec.ts`** — viewport breakpoint coverage.
 - **`*.spec.ts`** — feature-area suites mirroring `src/components/` folders.
-- **`helpers/`** — shared utilities. `mock-fetch.ts` stubs `fetch()` responses so suites don't require a populated DB.
+- **`helpers/`** — shared utilities. `mock-fetch.ts` stubs `fetch()` responses so suites don't require a populated DB. `time.ts` drives the Date & Time AM/PM and ET/CT chips (`selectMeridiem`, `selectTimezone`, `expectTimezone`) — they are `<button aria-pressed>` toggles, not radios; always go through the helper.
 
 ## Conventions
 

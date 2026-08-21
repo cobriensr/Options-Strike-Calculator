@@ -6,11 +6,13 @@ not Vercel serverless. Connection pooling via psycopg2.pool.
 
 from __future__ import annotations
 
+import contextlib
 import time
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Generator, Sequence
+from typing import Any
 
 import psycopg2
 import psycopg2.extras
@@ -46,6 +48,50 @@ HEALTH_PROBE_TIMEOUT_S = 2.0
 # stable value across all four batch-insert call sites since SIDE-003.
 _DEFAULT_BATCH_PAGE_SIZE = 500
 
+# --- Dead-connection hardening (2026-08-20 consume-loop freezes) -----------
+#
+# The Databento consume loop froze twice in 13 hours (2026-08-20 01:31Z
+# for >=14 min, losslessly resumed; again ~14:04Z, caught by the
+# watchdog at 306s). Signature both times: no bars written, no heartbeat,
+# no exception, health thread alive, client "connected". Root cause: the
+# psycopg2 connection to Neon died silently (LB/NAT idle reset) and the
+# next synchronous write from the consume loop blocked inside TCP
+# retransmission for ~15 min — the Linux tcp_retries2 default, which
+# matches freeze #1's duration almost exactly. Three bounds, layered:
+#
+# - CONNECT_TIMEOUT_S: caps connection ESTABLISHMENT (libpq, seconds).
+# - KEEPALIVES_*: detect a dead peer while the socket is IDLE. Probes
+#   start after 30s idle; 3 failed probes 10s apart => declared dead in
+#   ~60s (count was 5 / ~80s before the freezes).
+# - TCP_USER_TIMEOUT_MS: the actual fix for the freeze. Keepalive
+#   probes are only sent on an idle socket — once a query has been
+#   written but not ACKed, the kernel is in the retransmission path and
+#   keepalives never fire. TCP_USER_TIMEOUT (libpq >= 12; ms) caps how
+#   long transmitted-but-unACKed data may go unacknowledged before the
+#   kernel kills the socket, turning a 15-minute silent hang into an
+#   OperationalError after 30s that `_execute_with_retry` /
+#   `_execute_values_batch` already recover from on a fresh borrow.
+CONNECT_TIMEOUT_S = 10
+KEEPALIVES_IDLE_S = 30
+KEEPALIVES_INTERVAL_S = 10
+KEEPALIVES_COUNT = 3
+TCP_USER_TIMEOUT_MS = 30_000
+
+# Server-side statement cap, applied per-transaction by `get_conn` via
+# ``SET LOCAL`` — NOT via the ``options`` startup parameter, which
+# Neon's pooler rejects (commit 7def3bce had to revert exactly that
+# form). SET LOCAL is transaction-scoped, so it is also correct under
+# PgBouncer transaction pooling, where a session-level SET would stick
+# to an arbitrary backend. This bounds a statement that reached the
+# server but stalled there (lock wait, pathological plan); the
+# client-side network hang is bounded by TCP_USER_TIMEOUT_MS above.
+# Sizing: the largest sidecar statement is a 500-row execute_values
+# page (Theta EOD upsert / TBBO batch) — single-digit seconds worst
+# case on Neon — so 30s is >5x headroom, and a spurious QueryCanceled
+# is retried once on a fresh connection anyway (it subclasses
+# OperationalError; verified against psycopg2 2.9.12).
+STATEMENT_TIMEOUT_MS = 30_000
+
 
 class PoolTimeoutError(RuntimeError):
     """Raised when `get_conn` fails to borrow a connection in time."""
@@ -55,7 +101,7 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     """Lazy-init a threaded connection pool."""
     global _pool
     if _pool is None or _pool.closed:
-        from config import settings
+        from config import settings  # noqa: PLC0415 — lazy, env-free import
 
         # Strip options from DSN — Neon's pooler rejects startup
         # parameters like statement_timeout. Set timeout per-query instead.
@@ -66,20 +112,29 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
         # futures gap when the sidecar's pool sits quiet); without
         # keepalives, the first borrow after that gap raises
         # ``OperationalError: SSL connection has been closed unexpectedly``
-        # mid-batch and the in-flight rows are lost. With these settings
-        # the kernel probes every 30s + 10s*5 = ~80s after each idle window,
-        # so the broken socket is detected and the pool's
-        # ``putconn(close=True)`` path can discard it before the next batch.
-        # See SENTRY-EMERALD-DESERT-6X / -2C.
+        # mid-batch and the in-flight rows are lost. Idle death is now
+        # declared in ~30s + 10s*3 = 60s so the pool's
+        # ``putconn(close=True)`` path can discard the broken socket
+        # before the next batch. See SENTRY-EMERALD-DESERT-6X / -2C.
+        #
+        # connect_timeout and tcp_user_timeout bound the two remaining
+        # silent-hang windows (connection establishment; a write already
+        # in flight when the peer died) — the 2026-08-20 freeze fix.
+        # See the constants block above. All of these are CLIENT-side
+        # libpq parameters: they configure the local socket and are
+        # never sent as server startup parameters, so Neon's pooler
+        # (which rejects e.g. ``options``) never sees them.
         _pool = psycopg2.pool.ThreadedConnectionPool(
             minconn=1,
             maxconn=5,
             dsn=dsn,
             sslmode="require",
+            connect_timeout=CONNECT_TIMEOUT_S,
             keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=5,
+            keepalives_idle=KEEPALIVES_IDLE_S,
+            keepalives_interval=KEEPALIVES_INTERVAL_S,
+            keepalives_count=KEEPALIVES_COUNT,
+            tcp_user_timeout=TCP_USER_TIMEOUT_MS,
         )
         log.info("Database pool created")
     return _pool
@@ -114,24 +169,24 @@ def _getconn_with_timeout(
                 # sentry_setup optional (e.g., for unit tests that don't
                 # install sentry_sdk).
                 try:
-                    from sentry_setup import capture_message
+                    from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
                     capture_message(
                         "db pool getconn was slow",
                         level="warning",
                         context={"elapsed_ms": round(elapsed_ms, 1)},
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 — observability must never fail the borrow
                     log.warning("db pool getconn slow: %.1fms", elapsed_ms)
             return conn
-        except psycopg2.pool.PoolError:
+        except psycopg2.pool.PoolError as pool_exc:
             # Pool is exhausted. Sleep a bit and retry until the deadline.
             if time.monotonic() >= deadline:
                 elapsed_ms = (time.monotonic() - start) * 1000.0
                 raise PoolTimeoutError(
                     f"db pool saturated: could not borrow a connection "
                     f"within {timeout_s:.1f}s (waited {elapsed_ms:.0f}ms)"
-                )
+                ) from pool_exc
             time.sleep(backoff_s)
             backoff_s = min(backoff_s * 2, 0.2)  # cap at 200ms
 
@@ -151,6 +206,18 @@ def get_conn(
     pool = get_pool()
     conn = _getconn_with_timeout(pool, timeout_s)
     try:
+        # Server-side statement cap, scoped to this borrow's transaction.
+        # psycopg2 implicitly opens the transaction on this first execute,
+        # so SET LOCAL covers every statement the caller runs before the
+        # commit below — and being transaction-scoped it survives
+        # PgBouncer transaction pooling, unlike the ``options`` startup
+        # parameter Neon's pooler rejects (commit 7def3bce). A stale
+        # borrow also fails fast HERE (OperationalError on a dead
+        # socket) instead of inside the caller's batch, which the
+        # retry helpers treat as a normal reconnect. See the
+        # STATEMENT_TIMEOUT_MS constant for sizing rationale.
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL statement_timeout = %s", (STATEMENT_TIMEOUT_MS,))
         yield conn
         conn.commit()
     except Exception:
@@ -162,7 +229,7 @@ def get_conn(
         # SENTRY-EMERALD-DESERT-6S / -2C.
         try:
             conn.rollback()
-        except Exception as rollback_exc:
+        except Exception as rollback_exc:  # noqa: BLE001 — see comment above; original error re-raised
             log.debug(
                 "rollback after error failed (connection likely dead): %s",
                 rollback_exc,
@@ -176,7 +243,7 @@ def get_conn(
         # every borrow until the pool happens to recycle.
         try:
             pool.putconn(conn, close=bool(conn.closed))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — see comment below
             # Don't let putconn failures mask the real exception. During
             # shutdown the pool may already be closed (PoolError) — that's
             # benign and shouldn't replace whatever the caller was raising.
@@ -185,12 +252,11 @@ def get_conn(
 
 def verify_connection() -> None:
     """Verify the database is reachable."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 AS ok")
-            row = cur.fetchone()
-            if not row or row[0] != 1:
-                raise RuntimeError("Database connection verification failed")
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 AS ok")
+        row = cur.fetchone()
+        if not row or row[0] != 1:
+            raise RuntimeError("Database connection verification failed")
     log.info("Database connection verified")
 
 
@@ -209,25 +275,24 @@ def is_db_healthy() -> bool:
     - Any other exception (real connection/query failure) -> False.
     """
     try:
-        with get_conn(timeout_s=HEALTH_PROBE_TIMEOUT_S) as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                return True
+        with get_conn(timeout_s=HEALTH_PROBE_TIMEOUT_S) as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            return True
     except PoolTimeoutError:
         # Pool is saturated but the DB is alive — do NOT report unhealthy,
         # or Railway may restart a container that's simply busy ingesting.
         try:
-            from sentry_setup import capture_message
+            from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
             capture_message(
                 "db health probe: pool saturated (healthy but busy)",
                 level="warning",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 — see comment below
             # Observability must never flip the healthy-but-busy verdict.
             log.warning("db health probe: pool saturated (healthy but busy)")
         return True
-    except Exception:
+    except Exception:  # noqa: BLE001 — any other failure IS the unhealthy signal
         return False
 
 
@@ -259,14 +324,22 @@ def _execute_values_batch(
     the in-flight batch (typically 500 TBBO rows) is lost — only
     ``capture_exception`` is called by the caller, no recovery. See
     SENTRY-EMERALD-DESERT-6X.
+
+    The OperationalError catch deliberately also covers
+    ``psycopg2.errors.QueryCanceled`` (SQLSTATE 57014, raised when
+    ``get_conn``'s statement_timeout kills a stalled statement) and the
+    connection death forced by TCP_USER_TIMEOUT — both subclass
+    OperationalError (verified against psycopg2 2.9.12), so a
+    timeout-killed statement is retried exactly once on a fresh borrow
+    and then surfaces; never an infinite loop, never a crashed writer
+    thread.
     """
     if not rows:
         return
     for attempt in (1, 2):
         try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    psycopg2.extras.execute_values(cur, sql, rows, page_size=page_size)
+            with get_conn() as conn, conn.cursor() as cur:
+                psycopg2.extras.execute_values(cur, sql, rows, page_size=page_size)
             return
         except psycopg2.OperationalError:
             if attempt == 2:
@@ -275,6 +348,36 @@ def _execute_values_batch(
                 "_execute_values_batch: OperationalError on attempt 1, "
                 "retrying with a fresh connection"
             )
+
+
+def dedupe_rows_keep_last(rows: Sequence[tuple], key_len: int) -> list[tuple]:
+    """Collapse rows sharing a conflict-target key, keeping the LAST one.
+
+    Postgres raises ``CardinalityViolation: ON CONFLICT DO UPDATE command
+    cannot affect row a second time`` when a single ``INSERT ... ON
+    CONFLICT DO UPDATE`` statement proposes two rows with the same
+    conflict-target key (SENTRY 2026-08-17, futures-sidecar). Every
+    multi-row DO UPDATE batch in this module must therefore be collapsed
+    on its conflict key immediately before ``execute_values``. Plain
+    inserts and ``DO NOTHING`` batches are immune and must NOT be run
+    through this (duplicate ticks are intentional appends; DO NOTHING
+    skips within-statement dupes server-side).
+
+    ``key_len`` is the number of LEADING tuple fields forming the
+    conflict target — batch tuples in this module always lead with their
+    key columns. The LAST occurrence wins because batches are appended in
+    stream order, so the later row is the newer revision (e.g. a
+    corrected Theta EOD re-send); this matches the upsert's own
+    ``col = EXCLUDED.col`` last-write-wins semantics. Relative order of
+    distinct keys is preserved (dict insertion order); row order within a
+    single statement has no semantic effect anyway.
+
+    Pure: never mutates ``rows``; always returns a new list.
+    """
+    deduped: dict[tuple, tuple] = {}
+    for row in rows:
+        deduped[row[:key_len]] = row
+    return list(deduped.values())
 
 
 # ---------------------------------------------------------------------------
@@ -347,12 +450,16 @@ def _execute_with_retry(sql: str, params: tuple) -> None:
     a stale socket, raises ``OperationalError: SSL connection has been
     closed unexpectedly``, and the in-flight upsert is lost. See
     SENTRY-EMERALD-DESERT-6W.
+
+    Like :func:`_execute_values_batch`, the catch also covers
+    ``psycopg2.errors.QueryCanceled`` (statement_timeout) and
+    TCP_USER_TIMEOUT-killed connections — both OperationalError
+    subclasses — giving them the same retry-once-then-surface shape.
     """
     for attempt in (1, 2):
         try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(sql, params)
             return
         except psycopg2.OperationalError:
             if attempt == 2:
@@ -450,6 +557,12 @@ def batch_insert_trade_ticks(rows: list[tuple]) -> None:
     )
 
 
+# Leading tuple fields forming theta_option_eod's conflict target:
+# (symbol, expiration, strike, option_type, date) — migration #70's
+# UNIQUE constraint. Used to dedupe batches before execute_values.
+_THETA_EOD_CONFLICT_KEY_LEN = 5
+
+
 def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
     """Batch upsert Theta EOD rows into theta_option_eod.
 
@@ -464,6 +577,14 @@ def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
     snapshot — a later fetch for the same contract/day supersedes any
     earlier partial. `created_at` deliberately stays untouched so we
     preserve the first-seen timestamp across revisions.
+
+    This is the sidecar's only multi-row ``ON CONFLICT DO UPDATE``
+    statement, so it is the only one that can raise CardinalityViolation
+    ("cannot affect row a second time") when the batch itself carries two
+    rows for the same contract/day — Theta occasionally re-sends a date
+    within one response. The batch is collapsed keep-last on the conflict
+    key before hitting the wire; keep-last preserves the same
+    full-snapshot-supersedes semantics the DO UPDATE clause implements.
     """
     _execute_values_batch(
         """
@@ -485,25 +606,24 @@ def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
             bid_size    = EXCLUDED.bid_size,
             ask_size    = EXCLUDED.ask_size
         """,
-        rows,
+        dedupe_rows_keep_last(rows, _THETA_EOD_CONFLICT_KEY_LEN),
     )
 
 
 def has_theta_option_eod_rows(symbol: str) -> bool:
-    """True when theta_option_eod has at least one row for `symbol`.
+    """Return True when theta_option_eod has at least one row for `symbol`.
 
     Cheap existence check used by the backfill scheduler to skip roots
     that already have data. `LIMIT 1` + the ix_theta_option_eod_symbol_date
     index makes this O(1) even as the table grows into the millions of
     rows over time.
     """
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM theta_option_eod WHERE symbol = %s LIMIT 1",
-                (symbol,),
-            )
-            return cur.fetchone() is not None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM theta_option_eod WHERE symbol = %s LIMIT 1",
+            (symbol,),
+        )
+        return cur.fetchone() is not None
 
 
 def load_alert_config() -> dict[str, dict]:
@@ -524,55 +644,52 @@ def load_alert_config() -> dict[str, dict]:
     """
     configs: dict[str, dict] = {}
     try:
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT alert_type, enabled, params, cooldown_minutes FROM alert_config"
-                )
-                for row in cur.fetchall():
-                    configs[row["alert_type"]] = {
-                        "enabled": row["enabled"],
-                        "params": row["params"],
-                        "cooldown_minutes": row["cooldown_minutes"],
-                    }
+        with (
+            get_conn() as conn,
+            conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur,
+        ):
+            cur.execute("SELECT alert_type, enabled, params, cooldown_minutes FROM alert_config")
+            for row in cur.fetchall():
+                configs[row["alert_type"]] = {
+                    "enabled": row["enabled"],
+                    "params": row["params"],
+                    "cooldown_minutes": row["cooldown_minutes"],
+                }
     except psycopg2.errors.UndefinedTable:
         log.warning("alert_config table does not exist yet -- using defaults")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — degrade to defaults, forwarded to Sentry below
         log.error("Failed to load alert_config: %s", exc)
         # Forward to Sentry so config-loading drift surfaces in
         # observability instead of silently degrading to "no alerts."
         # Lazy import to avoid pulling sentry_setup into the db.py
         # import path of every test that touches Postgres.
-        try:
-            from sentry_setup import capture_exception
+        # Sentry path failure must never block the empty-dict
+        # fallback — caller depends on this returning a dict.
+        with contextlib.suppress(Exception):
+            from sentry_setup import capture_exception  # noqa: PLC0415 — lazy optional Sentry
 
             capture_exception(
                 exc,
                 context={"phase": "load_alert_config"},
                 tags={"component": "db"},
             )
-        except Exception:  # noqa: BLE001
-            # Sentry path failure must never block the empty-dict
-            # fallback — caller depends on this returning a dict.
-            pass
     return configs
 
 
 def get_recent_bars(symbol: str, minutes: int = 60) -> list[dict]:
     """Fetch the most recent N minutes of bars for a symbol."""
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
+    with get_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
                 SELECT ts, open, high, low, close, volume
                 FROM futures_bars
                 WHERE symbol = %s
                   AND ts >= NOW() - make_interval(mins => %s)
                 ORDER BY ts ASC
                 """,
-                (symbol, minutes),
-            )
-            return [dict(row) for row in cur.fetchall()]
+            (symbol, minutes),
+        )
+        return [dict(row) for row in cur.fetchall()]
 
 
 def drain_pool() -> None:

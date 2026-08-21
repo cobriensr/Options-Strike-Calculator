@@ -12,7 +12,13 @@ import { getAccessMode } from '../../utils/auth';
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+// Mirrors the real /api/dealer-regime envelope, which always emits all
+// four fields — `date` / `at` echo the query params and are null in live
+// mode. They were missing from this fixture until the response validator
+// (which normalizes them to null) made the omission visible.
 const SAMPLE_RESPONSE = {
+  date: null,
+  at: null,
   rows: [
     {
       ticker: 'SPX',

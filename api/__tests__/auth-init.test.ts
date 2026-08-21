@@ -5,6 +5,7 @@ import { mockRequest, mockResponse } from './helpers';
 
 vi.mock('../_lib/schwab.js', () => ({
   getAuthUrl: vi.fn(),
+  isSchwabConfigured: vi.fn(),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
@@ -12,7 +13,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../auth/init.js';
-import { getAuthUrl } from '../_lib/schwab.js';
+import { getAuthUrl, isSchwabConfigured } from '../_lib/schwab.js';
 import { rejectIfRateLimited } from '../_lib/api-helpers.js';
 
 describe('GET /api/auth/init', () => {
@@ -21,13 +22,54 @@ describe('GET /api/auth/init', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     process.env.APP_URL = 'https://example.com';
-    vi.restoreAllMocks();
+    // clearAllMocks resets call history so the "not called" assertions
+    // below don't see calls from earlier tests in this file.
+    vi.clearAllMocks();
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+    // Default: Schwab creds present so the OAuth path is exercised.
+    vi.mocked(isSchwabConfigured).mockReturnValue(true);
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
+
+  // ============================================================
+  // Unconfigured Schwab → owner login form (no 500, no Redis)
+  // ============================================================
+
+  describe('when Schwab credentials are not configured', () => {
+    beforeEach(() => {
+      vi.mocked(isSchwabConfigured).mockReturnValue(false);
+    });
+
+    it('redirects 302 to /api/auth/login', async () => {
+      const res = mockResponse();
+      await handler(mockRequest(), res);
+      expect(res._redirectStatus).toBe(302);
+      expect(res._redirectUrl).toBe('/api/auth/login');
+      expect(res._json).toBeNull();
+    });
+
+    it('does not touch getAuthUrl or the Redis-backed rate limiter', async () => {
+      const res = mockResponse();
+      await handler(mockRequest(), res);
+      expect(getAuthUrl).not.toHaveBeenCalled();
+      expect(rejectIfRateLimited).not.toHaveBeenCalled();
+    });
+
+    it('redirects even when APP_URL is missing (no 500 for the unconfigured case)', async () => {
+      delete process.env.APP_URL;
+      const res = mockResponse();
+      await handler(mockRequest(), res);
+      expect(res._redirectStatus).toBe(302);
+      expect(res._redirectUrl).toBe('/api/auth/login');
+    });
+  });
+
+  // ============================================================
+  // Configured Schwab → OAuth authorize redirect + genuine 500s
+  // ============================================================
 
   it('returns 500 when APP_URL is not configured', async () => {
     delete process.env.APP_URL;
@@ -41,7 +83,7 @@ describe('GET /api/auth/init', () => {
     expect((res._json as { error: string }).error).toContain('APP_URL');
   });
 
-  it('returns 500 when getAuthUrl returns null (missing creds)', async () => {
+  it('returns 500 when getAuthUrl returns null (creds vanished mid-request)', async () => {
     vi.mocked(getAuthUrl).mockResolvedValue(null);
     const res = mockResponse();
     await handler(mockRequest(), res);
@@ -61,6 +103,7 @@ describe('GET /api/auth/init', () => {
     await handler(mockRequest(), res);
     expect(res._redirectStatus).toBe(302);
     expect(res._redirectUrl).toContain('schwabapi.com');
+    expect(res._redirectUrl).not.toBe('/api/auth/login');
   });
 
   it('uses APP_URL directly for the redirect URI', async () => {
@@ -110,5 +153,6 @@ describe('GET /api/auth/init', () => {
       'auth-init',
       5,
     );
+    expect(getAuthUrl).not.toHaveBeenCalled();
   });
 });

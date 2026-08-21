@@ -439,25 +439,26 @@ describe('getBundle', () => {
     vi.useRealTimers();
   });
 
-  it('returns fallback when the manifest list entry is missing', async () => {
-    vi.useFakeTimers();
-    // list() resolves with no matching pathname → fetchManifest throws,
-    // withRetry exhausts, outer catch returns fallback (null).
+  it('returns fallback SILENTLY when the manifest list entry is missing', async () => {
+    // Regression 2026-08-17: a missing manifest is the EXPECTED state before
+    // the first takeit-retrain publishes a model — not an outage. The detect
+    // crons call getBundle() once per fire, so alerting here cost ~1,400
+    // Sentry events in one session (952 retry warnings + 476 failures) and
+    // buried the actionable alerts. It is deterministic, so it must not retry
+    // and must not alert. Genuine failures (network/auth/non-OK) still do
+    // both — see the neighbouring tests.
     vi.mocked(list).mockResolvedValue({
       blobs: [],
       cursor: undefined,
       hasMore: false,
     } as Awaited<ReturnType<typeof list>>);
 
-    const bundlePromise = getBundle('lottery');
-    await vi.runAllTimersAsync();
-    const bundle = await bundlePromise;
+    const bundle = await getBundle('lottery');
+
     expect(bundle).toBeNull();
-    expect(Sentry.captureMessage).toHaveBeenCalledWith(
-      'takeit.bundle.manifest_fetch_failed',
-      expect.objectContaining({ level: 'warning' }),
-    );
-    vi.useRealTimers();
+    // One probe only — no retry storm.
+    expect(vi.mocked(list)).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   it('returns fallback when the manifest fetch responds non-OK', async () => {

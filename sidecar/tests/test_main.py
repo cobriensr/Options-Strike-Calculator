@@ -52,6 +52,7 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
         "quote_processor_cls": MagicMock(),
         "databento_client_cls": MagicMock(),
         "start_health_server": MagicMock(),
+        "start_watchdog": MagicMock(),
         "connect_with_retry": MagicMock(),
     }
 
@@ -67,6 +68,7 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     monkeypatch.setattr(main, "QuoteProcessor", mocks["quote_processor_cls"])
     monkeypatch.setattr(main, "DatabentoClient", mocks["databento_client_cls"])
     monkeypatch.setattr(main, "start_health_server", mocks["start_health_server"])
+    monkeypatch.setattr(main, "start_watchdog", mocks["start_watchdog"])
     monkeypatch.setattr(main, "connect_with_retry", mocks["connect_with_retry"])
 
     return mocks
@@ -99,6 +101,7 @@ def test_main_exits_when_database_url_missing(
     patched_subsystems["quote_processor_cls"].assert_not_called()
     patched_subsystems["databento_client_cls"].assert_not_called()
     patched_subsystems["start_health_server"].assert_not_called()
+    patched_subsystems["start_watchdog"].assert_not_called()
     patched_subsystems["connect_with_retry"].assert_not_called()
 
 
@@ -136,6 +139,36 @@ def test_main_proceeds_when_required_env_present(
     patched_subsystems["theta_launcher_start"].assert_called_once()
     patched_subsystems["verify_connection"].assert_called_once()
     patched_subsystems["connect_with_retry"].assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# main() — stale-data watchdog wiring
+# ---------------------------------------------------------------------------
+
+
+def test_main_starts_stale_data_watchdog_reading_client_state(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+) -> None:
+    """main() must start the watchdog wired to the live client's state.
+
+    The watchdog (incident 2026-08-20: silent consume-loop freeze) has
+    to read the SAME client the health server reads — `is_connected`
+    and `last_bar_ts` on the DatabentoClient created by main() — or it
+    would watch a stale reference and either never fire or always fire.
+    """
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-key")
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+
+    main.main()
+
+    watchdog_mock = patched_subsystems["start_watchdog"]
+    watchdog_mock.assert_called_once()
+    kwargs = watchdog_mock.call_args.kwargs
+
+    client_instance = patched_subsystems["databento_client_cls"].return_value
+    assert kwargs["is_connected"]() is client_instance.is_connected
+    assert kwargs["last_bar_at"]() is client_instance.last_bar_ts
 
 
 # ---------------------------------------------------------------------------
@@ -248,12 +281,8 @@ def shutdown_fixtures(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
         "sys_exit": MagicMock(side_effect=SystemExit(0)),
     }
 
-    monkeypatch.setattr(
-        main.theta_fetcher, "stop_scheduler", mocks["theta_fetcher_stop"]
-    )
-    monkeypatch.setattr(
-        main.theta_launcher, "shutdown", mocks["theta_launcher_shutdown"]
-    )
+    monkeypatch.setattr(main.theta_fetcher, "stop_scheduler", mocks["theta_fetcher_stop"])
+    monkeypatch.setattr(main.theta_launcher, "shutdown", mocks["theta_launcher_shutdown"])
     monkeypatch.setattr(main, "drain_pool", mocks["drain_pool"])
     monkeypatch.setattr(main.time, "sleep", mocks["time_sleep"])
     monkeypatch.setattr(main.sys, "exit", mocks["sys_exit"])

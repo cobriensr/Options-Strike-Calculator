@@ -26,9 +26,10 @@ services:
   # Uncomment to run the Databento futures sidecar locally.
   # Requires DATABENTO_API_KEY in sidecar/.env
   #
-  # Streams OHLCV-1m bars for ES, NQ, ZN, RTY, CL, GC (CME/GLBX.MDP3),
-  # VX front + second month (CBOE/XCBF.PITCH), and DX (ICE/IFUS.IMPACT).
-  # Also subscribes to ES options trades/statistics/definitions.
+  # Streams OHLCV-1m bars for ES, NQ, ZN, RTY, CL, GC (CME/GLBX.MDP3) —
+  # six symbols. Also subscribes to ES options trades/statistics/definitions.
+  # (VX is deferred pending Databento availability; DX is not ingested at
+  # all — neither appears in sidecar/src/symbol_manager.py.)
   #
   # sidecar:
   #   build: ./sidecar

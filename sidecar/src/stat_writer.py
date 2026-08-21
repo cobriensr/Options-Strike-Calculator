@@ -33,10 +33,12 @@ exception is now ALSO re-raised so BatchedWriter re-queues the rows
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 from batched_writer import BatchedWriter
 
@@ -93,7 +95,7 @@ class StatWriter(BatchedWriter[StatRow]):
         AUD-M26 counter + throttled summary still fire. Do NOT swallow —
         that would defeat the retry.
         """
-        from db import upsert_options_daily
+        from db import upsert_options_daily  # noqa: PLC0415 — lazy, patched in tests
 
         try:
             for r in rows:
@@ -109,10 +111,8 @@ class StatWriter(BatchedWriter[StatRow]):
             if self._on_write_failure is not None:
                 # Never let the failure-tracking callback mask the
                 # original write error or block the base-class re-queue.
-                try:
+                with contextlib.suppress(Exception):
                     self._on_write_failure(exc)
-                except Exception:  # noqa: BLE001
-                    pass
             raise
 
     def start_background_flush(  # type: ignore[override]

@@ -18,7 +18,7 @@ shims so existing call sites and tests remain stable.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -55,14 +55,14 @@ if TYPE_CHECKING:
 # Re-export for backward compatibility with code (and tests) that
 # previously imported these from databento_client.
 __all__ = [
-    "DatabentoClient",
-    "STAT_TYPE_OPENING_PRICE",
-    "STAT_TYPE_SETTLEMENT",
     "STAT_TYPE_CLEARED_VOLUME",
-    "STAT_TYPE_OPEN_INTEREST",
-    "STAT_TYPE_IMPLIED_VOL",
     "STAT_TYPE_DELTA",
+    "STAT_TYPE_IMPLIED_VOL",
+    "STAT_TYPE_OPENING_PRICE",
+    "STAT_TYPE_OPEN_INTEREST",
+    "STAT_TYPE_SETTLEMENT",
     "STAT_TYPE_TO_KWARG",
+    "DatabentoClient",
 ]
 
 # Phase 2a note: we subscribe ONLY to ``tbbo``, never ``mbp-1``. Both
@@ -271,7 +271,7 @@ class DatabentoClient:
 
         # CME Group products (ES, NQ, ZN, RTY, CL) all on GLBX.MDP3
         cme_symbols = []
-        for sym, cfg in subs.items():
+        for cfg in subs.values():
             if cfg["dataset"] == DATASET_CME:
                 cme_symbols.append(cfg["parent_symbol"])
                 # Map prefix for resolving raw symbols from SDK symbology_map
@@ -373,8 +373,7 @@ class DatabentoClient:
         )
 
         log.info(
-            "Subscribed to ES.OPT definition (snapshot=start=0), "
-            "statistics, trades on %s",
+            "Subscribed to ES.OPT definition (snapshot=start=0), statistics, trades on %s",
             DATASET_CME,
         )
 
@@ -435,13 +434,11 @@ class DatabentoClient:
                 # MBP1Msg we see here is a TBBO record: a trade with the
                 # pre-trade BBO carried in levels[0].
                 self._handle_tbbo(record)
-            elif record_type.startswith("ErrorMsg") or record_type.startswith(
-                "SystemMsg"
-            ):
+            elif record_type.startswith("ErrorMsg") or record_type.startswith("SystemMsg"):
                 self._handle_system(record)
             # Ignore other record types (heartbeats, etc.)
-        except Exception as exc:
-            from sentry_setup import capture_exception
+        except Exception as exc:  # noqa: BLE001 — one bad record must not kill the stream
+            from sentry_setup import capture_exception  # noqa: PLC0415 — lazy optional Sentry
 
             capture_exception(
                 exc,
@@ -465,7 +462,7 @@ class DatabentoClient:
     RECONNECT_FIRST_BAR_SANITY_PCT = 2.0
 
     def _on_reconnect(self, gap_start: pd.Timestamp, gap_end: pd.Timestamp) -> None:
-        """Called when the client reconnects after a disconnect.
+        """Handle the client reconnecting after a disconnect.
 
         Computes the gap duration and reports to Sentry via the
         capture_message helper if the gap exceeds
@@ -492,7 +489,7 @@ class DatabentoClient:
         try:
             gap_s = max(0.0, (gap_end - gap_start).total_seconds())
         except (TypeError, AttributeError) as exc:
-            from sentry_setup import capture_exception
+            from sentry_setup import capture_exception  # noqa: PLC0415 — lazy optional Sentry
 
             capture_exception(
                 exc,
@@ -517,7 +514,7 @@ class DatabentoClient:
             # Significant gap — surface to Sentry as a warning event.
             # The structured context includes the gap duration so the
             # Sentry UI can filter and alert on long gaps.
-            from sentry_setup import capture_message
+            from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
             capture_message(
                 f"Databento reconnect gap {gap_s:.1f}s exceeds "
@@ -536,9 +533,7 @@ class DatabentoClient:
         # being tracked before the disconnect. When the next bar
         # arrives for each symbol, _handle_ohlcv will compare it to
         # _last_close_before_disconnect and warn on discontinuity.
-        self._reconnect_sanity_check_pending = set(
-            self._last_close_before_disconnect.keys()
-        )
+        self._reconnect_sanity_check_pending = set(self._last_close_before_disconnect.keys())
 
         # SIDE-017: re-seed the ES option definition snapshot.
         #
@@ -640,7 +635,7 @@ class DatabentoClient:
 
         # Convert timestamp (nanoseconds since epoch) to datetime
         ts_ns = record.ts_event
-        ts = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
+        ts = datetime.fromtimestamp(ts_ns / 1e9, tz=UTC)
 
         # Normalize to minute boundary
         ts = ts.replace(second=0, microsecond=0)
@@ -656,7 +651,7 @@ class DatabentoClient:
                 new_close = float(close)
                 pct_move = abs((new_close - prev_close) / prev_close) * 100
                 if pct_move >= self.RECONNECT_FIRST_BAR_SANITY_PCT:
-                    from sentry_setup import capture_message
+                    from sentry_setup import capture_message  # noqa: PLC0415 — lazy optional Sentry
 
                     capture_message(
                         f"{symbol} first-bar-after-reconnect price jump "
@@ -795,9 +790,7 @@ class DatabentoClient:
     def _handle_system(self, record: Any) -> None:
         """Handle system/error messages."""
         msg = getattr(record, "msg", "")
-        is_error = (
-            getattr(record, "is_error", False) or type(record).__name__ == "ErrorMsg"
-        )
+        is_error = getattr(record, "is_error", False) or type(record).__name__ == "ErrorMsg"
         if is_error:
             log.error("Databento system error: %s", msg)
         else:
@@ -850,8 +843,8 @@ class DatabentoClient:
         if self._client:
             try:
                 self._client.stop()
-            except Exception as exc:
-                from sentry_setup import capture_exception
+            except Exception as exc:  # noqa: BLE001 — shutdown must continue past a stop() failure
+                from sentry_setup import capture_exception  # noqa: PLC0415 — lazy optional Sentry
 
                 capture_exception(
                     exc,

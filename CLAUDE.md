@@ -6,36 +6,43 @@ Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Ser
 
 ```text
 src/              React 19 SPA (Tailwind CSS 4, no router)
-  components/     UI components (50+ TSX files, feature-grouped folders)
-  hooks/          Custom React hooks (useAppState, useMarketData, useChainData, etc.)
+  components/     UI components (230+ TSX files, feature-grouped folders)
+  hooks/          Custom React hooks (useMarketData, useChainData, useCalculation, etc.)
   utils/          Pure calculation modules (black-scholes, strikes, hedge, iron-condor, pin-risk, etc.)
   types/          Shared TypeScript types
-  data/           Static data (market hours, VIX stats — VIX OHLC has a cutoff date)
+  data/           Static data (market hours, VIX stats — VIX OHLC has a cutoff date, flow-regime baseline percentiles)
   constants/      App-wide constants
 
 api/              Vercel Serverless Functions
-  _lib/           21+ shared modules (see "Backend Modules" below)
+  _lib/           165+ shared modules (see "Backend Modules" below)
   auth/           Schwab OAuth flow (init.ts, callback.ts)
-  cron/           35 scheduled jobs (market data fetching, feature building, lesson curation)
+  cron/           78 scheduled jobs (86 vercel.json cron entries; market data fetching, feature building, lesson curation, feed-freshness monitoring)
   journal/        Journal CRUD + DB init/migrate
   ml/             ML data export endpoint
 
 sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
   src/            Python 3 service using databento SDK + psycopg2
-                  Ingests 7 futures symbols (ES, NQ, ZN, RTY, CL, GC, DX) + ES options
+                  Ingests 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) + ES options
                   Own requirements.txt, pyproject.toml, Dockerfile
                   Uses psycopg2 (not @neondatabase/serverless) for Neon Postgres
                   Sentry SDK for error tracking; VX deferred pending Databento availability
-                  vercel.json ignoreCommand skips deploys for sidecar/, ml/, scripts/, pine/, docs/, *.md changes
+                  vercel.json ignoreCommand skips deploys for sidecar/, ml/, uw-stream/, scripts/, pine/, docs/, *.md changes
 
-uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
+uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — one of three Railway services)
                   asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
                   per-channel handler queues → asyncpg COPY → Neon. Subscribes to flow-alerts (note hyphen,
-                  not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (~50 tickers).
-                  Writes to ws_flow_alerts (sql/001) and ws_option_trades (api migration #110); cron-fed
+                  not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (~86 tickers).
+                  Writes to ws_flow_alerts (sql/001) and ws_option_trades (api migration #109); cron-fed
                   flow_alerts table is NOT touched and runs in parallel during the soak window.
                   Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).
                   Own Dockerfile, README.md, requirements.txt, conftest.py — own pytest suite under tests/.
+
+classifier/       Multi-leg classifier HTTP service (Python, Railway, NOT Vercel — third Railway service)
+                  Carved out of sidecar/ so polars does not compete with the Theta JVM for memory.
+                  Source of truth is ml/src/multileg_{assembler,patterns}.py; byte-identical copies
+                  live in classifier/_vendored_ml/, kept in sync by a test.
+                  Own Dockerfile, railway.toml, requirements.txt, conftest.py — own pytest suite under tests/.
+                  NOT in the vercel.json ignoreCommand list, so classifier-only changes still build Vercel.
 
 scripts/          Backfill scripts (backfill-etf-tide.mjs, backfill-greek-exposure.mjs, etc.)
 
@@ -51,7 +58,7 @@ ml/               Python ML pipeline (clustering, EDA, classification, visualiza
 docs/             Design artifacts
   superpowers/    specs/ and plans/ for feature design documents
 
-e2e/              Playwright specs (23 specs including a11y)
+e2e/              Playwright specs (39 specs including a11y)
 ```
 
 ## Commands
@@ -160,10 +167,10 @@ Everything else gets the full loop.
 ### Backend (api/)
 
 - **Auth is single-owner + optional guest keys** — one Schwab OAuth session via httpOnly cookie. Plaintext cookie is intentional. The owner can hand out comma-separated guest keys via `GUEST_ACCESS_KEYS`; guests get read-only access to owner-gated data endpoints (dark pool, GEX, TRACE Live, etc.) but **not** to the Anthropic-backed `api/analyze.ts`. See `api/_lib/guest-auth.ts` (`rejectIfNotOwnerOrGuest`, `guardOwnerOrGuestEndpoint`) and `src/utils/auth.ts` (`getAccessMode`).
-- **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()`. 40+ tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
+- **Neon Postgres** — `@neondatabase/serverless`, lazy singleton via `getDb()`. 85+ tables managed by numbered migrations in `migrateDb()` (tracked in `schema_migrations`).
 - **Upstash Redis** — stores Schwab OAuth tokens (access + refresh). Env vars: `KV_REST_API_URL` / `UPSTASH_REDIS_REST_URL`.
-- **Input validation** — Zod schemas in `api/_lib/validation.ts` validate at system boundaries before data reaches Anthropic or Postgres.
-- **Cron jobs** — 35 jobs in `vercel.json`, all verify `CRON_SECRET`. Market data fetches run every 5 min during market hours (13-21 UTC, Mon-Fri).
+- **Input validation** — Zod schemas under `api/_lib/validation/` (`common`, `snapshot`, `market-data`, `lottery`, `periscope`, `tracker`, …) validate at system boundaries before data reaches Anthropic or Postgres. `api/_lib/validation.ts` is now just a barrel that `export *`s those files — add new schemas to the matching sub-file, not the barrel.
+- **Cron jobs** — 86 cron entries in `vercel.json` (some paths have several schedules), all verify `CRON_SECRET`. Market data fetches run every 1–5 min during market hours (13-21 UTC, Mon-Fri).
 - **Bot protection** — `botid` checks on production endpoints, skipped in local dev. **When adding a new endpoint that calls `checkBot(req)`, also add its path to the `protect` array in `src/main.tsx`'s `initBotId()` call.**
 - **Logging** — `pino` logger in `api/_lib/logger.ts`.
 - **Sentry** — error tracking + metrics via `@sentry/node`.
@@ -173,13 +180,13 @@ Everything else gets the full loop.
 
 Key modules beyond the basics:
 
-- `db.ts` — `initDb()` (base tables) + `migrateDb()` (69 numbered migrations, stored in `api/_lib/db-migrations.ts`). New tables go in `migrateDb()` only, never `initDb()`.
+- `db.ts` — `initDb()` (base tables) + `migrateDb()` (190 numbered migrations, stored in `api/_lib/db-migrations.ts`). New tables go in `migrateDb()` only, never `initDb()`.
 - `db-analyses.ts`, `db-flow.ts`, `db-snapshots.ts`, `db-positions.ts`, `db-strike-helpers.ts` — query modules split from db.ts.
 - `analyze-prompts.ts` — static Anthropic prompt text (system prompt parts, rules, chart type descriptions).
 - `analyze-context.ts` — dynamic context assembly; calls formatters from `db-flow.ts` (e.g. `formatSpotExposuresForClaude()`).
 - `lessons.ts` — lesson curation logic.
 - `overnight-gap.ts`, `spx-candles.ts`, `max-pain.ts`, `darkpool.ts`, `embeddings.ts`, `csv-parser.ts` — domain-specific modules.
-- `schwab.ts`, `api-helpers.ts`, `sentry.ts`, `validation.ts`, `logger.ts`, `constants.ts` — infrastructure.
+- `schwab.ts`, `sentry.ts`, `logger.ts`, `constants.ts`, `request-scope.ts` — infrastructure. `api-helpers.ts` and `validation.ts` are barrels re-exporting `auth-helpers`/`uw-fetch`/`cron-helpers`/`schwab-fetch` and `validation/*` respectively.
 
 #### Chain Data Boundary
 
@@ -198,11 +205,11 @@ When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/_
 - **Single-page app** — no router, one `App.tsx` orchestrating all sections.
 - **Tailwind CSS 4** with `prettier-plugin-tailwindcss`.
 - **Theme system** — `src/themes/` with dark mode default.
-- **Custom hooks** — state management via `useAppState`, data fetching via `useMarketData`, `useChainData`, `useVixData`, etc. Polling hooks gate refresh on `marketOpen` — do not add unconditional polling.
-- **Market hours time init** — `useAppState` defaults time to 10:00 AM CT outside market hours to keep `useCalculation` valid. The calculator produces no results if given an out-of-hours time.
+- **Custom hooks** — state management via `useSpotInputs`, `useIvInputs`, `useTimeInputs`, `useStrategyInputs`, `useTheme` (the old `useAppState` facade was decomposed into these in Phase 2P-2); data fetching via `useMarketData`, `useChainData`, `useVixData`, etc. Polling hooks gate refresh on `marketOpen` — do not add unconditional polling.
+- **Market hours time init** — `useTimeInputs` defaults time to 10:00 AM CT outside market hours to keep `useCalculation` valid. The calculator produces no results if given an out-of-hours time.
 - **Pure calculation utils** — `src/utils/` contains Black-Scholes, strike selection, hedge sizing, iron condor P&L, pin risk, and more. These are heavily tested.
 - **Sentry** — frontend error tracking via `@sentry/react`.
-- **PWA** — service worker via `vite-plugin-pwa`. Dynamic `import()` calls must include `.catch()` with a reload prompt for stale-chunk resilience. `cleanupOutdatedCaches: true` is set in `vite.config.ts`.
+- **PWA** — service worker via `vite-plugin-pwa` in `injectManifest` mode with a hand-written `src/sw.ts` (needed for the Web Push `push` handler). Dynamic `import()` calls must include `.catch()` with a reload prompt for stale-chunk resilience. `cleanupOutdatedCaches()` is called in `src/sw.ts`, not configured in `vite.config.ts`.
 
 ### Testing
 
@@ -219,9 +226,9 @@ When adding a migration to `migrateDb()` in `db.ts`, you must also update `api/_
 - **ESLint** — typescript-eslint + react-hooks + react-refresh + sonarjs. Config in `eslint.config.ts`.
 - Nested ternaries in JSX are allowed (`sonarjs/no-nested-conditional: off`).
 - **SonarJS rules to remember**: use `Number.parseFloat`/`Number.parseInt` (not globals), use `.at(-1)` not `[arr.length - 1]`, no nested template literals (extract to variable).
-- Run `npm run lint` before reporting any task complete. Lint covers root project only — `sidecar/` and `playwright-report/` are in the ESLint ignores list.
+- Run `npm run lint` before reporting any task complete. Lint covers root project only — `sidecar/`, `uw-stream/`, `classifier/`, `docs/`, and `playwright-report/` are in the ESLint ignores list.
 - Use `type` imports for type-only imports (`import type { ... }`).
-- **Explicit `.js` extensions in relative imports from `src/` that are imported by `api/`** — any file in `src/` that an `api/*` handler imports (directly or transitively) must use explicit `.js` extensions on all relative imports, e.g. `import { x } from './foo.js'` not `'./foo'`. Vite rewrites extension-less imports for the browser bundle, but Vercel Functions run Node's strict ESM resolver which does not. Failure mode: production Function crashes with `ERR_MODULE_NOT_FOUND` for the extension-less path while local dev + tests still pass. Type-only imports (`import type { ... }`) are erased at compile time and do NOT need `.js`. Examples of server-pulled `src/` files in this repo: `src/utils/max-pain.ts`, `src/utils/timezone.ts`, `src/utils/futures-gamma/{alerts,playbook,basis,triggers,tradeBias,types}.ts`. When adding a new `src/` module that `api/` will import, add `.js` to every non-type relative import inside it and inside its transitive deps.
+- **Explicit `.js` extensions in relative imports from `src/` that are imported by `api/`** — any file in `src/` that an `api/*` handler imports (directly or transitively) must use explicit `.js` extensions on all relative imports, e.g. `import { x } from './foo.js'` not `'./foo'`. Vite rewrites extension-less imports for the browser bundle, but Vercel Functions run Node's strict ESM resolver which does not. Failure mode: production Function crashes with `ERR_MODULE_NOT_FOUND` for the extension-less path while local dev + tests still pass. Type-only imports (`import type { ... }`) are erased at compile time and do NOT need `.js`. Examples of server-pulled `src/` files in this repo: `src/utils/timezone.ts`, `src/data/marketHours.ts`, `src/components/LotteryFinder/ct-window.ts`, `src/utils/gex-target/index.ts`, `src/utils/zero-gamma.ts`. When adding a new `src/` module that `api/` will import, add `.js` to every non-type relative import inside it and inside its transitive deps.
 
 ### Optional props policy (`exactOptionalPropertyTypes` is OFF — intentional)
 
@@ -246,23 +253,28 @@ Turning on `exactOptionalPropertyTypes` was evaluated during the 2026-04-16 Type
 
 Required env vars (pulled via `vercel env pull .env.local`):
 
-| Variable                                   | Source                             |
-| ------------------------------------------ | ---------------------------------- |
-| `DATABASE_URL`                             | Neon Postgres (Vercel Marketplace) |
-| `KV_REST_API_URL`, `KV_REST_API_TOKEN`     | Upstash Redis (Vercel Marketplace) |
-| `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET` | Schwab developer portal            |
-| `ANTHROPIC_API_KEY`                        | Anthropic                          |
-| `OPENAI_API_KEY`                           | OpenAI                             |
-| `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                             |
-| `CRON_SECRET`                              | Vercel (cron job auth)             |
-| `UW_API_KEY`                               | Unusual Whales                     |
-| `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)  |
-| `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)  |
-| `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)      |
-| `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)    |
-| `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)     |
-| `ARCHIVE_ROOT`                             | Volume path; default /data/archive |
-| `RAILWAY_RUN_UID`                          | `0` on Railway for volume write    |
+| Variable                                   | Source                                                          |
+| ------------------------------------------ | --------------------------------------------------------------- |
+| `DATABASE_URL`                             | Neon Postgres (Vercel Marketplace)                              |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN`     | Upstash Redis (Vercel Marketplace)                              |
+| `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET` | Schwab developer portal                                         |
+| `ANTHROPIC_API_KEY`                        | Anthropic                                                       |
+| `OPENAI_API_KEY`                           | OpenAI                                                          |
+| `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                                                          |
+| `CRON_SECRET`                              | Vercel (cron job auth)                                          |
+| `OWNER_SECRET`                             | Owner cookie secret (gates writes)                              |
+| `UW_API_KEY`                               | Unusual Whales                                                  |
+| `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)                               |
+| `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)                               |
+| `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)                                   |
+| `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)                                 |
+| `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)                                  |
+| `ARCHIVE_ROOT`                             | Volume path; default /data/archive                              |
+| `RAILWAY_RUN_UID`                          | `0` on Railway for volume write                                 |
+| `THETA_INDEX_CONCURRENCY`                  | Sidecar /theta/index/\* slot cap (default 2, min 1)             |
+| `THETA_INDEX_WAIT_S`                       | Sidecar slot wait before 503 theta_busy (default 5.0)           |
+| `WATCHDOG_STALE_EXIT_S`                    | Sidecar exits for restart after N s of stale data (default 300) |
+| `WS_STALE_ALERT_S`                         | monitor-ws-freshness stale threshold in s (default 300)         |
 
 Never edit `.env*` files with Claude. Never commit secrets.
 
@@ -274,12 +286,12 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 ## Deployment
 
 - **Platform**: Vercel (Fluid Compute, Node 24)
-- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change
-- **Long-running functions**: `api/analyze.ts` (800s), `api/cron/curate-lessons.ts` (780s), `api/cron/build-features.ts` (300s)
+- **Config**: `vercel.json` — crons, security headers, CSP, bot protection rewrites, SPA fallback, `ignoreCommand` skips builds when only `sidecar/`, `ml/`, `uw-stream/`, `scripts/`, `pine/`, `docs/`, or `*.md` files change
+- **Long-running functions**: `api/analyze.ts` (780s), `api/cron/curate-lessons.ts` (780s), `api/cron/build-features.ts` (300s)
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
 - **Sidecar**: Python service deployed separately to Railway (own Dockerfile). Env vars (`DATABENTO_API_KEY`, `DATABASE_URL`, `SENTRY_DSN`, and optionally `THETA_EMAIL` / `THETA_PASSWORD` for the co-resident Theta Data Terminal jar) are in Railway, not Vercel.
 
 ## Anthropic Integration
 
-- The analyze endpoint uses a split system prompt: `SYSTEM_PROMPT_PART1` + `SYSTEM_PROMPT_PART2` + `lessonsBlock` (~23K tokens).
-- Static prompt parts should use `cache_control: { type: 'ephemeral' }` for Anthropic prompt caching (~90% cost reduction opportunity).
+- The analyze endpoint assembles its cacheable system prompt as `SYSTEM_PROMPT_PART1` + `MARKET_MECHANICS_CONTEXT` + `SPOTGAMMA_MECHANICS_CONTEXT` + a mode-specific calibration example + `SYSTEM_PROMPT_PART2` (~70K tokens). `lessonsBlock` and `similarAnalysesBlock` are appended as separate system blocks OUTSIDE the cache boundary because they change frequently.
+- That stable block already carries `cache_control: { type: 'ephemeral', ttl: '1h' }` for Anthropic prompt caching — keep new static prompt text inside it, and anything volatile outside it.

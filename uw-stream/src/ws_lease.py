@@ -316,16 +316,19 @@ class WsLease:
         command = _eval_command(_CAS_DEL_SCRIPT, self._key, self._instance_id)
         # Release is best-effort: it lets the next generation acquire without
         # waiting out the TTL, but if Upstash is unreachable (e.g. we're
-        # releasing right after an unreachable-fence) we must NOT raise out of
-        # the shutdown path — the lease's TTL expires it on its own. The CAS-DEL
-        # is instance-fenced regardless, so it can never delete another gen's
-        # lease. Clear ``owns`` up front so a partial failure still reflects that
-        # we've relinquished it.
+        # releasing right after an unreachable-latch) we must NOT raise out of
+        # the shutdown path — the lease's TTL expires it on its own. The catch
+        # is deliberately broad (``Exception``, not just ``WsLeaseError``): an
+        # unexpected exception type on this path is exactly as harmless and
+        # exactly as unactionable at shutdown. The CAS-DEL is instance-fenced
+        # regardless, so it can never delete another gen's lease. Clear
+        # ``owns`` up front so a partial failure still reflects that we've
+        # relinquished it.
         self._owns = False
         try:
             payload = await self._command(command)
             deleted = _parse_eval_result(payload)
-        except WsLeaseError as exc:
+        except Exception as exc:
             log.warning(
                 "ws lease release failed (TTL will expire it)",
                 extra={"key": self._key, "err": str(exc)},
@@ -340,17 +343,26 @@ class WsLease:
     async def run_renewal(
         self, on_lost: Callable[[], Awaitable[None] | None]
     ) -> None:
-        """Renew the lease every ``renew_ms`` until ownership is lost.
+        """Renew the lease every ``renew_ms``; fence on loss, latch on outage.
 
-        Loops: sleep ``renew_ms``, ``renew()``. Fences (invokes ``on_lost``
-        exactly once, then returns) only on a CONFIRMED loss of ownership:
+        Loops: sleep ``renew_ms``, ``renew()``. Two distinct terminal states:
 
-        - ``renew()`` returns False — the CAS found another gen's id or a
-          vanished key (a GC pause let the TTL lapse, or someone grabbed it).
-        - ``renew()`` raises ``WsLeaseError`` (Upstash 5xx / unreachable) on
-          enough CONSECUTIVE attempts to span the full TTL — at that point we
-          could not have renewed, so the lease has surely lapsed and another
-          gen may hold it. A single transient blip is NOT a loss: the TTL gives
+        - FENCE (invokes ``on_lost`` exactly once, then returns) only on a
+          CONFIRMED loss of ownership: ``renew()`` returns False — the CAS
+          found another gen's id or a vanished key (a GC pause let the TTL
+          lapse, or someone grabbed it). Another generation may genuinely be
+          consuming, so the daemon must close its sockets — that's the lease
+          doing its job.
+        - LATCH LEASELESS (warn once + Sentry warning once, then PARK until
+          cancelled) when ``renew()`` raises ``WsLeaseError`` (Upstash 4xx/5xx/
+          quota/unreachable) on enough CONSECUTIVE attempts to span the full
+          TTL. That is a lease-INFRASTRUCTURE failure, not evidence of a rival
+          holder — and the lease is an optional deploy-overlap safety net, so
+          infra failure must NEVER stop ingestion (2026-08-19: an exhausted
+          Upstash quota crash-looped the daemon and lost 24h of market data).
+          We keep consuming without the lease and never retry Upstash again
+          this process (latched — no flapping, no further quota pressure).
+          A single transient blip is neither: the TTL gives
           ``ttl_ms // renew_ms`` (~3) attempts of headroom, mirroring
           ``connector.py``'s "log transient transport faults and retry,
           escalate only the unrecoverable" policy. A successful renew resets
@@ -388,12 +400,14 @@ class WsLease:
                 )
                 if consecutive_faults < max_consecutive_faults:
                     continue
-                # Upstash unreachable across the whole TTL — treat as lost.
-                await self._fence(
-                    "uw-stream ws lease renewal unreachable",
-                    on_lost,
-                    reason="upstash_unreachable",
-                )
+                # Upstash unreachable across the whole TTL. The lease has
+                # certainly lapsed, but this is an INFRASTRUCTURE failure —
+                # the lease service never told us another instance holds it —
+                # so fencing (shutdown) would let an optional safety net take
+                # down ingestion (the 2026-08-19 quota incident). Latch
+                # leaseless and park; on_lost is deliberately NOT fired.
+                self._go_leaseless(str(exc))
+                await _park_until_cancelled()
                 return
             except Exception as exc:  # defense in depth
                 # An UNEXPECTED non-transport error (not WsLeaseError) must
@@ -451,3 +465,45 @@ class WsLease:
         result = on_lost()
         if asyncio.iscoroutine(result):
             await result
+
+    def _go_leaseless(self, err: str) -> None:
+        """Latch into leaseless mode after a sustained lease-infra outage.
+
+        One WARNING log + one Sentry warning capture (warning, not error —
+        an unavailable optional safety net must not page; commit 331e915c's
+        "unconfigured != broken" principle). Clears ``owns()`` so the
+        shutdown-path ``release`` no-ops instead of poking a dead/exhausted
+        Upstash — the key TTL-expired on its own during the outage anyway.
+        """
+        self._owns = False
+        log.warning(
+            "ws-lease unavailable — proceeding WITHOUT the deploy-overlap lease",
+            extra={
+                "key": self._key,
+                "instance_id": self._instance_id,
+                "err": err,
+            },
+        )
+        capture_message(
+            "uw-stream ws lease renewal unreachable — running leaseless",
+            level="warning",
+            tags={"component": "ws_lease", "reason": "upstash_unreachable"},
+            context={
+                "key": self._key,
+                "instance_id": self._instance_id,
+                "err": err,
+            },
+        )
+
+
+async def _park_until_cancelled() -> None:
+    """Sleep forever; ends only via task cancellation at shutdown.
+
+    After latching leaseless the renewal task must NOT return: ``main``'s
+    ``asyncio.wait(FIRST_COMPLETED)`` treats ANY completed non-stop task as an
+    unexpected death and exits non-zero for a Railway restart — which would
+    turn "keep running without the lease" back into a restart loop. Parking
+    keeps the task pending until ``_shutdown`` cancels it like every other
+    background task.
+    """
+    await asyncio.Event().wait()

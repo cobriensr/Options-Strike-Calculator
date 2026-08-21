@@ -1,17 +1,26 @@
 import { test, expect, type Page } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 /**
  * Fill core calculator inputs manually to produce results and
  * render the VIXRangeAnalysis component within Market Regime.
  */
 async function fillCalculatorInputs(page: Page) {
+  // VIX Value lives in the default-collapsed Implied Volatility
+  // section — SectionBox unmounts children while collapsed.
+  await expandSection(page, 'Implied Volatility');
+  // VIXRangeAnalysis renders inside the default-collapsed Market Regime
+  // section.
+  await expandSection(page, 'Market Regime');
+
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
   await page.getByLabel('VIX Value').fill('19');
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('00');
+  await selectMeridiem(page, 'AM');
+  await selectTimezone(page, 'ET');
 
   // Wait for results to render, proving the calculator ran
   await expect(
@@ -84,20 +93,21 @@ test.describe('VIX Range Analysis', () => {
     await expect(survivalTable).toBeVisible({ timeout: 5000 });
 
     // Default mode is "settle" -- verify Settlement chip is active
-    const settleChip = page.getByRole('radio', {
+    const survivalMode = page.getByRole('group', { name: 'Survival mode' });
+    const settleChip = survivalMode.getByRole('button', {
       name: /Settlement/,
     });
-    await expect(settleChip).toHaveAttribute('aria-checked', 'true');
+    await expect(settleChip).toHaveAttribute('aria-pressed', 'true');
 
     // Click Intraday chip to switch
-    const intradayChip = page.getByRole('radio', {
+    const intradayChip = survivalMode.getByRole('button', {
       name: /Intraday/,
     });
     await intradayChip.click();
 
     // The Intraday chip should now be active
-    await expect(intradayChip).toHaveAttribute('aria-checked', 'true');
-    await expect(settleChip).toHaveAttribute('aria-checked', 'false');
+    await expect(intradayChip).toHaveAttribute('aria-pressed', 'true');
+    await expect(settleChip).toHaveAttribute('aria-pressed', 'false');
 
     // The table aria-label should now reflect intraday mode
     await expect(

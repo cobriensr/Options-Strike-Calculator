@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from health import HealthHandler  # noqa: E402
+from health import HealthHandler
 
 
 class _FakeRequest:
@@ -116,12 +116,7 @@ def test_takeit_explain_400_on_empty_body() -> None:
         # a POST with zero-length body explicitly.
         req = _FakeRequest("POST", "/takeit/explain", body=b"")
         # Inject Content-Length: 0 by patching the raw bytes.
-        req.raw = (
-            b"POST /takeit/explain HTTP/1.1\r\n"
-            b"Host: localhost\r\n"
-            b"Content-Length: 0\r\n"
-            b"\r\n"
-        )
+        req.raw = b"POST /takeit/explain HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
         output = io.BytesIO()
 
         class _H(HealthHandler):

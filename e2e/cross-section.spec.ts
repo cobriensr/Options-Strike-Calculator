@@ -1,10 +1,16 @@
 import { test, expect, type Page } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 async function fillInputs(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  // VIX Value lives in the default-collapsed Implied Volatility
+  // section — SectionBox unmounts children while collapsed.
+  await expandSection(page, 'Implied Volatility');
+
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('00');
+  await selectMeridiem(page, 'AM');
+  await selectTimezone(page, 'ET');
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
@@ -68,10 +74,11 @@ test.describe('Cross-Section Input Cascades', () => {
   test('changing VIX affects both strikes and regime section', async ({
     page,
   }) => {
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await expandSection(page, 'Implied Volatility');
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     // Fill with VIX=15
     await page.getByLabel('SPY Price').fill('679');
@@ -101,11 +108,13 @@ test.describe('Cross-Section Input Cascades', () => {
       expect(lowVixPut).toBeLessThan(6790);
     }).toPass({ timeout: 5000 });
 
-    // Note regime section text
-    const regimeText = await page
+    // Note the VIX regime card text (scoped to the IV section — a bare
+    // getByText(/regime/i) matches the static 'Market Regime' nav link)
+    const regimeCard = page
+      .locator('section[aria-label="Implied Volatility"]')
       .getByText(/regime/i)
-      .first()
-      .textContent();
+      .first();
+    const regimeText = await regimeCard.textContent();
 
     // Change VIX to 30
     await page.getByLabel('VIX Value').fill('30');
@@ -124,17 +133,16 @@ test.describe('Cross-Section Input Cascades', () => {
       expect(highVixPut).toBeLessThan(lowVixPut);
     }).toPass({ timeout: 5000 });
 
-    // Regime section should update (different zone for VIX 30 vs 15)
-    const updatedRegimeText = await page
-      .getByText(/regime/i)
-      .first()
-      .textContent();
+    // Regime card should update (different zone for VIX 30 vs 15)
+    const updatedRegimeText = await regimeCard.textContent();
     // The regime content or zone should differ between VIX 15 and 30
     expect(updatedRegimeText).not.toBe(regimeText);
   });
 
   test('skew adjustment affects put/call asymmetry', async ({ page }) => {
     await fillInputs(page);
+    // The skew slider lives in the default-collapsed Advanced section
+    await expandSection(page, 'Advanced');
 
     const table = page.getByRole('table', { name: 'Strike prices by delta' });
 
@@ -170,6 +178,7 @@ test.describe('Cross-Section Input Cascades', () => {
 
   test('wing width change updates iron condor section', async ({ page }) => {
     await fillInputs(page);
+    await expandSection(page, 'Advanced');
 
     const results = page.locator('#results');
 
@@ -177,10 +186,10 @@ test.describe('Cross-Section Input Cascades', () => {
     await expect(results.getByText('20-pt wings')).toBeVisible();
 
     // Change wing width to 25
-    const wingGroup = page.getByRole('radiogroup', {
+    const wingGroup = page.getByRole('group', {
       name: 'Iron condor wing width',
     });
-    await wingGroup.getByRole('radio', { name: '25' }).click();
+    await wingGroup.getByRole('button', { name: '25', exact: true }).click();
 
     // IC section should now show 25-pt wings
     await expect(results.getByText('25-pt wings')).toBeVisible();
@@ -200,7 +209,8 @@ test.describe('Cross-Section Input Cascades', () => {
     );
     const initialText = await icSection.textContent();
 
-    // Change contracts from 20 to 10
+    // Change contracts from 20 to 10 (inside the collapsed Advanced section)
+    await expandSection(page, 'Advanced');
     await page
       .locator('section[aria-label="Advanced"]')
       .getByLabel('Number of contracts')
@@ -223,7 +233,7 @@ test.describe('Cross-Section Input Cascades', () => {
     await fillInputs(page);
 
     // Switch to CT
-    await page.getByRole('radio', { name: 'CT', exact: true }).click();
+    await selectTimezone(page, 'CT');
 
     const results = page.locator('#results');
     const params = results.getByRole('group', {
@@ -236,7 +246,7 @@ test.describe('Cross-Section Input Cascades', () => {
     const ctHoursText = await hoursText.textContent();
 
     // Switch to ET — hours remaining should change (ET is 1 hour ahead)
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await selectTimezone(page, 'ET');
 
     // Wait for the text to actually change rather than relying on a fixed timeout
     await expect(hoursText).not.toHaveText(ctHoursText!, { timeout: 5000 });

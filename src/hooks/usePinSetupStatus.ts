@@ -57,6 +57,155 @@ export interface PinSetupStatus {
   asOf: string;
 }
 
+// ── Validation ─────────────────────────────────────────────
+//
+// Row-level validation at the parse (client-shape-hardening-2026-08-20,
+// Phase A). A shapeless envelope ({}, an HTML error body loosely parsed,
+// a 5xx JSON blob) previously reached the render pass as-is and crashed
+// the tile at `data.state.replace`. Invalid envelope → the hook's error
+// state; invalid trajectory points / trade-type entries are dropped,
+// never fatal; a malformed `outcome` degrades to `null`.
+
+const PIN_SETUP_STATES: readonly PinSetupState[] = [
+  'ARMED',
+  'WATCH',
+  'NOT_TRIGGERED',
+];
+
+const PIN_SETUP_BIASES: readonly PinSetupBias[] = [
+  'fade-rips',
+  'fade-dips',
+  'full-pin',
+  'no-signal',
+];
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function isNullableFiniteNumber(v: unknown): v is number | null {
+  return v === null || isFiniteNumber(v);
+}
+
+function isNullableString(v: unknown): v is string | null {
+  return v === null || typeof v === 'string';
+}
+
+function isPinSetupState(v: unknown): v is PinSetupState {
+  return (PIN_SETUP_STATES as readonly unknown[]).includes(v);
+}
+
+function isPinSetupBias(v: unknown): v is PinSetupBias {
+  return (PIN_SETUP_BIASES as readonly unknown[]).includes(v);
+}
+
+function isPinSetupMode(v: unknown): v is PinSetupStatus['mode'] {
+  return v === 'live' || v === 'historical';
+}
+
+function validateTrajectoryPoint(raw: unknown): PinSetupTrajectoryPoint | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.ts !== 'string' ||
+    !isFiniteNumber(r.gammaDirM) ||
+    !isNullableFiniteNumber(r.spot)
+  ) {
+    return null;
+  }
+  return { ts: r.ts, gammaDirM: r.gammaDirM, spot: r.spot };
+}
+
+function validateConditions(raw: unknown): PinSetupConditions | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.netGammaAtMagnetM) ||
+    !isFiniteNumber(r.netGammaThresholdM) ||
+    typeof r.netGammaMet !== 'boolean' ||
+    !isNullableFiniteNumber(r.magnetStrike) ||
+    typeof r.isRound50 !== 'boolean' ||
+    !isNullableFiniteNumber(r.distanceToMagnet) ||
+    !isFiniteNumber(r.distanceThreshold) ||
+    typeof r.distanceMet !== 'boolean'
+  ) {
+    return null;
+  }
+  return {
+    netGammaAtMagnetM: r.netGammaAtMagnetM,
+    netGammaThresholdM: r.netGammaThresholdM,
+    netGammaMet: r.netGammaMet,
+    magnetStrike: r.magnetStrike,
+    isRound50: r.isRound50,
+    distanceToMagnet: r.distanceToMagnet,
+    distanceThreshold: r.distanceThreshold,
+    distanceMet: r.distanceMet,
+  };
+}
+
+function validateOutcome(raw: unknown): PinSetupOutcome | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (!isFiniteNumber(r.settle) || !isFiniteNumber(r.settleVsMagnet)) {
+    return null;
+  }
+  return { settle: r.settle, settleVsMagnet: r.settleVsMagnet };
+}
+
+/**
+ * Validate the full envelope. Returns the typed status on success, or
+ * `null` on any envelope-level shape mismatch (caller surfaces the
+ * error state). Invalid rows (trajectory points, trade-type entries)
+ * are dropped, never fatal.
+ */
+function validatePinSetupStatus(raw: unknown): PinSetupStatus | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const conditions = validateConditions(r.conditions);
+  if (
+    typeof r.evaluatedAt !== 'string' ||
+    !isNullableString(r.date) ||
+    !isPinSetupMode(r.mode) ||
+    !isNullableString(r.snapshotTs) ||
+    !isNullableFiniteNumber(r.staleMinutes) ||
+    !isPinSetupState(r.state) ||
+    conditions == null ||
+    !isNullableFiniteNumber(r.spot) ||
+    !isPinSetupBias(r.bias) ||
+    !Array.isArray(r.recommendedTradeTypes) ||
+    !Array.isArray(r.avoidedTradeTypes) ||
+    !Array.isArray(r.trajectory) ||
+    typeof r.asOf !== 'string'
+  ) {
+    return null;
+  }
+  const trajectory: PinSetupTrajectoryPoint[] = [];
+  for (const p of r.trajectory) {
+    const point = validateTrajectoryPoint(p);
+    if (point) trajectory.push(point);
+  }
+  return {
+    evaluatedAt: r.evaluatedAt,
+    date: r.date,
+    mode: r.mode,
+    snapshotTs: r.snapshotTs,
+    staleMinutes: r.staleMinutes,
+    state: r.state,
+    conditions,
+    spot: r.spot,
+    bias: r.bias,
+    recommendedTradeTypes: r.recommendedTradeTypes.filter(
+      (t): t is string => typeof t === 'string',
+    ),
+    avoidedTradeTypes: r.avoidedTradeTypes.filter(
+      (t): t is string => typeof t === 'string',
+    ),
+    trajectory,
+    outcome: r.outcome == null ? null : validateOutcome(r.outcome),
+    asOf: r.asOf,
+  };
+}
+
 export interface UsePinSetupStatusReturn {
   data: PinSetupStatus | null;
   loading: boolean;
@@ -89,8 +238,16 @@ export function usePinSetupStatus({
         : '/api/pin-setup-status';
       const res = await fetch(url, { credentials: 'include' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const body = (await res.json()) as PinSetupStatus;
+      const raw: unknown = await res.json();
       if (!mountedRef.current) return;
+      const body = validatePinSetupStatus(raw);
+      if (body == null) {
+        // Shapeless body ({} / loosely-parsed HTML / 5xx JSON blob) —
+        // surface as a normal error state and keep any last-good `data`
+        // on screen; never let the malformed payload reach render.
+        setError('Unexpected response shape');
+        return;
+      }
       setData(body);
       setError(null);
     } catch (err) {

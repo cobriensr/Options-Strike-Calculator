@@ -1,12 +1,14 @@
 """HTTP client for the local Theta Data Terminal v2 API.
 
-The Terminal hosts its server at http://127.0.0.1:25503 (see
-theta_launcher.py). This module wraps the three endpoints we actually
-need for nightly EOD ingest:
+The Terminal hosts its server at http://127.0.0.1:25510 (see
+theta_launcher.py). This module wraps the endpoints we actually need
+for nightly EOD ingest plus the Index Data PRO proxy routes:
 
   - GET /v2/list/expirations?root=SPXW           — list all expirations
   - GET /v2/list/strikes?root=SPXW&exp=20260418  — list strikes for exp
   - GET /v2/hist/option/eod?...                  — EOD row per contract
+  - GET /v2/snapshot/index/price?root=SPX        — current index value
+  - GET /v2/hist/index/ohlc?...                  — index interval candles
 
 Theta v2 quirks encoded here:
 
@@ -14,12 +16,13 @@ Theta v2 quirks encoded here:
      sent as 5100000. We normalize to Decimal-in-dollars on the public
      API boundary so callers don't have to care.
   2. Dates are YYYYMMDD integers, not ISO strings.
-  3. When a contract has no data for the requested range, Theta returns
-     a plain-text body like ":No data for the specified timeframe &
-     contract." rather than an empty JSON array. We catch this and
-     surface it as an empty list.
-  4. Free-tier responses can also include HTTP 472 "Not entitled" —
-     we raise ThetaSubscriptionError so the fetcher can skip the root.
+  3. When a contract has no data for the requested range, Theta signals
+     it two ways: a plain-text body like ":No data for the specified
+     timeframe & contract." rather than an empty JSON array, or HTTP
+     472 (NO_DATA per the official error-code docs). Both are coerced
+     to the same empty payload and surface as an empty list / None.
+  4. HTTP 471 (PERMISSION) is a real entitlement denial — we raise
+     ThetaSubscriptionError so the fetcher can skip the root.
 
 Uses urllib.request to stay dep-free (no requests/httpx). Timeouts and
 retries are handled inline; Sentry reporting happens in the caller
@@ -38,10 +41,13 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 from logger_setup import log
 
-DEFAULT_BASE_URL = "http://127.0.0.1:25503"
+# Verified empirically against the live jar (Theta Terminal v1.8.6 Rev A):
+# HTTP binds :25510 (WS :25520); :25503 is never bound.
+DEFAULT_BASE_URL = "http://127.0.0.1:25510"
 DEFAULT_TIMEOUT_S = 15
 DEFAULT_MAX_RETRIES = 3
 
@@ -49,19 +55,28 @@ DEFAULT_MAX_RETRIES = 3
 # backoff path as 5xx (FINDING D):
 #   429 — rate limit
 #   476 — Theta MDDS transient disconnect
-# 472 ("Not entitled") is intentionally excluded — it raises
+# 471 (PERMISSION) is intentionally excluded — it raises
 # ThetaSubscriptionError immediately so the fetcher can skip the root.
+# 472 (NO_DATA) is also excluded — it's coerced to the empty no-data
+# payload, exactly like the plain-text ":No data" body.
 _RETRYABLE_THROTTLE_CODES = frozenset({429, 476})
 
 
 def _is_retryable_http(code: int) -> bool:
-    """True for HTTP codes that should retry with backoff (5xx + throttles)."""
+    """Return True for HTTP codes that should retry with backoff (5xx + throttles)."""
     return (500 <= code < 600) or (code in _RETRYABLE_THROTTLE_CODES)
+
 
 # Strikes are stored on the wire as integer thousandths of a dollar.
 # 5100000 wire -> $5100.00 human. Divisor lives in one place so tests
 # can assert against it symbolically.
 STRIKE_WIRE_DIVISOR = Decimal(1000)
+
+# Theta's `ms_of_day` fields are milliseconds since 00:00:00.000 Eastern.
+_ET_ZONE = ZoneInfo("America/New_York")
+
+# Default interval for index OHLC candles: 1 minute in milliseconds.
+DEFAULT_INDEX_IVL_MS = 60000
 
 
 class ThetaClientError(Exception):
@@ -69,7 +84,7 @@ class ThetaClientError(Exception):
 
 
 class ThetaSubscriptionError(ThetaClientError):
-    """Raised when Theta denies the request for subscription reasons (HTTP 472)."""
+    """Raised when Theta denies the request for subscription reasons (HTTP 471)."""
 
 
 @dataclass(frozen=True)
@@ -96,6 +111,36 @@ class EodRow:
     ask: Decimal | None
     bid_size: int | None
     ask_size: int | None
+
+
+@dataclass(frozen=True)
+class IndexPriceSnapshot:
+    """Current value of a calculated index (SPX / VIX family).
+
+    `ts_ms` is derived from Theta's `date` + `ms_of_day` columns
+    (milliseconds since ET midnight) as epoch milliseconds. Indices
+    have no trades, so there is no volume/size here by design.
+    """
+
+    root: str
+    price: Decimal
+    snapshot_date: date
+    ts_ms: int
+
+
+@dataclass(frozen=True)
+class IndexOhlcCandle:
+    """One interval candle of index values (OHLC of prices).
+
+    Indices have no volume — deliberately NO volume field so callers
+    can't accidentally depend on a fabricated one.
+    """
+
+    ts_ms: int
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
 
 
 class ThetaClient:
@@ -142,8 +187,9 @@ class ThetaClient:
         """Fetch EOD rows for a single contract across [start, end].
 
         Returns [] when Theta has no data for the range (plain-text
-        "No data..." response). Raises ThetaSubscriptionError when the
-        request is denied for entitlement reasons.
+        "No data..." response or HTTP 472 NO_DATA). Raises
+        ThetaSubscriptionError when the request is denied for
+        entitlement reasons (HTTP 471).
         """
         params = {
             "root": root,
@@ -173,6 +219,69 @@ class ThetaClient:
             for row in rows
         ]
 
+    def snapshot_index_price(self, root: str) -> IndexPriceSnapshot | None:
+        """Fetch the current value of an index root (Index Data PRO).
+
+        Wraps GET /v2/snapshot/index/price?root=... Returns None when
+        Theta has no snapshot for the root (plain-text "No data..."
+        response or HTTP 472 NO_DATA). Raises ThetaSubscriptionError
+        on entitlement denial (HTTP 471).
+        """
+        body = self._get_json("/v2/snapshot/index/price", {"root": root})
+
+        header = body.get("header") or {}
+        fmt: list[str] = header.get("format") or []
+        rows: list[list[Any]] = body.get("response") or []
+        if not fmt or not rows:
+            return None
+
+        cells = _zip_row_strict(fmt, rows[0])
+        price = cells.get("price")
+        if price is None:
+            raise ThetaClientError(f"Theta index snapshot missing 'price' field: {rows[0]!r}")
+        date_value = cells.get("date")
+        if date_value is None:
+            raise ThetaClientError(f"Theta index snapshot missing 'date' field: {rows[0]!r}")
+        snapshot_date = _parse_yyyymmdd(date_value)
+        ms_of_day = int(cells.get("ms_of_day") or 0)
+        return IndexPriceSnapshot(
+            root=root,
+            price=Decimal(str(price)),
+            snapshot_date=snapshot_date,
+            ts_ms=_et_epoch_ms(snapshot_date, ms_of_day),
+        )
+
+    def hist_index_ohlc(
+        self,
+        root: str,
+        day: date,
+        ivl_ms: int = DEFAULT_INDEX_IVL_MS,
+    ) -> list[IndexOhlcCandle]:
+        """Fetch one day of index OHLC interval candles (Index Data PRO).
+
+        Wraps GET /v2/hist/index/ohlc per-date (start_date == end_date
+        == `day`) at `ivl_ms` millisecond intervals (default 1 minute).
+        Returns [] when Theta has no data for the day (plain-text "No
+        data..." response or HTTP 472 NO_DATA). Raises
+        ThetaSubscriptionError on entitlement denial (HTTP 471).
+        Candles carry no volume — indices don't trade.
+        """
+        params = {
+            "root": root,
+            "start_date": _format_yyyymmdd(day),
+            "end_date": _format_yyyymmdd(day),
+            "ivl": ivl_ms,
+        }
+        body = self._get_json("/v2/hist/index/ohlc", params)
+
+        header = body.get("header") or {}
+        fmt: list[str] = header.get("format") or []
+        rows: list[list[Any]] = body.get("response") or []
+        if not fmt or not rows:
+            return []
+
+        return [_row_to_index_ohlc(fmt, row, fallback_date=day) for row in rows]
+
     # ------------------------------------------------------------------
     # Transport
     # ------------------------------------------------------------------
@@ -186,15 +295,19 @@ class ThetaClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                req = Request(url, headers={"Accept": "application/json"})
+                req = Request(url, headers={"Accept": "application/json"})  # noqa: S310 — localhost Terminal
                 with urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310
                     raw = resp.read()
                 return _parse_body(raw)
             except HTTPError as exc:
+                if exc.code == 471:
+                    raise ThetaSubscriptionError(f"Theta denied request (HTTP 471): {url}") from exc
                 if exc.code == 472:
-                    raise ThetaSubscriptionError(
-                        f"Theta denied request (HTTP 472): {url}"
-                    ) from exc
+                    # HTTP 472 = NO_DATA ("no data found for the specified
+                    # request") — same semantics as the plain-text ":No
+                    # data" body. Coerce to the empty payload shape so
+                    # callers take their existing no-data branch.
+                    return _no_data_body()
                 if _is_retryable_http(exc.code) and attempt < self.max_retries:
                     log.warning(
                         "Theta %s returned %d; retrying (%d/%d)",
@@ -207,9 +320,7 @@ class ThetaClient:
                     time.sleep(backoff_s)
                     backoff_s = min(backoff_s * 2, 10.0)
                     continue
-                raise ThetaClientError(
-                    f"Theta {path} failed with HTTP {exc.code}: {url}"
-                ) from exc
+                raise ThetaClientError(f"Theta {path} failed with HTTP {exc.code}: {url}") from exc
             except (URLError, TimeoutError, OSError) as exc:
                 if attempt < self.max_retries:
                     log.warning(
@@ -234,6 +345,16 @@ class ThetaClient:
 # ---------------------------------------------------------------------------
 
 
+def _no_data_body() -> dict[str, Any]:
+    """Return the empty payload shape all no-data signals coerce to.
+
+    Two wire signals mean "no data": the plain-text ":No data..." body
+    and HTTP 472 (NO_DATA). Both route here so every caller takes the
+    same empty-response branch (return [] / None per method).
+    """
+    return {"header": {"format": []}, "response": []}
+
+
 def _parse_body(raw: bytes) -> dict[str, Any]:
     """Parse a Theta v2 response body.
 
@@ -244,12 +365,12 @@ def _parse_body(raw: bytes) -> dict[str, Any]:
     """
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
-        return {"header": {"format": []}, "response": []}
+        return _no_data_body()
 
     # Plain-text "no data" response — NOT valid JSON.
     # Example: ":No data for the specified timeframe & contract."
     if text.startswith(":") or text.lower().startswith("no data"):
-        return {"header": {"format": []}, "response": []}
+        return _no_data_body()
 
     try:
         return json.loads(text)
@@ -259,7 +380,30 @@ def _parse_body(raw: bytes) -> dict[str, Any]:
 
 def _parse_yyyymmdd(value: int | str) -> date:
     """Parse Theta's integer YYYYMMDD date into datetime.date."""
-    return datetime.strptime(str(value), "%Y%m%d").date()
+    # DTZ007: calendar date only — .date() discards the (irrelevant) time part.
+    return datetime.strptime(str(value), "%Y%m%d").date()  # noqa: DTZ007
+
+
+def _et_epoch_ms(d: date, ms_of_day: int) -> int:
+    """Convert Theta's (date, ms-since-ET-midnight) pair to epoch ms."""
+    midnight_et = datetime(d.year, d.month, d.day, tzinfo=_ET_ZONE)
+    return int(midnight_et.timestamp() * 1000) + int(ms_of_day)
+
+
+def _zip_row_strict(fmt: list[str], row: list[Any]) -> dict[str, Any]:
+    """Zip a v2 row (array of values) with its format header.
+
+    strict=True so a format/row length mismatch (Theta adds or removes a
+    column) fails loudly instead of silently truncating to wrong/null
+    fields (FINDING C). Shared by the option-EOD and index parsers.
+    """
+    try:
+        return dict(zip(fmt, row, strict=True))
+    except ValueError as exc:
+        raise ThetaClientError(
+            f"Theta row/format length mismatch: "
+            f"len(format)={len(fmt)} len(row)={len(row)} row={row!r}"
+        ) from exc
 
 
 def _format_yyyymmdd(d: date) -> str:
@@ -298,18 +442,9 @@ def _row_to_eod(
     """Zip a v2 row (array of values) with its format header into an EodRow."""
     # The format list names every column in the wire row. The single-
     # contract endpoint doesn't echo symbol/strike/right/exp back — those
-    # are request-side knowns we inject here.
-    #
-    # strict=True so a format/row length mismatch (Theta adds or removes a
-    # column) fails loudly instead of silently truncating to wrong/null
-    # fields (FINDING C).
-    try:
-        cells = dict(zip(fmt, row, strict=True))
-    except ValueError as exc:
-        raise ThetaClientError(
-            f"Theta row/format length mismatch: "
-            f"len(format)={len(fmt)} len(row)={len(row)} row={row!r}"
-        ) from exc
+    # are request-side knowns we inject here. Length drift fails loudly
+    # via the shared strict-zip helper (FINDING C).
+    cells = _zip_row_strict(fmt, row)
 
     def _num(field: str) -> Decimal | None:
         value = cells.get(field)
@@ -343,4 +478,42 @@ def _row_to_eod(
         ask=_num("ask"),
         bid_size=_int("bid_size"),
         ask_size=_int("ask_size"),
+    )
+
+
+def _row_to_index_ohlc(
+    fmt: list[str],
+    row: list[Any],
+    *,
+    fallback_date: date,
+) -> IndexOhlcCandle:
+    """Zip an index OHLC row with its format header into a candle.
+
+    Unknown-but-named extra columns (e.g. a `count` field) are ignored;
+    only an unnamed length drift fails (strict zip). OHLC fields are
+    required — an index interval always has computed values, so a None
+    there means the wire format changed under us and must fail loudly.
+    Indices have no volume; none is read and none is fabricated.
+    """
+    cells = _zip_row_strict(fmt, row)
+
+    ms_of_day = cells.get("ms_of_day")
+    if ms_of_day is None:
+        raise ThetaClientError(f"Theta index ohlc row missing 'ms_of_day': {row!r}")
+
+    date_value = cells.get("date")
+    row_date = _parse_yyyymmdd(date_value) if date_value is not None else fallback_date
+
+    def _req(field: str) -> Decimal:
+        value = cells.get(field)
+        if value is None:
+            raise ThetaClientError(f"Theta index ohlc row missing '{field}' field: {row!r}")
+        return Decimal(str(value))
+
+    return IndexOhlcCandle(
+        ts_ms=_et_epoch_ms(row_date, int(ms_of_day)),
+        open=_req("open"),
+        high=_req("high"),
+        low=_req("low"),
+        close=_req("close"),
     )

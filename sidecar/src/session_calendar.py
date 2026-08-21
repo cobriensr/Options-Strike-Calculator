@@ -12,7 +12,7 @@ year around the DST transitions.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 _CHICAGO = ZoneInfo("America/Chicago")
@@ -25,7 +25,7 @@ def cme_session_date(ts_ns: int) -> date:
     session by its close, so a timestamp at/after 17:00 CT belongs to the NEXT
     calendar day's session (Sun 17:00 CT -> Monday). DST-aware via zoneinfo.
     """
-    ct = datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc).astimezone(_CHICAGO)
+    ct = datetime.fromtimestamp(ts_ns / 1e9, tz=UTC).astimezone(_CHICAGO)
     if ct.hour >= 17:
         return (ct + timedelta(days=1)).date()
     return ct.date()

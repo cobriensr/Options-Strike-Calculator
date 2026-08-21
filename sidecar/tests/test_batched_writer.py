@@ -37,7 +37,6 @@ import pytest  # noqa: E402
 
 from batched_writer import BatchedWriter  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Test subclasses
 # ---------------------------------------------------------------------------
@@ -396,9 +395,7 @@ class TestWriteFailureRequeue:
         assert w.writes == [[0, 1, 2]]
         assert w._buffer == []
 
-    def test_failure_fires_capture_exception(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_failure_fires_capture_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A write failure must be captured to Sentry centrally."""
         import batched_writer
 
@@ -412,9 +409,7 @@ class TestWriteFailureRequeue:
         # The captured exception is the one _write raised.
         assert isinstance(cap.call_args[0][0], RuntimeError)
 
-    def test_requeued_rows_preserve_order_at_front(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_requeued_rows_preserve_order_at_front(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Failed rows are re-prepended; newly-added rows go behind them."""
         import batched_writer
 

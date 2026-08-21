@@ -1,11 +1,17 @@
 import { test, expect, type Page } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 async function fillCalculatorInputs(page: Page) {
+  // VIX Value lives in the default-collapsed Implied Volatility
+  // section — SectionBox unmounts children while collapsed.
+  await expandSection(page, 'Implied Volatility');
+
   // Set explicit entry time to avoid wall-clock dependency
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('00');
+  await selectMeridiem(page, 'AM');
+  await selectTimezone(page, 'ET');
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');
@@ -76,11 +82,13 @@ test.describe('Error Recovery', () => {
   });
 
   test('rapid input changes do not crash the app', async ({ page }) => {
+    await expandSection(page, 'Implied Volatility');
+
     // Set entry time first
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     const spyInput = page.getByLabel('SPY Price');
     const vixInput = page.getByLabel('VIX Value');
@@ -109,13 +117,13 @@ test.describe('Error Recovery', () => {
     await fillCalculatorInputs(page);
 
     // Switch to Direct IV mode
-    await page.getByRole('radio', { name: 'Direct IV' }).click();
+    await page.getByRole('button', { name: 'Direct IV', exact: true }).click();
     await expect(
       page.getByRole('textbox', { name: /Direct IV/ }),
     ).toBeVisible();
 
     // Switch back to VIX mode
-    await page.getByRole('radio', { name: 'VIX' }).click();
+    await page.getByRole('button', { name: 'VIX', exact: true }).click();
     await expect(page.getByLabel('VIX Value')).toBeVisible();
 
     // Re-enter VIX and verify results still work

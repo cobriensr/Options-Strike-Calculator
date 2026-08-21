@@ -1,4 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 async function fillInputsAndWaitForResults(
   page: Page,
@@ -6,10 +8,14 @@ async function fillInputsAndWaitForResults(
   spx: string,
   vix: string,
 ) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  // VIX Value lives in the default-collapsed Implied Volatility
+  // section — SectionBox unmounts children while collapsed.
+  await expandSection(page, 'Implied Volatility');
+
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('00');
+  await selectMeridiem(page, 'AM');
+  await selectTimezone(page, 'ET');
 
   await page.getByLabel('SPY Price').fill(spy);
   await page.getByLabel(/SPX Price/).fill(spx);
@@ -147,6 +153,7 @@ test.describe('Extreme Inputs', () => {
       '19',
     );
 
+    await expandSection(page, 'Advanced');
     const contractsInput = page
       .locator('section[aria-label="Advanced"]')
       .getByLabel('Number of contracts');
@@ -169,6 +176,7 @@ test.describe('Extreme Inputs', () => {
     // Capture default (20 contracts) text
     const initialText = await results.textContent();
 
+    await expandSection(page, 'Advanced');
     const contractsInput = page
       .locator('section[aria-label="Advanced"]')
       .getByLabel('Number of contracts');

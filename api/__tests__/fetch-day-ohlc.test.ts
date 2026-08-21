@@ -208,11 +208,11 @@ describe('fetch-day-ohlc handler', () => {
     expect(res._json).toMatchObject({ updated: 0 });
   });
 
-  it('500s and reports to Sentry on sidecar HTTP failure', async () => {
+  it('500s and reports to Sentry on a genuine sidecar 5xx (not 503)', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,
-      status: 503,
-      json: async () => ({}),
+      status: 500,
+      json: async () => ({ error: 'duckdb exploded' }),
     });
 
     const res = mockResponse();
@@ -220,6 +220,108 @@ describe('fetch-day-ohlc handler', () => {
 
     expect(res._status).toBe(500);
     expect(Sentry.captureException).toHaveBeenCalled();
+  });
+
+  // ── Archive unavailable (2026-08-18) ────────────────────────
+  //
+  // When the sidecar's archive volume is unseeded / unmounted the
+  // /archive/* routes answer 503 (or 404) with a JSON code instead of
+  // 500. That is the same "no archive data for this date" semantic as
+  // the 404 case above: NOT an application error. The cron must not
+  // throw (which 500s the run + Sentry + red monitor) — it falls through
+  // to the Postgres fallback and, failing that, reports a clean skip.
+
+  it('treats sidecar 503 as archive-unavailable: falls back to Postgres, no throw, no Sentry', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: async () => ({ code: 'archive_unavailable' }),
+    });
+    mockedFetchOhlcPg.mockResolvedValueOnce({
+      open: 5300,
+      high: 5320,
+      low: 5285,
+      close: 5310,
+      range: 35,
+      up_excursion: 20,
+      down_excursion: 15,
+    });
+    mockSql.mockResolvedValueOnce([{ date: '2026-04-19' }]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-day-ohlc',
+      source: 'postgres',
+      updated: 1,
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('skips cleanly (200, reason "archive unavailable", no Sentry) on sidecar 503 when Postgres is empty too', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: async () => ({ code: 'archive_unavailable' }),
+    });
+    mockedFetchOhlcPg.mockResolvedValueOnce(null);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      skipped: true,
+      reason: 'archive unavailable',
+      sidecarStatus: 503,
+    });
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('treats ANY status whose JSON body carries code "archive_unavailable" as archive-unavailable', async () => {
+    // Belt-and-braces: even if the sidecar answers with a different HTTP
+    // status, the explicit code is authoritative. Body without a JSON
+    // payload at all on a 503 must still be handled (see 503 tests above).
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: async () => ({ code: 'archive_unavailable' }),
+    });
+    mockedFetchOhlcPg.mockResolvedValueOnce(null);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      skipped: true,
+      reason: 'archive unavailable',
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('handles a 503 whose body is not JSON (still archive-unavailable, no throw)', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON');
+      },
+    });
+    mockedFetchOhlcPg.mockResolvedValueOnce(null);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      skipped: true,
+      reason: 'archive unavailable',
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   // 404 means "archive parquet not dropped yet for this date" — same

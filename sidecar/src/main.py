@@ -17,14 +17,14 @@ Runs 24/7 on Railway as a persistent process.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import signal
 import sys
 import threading
 import time
 
 # Ensure src/ is on the Python path for local imports
-import os
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import archive_seeder
@@ -38,6 +38,7 @@ from logger_setup import log
 from quote_processor import QuoteProcessor
 from sentry_setup import capture_exception, init_sentry
 from trade_processor import TradeProcessor
+from watchdog import start_watchdog
 
 # A reconnect that survives at least this long is treated as a "healthy"
 # session and resets the backoff to 1.0s. Shorter sessions are flaps:
@@ -52,8 +53,8 @@ _quote_processor: QuoteProcessor | None = None
 _shutting_down = False
 
 
-def shutdown(signum: int, frame: object) -> None:
-    """Graceful shutdown handler."""
+def shutdown(signum: int, _frame: object) -> None:
+    """Graceful shutdown handler (signal.signal callback signature)."""
     global _shutting_down
     if _shutting_down:
         return
@@ -90,7 +91,7 @@ def shutdown(signum: int, frame: object) -> None:
 
 
 def main() -> None:
-    """Main entry point: verify env, connect DB, start streaming."""
+    """Run the sidecar: verify env, connect DB, start streaming."""
     global _client
 
     log.info("Futures relay sidecar starting")
@@ -171,8 +172,7 @@ def main() -> None:
         log.info("Archive seed endpoint enabled (root=%s)", archive_root)
     else:
         log.info(
-            "Archive seed endpoint disabled "
-            "(ARCHIVE_MANIFEST_URL or BLOB_READ_WRITE_TOKEN missing)"
+            "Archive seed endpoint disabled (ARCHIVE_MANIFEST_URL or BLOB_READ_WRITE_TOKEN missing)"
         )
 
     # Start health check server. Theta reporters are always passed —
@@ -193,6 +193,20 @@ def main() -> None:
     # Register signal handlers
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+
+    # Stale-data watchdog (incident 2026-08-20: the consume loop froze
+    # silently while is_connected stayed True and /health kept
+    # answering — Railway only restarts on crash, so nothing acted).
+    # If data is expected, the client says connected, and no bar has
+    # landed for WATCHDOG_STALE_EXIT_S, it os._exit(1)s so Railway
+    # brings up a fresh container and the replay subscription
+    # backfills the gap. Reads the same client state the health server
+    # reads. Started before the blocking connect loop below; the boot
+    # grace (WATCHDOG_BOOT_GRACE_S) covers Theta boot + connect time.
+    start_watchdog(
+        is_connected=lambda: _client.is_connected if _client else False,
+        last_bar_at=lambda: _client.last_bar_ts if _client else 0.0,
+    )
 
     # Connect with retry loop
     connect_with_retry(_client)
@@ -231,13 +245,11 @@ def connect_with_retry(client: DatabentoClient) -> None:
 
         except KeyboardInterrupt:
             break
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — the reconnect loop must survive any stream error
             capture_exception(exc, context={"backoff_s": backoff})
-            # Clean up on error too
-            try:
+            # Clean up on error too; a failing stop() must not abort the reconnect.
+            with contextlib.suppress(Exception):
                 client.stop()
-            except Exception:
-                pass
 
         if _shutting_down:
             break

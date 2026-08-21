@@ -15,7 +15,7 @@ patches the source-level ``sentry_setup.capture_message`` and
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock
 
 # Required env vars for config.py's pydantic-settings validation.
@@ -106,9 +106,7 @@ def _make_def_record(
 
 
 class TestInit:
-    def test_default_state(
-        self, router_setup: tuple[OptionsRecordRouter, dict]
-    ) -> None:
+    def test_default_state(self, router_setup: tuple[OptionsRecordRouter, dict]) -> None:
         router, _ = router_setup
         assert router.option_definitions == {}
         assert router.definition_lag_drops == 0
@@ -153,9 +151,7 @@ class TestHandleDefinition:
             router.handle_definition(_make_def_record(instrument_class=cls, iid=55))
         assert 55 not in router.option_definitions
 
-    def test_zero_expiration_dropped(
-        self, router_setup: tuple[OptionsRecordRouter, dict]
-    ) -> None:
+    def test_zero_expiration_dropped(self, router_setup: tuple[OptionsRecordRouter, dict]) -> None:
         """Definitions without an expiration timestamp are unusable for
         downstream pin/expiry routing — must early-return without caching."""
         router, _ = router_setup
@@ -429,7 +425,7 @@ class TestHandleStat:
         router._stat_writer.flush()  # AUD-M27: drain the off-thread writer
         passed_trade_date = mocks["upsert_options_daily"].call_args.args[1]
         assert passed_trade_date == date(2026, 6, 16)
-        assert passed_trade_date != date.today()
+        assert passed_trade_date != date.today()  # noqa: DTZ011 — asserting we do NOT use the local clock
 
 
 # ---------------------------------------------------------------------------
@@ -674,9 +670,7 @@ class TestStatUpsertFailureSummaryThrottle:
         root cause (overflow / schema drift / enum-adapt) is visible."""
         router, mocks = router_setup
         self._preload(router)
-        mocks["upsert_options_daily"].side_effect = ValueError(
-            "numeric field overflow"
-        )
+        mocks["upsert_options_daily"].side_effect = ValueError("numeric field overflow")
 
         # AUD-M27: handle_stat enqueues; the upsert (and thus the failure)
         # runs when the StatWriter drains. flush() surfaces it through
@@ -730,9 +724,7 @@ class TestStatUpsertFailureSummaryThrottle:
         from stat_writer import StatWriter
 
         for i in range(5):
-            router._stat_writer = StatWriter(
-                on_write_failure=router._on_stat_write_failure
-            )
+            router._stat_writer = StatWriter(on_write_failure=router._on_stat_write_failure)
             router.handle_stat(self._make_stat_record(quantity=1000 + i))
             router._stat_writer.flush()
 
@@ -762,7 +754,7 @@ class TestStatTypeToKwargTable:
     def test_summary_interval_is_60s(self) -> None:
         """Sanity guard on the throttle window. If this changes,
         the production-cadence Sentry alert thresholds need re-tuning."""
-        assert DEFINITION_LAG_SUMMARY_INTERVAL_S == pytest.approx(60.0)
+        assert pytest.approx(60.0) == DEFINITION_LAG_SUMMARY_INTERVAL_S
 
 
 # ---------------------------------------------------------------------------
@@ -773,7 +765,7 @@ class TestStatTypeToKwargTable:
 # prune compares against datetime.now(timezone.utc).date(), so deriving the
 # fixtures from the same clock keeps the test off real-time flakiness without
 # having to patch the prune's internal datetime import.
-_TODAY_UTC = datetime.now(timezone.utc).date()
+_TODAY_UTC = datetime.now(UTC).date()
 _YESTERDAY = _TODAY_UTC - timedelta(days=1)
 _LAST_WEEK = _TODAY_UTC - timedelta(days=7)
 _TOMORROW = _TODAY_UTC + timedelta(days=1)
@@ -803,18 +795,14 @@ class TestPruneExpiredDefinitions:
         assert router.option_definitions[3]["strike"] == pytest.approx(5820.0)
         assert router.option_definitions[4]["strike"] == pytest.approx(5830.0)
 
-    def test_empty_dict_is_noop(
-        self, router_setup: tuple[OptionsRecordRouter, dict]
-    ) -> None:
+    def test_empty_dict_is_noop(self, router_setup: tuple[OptionsRecordRouter, dict]) -> None:
         """Pruning an empty cache must not raise and leaves it empty."""
         router, _ = router_setup
         assert router.option_definitions == {}
         router._prune_expired_definitions()
         assert router.option_definitions == {}
 
-    def test_all_future_kept(
-        self, router_setup: tuple[OptionsRecordRouter, dict]
-    ) -> None:
+    def test_all_future_kept(self, router_setup: tuple[OptionsRecordRouter, dict]) -> None:
         router, _ = router_setup
         router.option_definitions = {
             1: _def_entry(5800.0, _TOMORROW),
@@ -844,13 +832,11 @@ class TestPruneExpiredDefinitions:
         # Trigger records carry a FUTURE expiry (30 days out) so the inserted
         # iids are never themselves pruned — keeps the test focused on the
         # seeded stale entry (iid 999) and the throttle gate.
-        future_dt = datetime.now(timezone.utc) + timedelta(days=30)
+        future_dt = datetime.now(UTC) + timedelta(days=30)
         future_ns = int(future_dt.timestamp() * 1e9)
 
         def _future_def(iid: int) -> MagicMock:
-            return _make_def_record(
-                instrument_class="C", iid=iid, expiration_ns=future_ns
-            )
+            return _make_def_record(instrument_class="C", iid=iid, expiration_ns=future_ns)
 
         router, _ = router_setup
         # last_prune_ts starts at 0.0, so the FIRST call's throttle gate opens

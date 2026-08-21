@@ -1,10 +1,19 @@
 import { test, expect, type Page } from '@playwright/test';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 async function fillCalculatorInputs(page: Page) {
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('00');
-  await page.getByRole('radio', { name: 'AM' }).click();
-  await page.getByRole('radio', { name: 'ET', exact: true }).click();
+  // VIX Value lives in the default-collapsed Implied Volatility
+  // section — SectionBox unmounts children while collapsed.
+  await expandSection(page, 'Implied Volatility');
+  // OpeningRangeCheck renders inside the default-collapsed Market Regime
+  // section.
+  await expandSection(page, 'Market Regime');
+
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('00');
+  await selectMeridiem(page, 'AM');
+  await selectTimezone(page, 'ET');
 
   await page.getByLabel('SPY Price').fill('679');
   await page.getByLabel(/SPX Price/).fill('6790');

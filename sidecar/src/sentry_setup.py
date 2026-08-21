@@ -43,7 +43,7 @@ def init_sentry() -> None:
         return
 
     try:
-        import sentry_sdk
+        import sentry_sdk  # noqa: PLC0415 — optional dep
     except ImportError:
         log.warning("sentry_sdk not installed — Sentry disabled")
         return
@@ -66,13 +66,13 @@ def init_sentry() -> None:
         )
         _sentry_enabled = True
         log.info("Sentry initialized for futures-sidecar")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — see comment below
         # Never let a Sentry init failure block sidecar startup.
         log.error("Failed to initialize Sentry: %s", exc)
 
 
 def is_enabled() -> bool:
-    """True if Sentry was successfully initialized."""
+    """Return True if Sentry was successfully initialized."""
     return _sentry_enabled
 
 
@@ -129,12 +129,12 @@ def capture_exception(
         return
 
     try:
-        import sentry_sdk
+        import sentry_sdk  # noqa: PLC0415 — optional dep
 
         with sentry_sdk.new_scope() as scope:
             _apply_scope(scope, tags, context)
             sentry_sdk.capture_exception(exc)
-    except Exception as inner:
+    except Exception as inner:  # noqa: BLE001 — telemetry must never raise into callers
         log.error("Failed to forward exception to Sentry: %s", inner)
 
 
@@ -163,10 +163,10 @@ def capture_message(
         return
 
     try:
-        import sentry_sdk
+        import sentry_sdk  # noqa: PLC0415 — optional dep
 
         with sentry_sdk.new_scope() as scope:
             _apply_scope(scope, tags, context)
             sentry_sdk.capture_message(message, level=level)
-    except Exception as inner:
+    except Exception as inner:  # noqa: BLE001 — telemetry must never raise into callers
         log.error("Failed to forward message to Sentry: %s", inner)

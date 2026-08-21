@@ -7,10 +7,27 @@
  * hours.
  *
  * Data source split:
- *   - $TICK, $TRIN → Schwab /pricehistory (returns intraday 1-min bars)
- *   - $ADD, $VOLD  → Schwab /quotes (pricehistory only returns completed
+ *   - $TICK, $TRIN → /pricehistory (returns intraday 1-min bars)
+ *   - $ADD, $VOLD  → /quotes (pricehistory only returns completed
  *     sessions for these symbols). We synthesize a flat bar
  *     (open=high=low=close=lastPrice) from the quote snapshot.
+ *
+ * SOURCE_UNAVAILABLE degrade (schwab-replacement-2026-08-16): the
+ * schwabFetch facade has NO replacement source for NYSE breadth
+ * internals — without Schwab configured every call returns 501
+ * SOURCE_UNAVAILABLE. The cron treats that as a QUIET skip: no Sentry
+ * event, at most one info log per run, feature columns stay NULL
+ * downstream. Genuine errors (network, DB) still alert as before.
+ *
+ * Schwab passthrough (readiness-loose-ends-2026-08-18, phase G): when
+ * SCHWAB_CLIENT_ID + SCHWAB_CLIENT_SECRET are set, the facade passes
+ * these paths through to the real Schwab Market Data API, so the
+ * breadth internals light back up once the owner completes OAuth. In
+ * the window between "creds added" and "OAuth completed" the facade
+ * returns the token envelope (401 SCHWAB_TOKEN_EXPIRED / 500
+ * SCHWAB_TOKEN_ERROR) for every symbol every minute — that is treated
+ * exactly like SOURCE_UNAVAILABLE for the skip decision (no Sentry, no
+ * failure count) with ONE warn per run pointing at /api/auth/init.
  *
  * Why per-minute polling:
  *   - $TICK/$ADD/$VOLD/$TRIN change second-by-second during the session.
@@ -88,6 +105,63 @@ interface SymbolResult {
   stored: number;
   skipped: number;
   error?: string;
+  /**
+   * True when the symbol was skipped quietly: the facade reported 501
+   * SOURCE_UNAVAILABLE (no breadth source exists) or Schwab is configured
+   * but the OAuth flow hasn't been completed yet (see `notConnected`).
+   * Not an error — the handler logs once per run per reason and neither
+   * Sentry nor the failure count sees these.
+   */
+  unavailable?: boolean;
+  /**
+   * Sub-reason for `unavailable`: the Schwab passthrough returned the
+   * token envelope (SCHWAB_TOKEN_EXPIRED / SCHWAB_TOKEN_ERROR) — creds are
+   * set but the owner hasn't visited /api/auth/init (or the refresh token
+   * lapsed). Surfaces as ONE warn per run instead of one error per symbol.
+   */
+  notConnected?: boolean;
+}
+
+/** Facade "no source for this path" marker — expected, not an error. */
+class SourceUnavailableError extends Error {}
+
+/**
+ * Facade passthrough "Schwab configured but not connected" marker — the
+ * token machinery answered instead of Schwab. Expected during the OAuth
+ * window; not an error.
+ */
+class SchwabNotConnectedError extends Error {}
+
+/** Facade result codes emitted by the OAuth token machinery. */
+const SCHWAB_NOT_CONNECTED_CODES = new Set([
+  'SCHWAB_TOKEN_EXPIRED',
+  'SCHWAB_TOKEN_ERROR',
+]);
+
+function isSourceUnavailable(result: {
+  status: number;
+  code?: string;
+}): boolean {
+  return result.status === 501 || result.code === 'SOURCE_UNAVAILABLE';
+}
+
+function isSchwabNotConnected(result: { code?: string }): boolean {
+  return result.code != null && SCHWAB_NOT_CONNECTED_CODES.has(result.code);
+}
+
+function unavailableResult(
+  symbol: InternalSymbol,
+  opts: { notConnected?: boolean } = {},
+): SymbolResult {
+  return {
+    symbol,
+    fetched: 0,
+    filtered: 0,
+    stored: 0,
+    skipped: 0,
+    unavailable: true,
+    ...(opts.notConnected ? { notConnected: true } : {}),
+  };
 }
 
 // Regular-session bounds in ET minutes-of-day.
@@ -128,7 +202,13 @@ async function fetchInternalCandles(
   );
 
   if (!result.ok) {
-    throw new Error(`Schwab pricehistory ${result.status}: ${result.error}`);
+    if (isSourceUnavailable(result)) {
+      throw new SourceUnavailableError(result.error);
+    }
+    if (isSchwabNotConnected(result)) {
+      throw new SchwabNotConnectedError(result.error);
+    }
+    throw new Error(`pricehistory ${result.status}: ${result.error}`);
   }
   return result.data.candles ?? [];
 }
@@ -235,6 +315,16 @@ async function processSymbol(
       skipped,
     };
   } catch (err) {
+    if (err instanceof SourceUnavailableError) {
+      // Expected degrade — no breadth source behind the facade. The
+      // handler logs this once per run; no Sentry noise.
+      return unavailableResult(symbol);
+    }
+    if (err instanceof SchwabNotConnectedError) {
+      // Expected during the OAuth window — creds set, no tokens yet.
+      // The handler warns once per run; no Sentry noise.
+      return unavailableResult(symbol, { notConnected: true });
+    }
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn({ err, symbol }, 'fetch-market-internals: per-symbol failure');
     Sentry.setTag('cron.symbol', symbol);
@@ -270,13 +360,24 @@ async function processQuoteSymbols(
     );
 
     if (!result.ok) {
+      if (isSourceUnavailable(result)) {
+        // Expected degrade — quiet skip, handler logs once per run.
+        return symbols.map((symbol) => unavailableResult(symbol));
+      }
+      if (isSchwabNotConnected(result)) {
+        // Expected during the OAuth window — quiet skip, handler warns
+        // once per run.
+        return symbols.map((symbol) =>
+          unavailableResult(symbol, { notConnected: true }),
+        );
+      }
       return symbols.map((symbol) => ({
         symbol,
         fetched: 0,
         filtered: 0,
         stored: 0,
         skipped: 0,
-        error: `Schwab quotes ${result.status}: ${result.error}`,
+        error: `quotes ${result.status}: ${result.error}`,
       }));
     }
 
@@ -389,7 +490,31 @@ export default withCronInstrumentation(
     );
 
     const failures = results.filter((r) => r.error);
-    const successes = results.filter((r) => !r.error);
+    const unavailable = results.filter((r) => r.unavailable);
+    const notConnected = unavailable.filter((r) => r.notConnected);
+    const noSource = unavailable.filter((r) => !r.notConnected);
+    const successes = results.filter((r) => !r.error && !r.unavailable);
+
+    if (noSource.length > 0) {
+      // Single per-run note (NOT Sentry): the facade has no breadth
+      // source, so these symbols are expected to skip every run until
+      // one is added — see schwab-replacement-2026-08-16.
+      ctx.logger.info(
+        { symbols: noSource.map((u) => u.symbol) },
+        'fetch-market-internals: no market-data source (SOURCE_UNAVAILABLE) — skipping',
+      );
+    }
+
+    if (notConnected.length > 0) {
+      // Single per-run warn (NOT Sentry): Schwab creds are set so the
+      // passthrough is live, but there are no OAuth tokens yet. The
+      // owner has to complete the browser flow once; until then every
+      // run lands here — one line, not one error per symbol per minute.
+      ctx.logger.warn(
+        { symbols: notConnected.map((u) => u.symbol) },
+        'fetch-market-internals: schwab configured but not connected — visit /api/auth/init',
+      );
+    }
 
     ctx.logger.info(
       {
@@ -397,6 +522,8 @@ export default withCronInstrumentation(
         ...totals,
         successCount: successes.length,
         failureCount: failures.length,
+        unavailableCount: unavailable.length,
+        notConnectedCount: notConnected.length,
         failures: failures.map((f) => ({ symbol: f.symbol, error: f.error })),
       },
       'fetch-market-internals completed',
@@ -433,6 +560,8 @@ export default withCronInstrumentation(
         ...totals,
         successCount: successes.length,
         failureCount: failures.length,
+        unavailableCount: unavailable.length,
+        notConnectedCount: notConnected.length,
         results,
       },
     };

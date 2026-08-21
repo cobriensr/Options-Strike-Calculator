@@ -7,7 +7,7 @@ How to get strike-calculator running on a clean clone. Allow ~30 minutes.
 - **Node.js 24+** — see [.nvmrc](../.nvmrc). Use `nvm use` or install matching version.
 - **npm 9+**
 - **Vercel CLI** — `npm i -g vercel`. Required for `npm run dev:full`.
-- _(optional)_ **Python 3.12** + `.venv` if you intend to touch `ml/`, `sidecar/`, or `uw-stream/`.
+- _(optional)_ **Python 3.12** + `.venv` if you intend to touch `ml/`, `sidecar/`, `uw-stream/`, or `classifier/` (each has its own `.venv`).
 - _(optional)_ **Docker** if you want a fully offline DB (see Path C below).
 
 ## Setup paths
@@ -53,7 +53,7 @@ For backend changes that touch schema. Uses `docker-compose.dev.yml` for an isol
 docker compose -f docker-compose.dev.yml up -d
 cp .env.example .env.local
 # Edit .env.local:
-#   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/strike_dev
+#   DATABASE_URL=postgresql://strike:strike@localhost:5432/strike_dev
 #   OWNER_SECRET=<openssl rand -hex 32>
 npm install
 npm run dev:full
@@ -99,7 +99,7 @@ Migrations live in [api/\_lib/db-migrations.ts](../api/_lib/db-migrations.ts). W
 
 ## Pitfalls
 
-1. **`.js` extensions in `src/` files imported by `api/`** — Vite rewrites extension-less imports for the browser bundle, but Node's strict ESM resolver does not. Vercel functions will crash with `ERR_MODULE_NOT_FOUND` in production while local dev passes. Files in this category: `src/utils/max-pain.ts`, `src/utils/timezone.ts`, `src/utils/futures-gamma/*`. Use `import { x } from './foo.js'`, not `'./foo'`. Type-only imports (`import type`) are erased at compile time and don't need the extension.
+1. **`.js` extensions in `src/` files imported by `api/`** — Vite rewrites extension-less imports for the browser bundle, but Node's strict ESM resolver does not. Vercel functions will crash with `ERR_MODULE_NOT_FOUND` in production while local dev passes. Files in this category: `src/utils/timezone.ts`, `src/data/marketHours.ts`, `src/components/LotteryFinder/ct-window.ts`, `src/utils/gex-target/index.ts`, `src/utils/zero-gamma.ts`. Use `import { x } from './foo.js'`, not `'./foo'`. Type-only imports (`import type`) are erased at compile time and don't need the extension.
 
 2. **`npm run dev` (frontend only) can't reach the API** — Vite proxies `/api/*` to `http://localhost:3000`, which doesn't exist unless `vercel dev` is running. Use `npm run dev:full` for the integrated experience, or run the two in separate terminals.
 
@@ -114,4 +114,4 @@ Migrations live in [api/\_lib/db-migrations.ts](../api/_lib/db-migrations.ts). W
 - [README.md](../README.md) — feature reference, architecture, deployment.
 - [CLAUDE.md](../CLAUDE.md) — project conventions, dev workflow, AI agent guidance.
 - [docs/INDEX.md](INDEX.md) — map of design specs and runbooks.
-- [sidecar/README.md](../sidecar/README.md), [ml/README.md](../ml/README.md), [uw-stream/README.md](../uw-stream/README.md) — Python services and pipeline.
+- [sidecar/README.md](../sidecar/README.md), [ml/README.md](../ml/README.md), [uw-stream/README.md](../uw-stream/README.md), [classifier/README.md](../classifier/README.md) — Python services and pipeline.

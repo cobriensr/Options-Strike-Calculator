@@ -100,6 +100,66 @@ function seriesOf(
   return out;
 }
 
+// ── Validation ─────────────────────────────────────────────
+//
+// Row-level validation at the parse (client-shape-hardening-2026-08-20,
+// follow-up sweep). Unlike its sibling hooks this one never crashed the
+// panel — `deriveTrajectory` runs inside `fetchSnapshots`' blanket
+// `catch`, so a malformed row's TypeError was swallowed. It was, though,
+// silently *lossy*: one null element discarded the ENTIRE payload, and
+// every subsequent poll discarded it again, so the trajectory line just
+// never appeared. Dropping bad rows here keeps the good ones.
+//
+// Field policy, checked against api/_lib/db-snapshots.ts
+// `getRecentVixSnapshots`:
+//   REQUIRED  entryTime (the `entry_time` TEXT column, always a string,
+//             and `parseEntryTimeMinutes` regex-matches it),
+//             vix (the mapper already drops rows whose `vix` is NaN or
+//             <= 0, so a finite number is guaranteed)
+//   DEGRADED  vix1d / vix9d / spx — nullable columns the mapper
+//             normalizes NaN → null; `seriesOf` already skips nulls
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/** Nullable numeric column: finite number passes through, else null. */
+function toNullableNumber(v: unknown): number | null {
+  return isFiniteNumber(v) ? v : null;
+}
+
+function validateSnapshot(raw: unknown): VixSnapshot | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.entryTime !== 'string' || !isFiniteNumber(r.vix)) return null;
+  return {
+    entryTime: r.entryTime,
+    vix: r.vix,
+    vix1d: toNullableNumber(r.vix1d),
+    vix9d: toNullableNumber(r.vix9d),
+    spx: toNullableNumber(r.spx),
+  };
+}
+
+/**
+ * Pull the well-formed snapshots out of a response body. A body that
+ * isn't an object, or whose `snapshots` isn't an array, yields `[]` —
+ * the same no-data outcome the hook already produced for a missing
+ * `snapshots` field.
+ */
+function validateSnapshots(raw: unknown): VixSnapshot[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const { snapshots } = raw as { snapshots?: unknown };
+  if (!Array.isArray(snapshots)) return [];
+
+  const out: VixSnapshot[] = [];
+  for (const candidate of snapshots) {
+    const snapshot = validateSnapshot(candidate);
+    if (snapshot) out.push(snapshot);
+  }
+  return out;
+}
+
 export function deriveTrajectory(
   snapshots: readonly VixSnapshot[],
 ): VixTrajectoryState {
@@ -133,9 +193,9 @@ export function useVixTrajectory(marketOpen: boolean): VixTrajectoryState {
         signal: AbortSignal.timeout(5_000),
       });
       if (!res.ok) return;
-      const data = (await res.json()) as { snapshots?: VixSnapshot[] };
+      const snapshots = validateSnapshots(await res.json());
       if (!mountedRef.current) return;
-      setState(deriveTrajectory(data.snapshots ?? []));
+      setState(deriveTrajectory(snapshots));
     } catch {
       // Network error: silent; the next poll retries.
     }

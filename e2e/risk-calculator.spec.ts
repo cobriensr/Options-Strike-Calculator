@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { expandSection } from './helpers/sections';
 
 /** Scope all selectors to the Risk Calculator section to avoid ambiguity. */
 function rcSection(page: Page) {
@@ -9,6 +10,10 @@ test.describe('Risk Calculator', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
+
+    // RiskCalculator is default-collapsed (and lazy-loaded); expand it
+    // so its inputs exist before each test touches them.
+    await expandSection(page, 'Risk Calculator');
   });
 
   test('renders risk calculator section with sell mode by default', async ({
@@ -18,7 +23,7 @@ test.describe('Risk Calculator', () => {
     await expect(section).toBeVisible();
 
     // Sell mode is active by default
-    const modeGroup = section.getByRole('radiogroup', {
+    const modeGroup = section.getByRole('group', {
       name: 'Trade mode',
     });
     await expect(modeGroup).toBeVisible();
@@ -33,9 +38,9 @@ test.describe('Risk Calculator', () => {
     await expect(section.getByLabel('Delta')).toBeVisible();
     await expect(section.getByLabel('PoP %')).toBeVisible();
 
-    // Wing width radiogroup visible in sell mode
+    // Wing width group visible in sell mode
     await expect(
-      section.getByRole('radiogroup', { name: 'Wing width' }),
+      section.getByRole('group', { name: 'Wing width' }),
     ).toBeVisible();
 
     // Contracts counter visible
@@ -47,7 +52,7 @@ test.describe('Risk Calculator', () => {
     page,
   }) => {
     const section = rcSection(page);
-    const modeGroup = section.getByRole('radiogroup', {
+    const modeGroup = section.getByRole('group', {
       name: 'Trade mode',
     });
 
@@ -61,9 +66,9 @@ test.describe('Risk Calculator', () => {
     // Sell-specific inputs disappear
     await expect(section.getByLabel('Credit Received')).not.toBeVisible();
 
-    // Wing width radiogroup hidden in buy mode
+    // Wing width group hidden in buy mode
     await expect(
-      section.getByRole('radiogroup', { name: 'Wing width' }),
+      section.getByRole('group', { name: 'Wing width' }),
     ).not.toBeVisible();
   });
 
@@ -187,7 +192,7 @@ test.describe('Risk Calculator', () => {
     const section = rcSection(page);
 
     // Switch to buy mode
-    const modeGroup = section.getByRole('radiogroup', {
+    const modeGroup = section.getByRole('group', {
       name: 'Trade mode',
     });
     await modeGroup.getByText('Buy').click();

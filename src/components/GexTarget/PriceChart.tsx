@@ -43,7 +43,14 @@ export type CandleInterval = '1m' | '5m';
 
 export interface PriceChartProps {
   candles: SPXCandle[];
-  previousClose: number | null;
+  /**
+   * Previous session close. `null` when unknown; `undefined` can also
+   * arrive at runtime when the upstream API payload omits the field —
+   * both mean "no line" (optional-props policy: guard with `!= null`,
+   * since `createPriceLine({ price: undefined })` throws inside
+   * lightweight-charts).
+   */
+  previousClose: number | null | undefined;
   /** The currently-active mode's TargetScore — overlay lines update when this changes. */
   score: TargetScore | null;
   /**
@@ -381,11 +388,15 @@ export const PriceChart = memo(function PriceChart({
     }
     priceLineRefs.current = [];
 
+    // `== null` (not `=== null`) throughout: these values are typed
+    // nullable but can also arrive as `undefined` at runtime, and
+    // `createPriceLine({ price: undefined })` throws inside
+    // lightweight-charts. Optional-props policy — null/undefined coalesce.
     if (
       !score &&
-      previousClose === null &&
-      openingCallStrike === null &&
-      openingPutStrike === null
+      previousClose == null &&
+      openingCallStrike == null &&
+      openingPutStrike == null
     )
       return;
 
@@ -407,7 +418,7 @@ export const PriceChart = memo(function PriceChart({
     }
 
     // Call wall (highest dealer call-gamma-OI strike at open) — cyan dashed
-    if (openingCallStrike !== null) {
+    if (openingCallStrike != null) {
       lines.push(
         series.createPriceLine({
           price: openingCallStrike,
@@ -421,7 +432,7 @@ export const PriceChart = memo(function PriceChart({
     }
 
     // Put wall (highest dealer put-gamma-OI strike at open) — orange dashed
-    if (openingPutStrike !== null) {
+    if (openingPutStrike != null) {
       lines.push(
         series.createPriceLine({
           price: openingPutStrike,
@@ -435,7 +446,7 @@ export const PriceChart = memo(function PriceChart({
     }
 
     // Previous close line
-    if (previousClose !== null) {
+    if (previousClose != null) {
       lines.push(
         series.createPriceLine({
           price: previousClose,

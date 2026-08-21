@@ -26,6 +26,14 @@ export default withDbReader(
   'owner-or-guest',
   async (_req, res, done) => {
     const sql = getDb();
+    // `expiry` is cast to text via TO_CHAR so the frontend receives a
+    // stable YYYY-MM-DD string. The Neon driver hydrates DATE columns as
+    // JS Date objects which then JSON-serialize to an ISO timestamp
+    // ("2026-05-22T00:00:00.000Z") — that breaks helpers.formatExpiryMD
+    // (splits on '-'), which rendered alert toasts as
+    // "NVDA 225P 05/22T00:00:00.000Z". Same fix and same rationale as
+    // /api/tracker/contracts. `fired_at` is a TIMESTAMPTZ whose full
+    // instant every consumer wants, so it is deliberately left alone.
     const rows = await withDbRetry(
       () => sql`
         SELECT
@@ -39,7 +47,7 @@ export default withDbReader(
           a.acknowledged    AS acknowledged,
           c.occ_symbol      AS occ_symbol,
           c.ticker          AS ticker,
-          c.expiry          AS expiry,
+          TO_CHAR(c.expiry, 'YYYY-MM-DD') AS expiry,
           c.strike          AS strike,
           c.side            AS side,
           c.direction       AS direction,

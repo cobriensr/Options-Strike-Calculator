@@ -54,6 +54,7 @@ import handler from '../pre-market.js';
 import {
   guardOwnerEndpoint,
   rejectIfRateLimited,
+  setCacheHeaders,
 } from '../_lib/api-helpers.js';
 
 describe('GET /api/pre-market', () => {
@@ -62,6 +63,7 @@ describe('GET /api/pre-market', () => {
     mockDbFn.mockReset();
     vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+    vi.mocked(setCacheHeaders).mockClear();
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -139,6 +141,7 @@ describe('GET /api/pre-market', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ data: preMarketData });
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, 120, 60);
   });
 
   it('returns null when no data exists for date', async () => {
@@ -153,6 +156,10 @@ describe('GET /api/pre-market', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ data: null });
+    // Pre-open null must not be edge-cached: the auto-prefill cron writes
+    // at the 8:30 CT open and the panel must pick it up on the next poll.
+    expect(setCacheHeaders).not.toHaveBeenCalled();
+    expect(res._headers['Cache-Control']).toBe('no-store');
   });
 
   it('returns null when pre_market_data column is null', async () => {
@@ -167,6 +174,8 @@ describe('GET /api/pre-market', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ data: null });
+    expect(setCacheHeaders).not.toHaveBeenCalled();
+    expect(res._headers['Cache-Control']).toBe('no-store');
   });
 
   it('defaults to today ET when no date param', async () => {

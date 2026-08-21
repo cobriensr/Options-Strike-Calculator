@@ -1,26 +1,40 @@
 """HTTP server on port 8080 — health check + admin endpoints.
 
-Serves `GET /health` for liveness/readiness monitoring and
-`POST /admin/seed-archive` for one-shot seeding of the persistent
-volume from Vercel Blob. The admin endpoint is gated on a shared token
-and is safe to leave deployed — subsequent calls are cheap (SHA-based
-resume) and guarded by a single-flight lock in `archive_seeder`.
+Serves `GET /health` for liveness/readiness monitoring plus two
+token-gated admin endpoints:
+
+  - `POST /admin/seed-archive` — one-shot seeding of the persistent
+    volume from Vercel Blob. Safe to leave deployed: subsequent calls
+    are cheap (SHA-based resume) and guarded by a single-flight lock in
+    `archive_seeder`.
+  - `POST|GET /admin/theta-backfill` — start / poll a targeted
+    `(roots, date-range)` Theta EOD repair (see `theta_fetcher`).
+
+Both share the `X-Admin-Token` vs `ARCHIVE_SEED_TOKEN` gate, and both
+answer a flat 401 on EVERY rejection so the admin surface is not an
+enumeration oracle — see `_reject_admin_unauthorized`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import json
+import math
 import os
 import re
 import threading
-from datetime import date, datetime, timezone
+import time
+import zoneinfo
+from collections.abc import Callable, Iterator
+from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from archive_seeder import SeedBusyError
 from logger_setup import log
+from sentry_setup import capture_message
 
 # 3-year window cap on /archive/*-batch range queries. A 3-year range
 # is ~750 trading dates × ~370k instruments — well within the 8 vCPU
@@ -39,6 +53,246 @@ _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # allocation. Configurable via env; default 1 MiB.
 MAX_BODY_BYTES = int(os.environ.get("TAKEIT_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
 
+# Roots the /theta/index/* proxy routes will serve. Matches the Index
+# Data PRO entitlement: SPX + the CBOE calculated VIX family. Anything
+# else is a 400 — the routes exist to feed the Schwab-replacement
+# facade's quotes/pricehistory paths, not as a general Theta proxy.
+_THETA_INDEX_ROOTS = frozenset({"SPX", "VIX", "VIX1D", "VIX9D", "VVIX"})
+
+# Default candle interval for /theta/index/history: 1 minute in ms.
+_THETA_DEFAULT_IVL_MS = 60000
+
+
+# ---------------------------------------------------------------------------
+# Concurrency bound for the /theta/index/* routes (Terminal burst choke)
+# ---------------------------------------------------------------------------
+#
+# Theta Terminal v1.8.6 (the co-resident jar, HTTP on 127.0.0.1:25510)
+# answers sequential requests reliably and drops them under a burst.
+# Two failures traced to it:
+#
+#   * `/api/history` on Vercel fans out 5 symbols x up to 6 concurrent
+#     days = ~30 simultaneous GET /theta/index/history calls. On
+#     2026-08-19 18:31 UTC $VIX1D came back empty while the other four
+#     roots succeeded, so the UI showed "n/a (no history)".
+#   * On 2026-08-18 /api/chain returned 502 seven times, each preceded
+#     by a sidecar `503 theta_unavailable` for $SPX.
+#
+# So bound how many requests may be inside the Terminal at once. This
+# mirrors `archive_query.archive_query_slot()` with ONE deliberate
+# difference: the archive slot sheds instantly (each admitted query
+# costs ~500 MB of DuckDB memory, so queueing would just OOM later),
+# whereas a queued Theta call costs nothing but a parked thread. The
+# callers here are Vercel Functions with an 8s client timeout
+# (`SIDECAR_TIMEOUT_MS` in api/_lib/market-data-adapters.ts), and they
+# would much rather wait a couple of seconds for the Terminal than take
+# an instant 503. The health server is a ThreadingHTTPServer (one
+# thread per request — see `_QuietThreadingHTTPServer` and `start()`),
+# so a blocking acquire parks only that request's own thread.
+#
+# 2 is deliberate: the Terminal is reliable sequentially, and 2 halves
+# queue latency without bursting it. Override via env for ops tuning.
+#
+# Both knobs are read at import. An exception here would take the whole
+# health server down (and Railway would then roll the deploy back in a
+# loop), so a bad value must DEGRADE to the documented default rather
+# than raise — see `_env_int` / `_env_float`. Concurrency is clamped to
+# >= 1 because a cap of 0 would permanently shed every request.
+_THETA_INDEX_CONCURRENCY_DEFAULT = 2
+
+
+def _env_int(name: str, default: int, *, minimum: int) -> int:
+    """Parse an integer tuning knob from the environment without raising.
+
+    Unset or blank → `default` silently. Unparseable → `default` with a
+    warning. Below `minimum` → `minimum` with a warning. Module-level
+    callers run at import time, where raising would be fatal.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        log.warning("%s=%r is not an integer; using default %d", name, raw, default)
+        return default
+    if value < minimum:
+        log.warning(
+            "%s=%d is below the minimum %d; clamping to %d",
+            name,
+            value,
+            minimum,
+            minimum,
+        )
+        return minimum
+    return value
+
+
+def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    """Parse a float tuning knob from the environment without raising.
+
+    Same contract as `_env_int`, plus: non-finite values (`nan`, `inf`)
+    fall back to `default` — `float()` accepts them but a NaN timeout
+    makes the semaphore wait forever and `inf` overflows the lock — and
+    values above `maximum` clamp down with a warning.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("%s=%r is not a number; using default %.1f", name, raw, default)
+        return default
+    if not math.isfinite(value):
+        log.warning("%s=%r is not finite; using default %.1f", name, raw, default)
+        return default
+    if value < minimum:
+        log.warning(
+            "%s=%r is below the minimum %.1fs; clamping to %.1fs",
+            name,
+            raw,
+            minimum,
+            minimum,
+        )
+        return minimum
+    if value > maximum:
+        log.warning(
+            "%s=%r is above the maximum %.1fs; clamping to %.1fs",
+            name,
+            raw,
+            maximum,
+            maximum,
+        )
+        return maximum
+    return value
+
+
+_THETA_INDEX_CONCURRENCY = _env_int(
+    "THETA_INDEX_CONCURRENCY", _THETA_INDEX_CONCURRENCY_DEFAULT, minimum=1
+)
+_theta_index_semaphore = threading.BoundedSemaphore(_THETA_INDEX_CONCURRENCY)
+
+# How long a request may queue for a slot before it gives up with 503
+# `theta_busy`. 5s sits inside the caller's 8s budget and still leaves
+# ~3s for the Terminal round-trip the slot then performs (a warm index
+# snapshot is well under 1s; the client itself is built with
+# timeout_s=5, max_retries=1). Expiring here is strictly better than
+# letting the caller time out: it returns a structured, retryable
+# answer with Retry-After instead of a dead socket.
+#
+# Clamped to [0.5s, 60s]: anything shorter is a shed in disguise (a warm
+# Terminal round-trip is a few hundred ms), and anything longer cannot
+# help a caller whose own budget is 8s — while an astronomically large
+# value makes `Semaphore.acquire(timeout=…)` raise OverflowError at
+# contention time, a latent 500 on the very path this bound protects.
+_THETA_INDEX_WAIT_S_DEFAULT = 5.0
+_THETA_INDEX_WAIT_S_MIN = 0.5
+_THETA_INDEX_WAIT_S_MAX = 60.0
+_THETA_INDEX_WAIT_S = _env_float(
+    "THETA_INDEX_WAIT_S",
+    _THETA_INDEX_WAIT_S_DEFAULT,
+    minimum=_THETA_INDEX_WAIT_S_MIN,
+    maximum=_THETA_INDEX_WAIT_S_MAX,
+)
+
+# Latch for the "wait expired" warning — see `_warn_theta_wait_expired`.
+_theta_index_wait_expired = False
+_theta_index_latch_lock = threading.Lock()
+
+
+class ThetaBusyError(Exception):
+    """Raised when a request waited out `_THETA_INDEX_WAIT_S` for a slot.
+
+    The HTTP layer maps this to 503 `theta_busy` + Retry-After. Distinct
+    from ThetaClientError (Terminal down → 503 `theta_unavailable`) so a
+    caller can tell "too many of us" from "it's broken".
+    """
+
+
+def _warn_theta_wait_expired() -> None:
+    """Warn once per process that a request never got a Terminal slot.
+
+    The first expiry is the signal that `THETA_INDEX_CONCURRENCY` (or
+    `THETA_INDEX_WAIT_S`) is too low for the offered load. Repeating it
+    per shed request during a burst would be pure alert noise, so the
+    warning is latched and later expiries drop to debug.
+
+    The sidecar's Sentry has no logging integration, so the log line
+    alone is invisible outside the Railway log drain. The first expiry
+    therefore ALSO goes out as a `capture_message` (same precedent as
+    db.py's slow-getconn and batched_writer's overflow-drop events),
+    behind the same latch — one Sentry event per process. The capture
+    is guarded: observability must never turn a 503 `theta_busy` into
+    an unhandled exception on the request thread.
+    """
+    global _theta_index_wait_expired
+    with _theta_index_latch_lock:
+        first = not _theta_index_wait_expired
+        _theta_index_wait_expired = True
+    if not first:
+        log.debug("theta index slot wait expired after %.1fs", _THETA_INDEX_WAIT_S)
+        return
+    log.warning(
+        "theta index slot wait expired after %.1fs at cap %d — raise "
+        "THETA_INDEX_CONCURRENCY if this repeats",
+        _THETA_INDEX_WAIT_S,
+        _THETA_INDEX_CONCURRENCY,
+    )
+    try:
+        capture_message(
+            "theta index slot wait expired",
+            level="warning",
+            context={"cap": _THETA_INDEX_CONCURRENCY, "wait_s": _THETA_INDEX_WAIT_S},
+            tags={"component": "health", "route": "theta-index"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("failed to forward theta busy warning to Sentry: %s", exc)
+
+
+@contextlib.contextmanager
+def theta_index_slot() -> Iterator[None]:
+    """Bound concurrent Theta Terminal calls to `_THETA_INDEX_CONCURRENCY`.
+
+    Blocking acquire with a `_THETA_INDEX_WAIT_S` deadline: a burst
+    queues (which the Terminal handles fine) instead of stampeding it.
+    Only when the deadline passes do we raise `ThetaBusyError` so the
+    HTTP layer can answer 503 `theta_busy`. The slot is released on exit
+    even if the wrapped call raises.
+    """
+    if not _theta_index_semaphore.acquire(blocking=False):
+        log.debug(
+            "theta index slots busy (cap %d); waiting up to %.1fs",
+            _THETA_INDEX_CONCURRENCY,
+            _THETA_INDEX_WAIT_S,
+        )
+        started = time.monotonic()
+        if not _theta_index_semaphore.acquire(timeout=_THETA_INDEX_WAIT_S):
+            _warn_theta_wait_expired()
+            raise ThetaBusyError("theta index concurrency limit reached")
+        log.debug(
+            "theta index slot acquired after waiting %.2fs",
+            time.monotonic() - started,
+        )
+    try:
+        yield
+    finally:
+        _theta_index_semaphore.release()
+
+
+def _previous_weekday(d: date) -> date:
+    """Return the closest weekday strictly before `d` (skips Sat/Sun).
+
+    Approximates "previous trading day" for the prev_close lookup on
+    /theta/index/price. Market holidays are NOT modeled — on those days
+    the hist fetch simply returns no candles and prev_close degrades to
+    null, which the response contract explicitly allows.
+    """
+    prev = d - timedelta(days=1)
+    while prev.weekday() >= 5:  # 5=Sat, 6=Sun
+        prev -= timedelta(days=1)
+    return prev
+
 
 def _is_today_or_future_utc(date_str: str) -> bool:
     """Return True when date_str (YYYY-MM-DD) is >= today in UTC.
@@ -53,11 +307,11 @@ def _is_today_or_future_utc(date_str: str) -> bool:
     no rows — ~96 wasted queries per session, each contributing
     memory pressure on an already-strained Railway tier.
     """
-    today_utc = datetime.now(timezone.utc).date().isoformat()
+    today_utc = datetime.now(UTC).date().isoformat()
     return date_str >= today_utc
 
 
-class _BadRequest(Exception):
+class _BadRequest(Exception):  # noqa: N818 — private sentinel, always converted to HTTP 400
     """Raised by parse helpers when an input is missing/malformed.
 
     Internal sentinel — caught by the route dispatch and converted to
@@ -126,6 +380,33 @@ def _parse_date_range(
     return start, end
 
 
+def _parse_theta_backfill_fields(payload: dict[str, Any]) -> tuple[list[str], date, date]:
+    """Validate the POST /admin/theta-backfill body's SHAPE.
+
+    Returns ``(roots, start_date, end_date)``; raises _BadRequest with an
+    operator-facing message. Only shape is checked here — the domain
+    rules (root allowlist, span cap, "before today") belong to
+    theta_fetcher, which owns the configured root list and the fetch.
+    """
+    roots = payload.get("roots")
+    if not isinstance(roots, list) or not all(isinstance(r, str) for r in roots):
+        raise _BadRequest("roots must be a list of strings")
+
+    parsed: list[date] = []
+    for name in ("start", "end"):
+        raw = payload.get(name)
+        if not isinstance(raw, str):
+            raise _BadRequest(f"{name} is required and must be a YYYY-MM-DD string")
+        if not _DATE_RE.fullmatch(raw):
+            raise _BadRequest(f"{name} must be YYYY-MM-DD")
+        try:
+            parsed.append(date.fromisoformat(raw))
+        except ValueError:
+            raise _BadRequest(f"{name} must be a real YYYY-MM-DD date") from None
+
+    return roots, parsed[0], parsed[1]
+
+
 # Lazy-loaded reference to the `archive_query` module. DuckDB import
 # cost (~12 MB) is real, so we defer until the first archive request
 # rather than paying it at sidecar startup. The holder pattern (vs.
@@ -144,7 +425,7 @@ def _aq() -> Any:
     """Return the lazy-loaded `archive_query` module."""
     global _archive_query_module
     if _archive_query_module is None:
-        import archive_query
+        import archive_query  # noqa: PLC0415 — heavy, cached above
 
         _archive_query_module = archive_query
     return _archive_query_module
@@ -169,13 +450,11 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
     All other exceptions propagate to the default ``handle_error``.
     """
 
-    def handle_error(self, request: Any, client_address: Any) -> None:  # noqa: D401
+    def handle_error(self, request: Any, client_address: Any) -> None:
         import sys  # noqa: PLC0415
 
         exc_type = sys.exc_info()[0]
-        if exc_type is not None and issubclass(
-            exc_type, (BrokenPipeError, ConnectionResetError)
-        ):
+        if exc_type is not None and issubclass(exc_type, (BrokenPipeError, ConnectionResetError)):
             return
         super().handle_error(request, client_address)
 
@@ -230,6 +509,35 @@ class HealthHandler(BaseHTTPRequestHandler):
         ("/archive/tbbo-ofi-percentile", "_handle_archive_tbbo_ofi_percentile"),
     )
 
+    # Theta index proxy routes. Localhost calls against the Theta
+    # Terminal — deliberately NOT gated behind archive_query_slot() (that
+    # semaphore bounds DuckDB memory, which these routes never touch);
+    # they carry their own `theta_index_slot()` bound instead, applied
+    # inside each handler after auth/validation.
+    # Both routes require the /takeit bearer: they consume live Terminal
+    # quota/bandwidth, so they are not public like /archive/*.
+    _THETA_ROUTES: tuple[tuple[str, str], ...] = (
+        ("/theta/index/price", "_handle_theta_index_price"),
+        ("/theta/index/history", "_handle_theta_index_history"),
+    )
+
+    # Admin routes, dispatched on an EXACT path match rather than the
+    # prefix match the two tables above use: they take no query string,
+    # and a prefix would route `/admin/theta-backfill-typo` straight into
+    # the admin handler. Every entry gates itself on X-Admin-Token.
+    _ADMIN_GET_ROUTES: tuple[tuple[str, str], ...] = (
+        ("/admin/theta-backfill", "_handle_theta_backfill_status"),
+    )
+
+    # All POST routes, exact-match. A table rather than an if-chain so a
+    # new endpoint is one line and the 404 fallback stays in one place.
+    _POST_ROUTES: tuple[tuple[str, str], ...] = (
+        ("/takeit/explain", "_handle_takeit_explain"),
+        ("/takeit/multileg-classify", "_handle_takeit_multileg_classify"),
+        ("/admin/seed-archive", "_handle_seed_archive"),
+        ("/admin/theta-backfill", "_handle_theta_backfill_start"),
+    )
+
     def do_GET(self) -> None:
         # /archive/* routes all run heavy, unbounded-memory DuckDB queries.
         # Bound their concurrency so N unauthenticated requests can't each
@@ -242,6 +550,16 @@ class HealthHandler(BaseHTTPRequestHandler):
         for prefix, handler_name in self._ARCHIVE_ROUTES:
             if self.path.startswith(prefix):
                 self._dispatch_bounded_archive(handler_name)
+                return
+
+        for prefix, handler_name in self._THETA_ROUTES:
+            if self.path.startswith(prefix):
+                getattr(self, handler_name)()
+                return
+
+        for admin_path, handler_name in self._ADMIN_GET_ROUTES:
+            if self.path == admin_path:
+                getattr(self, handler_name)()
                 return
 
         if self.path == "/takeit/health":
@@ -266,10 +584,10 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         try:
             checks["db"] = self.is_db_healthy()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — a probe crash is reported as db=False, not a 500
             # Surface DB-health probe failures so an outage shows up in
             # Sentry before it manifests as a sustained 503 from /health.
-            from sentry_setup import capture_exception
+            from sentry_setup import capture_exception  # noqa: PLC0415 — lazy optional Sentry
 
             capture_exception(
                 exc,
@@ -294,41 +612,49 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode())
 
-    def do_POST(self) -> None:  # noqa: N802 — http.server naming convention
-        """Dispatch POST requests."""
-        if self.path == "/takeit/explain":
-            self._handle_takeit_explain()
-            return
-        if self.path == "/takeit/multileg-classify":
-            self._handle_takeit_multileg_classify()
-            return
-        if self.path != "/admin/seed-archive":
-            self.send_response(404)
-            self.end_headers()
-            self.wfile.write(b"Not found")
-            return
+    def do_POST(self) -> None:
+        """Dispatch POST requests by exact path."""
+        for path, handler_name in self._POST_ROUTES:
+            if self.path == path:
+                getattr(self, handler_name)()
+                return
 
-        # Unify all auth-rejection paths to 401 so an external probe can't
-        # distinguish "endpoint disabled" from "wrong token" — that
-        # distinction is an enumeration oracle for the admin surface.
-        # Operators can still tell the two states apart via server logs.
-        if self.seed_archive is None:
-            log.warning("seed endpoint not configured (seed_archive is None)")
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
-            return
+        self.send_response(404)
+        self.end_headers()
+        self.wfile.write(b"Not found")
 
-        # Auth gate — single-owner token from env. `hmac.compare_digest`
-        # prevents timing-based token guessing (constant-time comparison).
+    def _admin_token_ok(self) -> bool:
+        """Constant-time X-Admin-Token check against ARCHIVE_SEED_TOKEN.
+
+        `hmac.compare_digest` prevents timing-based token guessing. An
+        unset env var means the admin surface is disabled, so it fails
+        closed rather than matching an empty header.
+        """
         expected = os.environ.get("ARCHIVE_SEED_TOKEN", "")
         got = self.headers.get("X-Admin-Token", "")
-        if not expected or not hmac.compare_digest(got, expected):
-            self.send_response(401)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": "unauthorized"}).encode())
+        return bool(expected) and hmac.compare_digest(got, expected)
+
+    def _reject_admin_unauthorized(self, reason: str) -> None:
+        """Answer the flat admin 401, logging the real reason server-side.
+
+        EVERY rejection an /admin/* route can produce — feature not
+        configured on this sidecar, ARCHIVE_SEED_TOKEN unset, wrong or
+        missing token — returns this byte-identical body. Distinguishing
+        them would hand an external prober an enumeration oracle for the
+        admin surface ("this deployment HAS a seeder, keep guessing").
+        Operators recover the distinction from the log line below.
+        """
+        log.warning("admin request rejected: %s", reason)
+        self._send_json(401, {"error": "unauthorized"})
+
+    def _handle_seed_archive(self) -> None:
+        """POST /admin/seed-archive — pull the archive from Vercel Blob."""
+        if self.seed_archive is None:
+            self._reject_admin_unauthorized("seed endpoint not configured (seed_archive is None)")
+            return
+
+        if not self._admin_token_ok():
+            self._reject_admin_unauthorized("seed-archive: bad or missing X-Admin-Token")
             return
 
         # Busy gate — the `seed_is_busy` probe is advisory (it can race
@@ -356,6 +682,164 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(exc)}).encode())
 
+    def _theta_backfill_authorized(self, route: str) -> bool:
+        """Gate an /admin/theta-backfill request; 401 (and False) on refusal.
+
+        Two rejection reasons, one response. `theta_is_running is None`
+        means this health server was started without the Theta reporters
+        — `start_health_server`'s default — so the process isn't running
+        Theta at all and a Theta repair endpoint is meaningless. The
+        sidecar's own main.py always passes them, so in production the
+        real switch is ARCHIVE_SEED_TOKEN; this branch keeps a partial
+        wiring (tests, an embedded server) from exposing the endpoint.
+        """
+        if self.theta_is_running is None:
+            self._reject_admin_unauthorized(f"{route}: Theta reporters not wired on this server")
+            return False
+        if not self._admin_token_ok():
+            self._reject_admin_unauthorized(f"{route}: bad or missing X-Admin-Token")
+            return False
+        return True
+
+    def _theta_fetcher_module(self) -> Any | None:
+        """Return the lazily-imported `theta_fetcher`, or answer 500 and None.
+
+        Lazy so the Theta stack never lands on a cold start that doesn't
+        need it; in practice main.py has already imported it, making this
+        a sys.modules lookup. The guard exists so a broken deploy answers
+        500 instead of raising out of the handler, which would drop the
+        connection with no response at all.
+        """
+        try:
+            import theta_fetcher  # noqa: PLC0415 — see docstring
+        except ImportError as exc:
+            log.error("theta-backfill: theta_fetcher import failed: %s", exc)
+            self._send_json(500, {"error": f"theta_fetcher unavailable: {exc}"})
+            return None
+        return theta_fetcher
+
+    def _handle_theta_backfill_start(self) -> None:
+        """POST /admin/theta-backfill — start a targeted EOD gap repair.
+
+        Body::
+
+            {"roots": ["VIX","VIXW","NDXP"],
+             "start": "2026-08-18", "end": "2026-08-19"}
+
+        Answers **202** with the accepted plan the moment the worker
+        thread is spawned. It MUST NOT wait on the job: the crawl runs
+        ~1.5-2 h (NDXP alone is ~25 min per trade date) and this is a
+        ThreadingHTTPServer, so a blocking admin request would pin one of
+        its threads for hours and time out at every proxy in between.
+        Poll `GET /admin/theta-backfill` for progress.
+
+        Other outcomes: 400 (malformed body, or any rule in
+        `theta_fetcher._validate_backfill_request` — the message is
+        returned verbatim), 401 (see `_theta_backfill_authorized`), 413
+        (over the body cap), 423 (a repair is already running — the job
+        is single-flight), 500 (unexpected).
+
+        OPERATIONAL NOTE: this and the 17:25 ET nightly both drive the
+        one co-resident Theta Terminal, and they do NOT share a lock. Run
+        repairs OUTSIDE 21:25Z-23:30Z (the nightly's window during EDT)
+        or the two will contend for the Terminal and both will crawl.
+        """
+        if not self._theta_backfill_authorized("theta-backfill"):
+            return
+
+        payload = self._read_json_object_body()
+        if payload is None:
+            return  # 400/413 already sent
+
+        try:
+            roots, start_date, end_date = _parse_theta_backfill_fields(payload)
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+
+        fetcher = self._theta_fetcher_module()
+        if fetcher is None:
+            return  # 500 already sent
+
+        try:
+            plan = fetcher.start_targeted_backfill(roots, start_date, end_date)
+        except fetcher.ThetaBackfillRequestError as exc:
+            # Domain rules (root allowlist, span cap, not-today) live in
+            # the fetcher; surface its message so curl output is actionable.
+            self._send_json(400, {"error": str(exc)})
+            return
+        except fetcher.ThetaBackfillBusyError:
+            self._send_json(423, {"error": "a targeted backfill is already in progress"})
+            return
+        except Exception as exc:  # noqa: BLE001 — never leave the request unanswered
+            log.error("theta-backfill start failed: %s", exc)
+            self._send_json(500, {"error": str(exc)})
+            return
+
+        log.info(
+            "theta-backfill accepted: roots=%s range=[%s, %s]",
+            ",".join(plan["roots"]),
+            plan["start"],
+            plan["end"],
+        )
+        self._send_json(202, {"accepted": True, **plan})
+
+    def _handle_theta_backfill_status(self) -> None:
+        """GET /admin/theta-backfill — snapshot of the targeted backfill.
+
+        Cheap and safe to poll while the job runs (the fetcher copies its
+        state under a lock). Reports `idle` until the first POST of this
+        process's lifetime — job state is deliberately NOT persisted
+        across a restart, since re-POSTing is idempotent.
+        """
+        if not self._theta_backfill_authorized("theta-backfill-status"):
+            return
+
+        fetcher = self._theta_fetcher_module()
+        if fetcher is None:
+            return  # 500 already sent
+
+        try:
+            self._send_json(200, fetcher.targeted_backfill_status())
+        except Exception as exc:  # noqa: BLE001 — never leave the request unanswered
+            log.error("theta-backfill status failed: %s", exc)
+            self._send_json(500, {"error": str(exc)})
+
+    def _read_json_object_body(self) -> dict[str, Any] | None:
+        """Read + parse a JSON object body, or answer 4xx and return None.
+
+        Mirrors the /takeit handlers' size discipline: reject by DECLARED
+        Content-Length before allocating, because the server binds
+        0.0.0.0 and an unbounded `rfile.read` is a remote-OOM vector. A
+        missing, oversized, malformed, or non-object body is a 400/413 —
+        never an unhandled 500.
+        """
+        raw_length = self.headers.get("Content-Length", "0") or "0"
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            self._send_json(400, {"error": "invalid Content-Length header"})
+            return None
+
+        if content_length <= 0:
+            self._send_json(400, {"error": "empty body"})
+            return None
+        if content_length > MAX_BODY_BYTES:
+            # Do NOT read the body — that is the whole point of the cap.
+            self._send_json(413, {"error": "payload too large"})
+            return None
+
+        body_bytes = self.rfile.read(content_length)
+        try:
+            parsed = json.loads(body_bytes)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            self._send_json(400, {"error": f"invalid JSON body: {exc}"})
+            return None
+        if not isinstance(parsed, dict):
+            self._send_json(400, {"error": "body must be a JSON object"})
+            return None
+        return parsed
+
     def _handle_takeit_health(self) -> None:
         """GET /takeit/health — cheap liveness + readiness probe for the
         take-it SHAP explainer. Wraps takeit_server.handle_health_payload."""
@@ -377,9 +861,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(
-                json.dumps(
-                    {"error": "takeit server disabled or missing ML deps"}
-                ).encode()
+                json.dumps({"error": "takeit server disabled or missing ML deps"}).encode()
             )
             return
 
@@ -423,9 +905,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(
-                json.dumps(
-                    {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}
-                ).encode()
+                json.dumps({"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"}).encode()
             )
             return
         auth_header = self.headers.get("Authorization", "")
@@ -461,6 +941,205 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(body, default=str).encode())
 
+    # ------------------------------------------------------------------
+    # /theta/index/* — Theta Terminal index proxy (Index Data PRO)
+    # ------------------------------------------------------------------
+
+    def _theta_bearer_ok(self) -> bool:
+        """Bearer gate for the /theta/index/* routes.
+
+        Same pattern as the /takeit routes: `hmac.compare_digest`
+        against `Bearer <TAKEIT_SIDECAR_SHARED_SECRET>` (constant-time),
+        503 when the env var is unset, 401 on mismatch. Sends the error
+        response itself and returns False so callers can just bail.
+        """
+        shared_secret = os.environ.get("TAKEIT_SIDECAR_SHARED_SECRET", "")
+        if not shared_secret:
+            self._send_json(503, {"error": "TAKEIT_SIDECAR_SHARED_SECRET not configured"})
+            return False
+        auth_header = self.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth_header, f"Bearer {shared_secret}"):
+            self._send_json(401, {"error": "unauthorized"})
+            return False
+        return True
+
+    def _theta_root_or_none(self, qs: dict[str, list[str]]) -> str | None:
+        """Validate ?root= against the index allowlist; 400 + None on miss."""
+        root = (qs.get("root") or [""])[0].upper()
+        if root not in _THETA_INDEX_ROOTS:
+            allowed = ", ".join(sorted(_THETA_INDEX_ROOTS))
+            self._send_json(400, {"error": f"root must be one of {allowed}"})
+            return None
+        return root
+
+    @staticmethod
+    def _theta_client() -> Any:
+        """Build an interactive-latency ThetaClient.
+
+        Fast-fail settings (5s timeout, single attempt) instead of the
+        fetcher's nightly-batch defaults (15s x 3 retries with backoff,
+        ~45s+ worst case) — these routes sit on Vercel's request path
+        behind Railway's edge proxy. Lazy import mirrors _aq(): the
+        module object is what tests patch (`theta_client.ThetaClient`).
+        """
+        import theta_client  # noqa: PLC0415
+
+        return theta_client.ThetaClient(timeout_s=5, max_retries=1)
+
+    def _send_theta_busy(self) -> None:
+        """503 + Retry-After for a request that never got a Terminal slot.
+
+        Same wire shape as the archive busy response (`Retry-After: 1`),
+        distinct body so the caller can tell a saturated Terminal from a
+        broken one (`theta_unavailable`) or a saturated archive.
+        """
+        self.send_response(503)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Retry-After", "1")
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": "theta_busy"}).encode())
+
+    def _handle_theta_index_price(self) -> None:
+        """GET /theta/index/price?root=SPX → current index value.
+
+        Response: `{root, price, prev_close, ts}` where `prev_close` is
+        the previous trading day's last hist-OHLC close (null when that
+        day has no data — holiday — or its fetch fails; best-effort by
+        contract) and `ts` is the snapshot time in epoch ms.
+
+        The bearer gate and root allowlist run OUTSIDE `theta_index_slot()`
+        so 401/400 stay instant and byte-identical however busy the
+        Terminal is; only the part that actually talks to the Terminal
+        is bounded.
+        """
+        if not self._theta_bearer_ok():
+            return
+        qs = parse_qs(urlparse(self.path).query)
+        root = self._theta_root_or_none(qs)
+        if root is None:
+            return
+        try:
+            with theta_index_slot():
+                self._theta_index_price_locked(root)
+        except ThetaBusyError:
+            self._send_theta_busy()
+
+    def _theta_index_price_locked(self, root: str) -> None:
+        """Body of /theta/index/price, run while holding a Terminal slot."""
+        import theta_client  # noqa: PLC0415
+
+        client = self._theta_client()
+        try:
+            snap = client.snapshot_index_price(root)
+        except theta_client.ThetaSubscriptionError:
+            # 472 Not entitled → structured 502, never a raw traceback.
+            self._send_json(502, {"error": "theta_not_entitled", "root": root})
+            return
+        except theta_client.ThetaClientError as exc:
+            # Terminal down (launcher not running → connection refused)
+            # or otherwise erroring → 503 service-unavailable.
+            log.warning("theta index price failed for %s: %s", root, exc)
+            self._send_json(503, {"error": "theta_unavailable"})
+            return
+
+        if snap is None:
+            self._send_json(404, {"error": "no_data", "root": root})
+            return
+
+        prev_close: float | None = None
+        try:
+            candles = client.hist_index_ohlc(root, _previous_weekday(snap.snapshot_date))
+            if candles:
+                prev_close = float(candles[-1].close)
+        except theta_client.ThetaClientError as exc:
+            # Includes ThetaSubscriptionError (subclass): prev_close is
+            # best-effort — degrade to null rather than sinking the price.
+            log.warning("theta prev-close fetch failed for %s: %s", root, exc)
+
+        self._send_json(
+            200,
+            {
+                "root": root,
+                "price": float(snap.price),
+                "prev_close": prev_close,
+                "ts": snap.ts_ms,
+            },
+        )
+
+    def _handle_theta_index_history(self) -> None:
+        """GET /theta/index/history?root=SPX&date=YYYY-MM-DD&ivl_ms=300000
+
+        Response: `{root, date, ivl_ms, candles: [{ts_ms, open, high,
+        low, close}]}`. Candles carry NO volume — indices don't trade,
+        and fabricating one would let callers depend on a lie.
+
+        As with /theta/index/price, auth + input validation run outside
+        `theta_index_slot()`; only the Terminal call is bounded.
+        """
+        if not self._theta_bearer_ok():
+            return
+        qs = parse_qs(urlparse(self.path).query)
+        root = self._theta_root_or_none(qs)
+        if root is None:
+            return
+        try:
+            date_str = _parse_date_param(qs, "date")
+            ivl_ms = _parse_optional_int(qs, "ivl_ms", lo=1000)
+        except _BadRequest as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        try:
+            day = date.fromisoformat(date_str)
+        except ValueError:
+            # Shape-valid but calendar-invalid (e.g. 2026-13-99).
+            self._send_json(400, {"error": "invalid date"})
+            return
+        if ivl_ms is None:
+            ivl_ms = _THETA_DEFAULT_IVL_MS
+        try:
+            with theta_index_slot():
+                self._theta_index_history_locked(root, date_str, day, ivl_ms)
+        except ThetaBusyError:
+            self._send_theta_busy()
+
+    def _theta_index_history_locked(self, root: str, date_str: str, day: date, ivl_ms: int) -> None:
+        """Body of /theta/index/history, run while holding a Terminal slot."""
+        import theta_client  # noqa: PLC0415
+
+        client = self._theta_client()
+        try:
+            candles = client.hist_index_ohlc(root, day, ivl_ms=ivl_ms)
+        except theta_client.ThetaSubscriptionError:
+            self._send_json(502, {"error": "theta_not_entitled", "root": root})
+            return
+        except theta_client.ThetaClientError as exc:
+            log.warning("theta index history failed for %s %s: %s", root, date_str, exc)
+            self._send_json(503, {"error": "theta_unavailable"})
+            return
+
+        if not candles:
+            self._send_json(404, {"error": "no_data", "root": root, "date": date_str})
+            return
+
+        self._send_json(
+            200,
+            {
+                "root": root,
+                "date": date_str,
+                "ivl_ms": ivl_ms,
+                "candles": [
+                    {
+                        "ts_ms": c.ts_ms,
+                        "open": float(c.open),
+                        "high": float(c.high),
+                        "low": float(c.low),
+                        "close": float(c.close),
+                    }
+                    for c in candles
+                ],
+            },
+        )
+
     def _dispatch_bounded_archive(self, handler_name: str) -> None:
         """Run an /archive/* handler under the concurrency-bound slot.
 
@@ -481,9 +1160,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Retry-After", "1")
             self.end_headers()
-            self.wfile.write(
-                json.dumps({"error": "archive busy, retry shortly"}).encode()
-            )
+            self.wfile.write(json.dumps({"error": "archive busy, retry shortly"}).encode())
 
     def _handle_archive_es_range(self) -> None:
         """GET /archive/es-range?date=YYYY-MM-DD → ES day summary from archive.
@@ -506,7 +1183,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # Known "no data for this date" — return 404 with message.
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "es-range", exc, "es-range query failed for %s: %s", d, exc, date=d
             )
 
@@ -535,7 +1212,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # surface as ValueError; the message is user-facing either way.
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "analog-days",
                 exc,
                 "analog-days query failed for %s: %s",
@@ -572,7 +1249,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-summary",
                 exc,
                 "day-summary query failed for %s: %s",
@@ -613,7 +1290,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-features",
                 exc,
                 "day-features query failed for %s: %s",
@@ -642,7 +1319,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_features_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-features-batch",
                 exc,
                 "day-features-batch failed for %s..%s: %s",
@@ -665,7 +1342,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_summary_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-summary-batch",
                 exc,
                 "day-summary-batch failed for %s..%s: %s",
@@ -696,7 +1373,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-summary-prediction",
                 exc,
                 "day-summary-prediction failed for %s: %s",
@@ -718,7 +1395,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             rows = _aq().day_summary_prediction_batch(start, end)
             self._send_json(200, {"from": start, "to": end, "rows": rows})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "day-summary-prediction-batch",
                 exc,
                 "day-summary-prediction-batch failed %s..%s: %s",
@@ -758,7 +1435,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # is a missing-data case.
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "tbbo-day-microstructure",
                 exc,
                 "tbbo-day-microstructure failed for %s/%s: %s",
@@ -776,8 +1453,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         describing where ``value`` falls in the last 252 days of historical
         daily-mean OFI at ``window`` for ``symbol`` (front-month only).
         """
-        import math
-
         qs = parse_qs(urlparse(self.path).query)
         symbol = (qs.get("symbol") or [""])[0].upper()
         value_raw = (qs.get("value") or [""])[0]
@@ -814,12 +1489,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             if horizon > _aq()._TBBO_OFI_MAX_HORIZON_DAYS:
                 self._send_json(
                     400,
-                    {
-                        "error": (
-                            "horizon_days must be <= "
-                            f"{_aq()._TBBO_OFI_MAX_HORIZON_DAYS}"
-                        )
-                    },
+                    {"error": (f"horizon_days must be <= {_aq()._TBBO_OFI_MAX_HORIZON_DAYS}")},
                 )
                 return
             kwargs["horizon_days"] = horizon
@@ -833,7 +1503,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             # the query layer after the validation above).
             self._send_json(404, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001
-            self._archive_500(
+            self._archive_query_error(
                 "tbbo-ofi-percentile",
                 exc,
                 "tbbo-ofi-percentile failed for %s/%s: %s",
@@ -844,7 +1514,7 @@ class HealthHandler(BaseHTTPRequestHandler):
                 window=window,
             )
 
-    def _archive_500(
+    def _archive_query_error(
         self,
         route: str,
         exc: Exception,
@@ -852,13 +1522,39 @@ class HealthHandler(BaseHTTPRequestHandler):
         *log_args: object,
         **tags: object,
     ) -> None:
-        """Log + Sentry-capture an archive query failure, then 500.
+        """Map a non-ValueError archive query failure to an HTTP response.
 
-        DRY helper for the archive read handlers. Mirrors the /health
-        DB-probe pattern (capture_exception alongside log.error) so
-        archive 500s surface in Sentry instead of dying in logs only.
-        The 500 JSON response shape is unchanged.
+        DRY helper for the archive read handlers (the `except Exception`
+        arm of each). Two outcomes:
+
+        - `ArchiveUnavailableError` — the dataset is not seeded on this
+          sidecar (empty/missing ARCHIVE_ROOT, or ohlcv/tbbo/symbology
+          Parquet absent). Unconfigured != broken: answer 503
+          `{error: "archive_unavailable", dataset}` with NO Sentry event
+          and no error-level log (the query layer already warned once
+          per missing path). No Retry-After either — unlike the busy-cap
+          503 this is not transient; it clears only after
+          POST /admin/seed-archive. Vercel consumers treat it as
+          "archive context unavailable, skip" (archive-sidecar.ts →
+          null; fetch-day-ohlc → Postgres fallback / skipped).
+        - anything else — genuine failure. Mirrors the /health DB-probe
+          pattern (capture_exception alongside log.error) so archive
+          500s surface in Sentry instead of dying in logs only. The 500
+          JSON response shape is unchanged.
         """
+        if isinstance(exc, _aq().ArchiveUnavailableError):
+            log.debug("%s: archive unavailable (%s)", route, exc)
+            message = f"archive dataset {exc.dataset!r} is not seeded on this sidecar"
+            self._send_json(
+                503,
+                {
+                    "error": "archive_unavailable",
+                    "dataset": exc.dataset,
+                    "message": message,
+                },
+            )
+            return
+
         log.error(log_msg, *log_args)
         from sentry_setup import capture_exception  # noqa: PLC0415
 
@@ -888,13 +1584,13 @@ class HealthHandler(BaseHTTPRequestHandler):
         if self.theta_last_ready_at is not None:
             try:
                 last_ready = self.theta_last_ready_at()
-            except Exception:
+            except Exception:  # noqa: BLE001 — injected callback; /health must still render
                 last_ready = 0.0
         last_error = None
         if self.theta_last_error is not None:
             try:
                 last_error = self.theta_last_error()
-            except Exception:
+            except Exception:  # noqa: BLE001 — injected callback; /health must still render
                 last_error = None
         return {
             "running": self.theta_is_running(),
@@ -908,7 +1604,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 
 def _now_ts() -> float:
-    return datetime.now(timezone.utc).timestamp()
+    return datetime.now(UTC).timestamp()
 
 
 def _is_data_expected() -> bool:
@@ -920,8 +1616,6 @@ def _is_data_expected() -> bool:
 
     Simplified: skip weekends and the 5 PM CT hour (maintenance window).
     """
-    import zoneinfo
-
     ct = datetime.now(zoneinfo.ZoneInfo("America/Chicago"))
     weekday = ct.weekday()  # Monday=0, Sunday=6
 
@@ -935,10 +1629,7 @@ def _is_data_expected() -> bool:
     if weekday == 4 and ct.hour >= 16:
         return False
     # Daily maintenance window
-    if ct.hour == 16:
-        return False
-
-    return True
+    return ct.hour != 16
 
 
 def start_health_server(
@@ -1000,7 +1691,7 @@ def start_health_server(
     # client (or Railway's edge proxy on its behalf) closes the upstream
     # connection before we finish writing. Vercel already records the
     # real failure (sidecar_non_2xx); the Python traceback is just noise.
-    server = _QuietThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    server = _QuietThreadingHTTPServer(("0.0.0.0", port), HealthHandler)  # noqa: S104 — container port, Railway fronts it
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log.info("Health server listening on port %d (threaded)", port)

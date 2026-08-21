@@ -1,0 +1,22 @@
+# Upload filter for `railway up`. Railway's CLI does NOT read .gitignore or
+# .dockerignore, so the local .venv/ (810 MB) would otherwise be swept into
+# the build context and blow the ~200 MB upload limit (Cloudflare 413).
+#
+# ThetaTerminalv3.jar (11 MB) is deliberately NOT ignored — the Dockerfile
+# COPYs it into the image so the build stays hermetic.
+.venv/
+node_modules/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info
+.env
+.env.*
+tests/
+test-ws.mjs

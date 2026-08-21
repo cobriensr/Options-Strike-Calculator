@@ -2,14 +2,15 @@
 
 Runs Theta Terminal (a Java jar) as a co-resident subprocess on the
 Railway sidecar so the existing Python runtime can make local HTTP
-requests against its v2 API at :25503.
+requests against its v2 API at :25510.
 
 Boot sequence:
   1. Abort if THETA_EMAIL or THETA_PASSWORD is unset (matches the
      sentry_setup no-op pattern — local dev works without creds).
   2. Write creds.txt into THETA_DATA_DIR with 0600 perms.
-  3. Popen `java -jar ThetaTerminalv3.jar` with cwd at that dir.
-  4. Poll http://127.0.0.1:25503/v2/list/roots/stock for up to 60s until
+  3. Popen `java -jar ThetaTerminalv3.jar --creds-file=<dir>/creds.txt`
+     with cwd at that dir (the jar does NOT auto-read creds.txt).
+  4. Poll http://127.0.0.1:25510/v2/list/roots/stock for up to 60s until
      HTTP 200.
   5. Spawn daemon threads that:
        - Tail stderr and forward lines matching java.*Exception / FATAL /
@@ -24,6 +25,7 @@ running even if Theta dies — Theta is additive, not critical.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
@@ -42,7 +44,9 @@ from sentry_setup import capture_exception, capture_message
 # THETA_DATA_DIR can override the working dir for tests/local runs.
 _THETA_HOME = Path(os.environ.get("THETA_DATA_DIR", "/app/theta_data/ThetaTerminal"))
 _JAR_PATH = Path(os.environ.get("THETA_JAR_PATH", "/app/ThetaTerminalv3.jar"))
-_HTTP_BASE = "http://127.0.0.1:25503"
+# Verified empirically against the live jar (Theta Terminal v1.8.6 Rev A):
+# HTTP binds :25510 (WS :25520); :25503 is never bound.
+_HTTP_BASE = "http://127.0.0.1:25510"
 _READINESS_PATH = "/v2/list/roots/stock"
 _READINESS_TIMEOUT_S = 60
 _READINESS_POLL_INTERVAL_S = 2
@@ -114,7 +118,7 @@ def start() -> bool:
     try:
         _write_creds(email, password)
         _spawn_subprocess()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — Theta is optional; a launch failure must not stop the sidecar
         capture_exception(
             exc,
             context={"phase": "theta_launch"},
@@ -142,7 +146,7 @@ def start() -> bool:
 
 
 def is_running() -> bool:
-    """True if the subprocess is currently alive."""
+    """Return True if the subprocess is currently alive."""
     with _state_lock:
         proc = _state.proc
     return bool(proc and proc.poll() is None)
@@ -184,11 +188,13 @@ def shutdown() -> None:
 
 
 def _write_creds(email: str, password: str) -> None:
-    """Write creds.txt where the jar looks for it, with 0600 perms.
+    """Write creds.txt for the jar to read via --creds-file, 0600 perms.
 
     Plaintext-on-disk is unavoidable: the third-party Theta Terminal jar
-    reads `creds.txt` from disk at boot (no stdin / keystore alternative
-    exists in v3). The mitigations are:
+    reads the creds file ONLY when pointed at it via `--creds-file`
+    (passed by _spawn_subprocess); without that flag it prompts for
+    credentials on stdin and dies at EOF in a TTY-less container. The
+    mitigations are:
       - File mode 0600 (only the container's own uid can read).
       - Parent dir mode 0700 (no traversal via parent listing).
       - Lives on the container's writable layer only — not the mounted
@@ -204,7 +210,7 @@ def _write_creds(email: str, password: str) -> None:
     _THETA_HOME.mkdir(parents=True, exist_ok=True)
     _THETA_HOME.chmod(0o700)
     creds = _THETA_HOME / "creds.txt"
-    creds.write_text(f"{email}\n{password}\n")  # noqa: S105
+    creds.write_text(f"{email}\n{password}\n")
     creds.chmod(0o600)
     log.info("Wrote Theta creds.txt at %s (user=%s)", creds, email)
 
@@ -229,10 +235,8 @@ def _reap_old_proc(
     if old_proc is not None:
         for pipe in (old_proc.stdout, old_proc.stderr):
             if pipe is not None:
-                try:
+                with contextlib.suppress(OSError):
                     pipe.close()
-                except OSError:
-                    pass
 
     for thread in old_drain_threads:
         # is_alive() is False for a thread that was never started (or
@@ -255,21 +259,25 @@ def _spawn_subprocess() -> None:
 
     _reap_old_proc(old_proc, old_drain_threads)
 
-    new_proc = subprocess.Popen(
-        ["java", "-jar", str(_JAR_PATH)],
+    # --creds-file (single token, equals syntax, AFTER the jar path) is
+    # required: the jar does NOT auto-read creds.txt from cwd. Without
+    # the flag it prompts for credentials on stdout and reads stdin —
+    # then dies at EOF in a TTY-less container ("Failed to parse command
+    # line arguments: No line found", exit 1). stdin=DEVNULL (not PIPE)
+    # because _reap_old_proc closes only stdout/stderr, so a PIPE stdin
+    # would leak one FD per respawn.
+    new_proc = subprocess.Popen(  # noqa: S603 — fixed argv, no user input
+        ["java", "-jar", str(_JAR_PATH), f"--creds-file={_THETA_HOME / 'creds.txt'}"],  # noqa: S607 — JAVA_HOME/bin is on PATH in the image
         cwd=str(_THETA_HOME),
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
     )
 
-    stderr_thread = threading.Thread(
-        target=_stderr_tail_loop, name="theta-stderr", daemon=True
-    )
-    stdout_thread = threading.Thread(
-        target=_stdout_drain_loop, name="theta-stdout", daemon=True
-    )
+    stderr_thread = threading.Thread(target=_stderr_tail_loop, name="theta-stderr", daemon=True)
+    stdout_thread = threading.Thread(target=_stdout_drain_loop, name="theta-stdout", daemon=True)
 
     with _state_lock:
         _state.proc = new_proc
@@ -391,7 +399,7 @@ def _monitor_loop() -> None:
             _spawn_subprocess()
             if not _wait_for_ready():
                 _handle_restart_not_ready()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — the restart loop must survive and back off
             capture_exception(
                 exc,
                 context={"phase": "theta_restart"},

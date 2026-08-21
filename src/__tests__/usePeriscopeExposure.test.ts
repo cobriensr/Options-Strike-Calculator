@@ -434,3 +434,178 @@ describe('usePeriscopeExposure: unmount safety', () => {
     expect(result.current.error).toBeNull();
   });
 });
+
+// ============================================================
+// Payload shape validation (client-shape-hardening follow-up)
+// ============================================================
+
+describe('usePeriscopeExposure: response shape validation', () => {
+  it.each([
+    ['a JSON string body', '<!doctype html><html>oops</html>'],
+    ['an array body', []],
+    ['a garbage scalar data block', { asOf: 'x', data: 'garbage' }],
+    [
+      'a view with no breaches array',
+      { asOf: 'x', data: { ...makeView(), breaches: undefined } },
+    ],
+    [
+      'a view with no gamma object',
+      { asOf: 'x', data: { ...makeView(), gamma: undefined } },
+    ],
+    [
+      'a view with an unparseable capturedAt',
+      { asOf: 'x', data: { ...makeView(), capturedAt: 'not-a-date' } },
+    ],
+    [
+      'a view with a non-numeric spot',
+      { asOf: 'x', data: { ...makeView(), spot: 'oops' } },
+    ],
+  ])('rejects %s into the error state', async (_label, body) => {
+    mockFetch.mockResolvedValue(jsonResponse(body));
+    const { result } = renderHook(() =>
+      usePeriscopeExposure({ marketOpen: false }),
+    );
+    await act(async () => {});
+
+    await waitFor(() =>
+      expect(result.current.error).toBe('Unexpected response shape'),
+    );
+    expect(result.current.view).toBeNull();
+  });
+
+  it('keeps the last-known-good view when a later poll returns garbage', async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({
+        marketOpen: true,
+        asOf: '2026-05-08T13:30:00Z',
+        data: makeView(),
+        availableSlots: [],
+      }),
+    );
+    const { result } = renderHook(() =>
+      usePeriscopeExposure({ marketOpen: false }),
+    );
+    await act(async () => {});
+    await waitFor(() => expect(result.current.view).not.toBeNull());
+
+    mockFetch.mockResolvedValue(jsonResponse({ asOf: 'x', data: 'garbage' }));
+    act(() => {
+      result.current.refresh();
+    });
+    await act(async () => {});
+
+    await waitFor(() =>
+      expect(result.current.error).toBe('Unexpected response shape'),
+    );
+    expect(result.current.view?.spot).toBe(5800);
+  });
+
+  it('treats a null data block as the normal empty state, not an error', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        marketOpen: true,
+        asOf: '2026-05-08T13:30:00Z',
+        data: null,
+        reason: 'no_spot',
+        availableSlots: [],
+      }),
+    );
+    const { result } = renderHook(() =>
+      usePeriscopeExposure({ marketOpen: false }),
+    );
+    await act(async () => {});
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.view).toBeNull();
+    expect(result.current.emptyReason).toBe('no_spot');
+  });
+
+  it('drops malformed ranked rows, sign flips, breaches and slots', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        marketOpen: true,
+        asOf: '2026-05-08T13:30:00Z',
+        data: {
+          ...makeView(),
+          gamma: {
+            ceiling: { strike: 5825, value: 0, ptsFromSpot: 25 },
+            // Missing ptsFromSpot — degraded to null, not fatal.
+            floor: { strike: 5775, value: 4_000_000 },
+            accelTop: [
+              { strike: 5750, value: -3_000_000, ptsFromSpot: -50 },
+              { strike: 'oops', value: -1, ptsFromSpot: 0 },
+              null,
+            ],
+            topByAbsNear: [{ strike: 5800, value: 1_000_000 }, 'garbage'],
+          },
+          signFlips: [{ strike: 5790, from: -1, to: 1 }, { strike: 0 }],
+          breaches: [
+            {
+              direction: 'upper',
+              breachTime: '2026-05-08T14:00:00Z',
+              spotAtBreach: 5860,
+              ptsPastBound: 10,
+            },
+            { direction: 'sideways' },
+          ],
+        },
+        availableSlots: ['2026-05-08T13:30:00Z', 'not-a-date', 7],
+      } as unknown),
+    );
+
+    const { result } = renderHook(() =>
+      usePeriscopeExposure({ marketOpen: false }),
+    );
+    await act(async () => {});
+    await waitFor(() => expect(result.current.view).not.toBeNull());
+
+    const view = result.current.view!;
+    // value: 0 is legitimate — the ceiling survives.
+    expect(view.gamma.ceiling?.value).toBe(0);
+    expect(view.gamma.floor).toBeNull();
+    expect(view.gamma.accelTop).toHaveLength(1);
+    expect(view.gamma.topByAbsNear).toHaveLength(1);
+    expect(view.signFlips).toHaveLength(1);
+    expect(view.breaches).toHaveLength(1);
+    expect(result.current.availableSlots).toEqual(['2026-05-08T13:30:00Z']);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('degrades malformed charm/vanna/cone fields to neutral values', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        marketOpen: true,
+        asOf: '2026-05-08T13:30:00Z',
+        data: {
+          ...makeView(),
+          charm: {
+            tallyNear50: 'oops',
+            tallyWide100: 0,
+            topByAbs: 'garbage',
+            charmZeroStrike: 'nope',
+          },
+          vanna: { topByAbs: null },
+          cone: { coneUpper: 'oops' },
+        },
+        availableSlots: 'garbage',
+      } as unknown),
+    );
+
+    const { result } = renderHook(() =>
+      usePeriscopeExposure({ marketOpen: false }),
+    );
+    await act(async () => {});
+    await waitFor(() => expect(result.current.view).not.toBeNull());
+
+    const view = result.current.view!;
+    expect(view.charm.tallyNear50).toBe(0);
+    expect(view.charm.tallyWide100).toBe(0);
+    expect(view.charm.topByAbs).toEqual([]);
+    expect(view.charm.charmZeroStrike).toBeNull();
+    expect(view.vanna.topByAbs).toEqual([]);
+    expect(view.cone).toBeNull();
+    expect(result.current.availableSlots).toEqual([]);
+    expect(result.current.error).toBeNull();
+  });
+});

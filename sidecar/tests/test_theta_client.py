@@ -11,20 +11,22 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
 import pytest
 
-import sys
-from pathlib import Path
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from theta_client import (  # noqa: E402
+from theta_client import (
+    DEFAULT_BASE_URL,
     EodRow,
+    IndexOhlcCandle,
+    IndexPriceSnapshot,
     ThetaClient,
     ThetaClientError,
     ThetaSubscriptionError,
@@ -47,7 +49,7 @@ def _http_response(body: dict | str | bytes, status: int = 200) -> object:
     class _Resp(io.BytesIO):
         status = 200
 
-        def __enter__(self) -> "_Resp":  # noqa: D401
+        def __enter__(self) -> _Resp:
             return self
 
         def __exit__(self, *_exc: object) -> None:
@@ -56,6 +58,21 @@ def _http_response(body: dict | str | bytes, status: int = 200) -> object:
     resp = _Resp(payload)
     resp.status = status
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Module constants — base URL pin
+# ---------------------------------------------------------------------------
+
+
+def test_default_base_url_points_at_port_25510() -> None:
+    """Pin the Terminal HTTP port verified empirically against the live jar.
+
+    Theta Terminal v1.8.6 Rev A (ThetaTerminalv3.jar) binds HTTP on
+    :25510 (and WS on :25520); :25503 is NEVER bound (connection
+    refused). A base URL on 25503 would make every fetch fail.
+    """
+    assert DEFAULT_BASE_URL == "http://127.0.0.1:25510"
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +128,15 @@ def test_list_expirations_empty() -> None:
     ):
         client = ThetaClient()
         assert client.list_expirations("DOESNOTEXIST") == []
+
+
+def test_list_expirations_472_no_data_returns_empty_list() -> None:
+    # HTTP 472 = NO_DATA per the official Theta error-code docs, NOT an
+    # entitlement denial. A 472 on the listing endpoint must read as an
+    # empty listing — not kill the root as "not entitled".
+    with patch("theta_client.urlopen", side_effect=_http_error(472, "No data")):
+        client = ThetaClient(max_retries=3)
+        assert client.list_expirations("SPXW") == []
 
 
 # ---------------------------------------------------------------------------
@@ -255,12 +281,13 @@ def test_fetch_eod_no_data_returns_empty_list() -> None:
 
 
 def test_fetch_eod_subscription_denial_raises_typed_error() -> None:
-    # HTTP 472 = Theta entitlement denial. Distinct exception so the
-    # fetcher can skip that root without halting the whole nightly.
+    # HTTP 471 = PERMISSION — a real Theta entitlement denial. Distinct
+    # exception so the fetcher can skip that root without halting the
+    # whole nightly.
     err = HTTPError(
-        url="http://127.0.0.1:25503/v2/hist/option/eod",
-        code=472,
-        msg="Not entitled",
+        url="http://127.0.0.1:25510/v2/hist/option/eod",
+        code=471,
+        msg="Permission denied",
         hdrs=None,  # type: ignore[arg-type]
         fp=None,
     )
@@ -279,7 +306,7 @@ def test_fetch_eod_subscription_denial_raises_typed_error() -> None:
 
 def test_fetch_eod_5xx_retries_then_fails() -> None:
     err = HTTPError(
-        url="http://127.0.0.1:25503/v2/hist/option/eod",
+        url="http://127.0.0.1:25510/v2/hist/option/eod",
         code=503,
         msg="Service Unavailable",
         hdrs=None,  # type: ignore[arg-type]
@@ -302,7 +329,7 @@ def test_fetch_eod_5xx_retries_then_fails() -> None:
 
 def _http_error(code: int, msg: str) -> HTTPError:
     return HTTPError(
-        url="http://127.0.0.1:25503/v2/hist/option/eod",
+        url="http://127.0.0.1:25510/v2/hist/option/eod",
         code=code,
         msg=msg,
         hdrs=None,  # type: ignore[arg-type]
@@ -374,10 +401,23 @@ def test_fetch_eod_persistent_476_fails_after_max_retries(
     assert mock_urlopen.call_count == 2
 
 
-def test_fetch_eod_472_still_raises_subscription_error_immediately() -> None:
-    # 472 must NOT be swept into the retry set — it's an immediate denial.
+def test_fetch_eod_472_no_data_returns_empty_list_immediately() -> None:
+    # HTTP 472 = NO_DATA ("no data found for the specified request") —
+    # must behave exactly like the plain-text ":No data" body: return []
+    # with no exception and no retries. Production repro: SPXW backfill
+    # died instantly because 472 was misread as an entitlement denial.
+    with patch("theta_client.urlopen", side_effect=_http_error(472, "No data")) as mock_urlopen:
+        client = ThetaClient(max_retries=3)
+        out = _fetch_eod_single_close(client)
+    assert out == []
+    # Answered on the first try — no-data is not retryable.
+    assert mock_urlopen.call_count == 1
+
+
+def test_fetch_eod_471_denial_raises_immediately_no_retry() -> None:
+    # 471 must NOT be swept into the retry set — it's an immediate denial.
     with patch(
-        "theta_client.urlopen", side_effect=_http_error(472, "Not entitled")
+        "theta_client.urlopen", side_effect=_http_error(471, "Permission denied")
     ) as mock_urlopen:
         client = ThetaClient(max_retries=3)
         with pytest.raises(ThetaSubscriptionError):
@@ -424,9 +464,7 @@ def test_fetch_eod_row_shorter_than_format_raises() -> None:
     "option_type,expected",
     [("C", "C"), ("c", "C"), ("CALL", "C"), ("Call", "C"), ("P", "P"), ("put", "P")],
 )
-def test_option_type_normalization_in_fetch_eod(
-    option_type: str, expected: str
-) -> None:
+def test_option_type_normalization_in_fetch_eod(option_type: str, expected: str) -> None:
     with patch(
         "theta_client.urlopen",
         return_value=_http_response({"header": {}, "response": []}),
@@ -482,3 +520,232 @@ def test_option_type_unknown_raises() -> None:
                 start_date=date(2024, 3, 15),
                 end_date=date(2024, 3, 15),
             )
+
+
+# ---------------------------------------------------------------------------
+# snapshot_index_price — GET /v2/snapshot/index/price (Index Data PRO)
+# ---------------------------------------------------------------------------
+
+
+def _et_ms(year: int, month: int, day: int, hour: int, minute: int) -> int:
+    """Epoch ms of a wall-clock Eastern time — independent derivation so
+    the tests don't just mirror the client's date+ms_of_day arithmetic."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    return int(
+        _dt(year, month, day, hour, minute, tzinfo=ZoneInfo("America/New_York")).timestamp() * 1000
+    )
+
+
+_SNAPSHOT_INDEX_PRICE_PAYLOAD = {
+    "header": {"format": ["ms_of_day", "price", "date"]},
+    # 41400000 ms of day = 11:30:00 ET
+    "response": [[41400000, 6423.53, 20260814]],
+}
+
+
+def test_snapshot_index_price_parses_price_and_ts() -> None:
+    with patch(
+        "theta_client.urlopen",
+        return_value=_http_response(_SNAPSHOT_INDEX_PRICE_PAYLOAD),
+    ) as mock_urlopen:
+        client = ThetaClient()
+        snap = client.snapshot_index_price("SPX")
+
+    assert isinstance(snap, IndexPriceSnapshot)
+    assert snap.root == "SPX"
+    assert snap.price == Decimal("6423.53")
+    assert snap.snapshot_date == date(2026, 8, 14)
+    assert snap.ts_ms == _et_ms(2026, 8, 14, 11, 30)
+    # Wraps the documented endpoint with root as the only param.
+    url = mock_urlopen.call_args[0][0].full_url
+    assert "/v2/snapshot/index/price?" in url
+    assert "root=SPX" in url
+
+
+def test_snapshot_index_price_no_data_returns_none() -> None:
+    with patch(
+        "theta_client.urlopen",
+        return_value=_http_response(":No data for the specified timeframe & contract."),
+    ):
+        client = ThetaClient()
+        assert client.snapshot_index_price("VIX1D") is None
+
+
+def test_snapshot_index_price_472_no_data_returns_none() -> None:
+    # HTTP 472 = NO_DATA — same semantics as the plain-text ":No data"
+    # body: None, no exception, no retries.
+    with patch("theta_client.urlopen", side_effect=_http_error(472, "No data")) as mock_urlopen:
+        client = ThetaClient(max_retries=3)
+        assert client.snapshot_index_price("SPX") is None
+    # No-data never retries.
+    assert mock_urlopen.call_count == 1
+
+
+def test_snapshot_index_price_471_raises_subscription_error() -> None:
+    # HTTP 471 = PERMISSION — the real entitlement denial.
+    with patch(
+        "theta_client.urlopen", side_effect=_http_error(471, "Permission denied")
+    ) as mock_urlopen:
+        client = ThetaClient(max_retries=3)
+        with pytest.raises(ThetaSubscriptionError):
+            client.snapshot_index_price("SPX")
+    # Denials never retry.
+    assert mock_urlopen.call_count == 1
+
+
+def test_snapshot_index_price_row_format_mismatch_raises() -> None:
+    # Column drift (row longer than format) must fail loudly, not
+    # silently misalign — same strict-zip contract as fetch_eod.
+    payload = {
+        "header": {"format": ["ms_of_day", "price"]},
+        "response": [[41400000, 6423.53, 20260814]],
+    }
+    with patch("theta_client.urlopen", return_value=_http_response(payload)):
+        client = ThetaClient()
+        with pytest.raises(ThetaClientError, match="length mismatch"):
+            client.snapshot_index_price("SPX")
+
+
+def test_snapshot_index_price_missing_price_column_raises() -> None:
+    payload = {
+        "header": {"format": ["ms_of_day", "date"]},
+        "response": [[41400000, 20260814]],
+    }
+    with patch("theta_client.urlopen", return_value=_http_response(payload)):
+        client = ThetaClient()
+        with pytest.raises(ThetaClientError, match="price"):
+            client.snapshot_index_price("SPX")
+
+
+# ---------------------------------------------------------------------------
+# hist_index_ohlc — GET /v2/hist/index/ohlc (per-date, interval candles)
+# ---------------------------------------------------------------------------
+
+
+_HIST_INDEX_OHLC_PAYLOAD = {
+    "header": {
+        "format": ["ms_of_day", "open", "high", "low", "close", "date"],
+    },
+    "response": [
+        # 34200000 = 09:30:00 ET, 34260000 = 09:31:00 ET
+        [34200000, 6400.10, 6402.50, 6399.00, 6401.25, 20260814],
+        [34260000, 6401.25, 6404.00, 6400.75, 6403.80, 20260814],
+    ],
+}
+
+
+def test_hist_index_ohlc_parses_candles() -> None:
+    with patch(
+        "theta_client.urlopen",
+        return_value=_http_response(_HIST_INDEX_OHLC_PAYLOAD),
+    ):
+        client = ThetaClient()
+        candles = client.hist_index_ohlc("SPX", date(2026, 8, 14))
+
+    assert len(candles) == 2
+    first = candles[0]
+    assert isinstance(first, IndexOhlcCandle)
+    assert first.ts_ms == _et_ms(2026, 8, 14, 9, 30)
+    assert first.open == Decimal("6400.10")
+    assert first.high == Decimal("6402.50")
+    assert first.low == Decimal("6399.00")
+    assert first.close == Decimal("6401.25")
+    second = candles[1]
+    assert second.ts_ms == _et_ms(2026, 8, 14, 9, 31)
+    assert second.close == Decimal("6403.80")
+
+
+def test_hist_index_ohlc_has_no_volume_field() -> None:
+    # Indices have no volume — the candle shape must not fabricate one.
+    with patch(
+        "theta_client.urlopen",
+        return_value=_http_response(_HIST_INDEX_OHLC_PAYLOAD),
+    ):
+        client = ThetaClient()
+        candles = client.hist_index_ohlc("SPX", date(2026, 8, 14))
+    assert not hasattr(candles[0], "volume")
+
+
+def test_hist_index_ohlc_sends_per_date_params_and_default_ivl() -> None:
+    with patch(
+        "theta_client.urlopen",
+        return_value=_http_response(_HIST_INDEX_OHLC_PAYLOAD),
+    ) as mock_urlopen:
+        client = ThetaClient()
+        client.hist_index_ohlc("VIX", date(2026, 8, 14))
+    url = mock_urlopen.call_args[0][0].full_url
+    assert "/v2/hist/index/ohlc?" in url
+    assert "root=VIX" in url
+    # Per-date wrapper: start_date == end_date == the requested day.
+    assert "start_date=20260814" in url
+    assert "end_date=20260814" in url
+    # Default interval is 1 minute.
+    assert "ivl=60000" in url
+
+
+def test_hist_index_ohlc_forwards_custom_ivl_ms() -> None:
+    with patch(
+        "theta_client.urlopen",
+        return_value=_http_response(_HIST_INDEX_OHLC_PAYLOAD),
+    ) as mock_urlopen:
+        client = ThetaClient()
+        client.hist_index_ohlc("SPX", date(2026, 8, 14), ivl_ms=300000)
+    url = mock_urlopen.call_args[0][0].full_url
+    assert "ivl=300000" in url
+
+
+def test_hist_index_ohlc_no_data_returns_empty_list() -> None:
+    with patch(
+        "theta_client.urlopen",
+        return_value=_http_response(":No data for the specified timeframe & contract."),
+    ):
+        client = ThetaClient()
+        assert client.hist_index_ohlc("VVIX", date(2026, 8, 14)) == []
+
+
+def test_hist_index_ohlc_row_format_mismatch_raises() -> None:
+    payload = {
+        "header": {"format": ["ms_of_day", "open", "high", "low", "close", "date"]},
+        "response": [[34200000, 6400.10, 6402.50, 6399.00, 6401.25]],
+    }
+    with patch("theta_client.urlopen", return_value=_http_response(payload)):
+        client = ThetaClient()
+        with pytest.raises(ThetaClientError, match="length mismatch"):
+            client.hist_index_ohlc("SPX", date(2026, 8, 14))
+
+
+def test_hist_index_ohlc_tolerates_extra_named_columns() -> None:
+    # If Theta adds a column AND names it in the format header, the
+    # strict zip still matches (equal lengths) and unknown names are
+    # simply ignored — only unnamed drift fails.
+    payload = {
+        "header": {
+            "format": ["ms_of_day", "open", "high", "low", "close", "count", "date"],
+        },
+        "response": [[34200000, 6400.10, 6402.50, 6399.00, 6401.25, 0, 20260814]],
+    }
+    with patch("theta_client.urlopen", return_value=_http_response(payload)):
+        client = ThetaClient()
+        candles = client.hist_index_ohlc("SPX", date(2026, 8, 14))
+    assert len(candles) == 1
+    assert candles[0].close == Decimal("6401.25")
+
+
+def test_hist_index_ohlc_472_no_data_returns_empty_list() -> None:
+    # HTTP 472 = NO_DATA — same semantics as the plain-text ":No data"
+    # body: [], no exception, no retries.
+    with patch("theta_client.urlopen", side_effect=_http_error(472, "No data")) as mock_urlopen:
+        client = ThetaClient(max_retries=3)
+        assert client.hist_index_ohlc("SPX", date(2026, 8, 14)) == []
+    # No-data never retries.
+    assert mock_urlopen.call_count == 1
+
+
+def test_hist_index_ohlc_471_raises_subscription_error() -> None:
+    # HTTP 471 = PERMISSION — the real entitlement denial.
+    with patch("theta_client.urlopen", side_effect=_http_error(471, "Permission denied")):
+        client = ThetaClient(max_retries=3)
+        with pytest.raises(ThetaSubscriptionError):
+            client.hist_index_ohlc("SPX", date(2026, 8, 14))

@@ -57,7 +57,11 @@ vi.mock('../_lib/flow-inversion.js', () => ({
   simulateFlowInversion: mockSimulateInversion,
 }));
 
-import handler from '../cron/enrich-lottery-outcomes.js';
+import handler, {
+  ENRICH_WALL_BUDGET_MS,
+} from '../cron/enrich-lottery-outcomes.js';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const GUARD = { apiKey: 'test-key', today: '2026-05-02' };
 
@@ -226,6 +230,81 @@ describe('enrich-lottery-outcomes', () => {
     expect(updateText).toContain('FROM unnest(');
     expect(updateText).toContain('f.id = u.id');
     expect(updateText).toContain('realized_flow_inversion_pct = u.inv');
+  });
+
+  it('enriches when the driver returns fire.id as a STRING and unnest returns fireId as a NUMBER', async () => {
+    // PRODUCTION REGRESSION (2026-08-17): the Neon driver returns
+    // lottery_finder_fires.id (bigint) as a STRING ("601"), while the batched
+    // read's `u.fire_id` comes from `unnest(...::int[])` and arrives as a
+    // NUMBER (601). The tick Map is built from row.fireId but looked up by
+    // fire.id, so `map.get("601")` missed `601` and EVERY fire was recorded
+    // as "no post-entry ticks" — then terminally stamped, permanently voiding
+    // its outcome labels. 600 fires were written off before this was caught.
+    // Every other test in this file mocks BOTH sides as numbers, which is why
+    // the batched-read refactor shipped green. Mirror production types here.
+    const stringIdFire = { ...baseFire, id: '1' as unknown as number };
+    mockSql.mockResolvedValueOnce([stringIdFire]); // SELECT fires
+    mockSql.mockResolvedValueOnce([
+      { fireId: 1, executedAt: new Date('2026-05-02T14:31:00Z'), price: 1.6 },
+      { fireId: 1, executedAt: new Date('2026-05-02T14:33:00Z'), price: 3.0 },
+    ]); // batched tick read — numeric fireId, as unnest ::int[] yields
+    // No loadMatchedFlow SELECT: mockFetchIntraday returns [] (beforeEach), so
+    // the flow-inversion path short-circuits before touching the DB. Queueing
+    // an extra value here would leak into later tests — vi.clearAllMocks()
+    // does not drain the mockResolvedValueOnce queue.
+    mockSql.mockResolvedValueOnce([]); // batched enriched UPDATE
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    // The fire must be ENRICHED, not skipped as tickless.
+    expect(res._json).toMatchObject({
+      status: 'success',
+      message: expect.stringContaining('Enriched 1'),
+    });
+    // Belt-and-braces: the old code produced "skipped 1 (no post-entry ticks)".
+    expect(res._json).toMatchObject({
+      message: expect.not.stringContaining('skipped 1'),
+    });
+  });
+
+  it('chunks the tick read so one run never issues a single mega-query', async () => {
+    // A busy fire carries ~2,900 post-entry ticks, so reading 300 fires in ONE
+    // query returned ~880k rows (~80 MB), blew the 30s per-attempt budget,
+    // exhausted withDbRetry (~93s) and 500ed the run. The read is chunked at
+    // TICK_READ_CHUNK=30 fires. 70 fires must therefore issue 3 reads, not 1.
+    const many = Array.from({ length: 70 }, (_, i) => ({
+      ...baseFire,
+      id: String(i + 1) as unknown as number, // driver returns bigint as string
+      optionChainId: `SPY260502C0050${String(i).padStart(4, '0')}`,
+    }));
+    mockSql.mockResolvedValueOnce(many); // SELECT fires
+    mockSql.mockResolvedValueOnce([]); // chunk 1 read (fires 1-30)
+    mockSql.mockResolvedValueOnce([]); // chunk 2 read (fires 31-60)
+    mockSql.mockResolvedValueOnce([]); // chunk 3 read (fires 61-70)
+    mockSql.mockResolvedValueOnce([]); // no-tick terminal UPDATE
+    mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    const reads = mockSql.mock.calls.filter((c) =>
+      queryText(c).includes('JOIN LATERAL'),
+    );
+    expect(reads).toHaveLength(3);
   });
 
   it('batches a mixed run: one enriched fire + one no-tick fire → both writes fire, fires grouped by id', async () => {
@@ -626,5 +705,317 @@ describe('enrich-lottery-outcomes', () => {
     // heartbeat correctly stays flat — exactly the missing-prune signal.
     expect(res._status).toBe(200);
     expect(mockMetricsIncrement).not.toHaveBeenCalledWith('lottery.kept_prune');
+  });
+
+  // ── Loop-until-budget (readiness-loose-ends-2026-08-18, phase A) ──────────
+  // Fires/day are 3.6k–5.3k since the uw-stream universe expansion. One run
+  // now drains batches of 300 (oldest first) until the SELECT comes back short
+  // or empty, OR the wall budget (ENRICH_WALL_BUDGET_MS, under the 300s
+  // maxDuration) is exceeded — leftovers roll to the next 5-min run.
+  describe('loop-until-budget', () => {
+    beforeEach(() => {
+      // These tests queue long mockResolvedValueOnce sequences. Reset the
+      // SQL mock's once-queue so a value left over from an earlier failure
+      // can't be consumed as this test's first SELECT and cascade.
+      mockSql.mockReset();
+    });
+
+    /** N unenriched fires with driver-realistic STRING ids + unique chains. */
+    function makeFires(from: number, count: number) {
+      return Array.from({ length: count }, (_, i) => ({
+        ...baseFire,
+        id: String(from + i) as unknown as number,
+        optionChainId: `SPY260502C${String(from + i).padStart(8, '0')}`,
+      }));
+    }
+
+    /** The per-batch candidate SELECTs (enriched_at IS NULL ... LIMIT). */
+    function selectCalls(): unknown[][] {
+      return mockSql.mock.calls.filter((c) => {
+        const t = queryText(c);
+        return (
+          t.includes('FROM lottery_finder_fires') &&
+          t.includes('enriched_at IS NULL')
+        );
+      });
+    }
+
+    /** The batched tick reads (one per 30-fire chunk). */
+    function tickReadCalls(): unknown[][] {
+      return mockSql.mock.calls.filter((c) =>
+        queryText(c).includes('JOIN LATERAL'),
+      );
+    }
+
+    /** The no-tick terminal-stamp UPDATEs (one per batch, when any). */
+    function noTickUpdateCalls(): unknown[][] {
+      return mockSql.mock.calls.filter((c) => {
+        const t = queryText(c);
+        return t.includes('SET enriched_at = NOW()') && t.includes('ANY(');
+      });
+    }
+
+    function run() {
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      return handler(req, res).then(() => res);
+    }
+
+    /**
+     * Inject a controllable clock. The handler reads Date.now() for the
+     * wall budget; tests advance `nowMs` from inside a mocked DB/UW call
+     * to simulate a slow batch without sleeping. Restored per test.
+     */
+    function fakeClock() {
+      const state = { nowMs: 1_700_000_000_000 };
+      const spy = vi.spyOn(Date, 'now').mockImplementation(() => state.nowMs);
+      return {
+        state,
+        advancePastBudget: () => {
+          state.nowMs += ENRICH_WALL_BUDGET_MS + 1;
+        },
+        restore: () => spy.mockRestore(),
+      };
+    }
+
+    it('pins the wall budget under the Vercel maxDuration for this function', () => {
+      expect(ENRICH_WALL_BUDGET_MS).toBe(240_000);
+      const cfg = JSON.parse(
+        readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
+      ) as {
+        functions?: Record<string, { maxDuration?: number }>;
+        crons?: { path: string; schedule: string }[];
+      };
+      const maxDuration =
+        cfg.functions?.['api/cron/enrich-lottery-outcomes.ts']?.maxDuration;
+      expect(maxDuration).toBeDefined();
+      // Leave headroom for one in-flight fire + the two flush writes + prune.
+      expect(ENRICH_WALL_BUDGET_MS).toBeLessThanOrEqual(
+        maxDuration! * 1000 - 60_000,
+      );
+      // Post-close every-5-min cadence: 21:40–21:55 then 22:00–23:55 UTC.
+      const windows = (cfg.crons ?? [])
+        .filter((c) => c.path === '/api/cron/enrich-lottery-outcomes')
+        .map((c) => c.schedule);
+      expect(windows).toEqual(['40-59/5 21 * * 1-5', '*/5 22-23 * * 1-5']);
+    });
+
+    it('drains multiple batches: a full batch of 300 triggers a second SELECT; a short batch ends the loop', async () => {
+      mockSql.mockResolvedValueOnce(makeFires(1, 300)); // batch 1 SELECT (full)
+      for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]); // 10 chunk reads
+      mockSql.mockResolvedValueOnce([]); // batch 1 no-tick UPDATE
+      mockSql.mockResolvedValueOnce(makeFires(301, 2)); // batch 2 SELECT (short → last)
+      mockSql.mockResolvedValueOnce([]); // batch 2 chunk read
+      mockSql.mockResolvedValueOnce([]); // batch 2 no-tick UPDATE
+      mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+      const res = await run();
+
+      expect(res._status).toBe(200);
+      expect(selectCalls()).toHaveLength(2);
+      expect(tickReadCalls()).toHaveLength(11);
+      expect(noTickUpdateCalls()).toHaveLength(2);
+      // 2 SELECTs + 11 chunk reads + 2 no-tick UPDATEs + prune = 16, and no
+      // third SELECT: the 2-row batch (< 300) is the last one.
+      expect(mockSql).toHaveBeenCalledTimes(16);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        batches: 2,
+        enriched: 0,
+        skipped: 302,
+        inversionFilled: 0,
+        budgetHit: false,
+        message: expect.stringMatching(/2 batches/),
+      });
+      expect(res._json).toMatchObject({
+        message: expect.stringContaining('skipped 302'),
+      });
+      // Batch 2's terminal stamp binds ONLY its own two fires.
+      const [, second] = noTickUpdateCalls();
+      expect((second![1] as unknown[]).map(Number)).toEqual([301, 302]);
+      // The prune still runs exactly once, last.
+      const calls = mockSql.mock.calls;
+      const pruneCall = findPruneCall(calls);
+      expect(pruneCall).toBeDefined();
+      expect(calls.indexOf(pruneCall!)).toBe(calls.length - 1);
+    });
+
+    it('stops when the SELECT after a full batch comes back empty', async () => {
+      mockSql.mockResolvedValueOnce(makeFires(1, 300)); // batch 1 SELECT (full)
+      for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]); // 10 chunk reads
+      mockSql.mockResolvedValueOnce([]); // batch 1 no-tick UPDATE
+      mockSql.mockResolvedValueOnce([]); // batch 2 SELECT (empty → done)
+      mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+      const res = await run();
+
+      expect(res._status).toBe(200);
+      expect(selectCalls()).toHaveLength(2);
+      expect(mockSql).toHaveBeenCalledTimes(14);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        batches: 1,
+        skipped: 300,
+        budgetHit: false,
+        message: expect.stringMatching(/1 batch\b/),
+      });
+    });
+
+    it('stops between batches once the wall budget is exceeded (no further SELECT)', async () => {
+      const clock = fakeClock();
+      try {
+        mockSql.mockResolvedValueOnce(makeFires(1, 300)); // batch 1 SELECT (full)
+        for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]); // 10 chunk reads
+        // The batch-1 flush is "slow": the clock jumps past the budget.
+        mockSql.mockImplementationOnce(() => {
+          clock.advancePastBudget();
+          return Promise.resolve([]);
+        }); // batch 1 no-tick UPDATE
+        mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+        const res = await run();
+
+        expect(res._status).toBe(200);
+        // A full batch would normally trigger another SELECT — the budget
+        // check at the top of the loop must stop it.
+        expect(selectCalls()).toHaveLength(1);
+        expect(mockSql).toHaveBeenCalledTimes(13);
+        expect(res._json).toMatchObject({
+          status: 'success',
+          batches: 1,
+          skipped: 300,
+          budgetHit: true,
+          message: expect.stringContaining('wall budget'),
+        });
+        expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('stops mid-batch once the wall budget is exceeded, flushing only the fires already processed', async () => {
+      const clock = fakeClock();
+      try {
+        const fire1 = { ...baseFire, id: 1, entryPrice: 1.0 };
+        const fire2 = {
+          ...baseFire,
+          id: 2,
+          optionChainId: 'SPY260502C00505000',
+          entryPrice: 1.0,
+        };
+        mockSql.mockResolvedValueOnce([fire1, fire2]); // SELECT fires
+        mockSql.mockResolvedValueOnce([
+          {
+            fireId: 1,
+            executedAt: new Date('2026-05-02T14:31:00Z'),
+            price: 1.5,
+          },
+          {
+            fireId: 2,
+            executedAt: new Date('2026-05-02T14:31:00Z'),
+            price: 1.2,
+          },
+        ]); // batched tick read (both fires have ticks)
+        let updateIds: unknown[] = [];
+        mockSql.mockImplementationOnce((...args: unknown[]) => {
+          updateIds = args[1] as unknown[];
+          return Promise.resolve([]);
+        }); // batched enriched UPDATE
+        mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+        // Fire 1's UW intraday call is "slow": the clock jumps past the
+        // budget while it is in flight. Fire 2 must NOT be started.
+        mockFetchIntraday.mockImplementationOnce(() => {
+          clock.advancePastBudget();
+          return Promise.resolve([]);
+        });
+
+        const res = await run();
+
+        expect(res._status).toBe(200);
+        expect(mockFetchIntraday).toHaveBeenCalledTimes(1);
+        expect(updateIds).toEqual([1]);
+        // Fire 2 is neither enriched nor stamped no-tick — it stays
+        // enriched_at IS NULL and rolls to the next run.
+        expect(noTickUpdateCalls()).toHaveLength(0);
+        expect(mockSql).toHaveBeenCalledTimes(4);
+        expect(res._json).toMatchObject({
+          status: 'success',
+          batches: 1,
+          enriched: 1,
+          skipped: 0,
+          budgetHit: true,
+          message: expect.stringContaining('wall budget'),
+        });
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('stops between tick-read chunks once the wall budget is exceeded: no further reads, nothing stamped', async () => {
+      const clock = fakeClock();
+      try {
+        mockSql.mockResolvedValueOnce(makeFires(1, 70)); // SELECT fires (3 chunks)
+        // Chunk 1 read is "slow": the clock jumps past the budget. Chunks 2
+        // and 3 must not be read. Fires 31-70 were never looked at, so they
+        // must NOT be stamped no-tick (that would permanently void their
+        // labels) — and once the budget has tripped, no fire is processed:
+        // the whole batch rolls to the next run. Only the prune follows.
+        mockSql.mockImplementationOnce(() => {
+          clock.advancePastBudget();
+          return Promise.resolve([]);
+        }); // chunk 1 read (fires 1-30, no ticks)
+        mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+        const res = await run();
+
+        expect(res._status).toBe(200);
+        expect(tickReadCalls()).toHaveLength(1);
+        expect(noTickUpdateCalls()).toHaveLength(0);
+        expect(mockFetchIntraday).not.toHaveBeenCalled();
+        // SELECT + chunk 1 read + prune — no UPDATE of any kind.
+        expect(mockSql).toHaveBeenCalledTimes(3);
+        expect(findPruneCall(mockSql.mock.calls)).toBeDefined();
+        expect(res._json).toMatchObject({
+          status: 'success',
+          batches: 1,
+          enriched: 0,
+          skipped: 0,
+          budgetHit: true,
+          message: expect.stringContaining('wall budget'),
+        });
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('does not spin when a batch re-selects fires already processed this run', async () => {
+      // Every fire in a batch is either enriched or stamped no-tick, so a
+      // second SELECT can only return the same rows if the stamp did not
+      // land. Guard: a batch with no unseen fires ends the loop (no third
+      // SELECT, no second UPDATE) instead of looping forever.
+      const same = makeFires(1, 300);
+      mockSql.mockResolvedValueOnce(same); // batch 1 SELECT (full)
+      for (let i = 0; i < 10; i++) mockSql.mockResolvedValueOnce([]); // 10 chunk reads
+      mockSql.mockResolvedValueOnce([]); // batch 1 no-tick UPDATE
+      mockSql.mockResolvedValueOnce(same); // batch 2 SELECT → all already seen
+      mockSql.mockResolvedValueOnce([]); // prune DELETE
+
+      const res = await run();
+
+      expect(res._status).toBe(200);
+      expect(selectCalls()).toHaveLength(2);
+      expect(tickReadCalls()).toHaveLength(10);
+      expect(noTickUpdateCalls()).toHaveLength(1);
+      expect(mockSql).toHaveBeenCalledTimes(14);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        batches: 1,
+        skipped: 300,
+      });
+    });
   });
 });

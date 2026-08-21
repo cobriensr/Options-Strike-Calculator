@@ -342,3 +342,149 @@ describe('useGexStrikeExpiry', () => {
     expect(result.current.data.NDX).toBeNull();
   });
 });
+
+// ============================================================
+// MALFORMED PAYLOADS (client shape hardening 2026-08-20)
+// ============================================================
+
+/**
+ * Route raw (possibly malformed) bodies per ticker. Tickers without an
+ * entry get a valid empty envelope. Separate from `tickerRouter` because
+ * that helper types bodies as GexStrikeExpiryResponse.
+ */
+function rawRouter(
+  bodies: Partial<Record<GexStrikeExpiryTicker, unknown>>,
+): (url: string) => Promise<Response> {
+  return async (url: string) => {
+    const ticker = (
+      ['SPY', 'QQQ', 'SPX', 'NDX'] as GexStrikeExpiryTicker[]
+    ).find((t) => url.includes(`ticker=${t}`));
+    if (ticker == null) throw new Error(`unknown ticker URL: ${url}`);
+    return jsonResponse(bodies[ticker] ?? emptyResp(ticker));
+  };
+}
+
+/** Minimal valid row — every nullable numeric field intentionally absent. */
+function minimalRow(ticker: GexStrikeExpiryTicker, strike: number) {
+  return {
+    ticker,
+    expiry: '2026-05-07',
+    strike,
+    ts_minute: '2026-05-07T14:30:00.000Z',
+  };
+}
+
+describe('useGexStrikeExpiry: malformed payloads', () => {
+  it('shapeless {} for one ticker leaves it null, healthy tickers populate, first miss silent', async () => {
+    fetchMock.mockImplementation(rawRouter({ SPY: {} }));
+
+    const { result } = renderHook(() =>
+      useGexStrikeExpiry(false, '2026-05-07'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data.SPY).toBeNull();
+    expect(result.current.data.QQQ?.ticker).toBe('QQQ');
+    expect(result.current.data.SPX?.ticker).toBe('SPX');
+    expect(result.current.data.NDX?.ticker).toBe('NDX');
+    expect(result.current.error).toBeNull();
+    expect(result.current.errors.SPY).toBeNull();
+
+    // Second consecutive shapeless payload → grace count exhausted.
+    await act(async () => {
+      result.current.refresh();
+    });
+    await waitFor(() =>
+      expect(result.current.error).toBe('Partial fetch failure: SPY'),
+    );
+    expect(result.current.errors.SPY).toContain('unexpected response shape');
+  });
+
+  it('a bare JSON string body is treated as a malformed envelope', async () => {
+    fetchMock.mockImplementation(
+      rawRouter({ QQQ: '<!doctype html><html>backend exploded</html>' }),
+    );
+
+    const { result } = renderHook(() =>
+      useGexStrikeExpiry(false, '2026-05-07'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data.QQQ).toBeNull();
+    expect(result.current.data.SPY?.ticker).toBe('SPY');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('rows: non-array is a malformed envelope', async () => {
+    fetchMock.mockImplementation(
+      rawRouter({ SPX: { ...emptyResp('SPX'), rows: {} } }),
+    );
+
+    const { result } = renderHook(() =>
+      useGexStrikeExpiry(false, '2026-05-07'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data.SPX).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
+  it('drops malformed rows inside a valid envelope and keeps valid rows', async () => {
+    fetchMock.mockImplementation(
+      rawRouter({
+        SPY: {
+          ...emptyResp('SPY'),
+          rows: [
+            minimalRow('SPY', 721),
+            { strike: 'not-a-number' },
+            42,
+            null,
+            // Valid strings but a garbage numeric field — dropped.
+            { ...minimalRow('SPY', 723), call_gamma_oi: 'bad' },
+            minimalRow('SPY', 719),
+          ],
+        },
+      }),
+    );
+
+    const { result } = renderHook(() =>
+      useGexStrikeExpiry(false, '2026-05-07'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data.SPY?.rows.map((r) => r.strike)).toEqual([
+      721, 719,
+    ]);
+    // Absent nullable numeric fields coalesce to null (optional-props
+    // policy) — same shape the server sends as explicit nulls.
+    expect(result.current.data.SPY?.rows[0]?.price).toBeNull();
+    expect(result.current.data.SPY?.rows[0]?.gamma_delta_30m).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
+  it('filters non-string entries out of timestamps', async () => {
+    fetchMock.mockImplementation(
+      rawRouter({
+        SPY: {
+          ...emptyResp('SPY'),
+          timestamps: [
+            '2026-05-07T14:30:00Z',
+            42,
+            null,
+            '2026-05-07T14:31:00Z',
+          ],
+        },
+      }),
+    );
+
+    const { result } = renderHook(() =>
+      useGexStrikeExpiry(false, '2026-05-07'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data.SPY?.timestamps).toEqual([
+      '2026-05-07T14:30:00Z',
+      '2026-05-07T14:31:00Z',
+    ]);
+  });
+});

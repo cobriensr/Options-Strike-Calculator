@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MockInstance } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 
 const { getCTTimeMock, getCTDateStrMock } = vi.hoisted(() => ({
@@ -62,6 +63,8 @@ function seedCache(date: string, overrides: Partial<Regime0dteResponse> = {}) {
 }
 
 describe('useRegime0dte', () => {
+  let consoleErrorSpy: MockInstance;
+
   beforeEach(() => {
     fetchMock.mockReset();
     getCTTimeMock.mockReset();
@@ -70,6 +73,13 @@ describe('useRegime0dte', () => {
     getCTTimeMock.mockReturnValue({ hour: 10, minute: 0 });
     getCTDateStrMock.mockReturnValue('2026-06-05');
     localStorage.clear();
+    consoleErrorSpy = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('populates displayData.gate after a successful fetch inside the window', async () => {
@@ -183,5 +193,85 @@ describe('useRegime0dte', () => {
     });
     // Last-good (today-dated) survives the transient error.
     expect(result.current.displayData?.gate).toBe('calm');
+  });
+
+  // ── Malformed payloads (client-shape-hardening-2026-08-20) ──────────
+
+  it('surfaces a shapeless {} payload as the error state with zero console errors', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
+
+    const { result } = renderHook(() => useRegime0dte());
+
+    await waitFor(() => {
+      expect(result.current.error).toBe('Unexpected response shape');
+    });
+    expect(result.current.displayData).toBeNull();
+    // A rejected payload is never mirrored into the last-good cache.
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('surfaces an HTML-ish string body as the error state with zero console errors', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => '<!doctype html><html>oops</html>',
+    });
+
+    const { result } = renderHook(() => useRegime0dte());
+
+    await waitFor(() => {
+      expect(result.current.error).toBe('Unexpected response shape');
+    });
+    expect(result.current.displayData).toBeNull();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('drops malformed optional-series rows and degrades bad scalars, keeping the graded read', async () => {
+    const mixed = {
+      ...makeResponse({ gate: 'lean_down' }),
+      // One valid row survives; a bad-typed row and a garbage entry drop.
+      gexStrikes: [
+        { strike: 5900, netGex: -2.1e10 },
+        { strike: 'oops', netGex: -1 },
+        'garbage',
+      ],
+      putIv: [{ ctMin: 540, iv: 0.31 }, { ctMin: 'x', iv: 0.3 }, null],
+      // Present-but-malformed optional fields degrade, never fatal.
+      candles30: 'nope',
+      spot: 'high',
+      bandPct: 'wide',
+    };
+    fetchMock.mockResolvedValue({ ok: true, json: async () => mixed });
+
+    const { result } = renderHook(() => useRegime0dte());
+
+    await waitFor(() => {
+      expect(result.current.displayData?.gate).toBe('lean_down');
+    });
+    const d = result.current.displayData!;
+    expect(d.gexStrikes).toEqual([{ strike: 5900, netGex: -2.1e10 }]);
+    expect(d.putIv).toEqual([{ ctMin: 540, iv: 0.31 }]);
+    expect(d.candles30).toBeUndefined();
+    expect(d.spot).toBeNull();
+    expect(d.bandPct).toBeUndefined();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('never surfaces a malformed today-dated cache (validator guards the cache read)', () => {
+    getCTTimeMock.mockReturnValue({ hour: 16, minute: 0 });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        data: { ...makeResponse(), triggers: 'garbage' },
+        savedAt: '2026-06-05T20:00:00Z',
+        date: '2026-06-05',
+      }),
+    );
+
+    const { result } = renderHook(() => useRegime0dte());
+
+    expect(result.current.displayData).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 });

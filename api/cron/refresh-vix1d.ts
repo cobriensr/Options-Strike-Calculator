@@ -17,7 +17,7 @@
  */
 
 import { Sentry, metrics } from '../_lib/sentry.js';
-import { redis } from '../_lib/redis.js';
+import { redis, safeRedis } from '../_lib/redis.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { cronGuard } from '../_lib/api-helpers.js';
@@ -143,12 +143,27 @@ export default withCronCheckin('refresh-vix1d', async (req, res) => {
         return res.status(500).json({ error: msg });
       }
 
-      await redis.set(REDIS_KEY, dailyMap, { ex: REDIS_TTL });
+      // `safeRedis`: a Redis outage or Upstash over-quota rejection must
+      // not fall through to the unhandled-500 catch (Sentry exception per
+      // run). It is reported below as a controlled error status instead;
+      // the failure itself is counted in `redis.error` /
+      // `redis.quota_exceeded`.
+      const stored = await safeRedis(async () => {
+        await redis.set(REDIS_KEY, dailyMap, { ex: REDIS_TTL });
+        return true;
+      }, false);
 
-      logger.info(
-        { dayCount, durationMs: Date.now() - startTime },
-        'refresh-vix1d: stored VIX1D daily map in Redis',
-      );
+      if (stored) {
+        logger.info(
+          { dayCount, durationMs: Date.now() - startTime },
+          'refresh-vix1d: stored VIX1D daily map in Redis',
+        );
+      } else {
+        logger.error(
+          { dayCount },
+          'refresh-vix1d: Redis write failed — VIX1D daily map NOT stored (outage or quota); /api/vix1d-daily will serve the static baseline',
+        );
+      }
 
       // Phase 5 of the lottery inversion-quality filter
       // (docs/superpowers/specs/lottery-inversion-quality-filter-2026-05-19.md).
@@ -175,6 +190,24 @@ export default withCronCheckin('refresh-vix1d', async (req, res) => {
       } catch (err) {
         Sentry.captureException(err, {
           tags: { source: 'lottery-ticker-stats-staleness-check' },
+        });
+      }
+
+      if (!stored) {
+        const msg = 'Redis write failed — VIX1D daily map not stored';
+        await reportCronRun('refresh-vix1d', {
+          status: 'error',
+          error: msg,
+          dayCount,
+          durationMs: Date.now() - startTime,
+        });
+        done({ status: 503 });
+        return res.status(503).json({
+          job: 'refresh-vix1d',
+          success: false,
+          error: msg,
+          dayCount,
+          durationMs: Date.now() - startTime,
         });
       }
 

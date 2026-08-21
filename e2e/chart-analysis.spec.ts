@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+import { expandSection } from './helpers/sections';
 
 const MOCK_ANALYZE = {
   analysis: {
@@ -46,9 +47,11 @@ test.describe('Chart Analysis', () => {
   test('mode selector shows entry, midday, and review options', async ({
     page,
   }) => {
-    // Wait for Chart Analysis section to render (quotes are mocked)
+    // Wait for Chart Analysis section to render (quotes are mocked),
+    // then expand it — the section is default-collapsed.
     const section = page.locator('section[aria-label="Chart Analysis"]');
     await expect(section).toBeVisible({ timeout: 10000 });
+    await expandSection(page, 'Chart Analysis');
 
     await expect(section.getByText('Pre-Trade')).toBeVisible();
     await expect(section.getByText('Mid-Day')).toBeVisible();
@@ -58,6 +61,7 @@ test.describe('Chart Analysis', () => {
   test('drop zone shows upload prompt', async ({ page }) => {
     const section = page.locator('section[aria-label="Chart Analysis"]');
     await expect(section).toBeVisible({ timeout: 10000 });
+    await expandSection(page, 'Chart Analysis');
 
     await expect(
       section.getByText(/Drop or click to upload|paste/).first(),

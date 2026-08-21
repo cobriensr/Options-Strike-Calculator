@@ -100,7 +100,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
   }),
 }));
 
-import handler from '../cron/fetch-strike-iv.js';
+import handler, { pickExpiryForFire } from '../cron/fetch-strike-iv.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
@@ -974,5 +974,67 @@ describe('fetch-strike-iv handler', () => {
     };
     // Two calls pass (OI=200 + OI=800); the OI=199 put is rejected.
     expect(body.results.find((r) => r.ticker === 'SNDK')?.rowsInserted).toBe(2);
+  });
+
+  // ── Facade path shape + expiry staggering (schwab-replacement) ──
+
+  it('requests a single range=OTM expiry per fire (today on even fires)', async () => {
+    // MARKET_TIME is minute :30 → fire index 6 (even) → today's 0DTE.
+    mockChainSequence(Array.from({ length: 17 }, () => null));
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const paths = vi.mocked(schwabFetch).mock.calls.map((c) => c[0] as string);
+    expect(paths).toHaveLength(17);
+    for (const p of paths) {
+      // OTM server-side filter keeps each expiry to ~1 UW page.
+      expect(p).toContain('range=OTM');
+      // Single-expiry window — never the full today..Friday2 span.
+      expect(p).toContain('fromDate=2026-04-24&toDate=2026-04-24');
+    }
+  });
+
+  it('rotates to a Friday expiry on odd fires (minute :35 → 2nd Friday)', async () => {
+    vi.setSystemTime(new Date('2026-04-24T14:35:00.000Z'));
+    mockChainSequence(Array.from({ length: 17 }, () => null));
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const paths = vi.mocked(schwabFetch).mock.calls.map((c) => c[0] as string);
+    expect(paths).toHaveLength(17);
+    for (const p of paths) {
+      expect(p).toContain('fromDate=2026-05-08&toDate=2026-05-08');
+    }
+  });
+});
+
+// ── pickExpiryForFire (pure rotation logic) ────────────────────
+
+describe('pickExpiryForFire', () => {
+  it('snapshots today (0DTE) on even fires and alternates Fridays on odd fires (Friday today)', () => {
+    // Friday 2026-04-24 → expiry set [today, 2026-05-01, 2026-05-08].
+    const today = '2026-04-24';
+    // Even fires (minute 0, 10, 20, …) → today, every 10 minutes.
+    for (const minute of [0, 10, 20, 30, 40, 50]) {
+      expect(pickExpiryForFire(today, minute)).toBe(today);
+    }
+    // Odd fires alternate the Fridays, each sampled every 20 minutes.
+    expect(pickExpiryForFire(today, 5)).toBe('2026-05-01');
+    expect(pickExpiryForFire(today, 15)).toBe('2026-05-08');
+    expect(pickExpiryForFire(today, 25)).toBe('2026-05-01');
+    expect(pickExpiryForFire(today, 35)).toBe('2026-05-08');
+    expect(pickExpiryForFire(today, 45)).toBe('2026-05-01');
+    expect(pickExpiryForFire(today, 55)).toBe('2026-05-08');
+  });
+
+  it('round-robins all Friday expiries on odd fires (mid-week today)', () => {
+    // Wednesday 2026-04-22 → set [today, 04-24, 05-01, 05-08].
+    const today = '2026-04-22';
+    expect(pickExpiryForFire(today, 0)).toBe(today);
+    expect(pickExpiryForFire(today, 5)).toBe('2026-04-24');
+    expect(pickExpiryForFire(today, 10)).toBe(today);
+    expect(pickExpiryForFire(today, 15)).toBe('2026-05-01');
+    expect(pickExpiryForFire(today, 25)).toBe('2026-05-08');
+    expect(pickExpiryForFire(today, 35)).toBe('2026-04-24');
   });
 });

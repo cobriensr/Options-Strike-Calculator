@@ -6,23 +6,23 @@ System design, project structure, data flow, security, math, and the data pipeli
 
 ```text
 ├── api/                                  # Vercel Serverless Functions
-│   ├── __tests__/                        # 130 test files — endpoints, cron jobs, _lib
-│   ├── _lib/                             # 63 shared backend modules
+│   ├── __tests__/                        # 311 test files — endpoints, cron jobs, _lib
+│   ├── _lib/                             # 168 shared backend modules
 │   │   ├── schwab.ts                     # Schwab OAuth token lifecycle (Redis + distributed lock)
-│   │   ├── api-helpers.ts                # Shared fetch, cache, owner-gate, rate limiting, bot check
-│   │   ├── db.ts                         # Neon Postgres: initDb() + migrateDb() (77+ migrations)
-│   │   ├── db-migrations.ts              # Numbered migration definitions (50+ tables)
+│   │   ├── api-helpers.ts                # Barrel re-export of auth-helpers / uw-fetch / cron-helpers / schwab-fetch
+│   │   ├── db.ts                         # Neon Postgres: initDb() + migrateDb() (190 migrations)
+│   │   ├── db-migrations.ts              # Numbered migration definitions (~96 tables)
 │   │   ├── db-analyses.ts                # Analysis CRUD
 │   │   ├── db-flow.ts                    # Flow data queries + formatters
 │   │   ├── db-snapshots.ts               # Snapshot persistence
 │   │   ├── db-positions.ts               # Position CRUD
-│   │   ├── db-darkpool.ts                # Dark pool snapshot storage
+│   │   ├── darkpool.ts                   # Dark pool fetch + dark-pool-query.ts / dark-pool-filter.ts
 │   │   ├── db-oi-change.ts               # OI change tracking
 │   │   ├── db-strike-helpers.ts          # Per-strike exposure queries
 │   │   ├── db-nope.ts                    # SPY NOPE time series
 │   │   ├── analyze-prompts.ts            # Static Anthropic prompt text
 │   │   ├── analyze-context.ts            # Orchestrator — wires fetchers + assembles template
-│   │   ├── analyze-context-fetchers.ts   # 13 focused per-data-source fetchers
+│   │   ├── analyze-context-fetchers.ts   # 20 focused per-data-source fetchers
 │   │   ├── analyze-context-formatters.ts # Pure `format*` helpers (tests target these)
 │   │   ├── analyze-context-helpers.ts    # numOrUndef, parseEntryTimeAsUtc + shared types
 │   │   ├── analyze-calibration.ts        # Mode-specific example outputs
@@ -52,10 +52,12 @@ System design, project structure, data flow, security, math, and the data pipeli
 │   │   ├── init.ts                       # POST → create tables + run migrations
 │   │   ├── migrate.ts                    # POST → add new columns (idempotent)
 │   │   └── status.ts                     # GET → DB connection diagnostics
-│   ├── cron/                             # 38 scheduled jobs (39 schedules in vercel.json)
+│   ├── cron/                             # 78 scheduled jobs (86 schedules in vercel.json, 79 unique paths)
 │   ├── ml/                               # ML data export + plot analysis endpoints
-│   ├── options-flow/                     # Whale positioning + options flow endpoints
-│   ├── market-internals/                 # Breadth indicators (TICK/ADD/VOLD/TRIN)
+│   ├── futures/                          # Futures gamma + basis endpoints
+│   ├── gamma-setups/                     # Gamma setup detection endpoints
+│   ├── tracker/                          # Long-term contract tracker endpoints
+│   ├── push/                             # Web Push subscription endpoints
 │   ├── analyze.ts                        # POST → Claude Opus 4.7 chart analysis
 │   ├── analyses.ts                       # GET → browse past analyses (public)
 │   ├── chain.ts                          # GET → live option chain
@@ -78,27 +80,29 @@ System design, project structure, data flow, security, math, and the data pipeli
 │   ├── vix-ohlc.ts                       # GET → VIX OHLC from snapshots
 │   └── yesterday.ts                      # GET → prior day SPX OHLC
 ├── src/                                  # React 19 SPA
-│   ├── __tests__/                        # 161 unit test files (components, hooks, utils, data)
+│   ├── __tests__/                        # 320 unit test files (components, hooks, utils, data)
 │   │   └── setup.ts                      # Vitest setup (jsdom, mocks)
-│   ├── components/                       # 138 TSX component files, grouped by feature folder
-│   ├── hooks/                            # 32 custom React hooks
-│   ├── utils/                            # ~30 pure calculation modules
+│   ├── components/                       # 236 TSX component files, grouped by feature folder
+│   ├── hooks/                            # 83 custom React hooks
+│   ├── utils/                            # 62 pure calculation modules
 │   ├── types/                            # Shared TypeScript types
 │   ├── data/                             # Static data (event calendar, VIX range stats)
 │   ├── constants/                        # App-wide constants
 │   ├── themes/                           # Light/dark theme definitions
+│   ├── lib/                              # Shared browser-side helpers
 │   ├── App.tsx                           # Root component
 │   └── main.tsx                          # React entry point + Sentry init
 ├── ml/                                   # Python ML pipeline (see ml/README.md)
 ├── sidecar/                              # Databento + Theta sidecar (see sidecar/README.md)
 ├── uw-stream/                            # UW websocket consumer (see uw-stream/README.md)
+├── classifier/                           # polars multi-leg classifier (see classifier/README.md)
 ├── scripts/                              # Backfill + utility scripts (see scripts/README.md)
-├── e2e/                                  # 32 Playwright E2E specs (see e2e/README.md)
+├── e2e/                                  # 39 Playwright E2E specs (see e2e/README.md)
 ├── docs/                                 # Design documents + superpowers specs (see docs/INDEX.md)
 ├── public/
 │   ├── vix-data.json                     # VIX OHLC history (1990–present)
 │   └── vix1d-daily.json                  # VIX1D daily history (May 2022–present)
-├── .github/workflows/                    # CI, nightly ML pipeline, takeit retrain
+├── .github/workflows/                    # ci.yml, ml-pipeline.yml (incl. takeit-retrain job), neon_workflow.yml
 ├── vercel.json                           # Crons, security headers, CSP, rewrites, ignoreCommand
 ├── vite.config.ts                        # Vite + Vitest + PWA + bundle analysis
 ├── .env.example                          # Environment variable template
@@ -150,10 +154,12 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
                     │  Claude vision → findings.json → frontend    │
                     └──────────────────────────────────────────────┘
 
-                    ┌─── Railway Sidecar ─────────────────────────┐
-                    │  Databento Live → futures_bars, ES options   │
-                    │  Theta Terminal → SPX EOD chains             │
-                    │  DuckDB → /archive/* endpoints (analog/OFI)  │
+                    ┌─── Railway (3 services) ────────────────────┐
+                    │  sidecar:    Databento Live → futures_bars   │
+                    │              Theta Terminal → SPX EOD chains │
+                    │              DuckDB → /archive/* (analog/OFI)│
+                    │  uw-stream:  UW websocket → ws_* tables      │
+                    │  classifier: polars multi-leg classifier     │
                     └──────────────────────────────────────────────┘
 
                     ┌─── Historical Data ─────────────┐
@@ -185,12 +191,12 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
 | `GET /api/intraday`          | Schwab (`priceHistory`, 5-min)        | Today's OHLC + 30-min opening range         | 2 min          | 10 min         |
 | `GET /api/yesterday`         | Schwab (`priceHistory`, daily)        | Prior 5 days SPX OHLC for rolling RV        | 1 hour         | 1 day          |
 | `GET /api/chain`             | Schwab (`chains`, 0DTE)               | Live option chain with per-strike deltas    | 30s            | —              |
-| `GET /api/history`           | Schwab (`priceHistory`, multi-symbol) | Historical candles for backtesting          | 1 hour         | 1 day          |
-| `GET /api/movers`            | Schwab (`movers`)                     | Market movers                               | 5 min          | 10 min         |
+| `GET /api/history`           | Schwab (`priceHistory`, multi-symbol) | Historical candles for backtesting          | 2 min          | 2 min          |
+| `GET /api/movers`            | Schwab (`movers`)                     | Market movers                               | 2 min          | 10 min         |
 | `GET /api/positions`         | Schwab Trader API                     | Live SPX 0DTE positions + spreads           | —              | —              |
 | `GET /api/events`            | FRED + Finnhub                        | Economic calendar events                    | 7d Redis       | 7d Redis       |
-| `GET /api/darkpool-levels`   | Unusual Whales                        | Dark pool support/resistance                | 60s            | —              |
-| `GET /api/iv-term-structure` | Unusual Whales                        | Volatility term structure                   | —              | —              |
+| `GET /api/darkpool-levels`   | Unusual Whales                        | Dark pool support/resistance                | no-store       | no-store       |
+| `GET /api/iv-term-structure` | Unusual Whales                        | Volatility term structure                   | 5 min          | 5 min          |
 | `GET /api/bwb-anchor`        | Internal (GEX + charm)                | BWB gamma anchor level                      | —              | —              |
 | `POST /api/analyze`          | Anthropic Messages API                | Claude chart analysis                       | —              | —              |
 | `GET /api/analyses`          | Neon Postgres                         | Browse past analyses (public)               | —              | —              |
@@ -232,15 +238,16 @@ Upstash Redis (via Vercel Marketplace). REST-based client, serverless-compatible
 - `X-Content-Type-Options: nosniff`
 - `X-Frame-Options: SAMEORIGIN`
 - `Referrer-Policy: strict-origin-when-cross-origin`
-- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
-- `X-XSS-Protection: 1; mode=block`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), accelerometer=(), gyroscope=(), magnetometer=(), interest-cohort=(), browsing-topics=()`
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+- `X-XSS-Protection: 0` (legacy auditor deliberately disabled — the modern recommendation)
 - `Content-Security-Policy`: `default-src 'self'`, strict `script-src` (with Sentry CDN), `frame-ancestors 'self'`, `connect-src` limited to self + Schwab + Vercel Analytics + Sentry ingest
 
 ### Authentication
 
 - Owner cookie: HttpOnly, Secure, 7-day expiry, matched against `OWNER_SECRET` env var
 - Hint cookie: Non-HttpOnly `sc-hint=1` for frontend page-load detection
-- All API endpoints: `rejectIfNotOwner()` returns 401 for unauthenticated requests
+- All API endpoints: `guardOwnerEndpoint()` (or `guardOwnerOrGuestEndpoint()`) returns 401 for unauthenticated requests; both live in `api/_lib/auth-helpers.ts`, re-exported through the `api-helpers.ts` barrel
 - All API keys (Schwab, Anthropic, Postgres) are server-side only, never in client bundle
 - Bot protection: `botid` checks on production endpoints, skipped in local dev. New endpoints must be added to the `protect` array in [src/main.tsx](../src/main.tsx).
 
@@ -259,7 +266,7 @@ All owner-gated endpoints are rate-limited via Upstash Redis:
 
 ### Input Validation
 
-- Image payload: Max 4 images, max 5MB per image (base64), validated by Zod schemas
+- Image payload: Max 2 images, max 5MB per image (base64), validated by Zod schemas
 - Anthropic errors: Sanitized to generic messages, full details logged server-side only
 - DB errors: Sanitized, never expose connection details to client
 - SQL injection: Neon tagged templates auto-parameterize all queries
@@ -319,9 +326,10 @@ BE High     = short_call + call_credit   # per-side credit, not total
 PoP         = P(S_T > BE_low) + P(S_T < BE_high) − 1
 
 Fat-tail adjustment (VIX-regime-dependent via getKurtosisFactor):
-  kurtosis = 1.5 (VIX<15) / 2.0 (15-20) / 2.5 (20-25) / 3.0 (25-30) / 3.5 (30+)
-  P_adj(breach_low)  = min(1, P(S_T < BE_low)  × kurtosis)
-  P_adj(breach_high) = min(1, P(S_T > BE_high) × kurtosis)
+  {crash, rally} = {1.8,1.2} (VIX<15) / {2.5,1.5} (15-20) / {3,2} (20-25)
+                 / {3.5,2.5} (25-30) / {4,3} (30+)
+  P_adj(breach_low)  = min(1, P(S_T < BE_low)  × crash)
+  P_adj(breach_high) = min(1, P(S_T > BE_high) × rally)
   PoP_adjusted       = 1 − P_adj(breach_low) − P_adj(breach_high)
 ```
 
@@ -379,7 +387,7 @@ npm run build:analyze    # Opens dist/bundle-stats.html
 
 ## Data Collection & ML Pipeline
 
-### Database Schema (50+ Tables, 77+ numbered migrations)
+### Database Schema (~96 Tables, 190 numbered migrations)
 
 **Core Trading Tables:**
 
@@ -409,7 +417,7 @@ npm run build:analyze    # Opens dist/bundle-stats.html
 | `day_labels`        | ML training labels from review analyses   | structure_correct, flow signals, settlement direction | 1 row/trading day |
 | `economic_events`   | FRED + Finnhub calendar                   | event_name, event_time, type, forecast, previous      | Per event         |
 
-### Intraday Data Collection (38 Cron Jobs)
+### Intraday Data Collection (78 Cron Handlers, 86 vercel.json Schedules)
 
 All cron jobs are guarded by `CRON_SECRET` and run during market hours (13–21 UTC, Mon–Fri) unless otherwise noted.
 
@@ -423,32 +431,37 @@ All cron jobs are guarded by `CRON_SECRET` and run during market hours (13–21 
 | `fetch-zero-dte-flow`   | Unusual Whales | `flow_data`        | 0DTE-specific flow             |
 | `fetch-greek-flow`      | Unusual Whales | `flow_data`        | Delta flow per symbol          |
 | `fetch-greek-exposure`  | Unusual Whales | `greek_exposure`   | Agg + by-expiry Greek exposure |
-| `fetch-spot-gex`        | Unusual Whales | `spot_exposures`   | Aggregate GEX snapshot         |
 | `fetch-strike-exposure` | Unusual Whales | `strike_exposures` | Per-strike Greeks (0DTE)       |
 | `fetch-strike-all`      | Unusual Whales | `strike_exposures` | All-strike composite data      |
 
 **Every minute (market hours):**
 
-| Cron                 | Source         | Target Table        | Data                          |
-| -------------------- | -------------- | ------------------- | ----------------------------- |
-| `monitor-iv`         | Internal       | `training_features` | IV snapshots + crush rate     |
-| `monitor-flow-ratio` | Internal       | `training_features` | Flow ratio dynamics           |
-| `fetch-darkpool`     | Unusual Whales | (DB)                | $5M+ dark pool block tracking |
+| Cron                 | Source         | Target Table        | Data                   |
+| -------------------- | -------------- | ------------------- | ---------------------- |
+| `monitor-flow-ratio` | Internal       | `training_features` | Flow ratio dynamics    |
+| `monitor-vega-spike` | Internal       | `vega_spike_events` | Vega spike detection   |
+| `fetch-spot-gex`     | Unusual Whales | `spot_exposures`    | Aggregate GEX snapshot |
+
+**Every 5 minutes (monitoring):**
+
+| Cron                   | Source   | Target Table | Data                                             |
+| ---------------------- | -------- | ------------ | ------------------------------------------------ |
+| `monitor-ws-freshness` | Internal | (Sentry)     | Alerts if `ws_option_trades` stalls > 300s (RTH) |
 
 **Post-close and daily:**
 
-| Cron                      | Schedule          | Data                                   |
-| ------------------------- | ----------------- | -------------------------------------- |
-| `fetch-outcomes`          | 4:25, 5:25 PM ET  | SPX OHLC settlement + VIX close        |
-| `fetch-oi-change`         | 5:30 PM ET        | Open interest changes                  |
-| `fetch-oi-per-strike`     | 10:00 AM ET       | Per-strike OI snapshot                 |
-| `fetch-vol-surface`       | 5:35 PM ET        | IV term structure by strike/expiry     |
-| `fetch-economic-calendar` | 9:25, 10:25 AM ET | FRED + Finnhub events                  |
-| `compute-es-overnight`    | 9:35, 10:35 AM ET | ES futures overnight session summary   |
-| `build-features`          | 4:45, 5:45 PM ET  | ML feature engineering (100+ features) |
-| `curate-lessons`          | Sat 3:00 AM UTC   | Weekly lessons curation pipeline       |
-| `backup-tables`           | Sun 5:00 AM UTC   | Database backup to Vercel Blob         |
-| `health`                  | Mon 9:25 AM ET    | Postgres + Redis + Schwab token check  |
+| Cron                      | Schedule           | Data                                   |
+| ------------------------- | ------------------ | -------------------------------------- |
+| `fetch-outcomes`          | 4:25, 5:25 PM ET   | SPX OHLC settlement + VIX close        |
+| `fetch-oi-change`         | 5:30 PM ET         | Open interest changes                  |
+| `fetch-oi-per-strike`     | 10:30 AM ET        | Per-strike OI snapshot                 |
+| `fetch-vol-surface`       | 5:35 PM ET         | IV term structure by strike/expiry     |
+| `fetch-economic-calendar` | 9:25, 10:25 AM ET  | FRED + Finnhub events                  |
+| `compute-es-overnight`    | 9:35, 10:35 AM ET  | ES futures overnight session summary   |
+| `build-features`          | 4:45, 5:45 PM ET   | ML feature engineering (100+ features) |
+| `curate-lessons`          | Sat 3:00 AM UTC    | Weekly lessons curation pipeline       |
+| `backup-tables`           | Sun 5:00 AM UTC    | Database backup to Vercel Blob         |
+| `/api/health`             | Mon–Fri 9:25 AM ET | Postgres + Redis + Schwab token check  |
 
 ### ML Pipeline (Python)
 
@@ -492,9 +505,9 @@ A multi-phase ML system that augments the rule-based analyze endpoint with stati
 
 **Source modules (`ml/src/`):**
 
-Core pipeline scripts: `utils.py`, `eda.py`, `clustering.py`, `phase2_early.py`, `visualize.py`, `backtest.py`, `pin_analysis.py`, `health.py`, `milestone_check.py`, `explore.py`.
+Core pipeline scripts: `utils/` (package), `eda.py`, `clustering.py`, `phase2_early.py`, `visualize.py`, `backtest.py`, `pin_analysis.py`, `health.py`, `milestone_check.py`, `explore.py`.
 
-Microstructure pipeline (`ml/src/features/`): OFI feature engineering, TBBO conversion, Parquet writer. Uses DuckDB with its own `_new_connection()` that mirrors the sidecar's UTC-TimeZone + memory-limit safety.
+Microstructure pipeline: OFI feature engineering in `ml/src/features/microstructure.py`; TBBO/Parquet conversion in `ml/src/tbbo_convert.py` and `ml/src/archive_convert.py`. Uses DuckDB with its own `_new_connection()` that mirrors the sidecar's UTC-TimeZone + memory-limit safety.
 
 PAC engine scaffold (`ml/src/pac/`): DuckDB-backed order-blocks + structure detection for a future price-action-confirmation backtester.
 
@@ -517,14 +530,14 @@ Output: One row per trading day in `training_features` (100+ columns) + `day_lab
 - **Trigger:** Cron + manual dispatch
 - **Pipeline:**
   1. Setup Python 3.13 + Node 24
-  2. Run `make -C ml all` (health → EDA → clustering → visualize → phase2 → backtest → pin)
+  2. Run `make -C ml all` (health → eda → cluster → visualize → early → backtest → pin → nope → flow → calibration)
   3. Upload all plots to Vercel Blob (`ml-plots/latest/`)
   4. Trigger Claude vision analysis (`POST /api/ml/analyze-plots`) for AI interpretation of each plot
   5. Commit `findings.json` if changed
 
 ---
 
-## Futures + ES Options Sidecar (Railway)
+## Futures + ES Options Sidecar (Railway service 1 of 3 — see also `uw-stream/` and `classifier/`)
 
 A full Python data-platform service deployed separately on Railway, combining four distinct responsibilities: (1) real-time Databento Live ingestion of 6 futures symbols + ES options, (2) end-of-day Theta Data backfill of SPX option chains, (3) a persistent TBBO Parquet archive (distributed from Vercel Blob to Railway volume), and (4) a DuckDB query layer exposing microstructure + analog-day endpoints back to the Vercel side. Runs outside Vercel because it holds long-lived streaming connections and queries GB-scale Parquet archives — neither fits a serverless cold-start model.
 
@@ -543,14 +556,20 @@ Databento Live (streaming)         Theta Data Terminal (nightly backfill)
   ├─ theta_fetcher.py              — nightly APScheduler + SPX EOD chain backfill
   ├─ archive_seeder.py             — one-shot pull from Vercel Blob → /data/archive (SHA-resumable)
   ├─ archive_query.py              — DuckDB layer over the TBBO Parquet archive
-  ├─ health.py                     — /health + /archive/* + /admin/seed-archive HTTP server
+  ├─ health.py                     — /health, /archive/*, /admin/seed-archive, /theta/index/*, /takeit/* HTTP server
   ├─ db.py                         — psycopg2 upserts (not @neondatabase/serverless)
+  ├─ takeit_server.py              — Takeit XGBoost scoring server (/takeit/*)
+  ├─ multileg_routes.py            — multi-leg classify routes
+  ├─ watchdog.py                   — stale-data watchdog (WATCHDOG_STALE_EXIT_S)
+  ├─ config.py, logger_setup.py    — settings + structured logging
+  ├─ bar_writer.py, batched_writer.py, stat_writer.py — batched Postgres writers
+  ├─ front_month.py, session_calendar.py, options_router.py — contract + session helpers
   └─ sentry_setup.py               — Sentry init (separate DSN from Vercel side)
   ↓
 Neon Postgres + Railway Volume [/data/archive/tbbo/year=*/part.parquet]
 ```
 
-**Four concurrent responsibilities:**
+**Concurrent responsibilities** (the four below, plus the Takeit XGBoost scoring server in `takeit_server.py` and the multi-leg routes in `multileg_routes.py`)**:**
 
 1. **Real-time Databento Live** — 6 futures symbols (ES, NQ, ZN, RTY, CL, GC) on OHLCV-1m plus ES+NQ TBBO for microstructure, plus full ES.OPT chain (definition snapshot at session open with `start=0`, statistics for EOD OI/IV/delta, and trades filtered to an ATM ±10 strike window). Writes to `futures_bars`, `futures_options_trades`, `futures_options_daily`, and TopOfBook/TradeTick Parquet.
 2. **Theta Data backfill** — nightly SPX option chain EOD fetcher via the co-resident Theta Terminal Java subprocess. Optional — disabled when `THETA_EMAIL`/`THETA_PASSWORD` are unset.

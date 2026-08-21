@@ -55,6 +55,14 @@ async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
         (err instanceof Error && err.name === 'BundleSchemaError');
       if (isSchemaErr) throw err;
 
+      // Same reasoning for "no model published yet": deterministic, so
+      // retrying just triples the log noise. Re-throw for getBundle to
+      // swallow quietly. Name-matched for the same class-identity safety.
+      const isNotProvisioned =
+        err instanceof TakeitNotProvisionedError ||
+        (err instanceof Error && err.name === 'TakeitNotProvisionedError');
+      if (isNotProvisioned) throw err;
+
       lastErr = err;
       if (attempt >= BUNDLE_FETCH_MAX_RETRIES) break;
       const delay = BUNDLE_FETCH_BACKOFFS_MS[attempt] ?? 1000;
@@ -113,11 +121,34 @@ function isFresh(entry: CacheEntry | undefined): boolean {
  * The manifest is the single editable pointer to whichever versions are
  * currently in production; rolling back is one Blob upload.
  */
+/**
+ * Thrown when the Blob store simply has no take-it manifest yet — i.e. the
+ * ML pipeline has never published a model. This is the EXPECTED steady state
+ * before the first `takeit-retrain` run, not an outage.
+ *
+ * It exists to keep that state quiet. The detect crons call `getBundle()`
+ * once per fire, so on a busy day (3,588 fires) an un-provisioned Blob store
+ * produced ~1,400 Sentry events — 952 retry warnings plus 476
+ * `manifest_fetch_failed` — which is what buried the genuinely actionable
+ * alerts. `withRetry` re-throws this immediately (retrying cannot conjure a
+ * model) and `getBundle` swallows it, exactly like the fail-open path when a
+ * bundle is absent. Any OTHER manifest failure (network, auth, malformed
+ * JSON) still retries and still alerts.
+ */
+export class TakeitNotProvisionedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TakeitNotProvisionedError';
+  }
+}
+
 async function fetchManifest(): Promise<ManifestPayload> {
   const { blobs } = await list({ prefix: MANIFEST_PATH });
   const entry = blobs.find((b) => b.pathname === MANIFEST_PATH);
   if (!entry) {
-    throw new Error(`take-it manifest missing at ${MANIFEST_PATH}`);
+    throw new TakeitNotProvisionedError(
+      `take-it manifest missing at ${MANIFEST_PATH}`,
+    );
   }
   const res = await fetch(entry.downloadUrl, { headers: blobAuthHeaders() });
   if (!res.ok) {
@@ -163,10 +194,17 @@ export async function getBundle(
   try {
     manifest = await withRetry('fetchManifest', () => fetchManifest());
   } catch (err) {
-    Sentry.captureMessage('takeit.bundle.manifest_fetch_failed', {
-      level: 'warning',
-      extra: { error: (err as Error).message, alertType },
-    });
+    // "No model published yet" is the expected pre-training state — stay
+    // silent (see TakeitNotProvisionedError). Everything else still alerts.
+    const isNotProvisioned =
+      err instanceof TakeitNotProvisionedError ||
+      (err instanceof Error && err.name === 'TakeitNotProvisionedError');
+    if (!isNotProvisioned) {
+      Sentry.captureMessage('takeit.bundle.manifest_fetch_failed', {
+        level: 'warning',
+        extra: { error: (err as Error).message, alertType },
+      });
+    }
     return fallback;
   }
 

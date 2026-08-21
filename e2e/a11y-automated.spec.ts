@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { selectMeridiem, selectTimezone } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 async function scanA11y(page: import('@playwright/test').Page) {
   const results = await new AxeBuilder({ page })
@@ -34,10 +36,13 @@ test.describe('Automated Accessibility Scanning', () => {
     await page.route('**/api/**', (route) => route.abort());
     await page.goto('/');
 
-    await page.getByLabel('Hour').selectOption('10');
-    await page.getByLabel('Minute').selectOption('00');
-    await page.getByRole('radio', { name: 'AM' }).click();
-    await page.getByRole('radio', { name: 'ET', exact: true }).click();
+    // VIX Value lives in the default-collapsed Implied Volatility section
+    await expandSection(page, 'Implied Volatility');
+
+    await page.getByLabel('Hour', { exact: true }).selectOption('10');
+    await page.getByLabel('Minute', { exact: true }).selectOption('00');
+    await selectMeridiem(page, 'AM');
+    await selectTimezone(page, 'ET');
 
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');

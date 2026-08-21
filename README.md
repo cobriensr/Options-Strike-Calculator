@@ -4,17 +4,17 @@ Production-grade 0DTE SPX options analysis platform: Black-Scholes pricing, AI-p
 
 ## What's where
 
-| Topic                                                        | Doc                                                                                                                                                                                      |
-| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **First read** — what's in here, accounts you'll need, costs | [docs/ONBOARDING.md](docs/ONBOARDING.md)                                                                                                                                                 |
-| Run it locally                                               | [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)                                                                                                                                                   |
-| Features (chart analysis, regime intelligence, positions, …) | [docs/FEATURES.md](docs/FEATURES.md)                                                                                                                                                     |
-| Architecture, project structure, data flow, security, math   | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)                                                                                                                                             |
-| Deployment + testing                                         | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)                                                                                                                                                 |
-| Trading workflow + position sizing rules                     | [docs/TRADING_WORKFLOW.md](docs/TRADING_WORKFLOW.md)                                                                                                                                     |
-| Design specs and runbooks                                    | [docs/INDEX.md](docs/INDEX.md)                                                                                                                                                           |
-| Subprojects                                                  | [sidecar/README.md](sidecar/README.md), [ml/README.md](ml/README.md), [uw-stream/README.md](uw-stream/README.md), [scripts/README.md](scripts/README.md), [e2e/README.md](e2e/README.md) |
-| Conventions for AI coding agents                             | [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md)                                                                                                                                           |
+| Topic                                                        | Doc                                                                                                                                                                                                                                    |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **First read** — what's in here, accounts you'll need, costs | [docs/ONBOARDING.md](docs/ONBOARDING.md)                                                                                                                                                                                               |
+| Run it locally                                               | [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md)                                                                                                                                                                                                 |
+| Features (chart analysis, regime intelligence, positions, …) | [docs/FEATURES.md](docs/FEATURES.md)                                                                                                                                                                                                   |
+| Architecture, project structure, data flow, security, math   | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)                                                                                                                                                                                           |
+| Deployment + testing                                         | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)                                                                                                                                                                                               |
+| Trading workflow + position sizing rules                     | [docs/TRADING_WORKFLOW.md](docs/TRADING_WORKFLOW.md)                                                                                                                                                                                   |
+| Design specs and runbooks                                    | [docs/INDEX.md](docs/INDEX.md)                                                                                                                                                                                                         |
+| Subprojects                                                  | [sidecar/README.md](sidecar/README.md), [ml/README.md](ml/README.md), [uw-stream/README.md](uw-stream/README.md), [classifier/README.md](classifier/README.md), [scripts/README.md](scripts/README.md), [e2e/README.md](e2e/README.md) |
+| Conventions for AI coding agents                             | [CLAUDE.md](CLAUDE.md), [AGENTS.md](AGENTS.md)                                                                                                                                                                                         |
 
 ## Quick start
 
@@ -36,12 +36,12 @@ npm run dev:full                 # full stack via vercel dev,  http://localhost:
 - **Data** — Neon Postgres (`@neondatabase/serverless`), Upstash Redis
 - **AI** — Anthropic Claude Opus 4.7 (analyze), OpenAI text-embedding-3-large (lessons dedup)
 - **Market data** — Schwab Trader/Market Data API, Unusual Whales, Databento (sidecar)
-- **Python services** — `sidecar/` (Databento + Theta on Railway), `uw-stream/` (UW websocket on Railway), `ml/` (nightly pipeline)
+- **Python services** — `sidecar/` (Databento + Theta on Railway), `uw-stream/` (UW websocket on Railway), `classifier/` (multi-leg classifier on Railway), `ml/` (nightly pipeline)
 - **Observability** — Sentry, pino structured logs, Vercel Speed Insights
 
 ## What this app does
 
-Given a SPY/SPX price, VIX, and time, the calculator produces delta-targeted strike tables, full iron condor / BWB P&L with skew-adjusted fat-tail PoP, a delta ceiling recommendation backed by 9,102 days of historical VIX-to-SPX range data, and a catalog of regime signals (VIX term structure, opening range, volatility clustering, dark pool levels, GEX walls, event-day warnings). An AI analyze endpoint reads up to 4 chart screenshots (Market Tide, Net Flow, Periscope) and returns a structure / delta / entry plan / management rules / hedge recommendation, with active "lessons learned" injected from a self-improving weekly curation pipeline. Live data ingestion, ML feature engineering, and Claude vision analysis of nightly plots all run on schedule. See [docs/FEATURES.md](docs/FEATURES.md) for the full surface.
+Given a SPY/SPX price, VIX, and time, the calculator produces delta-targeted strike tables, full iron condor / BWB P&L with skew-adjusted fat-tail PoP, a delta ceiling recommendation backed by 9,102 days of historical VIX-to-SPX range data, and a catalog of regime signals (VIX term structure, opening range, volatility clustering, dark pool levels, GEX walls, event-day warnings). An AI analyze endpoint reads up to 2 chart screenshots (Periscope Gamma, Periscope Charm) and returns a structure / delta / entry plan / management rules / hedge recommendation, with active "lessons learned" injected from a self-improving weekly curation pipeline. Live data ingestion, ML feature engineering, and Claude vision analysis of nightly plots all run on schedule. See [docs/FEATURES.md](docs/FEATURES.md) for the full surface.
 
 ## Tests
 
@@ -51,7 +51,7 @@ npm run test:run      # vitest unit tests (no env vars required)
 npm run test:e2e      # Playwright e2e + a11y across chromium/firefox/webkit
 ```
 
-6,897 unit tests across 277 files; 34 Playwright specs across 3 browsers. ML pipeline has 14 pytest files. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
+13,379 unit tests across 659 files; 39 Playwright specs across 3 browsers. ML pipeline has 54 pytest files. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full breakdown.
 
 ## License
 

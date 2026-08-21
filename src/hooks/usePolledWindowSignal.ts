@@ -28,9 +28,18 @@
  *     code path (`maybeFetch`) rather than recomputing the predicate in two
  *     places.
  *
- * Persistence semantics: after every successful fetch the payload is mirrored
- * to `storageKey`. On mount the cache is read once; if its `date` matches
- * today it seeds `displayData`, otherwise it is dropped.
+ *   - **Shape validation at both parse sites.** The caller-supplied
+ *     `validate` runs on the fetch body AND on the localStorage last-good
+ *     read (client-shape-hardening-2026-08-20). A shapeless envelope ({},
+ *     a loosely-parsed HTML error body, a 5xx JSON blob) surfaces as the
+ *     hook's normal error state — never as `data` — and a poisoned or
+ *     stale-schema cache silently reads as no-data instead of crashing the
+ *     render pass.
+ *
+ * Persistence semantics: after every successful fetch the VALIDATED payload
+ * is mirrored to `storageKey`. On mount the cache is read once; if its
+ * `date` matches today and it passes `validate` it seeds `displayData`,
+ * otherwise it is dropped.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -57,7 +66,7 @@ export interface PolledWindowSignalResult<
   refresh: () => void;
 }
 
-export interface PolledWindowSignalOptions {
+export interface PolledWindowSignalOptions<T extends DatedPayload> {
   /** Endpoint to GET. Sent with `credentials: 'include'`. */
   url: string;
   /** localStorage slot for the single last-good payload. */
@@ -68,6 +77,16 @@ export interface PolledWindowSignalOptions {
   inWindow: (now: Date) => boolean;
   /** Today's date string (YYYY-MM-DD) in the caller's TZ — the staleness key. */
   todayStr: () => string;
+  /**
+   * Shape validator, run on BOTH the fetch parse and the localStorage
+   * last-good read. Return the typed payload (with malformed rows dropped /
+   * optional fields degraded as the caller sees fit), or `null` for a
+   * shapeless envelope. `null` from a fetch surfaces as the hook's normal
+   * error state (`'Unexpected response shape'`); `null` from the cache read
+   * is a silent no-data. Required on purpose — an identity cast here was
+   * the crash vector this closes (client-shape-hardening-2026-08-20).
+   */
+  validate: (raw: unknown) => T | null;
 }
 
 /** How often the lightweight window watcher re-checks the predicate. */
@@ -79,14 +98,12 @@ interface CachedEntry<T> {
   date: string;
 }
 
-function readCache<T extends DatedPayload>(
-  storageKey: string,
-): CachedEntry<T> | null {
+function readCache(storageKey: string): CachedEntry<unknown> | null {
   if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(storageKey);
     if (raw == null) return null;
-    const parsed = JSON.parse(raw) as Partial<CachedEntry<T>>;
+    const parsed = JSON.parse(raw) as Partial<CachedEntry<unknown>>;
     if (
       parsed == null ||
       typeof parsed.date !== 'string' ||
@@ -95,7 +112,7 @@ function readCache<T extends DatedPayload>(
     ) {
       return null;
     }
-    return parsed as CachedEntry<T>;
+    return parsed as CachedEntry<unknown>;
   } catch {
     return null;
   }
@@ -120,8 +137,11 @@ function clearCache(storageKey: string): void {
 }
 
 /**
- * Load the cached payload only if it belongs to today. A prior-day cache is
- * dropped (and evicted from storage) so it can never render as live data.
+ * Load the cached payload only if it belongs to today AND passes the
+ * caller's shape validator. A prior-day cache is dropped (and evicted from
+ * storage) so it can never render as live data; a today-dated but malformed
+ * cache (older app version, hand-edited storage) reads as no-data rather
+ * than crashing the render pass.
  *
  * See also: network feeds built on `useFetchedData` use the
  * `requestKey`/`responseKey` cross-day gate instead. The two mechanisms are
@@ -132,18 +152,21 @@ function clearCache(storageKey: string): void {
 function loadFreshCache<T extends DatedPayload>(
   storageKey: string,
   today: string,
+  validate: (raw: unknown) => T | null,
 ): T | null {
-  const cached = readCache<T>(storageKey);
+  const cached = readCache(storageKey);
   if (cached == null) return null;
   if (cached.date !== today) {
     clearCache(storageKey);
     return null;
   }
-  return cached.data;
+  // Same shape validation as the network parse — the cache is just a
+  // deferred replay of a fetch body and gets no more trust than one.
+  return validate(cached.data);
 }
 
 export function usePolledWindowSignal<T extends DatedPayload>(
-  opts: PolledWindowSignalOptions,
+  opts: PolledWindowSignalOptions<T>,
 ): PolledWindowSignalResult<T> {
   // `url` and `storageKey` are read via `optsRef` inside the stable fetch
   // closure; only the render-level config is destructured here.
@@ -161,9 +184,10 @@ export function usePolledWindowSignal<T extends DatedPayload>(
     fetchedAt: null,
   });
 
-  // Cached payload, gated through the staleness guard on first read.
+  // Cached payload, gated through the staleness guard + shape validator on
+  // first read.
   const [cachedData, setCachedData] = useState<T | null>(() =>
-    loadFreshCache<T>(storageKey, todayStr()),
+    loadFreshCache<T>(storageKey, todayStr(), opts.validate),
   );
 
   // Single source of truth for the window-open flag.
@@ -187,9 +211,21 @@ export function usePolledWindowSignal<T extends DatedPayload>(
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as T;
+      const raw: unknown = await res.json();
 
       if (ctrl.signal.aborted) return;
+      const json = optsRef.current.validate(raw);
+      if (json == null) {
+        // Shapeless body ({} / loosely-parsed HTML / 5xx JSON blob) —
+        // surface as a normal error state, never let it reach render. The
+        // (validated) last-good cache keeps backing `displayData`.
+        setState((prev) => ({
+          ...prev,
+          loading: false,
+          error: 'Unexpected response shape',
+        }));
+        return;
+      }
       setState({
         data: json,
         loading: false,
@@ -211,8 +247,9 @@ export function usePolledWindowSignal<T extends DatedPayload>(
         error: getErrorMessage(err),
       }));
     }
-    // `url`/`storageKey` are read via optsRef so this stays referentially
-    // stable; the effect/poll deps don't churn when callers pass inline opts.
+    // `url`/`storageKey`/`validate` are read via optsRef so this stays
+    // referentially stable; the effect/poll deps don't churn when callers
+    // pass inline opts.
   }, []);
 
   // One code path for both the eager mount fetch and the recurring tick:

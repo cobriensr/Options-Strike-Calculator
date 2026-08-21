@@ -28,6 +28,16 @@ vi.mock('../_lib/api-helpers.js', () => ({
   checkDataQuality: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
+  metrics: {
+    increment: vi.fn(),
+  },
+}));
+
 // Mock global fetch
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -35,6 +45,7 @@ vi.stubGlobal('fetch', mockFetch);
 import handler from '../cron/backfill-futures-gaps.js';
 import { cronGuard, checkDataQuality } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -123,14 +134,29 @@ describe('backfill-futures-gaps handler', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('returns 500 when DATABENTO_API_KEY is missing', async () => {
+  it('SKIPS (200, not 500) when DATABENTO_API_KEY is not set — optional feed', async () => {
+    // Regression 2026-08-18: Databento historical gap-fill is an OPTIONAL
+    // feature. On a deployment that never provisioned the key this daily
+    // cron 500'd every run — a permanently red cron monitor + a Sentry
+    // error for a state no operator can act on. Unconfigured != broken
+    // (same principle as the gexbot skip in commit 331e915c): skip
+    // cleanly so withCronCheckin records an OK check-in.
     delete process.env.DATABENTO_API_KEY;
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Missing DATABENTO_API_KEY' });
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      message: expect.stringContaining('DATABENTO_API_KEY not configured'),
+    });
+    // Quiet skip: info-level, no error log, no Sentry, no Databento call.
+    expect(logger.info).toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   // ── Happy path ────────────────────────────────────────

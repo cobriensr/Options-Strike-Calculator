@@ -9,7 +9,8 @@
  *
  * Schedule: daily at 06:00 UTC (1 AM ET, after CME maintenance window)
  *
- * Environment: CRON_SECRET, DATABENTO_API_KEY
+ * Environment: CRON_SECRET, DATABENTO_API_KEY (optional — when unset the
+ * cron returns 200 `status: 'skipped'` instead of erroring; see handler)
  */
 
 import {
@@ -201,8 +202,17 @@ export default withCronCheckin('backfill-futures-gaps', async (req, res) => {
 
   const apiKey = process.env.DATABENTO_API_KEY;
   if (!apiKey) {
-    logger.error('DATABENTO_API_KEY not configured');
-    return res.status(500).json({ error: 'Missing DATABENTO_API_KEY' });
+    // Databento historical gap-fill is an OPTIONAL feature. On a deployment
+    // that never provisioned the key this daily cron used to 500 on every
+    // run — a permanently red cron monitor and a Sentry error nobody can
+    // act on. Unconfigured != broken (commit 331e915c): skip quietly with a
+    // 200 so withCronCheckin records an OK check-in. No Sentry capture.
+    logger.info('DATABENTO_API_KEY not configured — futures gap-fill skipped');
+    return res.status(200).json({
+      job: 'backfill-futures-gaps',
+      status: 'skipped',
+      message: 'DATABENTO_API_KEY not configured — futures gap-fill disabled',
+    });
   }
 
   const sql = getDb();

@@ -1,4 +1,11 @@
 import { test, expect } from '@playwright/test';
+import {
+  meridiemChip,
+  selectMeridiem,
+  selectTimezone,
+  timezoneChip,
+} from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 /**
  * Tests for the Entry Time section: hour/minute selects,
@@ -11,45 +18,57 @@ test.describe('Entry Time Section', () => {
   });
 
   test('entry time section renders with default values', async ({ page }) => {
-    await expect(page.getByText('Date & Time', { exact: true })).toBeVisible();
-    await expect(page.getByLabel('Hour')).toBeVisible();
-    await expect(page.getByLabel('Minute')).toBeVisible();
+    // The sidebar nav also renders 'Date & Time' links, so target the
+    // section heading specifically to avoid a strict-mode violation.
+    await expect(
+      page.getByRole('heading', { name: 'Date & Time', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByLabel('Hour', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('Minute', { exact: true })).toBeVisible();
   });
 
   test('hour and minute selects have correct options', async ({ page }) => {
-    const hourSelect = page.getByLabel('Hour');
+    const hourSelect = page.getByLabel('Hour', { exact: true });
     // Should have options 01-12
     await expect(hourSelect.locator('option')).toHaveCount(12);
 
-    const minuteSelect = page.getByLabel('Minute');
+    const minuteSelect = page.getByLabel('Minute', { exact: true });
     // Should have options 00, 05, 10, ..., 55 (12 options at 5-min intervals)
     await expect(minuteSelect.locator('option')).toHaveCount(12);
   });
 
   test('AM/PM toggle switches between AM and PM', async ({ page }) => {
-    const amChip = page.getByRole('radio', { name: 'AM' });
-    const pmChip = page.getByRole('radio', { name: 'PM' });
+    // selectMeridiem clicks the chip and asserts aria-pressed="true"
+    await selectMeridiem(page, 'PM');
+    await expect(meridiemChip(page, 'AM')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
 
-    await pmChip.click();
-    // PM should now be active (visual confirmation via aria or class)
-    await expect(pmChip).toBeVisible();
-
-    await amChip.click();
-    await expect(amChip).toBeVisible();
+    await selectMeridiem(page, 'AM');
+    await expect(meridiemChip(page, 'PM')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
   });
 
   test('timezone toggle switches between ET and CT', async ({ page }) => {
-    const etChip = page.getByRole('radio', { name: 'ET', exact: true });
-    const ctChip = page.getByRole('radio', { name: 'CT', exact: true });
+    // selectTimezone clicks the chip and asserts aria-pressed="true"
+    await selectTimezone(page, 'ET');
+    await expect(timezoneChip(page, 'CT')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
 
-    await etChip.click();
-    await expect(etChip).toHaveAttribute('aria-checked', 'true');
-
-    await ctChip.click();
-    await expect(ctChip).toHaveAttribute('aria-checked', 'true');
+    await selectTimezone(page, 'CT');
+    await expect(timezoneChip(page, 'ET')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
   });
 
   test('changing time updates calculation results', async ({ page }) => {
+    await expandSection(page, 'Implied Volatility');
     // Set up inputs
     await page.getByLabel('SPY Price').fill('679');
     await page.getByLabel(/SPX Price/).fill('6790');
@@ -65,8 +84,8 @@ test.describe('Entry Time Section', () => {
     const initialText = await paramSummary.textContent();
 
     // Change to a different hour
-    await page.getByLabel('Hour').selectOption('2');
-    await page.getByRole('radio', { name: 'PM' }).click();
+    await page.getByLabel('Hour', { exact: true }).selectOption('2');
+    await selectMeridiem(page, 'PM');
 
     // Results should update with different T value
     await expect(results.getByText('All Delta Strikes')).toBeVisible();

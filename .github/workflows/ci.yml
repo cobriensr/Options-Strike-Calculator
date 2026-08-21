@@ -67,7 +67,7 @@ jobs:
     timeout-minutes: 20
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-      # Vitest + V8 coverage across 330 test files pushes past Node's
+      # Vitest + V8 coverage across 659 test files pushes past Node's
       # default ~4GB old-space ceiling. Ubuntu runners have 16GB RAM;
       # 6GB heap leaves ample OS headroom.
       NODE_OPTIONS: '--max-old-space-size=6144'

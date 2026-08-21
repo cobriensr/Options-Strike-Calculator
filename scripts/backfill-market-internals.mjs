@@ -62,6 +62,8 @@ const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token';
 const KV_KEY = 'schwab:tokens';
 const BUFFER_MS = 60_000;
+/** Longest refresh-token window Schwab grants, at the original OAuth login. */
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ── ET timezone helpers (mirrors backfill-spx-candles-1m) ──
 
@@ -89,6 +91,41 @@ const SESSION_OPEN_MIN = 570; // 9:30 AM ET
 const SESSION_CLOSE_MIN = 960; // 4:00 PM ET
 
 // ── Schwab auth ────────────────────────────────────────────
+
+/**
+ * Carry the refresh-token deadline forward across a refresh.
+ *
+ * Schwab does NOT issue a new 7-day refresh token when you exchange one for
+ * an access token — the refresh token keeps the lifetime granted at the
+ * original OAuth login. Recomputing `now + 7d` on every refresh pushed the
+ * deadline forward forever, so the stored token never appeared to expire and
+ * the derived Redis TTL crept upward instead of counting down.
+ *
+ * This script writes the SAME `schwab:tokens` key the API uses, so running it
+ * once with the old arithmetic would re-inflate the deadline and silently undo
+ * the API-side fix. Mirrors `carryForwardRefreshExpiry` in api/_lib/schwab.ts:
+ * clamp with `Math.min` so the value can never drift further out, and fall
+ * back to a full window only when the stored value is missing or non-finite
+ * (assuming 7 days is the safe direction — treating it as expired would take
+ * the caller offline over a bookkeeping gap).
+ */
+function carryForwardRefreshExpiry(stored, now) {
+  const fullWindow = now + REFRESH_TOKEN_TTL_MS;
+  const storedDeadline = stored.refreshExpiresAt;
+
+  if (
+    typeof storedDeadline !== 'number' ||
+    !Number.isFinite(storedDeadline) ||
+    storedDeadline <= 0
+  ) {
+    console.warn(
+      '  Stored refreshExpiresAt missing or invalid — assuming a full 7-day window; re-auth at /api/auth/init to record the real deadline.',
+    );
+    return fullWindow;
+  }
+
+  return Math.min(storedDeadline, fullWindow);
+}
 
 async function getSchwabToken() {
   const stored = await redis.get(KV_KEY);
@@ -133,9 +170,11 @@ async function getSchwabToken() {
   const now = Date.now();
   const newTokens = {
     accessToken: data.access_token,
-    refreshToken: data.refresh_token,
+    // A response omitting refresh_token must not persist `undefined` into the
+    // shared blob — that would brick auth for the API too.
+    refreshToken: data.refresh_token || stored.refreshToken,
     expiresAt: now + data.expires_in * 1000,
-    refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
+    refreshExpiresAt: carryForwardRefreshExpiry(stored, now),
   };
 
   const ttlSec = Math.max(

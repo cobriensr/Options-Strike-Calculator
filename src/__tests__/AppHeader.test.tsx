@@ -135,10 +135,12 @@ describe('AppHeader', () => {
   it('shows Sign in CTA in public mode and hides owner-only admin actions', () => {
     renderHeader({ accessMode: 'public', isOwner: false });
 
-    // Sign in link present.
-    expect(
-      screen.getByRole('link', { name: /authenticate with schwab/i }),
-    ).toBeInTheDocument();
+    // Sign in link present. It targets /api/auth/init, which routes to the
+    // owner login form when Schwab is unconfigured, so its accessible name
+    // is the neutral "Sign in" rather than "Authenticate with Schwab".
+    const signIn = screen.getByRole('link', { name: /^sign in$/i });
+    expect(signIn).toBeInTheDocument();
+    expect(signIn).toHaveAttribute('href', '/api/auth/init');
 
     // Owner-only admin buttons absent.
     expect(
@@ -162,7 +164,7 @@ describe('AppHeader', () => {
 
     // No sign-in link.
     expect(
-      screen.queryByRole('link', { name: /authenticate with schwab/i }),
+      screen.queryByRole('link', { name: /^sign in$/i }),
     ).not.toBeInTheDocument();
 
     // No admin buttons.

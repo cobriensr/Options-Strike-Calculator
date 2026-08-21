@@ -37,6 +37,79 @@ import type { PeriscopeLessonRow } from './types.js';
 
 type StatusTab = 'proposed' | 'active' | 'archived';
 
+// ============================================================
+// Response validation
+// ============================================================
+//
+// Mirrors the `validateSpike` pattern in useVegaSpikes: each row is
+// validated individually (a malformed row is dropped, never fatal),
+// while a malformed envelope (`{}`, a 5xx JSON blob, a loosely-parsed
+// HTML error body) collapses to an empty list so the panel settles
+// into its normal per-tab empty state instead of throwing
+// `undefined.filter` into the section ErrorBoundary.
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function isNullableString(v: unknown): v is string | null {
+  return v === null || typeof v === 'string';
+}
+
+const LESSON_STATUSES: ReadonlySet<string> = new Set([
+  'proposed',
+  'active',
+  'archived',
+]);
+
+/**
+ * Validate one lesson row; null on any shape mismatch. An unknown
+ * `status` is fatal for the row — the tab filter, per-tab counts, and
+ * empty-state copy all index Records by it.
+ */
+function validateLessonRow(raw: unknown): PeriscopeLessonRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.id) ||
+    typeof r.lesson_text !== 'string' ||
+    !Array.isArray(r.source_ids) ||
+    typeof r.status !== 'string' ||
+    !LESSON_STATUSES.has(r.status) ||
+    !isFiniteNumber(r.citation_count) ||
+    typeof r.created_at !== 'string' ||
+    !isNullableString(r.promoted_at) ||
+    !isNullableString(r.archived_at)
+  ) {
+    return null;
+  }
+  return {
+    id: r.id,
+    lesson_text: r.lesson_text,
+    // The row survives a stray non-numeric element — only its source
+    // count renders, so filtering beats dropping the whole lesson.
+    source_ids: r.source_ids.filter((n) => isFiniteNumber(n)),
+    status: r.status as PeriscopeLessonRow['status'],
+    citation_count: r.citation_count,
+    created_at: r.created_at,
+    promoted_at: r.promoted_at,
+    archived_at: r.archived_at,
+  };
+}
+
+/** Envelope + row validation; a malformed envelope returns `[]`. */
+function validateLessonsEnvelope(raw: unknown): PeriscopeLessonRow[] {
+  if (typeof raw !== 'object' || raw === null) return [];
+  const list = (raw as Record<string, unknown>).lessons;
+  if (!Array.isArray(list)) return [];
+  const out: PeriscopeLessonRow[] = [];
+  for (const row of list) {
+    const valid = validateLessonRow(row);
+    if (valid != null) out.push(valid);
+  }
+  return out;
+}
+
 const STATUS_TABS: Array<{ key: StatusTab; label: string }> = [
   { key: 'proposed', label: 'Proposed' },
   { key: 'active', label: 'Active' },
@@ -158,9 +231,12 @@ export default function LessonLibrary() {
           };
           throw new Error(body.error ?? `HTTP ${res.status}`);
         }
-        const data = (await res.json()) as { lessons: PeriscopeLessonRow[] };
+        const data: unknown = await res.json();
         if (ac.signal.aborted) return;
-        setLessons(data.lessons);
+        // Envelope + row validation — a malformed body ({} from a 5xx,
+        // an HTML error page parsed loosely) becomes the empty state,
+        // and a bad row is dropped rather than crashing the panel.
+        setLessons(validateLessonsEnvelope(data));
       } catch (err) {
         if (err instanceof Error && err.name === 'AbortError') return;
         setError(err instanceof Error ? err.message : 'Failed to load lessons');

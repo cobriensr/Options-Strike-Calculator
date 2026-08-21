@@ -303,3 +303,162 @@ describe('useGreekFlow', () => {
     expect(abortRef.signal?.aborted).toBe(true);
   });
 });
+
+// ============================================================
+// Payload shape validation (client-shape-hardening follow-up)
+// ============================================================
+
+function numericRow(
+  ticker: 'SPY' | 'QQQ',
+  timestamp: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ticker,
+    timestamp,
+    transactions: 10,
+    volume: 100,
+    dir_vega_flow: 0,
+    total_vega_flow: 0,
+    otm_dir_vega_flow: 0,
+    otm_total_vega_flow: 0,
+    dir_delta_flow: 0,
+    total_delta_flow: 0,
+    otm_dir_delta_flow: 0,
+    otm_total_delta_flow: 0,
+    cum_dir_vega_flow: 0,
+    cum_total_vega_flow: 0,
+    cum_otm_dir_vega_flow: 0,
+    cum_otm_total_vega_flow: 0,
+    cum_dir_delta_flow: 0,
+    cum_total_delta_flow: 0,
+    cum_otm_dir_delta_flow: 0,
+    cum_otm_total_delta_flow: 0,
+    price: null,
+    ...overrides,
+  };
+}
+
+describe('useGreekFlow: response shape validation', () => {
+  it.each([
+    ['a shapeless {} body', {}],
+    ['a JSON string body', '<!doctype html><html>oops</html>'],
+    ['an array body', []],
+    ['a 5xx-style JSON blob', { error: 'Internal error' }],
+    ['an envelope with no tickers', { date: '2026-04-28', scope: '0dte' }],
+    ['a non-object tickers field', { date: null, tickers: 'garbage' }],
+  ])(
+    'rejects %s into the error state without clobbering data',
+    async (_label, body) => {
+      const { result } = renderHook(() => useGreekFlow(false));
+      await act(async () => {});
+      await waitFor(() => expect(result.current.data).toEqual(SAMPLE));
+
+      mockFetch.mockResolvedValue({ ok: true, json: async () => body });
+      act(() => {
+        result.current.refresh();
+      });
+      await act(async () => {});
+
+      await waitFor(() =>
+        expect(result.current.error).toBe('Unexpected response shape'),
+      );
+      // Last-known-good survives, same as the non-2xx path.
+      expect(result.current.data).toEqual(SAMPLE);
+    },
+  );
+
+  it('drops malformed rows and keeps the valid ones', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        date: '2026-04-28',
+        scope: '0dte',
+        asOf: '2026-04-28T21:00:00.000Z',
+        tickers: {
+          SPY: {
+            rows: [
+              numericRow('SPY', '2026-04-28T14:30:00.000Z', { price: 500.25 }),
+              // Non-finite cumulative — dropped.
+              numericRow('SPY', '2026-04-28T14:31:00.000Z', {
+                cum_otm_dir_delta_flow: 'oops',
+              }),
+              // Missing timestamp — dropped.
+              numericRow('SPY', '2026-04-28T14:32:00.000Z', {
+                timestamp: 12345,
+              }),
+              // Unknown ticker — dropped.
+              numericRow('SPY', '2026-04-28T14:33:00.000Z', { ticker: 'IWM' }),
+              // Non-object row — dropped.
+              'garbage',
+            ],
+            metrics: EMPTY_METRICS,
+          },
+          QQQ: { rows: [], metrics: EMPTY_METRICS },
+        },
+        divergence: EMPTY_DIVERGENCE,
+      }),
+    });
+
+    const { result } = renderHook(() => useGreekFlow(false));
+    await act(async () => {});
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data?.tickers.SPY.rows).toHaveLength(1);
+    expect(result.current.data?.tickers.SPY.rows[0]?.price).toBe(500.25);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('keeps rows whose numeric fields are legitimately zero', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        date: '2026-04-28',
+        scope: '0dte',
+        asOf: '2026-04-28T21:00:00.000Z',
+        tickers: {
+          SPY: {
+            rows: [numericRow('SPY', '2026-04-28T14:30:00.000Z')],
+            metrics: EMPTY_METRICS,
+          },
+          QQQ: { rows: [], metrics: EMPTY_METRICS },
+        },
+        divergence: EMPTY_DIVERGENCE,
+      }),
+    });
+
+    const { result } = renderHook(() => useGreekFlow(false));
+    await act(async () => {});
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.data?.tickers.SPY.rows).toHaveLength(1);
+    expect(
+      result.current.data?.tickers.SPY.rows[0]?.cum_otm_dir_vega_flow,
+    ).toBe(0);
+  });
+
+  it('degrades malformed tickers/metrics/divergence to the neutral shapes', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        date: '2026-04-28',
+        tickers: { SPY: 'garbage', QQQ: null },
+        divergence: { otm_dir_delta_flow: { spySign: 7, qqqSign: 1 } },
+      }),
+    });
+
+    const { result } = renderHook(() => useGreekFlow(false));
+    await act(async () => {});
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    const data = result.current.data;
+    expect(data?.tickers.SPY.rows).toEqual([]);
+    expect(data?.tickers.QQQ.rows).toEqual([]);
+    expect(data?.tickers.SPY.metrics).toEqual(EMPTY_METRICS);
+    expect(data?.divergence).toEqual(EMPTY_DIVERGENCE);
+    // scope + asOf degrade to the requested scope / empty string.
+    expect(data?.scope).toBe('0dte');
+    expect(data?.asOf).toBe('');
+    expect(result.current.error).toBeNull();
+  });
+});

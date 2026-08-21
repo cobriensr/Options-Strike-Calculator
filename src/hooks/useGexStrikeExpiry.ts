@@ -91,6 +91,143 @@ export interface GexStrikeExpiryResponse {
   asOf: string;
 }
 
+// ── Validation ─────────────────────────────────────────────
+// Mirrors the `validateSpike` pattern in useVegaSpikes / the envelope
+// validator in useGexLandscapeData: each row is validated individually (a
+// malformed row is dropped, never fatal), while a per-ticker payload whose
+// envelope doesn't match — `{}`, an HTML error body parsed loosely, a 5xx
+// JSON blob — is rejected wholesale. The rejection surfaces through the
+// same per-ticker grace-counted failure path as an HTTP error, so one
+// malformed ticker never discards the healthy tickers.
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/**
+ * `null` and `undefined` coalesce per the optional-props policy (both mean
+ * "no value at this strike"); anything else must be a finite number.
+ */
+function isNullishOrFiniteNumber(v: unknown): v is number | null | undefined {
+  return v == null || isFiniteNumber(v);
+}
+
+function isGexTicker(v: unknown): v is GexStrikeExpiryTicker {
+  return v === 'SPY' || v === 'QQQ' || v === 'SPX' || v === 'NDX';
+}
+
+/**
+ * Every `number | null` field on GexStrikeExpiryRow. Table-driven so the
+ * validator stays O(1) lines per field; `satisfies` keeps the list honest
+ * against the interface, and the validator's return type keeps it
+ * complete (a missing field fails the `GexStrikeExpiryRow` return shape).
+ */
+const NULLABLE_NUMERIC_FIELDS = [
+  'price',
+  'call_gamma_oi',
+  'put_gamma_oi',
+  'call_charm_oi',
+  'put_charm_oi',
+  'call_vanna_oi',
+  'put_vanna_oi',
+  'call_gamma_vol',
+  'put_gamma_vol',
+  'call_charm_vol',
+  'put_charm_vol',
+  'call_vanna_vol',
+  'put_vanna_vol',
+  'call_gamma_ask_vol',
+  'call_gamma_bid_vol',
+  'put_gamma_ask_vol',
+  'put_gamma_bid_vol',
+  'call_charm_ask_vol',
+  'call_charm_bid_vol',
+  'put_charm_ask_vol',
+  'put_charm_bid_vol',
+  'call_vanna_ask_vol',
+  'call_vanna_bid_vol',
+  'put_vanna_ask_vol',
+  'put_vanna_bid_vol',
+  'gamma_delta_1m',
+  'gamma_delta_5m',
+  'gamma_delta_10m',
+  'gamma_delta_15m',
+  'gamma_delta_30m',
+] as const satisfies readonly (keyof GexStrikeExpiryRow)[];
+
+type NullableNumericField = (typeof NULLABLE_NUMERIC_FIELDS)[number];
+
+/**
+ * Validate one row from `rows`. Returns the typed row on success (nullish
+ * numeric fields normalized to `null`, matching the server's explicit
+ * nulls) or `null` on any field-shape mismatch — the caller drops it so
+ * one bad row can't poison the whole ticker.
+ */
+function validateGexStrikeExpiryRow(raw: unknown): GexStrikeExpiryRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isGexTicker(r.ticker) ||
+    typeof r.expiry !== 'string' ||
+    !isFiniteNumber(r.strike) ||
+    typeof r.ts_minute !== 'string'
+  ) {
+    return null;
+  }
+  const numeric = {} as Record<NullableNumericField, number | null>;
+  for (const field of NULLABLE_NUMERIC_FIELDS) {
+    const v = r[field];
+    if (!isNullishOrFiniteNumber(v)) return null;
+    numeric[field] = v ?? null;
+  }
+  return {
+    ticker: r.ticker,
+    expiry: r.expiry,
+    strike: r.strike,
+    ts_minute: r.ts_minute,
+    ...numeric,
+  };
+}
+
+/**
+ * Validate one per-ticker /api/gex-strike-expiry envelope. Returns the
+ * typed response on success or `null` on any mismatch — the caller throws,
+ * landing in the same grace-counted per-ticker failure path as an HTTP
+ * error, so the panel degrades (empty state / stale-but-rendered data)
+ * instead of crashing on `data[t]?.rows.length`.
+ */
+function validateGexStrikeExpiryResponse(
+  raw: unknown,
+): GexStrikeExpiryResponse | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isGexTicker(r.ticker) ||
+    typeof r.expiry !== 'string' ||
+    typeof r.asOf !== 'string' ||
+    !Array.isArray(r.rows) ||
+    !Array.isArray(r.timestamps)
+  ) {
+    return null;
+  }
+  const rows: GexStrikeExpiryRow[] = [];
+  for (const row of r.rows) {
+    const valid = validateGexStrikeExpiryRow(row);
+    if (valid) rows.push(valid);
+  }
+  const timestamps = r.timestamps.filter(
+    (t): t is string => typeof t === 'string',
+  );
+  return {
+    ticker: r.ticker,
+    expiry: r.expiry,
+    at: typeof r.at === 'string' ? r.at : null,
+    rows,
+    timestamps,
+    asOf: r.asOf,
+  };
+}
+
 export interface UseGexStrikeExpiryReturn {
   /** Per-ticker latest payload, or null until first successful fetch. */
   data: Record<GexStrikeExpiryTicker, GexStrikeExpiryResponse | null>;
@@ -164,7 +301,15 @@ async function fetchOne(
     if (res.status === 401) return null;
     throw new Error(`gex-strike-expiry ${ticker}: HTTP ${res.status}`);
   }
-  return (await res.json()) as GexStrikeExpiryResponse;
+  const raw: unknown = await res.json();
+  const validated = validateGexStrikeExpiryResponse(raw);
+  if (validated == null) {
+    // Shapeless body ({} / loosely-parsed HTML / error JSON) — reject like
+    // an HTTP failure so the per-ticker grace count + stale-data merge
+    // handle it, never the renderer.
+    throw new Error(`gex-strike-expiry ${ticker}: unexpected response shape`);
+  }
+  return validated;
 }
 
 export function useGexStrikeExpiry(

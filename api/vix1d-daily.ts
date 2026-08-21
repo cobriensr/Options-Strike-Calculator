@@ -3,8 +3,9 @@
  *
  * Serves the VIX1D daily OHLC map for backtesting. Reads from the Redis key
  * written by the `refresh-vix1d` cron. Returns 404 when the cron has not yet
- * run (e.g., fresh deploy) so the frontend can fall back to the static
- * `public/vix1d-daily.json` baseline.
+ * run (e.g., fresh deploy) — or when Redis is unavailable / over quota — so
+ * the frontend can fall back to the static `public/vix1d-daily.json`
+ * baseline.
  *
  * Public — no auth required (same as the static file it replaces).
  * Cached for 24 hours at the CDN layer.
@@ -12,7 +13,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from './_lib/sentry.js';
-import { redis } from './_lib/redis.js';
+import { redis, safeRedis } from './_lib/redis.js';
 import { setCacheHeaders } from './_lib/api-helpers.js';
 import type { Vix1dDailyMap } from './cron/refresh-vix1d.js';
 
@@ -29,7 +30,14 @@ export default async function handler(
     const done = metrics.request('/api/vix1d-daily');
 
     try {
-      const dailyMap = await redis.get<Vix1dDailyMap>(REDIS_KEY);
+      // `safeRedis`: a Redis outage or Upstash over-quota rejection reads
+      // as "not populated" (404 below) — the SPA falls back to the static
+      // baseline — instead of an unhandled 500. The failure is counted in
+      // `redis.error` / `redis.quota_exceeded`.
+      const dailyMap = await safeRedis<Vix1dDailyMap | null>(
+        () => redis.get<Vix1dDailyMap>(REDIS_KEY),
+        null,
+      );
 
       if (!dailyMap || Object.keys(dailyMap).length === 0) {
         done({ status: 404 });

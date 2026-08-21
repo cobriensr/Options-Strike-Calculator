@@ -22,7 +22,7 @@
  * Snapshot mode (`at` set) is one-shot.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getAccessMode } from '../utils/auth';
 import { getErrorMessage } from '../utils/error';
@@ -152,6 +152,111 @@ export function projectStrike(
   };
 }
 
+// ── Response validation ────────────────────────────────────
+// Mirrors the `validateSpike` pattern in useVegaSpikes: each strike row is
+// validated individually (a malformed row is dropped, never fatal), while a
+// payload whose envelope doesn't match — `{}`, an HTML error body parsed
+// loosely, a 5xx JSON blob — is rejected wholesale and surfaces as a stable
+// error state ("no data") instead of leaking a shapeless object into the
+// derived-state pass downstream.
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/**
+ * `null` and `undefined` coalesce per the optional-props policy (both mean
+ * "no prior value"); anything else must be a finite number.
+ */
+function isNullishOrFiniteNumber(v: unknown): v is number | null | undefined {
+  return v == null || isFiniteNumber(v);
+}
+
+/**
+ * Validate one strike row from `data.strikes`. Returns the typed row on
+ * success (nullish prev fields normalized to `null`) or `null` on any
+ * field-shape mismatch — the caller drops it so one bad row can't poison
+ * the whole landscape.
+ */
+function validateStrikeRow(raw: unknown): GexLandscapeStrikeRow | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.strike) ||
+    !isFiniteNumber(r.gamma) ||
+    !isFiniteNumber(r.charm) ||
+    !isFiniteNumber(r.vanna) ||
+    !isNullishOrFiniteNumber(r.gammaPrev1m) ||
+    !isNullishOrFiniteNumber(r.gammaPrev5m) ||
+    !isNullishOrFiniteNumber(r.gammaPrev10m) ||
+    !isNullishOrFiniteNumber(r.charmPrev1m) ||
+    !isNullishOrFiniteNumber(r.charmPrev5m) ||
+    !isNullishOrFiniteNumber(r.charmPrev10m) ||
+    !isNullishOrFiniteNumber(r.vannaPrev1m) ||
+    !isNullishOrFiniteNumber(r.vannaPrev5m) ||
+    !isNullishOrFiniteNumber(r.vannaPrev10m)
+  ) {
+    return null;
+  }
+  return {
+    strike: r.strike,
+    gamma: r.gamma,
+    charm: r.charm,
+    vanna: r.vanna,
+    gammaPrev1m: r.gammaPrev1m ?? null,
+    gammaPrev5m: r.gammaPrev5m ?? null,
+    gammaPrev10m: r.gammaPrev10m ?? null,
+    charmPrev1m: r.charmPrev1m ?? null,
+    charmPrev5m: r.charmPrev5m ?? null,
+    charmPrev10m: r.charmPrev10m ?? null,
+    vannaPrev1m: r.vannaPrev1m ?? null,
+    vannaPrev5m: r.vannaPrev5m ?? null,
+    vannaPrev10m: r.vannaPrev10m ?? null,
+  };
+}
+
+/**
+ * Validate the top-level /api/gex-landscape envelope. Returns the typed
+ * response on success or `null` on any mismatch (the caller treats that
+ * as an error/"no data" state).
+ */
+function validateGexLandscapeResponse(
+  raw: unknown,
+): GexLandscapeResponse | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.marketOpen !== 'boolean' || typeof r.asOf !== 'string') {
+    return null;
+  }
+  if (!Array.isArray(r.availableMinutes)) return null;
+  const availableMinutes = r.availableMinutes.filter(
+    (m): m is string => typeof m === 'string',
+  );
+
+  let data: GexLandscapeResponse['data'] = null;
+  if (r.data != null) {
+    if (typeof r.data !== 'object') return null;
+    const d = r.data as Record<string, unknown>;
+    if (!Array.isArray(d.strikes) || !isFiniteNumber(d.spot)) return null;
+    const strikes: GexLandscapeStrikeRow[] = [];
+    for (const row of d.strikes) {
+      const valid = validateStrikeRow(row);
+      if (valid) strikes.push(valid);
+    }
+    data = { strikes, spot: d.spot };
+  }
+
+  return {
+    marketOpen: r.marketOpen,
+    asOf: r.asOf,
+    data,
+    reason:
+      r.reason === 'no_slot' || r.reason === 'no_spot' ? r.reason : undefined,
+    ageSec: isFiniteNumber(r.ageSec) ? r.ageSec : undefined,
+    availableMinutes,
+  };
+}
+
 async function fetchGexLandscape(
   at: string | null,
   signal: AbortSignal,
@@ -169,7 +274,14 @@ async function fetchGexLandscape(
     if (res.status === 401) return null;
     throw new Error(`gex-landscape: HTTP ${res.status}`);
   }
-  return (await res.json()) as GexLandscapeResponse;
+  const raw: unknown = await res.json();
+  const validated = validateGexLandscapeResponse(raw);
+  if (validated == null) {
+    // Shapeless body ({} / loosely-parsed HTML / error JSON) — surface as
+    // a normal error state, never let it reach the derived-state pass.
+    throw new Error('gex-landscape: unexpected response shape');
+  }
+  return validated;
 }
 
 export function useGexLandscapeData(
@@ -235,30 +347,48 @@ export function useGexLandscapeData(
     void fetchOnce();
   }, [fetchOnce]);
 
-  // Derived state — kept inline (no `useMemo`) because the dep is a
-  // single `resp` reference and the work is O(N strikes), N≈40.
+  // Derived state — memoized on the single `resp` reference. The memo is
+  // NOT a perf optimization (the work is O(N strikes), N≈40): referential
+  // stability is load-bearing. Consumers key effects on `timestamps` /
+  // `strikes` / the maps (GexLandscape mirrors `timestamps` into local
+  // state via an effect). When this block ran inline every render, any
+  // render where `resp` carried no `availableMinutes` (null resp, or a
+  // shapeless payload pre-validation) fabricated a fresh `[]` each pass,
+  // re-firing those effects → setState → re-render → "Maximum update
+  // depth exceeded", with the section ErrorBoundary remounting the panel
+  // straight back into the same loop. Memoizing on `resp` lets the hook
+  // settle into a stable empty/error state instead.
   //
   // The deltas are computed once per row and threaded into `projectStrike`
   // so vol-reinforcement uses the SAME values that populate the maps —
   // never recompute downstream.
-  const sourceRows = resp?.data?.strikes ?? [];
-  const spot = resp?.data?.spot ?? 0;
+  const { strikes, timestamps, gexDelta1mMap, gexDelta5mMap, gexDelta10mMap } =
+    useMemo(() => {
+      const sourceRows = resp?.data?.strikes ?? [];
+      const spot = resp?.data?.spot ?? 0;
 
-  const gexDelta1mMap = new Map<number, number | null>();
-  const gexDelta5mMap = new Map<number, number | null>();
-  const gexDelta10mMap = new Map<number, number | null>();
-  const strikes: GexStrikeLevel[] = [];
-  for (const row of sourceRows) {
-    const d1 = computeDelta(row.gamma, row.gammaPrev1m);
-    const d5 = computeDelta(row.gamma, row.gammaPrev5m);
-    const d10 = computeDelta(row.gamma, row.gammaPrev10m);
-    gexDelta1mMap.set(row.strike, d1);
-    gexDelta5mMap.set(row.strike, d5);
-    gexDelta10mMap.set(row.strike, d10);
-    strikes.push(projectStrike(row, spot, d1, d5, d10));
-  }
+      const delta1mMap = new Map<number, number | null>();
+      const delta5mMap = new Map<number, number | null>();
+      const delta10mMap = new Map<number, number | null>();
+      const levels: GexStrikeLevel[] = [];
+      for (const row of sourceRows) {
+        const d1 = computeDelta(row.gamma, row.gammaPrev1m);
+        const d5 = computeDelta(row.gamma, row.gammaPrev5m);
+        const d10 = computeDelta(row.gamma, row.gammaPrev10m);
+        delta1mMap.set(row.strike, d1);
+        delta5mMap.set(row.strike, d5);
+        delta10mMap.set(row.strike, d10);
+        levels.push(projectStrike(row, spot, d1, d5, d10));
+      }
 
-  const timestamps = resp?.availableMinutes ?? [];
+      return {
+        strikes: levels,
+        timestamps: resp?.availableMinutes ?? [],
+        gexDelta1mMap: delta1mMap,
+        gexDelta5mMap: delta5mMap,
+        gexDelta10mMap: delta10mMap,
+      };
+    }, [resp]);
 
   return {
     strikes,

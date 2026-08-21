@@ -32,7 +32,7 @@ from router import Router
 from sentry_setup import capture_exception, capture_message, init_sentry
 from state import state
 from subscription_watchdog import run_subscription_watchdog
-from ws_lease import WsLease
+from ws_lease import WsLease, WsLeaseError
 
 # Total request budget for the lease's dedicated aiohttp session. Upstash
 # REST round-trips are sub-100ms; 5s gives generous headroom for a slow
@@ -127,14 +127,15 @@ async def _run() -> None:
     #
     # Everything after the lease is created lives inside the try so the
     # finally is GUARANTEED to release a held lease and close the session +
-    # pool on ANY exit path — not just graceful shutdown. The two paths that
-    # bypass _shutdown and would otherwise leak are: (1) lease.acquire()
-    # *raising* (bad token / Upstash 5xx → WsLeaseError), and (2) a crash
-    # AFTER a successful acquire but before/within the run loop, which would
-    # leave the lease HELD in Upstash and block the next generation's boot
-    # for the full TTL. On the normal path _shutdown already released the
-    # lease and closed its session; release() no-ops once owns()==False and
-    # the closes are guarded, so the finally is idempotent.
+    # pool on ANY exit path — not just graceful shutdown. The main path that
+    # bypasses _shutdown and would otherwise leak is a crash AFTER a
+    # successful acquire but before/within the run loop, which would leave
+    # the lease HELD in Upstash and block the next generation's boot for the
+    # full TTL. (lease.acquire() *raising* no longer reaches the finally with
+    # a live lease — infra failures FAIL OPEN below and drop the lease.) On
+    # the normal path _shutdown already released the lease and closed its
+    # session; release() no-ops once owns()==False and the closes are
+    # guarded, so the finally is idempotent.
     lease: WsLease | None = None
     lease_session: aiohttp.ClientSession | None = None
     try:
@@ -158,36 +159,90 @@ async def _run() -> None:
                     "timeout_s": settings.ws_lease_acquire_timeout_s,
                 },
             )
-            acquired = await lease.acquire(settings.ws_lease_acquire_timeout_s)
-            if not acquired:
-                # A prior generation still holds the lease past our timeout
-                # (likely a wedged old process). We do NOT force-steal —
-                # stealing re-introduces the connection overlap the lease
-                # exists to prevent. Exit non-zero so Railway restarts and
-                # retries once the slot frees; SystemExit(1) propagates
-                # through asyncio.run cleanly. The finally tears down the
-                # session + pool (the lease was never acquired → no release).
-                log.error(
-                    "ws lease acquire timed out — refusing to open sockets; "
-                    "exiting for Railway to restart + retry",
+            # FAIL OPEN on lease-INFRASTRUCTURE failure. The lease guards
+            # deploy overlap only — an optional safety net (this deployment
+            # ran fine for days with WS_LEASE_ENABLED=false) — so a broken
+            # lease backend must NEVER take down ingestion. On 2026-08-19 the
+            # Upstash quota exhausted, acquire() raised WsLeaseError
+            # ("HTTP 400: ERR max requests limit exceeded"), the raise
+            # crashed the daemon, and Railway's restarts hit the same error
+            # until the policy gave up — 24h of lost market data.
+            #
+            # The two acquire outcomes are distinguished by HOW they present:
+            # - acquire() returns False → the lease service is HEALTHY and the
+            #   lease is held by another instance past our timeout. That's the
+            #   lease doing its job during a deploy handoff — keep the
+            #   existing block/exit-1/let-Railway-retry behavior (below).
+            # - acquire() RAISES → quota / HTTP / network / timeout / config
+            #   fault (WsLeaseError, or anything unexpected — broad on
+            #   purpose: no lease bug may kill ingestion). Warn once, Sentry
+            #   warning once (not error — 331e915c: an unavailable optional
+            #   feature must not page), drop the lease (no renewal task, no
+            #   release), close its session, and start ingestion anyway.
+            try:
+                acquired = await lease.acquire(
+                    settings.ws_lease_acquire_timeout_s
+                )
+            except Exception as exc:
+                log.warning(
+                    "ws-lease unavailable — proceeding WITHOUT the "
+                    "deploy-overlap lease",
                     extra={
                         "key": settings.ws_lease_key,
-                        "timeout_s": settings.ws_lease_acquire_timeout_s,
+                        "err": repr(exc),
+                        "expected_fault": isinstance(exc, WsLeaseError),
                     },
                 )
-                # SystemExit is a BaseException, so main()'s `except Exception`
-                # never sees it — without this the acquire-timeout crash loop is
-                # Sentry-silent (AUD-H2). Report explicitly before exiting.
                 capture_message(
-                    "uw-stream ws lease acquire timed out — exiting for restart",
-                    level="error",
-                    tags={"component": "main", "reason": "lease_acquire_timeout"},
+                    "uw-stream ws lease unavailable at boot — running leaseless",
+                    level="warning",
+                    tags={"component": "main", "reason": "lease_infra_failure"},
                     context={
                         "key": settings.ws_lease_key,
-                        "timeout_s": settings.ws_lease_acquire_timeout_s,
+                        "err": repr(exc),
                     },
                 )
-                raise SystemExit(1)
+                lease = None
+                if lease_session is not None and not lease_session.closed:
+                    with contextlib.suppress(Exception):
+                        await lease_session.close()
+                lease_session = None
+            else:
+                if not acquired:
+                    # A prior generation still holds the lease past our
+                    # timeout (likely a wedged old process). We do NOT
+                    # force-steal — stealing re-introduces the connection
+                    # overlap the lease exists to prevent. Exit non-zero so
+                    # Railway restarts and retries once the slot frees;
+                    # SystemExit(1) propagates through asyncio.run cleanly.
+                    # The finally tears down the session + pool (the lease
+                    # was never acquired → no release).
+                    log.error(
+                        "ws lease acquire timed out — refusing to open "
+                        "sockets; exiting for Railway to restart + retry",
+                        extra={
+                            "key": settings.ws_lease_key,
+                            "timeout_s": settings.ws_lease_acquire_timeout_s,
+                        },
+                    )
+                    # SystemExit is a BaseException, so main()'s
+                    # `except Exception` never sees it — without this the
+                    # acquire-timeout crash loop is Sentry-silent (AUD-H2).
+                    # Report explicitly before exiting.
+                    capture_message(
+                        "uw-stream ws lease acquire timed out — "
+                        "exiting for restart",
+                        level="error",
+                        tags={
+                            "component": "main",
+                            "reason": "lease_acquire_timeout",
+                        },
+                        context={
+                            "key": settings.ws_lease_key,
+                            "timeout_s": settings.ws_lease_acquire_timeout_s,
+                        },
+                    )
+                    raise SystemExit(1)
 
         handlers = _build_handlers(settings.channels)
         router = Router(handlers)

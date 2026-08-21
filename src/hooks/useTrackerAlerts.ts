@@ -20,9 +20,127 @@ import { getErrorMessage } from '../utils/error.js';
 
 const POLL_INTERVAL_MS = 30_000;
 
-interface UnreadResponse {
-  alerts: TrackerAlert[];
-  count: number;
+// ── Response validation ────────────────────────────────────
+// Same model as useTrackerContracts / `validateSpike` (useVegaSpikes):
+// validate at the parse, drop bad rows, reject a bad envelope.
+//
+// The identity cast here didn't crash the section (the `for (const a of
+// incoming)` throw lands in this hook's own catch), but it lost data: a
+// single unusable row aborted the loop BEFORE `setData`, so every
+// healthy unread alert in the same response was discarded and the
+// Watchlist tab silently under-counted.
+//
+// Field types mirror what `GET /api/tracker/alerts/unread` returns
+// (migration 163 joined to tracker_contracts): NUMERIC as strings,
+// `id` from a BIGSERIAL — which the Neon driver may hand back as a
+// string — so ids accept `number | numeric string` and normalize.
+
+/** BIGSERIAL/INTEGER id, tolerant of a BIGINT arriving as a string. */
+function toFiniteNumber(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v.length > 0) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** NUMERIC-as-string, tolerant of a driver that hands back numbers. */
+function toNumericString(v: unknown): string | null {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  return null;
+}
+
+function toNullableString(v: unknown): string | null {
+  if (v == null) return null;
+  return toNumericString(v);
+}
+
+function isAlertType(v: unknown): v is TrackerAlert['alert_type'] {
+  return (
+    v === 'up_pct' || v === 'down_pct' || v === 'spot_level' || v === 'dte_7'
+  );
+}
+
+/**
+ * Validate one joined unread-alert row. Returns the typed row, or `null`
+ * on any load-bearing field mismatch so the caller drops just that row.
+ * `id` / `contract_id` drive the seen-set, the ack call and the
+ * watchlist join; `ticker` / `expiry` / `side` / `strike` are read by
+ * `buildAlertToast` (where `formatExpiryMD` splits `expiry`).
+ */
+function validateAlert(raw: unknown): TrackerAlert | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const id = toFiniteNumber(r.id);
+  const contractId = toFiniteNumber(r.contract_id);
+  const threshold = toNumericString(r.threshold);
+  const strike = toNumericString(r.strike);
+  const entryPrice = toNumericString(r.entry_price);
+  const quantity = toFiniteNumber(r.quantity);
+  if (
+    id === null ||
+    contractId === null ||
+    threshold === null ||
+    strike === null ||
+    entryPrice === null ||
+    quantity === null ||
+    !isAlertType(r.alert_type) ||
+    typeof r.ticker !== 'string' ||
+    typeof r.occ_symbol !== 'string' ||
+    typeof r.expiry !== 'string' ||
+    (r.side !== 'C' && r.side !== 'P') ||
+    (r.direction !== 'long' && r.direction !== 'short') ||
+    (r.contract_status !== 'active' &&
+      r.contract_status !== 'closed' &&
+      r.contract_status !== 'expired')
+  ) {
+    return null;
+  }
+  return {
+    id,
+    contract_id: contractId,
+    fired_at: typeof r.fired_at === 'string' ? r.fired_at : '',
+    alert_type: r.alert_type,
+    threshold,
+    price_at_fire: toNullableString(r.price_at_fire),
+    underlying_at_fire: toNullableString(r.underlying_at_fire),
+    acknowledged: r.acknowledged === true,
+    occ_symbol: r.occ_symbol,
+    ticker: r.ticker,
+    // Normalize to the YYYY-MM-DD the type documents. The server-side
+    // fix landed in /api/tracker/alerts/unread (it now TO_CHARs `expiry`
+    // like /api/tracker/contracts), so this slice is a no-op today and
+    // is kept as defense in depth: an un-TO_CHARed DATE column arrives
+    // hydrated by the Neon driver as a JS Date, JSON-serializes to
+    // `2026-05-08T00:00:00.000Z`, and `formatExpiryMD` (splits on '-')
+    // renders it as the garbage toast label `05/08T00:00:00.000Z`.
+    expiry: r.expiry.slice(0, 10),
+    strike,
+    side: r.side,
+    direction: r.direction,
+    entry_price: entryPrice,
+    quantity,
+    contract_status: r.contract_status,
+  };
+}
+
+/**
+ * Validate the unread envelope. Returns the surviving rows, or `null`
+ * when the body isn't an alerts payload at all — the caller then throws
+ * into its existing error path.
+ */
+function validateUnreadAlerts(raw: unknown): TrackerAlert[] | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.alerts)) return null;
+  const out: TrackerAlert[] = [];
+  for (const row of r.alerts) {
+    const valid = validateAlert(row);
+    if (valid) out.push(valid);
+  }
+  return out;
 }
 
 export interface UseTrackerAlertsArgs {
@@ -113,9 +231,9 @@ export function useTrackerAlerts({
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as UnreadResponse;
+      const incoming = validateUnreadAlerts(await res.json());
       if (ctrl.signal.aborted) return;
-      const incoming = json.alerts;
+      if (incoming === null) throw new Error('Unexpected response shape');
 
       if (isFirstFetchRef.current) {
         // Seed the seen-set with the initial server state so we don't

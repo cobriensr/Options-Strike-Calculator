@@ -9,18 +9,22 @@ vi.mock('botid/server', () => ({
   checkBotId: vi.fn().mockResolvedValue({ isBot: false }),
 }));
 
-// Mock schwab module before importing api-helpers
-const mockPipeline = {
-  incr: vi.fn().mockReturnThis(),
-  expire: vi.fn().mockReturnThis(),
-  exec: vi.fn().mockResolvedValue([0]),
-};
+// Mock the Redis singleton before importing api-helpers. The rate limiter
+// issues INCR, a conditional EXPIRE (first hit of the window), and on the
+// rejection path a TTL self-heal — all plain commands, no pipeline.
+// `recordRedisError` is the classifier the limiter uses to decide whether a
+// Redis failure is worth a Sentry capture ('error') or is the Upstash
+// over-quota rejection ('quota').
+const { mockRecordRedisError } = vi.hoisted(() => ({
+  mockRecordRedisError: vi.fn(() => 'error' as 'error' | 'quota'),
+}));
 vi.mock('../_lib/redis.js', () => ({
   redis: {
     incr: vi.fn(),
     expire: vi.fn(),
-    pipeline: vi.fn(() => mockPipeline),
+    ttl: vi.fn(),
   },
+  recordRedisError: mockRecordRedisError,
 }));
 
 vi.mock('../_lib/schwab.js', () => ({
@@ -79,7 +83,6 @@ import {
   OWNER_COOKIE,
   OWNER_COOKIE_MAX_AGE,
   rejectIfRateLimited,
-  schwabFetch,
   schwabTraderFetch,
   setCacheHeaders,
   isMarketOpen,
@@ -98,6 +101,8 @@ import {
 } from '../_lib/api-helpers.js';
 import { z } from 'zod';
 import { getAccessToken } from '../_lib/schwab.js';
+import { redis } from '../_lib/redis.js';
+import { Sentry as mockedSentry } from '../_lib/sentry.js';
 import { checkBotId } from 'botid/server';
 import { getETDayOfWeek, getETTime } from '../../src/utils/timezone.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
@@ -212,8 +217,21 @@ describe('api-helpers', () => {
   // ============================================================
 
   describe('rejectIfRateLimited', () => {
+    beforeEach(() => {
+      vi.mocked(redis.incr).mockReset();
+      vi.mocked(redis.expire).mockReset();
+      vi.mocked(redis.ttl).mockReset();
+      mockRecordRedisError.mockReset();
+      mockRecordRedisError.mockReturnValue('error');
+      // Default: key already has a live TTL so the self-heal is a no-op.
+      vi.mocked(redis.ttl).mockResolvedValue(42);
+      vi.mocked(redis.expire).mockResolvedValue(1);
+      delete process.env.CRON_SECRET;
+      delete process.env.OWNER_SECRET;
+    });
+
     it('sends 429 when rate limited', async () => {
-      mockPipeline.exec.mockResolvedValue([100]);
+      vi.mocked(redis.incr).mockResolvedValue(100);
       const req = mockRequest({ headers: {} });
       const res = mockResponse();
       const rejected = await rejectIfRateLimited(req, res, 'test', 5);
@@ -223,11 +241,129 @@ describe('api-helpers', () => {
     });
 
     it('returns false when not rate limited', async () => {
-      mockPipeline.exec.mockResolvedValue([1]);
+      vi.mocked(redis.incr).mockResolvedValue(1);
       const req = mockRequest({ headers: {} });
       const res = mockResponse();
       const rejected = await rejectIfRateLimited(req, res, 'test', 5);
       expect(rejected).toBe(false);
+    });
+
+    // ── Command budget (Upstash bills per command) ──────────────
+
+    it('issues INCR + EXPIRE 60 on the FIRST hit of a window (count === 1)', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(1);
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      await rejectIfRateLimited(req, res, 'test', 5);
+      expect(redis.incr).toHaveBeenCalledTimes(1);
+      expect(redis.incr).toHaveBeenCalledWith('ratelimit:test:1.2.3.4');
+      expect(redis.expire).toHaveBeenCalledTimes(1);
+      expect(redis.expire).toHaveBeenCalledWith('ratelimit:test:1.2.3.4', 60);
+      // Under the limit → no TTL self-heal read.
+      expect(redis.ttl).not.toHaveBeenCalled();
+    });
+
+    it('issues ONLY INCR (no EXPIRE) on later hits inside the window (count > 1)', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(3);
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+      expect(redis.incr).toHaveBeenCalledTimes(1);
+      expect(redis.expire).not.toHaveBeenCalled();
+      expect(redis.ttl).not.toHaveBeenCalled();
+    });
+
+    it('on the rejection path re-arms a stuck key (TTL -1) with EXPIRE 60', async () => {
+      // INCR succeeded but the follow-up EXPIRE failed on a previous first
+      // hit → the key has no TTL and would 429 this caller forever. The
+      // limiter self-heals when it next rejects.
+      vi.mocked(redis.incr).mockResolvedValue(6);
+      vi.mocked(redis.ttl).mockResolvedValue(-1);
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(true);
+      expect(redis.ttl).toHaveBeenCalledWith('ratelimit:test:1.2.3.4');
+      expect(redis.expire).toHaveBeenCalledWith('ratelimit:test:1.2.3.4', 60);
+    });
+
+    it('on the rejection path leaves a key with a live TTL alone', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(6);
+      vi.mocked(redis.ttl).mockResolvedValue(30);
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(true);
+      expect(redis.expire).not.toHaveBeenCalled();
+    });
+
+    it('still rejects when the TTL self-heal itself throws (verdict already known)', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(6);
+      vi.mocked(redis.ttl).mockRejectedValue(new Error('boom'));
+      const req = mockRequest({ headers: { 'x-real-ip': '1.2.3.4' } });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(true);
+      expect(res._status).toBe(429);
+    });
+
+    // ── Trusted callers skip the limiter entirely (zero commands) ──
+
+    it('skips the limiter (no Redis commands) for a valid sc-owner cookie', async () => {
+      process.env.OWNER_SECRET = 'owner-secret';
+      const req = mockRequest({
+        headers: { cookie: `${OWNER_COOKIE}=owner-secret` },
+      });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+      expect(redis.incr).not.toHaveBeenCalled();
+      expect(redis.expire).not.toHaveBeenCalled();
+    });
+
+    it('does NOT skip for a wrong sc-owner cookie', async () => {
+      process.env.OWNER_SECRET = 'owner-secret';
+      vi.mocked(redis.incr).mockResolvedValue(100);
+      const req = mockRequest({
+        headers: { cookie: `${OWNER_COOKIE}=not-the-secret` },
+      });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(true);
+      expect(redis.incr).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips the limiter (no Redis commands) for Authorization: Bearer <CRON_SECRET>', async () => {
+      process.env.CRON_SECRET = 'cron-secret';
+      const req = mockRequest({
+        headers: { authorization: 'Bearer cron-secret' },
+      });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+      expect(redis.incr).not.toHaveBeenCalled();
+    });
+
+    it('does NOT skip for a wrong bearer, and not at all when CRON_SECRET is unset', async () => {
+      vi.mocked(redis.incr).mockResolvedValue(100);
+      process.env.CRON_SECRET = 'cron-secret';
+      const wrong = mockRequest({
+        headers: { authorization: 'Bearer nope' },
+      });
+      expect(await rejectIfRateLimited(wrong, mockResponse(), 'test', 5)).toBe(
+        true,
+      );
+      expect(redis.incr).toHaveBeenCalledTimes(1);
+
+      delete process.env.CRON_SECRET;
+      const unset = mockRequest({
+        headers: { authorization: 'Bearer cron-secret' },
+      });
+      expect(await rejectIfRateLimited(unset, mockResponse(), 'test', 5)).toBe(
+        true,
+      );
+      expect(redis.incr).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -235,16 +371,23 @@ describe('api-helpers', () => {
   // SCHWAB FETCH
   // ============================================================
 
-  describe('schwabFetch', () => {
+  // schwabFetch is now a path dispatcher over the UW/Theta-sidecar
+  // market-data adapters (schwab-replacement-2026-08-16 Phase 2) —
+  // dispatch behavior is covered in schwab-fetch.test.ts and the
+  // adapters in market-data-adapters.test.ts. The token/transport
+  // behaviors below live on in schwabApiFetch, whose only remaining
+  // consumer is schwabTraderFetch — so they're asserted through it.
+  describe('schwabTraderFetch (token + transport behaviors)', () => {
     it('returns error when getAccessToken fails with expired_refresh', async () => {
       vi.mocked(getAccessToken).mockResolvedValue({
         error: { type: 'expired_refresh', message: 'Token expired' },
       });
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({
         ok: false,
         error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
         status: 401,
+        code: 'SCHWAB_TOKEN_EXPIRED',
       });
     });
 
@@ -252,17 +395,18 @@ describe('api-helpers', () => {
       vi.mocked(getAccessToken).mockResolvedValue({
         error: { type: 'token_error', message: 'Something broke' },
       });
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({
         ok: false,
         error: '[SCHWAB_TOKEN_ERROR] Something broke',
         status: 500,
+        code: 'SCHWAB_TOKEN_ERROR',
       });
     });
 
     it('returns data on successful fetch', async () => {
       vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
-      const mockData = { SPY: { quote: { lastPrice: 500 } } };
+      const mockData = { securitiesAccount: { positions: [] } };
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
@@ -270,7 +414,7 @@ describe('api-helpers', () => {
           json: () => Promise.resolve(mockData),
         }),
       );
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({ ok: true, data: mockData });
       vi.unstubAllGlobals();
     });
@@ -285,7 +429,7 @@ describe('api-helpers', () => {
           text: () => Promise.resolve('Forbidden'),
         }),
       );
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({
         ok: false,
         error: '[SCHWAB_API_403] Schwab API error (403): Forbidden',
@@ -304,7 +448,7 @@ describe('api-helpers', () => {
           text: () => Promise.resolve('Unauthorized'),
         }),
       );
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({
         ok: false,
         error: '[SCHWAB_API_REJECTED] Schwab API error (401): Unauthorized',
@@ -314,15 +458,12 @@ describe('api-helpers', () => {
     });
 
     it('retries on AbortSignal timeout and returns data when a later attempt succeeds', async () => {
-      // Schwab's /chains endpoint occasionally exceeds the 30s
-      // AbortController timeout when the payload is large (SPXW with
-      // strikeCount=500 across multiple expiries). The timeout throws a
+      // The 30s AbortController timeout throws a
       // DOMException("aborted", "TimeoutError"); the retry loop must
-      // catch it like a 5xx and try again rather than bubbling it up to
-      // the caller (which was producing Sentry issue 76 — one
-      // TimeoutError captureException per timed-out ticker per minute).
+      // catch it like a 5xx and try again rather than bubbling it up
+      // to the caller.
       vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
-      const mockData = { SPY: { quote: { lastPrice: 500 } } };
+      const mockData = { securitiesAccount: { positions: [] } };
       const timeoutErr = new DOMException(
         'The operation was aborted due to timeout',
         'TimeoutError',
@@ -336,7 +477,7 @@ describe('api-helpers', () => {
         });
       vi.stubGlobal('fetch', fetchMock);
 
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({ ok: true, data: mockData });
       expect(fetchMock).toHaveBeenCalledTimes(2);
       vi.unstubAllGlobals();
@@ -344,10 +485,7 @@ describe('api-helpers', () => {
 
     it('returns a 504 ApiResult error when every attempt times out', async () => {
       // After MAX_RETRIES (2) + initial = 3 consecutive timeouts the
-      // helper surfaces a structured error instead of throwing. The
-      // caller (fetch-strike-iv runTicker) reads `result.ok = false`
-      // and skips the ticker with reason='schwab_error' — no exception
-      // propagates, no Sentry captureException fires.
+      // helper surfaces a structured error instead of throwing.
       vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok123' });
       const timeoutErr = new DOMException(
         'The operation was aborted due to timeout',
@@ -356,7 +494,7 @@ describe('api-helpers', () => {
       const fetchMock = vi.fn().mockRejectedValue(timeoutErr);
       vi.stubGlobal('fetch', fetchMock);
 
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.status).toBe(504);
@@ -1268,6 +1406,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
         status: 401,
+        code: 'SCHWAB_TOKEN_EXPIRED',
       });
     });
 
@@ -1433,7 +1572,7 @@ describe('api-helpers', () => {
   // SCHWAB FETCH — RETRY PATH (500 transient → success)
   // ============================================================
 
-  describe('schwabFetch (retry on 500)', () => {
+  describe('schwabTraderFetch (retry on 500)', () => {
     afterEach(() => {
       vi.unstubAllGlobals();
     });
@@ -1453,7 +1592,7 @@ describe('api-helpers', () => {
           json: () => Promise.resolve(mockData),
         });
       vi.stubGlobal('fetch', mockFetch);
-      const result = await schwabFetch('/quotes');
+      const result = await schwabTraderFetch('/accounts');
       expect(result).toEqual({ ok: true, data: mockData });
       expect(mockFetch).toHaveBeenCalledTimes(2);
     }, 10000);
@@ -1464,8 +1603,18 @@ describe('api-helpers', () => {
   // ============================================================
 
   describe('rejectIfRateLimited (Redis error path)', () => {
-    it('fails open when Redis pipeline throws', async () => {
-      mockPipeline.exec.mockRejectedValueOnce(
+    beforeEach(() => {
+      vi.mocked(redis.incr).mockReset();
+      vi.mocked(redis.expire).mockReset();
+      vi.mocked(mockedSentry.captureException).mockClear();
+      mockRecordRedisError.mockReset();
+      delete process.env.CRON_SECRET;
+      delete process.env.OWNER_SECRET;
+    });
+
+    it('fails open when INCR throws and captures the (non-quota) error to Sentry', async () => {
+      mockRecordRedisError.mockReturnValue('error');
+      vi.mocked(redis.incr).mockRejectedValueOnce(
         new Error('Redis connection refused'),
       );
       const req = mockRequest({ headers: {} });
@@ -1473,6 +1622,31 @@ describe('api-helpers', () => {
       // Fails open — should not block the request
       const rejected = await rejectIfRateLimited(req, res, 'test', 5);
       expect(rejected).toBe(false);
+      expect(mockRecordRedisError).toHaveBeenCalledTimes(1);
+      expect(mockedSentry.captureException).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails open when the first-hit EXPIRE throws', async () => {
+      mockRecordRedisError.mockReturnValue('error');
+      vi.mocked(redis.incr).mockResolvedValueOnce(1);
+      vi.mocked(redis.expire).mockRejectedValueOnce(new Error('boom'));
+      const req = mockRequest({ headers: {} });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+    });
+
+    it('fails open on the Upstash quota error WITHOUT a Sentry capture', async () => {
+      mockRecordRedisError.mockReturnValue('quota');
+      vi.mocked(redis.incr).mockRejectedValueOnce(
+        new Error('ERR max requests limit exceeded. Limit: 500000'),
+      );
+      const req = mockRequest({ headers: {} });
+      const res = mockResponse();
+      const rejected = await rejectIfRateLimited(req, res, 'test', 5);
+      expect(rejected).toBe(false);
+      expect(mockRecordRedisError).toHaveBeenCalledTimes(1);
+      expect(mockedSentry.captureException).not.toHaveBeenCalled();
     });
   });
 

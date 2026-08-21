@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+import { expectTimezone, selectMeridiem } from './helpers/time';
+import { expandSection } from './helpers/sections';
 
 const MOCK_YESTERDAY = {
   yesterday: {
@@ -127,19 +129,21 @@ async function waitForAutoFillAndSetTime(
     timeout: 10000,
   });
   // Auto-fill sets timezone to CT
-  await expect(
-    page.getByRole('radio', { name: 'CT', exact: true }),
-  ).toBeChecked({ timeout: 5000 });
+  await expectTimezone(page, 'CT', { timeout: 5000 });
 
   // Override to a valid market time — auto-fill has finished
-  await page.getByLabel('Hour').selectOption('10');
-  await page.getByLabel('Minute').selectOption('30');
-  await page.getByRole('radio', { name: 'AM' }).click();
+  await page.getByLabel('Hour', { exact: true }).selectOption('10');
+  await page.getByLabel('Minute', { exact: true }).selectOption('30');
+  await selectMeridiem(page, 'AM');
 
-  // Wait for calculation results so the Market Regime section expands
+  // Wait for calculation results so the Market Regime section has data
   await expect(
     page.locator('#results').getByText('All Delta Strikes'),
   ).toBeVisible({ timeout: 15000 });
+
+  // PreTradeSignals renders inside the default-collapsed Market Regime
+  // section — expand it so the signal tiles exist in the DOM.
+  await expandSection(page, 'Market Regime');
 }
 
 /**

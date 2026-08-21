@@ -56,6 +56,24 @@ def _reset_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Module constants — HTTP base URL pin
+# ---------------------------------------------------------------------------
+
+
+def test_http_base_points_at_port_25510() -> None:
+    """Pin the Terminal HTTP port verified empirically against the live jar.
+
+    Theta Terminal v1.8.6 Rev A (ThetaTerminalv3.jar) binds HTTP on
+    :25510 (and WS on :25520); :25503 is NEVER bound. A base URL on
+    25503 means _wait_for_ready() can never succeed, so the launcher
+    times out on every Railway boot.
+    """
+    import theta_launcher
+
+    assert theta_launcher._HTTP_BASE == "http://127.0.0.1:25510"
+
+
+# ---------------------------------------------------------------------------
 # start() — guard conditions
 # ---------------------------------------------------------------------------
 
@@ -148,7 +166,7 @@ def test_wait_for_ready_returns_true_and_records_timestamp(
     class _FakeResp:
         status = 200
 
-        def __enter__(self) -> "_FakeResp":
+        def __enter__(self) -> _FakeResp:
             return self
 
         def __exit__(self, *_exc: object) -> None:
@@ -351,8 +369,15 @@ def test_spawn_subprocess_calls_popen_with_jar_and_starts_threads(
     assert args[0][0] == "java"
     assert args[0][1] == "-jar"
     assert args[0][2].endswith("ThetaTerminalv3.jar")
+    # The jar reads creds.txt ONLY when pointed at it via --creds-file
+    # (single token, equals syntax, after the jar path). Without it the
+    # jar prompts on stdin and dies at EOF in a TTY-less container.
+    assert args[0][3] == f"--creds-file={tmp_path / 'creds.txt'}"
     assert kwargs["stdout"] == subprocess.PIPE
     assert kwargs["stderr"] == subprocess.PIPE
+    # DEVNULL, not PIPE — _reap_old_proc closes only stdout/stderr, so a
+    # PIPE stdin would leak one FD per respawn.
+    assert kwargs["stdin"] is subprocess.DEVNULL
     assert kwargs["text"] is True
 
     # State was populated.
@@ -421,9 +446,7 @@ def test_spawn_subprocess_drain_threads_bounded_across_respawns(
     """N respawns never grow _state.drain_threads past two handles."""
     import theta_launcher
 
-    monkeypatch.setattr(
-        theta_launcher.subprocess, "Popen", lambda *_a, **_kw: MagicMock()
-    )
+    monkeypatch.setattr(theta_launcher.subprocess, "Popen", lambda *_a, **_kw: MagicMock())
 
     real_thread = theta_launcher.threading.Thread
 
@@ -621,7 +644,7 @@ def test_stdout_drain_loop_consumes_all_lines() -> None:
         def __init__(self, lines: list[str]) -> None:
             self._lines = iter(lines)
 
-        def __iter__(self) -> "_StdoutTracker":
+        def __iter__(self) -> _StdoutTracker:
             return self
 
         def __next__(self) -> str:
@@ -893,9 +916,7 @@ def test_monitor_loop_returns_after_sleep_if_shutdown_during_backoff(
     monkeypatch.setattr(theta_launcher.time, "sleep", _flip_shutdown)
 
     spawn_calls: list[int] = []
-    monkeypatch.setattr(
-        theta_launcher, "_spawn_subprocess", lambda: spawn_calls.append(1)
-    )
+    monkeypatch.setattr(theta_launcher, "_spawn_subprocess", lambda: spawn_calls.append(1))
 
     theta_launcher._monitor_loop()
     # _spawn_subprocess should NOT have been called.

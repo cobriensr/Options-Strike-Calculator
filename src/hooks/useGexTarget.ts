@@ -50,7 +50,14 @@ import { getETToday } from '../utils/timezone';
 import { useScrubController } from './useScrubController';
 import { useWallClockFreshness } from './useWallClockFreshness';
 import { usePolling } from './usePolling';
-import type { TargetScore } from '../utils/gex-target';
+import type {
+  ComponentScores,
+  MagnetFeatures,
+  StrikeScore,
+  TargetScore,
+  Tier,
+  WallSide,
+} from '../utils/gex-target';
 
 /**
  * A snapshot is considered "live" only if its timestamp is within this many
@@ -129,6 +136,297 @@ interface GexTargetHistoryResponse {
   dir: TargetScore | null;
   candles: SPXCandle[];
   previousClose: number | null;
+}
+
+// ── Response validation ────────────────────────────────────────
+//
+// Both `/api/gex-target-history` parses used to be identity casts, so a
+// shapeless body (a 5xx JSON blob, a loosely-parsed HTML error page, a
+// truncated payload) flowed straight into the render pass and threw:
+//   - `selectTarget(raw.leaderboard, …)` → `leaderboard.length` of undefined
+//     (src/utils/gex-target/select-target.ts:97)
+//   - `computeAttractingMomentum(s.features)` → `.gexDollars` of undefined
+//     (src/utils/gex-target/scorers.ts:222)
+//   - `timestamps.at(-1)` when `timestamps` arrived as a non-array
+//     (src/hooks/useScrubController.ts:82)
+// Validation now happens at the parse (the `validateSpike` pattern in
+// src/hooks/useVegaSpikes.ts): bad rows are dropped, a bad envelope leaves
+// the last-known-good state untouched and routes to this hook's existing
+// error path.
+//
+// Faithfulness to `api/gex-target-history.ts` — over-strict validation
+// would be worse than the crash, so:
+//   - `availableDates`, `timestamps` and `candles` are present on ALL FOUR
+//     of the handler's return paths (empty-DB, no-rows-for-date, single,
+//     bulk), so requiring them cannot reject a legitimate payload.
+//   - `snapshots` is NOT: the empty-DB and no-rows-for-date paths return the
+//     single-snapshot shape even when `?all=true` was requested. It is
+//     therefore optional and defaults to `[]`.
+//   - The MagnetFeatures numerics the server builds with `num()` coerce a
+//     NULL column to 0 before serializing, and a NUMERIC 'NaN' serializes
+//     as JSON null. Accepting `number | null` and coalescing null to 0 is
+//     strictly more permissive than the server's own semantics.
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function isNullableFiniteNumber(v: unknown): v is number | null {
+  return v === null || isFiniteNumber(v);
+}
+
+/** Array of strings with non-string entries dropped; `null` if not an array. */
+function toStringArray(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  return v.filter((s): s is string => typeof s === 'string');
+}
+
+const TIERS: readonly unknown[] = ['HIGH', 'MEDIUM', 'LOW', 'NONE'];
+const WALL_SIDES: readonly unknown[] = ['CALL', 'PUT', 'NEUTRAL'];
+
+/** Zeroed component scores — the shape `groupRowsByMode` itself emits. */
+function zeroComponents(): ComponentScores {
+  return {
+    flowConfluence: 0,
+    priceConfirm: 0,
+    charmScore: 0,
+    dominance: 0,
+    clarity: 0,
+    proximity: 0,
+  };
+}
+
+function validateComponents(raw: unknown): ComponentScores {
+  if (typeof raw !== 'object' || raw === null) return zeroComponents();
+  const r = raw as Record<string, unknown>;
+  return {
+    flowConfluence: isFiniteNumber(r.flowConfluence) ? r.flowConfluence : 0,
+    priceConfirm: isFiniteNumber(r.priceConfirm) ? r.priceConfirm : 0,
+    charmScore: isFiniteNumber(r.charmScore) ? r.charmScore : 0,
+    dominance: isFiniteNumber(r.dominance) ? r.dominance : 0,
+    clarity: isFiniteNumber(r.clarity) ? r.clarity : 0,
+    proximity: isFiniteNumber(r.proximity) ? r.proximity : 0,
+  };
+}
+
+/**
+ * Every field the scorers read arithmetically. `strike` must be a genuine
+ * finite number — it is a Map key, a price-line value in PriceChart, and a
+ * table row key — so a row without one is unusable and gets dropped.
+ */
+function validateFeatures(raw: unknown): MagnetFeatures | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.strike) ||
+    !isNullableFiniteNumber(r.spot) ||
+    !isNullableFiniteNumber(r.distFromSpot) ||
+    !isNullableFiniteNumber(r.gexDollars) ||
+    !isNullableFiniteNumber(r.callGexDollars) ||
+    !isNullableFiniteNumber(r.putGexDollars) ||
+    !isNullableFiniteNumber(r.callDelta) ||
+    !isNullableFiniteNumber(r.putDelta) ||
+    !isNullableFiniteNumber(r.deltaGex_1m) ||
+    !isNullableFiniteNumber(r.deltaGex_5m) ||
+    !isNullableFiniteNumber(r.deltaGex_20m) ||
+    !isNullableFiniteNumber(r.deltaGex_60m) ||
+    !isNullableFiniteNumber(r.prevGexDollars_1m) ||
+    !isNullableFiniteNumber(r.prevGexDollars_5m) ||
+    !isNullableFiniteNumber(r.prevGexDollars_10m) ||
+    !isNullableFiniteNumber(r.prevGexDollars_15m) ||
+    !isNullableFiniteNumber(r.prevGexDollars_20m) ||
+    !isNullableFiniteNumber(r.prevGexDollars_60m) ||
+    !isNullableFiniteNumber(r.deltaPct_1m) ||
+    !isNullableFiniteNumber(r.deltaPct_5m) ||
+    !isNullableFiniteNumber(r.deltaPct_20m) ||
+    !isNullableFiniteNumber(r.deltaPct_60m) ||
+    !isNullableFiniteNumber(r.callRatio) ||
+    !isNullableFiniteNumber(r.charmNet) ||
+    !isNullableFiniteNumber(r.deltaNet) ||
+    !isNullableFiniteNumber(r.vannaNet) ||
+    !isNullableFiniteNumber(r.minutesAfterNoonCT)
+  ) {
+    return null;
+  }
+  return {
+    strike: r.strike,
+    // NOT-NULL server columns — `?? 0` mirrors the server's own `num()`
+    // handling of a NULL/NaN value, so nothing legitimate is lost.
+    spot: r.spot ?? 0,
+    distFromSpot: r.distFromSpot ?? 0,
+    gexDollars: r.gexDollars ?? 0,
+    callGexDollars: r.callGexDollars ?? 0,
+    putGexDollars: r.putGexDollars ?? 0,
+    callRatio: r.callRatio ?? 0,
+    charmNet: r.charmNet ?? 0,
+    deltaNet: r.deltaNet ?? 0,
+    vannaNet: r.vannaNet ?? 0,
+    minutesAfterNoonCT: r.minutesAfterNoonCT ?? 0,
+    // Genuinely nullable columns — null is a meaningful "unavailable".
+    callDelta: r.callDelta,
+    putDelta: r.putDelta,
+    deltaGex_1m: r.deltaGex_1m,
+    deltaGex_5m: r.deltaGex_5m,
+    deltaGex_20m: r.deltaGex_20m,
+    deltaGex_60m: r.deltaGex_60m,
+    prevGexDollars_1m: r.prevGexDollars_1m,
+    prevGexDollars_5m: r.prevGexDollars_5m,
+    prevGexDollars_10m: r.prevGexDollars_10m,
+    prevGexDollars_15m: r.prevGexDollars_15m,
+    prevGexDollars_20m: r.prevGexDollars_20m,
+    prevGexDollars_60m: r.prevGexDollars_60m,
+    deltaPct_1m: r.deltaPct_1m,
+    deltaPct_5m: r.deltaPct_5m,
+    deltaPct_20m: r.deltaPct_20m,
+    deltaPct_60m: r.deltaPct_60m,
+  };
+}
+
+/**
+ * `components`, `finalScore`, `tier`, `wallSide` and `isTarget` are all
+ * recomputed browser-side by `selectTarget` before anything renders, so a
+ * bad value degrades to a neutral default rather than dropping the row.
+ * Only `features` (and the `strike` inside it) is load-bearing.
+ */
+function validateStrikeScore(raw: unknown): StrikeScore | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const features = validateFeatures(r.features);
+  if (features == null) return null;
+  return {
+    strike: isFiniteNumber(r.strike) ? r.strike : features.strike,
+    features,
+    components: validateComponents(r.components),
+    finalScore: isFiniteNumber(r.finalScore) ? r.finalScore : 0,
+    tier: TIERS.includes(r.tier) ? (r.tier as Tier) : 'NONE',
+    wallSide: WALL_SIDES.includes(r.wallSide)
+      ? (r.wallSide as WallSide)
+      : 'NEUTRAL',
+    rankByScore: isFiniteNumber(r.rankByScore) ? r.rankByScore : 0,
+    rankBySize: isFiniteNumber(r.rankBySize) ? r.rankBySize : 0,
+    isTarget: r.isTarget === true,
+  };
+}
+
+/** A mode's TargetScore. Bad rows are dropped; a non-array leaderboard is fatal for the mode only. */
+function validateTargetScore(raw: unknown): TargetScore | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (!Array.isArray(r.leaderboard)) return null;
+  const leaderboard: StrikeScore[] = [];
+  for (const row of r.leaderboard) {
+    const score = validateStrikeScore(row);
+    if (score) leaderboard.push(score);
+  }
+  return { target: validateStrikeScore(r.target), leaderboard };
+}
+
+function validateCandle(raw: unknown): SPXCandle | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    !isFiniteNumber(r.open) ||
+    !isFiniteNumber(r.high) ||
+    !isFiniteNumber(r.low) ||
+    !isFiniteNumber(r.close) ||
+    !isFiniteNumber(r.volume) ||
+    !isFiniteNumber(r.datetime)
+  ) {
+    return null;
+  }
+  return {
+    open: r.open,
+    high: r.high,
+    low: r.low,
+    close: r.close,
+    volume: r.volume,
+    datetime: r.datetime,
+  };
+}
+
+/** Fields shared by the single-snapshot and bulk response shapes. */
+interface GexTargetEnvelope {
+  availableDates: string[];
+  date: string | null;
+  timestamps: string[];
+  candles: SPXCandle[];
+  previousClose: number | null;
+}
+
+function validateEnvelope(raw: unknown): GexTargetEnvelope | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const r = raw as Record<string, unknown>;
+  const availableDates = toStringArray(r.availableDates);
+  const timestamps = toStringArray(r.timestamps);
+  if (
+    availableDates == null ||
+    timestamps == null ||
+    !Array.isArray(r.candles)
+  ) {
+    return null;
+  }
+  const candles: SPXCandle[] = [];
+  for (const row of r.candles) {
+    const candle = validateCandle(row);
+    if (candle) candles.push(candle);
+  }
+  return {
+    availableDates,
+    date: typeof r.date === 'string' ? r.date : null,
+    timestamps,
+    candles,
+    previousClose: isNullableFiniteNumber(r.previousClose)
+      ? r.previousClose
+      : null,
+  };
+}
+
+function validateHistoryResponse(
+  raw: unknown,
+): GexTargetHistoryResponse | null {
+  const envelope = validateEnvelope(raw);
+  if (envelope == null) return null;
+  const r = raw as Record<string, unknown>;
+  return {
+    ...envelope,
+    timestamp: typeof r.timestamp === 'string' ? r.timestamp : null,
+    spot: isNullableFiniteNumber(r.spot) ? r.spot : null,
+    oi: validateTargetScore(r.oi),
+    vol: validateTargetScore(r.vol),
+    dir: validateTargetScore(r.dir),
+  };
+}
+
+function validateBulkSnapshot(raw: unknown): BulkSnapshot | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  // The timestamp is the snapshot cache key and the scrub target — a
+  // snapshot without one cannot be addressed, so it is dropped.
+  if (typeof r.timestamp !== 'string') return null;
+  return {
+    timestamp: r.timestamp,
+    spot: isNullableFiniteNumber(r.spot) ? r.spot : null,
+    oi: validateTargetScore(r.oi),
+    vol: validateTargetScore(r.vol),
+    dir: validateTargetScore(r.dir),
+  };
+}
+
+function validateBulkResponse(raw: unknown): GexTargetBulkResponse | null {
+  const envelope = validateEnvelope(raw);
+  if (envelope == null) return null;
+  const r = raw as Record<string, unknown>;
+  const snapshots: BulkSnapshot[] = [];
+  // Optional by design — see the faithfulness note above.
+  if (Array.isArray(r.snapshots)) {
+    for (const row of r.snapshots) {
+      const snapshot = validateBulkSnapshot(row);
+      if (snapshot) snapshots.push(snapshot);
+    }
+  }
+  return { ...envelope, snapshots };
 }
 
 export interface UseGexTargetReturn {
@@ -360,9 +658,20 @@ export function useGexTarget(
           return;
         }
 
-        const data = (await res.json()) as GexTargetHistoryResponse;
+        const data = validateHistoryResponse(await res.json());
 
         if (!mountedRef.current || seq !== requestSeqRef.current) return;
+
+        if (data == null) {
+          // Shapeless body (5xx JSON blob, HTML error page). Routed through
+          // the same grace-counted path as an HTTP error, and deliberately
+          // writing NO state: one bad poll must not wipe a good display.
+          failCountRef.current += 1;
+          if (failCountRef.current >= FAIL_GRACE_COUNT) {
+            setError('Unexpected response shape from GexTarget data');
+          }
+          return;
+        }
 
         // Three parallel modes -- always written as a triple so a successful
         // fetch never leaves a stale mix of old/new across the three fields.
@@ -371,10 +680,10 @@ export function useGexTarget(
         setDir(data.dir);
         setSpot(data.spot);
         setTimestamp(data.timestamp);
-        setTimestamps(data.timestamps ?? []);
-        setCandles(filterRegularSessionCT(data.candles ?? []));
+        setTimestamps(data.timestamps);
+        setCandles(filterRegularSessionCT(data.candles));
         setPreviousClose(data.previousClose);
-        setAvailableDates(data.availableDates ?? []);
+        setAvailableDates(data.availableDates);
         failCountRef.current = 0;
         setError(null);
       } catch (err) {
@@ -420,21 +729,28 @@ export function useGexTarget(
         if (res.status !== 401) setError('Failed to load GexTarget data');
         return;
       }
-      const data = (await res.json()) as GexTargetBulkResponse;
+      const data = validateBulkResponse(await res.json());
       if (!mountedRef.current || seq !== requestSeqRef.current) return;
+
+      if (data == null) {
+        // Shapeless envelope — surface the panel's existing error state
+        // (with its Retry button) instead of half-writing state from it.
+        setError('Unexpected response shape from GexTarget data');
+        return;
+      }
 
       // Populate snapshot cache
       const cache = new Map<string, BulkSnapshot>();
-      for (const snap of data.snapshots ?? []) {
+      for (const snap of data.snapshots) {
         cache.set(snap.timestamp, snap);
       }
       allSnapshotsRef.current = cache;
 
       // Per-day fields — filter candles to 8:30 AM–3:00 PM CT only
-      setCandles(filterRegularSessionCT(data.candles ?? []));
+      setCandles(filterRegularSessionCT(data.candles));
       setPreviousClose(data.previousClose);
-      setTimestamps(data.timestamps ?? []);
-      setAvailableDates(data.availableDates ?? []);
+      setTimestamps(data.timestamps);
+      setAvailableDates(data.availableDates);
 
       // Opening walls: from the first snapshot's OI leaderboard, find the
       // strike with the largest dealer call-gamma-OI exposure (Call Wall)
@@ -445,7 +761,7 @@ export function useGexTarget(
       // strikes. `Math.abs` normalizes sign conventions across the two
       // fields. The walls stay fixed for the day so the price chart can
       // draw static reference lines.
-      const firstSnap = (data.snapshots ?? [])[0] ?? null;
+      const firstSnap = data.snapshots[0] ?? null;
       if (firstSnap?.oi?.leaderboard && firstSnap.oi.leaderboard.length > 0) {
         const board = firstSnap.oi.leaderboard;
         let maxCallGex = -Infinity;
@@ -472,7 +788,7 @@ export function useGexTarget(
       }
 
       // Set state from latest snapshot
-      const latest = (data.snapshots ?? []).at(-1) ?? null;
+      const latest = data.snapshots.at(-1) ?? null;
       setOi(latest?.oi ?? null);
       setVol(latest?.vol ?? null);
       setDir(latest?.dir ?? null);

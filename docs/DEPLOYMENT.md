@@ -10,26 +10,27 @@ How the app deploys to production, and what the test suite looks like. For local
 vercel deploy --prod     # Or push to main for auto-deploy
 ```
 
-**Requirements**: Vercel Pro plan (required for 800-second function timeout on `/api/analyze`).
+**Requirements**: Vercel Pro plan (required for the 780-second function timeout on `/api/analyze`).
 
 **Framework Preset**: Must be set to "Other" (not Vite) for API routes to work alongside SPA.
 
-**Ignore command**: `git diff --quiet HEAD^ HEAD -- ':!sidecar' ':!ml' ':!scripts' ':!pine' ':!docs'` — skips builds when only sidecar, ML, scripts, Pine, or docs change.
+**Ignore command**: `git diff --quiet "$BASE" HEAD -- ':!sidecar' ':!ml' ':!uw-stream' ':!docs' ':!scripts' ':!pine' ':!*.md'` (where `$BASE` is `VERCEL_GIT_PREVIOUS_SHA`, falling back to `HEAD^`) — skips builds when only sidecar, ML, uw-stream, scripts, Pine, docs, or Markdown change. Note `classifier/` is **not** excluded, so classifier-only changes still trigger a Vercel build.
 
 **Long-running functions**:
 
-- `api/analyze.ts` — 800s (Claude Opus 4.7 with adaptive thinking)
+- `api/analyze.ts` — 780s (Claude Opus 4.7 with adaptive thinking)
 - `api/cron/curate-lessons.ts` — 780s (lesson curation pipeline)
 - `api/cron/build-features.ts` — 300s (ML feature engineering)
 
-### Railway (Sidecar + uw-stream)
+### Railway (Sidecar + uw-stream + classifier)
 
-Two separate Railway services, each with their own Dockerfile and env vars:
+Three separate Railway services, each with their own Dockerfile, `railway.toml`, and env vars:
 
-- [sidecar/README.md](../sidecar/README.md) — Databento + Theta + multi-leg + Takeit
+- [sidecar/README.md](../sidecar/README.md) — Databento + Theta + Takeit
 - [uw-stream/README.md](../uw-stream/README.md) — UW websocket consumer
+- [classifier/README.md](../classifier/README.md) — polars multi-leg classifier, carved out of `sidecar/`
 
-The root `vercel.json` `ignoreCommand` skips Vercel builds when only Railway-service folders change, so the two platforms deploy independently.
+The root `vercel.json` `ignoreCommand` skips Vercel builds when only `sidecar/`, `ml/`, or `uw-stream/` change, so those deploy independently. `classifier/` is not in that exclusion list, so classifier-only changes still rebuild Vercel.
 
 ### Post-Deploy Setup
 
@@ -46,15 +47,15 @@ The root `vercel.json` `ignoreCommand` skips Vercel builds when only Railway-ser
 
 ## Testing
 
-**6,897 unit tests across 277 test files** + 32 Playwright E2E specs (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode. ML pipeline has 14 additional pytest files. Overall coverage: 95.3% statements / 87.9% branches / 96.3% functions.
+**13,379 unit tests across 659 test files** + 39 Playwright E2E specs (Chromium, Firefox, and WebKit), all passing with TypeScript strict mode. ML pipeline has 54 additional pytest files. Overall coverage: 95.3% statements / 87.9% branches / 96.3% functions.
 
 ### Unit Tests (Vitest)
 
 Tests are organized by source type:
 
 ```text
-src/__tests__/     161 test files — components, hooks, utils, data
-api/__tests__/     130 test files — API endpoints, cron jobs, _lib modules
+src/__tests__/     320 test files — components, hooks, utils, data
+api/__tests__/     311 test files — API endpoints, cron jobs, _lib modules
 ```
 
 | File                                | Focus                                                                                      |
@@ -74,47 +75,54 @@ api/__tests__/     130 test files — API endpoints, cron jobs, _lib modules
 
 ### E2E Tests (Playwright — Chromium, Firefox, WebKit)
 
-32 spec files covering user workflows, accessibility, and cross-browser compatibility. See [e2e/README.md](../e2e/README.md) for run + convention details. Coverage includes:
+39 spec files covering user workflows, accessibility, and cross-browser compatibility. See [e2e/README.md](../e2e/README.md) for run + convention details. Coverage includes:
 
-| File                          | Coverage                                                     |
-| ----------------------------- | ------------------------------------------------------------ |
-| `calculator-flow.spec.ts`     | Full calculation flow, mode switching, dark mode             |
-| `strike-table.spec.ts`        | Delta rows, ordering invariants, VIX sensitivity             |
-| `iron-condor.spec.ts`         | IC legs, hedge toggle, contracts, hide/show                  |
-| `hedge-dte.spec.ts`           | DTE selector, EOD recovery, net cost labels, scenarios       |
-| `iv-acceleration.spec.ts`     | σ multiplier at different times, late session warning        |
-| `fat-tail-pop.spec.ts`        | Adjusted PoP display, struck-through log-normal              |
-| `market-regime-new.spec.ts`   | Clustering, term structure shapes (contango/fear-spike/flat) |
-| `entry-time.spec.ts`          | Time selects, AM/PM, timezone, recalculation                 |
-| `advanced-section.spec.ts`    | Skew slider, wing width, contracts counter                   |
-| `chart-analysis.spec.ts`      | Mode selector, drop zone, mocked analysis                    |
-| `chart-analysis-flow.spec.ts` | Full chart analysis flow with rendering                      |
-| `risk-calculator.spec.ts`     | Risk tiers, buy/sell modes, position sizing                  |
-| `pnl-profile.spec.ts`         | P&L diagram rendering                                        |
-| `positions-upload.spec.ts`    | PaperMoney CSV upload and position parsing                   |
-| `export-download.spec.ts`     | CSV and Excel export/download verification                   |
-| `validation-errors.spec.ts`   | Input validation, error states, clearing                     |
-| `extreme-inputs.spec.ts`      | Edge cases: extreme values, boundary inputs                  |
-| `responsive.spec.ts`          | iPhone, iPad, desktop viewports                              |
-| `theme-persistence.spec.ts`   | Dark mode persistence across page reloads                    |
-| `error-recovery.spec.ts`      | Error handling and recovery                                  |
-| `a11y-automated.spec.ts`      | Axe-core WCAG 2.1 AA scans (home, results, dark mode)        |
-| `accessibility.spec.ts`       | Keyboard navigation, ARIA attributes, focus management       |
-| `a11y-live-data.spec.ts`      | Live region testing for dynamic content                      |
-| `cross-section.spec.ts`       | Cross-section interaction flows                              |
-| `date-lookup.spec.ts`         | Date picker with event day integration                       |
-| `delta-regime-guide.spec.ts`  | Delta guide ceiling and regime badges                        |
-| `opening-range.spec.ts`       | Opening range check signals                                  |
-| `parameter-summary.spec.ts`   | Parameter summary display                                    |
-| `pre-market.spec.ts`          | Pre-market data analysis                                     |
-| `pre-trade-signals.spec.ts`   | Signal validation                                            |
-| `vix-range-analysis.spec.ts`  | VIX/range analysis with fine-grained bars                    |
-| `event-day-warning.spec.ts`   | Event day alerts and severity coding                         |
+| File                                | Coverage                                                     |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `calculator-flow.spec.ts`           | Full calculation flow, mode switching, dark mode             |
+| `strike-table.spec.ts`              | Delta rows, ordering invariants, VIX sensitivity             |
+| `iron-condor.spec.ts`               | IC legs, hedge toggle, contracts, hide/show                  |
+| `hedge-dte.spec.ts`                 | DTE selector, EOD recovery, net cost labels, scenarios       |
+| `iv-acceleration.spec.ts`           | σ multiplier at different times, late session warning        |
+| `fat-tail-pop.spec.ts`              | Adjusted PoP display, struck-through log-normal              |
+| `market-regime-new.spec.ts`         | Clustering, term structure shapes (contango/fear-spike/flat) |
+| `entry-time.spec.ts`                | Time selects, AM/PM, timezone, recalculation                 |
+| `advanced-section.spec.ts`          | Skew slider, wing width, contracts counter                   |
+| `chart-analysis.spec.ts`            | Mode selector, drop zone, mocked analysis                    |
+| `chart-analysis-flow.spec.ts`       | Full chart analysis flow with rendering                      |
+| `risk-calculator.spec.ts`           | Risk tiers, buy/sell modes, position sizing                  |
+| `pnl-profile.spec.ts`               | P&L diagram rendering                                        |
+| `positions-upload.spec.ts`          | PaperMoney CSV upload and position parsing                   |
+| `export-download.spec.ts`           | CSV and Excel export/download verification                   |
+| `validation-errors.spec.ts`         | Input validation, error states, clearing                     |
+| `extreme-inputs.spec.ts`            | Edge cases: extreme values, boundary inputs                  |
+| `responsive.spec.ts`                | iPhone, iPad, desktop viewports                              |
+| `theme-persistence.spec.ts`         | Dark mode persistence across page reloads                    |
+| `error-recovery.spec.ts`            | Error handling and recovery                                  |
+| `a11y-automated.spec.ts`            | Axe-core WCAG 2.1 AA scans (home, results, dark mode)        |
+| `accessibility.spec.ts`             | Keyboard navigation, ARIA attributes, focus management       |
+| `a11y-live-data.spec.ts`            | Live region testing for dynamic content                      |
+| `cross-section.spec.ts`             | Cross-section interaction flows                              |
+| `date-lookup.spec.ts`               | Date picker with event day integration                       |
+| `delta-regime-guide.spec.ts`        | Delta guide ceiling and regime badges                        |
+| `opening-range.spec.ts`             | Opening range check signals                                  |
+| `parameter-summary.spec.ts`         | Parameter summary display                                    |
+| `pre-market.spec.ts`                | Pre-market data analysis                                     |
+| `pre-trade-signals.spec.ts`         | Signal validation                                            |
+| `vix-range-analysis.spec.ts`        | VIX/range analysis with fine-grained bars                    |
+| `event-day-warning.spec.ts`         | Event day alerts and severity coding                         |
+| `options-alerts.spec.ts`            | Options Alerts view (Lottery Finder, Silent Boom)            |
+| `options-alerts-responsive.spec.ts` | Options Alerts responsive layout                             |
+| `tracker.spec.ts`                   | Contract Tracker watchlist, alerts, archive stats            |
+| `regime-0dte.spec.ts`               | 0DTE Gamma Regime panel + a11y scan                          |
+| `vega-spike-feed.spec.ts`           | VegaSpikeFeed panel + a11y scan                              |
+| `panel-reorder.spec.ts`             | Panel reorder modal + a11y scan                              |
+| `toolbar-export-row.spec.ts`        | Toolbar export row stays on one line                         |
 
 ### ML Tests (pytest)
 
 ```bash
-cd ml && .venv/bin/pytest -v     # 14 test files covering all pipeline phases
+cd ml && .venv/bin/pytest -v     # 54 test files covering all pipeline phases
 ```
 
 | File                 | Coverage                                        |
@@ -169,7 +177,7 @@ cd ml && .venv/bin/pytest -v     # 14 test files covering all pipeline phases
 
 ### Backfill Scripts
 
-~125 scripts in `scripts/` — see [scripts/README.md](../scripts/README.md) for the categorical map.
+~250 scripts in `scripts/` (116 `.py`, 68 `.mjs`, 65 `.ts`) — see [scripts/README.md](../scripts/README.md) for the categorical map.
 
 ---
 
@@ -177,8 +185,8 @@ cd ml && .venv/bin/pytest -v     # 14 test files covering all pipeline phases
 
 Three GitHub Actions workflows in `.github/workflows/`:
 
-- **ci.yml** — runs on PR and push to main. Tests the app (always), ML (if `ml/` changed), sidecar (if `sidecar/` changed), and E2E (if `e2e/` or `api/` changed).
-- **ml-pipeline.yml** — nightly cron at 01:45 UTC Tue–Sat. Runs the full ML pipeline, uploads plots to Vercel Blob, triggers Claude vision, commits `findings.json`.
-- **takeit-retrain.yml** — same schedule as ml-pipeline. Retrains the XGBoost model on prod data.
+- **ci.yml** — runs on PR and push to main. A `changes` job path-filters the rest: app (if `src/`, `api/`, `scripts/`, `.github/`, or root config changed), ML (if `ml/` changed), sidecar (if `sidecar/` changed), and E2E (if `src/`, `api/`, `e2e/`, or `playwright.config.ts` changed). There is no `uw-stream` or `classifier` job.
+- **ml-pipeline.yml** — nightly cron at 01:45 UTC Tue–Sat. Runs the full ML pipeline, uploads plots to Vercel Blob, triggers Claude vision, commits `findings.json`. Its second job, `takeit-retrain`, retrains the XGBoost model on prod data on the same schedule.
+- **neon_workflow.yml** — creates a Neon branch per PR and deletes it when the PR closes.
 
 ML and sidecar workflows require `DATABASE_URL` and `BLOB_READ_WRITE_TOKEN` repository secrets.

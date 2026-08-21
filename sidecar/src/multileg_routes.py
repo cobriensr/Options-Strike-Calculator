@@ -28,6 +28,7 @@ the matcher tolerates absence.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
@@ -139,6 +140,7 @@ def _classify_with_polars(request: MultilegClassifyRequest) -> list[dict]:
     ~46 MB and only this route needs it).
     """
     import polars as pl  # noqa: PLC0415
+
     from multileg_assembler import classify_trades  # noqa: PLC0415
 
     # Build row dicts with normalized option_type. The matcher matches on
@@ -234,18 +236,15 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
 
     try:
         results = _classify_with_polars(request)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("multileg classify failed: unexpected")
         # Sentry capture is best-effort — the sentry_setup module is
         # available in the sidecar and a no-op when SENTRY_DSN is unset.
-        try:
+        # Never let logging break the response.
+        with contextlib.suppress(Exception):
             from sentry_setup import capture_exception  # noqa: PLC0415
 
-            capture_exception(
-                exc, tags={"component": "multileg_routes", "route": "classify"}
-            )
-        except Exception:  # noqa: BLE001 — never let logging break the response
-            pass
+            capture_exception(exc, tags={"component": "multileg_routes", "route": "classify"})
         return 500, {"error": str(exc)}
 
     return 200, {"classifications": results}

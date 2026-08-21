@@ -53,6 +53,8 @@ __snapshots__/
 .claude/*
 !.claude/skills
 .claude/skills/*
+# skills.sh lockfile for the (ignored) upstash skill dirs above
+skills-lock.json
 !.claude/skills/charm-pressure
 !.claude/skills/delta-pressure
 !.claude/skills/gamma
@@ -193,3 +195,4 @@ data/*.parquet
 
 # Git worktrees (isolated workspaces for parallel sessions)
 .worktrees/
+.env*

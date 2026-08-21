@@ -172,10 +172,7 @@ export default function AppHeader({
             />
           )}
           {accessMode === 'public' && (
-            <SchwabAuthLink
-              ariaLabel="Authenticate with Schwab"
-              text="Sign in"
-            />
+            <SchwabAuthLink ariaLabel="Sign in" text="Sign in" />
           )}
           {/* Access-key entry point. In the calculator view the sidebar
               bottomSlot is the canonical mount on lg+, so this header

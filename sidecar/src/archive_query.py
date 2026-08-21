@@ -20,11 +20,18 @@ Design notes:
   contract dominates volume. We pick "top symbol by volume on that day"
   rather than hardcoding a roll calendar — robust to early/late rolls
   and makes no assumption about the continuous series in the archive.
+- **Unseeded archive is a first-class state.** Every public query calls
+  `_require_seeded()` before touching DuckDB and raises
+  `ArchiveUnavailableError` (→ HTTP 503 `archive_unavailable`) when the
+  dataset's Parquet files are not on disk. ValueError stays reserved for
+  "seeded, but no rows for that date / bad input" (→ 404 / 400).
 """
 
 from __future__ import annotations
 
 import contextlib
+import glob
+import math
 import os
 import threading
 from collections.abc import Iterator
@@ -60,9 +67,7 @@ _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
 # 2 is deliberate: it leaves headroom for /health + the Theta/Databento
 # relay while still allowing one backfill request to overlap a single
 # interactive analyze-context query. Override via env for ops tuning.
-_ARCHIVE_QUERY_CONCURRENCY = int(
-    os.environ.get("ARCHIVE_QUERY_CONCURRENCY", "2")
-)
+_ARCHIVE_QUERY_CONCURRENCY = int(os.environ.get("ARCHIVE_QUERY_CONCURRENCY", "2"))
 _archive_query_semaphore = threading.BoundedSemaphore(_ARCHIVE_QUERY_CONCURRENCY)
 
 
@@ -112,6 +117,81 @@ def _tbbo_glob(root: Path | None = None) -> str:
 def _symbology_path(root: Path | None = None) -> str:
     base = root or _ROOT
     return str(base / "symbology.parquet")
+
+
+# ---------------------------------------------------------------------------
+# Unseeded-archive guard
+# ---------------------------------------------------------------------------
+#
+# The archive is an *optional* feature of the sidecar: it only exists once
+# an operator has run `POST /admin/seed-archive` (which itself needs
+# ARCHIVE_MANIFEST_URL + BLOB_READ_WRITE_TOKEN). On a fresh deployment the
+# Railway volume is mounted but empty (or ARCHIVE_ROOT points nowhere).
+# DuckDB's `read_parquet('<root>/ohlcv_1m/year=*/part.parquet')` raises
+# `IOException: No files found that match the pattern` in that state,
+# which the HTTP layer used to treat as an unexpected failure — 500 +
+# log.error + Sentry capture on every /archive/* call, all session long
+# (readiness audit 2026-08-18: fetch-day-ohlc saw HTTP 500 from
+# /archive/day-summary-batch). Unconfigured != broken: detect the
+# unseeded state up front and raise a dedicated exception the HTTP layer
+# maps to a quiet 503 `archive_unavailable`.
+#
+# The check is per dataset (ohlcv_1m vs tbbo, each plus symbology.parquet)
+# because production can legitimately have one seeded and not the other.
+
+
+class ArchiveUnavailableError(Exception):
+    """Raised when the Parquet dataset a query needs is not on disk.
+
+    Distinct from ValueError (no data for *this date* → 404/400) and from
+    ArchiveBusyError (concurrency cap → transient 503 + Retry-After): the
+    archive simply has not been seeded, so retrying will not help until an
+    operator runs the seed. `dataset` names the missing piece
+    (``ohlcv_1m`` / ``tbbo`` / ``symbology``); `path` is the glob/file
+    that matched nothing.
+    """
+
+    def __init__(self, message: str, *, dataset: str, path: str = "") -> None:
+        super().__init__(message)
+        self.dataset = dataset
+        self.path = path
+
+
+# Missing paths already logged at WARNING. The /archive/* routes get
+# polled every 5 min during RTH by Vercel crons; one warning per process
+# per missing path is enough for an operator to notice, and anything
+# louder is exactly the alert noise this guard exists to remove.
+_unavailable_warned: set[str] = set()
+
+
+def _require_seeded(dataset_glob: str, symbology: str, dataset: str) -> None:
+    """Raise ArchiveUnavailableError unless the dataset is on disk.
+
+    ``dataset_glob`` must match at least one Parquet file AND
+    ``symbology`` (a plain path) must exist — every archive query joins
+    the two, so either one missing means the query cannot run. Cheap:
+    one directory listing + one stat per call, negligible next to the
+    DuckDB scan it protects. Call it BEFORE `_connection()` so an
+    unseeded sidecar never opens a DuckDB connection just to bail.
+    """
+    if not glob.glob(dataset_glob):
+        _raise_unavailable(dataset, dataset_glob)
+    if not os.path.exists(symbology):
+        _raise_unavailable("symbology", symbology)
+
+
+def _raise_unavailable(dataset: str, path: str) -> None:
+    message = f"archive dataset {dataset!r} not found (no files match {path})"
+    # `set.add` is GIL-atomic; a duplicate warning under a thread race is
+    # harmless, so no lock.
+    if path not in _unavailable_warned:
+        _unavailable_warned.add(path)
+        log.warning(
+            "%s — archive unseeded? /archive/* routes will answer 503 "
+            "archive_unavailable until POST /admin/seed-archive has run",
+            message,
+        )
+    raise ArchiveUnavailableError(message, dataset=dataset, path=path)
 
 
 # Thread-local DuckDB connections.
@@ -224,9 +304,10 @@ def es_day_summary(
 
     Raises ValueError if the date has no ES bars in the archive.
     """
-    conn = _connection()
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(ohlcv, symbology, "ohlcv_1m")
+    conn = _connection()
 
     # Step 1 — pick the top ES contract by volume on this date.
     # Symbology uses 'ESH5' etc. for futures; options carry 'ES <date> C<strike>'
@@ -273,7 +354,7 @@ def es_day_summary(
         [ohlcv, symbology, top_symbol, date_iso],
     ).fetchone()
 
-    assert summary is not None  # filtered is non-empty by construction
+    assert summary is not None  # noqa: S101 — narrowing; filtered is non-empty by construction
     day_open, day_high, day_low, day_close, day_volume, bar_count = summary
 
     return {
@@ -345,13 +426,12 @@ def analog_days(
     if k < 1 or k > _ANALOG_MAX_K:
         raise ValueError(f"k must be in 1..{_ANALOG_MAX_K}, got {k}")
     if until_minute < _ANALOG_MIN_WINDOW or until_minute > _ANALOG_MAX_WINDOW:
-        raise ValueError(
-            f"until_minute must be in {_ANALOG_MIN_WINDOW}..{_ANALOG_MAX_WINDOW}"
-        )
+        raise ValueError(f"until_minute must be in {_ANALOG_MIN_WINDOW}..{_ANALOG_MAX_WINDOW}")
 
-    conn = _connection()
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(ohlcv, symbology, "ohlcv_1m")
+    conn = _connection()
 
     # Single SQL computes target + all candidates + ordering in one pass.
     # `per_day` derives open and close-at-window for every ES front-month
@@ -498,9 +578,7 @@ def analog_days(
     if target_row is None or target_row[0] is None:
         raise ValueError(f"No ES bars found for {date_iso}")
 
-    tgt_symbol, tgt_open, tgt_high, tgt_low, tgt_close, tgt_vol, tgt_win, tgt_delta = (
-        target_row
-    )
+    tgt_symbol, tgt_open, tgt_high, tgt_low, tgt_close, tgt_vol, tgt_win, tgt_delta = target_row
 
     analogs = [
         {
@@ -566,9 +644,10 @@ def day_summary_text(
 
     Raises ValueError if the date has no ES bars in the archive.
     """
-    conn = _connection()
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(ohlcv, symbology, "ohlcv_1m")
+    conn = _connection()
 
     top_symbol = _front_month_symbol(conn, ohlcv, symbology, date_iso)
     if top_symbol is None:
@@ -615,7 +694,7 @@ def day_summary_text(
         [ohlcv, symbology, top_symbol, date_iso],
     ).fetchone()
 
-    assert row is not None
+    assert row is not None  # noqa: S101 — narrowing; aggregate query always yields one row
     (
         day_open,
         day_high,
@@ -673,9 +752,10 @@ def day_features_vector(
     in the first-hour window (implausible data; refuse rather than
     pad-with-zeros a bad vector into the archive).
     """
-    conn = _connection()
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(ohlcv, symbology, "ohlcv_1m")
+    conn = _connection()
 
     top_symbol = _front_month_symbol(conn, ohlcv, symbology, date_iso)
     if top_symbol is None:
@@ -714,9 +794,7 @@ def day_features_vector(
     ).fetchall()
 
     if len(rows) < 10:
-        raise ValueError(
-            f"Insufficient first-hour bars for {date_iso}: got {len(rows)}"
-        )
+        raise ValueError(f"Insufficient first-hour bars for {date_iso}: got {len(rows)}")
 
     day_open = float(rows[0][2])
     # Build bucket keyed on minute index; forward-fill gaps.
@@ -765,9 +843,10 @@ def day_summary_prediction(
     Format stability matters: this is the deterministic input to the
     OpenAI embedding call. Reordering fields invalidates stored rows.
     """
-    conn = _connection()
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(ohlcv, symbology, "ohlcv_1m")
+    conn = _connection()
 
     top_symbol = _front_month_symbol(conn, ohlcv, symbology, date_iso)
     if top_symbol is None:
@@ -806,13 +885,11 @@ def day_summary_prediction(
         [ohlcv, symbology, top_symbol, date_iso],
     ).fetchone()
 
-    assert row is not None
+    assert row is not None  # noqa: S101 — narrowing; aggregate query always yields one row
     day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = row
 
     if hour_bars is None or hour_bars < 10:
-        raise ValueError(
-            f"Insufficient first-hour bars for {date_iso}: got {hour_bars}"
-        )
+        raise ValueError(f"Insufficient first-hour bars for {date_iso}: got {hour_bars}")
 
     d1 = float(close_60) - float(day_open)
 
@@ -850,9 +927,10 @@ def day_features_batch(
     are simply absent from the returned list — caller decides whether
     to treat as a gap or an error.
     """
-    conn = _connection()
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(ohlcv, symbology, "ohlcv_1m")
+    conn = _connection()
 
     # Standardized via `front_month_cte` (Phase 2b). Behavior change vs
     # pre-refactor: tied-volume contracts now resolve to the
@@ -861,7 +939,7 @@ def day_features_batch(
     # contracts on the same day are vanishingly rare in production data;
     # the determinism guarantee is the win.
     rows = conn.execute(
-        front_month_cte(
+        front_month_cte(  # noqa: S608 — identifiers are module constants; values are bound via `?`
             symbol_like="'ES%'",
             parquet_path_param="?",
             symbology_path_param="?",
@@ -954,15 +1032,16 @@ def day_summary_batch(
     same precision, same field order — so rows emitted here can flow
     straight into `upsertDayEmbedding` without format drift.
     """
-    conn = _connection()
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(ohlcv, symbology, "ohlcv_1m")
+    conn = _connection()
 
     # Standardized via `front_month_cte` (Phase 2b). Tied-volume
     # contracts now resolve deterministically by `symbol ASC` rather
     # than relying on DuckDB row order — see day_features_batch comment.
     rows = conn.execute(
-        front_month_cte(
+        front_month_cte(  # noqa: S608 — identifiers are module constants; values are bound via `?`
             symbol_like="'ES%'",
             parquet_path_param="?",
             symbology_path_param="?",
@@ -1067,15 +1146,16 @@ def day_summary_prediction_batch(
     """Batched leakage-free summaries. Byte-identical format to
     `day_summary_prediction`. Single DuckDB query per call.
     """
-    conn = _connection()
     ohlcv = _ohlcv_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(ohlcv, symbology, "ohlcv_1m")
+    conn = _connection()
 
     # Standardized via `front_month_cte` (Phase 2b). Tied-volume
     # contracts now resolve deterministically by `symbol ASC` rather
     # than relying on DuckDB row order — see day_features_batch comment.
     rows = conn.execute(
-        front_month_cte(
+        front_month_cte(  # noqa: S608 — identifiers are module constants; values are bound via `?`
             symbol_like="'ES%'",
             parquet_path_param="?",
             symbology_path_param="?",
@@ -1123,9 +1203,7 @@ def day_summary_prediction_batch(
 
     out: list[dict[str, Any]] = []
     for row in rows:
-        day, symbol, day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = (
-            row
-        )
+        day, symbol, day_open, close_60, hour_high, hour_low, hour_volume, hour_bars = row
         if hour_bars < 10:
             continue
         d1 = float(close_60) - float(day_open)
@@ -1241,13 +1319,12 @@ def tbbo_day_microstructure(
     """
     symbol_root = symbol.upper()
     if symbol_root not in _TBBO_ALLOWED_SYMBOLS:
-        raise ValueError(
-            f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}"
-        )
+        raise ValueError(f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}")
 
-    conn = _connection()
     tbbo = _tbbo_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(tbbo, symbology, "tbbo")
+    conn = _connection()
 
     contract = _tbbo_front_month(conn, tbbo, symbology, date_iso, symbol_root)
     if contract is None:
@@ -1340,7 +1417,7 @@ def tbbo_day_microstructure(
         if v is None:
             return None
         fv = float(v)
-        if fv != fv:  # NaN check without `math` import noise
+        if math.isnan(fv):
             return None
         return fv
 
@@ -1395,13 +1472,9 @@ def tbbo_ofi_percentile(
     """
     symbol_root = symbol.upper()
     if symbol_root not in _TBBO_ALLOWED_SYMBOLS:
-        raise ValueError(
-            f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}"
-        )
+        raise ValueError(f"symbol must be one of {sorted(_TBBO_ALLOWED_SYMBOLS)}, got {symbol!r}")
     if window not in _TBBO_OFI_WINDOWS:
-        raise ValueError(
-            f"window must be one of {sorted(_TBBO_OFI_WINDOWS)}, got {window!r}"
-        )
+        raise ValueError(f"window must be one of {sorted(_TBBO_OFI_WINDOWS)}, got {window!r}")
     if horizon_days < 1:
         raise ValueError(f"horizon_days must be >= 1, got {horizon_days}")
     if horizon_days > _TBBO_OFI_MAX_HORIZON_DAYS:
@@ -1414,20 +1487,17 @@ def tbbo_ofi_percentile(
     try:
         current_float = float(current_value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"current_value must be a number, got {current_value!r}"
-        ) from exc
-    import math as _math
-
-    if not _math.isfinite(current_float):
+        raise ValueError(f"current_value must be a number, got {current_value!r}") from exc
+    if not math.isfinite(current_float):
         raise ValueError(f"current_value must be finite, got {current_value!r}")
 
     window_minutes = _TBBO_OFI_WINDOWS[window]
     preceding = window_minutes - 1
 
-    conn = _connection()
     tbbo = _tbbo_glob(root)
     symbology = _symbology_path(root)
+    _require_seeded(tbbo, symbology, "tbbo")
+    conn = _connection()
 
     # Build the historical distribution in one DuckDB pass. Strategy:
     #   1. filtered: TBBO rows for the symbol root, joined to symbology
@@ -1475,7 +1545,7 @@ def tbbo_ofi_percentile(
         )
         ORDER BY day DESC
         LIMIT 1 OFFSET ?
-        """,
+        """,  # noqa: S608 — {session_day} is a module-constant SQL expression; values bound via `?`
         [tbbo, symbology, f"{symbol_root}%", horizon_days - 1],
     ).fetchone()
 
@@ -1583,7 +1653,7 @@ def tbbo_ofi_percentile(
         GROUP BY day
         ORDER BY day DESC
         LIMIT ?
-        """,
+        """,  # noqa: S608 — {session_day} is a module-constant SQL expression; values bound via `?`
         [
             tbbo,
             symbology,
@@ -1596,9 +1666,7 @@ def tbbo_ofi_percentile(
 
     values = [float(row[1]) for row in daily if row[1] is not None]
     if not values:
-        raise ValueError(
-            f"No TBBO {symbol_root} OFI history available for window {window}"
-        )
+        raise ValueError(f"No TBBO {symbol_root} OFI history available for window {window}")
 
     below = sum(1 for v in values if v < current_float)
     # Fraction strictly below, scaled 0-100. At the true minimum, zero values

@@ -9,20 +9,25 @@
  * Public endpoint — no owner gate. All data is publicly available.
  * Results cached in Upstash Redis for 7 days (key is date-scoped), but only
  * when every source returned OK — a FRED error skips the cache write so a
- * later request can retry (AUD-M2).
+ * later request can retry (AUD-M2). The cache is best-effort via
+ * `safeRedis`: a Redis outage or Upstash over-quota rejection degrades to
+ * a cache miss (fresh fetch, 200) rather than a 500.
  *
  * Query params:
  *   ?days=30  — how many days ahead to return (default 30, max 90)
  *
  * Environment variables:
  *   FRED_API_KEY    — Free key from https://fred.stlouisfed.org/docs/api/api_key.html
+ *                     (optional: when unset the endpoint returns 200 with
+ *                     ONLY the static FOMC / early-close events and
+ *                     `configured: false` — it does NOT 500; see handler)
  *   FINNHUB_API_KEY — Free key from https://finnhub.io/register (optional, earnings only)
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import { checkBot, setCacheHeaders } from './_lib/api-helpers.js';
 import { withRequestScope } from './_lib/request-scope.js';
-import { redis } from './_lib/redis.js';
+import { redis, safeRedis, safeRedisVoid } from './_lib/redis.js';
 import logger from './_lib/logger.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -364,6 +369,76 @@ async function fetchReleaseDates(
 }
 
 // ============================================================
+// STATIC EVENTS (no external key required)
+// ============================================================
+
+/**
+ * FOMC + half-day / holiday events inside [startDate, endDate], built purely
+ * from the static tables above. Single source of truth for BOTH the
+ * configured path (merged with FRED + Finnhub in `fetchAllEvents`) and the
+ * unconfigured path (served alone when `FRED_API_KEY` is unset) — the
+ * EventDayWarning FOMC / early-close banners must never depend on a key.
+ * Returned in table order; callers sort via `sortEvents`.
+ */
+function buildStaticEvents(startDate: string, endDate: string): EventItem[] {
+  const events: EventItem[] = [];
+
+  // Static FOMC dates within range
+  for (const fomcDate of ALL_FOMC) {
+    if (fomcDate >= startDate && fomcDate <= endDate) {
+      const hasSEP = SEP_DATES.has(fomcDate);
+      events.push({
+        date: fomcDate,
+        event: hasSEP ? 'FOMC + SEP' : 'FOMC',
+        description: hasSEP
+          ? 'Fed rate decision + Summary of Economic Projections (dot plot)'
+          : 'Federal Reserve interest rate decision',
+        time: '2:00 PM',
+        severity: 'high',
+        source: 'static',
+      });
+    }
+  }
+
+  // Half-day / early close dates within range
+  for (const hd of ALL_HALF_DAYS) {
+    if (hd.date >= startDate && hd.date <= endDate) {
+      if (hd.type === 'closed') {
+        events.push({
+          date: hd.date,
+          event: 'CLOSED',
+          description: `Market closed \u2014 ${hd.reason}`,
+          time: 'All Day',
+          severity: 'high',
+          source: 'static',
+        });
+      } else {
+        events.push({
+          date: hd.date,
+          event: 'EARLY CLOSE',
+          description: `Market closes at ${hd.closeTime} ET \u2014 ${hd.reason}. Time-to-expiry uses ${hd.closeTime} instead of 4:00 PM.`,
+          time: hd.closeTime!,
+          severity: 'high',
+          source: 'static',
+        });
+      }
+    }
+  }
+
+  return events;
+}
+
+/** Sort in place by date, then severity (high first), then event name. */
+function sortEvents(events: EventItem[]): EventItem[] {
+  events.sort((a, b) => {
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    if (a.severity !== b.severity) return a.severity === 'high' ? -1 : 1;
+    return a.event.localeCompare(b.event);
+  });
+  return events;
+}
+
+// ============================================================
 // MAIN FETCH
 // ============================================================
 
@@ -419,59 +494,13 @@ async function fetchAllEvents(
     }
   }
 
-  // Add static FOMC dates within range
-  for (const fomcDate of ALL_FOMC) {
-    if (fomcDate >= startDate && fomcDate <= endDate) {
-      const hasSEP = SEP_DATES.has(fomcDate);
-      events.push({
-        date: fomcDate,
-        event: hasSEP ? 'FOMC + SEP' : 'FOMC',
-        description: hasSEP
-          ? 'Fed rate decision + Summary of Economic Projections (dot plot)'
-          : 'Federal Reserve interest rate decision',
-        time: '2:00 PM',
-        severity: 'high',
-        source: 'static',
-      });
-    }
-  }
-
-  // Add half-day / early close dates within range
-  for (const hd of ALL_HALF_DAYS) {
-    if (hd.date >= startDate && hd.date <= endDate) {
-      if (hd.type === 'closed') {
-        events.push({
-          date: hd.date,
-          event: 'CLOSED',
-          description: `Market closed \u2014 ${hd.reason}`,
-          time: 'All Day',
-          severity: 'high',
-          source: 'static',
-        });
-      } else {
-        events.push({
-          date: hd.date,
-          event: 'EARLY CLOSE',
-          description: `Market closes at ${hd.closeTime} ET \u2014 ${hd.reason}. Time-to-expiry uses ${hd.closeTime} instead of 4:00 PM.`,
-          time: hd.closeTime!,
-          severity: 'high',
-          source: 'static',
-        });
-      }
-    }
-  }
+  // Add static FOMC + half-day / early close dates within range
+  events.push(...buildStaticEvents(startDate, endDate));
 
   // Add mega-cap earnings
   events.push(...earningsEvents);
 
-  // Sort by date, then severity (high first), then event name
-  events.sort((a, b) => {
-    if (a.date !== b.date) return a.date.localeCompare(b.date);
-    if (a.severity !== b.severity) return a.severity === 'high' ? -1 : 1;
-    return a.event.localeCompare(b.event);
-  });
-
-  return { events, complete };
+  return { events: sortEvents(events), complete };
 }
 
 // ============================================================
@@ -489,16 +518,6 @@ export default withRequestScope(
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      const fredKey = process.env.FRED_API_KEY;
-      if (!fredKey) {
-        done({ status: 500 });
-        logger.error('FRED_API_KEY not configured');
-        return res
-          .status(500)
-          .json({ error: 'Service temporarily unavailable' });
-      }
-      const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
-
       // Parse days parameter (default 30, max 90)
       const daysParam = Number(req.query?.days) || 30;
       const days = Math.min(Math.max(daysParam, 1), 90);
@@ -510,36 +529,69 @@ export default withRequestScope(
         new Date(now.getTime() + days * 24 * 60 * 60 * 1000),
       );
 
-      // Try Redis cache first
+      const fredKey = process.env.FRED_API_KEY;
+      if (!fredKey) {
+        // FRED is an OPTIONAL feed. A deployment that never provisioned the
+        // key used to 500 on every SPA poll here — an error-level log per
+        // request for a state no operator can act on. Unconfigured != broken
+        // (commit 331e915c): serve the normal response shape and flag
+        // `configured: false` so a UI can surface it later. Only the keyed
+        // feeds (FRED releases, Finnhub earnings) go dark — the FOMC and
+        // early-close / holiday events come from the static tables and are
+        // still served so EventDayWarning keeps its FOMC-day / 1 PM-close
+        // banners. No FRED/Finnhub call, and the day-scoped redis key is
+        // neither read (a configured-era cache must not leak FRED entries)
+        // nor written (must not pin the key once the operator adds the key)
+        // — the same "skip the cache write" rule as a FRED error below.
+        // Edge/browser cache headers match the success path so the SPA
+        // doesn't hammer the function. Genuine upstream failures still 500.
+        logger.warn(
+          'FRED_API_KEY not configured — /api/events serving static events only',
+        );
+        setCacheHeaders(res, 300, 120);
+        done({ status: 200 });
+        return res.status(200).json({
+          events: sortEvents(buildStaticEvents(startDate, endDate)),
+          startDate,
+          endDate,
+          cached: false,
+          configured: false,
+          asOf: new Date().toISOString(),
+        });
+      }
+      const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
+
+      // Try Redis cache first. `safeRedis` turns ANY Redis failure (outage
+      // or Upstash over-quota) into a cache miss — the endpoint still
+      // answers from FRED/Finnhub; the failure is counted in `redis.error`
+      // / `redis.quota_exceeded` rather than surfacing here.
       const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;
-      try {
-        const raw = await redis.get<
-          { data: EventItem[]; cachedAt: number } | EventItem[]
-        >(cacheKey);
-        if (raw) {
-          metrics.cacheResult('/api/events', true);
-          setCacheHeaders(res, 300, 120);
-          res.setHeader('X-Cache', 'HIT');
-          // Support both new wrapper format and legacy plain array
-          const cachedEvents = Array.isArray(raw) ? raw : raw.data;
-          const cachedAt = Array.isArray(raw) ? null : raw.cachedAt;
-          if (cachedAt) {
-            res.setHeader(
-              'X-Cache-Age',
-              Math.round((Date.now() - cachedAt) / 1000),
-            );
-          }
-          done({ status: 200 });
-          return res.status(200).json({
-            events: cachedEvents,
-            startDate,
-            endDate,
-            cached: true,
-            asOf: new Date().toISOString(),
-          });
+      type CachedEvents = { data: EventItem[]; cachedAt: number } | EventItem[];
+      const raw = await safeRedis<CachedEvents | null>(
+        () => redis.get<CachedEvents>(cacheKey),
+        null,
+      );
+      if (raw) {
+        metrics.cacheResult('/api/events', true);
+        setCacheHeaders(res, 300, 120);
+        res.setHeader('X-Cache', 'HIT');
+        // Support both new wrapper format and legacy plain array
+        const cachedEvents = Array.isArray(raw) ? raw : raw.data;
+        const cachedAt = Array.isArray(raw) ? null : raw.cachedAt;
+        if (cachedAt) {
+          res.setHeader(
+            'X-Cache-Age',
+            Math.round((Date.now() - cachedAt) / 1000),
+          );
         }
-      } catch {
-        // Redis unavailable — fetch fresh
+        done({ status: 200 });
+        return res.status(200).json({
+          events: cachedEvents,
+          startDate,
+          endDate,
+          cached: true,
+          asOf: new Date().toISOString(),
+        });
       }
 
       // Fetch from all sources
@@ -555,16 +607,17 @@ export default withRequestScope(
       // would serve a missing CPI/NFP flag all day (AUD-M2). Skipping the
       // write lets the next request retry FRED.
       if (complete) {
-        // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
-        try {
+        // Cache in Redis for 7 days (key is date-scoped, stale keys
+        // auto-expire). Best-effort: a failed write (outage / quota) is a
+        // metric, not an error log per request — the next request simply
+        // misses and retries the write.
+        await safeRedisVoid(async () => {
           await redis.set(
             cacheKey,
             { data: events, cachedAt: Date.now() },
             { ex: CACHE_TTL_SEC },
           );
-        } catch (err) {
-          logger.error({ err }, 'Failed to cache events in Redis');
-        }
+        });
       }
 
       setCacheHeaders(res, 300, 120);
