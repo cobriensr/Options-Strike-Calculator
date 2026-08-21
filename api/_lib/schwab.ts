@@ -6,7 +6,14 @@
  *
  * Token lifecycle:
  *   - Access token: expires every 30 minutes → auto-refreshed
- *   - Refresh token: expires every 7 days → requires manual re-auth
+ *   - Refresh token: expires 7 days after the ORIGINAL OAuth login →
+ *     requires manual re-auth. Schwab does NOT hand out a new 7-day refresh
+ *     token when you exchange one for an access token, so `refreshExpiresAt`
+ *     is set exactly once (at `storeInitialTokens`) and carried forward
+ *     unchanged by every subsequent refresh. Recomputing it per refresh —
+ *     the pre-2026-08-20 behavior — walked the deadline (and the Redis TTL
+ *     derived from it) forward forever, so the app never saw the expiry
+ *     coming and positions/breadth went dark with zero warning.
  *
  * The decoded access token is additionally cached in module memory (see
  * `tokenCache`) so a warm lambda does zero Redis reads between refreshes —
@@ -64,6 +71,116 @@ const KV_KEY = 'schwab:tokens';
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token';
 const BUFFER_MS = 60_000; // Refresh 1 minute before expiry
 
+/**
+ * Lifetime Schwab grants a refresh token at the OAuth login. This is the
+ * ONLY moment the clock starts — an access-token refresh does not restart
+ * it (see the module docblock).
+ */
+const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Start nagging the owner to re-auth this long before the deadline. */
+const REFRESH_EXPIRY_WARN_MS = 24 * 60 * 60 * 1000;
+
+const MS_PER_HOUR = 60 * 60 * 1000;
+
+// ============================================================
+// REFRESH-TOKEN DEADLINE
+// ============================================================
+
+/**
+ * Once-per-process latch for the "expires soon" alarm. `getAccessToken` runs
+ * on every Schwab call — crons hit it every minute — so an unlatched capture
+ * would be thousands of identical Sentry events a day. One per lambda
+ * lifetime is enough to page the owner.
+ */
+let refreshExpiryWarned = false;
+
+/** Once-per-process latch for the "stored deadline unusable" fallback log. */
+let refreshDeadlineFallbackWarned = false;
+
+/**
+ * Re-arm both warn latches. Called after a real re-auth (a new 7-day window
+ * means the next expiry deserves its own alarm) and by tests.
+ */
+function resetRefreshWarnLatches(): void {
+  refreshExpiryWarned = false;
+  refreshDeadlineFallbackWarned = false;
+}
+
+/** Re-arm both warn latches. Exported for tests only. */
+export function _resetSchwabWarnLatchesForTests(): void {
+  resetRefreshWarnLatches();
+}
+
+/**
+ * The refresh-token deadline to persist after an access-token refresh.
+ *
+ * Carries the stored deadline forward rather than inventing a new one, and
+ * clamps with `Math.min` against `now + 7d`: we cannot prove Schwab ever
+ * rotates the refresh token, so the app must never end up believing it has
+ * MORE time than the longest window Schwab could possibly have granted. The
+ * clamp is what neutralizes a blob written by the old code (or any corrupted
+ * value) — it stops the deadline drifting further out, it just cannot
+ * retroactively recover the true login time.
+ *
+ * A missing / non-numeric / non-finite value (an old blob, a partial write)
+ * falls back to a full window and logs once. Assuming 7 days there is the
+ * safe direction: the alternative — treating it as expired — would take
+ * positions offline over a bookkeeping gap.
+ */
+function carryForwardRefreshExpiry(stored: SchwabTokens, now: number): number {
+  const fullWindow = now + REFRESH_TOKEN_TTL_MS;
+  // Typed `number`, but it round-trips through Redis JSON written by older
+  // code, so it is untrusted at runtime.
+  const storedDeadline: unknown = stored.refreshExpiresAt;
+
+  if (
+    typeof storedDeadline !== 'number' ||
+    !Number.isFinite(storedDeadline) ||
+    storedDeadline <= 0
+  ) {
+    if (!refreshDeadlineFallbackWarned) {
+      refreshDeadlineFallbackWarned = true;
+      logger.warn(
+        { storedRefreshExpiresAt: storedDeadline },
+        'schwab refresh: stored refreshExpiresAt is missing or invalid — assuming a full 7-day window from now; re-auth at /api/auth/init to record the real deadline',
+      );
+    }
+    return fullWindow;
+  }
+
+  return Math.min(storedDeadline, fullWindow);
+}
+
+/**
+ * Emit ONE warning per process when the refresh token is inside its final
+ * 24 hours. Without this the first sign of trouble is Schwab rejecting the
+ * refresh — at which point the Position Monitor and the NYSE breadth
+ * internals have already gone dark and `/api/health` is the only tell.
+ */
+function warnIfRefreshExpiringSoon(
+  refreshExpiresAt: number,
+  now: number,
+): void {
+  if (refreshExpiryWarned) return;
+  if (!Number.isFinite(refreshExpiresAt)) return;
+
+  const msRemaining = refreshExpiresAt - now;
+  if (msRemaining > REFRESH_EXPIRY_WARN_MS) return;
+
+  refreshExpiryWarned = true;
+  const hoursRemaining = Math.round((msRemaining / MS_PER_HOUR) * 10) / 10;
+  const expiresAt = new Date(refreshExpiresAt).toISOString();
+  const message =
+    'schwab refresh token expires soon — re-auth at /api/auth/init';
+
+  logger.warn({ expiresAt, hoursRemaining }, message);
+  Sentry.captureMessage(message, {
+    level: 'warning',
+    extra: { expiresAt, hoursRemaining },
+  });
+}
+
 // ============================================================
 // HELPERS
 // ============================================================
@@ -110,7 +227,14 @@ async function getStoredTokens(): Promise<SchwabTokens | null> {
 }
 
 async function storeTokens(tokens: SchwabTokens): Promise<void> {
-  // TTL = refresh token lifetime + 1 day buffer
+  // TTL = time left on the refresh token + 1 day of slack.
+  //
+  // `refreshExpiresAt` is the deadline set at the original OAuth login and
+  // carried forward untouched by refreshes, so this TTL now SHRINKS as the
+  // deadline approaches instead of being pushed out every ~30 minutes. Once
+  // the deadline passes, the 1-hour floor keeps the (dead) blob around long
+  // enough for `getAccessToken` to answer with the precise "Refresh token
+  // expired. Run /api/auth/init" error rather than a bare "No tokens found".
   const ttlMs = tokens.refreshExpiresAt - Date.now() + 86_400_000;
   const ttlSec = Math.max(Math.floor(ttlMs / 1000), 3600);
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -235,8 +359,16 @@ async function waitForLockRelease(maxWaitMs = 30_000): Promise<void> {
   }
 }
 
+/**
+ * Exchange the stored refresh token for a fresh access token.
+ *
+ * Takes the whole stored record (not just the refresh-token string) because
+ * the result has to inherit its `refreshExpiresAt` — Schwab's response says
+ * nothing about the refresh token's remaining life, so the only source of
+ * truth is what we recorded at login.
+ */
 async function refreshAccessToken(
-  refreshToken: string,
+  stored: SchwabTokens,
   clientId: string,
   clientSecret: string,
 ): Promise<SchwabTokens> {
@@ -248,7 +380,7 @@ async function refreshAccessToken(
     },
     body: new URLSearchParams({
       grant_type: 'refresh_token',
-      refresh_token: refreshToken,
+      refresh_token: stored.refreshToken,
     }),
     signal: AbortSignal.timeout(30_000),
   });
@@ -260,12 +392,21 @@ async function refreshAccessToken(
 
   const data = (await res.json()) as SchwabTokenResponse;
   const now = Date.now();
+  const refreshExpiresAt = carryForwardRefreshExpiry(stored, now);
+
+  // Belt-and-braces with the same check in `getAccessToken`: a refresh can
+  // finish materially later than the read that triggered it (lock wait +
+  // network), so the deadline can cross the 24h line in between.
+  warnIfRefreshExpiringSoon(refreshExpiresAt, now);
 
   return {
     accessToken: data.access_token,
-    refreshToken: data.refresh_token,
+    // Schwab echoes the refresh token back; if a response ever omits it,
+    // keep the one we already hold rather than persisting `undefined` and
+    // bricking auth until the next manual login.
+    refreshToken: data.refresh_token || stored.refreshToken,
     expiresAt: now + data.expires_in * 1000,
-    refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
+    refreshExpiresAt,
   };
 }
 
@@ -304,7 +445,7 @@ const LOCK_MAX_ATTEMPTS = 3;
  *      coordination.
  */
 async function refreshAccessTokenOnce(
-  refreshToken: string,
+  stored: SchwabTokens,
   clientId: string,
   clientSecret: string,
 ): Promise<SchwabTokens> {
@@ -320,7 +461,7 @@ async function refreshAccessTokenOnce(
         // given moment.
         try {
           const tokens = await refreshAccessToken(
-            refreshToken,
+            stored,
             clientId,
             clientSecret,
           );
@@ -407,6 +548,12 @@ export async function getAccessToken(): Promise<
     };
   }
 
+  // Still authenticated, but possibly not for much longer. Checked on every
+  // Redis read (i.e. at most once per ~30 min per warm instance) rather than
+  // only on refresh, so a low-traffic instance that never needs to refresh
+  // still raises the alarm.
+  warnIfRefreshExpiringSoon(stored.refreshExpiresAt, Date.now());
+
   // Check if access token is still valid (with buffer)
   if (Date.now() < stored.expiresAt - BUFFER_MS) {
     cacheToken(stored);
@@ -416,7 +563,7 @@ export async function getAccessToken(): Promise<
   // Refresh the access token (deduplicated across parallel calls)
   try {
     const newTokens = await refreshAccessTokenOnce(
-      stored.refreshToken,
+      stored,
       creds.clientId,
       creds.clientSecret,
     );
@@ -479,14 +626,20 @@ export async function storeInitialTokens(
     const data = (await res.json()) as SchwabTokenResponse;
     const now = Date.now();
 
+    // The ONE place a new 7-day window is legitimately minted: this is a
+    // genuine authorization-code exchange, so the refresh token really is
+    // brand new. Every later access-token refresh inherits this deadline.
     const tokens: SchwabTokens = {
       accessToken: data.access_token,
       refreshToken: data.refresh_token,
       expiresAt: now + data.expires_in * 1000,
-      refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
+      refreshExpiresAt: now + REFRESH_TOKEN_TTL_MS,
     };
 
     await storeTokens(tokens);
+    // Fresh window → re-arm the alarms so the NEXT expiry is announced too
+    // (a long-lived instance would otherwise stay latched forever).
+    resetRefreshWarnLatches();
     // Replace (not just drop) the in-memory copy so this instance serves
     // the post-login token without a Redis read; other warm instances age
     // out their old copy at its expiry.

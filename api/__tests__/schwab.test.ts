@@ -18,6 +18,25 @@ const mockLogger = vi.hoisted(() => ({
 
 vi.mock('../_lib/logger.js', () => ({ default: mockLogger }));
 
+const { mockCaptureException, mockCaptureMessage } = vi.hoisted(() => ({
+  mockCaptureException: vi.fn(),
+  mockCaptureMessage: vi.fn(),
+}));
+
+// `redis.ts` (loaded for real here — only `@upstash/redis` is mocked) pulls
+// `metrics` from this module, so the mock has to carry it too.
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    captureException: mockCaptureException,
+    captureMessage: mockCaptureMessage,
+  },
+  metrics: {
+    increment: vi.fn(),
+    tokenRefresh: vi.fn(),
+    schwabCall: vi.fn(() => vi.fn()),
+  },
+}));
+
 vi.mock('@upstash/redis', () => {
   return {
     Redis: class MockRedis {
@@ -34,6 +53,7 @@ import {
   getAuthUrl,
   isSchwabConfigured,
   invalidateSchwabTokenCache,
+  _resetSchwabWarnLatchesForTests,
 } from '../_lib/schwab.js';
 
 describe('schwab', () => {
@@ -46,9 +66,14 @@ describe('schwab', () => {
     mockRedisGet.mockReset();
     mockRedisSet.mockReset();
     mockRedisDel.mockReset();
+    mockCaptureException.mockReset();
+    mockCaptureMessage.mockReset();
     // The module-scoped access-token cache would otherwise leak a token
     // cached by one test into the next and mask the Redis read under test.
     invalidateSchwabTokenCache();
+    // Same for the once-per-process warn latches: without a reset the first
+    // test to trip one would silence every later assertion on them.
+    _resetSchwabWarnLatchesForTests();
   });
 
   afterEach(() => {
@@ -842,10 +867,480 @@ describe('schwab', () => {
   });
 
   // ============================================================
+  // Refresh-token deadline carry-forward + expiry warning
+  // ============================================================
+
+  /**
+   * Schwab's Trader API does NOT mint a new 7-day refresh token when you
+   * exchange a refresh token for an access token — the refresh token keeps
+   * the lifetime it was granted at the original OAuth login. The old code
+   * recomputed `refreshExpiresAt = now + 7d` on EVERY ~30-minute refresh,
+   * so the recorded deadline (and the Redis TTL derived from it) walked
+   * forward forever and the token never appeared to expire. Live proof: the
+   * `schwab:tokens` TTL read 690,768s on 2026-08-19 and 691,154s on
+   * 2026-08-20 — it went UP over a day.
+   */
+  describe('refresh-token deadline (carry-forward)', () => {
+    const DAY_MS = 86_400_000;
+    const WEEK_MS = 7 * DAY_MS;
+    const NOW = new Date('2026-08-20T15:00:00Z').getTime();
+
+    interface StoredBlob {
+      accessToken: string;
+      refreshToken: string;
+      expiresAt: number;
+      refreshExpiresAt: number;
+    }
+
+    function setCreds() {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+    }
+
+    /** A stored blob whose access token is inside the 60s refresh buffer. */
+    function staleAccess(overrides: Partial<StoredBlob> = {}) {
+      return {
+        accessToken: 'old-tok',
+        refreshToken: 'ref-tok',
+        expiresAt: Date.now() + 30_000,
+        refreshExpiresAt: Date.now() + WEEK_MS,
+        ...overrides,
+      };
+    }
+
+    function mockRefreshOk(access = 'new-access', refresh = 'new-ref') {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            access_token: access,
+            refresh_token: refresh,
+            expires_in: 1800,
+            token_type: 'Bearer',
+            scope: 'api',
+            id_token: '',
+          }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return fetchMock;
+    }
+
+    /** The last `SET schwab:tokens` payload (lock writes use a different key). */
+    function lastTokenWrite(): { tokens: StoredBlob; ttlSec: number } | null {
+      const call = mockRedisSet.mock.calls
+        .filter((c) => c[0] === 'schwab:tokens')
+        .at(-1);
+      if (!call) return null;
+      return {
+        tokens: call[1] as StoredBlob,
+        ttlSec: (call[2] as { ex: number }).ex,
+      };
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ now: new Date(NOW) });
+      setCreds();
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+      mockLogger.warn.mockReset();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it('preserves the stored deadline instead of minting a new 7-day window', async () => {
+      // Login was 5 days ago → the refresh token really dies in 2 days.
+      const realDeadline = NOW + 2 * DAY_MS;
+      mockRedisGet.mockResolvedValue(
+        staleAccess({ refreshExpiresAt: realDeadline }),
+      );
+      mockRefreshOk();
+
+      expect(await getAccessToken()).toEqual({ token: 'new-access' });
+
+      const write = lastTokenWrite();
+      expect(write).not.toBeNull();
+      expect(write!.tokens.refreshExpiresAt).toBe(realDeadline);
+      // The bug this test exists for:
+      expect(write!.tokens.refreshExpiresAt).not.toBe(NOW + WEEK_MS);
+    });
+
+    it('does not let the Redis TTL creep upward across successive refreshes', async () => {
+      const realDeadline = NOW + 3 * DAY_MS;
+      mockRedisGet.mockResolvedValue(
+        staleAccess({ refreshExpiresAt: realDeadline }),
+      );
+      mockRefreshOk();
+      await getAccessToken();
+      const first = lastTokenWrite()!;
+
+      // 30 minutes later, the next refresh reads back what we just wrote.
+      vi.setSystemTime(NOW + 1_800_000);
+      invalidateSchwabTokenCache();
+      mockRedisGet.mockResolvedValue({
+        ...first.tokens,
+        expiresAt: Date.now() + 30_000,
+      });
+      mockRefreshOk('newer-access');
+      await getAccessToken();
+      const second = lastTokenWrite()!;
+
+      expect(second.tokens.refreshExpiresAt).toBe(realDeadline);
+      // TTL = deadline − now + 1 day buffer, so it must SHRINK as the
+      // deadline approaches. Under the bug it grew by the elapsed time.
+      expect(second.ttlSec).toBeLessThan(first.ttlSec);
+      expect(first.ttlSec).toBe(Math.floor((3 * DAY_MS + DAY_MS) / 1000));
+    });
+
+    it('clamps a stored deadline further out than 7 days to now + 7d (Math.min)', async () => {
+      // An inflated blob written by the old code (or a corrupted value):
+      // never believe we have MORE time than Schwab could possibly grant.
+      mockRedisGet.mockResolvedValue(
+        staleAccess({ refreshExpiresAt: NOW + 30 * DAY_MS }),
+      );
+      mockRefreshOk();
+
+      await getAccessToken();
+
+      expect(lastTokenWrite()!.tokens.refreshExpiresAt).toBe(NOW + WEEK_MS);
+    });
+
+    it('falls back to now + 7d when the stored deadline is missing', async () => {
+      const legacy = {
+        accessToken: 'old-tok',
+        refreshToken: 'ref-tok',
+        expiresAt: NOW + 30_000,
+      };
+      mockRedisGet.mockResolvedValue(legacy);
+      mockRefreshOk();
+
+      expect(await getAccessToken()).toEqual({ token: 'new-access' });
+      expect(lastTokenWrite()!.tokens.refreshExpiresAt).toBe(NOW + WEEK_MS);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ storedRefreshExpiresAt: undefined }),
+        expect.stringContaining('refreshExpiresAt'),
+      );
+    });
+
+    it('falls back safely (and logs once) when the stored deadline is garbage', async () => {
+      mockRedisGet.mockResolvedValue(
+        staleAccess({ refreshExpiresAt: 'not-a-number' as unknown as number }),
+      );
+      mockRefreshOk();
+      await getAccessToken();
+      expect(lastTokenWrite()!.tokens.refreshExpiresAt).toBe(NOW + WEEK_MS);
+
+      // A second refresh must not re-log — a per-minute cron would spam.
+      invalidateSchwabTokenCache();
+      mockRedisGet.mockResolvedValue(
+        staleAccess({ refreshExpiresAt: Number.NaN }),
+      );
+      mockRefreshOk('second-access');
+      await getAccessToken();
+
+      const fallbackWarns = mockLogger.warn.mock.calls.filter((c) =>
+        String(c[1]).includes('refreshExpiresAt'),
+      );
+      expect(fallbackWarns).toHaveLength(1);
+    });
+
+    it('keeps the stored refresh token when Schwab omits refresh_token', async () => {
+      mockRedisGet.mockResolvedValue(staleAccess({ refreshToken: 'keep-me' }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'new-access',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+
+      await getAccessToken();
+
+      expect(lastTokenWrite()!.tokens.refreshToken).toBe('keep-me');
+    });
+  });
+
+  // ============================================================
+  // Proactive refresh-token expiry warning
+  // ============================================================
+
+  describe('refresh-token expiry warning', () => {
+    const DAY_MS = 86_400_000;
+    const WEEK_MS = 7 * DAY_MS;
+    const NOW = new Date('2026-08-26T06:00:00Z').getTime();
+    const WARN_MSG =
+      'schwab refresh token expires soon — re-auth at /api/auth/init';
+
+    beforeEach(() => {
+      vi.useFakeTimers({ now: new Date(NOW) });
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+      mockLogger.warn.mockReset();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    it('warns once when the refresh token is within 24h of expiry', async () => {
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok',
+        refreshToken: 'ref',
+        expiresAt: NOW + 600_000, // access token still fresh
+        refreshExpiresAt: NOW + 6 * 60 * 60 * 1000, // 6h left
+      });
+
+      expect(await getAccessToken()).toEqual({ token: 'tok' });
+
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+      expect(mockCaptureMessage).toHaveBeenCalledWith(WARN_MSG, {
+        level: 'warning',
+        extra: {
+          expiresAt: new Date(NOW + 6 * 60 * 60 * 1000).toISOString(),
+          hoursRemaining: 6,
+        },
+      });
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ hoursRemaining: 6 }),
+        WARN_MSG,
+      );
+    });
+
+    it('does NOT re-warn on later calls or refreshes (per-process latch)', async () => {
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok',
+        refreshToken: 'ref',
+        expiresAt: NOW + 600_000,
+        refreshExpiresAt: NOW + 6 * 60 * 60 * 1000,
+      });
+      await getAccessToken();
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+
+      // Repeated reads (a per-minute cron) must not fan out into Sentry.
+      for (let i = 0; i < 3; i++) {
+        invalidateSchwabTokenCache();
+        await getAccessToken();
+      }
+
+      // ...nor a refresh, which observes the same deadline.
+      invalidateSchwabTokenCache();
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok',
+        refreshToken: 'ref',
+        expiresAt: NOW + 30_000,
+        refreshExpiresAt: NOW + 6 * 60 * 60 * 1000,
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'refreshed',
+              refresh_token: 'ref',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+      await getAccessToken();
+
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT warn when the deadline is comfortably far out', async () => {
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok',
+        refreshToken: 'ref',
+        expiresAt: NOW + 600_000,
+        refreshExpiresAt: NOW + 6 * DAY_MS,
+      });
+
+      expect(await getAccessToken()).toEqual({ token: 'tok' });
+      expect(mockCaptureMessage).not.toHaveBeenCalled();
+    });
+
+    it('warns when a refresh lands inside the 24h window', async () => {
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'old',
+        refreshToken: 'ref',
+        expiresAt: NOW + 30_000, // inside the buffer → refresh
+        refreshExpiresAt: NOW + 12 * 60 * 60 * 1000,
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'refreshed',
+              refresh_token: 'ref',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+
+      expect(await getAccessToken()).toEqual({ token: 'refreshed' });
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+      expect(mockCaptureMessage.mock.calls[0]![1]).toMatchObject({
+        extra: { hoursRemaining: 12 },
+      });
+    });
+
+    it('warns when the deadline crosses the 24h line DURING the refresh', async () => {
+      // Read time: 24h + 30s left → nothing to say yet. The refresh then
+      // takes 60s (lock wait + network), by which point it is 24h − 30s.
+      // Only the check inside refreshAccessToken can catch this.
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'old',
+        refreshToken: 'ref',
+        expiresAt: NOW + 30_000,
+        refreshExpiresAt: NOW + DAY_MS + 30_000,
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation(() => {
+          vi.setSystemTime(Date.now() + 60_000);
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                access_token: 'refreshed',
+                refresh_token: 'ref',
+                expires_in: 1800,
+                token_type: 'Bearer',
+                scope: 'api',
+                id_token: '',
+              }),
+          });
+        }),
+      );
+
+      expect(await getAccessToken()).toEqual({ token: 'refreshed' });
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not throw when the stored deadline is unparseable', async () => {
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok',
+        refreshToken: 'ref',
+        expiresAt: NOW + 600_000,
+        refreshExpiresAt: Number.NaN,
+      });
+
+      expect(await getAccessToken()).toEqual({ token: 'tok' });
+      expect(mockCaptureMessage).not.toHaveBeenCalled();
+    });
+
+    it('re-arms the latch after a successful re-auth', async () => {
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok',
+        refreshToken: 'ref',
+        expiresAt: NOW + 600_000,
+        refreshExpiresAt: NOW + 6 * 60 * 60 * 1000,
+      });
+      await getAccessToken();
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'post-login',
+              refresh_token: 'fresh-ref',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+      expect(await storeInitialTokens('code', 'http://x/cb')).toEqual({
+        success: true,
+      });
+
+      // A fresh 7-day window: nothing to warn about yet...
+      invalidateSchwabTokenCache();
+      mockRedisGet.mockResolvedValue({
+        accessToken: 'tok2',
+        refreshToken: 'fresh-ref',
+        expiresAt: NOW + 600_000,
+        refreshExpiresAt: NOW + WEEK_MS,
+      });
+      await getAccessToken();
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+
+      // ...but six days later the new window is closing, and the owner
+      // must be told again.
+      vi.setSystemTime(NOW + 6 * DAY_MS + 12 * 60 * 60 * 1000);
+      invalidateSchwabTokenCache();
+      await getAccessToken();
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ============================================================
   // storeInitialTokens
   // ============================================================
 
   describe('storeInitialTokens', () => {
+    it('grants a full 7-day refresh window on a real OAuth login', async () => {
+      vi.useFakeTimers({ now: new Date('2026-08-19T18:24:00Z') });
+      const now = Date.now();
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              access_token: 'access-tok',
+              refresh_token: 'refresh-tok',
+              expires_in: 1800,
+              token_type: 'Bearer',
+              scope: 'api',
+              id_token: '',
+            }),
+        }),
+      );
+
+      expect(await storeInitialTokens('code', 'http://x/cb')).toEqual({
+        success: true,
+      });
+
+      const call = mockRedisSet.mock.calls
+        .filter((c) => c[0] === 'schwab:tokens')
+        .at(-1)!;
+      const tokens = call[1] as { refreshExpiresAt: number };
+      expect(tokens.refreshExpiresAt).toBe(now + 7 * 86_400_000);
+      // TTL = 7-day refresh lifetime + the 1-day buffer.
+      expect((call[2] as { ex: number }).ex).toBe(8 * 86_400);
+
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
     it('returns missing_config error when credentials are not set', async () => {
       delete process.env.SCHWAB_CLIENT_ID;
       delete process.env.SCHWAB_CLIENT_SECRET;
