@@ -952,3 +952,233 @@ def test_run_nightly_is_decorated_with_slug_and_monitor_config() -> None:
     assert kwargs["monitor_config"] is declared_cfg
     assert kwargs["monitor_config"]["schedule"]["value"] == "25 17 * * *"
     assert kwargs["monitor_config"]["timezone"] == "America/New_York"
+
+
+# ---------------------------------------------------------------------------
+# run_nightly — per-root isolation
+#
+# Regression cover for the 2026-08-18/19 silent coverage collapse: the
+# nightly wrote SPXW only (trade dates 2026-08-18 and 2026-08-19) because
+# ONE exception mid-root propagated out of the root loop and killed the
+# whole run, so VIX / VIXW / NDXP were never even attempted. Nothing in
+# the data said so — the rows just stopped. These tests pin the two
+# properties that failure mode violated: every configured root is
+# attempted regardless of what its siblings did, and "wrote nothing" is
+# distinguishable from "blew up".
+# ---------------------------------------------------------------------------
+
+
+def test_run_nightly_continues_to_next_root_after_one_root_raises(monkeypatch) -> None:
+    """A failure on the first root must NOT stop later roots from running.
+
+    This is the exact regression: SPXW raised, and VIX/VIXW/NDXP silently
+    never ran.
+    """
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX,NDXP")
+
+    processed: list[str] = []
+
+    def fake_fetch(_client, root, _start, _end) -> int:
+        processed.append(root)
+        if root == "SPXW":
+            raise RuntimeError("SPXW upsert died")
+        return 5
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", fake_fetch)
+    monkeypatch.setattr(theta_fetcher, "capture_exception", MagicMock())
+
+    with (
+        patch("theta_fetcher.ThetaClient", return_value=MagicMock()),
+        pytest.raises(theta_fetcher.ThetaNightlyRootsFailedError),
+    ):
+        theta_fetcher.run_nightly()
+
+    assert processed == ["SPXW", "VIX", "NDXP"]
+
+
+def test_run_nightly_reports_every_failed_root_not_just_the_first(monkeypatch) -> None:
+    """Each failing root gets its own Sentry capture, and the aggregate
+    raised at the end names them all — one bad root must not mask another."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX,VIXW,NDXP")
+
+    def fake_fetch(_client, root, _start, _end) -> int:
+        if root in ("SPXW", "VIXW"):
+            raise RuntimeError(f"{root} boom")
+        return 2
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", fake_fetch)
+
+    capture_calls: list[tuple] = []
+    monkeypatch.setattr(
+        theta_fetcher,
+        "capture_exception",
+        lambda exc, **kw: capture_calls.append((exc, kw)),
+    )
+
+    with (
+        patch("theta_fetcher.ThetaClient", return_value=MagicMock()),
+        pytest.raises(theta_fetcher.ThetaNightlyRootsFailedError) as excinfo,
+    ):
+        theta_fetcher.run_nightly()
+
+    assert len(capture_calls) == 2
+    failed_roots = {kw["context"]["root"] for _exc, kw in capture_calls}
+    assert failed_roots == {"SPXW", "VIXW"}
+    assert all(kw["context"]["phase"] == "theta_nightly" for _exc, kw in capture_calls)
+
+    message = str(excinfo.value)
+    assert "SPXW" in message
+    assert "VIXW" in message
+    # The healthy roots are not slandered as failures.
+    assert "2 of 4" in message
+
+
+def test_run_nightly_partial_failure_is_a_runtime_error(monkeypatch) -> None:
+    """The aggregate stays a RuntimeError subclass so existing callers
+    (APScheduler's error logging, the Sentry cron monitor) are unchanged."""
+    import theta_fetcher
+
+    assert issubclass(theta_fetcher.ThetaNightlyRootsFailedError, RuntimeError)
+
+
+def test_run_nightly_zero_row_root_is_no_data_not_an_error(monkeypatch) -> None:
+    """A root that completes with zero rows (holiday, delisted root) is
+    NOT a failure: no capture_exception, no raise. It still gets a
+    warning so the silence is visible."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+
+    monkeypatch.setattr(
+        theta_fetcher,
+        "_fetch_root_range",
+        lambda _c, root, _s, _e: 0 if root == "VIX" else 11,
+    )
+
+    exc_mock = MagicMock()
+    monkeypatch.setattr(theta_fetcher, "capture_exception", exc_mock)
+    msg_calls: list[tuple] = []
+    monkeypatch.setattr(
+        theta_fetcher,
+        "capture_message",
+        lambda msg, **kw: msg_calls.append((msg, kw)),
+    )
+
+    with patch("theta_fetcher.ThetaClient", return_value=MagicMock()):
+        theta_fetcher.run_nightly()  # must not raise
+
+    exc_mock.assert_not_called()
+    assert len(msg_calls) == 1
+    msg, kw = msg_calls[0]
+    assert "no rows" in msg
+    assert kw["level"] == "warning"
+    assert kw["context"]["empty_roots"] == "VIX"
+
+
+def test_run_nightly_totals_only_count_roots_that_wrote(monkeypatch) -> None:
+    """The completion total sums the successful roots and ignores the
+    failed ones, so the log line can't overstate coverage."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher.settings, "theta_roots", "SPXW,VIX")
+
+    def fake_fetch(_client, root, _start, _end) -> int:
+        if root == "SPXW":
+            raise RuntimeError("nope")
+        return 9
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", fake_fetch)
+    monkeypatch.setattr(theta_fetcher, "capture_exception", MagicMock())
+
+    outcomes: list = []
+    with (
+        patch("theta_fetcher.ThetaClient", return_value=MagicMock()),
+        patch.object(
+            theta_fetcher,
+            "_report_nightly_outcomes",
+            side_effect=lambda o, **kw: outcomes.extend(o),
+        ),
+        pytest.raises(theta_fetcher.ThetaNightlyRootsFailedError),
+    ):
+        theta_fetcher.run_nightly()
+
+    assert sum(o.rows for o in outcomes) == 9
+
+
+# ---------------------------------------------------------------------------
+# _run_root_nightly — the per-root outcome classifier
+# ---------------------------------------------------------------------------
+
+
+def test_run_root_nightly_ok_when_rows_written(monkeypatch) -> None:
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", lambda *a, **k: 42)
+
+    outcome = theta_fetcher._run_root_nightly(MagicMock(), "SPXW", date(2026, 8, 19))
+
+    assert outcome.root == "SPXW"
+    assert outcome.rows == 42
+    assert outcome.status == theta_fetcher.ROOT_OK
+    assert outcome.error is None
+
+
+def test_run_root_nightly_no_data_when_zero_rows(monkeypatch) -> None:
+    """Zero rows is its own status — a quiet root and a broken root must
+    never look identical to the operator."""
+    import theta_fetcher
+
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", lambda *a, **k: 0)
+
+    outcome = theta_fetcher._run_root_nightly(MagicMock(), "VIX", date(2026, 8, 19))
+
+    assert outcome.status == theta_fetcher.ROOT_NO_DATA
+    assert outcome.rows == 0
+    assert outcome.error is None
+
+
+def test_run_root_nightly_error_captures_with_root_context(monkeypatch) -> None:
+    import theta_fetcher
+
+    boom = RuntimeError("terminal vanished")
+    monkeypatch.setattr(theta_fetcher, "_fetch_root_range", MagicMock(side_effect=boom))
+
+    capture_calls: list[tuple] = []
+    monkeypatch.setattr(
+        theta_fetcher,
+        "capture_exception",
+        lambda exc, **kw: capture_calls.append((exc, kw)),
+    )
+
+    outcome = theta_fetcher._run_root_nightly(MagicMock(), "NDXP", date(2026, 8, 19))
+
+    assert outcome.status == theta_fetcher.ROOT_ERROR
+    assert outcome.rows == 0
+    assert outcome.error is not None
+    assert "terminal vanished" in outcome.error
+
+    assert len(capture_calls) == 1
+    exc, kw = capture_calls[0]
+    assert exc is boom
+    assert kw["context"]["phase"] == "theta_nightly"
+    assert kw["context"]["root"] == "NDXP"
+    assert kw["context"]["trade_day"] == "2026-08-19"
+
+
+def test_run_root_nightly_lets_keyboard_interrupt_through(monkeypatch) -> None:
+    """Only `Exception` is isolated — a shutdown signal must still stop
+    the job rather than being logged as a per-root data problem."""
+    import theta_fetcher
+
+    monkeypatch.setattr(
+        theta_fetcher,
+        "_fetch_root_range",
+        MagicMock(side_effect=KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        theta_fetcher._run_root_nightly(MagicMock(), "SPXW", date(2026, 8, 19))

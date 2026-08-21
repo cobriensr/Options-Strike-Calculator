@@ -8,7 +8,10 @@ Two entry points:
 
   - ``run_nightly()``  — daily at 17:25 America/New_York via APScheduler.
                           Pulls prior trading day's EOD for every
-                          configured root.
+                          configured root. Roots are independent: a root
+                          that fails is captured, classified, and the
+                          loop moves on; the run raises a single
+                          ThetaNightlyRootsFailedError at the end.
   - ``run_backfill_if_needed()`` — fired once from main.py startup in a
                           background thread. For every root with an
                           empty theta_option_eod, pulls the last
@@ -27,12 +30,21 @@ Design notes:
     unbounded by subscription.
   - Idempotent via ``ON CONFLICT DO UPDATE`` (see db.upsert_theta_option_eod_batch).
   - Batch flushes every 500 rows to bound memory on the Railway container.
+  - NOT resumable. The nightly is a ~100 minute per-contract crawl, and
+    nothing re-attempts a trade day it did not finish: a container
+    restart mid-run (deploy, watchdog exit, Railway platform event)
+    leaves a permanent hole, because ``run_backfill_if_needed`` only
+    fires for roots whose table is entirely EMPTY. Two such holes exist
+    (trade dates 2026-08-18 and 2026-08-19, SPXW-only). Per-root
+    isolation below bounds in-process failures; it cannot bound a
+    process death. A gap-repair pass is the open follow-up.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
@@ -47,6 +59,15 @@ from theta_client import EodRow, ThetaClient, ThetaSubscriptionError
 # Sentry tags applied to every Theta-sourced event so operators can
 # filter this feature independently from Databento / the Vercel backend.
 _THETA_TAGS = {"component": "theta"}
+
+# Per-root outcome statuses for one nightly pass. "wrote nothing" and
+# "blew up" are deliberately separate: on trade dates 2026-08-18 and
+# 2026-08-19 the nightly landed SPXW only, and the absence of VIX /
+# VIXW / NDXP rows was indistinguishable from those roots legitimately
+# having no data. See ThetaNightlyRootsFailedError.
+ROOT_OK = "ok"
+ROOT_NO_DATA = "no_data"
+ROOT_ERROR = "error"
 
 # Sentry cron monitor for the nightly job. The monitor is declared IN
 # CODE via `monitor_config` on the @sentry_sdk.monitor decorator (Sentry
@@ -94,6 +115,46 @@ MAX_JOB_DURATION_S = 3 * 60 * 60
 # block the sidecar's main Databento loop.
 _scheduler: Any = None  # apscheduler.BackgroundScheduler | None
 _scheduler_lock = threading.Lock()
+
+
+class ThetaNightlyRootsFailedError(RuntimeError):
+    """Raised at the END of run_nightly when one or more roots failed.
+
+    Deliberately raised after every configured root has been attempted,
+    not at the first failure. Before 2026-08-21 the root loop lived
+    inside a single try/except that re-raised immediately, so ONE
+    exception anywhere in the first root silently dropped every root
+    after it — which is exactly what produced the SPXW-only trade dates
+    2026-08-18 and 2026-08-19 (VIX / VIXW / NDXP were never attempted,
+    and nothing in the data said so).
+
+    Still a RuntimeError so nothing downstream changes shape:
+    APScheduler logs it, and the Sentry cron monitor (see
+    _NIGHTLY_MONITOR_CONFIG) still marks the check-in failed. The
+    message names every failed root so the alert is actionable without
+    opening the logs.
+    """
+
+
+@dataclass(frozen=True)
+class RootOutcome:
+    """What one root did during one nightly pass.
+
+    ``status`` is one of ROOT_OK / ROOT_NO_DATA / ROOT_ERROR. The
+    no-data-vs-error split is the point of this type: a holiday, a
+    delisted root and a crashed root all write zero rows, and the
+    operator needs to tell them apart from the summary alone.
+
+    Note: a Theta entitlement denial (HTTP 471) is absorbed inside
+    :func:`_fetch_root_range`, which already emits its own
+    "Theta denied ..." Sentry error, and surfaces here as ROOT_NO_DATA
+    (or ROOT_OK for a mid-root denial that had already written rows).
+    """
+
+    root: str
+    rows: int
+    status: str
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +242,11 @@ def run_nightly() -> None:
     the only signal for the "scheduler never fired" failure mode that
     exception-capture misses. When SENTRY_DSN is unset the decorator is
     a cheap no-op.
+
+    Roots are INDEPENDENT: each one is attempted regardless of what its
+    siblings did, and failures are aggregated into a single
+    ThetaNightlyRootsFailedError raised once the loop is done. See that
+    exception's docstring for the incident this shape prevents.
     """
     start = time.time()
     # DTZ011: local-clock date on purpose. The container runs in UTC and the
@@ -191,33 +257,17 @@ def run_nightly() -> None:
     log.info("Theta nightly ingest starting (trade_day=%s)", trade_day)
 
     client = ThetaClient()
-    total = 0
-    try:
-        for root in settings.theta_roots_list:
-            total += _fetch_root_range(client, root, trade_day, trade_day)
-    except Exception as exc:
-        capture_exception(
-            exc,
-            context={
-                "phase": "theta_nightly",
-                "trade_day": trade_day.isoformat(),
-                "rows_so_far": total,
-            },
-            tags=_THETA_TAGS,
-        )
-        raise
+    outcomes = [_run_root_nightly(client, root, trade_day) for root in settings.theta_roots_list]
 
     elapsed = time.time() - start
-    log.info("Theta nightly complete: %d rows in %.1fs", total, elapsed)
-    if elapsed > MAX_JOB_DURATION_S:
-        capture_message(
-            "Theta nightly job exceeded max duration",
-            level="warning",
-            context={
-                "elapsed_s": round(elapsed, 1),
-                "rows_written": total,
-            },
-            tags=_THETA_TAGS,
+    _report_nightly_outcomes(outcomes, trade_day=trade_day, elapsed_s=elapsed)
+
+    failed = [o for o in outcomes if o.status == ROOT_ERROR]
+    if failed:
+        detail = "; ".join(f"{o.root}: {o.error}" for o in failed)
+        raise ThetaNightlyRootsFailedError(
+            f"Theta nightly {trade_day.isoformat()}: "
+            f"{len(failed)} of {len(outcomes)} roots failed — {detail}"
         )
 
 
@@ -258,6 +308,95 @@ def run_backfill_if_needed() -> None:
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+def _run_root_nightly(client: ThetaClient, root: str, trade_day: date) -> RootOutcome:
+    """Fetch one root's EOD for `trade_day`, classified, never raising.
+
+    Isolates the root: any ``Exception`` is captured to Sentry with the
+    root in context and returned as ROOT_ERROR so the caller can move on
+    to the next root. ``BaseException`` (KeyboardInterrupt, SystemExit)
+    is deliberately NOT caught — a shutdown signal must stop the job, not
+    be filed as a per-root data problem.
+
+    Zero rows without an exception is ROOT_NO_DATA, not a failure: the
+    prior trading day can be a market holiday (``_prior_trading_day`` is
+    holiday-unaware by design) and a root can legitimately have nothing
+    listed.
+    """
+    try:
+        rows = _fetch_root_range(client, root, trade_day, trade_day)
+    except Exception as exc:  # noqa: BLE001 — isolation is the point; captured below
+        capture_exception(
+            exc,
+            context={
+                "phase": "theta_nightly",
+                "root": root,
+                "trade_day": trade_day.isoformat(),
+            },
+            tags=_THETA_TAGS,
+        )
+        return RootOutcome(root=root, rows=0, status=ROOT_ERROR, error=str(exc))
+
+    status = ROOT_OK if rows > 0 else ROOT_NO_DATA
+    log.info("Theta nightly root %s: %d rows (%s)", root, rows, status)
+    return RootOutcome(root=root, rows=rows, status=status)
+
+
+def _report_nightly_outcomes(
+    outcomes: list[RootOutcome],
+    *,
+    trade_day: date,
+    elapsed_s: float,
+) -> None:
+    """Log the per-root summary and raise the two non-fatal Sentry alarms.
+
+    Two things get their own warning because both are silent in the data:
+
+      - roots that completed with zero rows (ROOT_NO_DATA). One event
+        listing them all, not one per root — a market holiday empties
+        every root at once and must not page four times.
+      - a run that blew past MAX_JOB_DURATION_S.
+
+    Failed roots are NOT alarmed here; each already went to Sentry with
+    its own exception inside :func:`_run_root_nightly`, and the caller
+    raises ThetaNightlyRootsFailedError so the cron monitor marks the run
+    failed.
+    """
+    total = sum(o.rows for o in outcomes)
+    summary = ", ".join(f"{o.root}={o.rows}/{o.status}" for o in outcomes)
+    log.info(
+        "Theta nightly complete: %d rows in %.1fs (trade_day=%s) [%s]",
+        total,
+        elapsed_s,
+        trade_day,
+        summary,
+    )
+
+    empty = [o.root for o in outcomes if o.status == ROOT_NO_DATA]
+    if empty:
+        capture_message(
+            "Theta nightly: root(s) completed with no rows",
+            level="warning",
+            context={
+                "trade_day": trade_day.isoformat(),
+                "empty_roots": ",".join(empty),
+                "summary": summary,
+            },
+            tags=_THETA_TAGS,
+        )
+
+    if elapsed_s > MAX_JOB_DURATION_S:
+        capture_message(
+            "Theta nightly job exceeded max duration",
+            level="warning",
+            context={
+                "elapsed_s": round(elapsed_s, 1),
+                "rows_written": total,
+                "summary": summary,
+            },
+            tags=_THETA_TAGS,
+        )
 
 
 def _fetch_root_range(
