@@ -2,13 +2,19 @@
  * Unit tests for usePeriscopeStrikes.
  *
  * Mocks global fetch + getAccessMode so the hook can be exercised
- * without a network round-trip. The lookback-walking logic
- * (latest + 1/2/3 slots back) is the load-bearing piece — most cases
- * here pin that contract.
+ * without a network round-trip.
+ *
+ * The load-bearing contract is the REQUEST COUNT: exactly one round-trip
+ * per fetch cycle. The hook used to fire two extra lookback requests
+ * (10m / 30m prior slots) to build Δ% gamma maps whose only consumer —
+ * the legacy GexLandscape StrikeTable — had already moved to
+ * `useGexLandscapeData`. Several cases here pin the count so those
+ * wasted calls cannot silently return.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { POLL_INTERVALS } from '../../constants';
 
 const { mockGetAccessMode } = vi.hoisted(() => ({
   mockGetAccessMode: vi.fn(),
@@ -77,28 +83,14 @@ afterEach(() => {
 });
 
 describe('usePeriscopeStrikes', () => {
-  it('fetches latest + 10m/30m lookbacks and builds gamma maps', async () => {
+  it('fetches ONLY the latest slot — exactly one request, no lookbacks', async () => {
+    // Regression pin. A populated `availableSlots` used to trigger two
+    // extra round-trips (1-slot-back + 3-slots-back). Nothing reads
+    // those maps any more, so a full slot list must still produce a
+    // single request.
     const calls: string[] = [];
     mockFetch((url) => {
       calls.push(url);
-      // First call (no `?time`): latest.
-      if (!url.includes('time=')) return jsonResponse(makeResponse());
-      // Lookback calls — return distinct gamma values per slot so the
-      // delta map keying is verifiable.
-      if (url.includes('time=13%3A30') || url.includes('time=13:30'))
-        return jsonResponse(
-          makeResponse({
-            capturedAt: '2026-05-12T18:30:00.000Z',
-            strikes: [{ strike: 7350, gamma: 4500, charm: 0 }],
-          }),
-        );
-      if (url.includes('time=13%3A10') || url.includes('time=13:10'))
-        return jsonResponse(
-          makeResponse({
-            capturedAt: '2026-05-12T18:10:00.000Z',
-            strikes: [{ strike: 7350, gamma: 3500, charm: 0 }],
-          }),
-        );
       return jsonResponse(makeResponse());
     });
 
@@ -108,42 +100,73 @@ describe('usePeriscopeStrikes', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.latest?.capturedAt).toBe('2026-05-12T18:40:00.000Z');
-    expect(result.current.prior10m?.get(7350)).toBe(4500);
-    expect(result.current.prior30m?.get(7350)).toBe(3500);
+    expect(result.current.latest?.strikes).toHaveLength(2);
     expect(result.current.error).toBeNull();
-    // 3 HTTP calls — primary + 10m + 30m. 20m intentionally skipped
-    // (no Phase 2 consumer; Phase 3 adds it back).
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(1);
+    // Lookback fetches were the only requests that carried `time=` in
+    // live mode (the primary uses `date=` alone), so this is the
+    // signature to assert against.
+    expect(calls.some((u) => u.includes('time='))).toBe(false);
   });
 
-  it('returns null 30m lookback when not enough history exists', async () => {
+  it('fires exactly one request per poll cycle in live mode', async () => {
+    // The waste this hook shed was per-POLL, not per-mount: at a 30s
+    // cadence across a 6.5h session, two extra calls per cycle is
+    // ~1,500 pointless round-trips a day. Pin the per-tick count.
+    vi.useFakeTimers();
+    const calls: string[] = [];
     mockFetch((url) => {
-      // Only two slots in availableSlots — only 10m lookback is reachable.
-      if (!url.includes('time=')) {
-        return jsonResponse(
-          makeResponse({
-            availableSlots: [
-              '2026-05-12T18:30:00.000Z',
-              '2026-05-12T18:40:00.000Z',
-            ],
-          }),
-        );
-      }
-      return jsonResponse(
-        makeResponse({
-          capturedAt: '2026-05-12T18:30:00.000Z',
-          strikes: [{ strike: 7350, gamma: 4500, charm: 0 }],
-        }),
-      );
+      calls.push(url);
+      return jsonResponse(makeResponse());
     });
 
-    const { result } = renderHook(() =>
-      usePeriscopeStrikes(false, '2026-05-12'),
-    );
+    try {
+      renderHook(() => usePeriscopeStrikes(true, '2026-05-12'));
+      // Settle the mount fetch WITHOUT advancing the clock —
+      // `runOnlyPendingTimersAsync` would also fire the poll interval
+      // that `usePolling` has already scheduled and inflate the count.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(calls).toHaveLength(1);
 
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.prior10m?.get(7350)).toBe(4500);
-    expect(result.current.prior30m).toBeNull();
+      // Each subsequent tick adds exactly one request.
+      for (let expected = 2; expected <= 4; expected++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(POLL_INTERVALS.STRIKE_BATTLE_MAP);
+        });
+        expect(calls).toHaveLength(expected);
+      }
+
+      expect(calls.every((u) => !u.includes('time='))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not poll while the market is closed', async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    mockFetch((url) => {
+      calls.push(url);
+      return jsonResponse(makeResponse());
+    });
+
+    try {
+      renderHook(() => usePeriscopeStrikes(false, '2026-05-12'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(calls).toHaveLength(1);
+      // marketOpen=false closes the poll gate — the mount fetch is the
+      // only request no matter how far the clock advances.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(POLL_INTERVALS.STRIKE_BATTLE_MAP * 4);
+      });
+      expect(calls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('stays idle in public access mode (no fetch fired)', async () => {
@@ -186,7 +209,7 @@ describe('usePeriscopeStrikes', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('does NOT fetch lookbacks when latest has no capturedAt (empty slot)', async () => {
+  it('issues a single request when the latest slot is empty', async () => {
     const calls: string[] = [];
     mockFetch((url) => {
       calls.push(url);
@@ -205,53 +228,18 @@ describe('usePeriscopeStrikes', () => {
     );
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.prior10m).toBeNull();
-    expect(result.current.prior30m).toBeNull();
-    // Only the primary fetch — no lookback round-trips.
+    expect(result.current.latest?.strikes).toEqual([]);
+    expect(result.current.error).toBeNull();
     expect(calls).toHaveLength(1);
-  });
-
-  it('short-circuits when capturedAt is not present in availableSlots', async () => {
-    // Defensive case: capturedAt missing from availableSlots means
-    // indexOf returns -1, so no lookback slot can be computed. The
-    // short-circuit must skip the .map() entirely — no lookback HTTP
-    // calls fire. We pin this by asserting NO request URL carries a
-    // `time=` param (the primary fetch only uses `date=`; lookback
-    // fetches always include `time=`). The total-call-count assertion
-    // alone is not enough — even without the outer short-circuit, the
-    // per-index `idx < 0` guard would still suppress the fetches.
-    const calls: string[] = [];
-    mockFetch((url) => {
-      calls.push(url);
-      return jsonResponse(
-        makeResponse({
-          capturedAt: '2026-05-12T18:40:00.000Z',
-          // capturedAt deliberately absent from availableSlots
-          availableSlots: [
-            '2026-05-12T18:10:00.000Z',
-            '2026-05-12T18:20:00.000Z',
-            '2026-05-12T18:30:00.000Z',
-          ],
-        }),
-      );
-    });
-
-    const { result } = renderHook(() =>
-      usePeriscopeStrikes(false, '2026-05-12'),
-    );
-
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.prior10m).toBeNull();
-    expect(result.current.prior30m).toBeNull();
-    expect(calls).toHaveLength(1);
-    // No URL carries `time=` — confirms no lookback fetches fired.
-    expect(calls.some((u) => u.includes('time='))).toBe(false);
   });
 
   it('does NOT poll when in snapshot mode (at param set)', async () => {
     vi.useFakeTimers();
-    const fetchSpy = vi.fn(async () => jsonResponse(makeResponse()));
-    vi.stubGlobal('fetch', fetchSpy);
+    const calls: string[] = [];
+    mockFetch((url) => {
+      calls.push(url);
+      return jsonResponse(makeResponse());
+    });
 
     try {
       renderHook(() =>
@@ -261,9 +249,10 @@ describe('usePeriscopeStrikes', () => {
       await vi.runOnlyPendingTimersAsync();
       // Advance well past the poll interval — no second fetch should fire.
       await vi.advanceTimersByTimeAsync(120_000);
-      // 3 calls total = 1 primary + 10m + 30m lookbacks. No polling
-      // = no 4th call. (20m intentionally not fetched in Phase 2.)
-      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      // The scrubbed slot is resolved by the primary fetch itself (it
+      // carries `?time`), so snapshot mode is one request, full stop.
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain('time=');
     } finally {
       vi.useRealTimers();
     }
@@ -301,8 +290,8 @@ describe('usePeriscopeStrikes', () => {
       async (_input: RequestInfo | URL, init?: RequestInit) => {
         callCount += 1;
         if (init?.signal) aborts.push(init.signal);
-        // First 3 calls (initial latest + 2 lookbacks for date #1) hang.
-        if (callCount <= 3) {
+        // The single initial request for date #1 hangs until aborted.
+        if (callCount <= 1) {
           return new Promise<Response>((_, reject) => {
             init?.signal?.addEventListener('abort', () =>
               reject(new DOMException('aborted', 'AbortError')),
@@ -328,9 +317,9 @@ describe('usePeriscopeStrikes', () => {
 });
 
 // ── Malformed payload validation ─────────────────────────────
-// Both parses used to be `(await res.json()) as PeriscopeStrikesResponse`,
+// The parse used to be `(await res.json()) as PeriscopeStrikesResponse`,
 // so a shapeless body reached the GexTarget MM-overlay memo and threw
-// "strikes is not iterable" (src/components/GexTarget/index.tsx:134).
+// "strikes is not iterable" (src/components/GexTarget/index.tsx).
 
 describe('usePeriscopeStrikes: malformed payloads', () => {
   it('reports a shape error on a {} latest-slot body', async () => {
@@ -394,22 +383,27 @@ describe('usePeriscopeStrikes: malformed payloads', () => {
     expect(result.current.error).toBeNull();
   });
 
-  it('keeps the valid latest slot when only a lookback slot is malformed', async () => {
-    mockFetch((url) =>
-      url.includes('time=') ? jsonResponse({}) : jsonResponse(makeResponse()),
-    );
+  it('keeps the last-known-good latest when a later poll is malformed', async () => {
+    // The soft-degrade contract: a bad payload surfaces `error` but must
+    // not blank the MM overlay the panel is already rendering.
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      return call === 1 ? jsonResponse(makeResponse()) : jsonResponse({});
+    });
 
     const { result } = renderHook(() =>
       usePeriscopeStrikes(false, '2026-05-12'),
     );
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-    // `setLatest` already ran before the lookbacks were requested, so the
-    // MM overlay keeps its data; only the Δ% maps are unavailable.
     expect(result.current.latest?.strikes).toHaveLength(2);
-    expect(result.current.error).toMatch(/unexpected response shape/i);
-    expect(result.current.prior10m).toBeNull();
-    expect(result.current.prior30m).toBeNull();
+
+    result.current.refresh();
+    await waitFor(() =>
+      expect(result.current.error).toMatch(/unexpected response shape/i),
+    );
+    expect(result.current.latest?.strikes).toHaveLength(2);
   });
 
   it('accepts the no-slot 200 payload (empty strikes, slot list present)', async () => {
@@ -435,6 +429,8 @@ describe('usePeriscopeStrikes: malformed payloads', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBeNull();
     expect(result.current.latest?.strikes).toEqual([]);
-    expect(result.current.prior10m).toBeNull();
+    expect(result.current.latest?.availableSlots).toEqual([
+      '2026-05-12T18:10:00.000Z',
+    ]);
   });
 });

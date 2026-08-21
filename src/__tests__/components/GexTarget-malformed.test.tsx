@@ -7,7 +7,7 @@
  *
  *   - `/api/gex-target-history?all=true` → useGexTarget (bulk)
  *   - `/api/gex-target-history`          → useGexTarget (single/poll/scrub)
- *   - `/api/periscope-strikes`           → usePeriscopeStrikes (latest + lookbacks)
+ *   - `/api/periscope-strikes`           → usePeriscopeStrikes (latest slot)
  *   - `/api/nope-intraday`               → useNopeIntraday
  *
  * Unlike GexTarget.test.tsx (which hands the component a hand-built
@@ -276,7 +276,6 @@ interface RouteOverrides {
   bulk?: unknown;
   single?: unknown;
   periscopeLatest?: unknown;
-  periscopeLookback?: unknown;
   nope?: unknown;
 }
 
@@ -298,9 +297,6 @@ function stubFetch(routes: RouteOverrides = {}) {
         return jsonResponse(routes.nope ?? validNope());
       }
       if (url.includes('/api/periscope-strikes')) {
-        if (url.includes('time=')) {
-          return jsonResponse(routes.periscopeLookback ?? validPeriscope());
-        }
         return jsonResponse(routes.periscopeLatest ?? validPeriscope());
       }
       if (url.includes('/api/gex-target-history')) {
@@ -324,7 +320,7 @@ function Harness({ marketOpen = true }: { marketOpen?: boolean }) {
 
 /**
  * Flush the trailing async state updates. Three endpoints resolve on
- * independent promise chains (bulk, periscope latest + lookbacks, NOPE);
+ * independent promise chains (bulk, periscope latest, NOPE);
  * without this the later ones land after the test body finishes and React
  * logs an act(...) warning through console.error, which would masquerade
  * as a shape-hardening failure.
@@ -499,11 +495,20 @@ describe('GexTarget — malformed payload crash regression', () => {
       expect(consoleErrorSpy).not.toHaveBeenCalled();
     });
 
-    it('keeps the MM gamma overlay when a lookback slot payload is shapeless', async () => {
-      stubFetch({ periscopeLookback: {} });
+    it('requests the latest slot only — no lookback round-trips', async () => {
+      // Companion to the hook-level count pin
+      // (src/__tests__/hooks/usePeriscopeStrikes.test.ts). Asserted from
+      // the real panel so a consumer that reintroduces Δ%-map lookbacks
+      // is caught here too. Lookbacks were the only periscope requests
+      // that carried `time=` for an unscrubbed panel.
+      const calls = stubFetch();
       render(<Harness />);
       await waitForPanel();
-      expect(screen.getByText('GEX TARGET')).toBeInTheDocument();
+      const periscopeCalls = calls.filter((u) =>
+        u.includes('/api/periscope-strikes'),
+      );
+      expect(periscopeCalls).toHaveLength(1);
+      expect(periscopeCalls.some((u) => u.includes('time='))).toBe(false);
       expect(consoleErrorSpy).not.toHaveBeenCalled();
     });
 
