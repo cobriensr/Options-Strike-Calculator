@@ -33,7 +33,7 @@ Multi-phase initiatives in flight. Each plan spawns several specs in `superpower
 
 ## Specs (`superpowers/specs/`)
 
-156 specs. They share a naming convention but **not** a status convention — to tell what's shipped, cross-reference `git log --oneline | grep <spec-keyword>` or grep the codebase for the feature.
+244 specs. They share a naming convention but **not** a status convention — to tell what's shipped, cross-reference `git log --oneline | grep <spec-keyword>` or grep the codebase for the feature.
 
 By rough domain (look for filenames matching the prefix):
 

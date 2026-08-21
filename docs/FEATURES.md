@@ -16,10 +16,10 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 - A risk calculator with position sizing, risk tiers, and buy/sell mode analysis
 - A hedge calculator with DTE selection (1-21 days), extrinsic value modeling at EOD close, net cost breakdown, and crash/rally scenario tables
 - A Delta Guide with a ceiling recommendation based on 9,102 days of historical VIX-to-SPX range data, adjusted for day-of-week effects and directional volatility clustering
-- AI-powered chart analysis that reads Market Tide, Net Flow, and Periscope screenshots to recommend structure, delta, strike placement, entry plan, management rules, and hedge
+- AI-powered chart analysis that reads Periscope Gamma and Periscope Charm screenshots to recommend structure, delta, strike placement, entry plan, management rules, and hedge
 - A self-improving lessons system where end-of-day reviews produce lessons that are vector-deduplicated and injected into future analyses
 - Live option chain verification comparing theoretical strikes to actual Schwab chain deltas
-- VIX term structure signals with curve shape classification (contango, fear-spike, backwardation, hump, flat)
+- VIX term structure signals with curve shape classification (contango, fear-spike, backwardation, hump, flat, front-calm)
 - Realized vs implied volatility ratio using 5-day rolling Parkinson RV, showing whether IV is rich or cheap
 - Settlement pin risk analysis with OI heatmap from live Schwab chain data
 - Pre-trade signal cards (RV/IV, overnight gap, breadth, GEX regime, charm decay)
@@ -29,12 +29,12 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 - Event day warnings for FOMC, CPI, NFP, GDP, and earnings with severity-coded alerts and actionable advice
 - Historical backtesting with full candle-by-candle replay and settlement verification
 - Position monitor with paper dashboard, execution quality analysis, and theta decay simulation
-- Automatic data collection to Neon Postgres (50+ tables, 77+ migrations, 38 cron jobs) feeding a multi-phase ML pipeline
+- Automatic data collection to Neon Postgres (~85 tables, 190 migrations, 78 cron jobs / 86 schedule entries) feeding a multi-phase ML pipeline
 - Analog range forecast: strike-placement hints from 15 text-embedding-nearest historical mornings, VIX-regime-stratified for elevated/crisis days
 - Microstructure signals: validated NQ 1h OFI (ρ=0.313, p<0.001) + historical percentile rank against a 1-year TBBO archive
 - Futures-side structural levels from ES options EOD open interest, compared against SPX gamma walls
 - ML Insights section with nightly pipeline plots analyzed by Claude vision
-- Railway Python sidecar: Databento Live (6 futures + ES options) + Theta Data Terminal (nightly SPX EOD chains) + DuckDB query layer over a 3.9 GB TBBO Parquet archive
+- Three Railway Python services: `sidecar/` — Databento Live (6 futures: ES, NQ, ZN, RTY, CL, GC + ES options) + Theta Data Terminal (nightly SPX EOD chains) + DuckDB query layer over the TBBO Parquet archive; `uw-stream/` — UnusualWhales websocket daemon; `classifier/` — polars multi-leg classifier
 
 ---
 
@@ -77,7 +77,7 @@ You input (or auto-receive) the current SPY price, the VIX (plus optionally VIX1
 - Iron condor PoP: Uses the correct formula `P(S_T > BE_low) + P(S_T < BE_high) − 1`, NOT the product of individual spread PoPs
 - Individual spread PoPs: Single-tail probabilities for each side — always higher than the combined IC PoP
 - Skew-adjusted: Put-side uses `putSigma` for lower breakeven, call-side uses `callSigma` for upper breakeven
-- Fat-tail kurtosis adjustment: Breach probabilities inflated by a VIX-regime-dependent factor via `getKurtosisFactor(vix)` (1.5× in calm markets → 3.5× in crisis vol). Adjusted PoP shown as primary value; log-normal PoP displayed struck-through underneath for reference. At 10Δ with VIX 15–20, this reduces IC PoP from ~82% to ~65% — matching empirical breach rates from 9,102 days of data.
+- Fat-tail kurtosis adjustment: Breach probabilities inflated by a VIX-regime-dependent factor via `getKurtosisFactor(vix)`, which returns an asymmetric `{crash, rally}` pair (1.8× crash / 1.2× rally in calm markets → 4.0× crash / 3.0× rally in crisis vol). Adjusted PoP shown as primary value; log-normal PoP displayed struck-through underneath for reference. At 10Δ with VIX 15–20, this reduces IC PoP from ~82% to ~65% — matching empirical breach rates from 9,102 days of data.
 - Base sigma for PoP: Settlement probability uses base σ (no IV acceleration) for placement stability — the accelerated σ is only used for premiums and Greeks.
 
 ### Broken-Wing Butterfly (BWB) Calculator
@@ -136,7 +136,7 @@ Comprehensive position sizing and risk management tool:
 - Light and dark modes with WCAG AA contrast in both modes
 - 508 accessibility compliance: ARIA labels, roles, focus management, keyboard navigation, screen reader support
 - Responsive: Works on desktop and mobile
-- Sticky section navigation with 11 sections: Inputs, Settings, Risk, Regime, Dark Pool, Charts, History, ML Insights, Positions, BWB, Results
+- Sticky section navigation built from `src/constants/panel-registry.ts` (32 registered panels), ordered and filtered at runtime by the user's saved panel prefs
 - Debounced inputs: Text fields recalculate after 250ms; dropdowns and sliders update instantly
 - Live data indicator: Shows "● LIVE" or "● CLOSED" badge when market data is streaming (owner-only)
 - Collapsible section boxes with badge counts
@@ -147,7 +147,7 @@ Comprehensive position sizing and risk management tool:
 
 ## Chart Analysis (Claude Opus 4.7)
 
-The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SPX), and Periscope (Delta Flow/Gamma) from Unusual Whales, and Claude Opus 4.7 with adaptive thinking analyzes them alongside the calculator's full context to produce a complete trading plan.
+The centerpiece feature: upload Periscope Gamma and Periscope Charm (SPX) screenshots from Unusual Whales, and Claude Opus 4.7 with adaptive thinking analyzes them alongside the calculator's full context to produce a complete trading plan.
 
 ### Three Analysis Modes
 
@@ -159,7 +159,7 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SP
 
 ### What Claude Receives
 
-- All uploaded chart images (up to 4, validated at the Zod boundary) with labels (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX, and SpotGamma Delta Pressure + Charm Pressure heatmaps)
+- All uploaded chart images (up to 2, validated at the Zod boundary) with labels (Periscope (Gamma), Periscope Charm (SPX))
 - Full calculator context: SPX, VIX, VIX1D, VIX9D, VVIX, σ, T, hours remaining, delta ceiling, spread ceilings, regime zone, cluster multiplier (symmetric + directional put/call), DOW label, opening range signal, term structure signal + curve shape, RV/IV ratio, IV acceleration multiplier, overnight gap
 - Live Schwab positions: Current SPX 0DTE spreads with strikes, credits, P&L, cushion distances, and net greeks — auto-fetched before each analysis so Claude knows what's already open
 - Database-driven market context: Flow data (last 24h), GEX snapshots, SPX candles, dark pool clusters, max pain, economic events — all assembled by `buildAnalysisContext()`
@@ -185,8 +185,8 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SP
 
 ### UI Features
 
-- Drag-and-drop, file picker, or clipboard paste for image upload (max 4 images per the Zod schema in `api/_lib/validation.ts`)
-- Per-image label selector (Market Tide, Net Flow SPY, Net Flow QQQ, Net Flow SPX, Periscope Delta Flow, Periscope Gamma, Net Charm SPX)
+- Drag-and-drop, file picker, or clipboard paste for image upload (max 2 images per the Zod schema in `api/_lib/validation/snapshot.ts`, re-exported through the `api/_lib/validation.ts` barrel)
+- Per-image label selector (Periscope (Gamma), Periscope Charm (SPX)) — driven by `CHART_LABELS` in `src/components/ChartAnalysis/types.ts`
 - Two-step confirmation: Analyze button → confirmation bar showing image count, mode, and labels → Confirm/Go Back
 - Thinking indicator with progress bar, elapsed timer, rotating status messages, and Cancel button
 - TL;DR summary card always visible with structure, confidence, delta, hedge badge, Entry 1 details, profit target
@@ -199,9 +199,9 @@ The centerpiece feature: upload screenshots of Market Tide, Net Flow (SPY/QQQ/SP
 - Model: Claude Opus 4.7 (`claude-opus-4-7`)
 - Adaptive thinking: `thinking: { type: 'adaptive' }` — Claude decides how much thinking budget to use per request
 - Max tokens: 128,000 (Opus primary) / 64,000 (Sonnet fallback)
-- Vercel function timeout: 800 seconds (`maxDuration: 800`)
-- Client-side timeout: 750 seconds / 12m 30s (AbortController)
-- Cost: ~$0.40–0.60 per analysis (4 images with thinking)
+- Vercel function timeout: 780 seconds (`maxDuration: 780`)
+- Client-side timeout: 800 seconds / 13m 20s per attempt (AbortController) — deliberately longer than the 780s backend cap
+- Cost: ~$0.40–0.60 per analysis (2 images with thinking)
 - System prompt caching: `cache_control: { type: 'ephemeral' }` for ~90% cost reduction on static prompt parts (~23K tokens)
 - Owner-gated: requires authenticated session cookie
 - Rate limited: 3 analyses per minute via Upstash Redis
@@ -417,11 +417,11 @@ First 30 minutes of SPX trading vs expected daily range: GREEN (<40% consumed), 
 
 Yesterday's range percentile → today's range multiplier. Up to 1.87× at high VIX after a P90 day.
 
-- **Directional asymmetry (post-2020 updated)**: After a big down day, both sides expand — put-side by 1.6× the base cluster multiplier, call-side by 1.2× (V-reversals are common post-COVID). After a big up day, call-side compresses more aggressively (0.85×) while put-side stays elevated (1.15×). Flat days and tailwinds (mult < 1) are symmetric. Separate put/call multipliers displayed and passed to Claude.
+- **Directional asymmetry (post-2020 updated)**: After a big down day, both sides expand — put-side by 1.3× the base cluster multiplier, call-side by 1.1× (V-reversals are common post-COVID). After a big up day, put-side compresses more aggressively (0.6×) while call-side expands (1.3×). Flat days and tailwinds (mult < 1) are symmetric. Separate put/call multipliers displayed and passed to Claude.
 
 ### Event Day Warning
 
-Static calendar of FOMC (8/year), CPI (12/year), NFP (12/year), GDP (4/year) for 2025–2026 with severity-coded banners. Dynamic economic events from FRED API (PCE, PPI, Retail Sales, JOLTS) + Finnhub earnings calendar. Early close dates for day-before-holiday sessions.
+Static calendar of FOMC dates (8/year) for 2025–2026 with severity-coded banners. Dynamic economic events from the FRED API (CPI, NFP, GDP, PCE, PPI, Retail Sales, JOLTS) + Finnhub earnings calendar. Early close dates for day-before-holiday sessions.
 
 ### Pre-Trade Signals
 
@@ -442,7 +442,7 @@ Real-time dark pool support/resistance from Unusual Whales (owner-only):
 - Identifies buyer/seller-initiated trades
 - Shows current support and resistance levels with strength indicators
 - Relationship to spot price (above/below/at)
-- Updated every minute during market hours via cron
+- Written continuously by the `uw-stream` Railway daemon (`off_lit_trades` → `dark_pool_prints`); the frontend polls `/api/darkpool-levels` every 60s. There is no dark-pool cron.
 
 ---
 
@@ -450,7 +450,7 @@ Real-time dark pool support/resistance from Unusual Whales (owner-only):
 
 Three-tier strategy: localStorage cache (instant) → static JSON (first load) → manual CSV upload (override).
 
-Built-in: 9,137 days of VIX OHLC (1990–2026) + 960 days of VIX1D daily OHLC (May 2022–March 2026).
+Built-in: 9,137 days of VIX OHLC (1990–2026) + 980 days of VIX1D daily OHLC (May 2022–April 2026).
 
 VIX OHLC field selector: Choose resolution strategy for VIX from daily candles (smart, open, high, low, close).
 
@@ -474,7 +474,7 @@ Section 508 / WCAG 2.1 AA: semantic HTML, ARIA attributes, focus management, 4.5
 
 1. **VIX vs actual 0DTE IV**: VIX1D auto-apply mitigates this; chain verification shows actual per-strike deltas
 2. **IV acceleration is empirical**: The intraday σ multiplier (0.6 coefficient) is calibrated from observed behavior, not derived from a formal model. Actual gamma acceleration varies by VIX regime and market structure. The multiplier is capped at 1.8× to prevent extreme values near close.
-3. **Fat-tail kurtosis is stepped, not continuous**: The VIX-dependent kurtosis factor (`getKurtosisFactor(vix)`) uses discrete VIX bands (1.5× at VIX < 15 → 3.5× at VIX > 30). Real kurtosis varies continuously and by time of day. A smoothly interpolated kurtosis curve would be more accurate.
+3. **Fat-tail kurtosis is stepped, not continuous**: The VIX-dependent kurtosis factor (`getKurtosisFactor(vix)`) uses discrete VIX bands (1.8× crash / 1.2× rally at VIX < 15 → 4.0× crash / 3.0× rally at VIX ≥ 30). Real kurtosis varies continuously and by time of day. A smoothly interpolated kurtosis curve would be more accurate.
 4. **Convex skew exponent is static**: The 1.35 put convexity is empirically reasonable for typical VIX 15-25 days. On extreme fear days (VIX 35+), real put skew can be significantly steeper. The chain endpoint shows actual per-strike IV for comparison.
 5. **Theoretical vs market premiums**: Black-Scholes assumes continuous hedging; real prices include bid/ask spreads
 6. **Parkinson RV estimator**: Uses a 5-day rolling window of daily high-low ranges. Smoother than single-day, but still sensitive to outlier days. A longer window (10-20 days) or GARCH-based estimator could improve stability.
@@ -483,4 +483,4 @@ Section 508 / WCAG 2.1 AA: semantic HTML, ARIA attributes, focus management, 4.5
 9. **Database coverage**: VIX1D data available from May 2022 only; earlier outcomes have VIX close but not VIX1D close
 10. **Pin risk requires live chain**: OI heatmap only available during market hours with authenticated Schwab session. Historical OI data is not persisted.
 11. **ML pipeline maturity**: Phase 2 (structure classification) is in early feasibility with ~35 labeled days — no model yet beats the majority-class baseline. Full training expected at 60+ labeled days.
-12. **ES sidecar data**: Tradovate market data access is subject to API mode restrictions. Overnight data may have gaps during maintenance windows.
+12. **ES sidecar data**: sourced from Databento (Live + TBBO archive) via the Railway sidecar. Overnight data may have gaps during maintenance windows.
