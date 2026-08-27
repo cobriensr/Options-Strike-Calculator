@@ -120,6 +120,29 @@ describe('normalCDF', () => {
       expect(normalCDF(x) + normalCDF(-x)).toBeCloseTo(1, 8);
     }
   });
+
+  // The far tail used to reflect through `1 - (1 - tail)`. Once tail fell
+  // below ~1.1e-16 that rounded to exactly 0, so `toBeCloseTo(0, …)` passed
+  // while the value was gone. These assert it is small AND still nonzero.
+  it('does not collapse to exactly zero in the far left tail', () => {
+    for (const x of [-8, -9, -10, -12]) {
+      expect(normalCDF(x)).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps the far left tail to the right order of magnitude', () => {
+    // A&S 26.2.17 carries |error| < 7.5e-8 absolute, so only ~1-2% relative
+    // accuracy is available out here; 10% is a deliberately loose bound that
+    // still fails hard if the reflection regresses.
+    const expected: Array<[number, number]> = [
+      [-8, 6.220960732203e-16],
+      [-9, 1.128588411665e-19],
+      [-10, 7.619853033222e-24],
+    ];
+    for (const [x, truth] of expected) {
+      expect(Math.abs(normalCDF(x) - truth) / truth).toBeLessThan(0.1);
+    }
+  });
 });
 
 // ── normalPDF ──────────────────────────────────────────────────
