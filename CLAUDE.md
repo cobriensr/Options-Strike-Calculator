@@ -31,7 +31,7 @@ sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
 uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
                   asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
                   per-channel handler queues → chunked multi-row INSERT ... ON CONFLICT DO NOTHING → Neon. Subscribes to flow-alerts (note hyphen,
-                  not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (~50 tickers).
+                  not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (86 tickers).
                   Writes to ws_flow_alerts (sql/001) and ws_option_trades (api migration #110); cron-fed
                   flow_alerts table is NOT touched and runs in parallel during the soak window.
                   Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).
@@ -257,6 +257,7 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `CRON_SECRET`                              | Vercel (cron job auth)             |
 | `UW_API_KEY`                               | Unusual Whales                     |
 | `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)  |
+| `UW_PER_MINUTE_CAP`                        | UW limiter override (opt., def 2000) |
 | `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)  |
 | `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)      |
 | `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)    |

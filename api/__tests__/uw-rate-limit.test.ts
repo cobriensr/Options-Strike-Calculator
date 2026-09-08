@@ -2,13 +2,14 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockPipeline, mockIncrement } = vi.hoisted(() => ({
+const { mockPipeline, mockIncrement, mockMinuteCount } = vi.hoisted(() => ({
   mockPipeline: {
     incr: vi.fn().mockReturnThis(),
     expire: vi.fn().mockReturnThis(),
     exec: vi.fn(),
   },
   mockIncrement: vi.fn(),
+  mockMinuteCount: vi.fn(),
 }));
 
 vi.mock('../_lib/redis.js', () => ({
@@ -18,7 +19,7 @@ vi.mock('../_lib/redis.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  metrics: { increment: mockIncrement },
+  metrics: { increment: mockIncrement, uwMinuteCount: mockMinuteCount },
   Sentry: { captureException: vi.fn() },
 }));
 
@@ -26,7 +27,11 @@ vi.mock('../_lib/logger.js', () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
-import { acquireUWSlot, UW_PER_MINUTE_CAP } from '../_lib/uw-rate-limit.js';
+import {
+  acquireUWSlot,
+  getPerMinuteCap,
+  UW_PER_MINUTE_CAP,
+} from '../_lib/uw-rate-limit.js';
 
 describe('uw-rate-limit', () => {
   const originalEnv = process.env;
@@ -34,6 +39,7 @@ describe('uw-rate-limit', () => {
   beforeEach(() => {
     mockPipeline.exec.mockReset();
     mockIncrement.mockReset();
+    mockMinuteCount.mockReset();
     process.env = {
       ...originalEnv,
       KV_REST_API_URL: 'https://test.upstash.io',
@@ -63,6 +69,59 @@ describe('uw-rate-limit', () => {
     await expect(acquireUWSlot()).rejects.toThrow(/per-minute cap/);
     expect(mockIncrement).toHaveBeenCalledWith('uw.rate_limit.throw.minute');
     expect(mockPipeline.exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('defaults the cap to UW_PER_MINUTE_CAP when no override is set', () => {
+    delete process.env.UW_PER_MINUTE_CAP;
+    expect(getPerMinuteCap()).toBe(UW_PER_MINUTE_CAP);
+  });
+
+  it('honours a numeric UW_PER_MINUTE_CAP override', async () => {
+    process.env.UW_PER_MINUTE_CAP = '5';
+    expect(getPerMinuteCap()).toBe(5);
+
+    // 6 > 5 → the override, not the 2000 default, decides.
+    mockPipeline.exec.mockResolvedValueOnce([6, 1]);
+    await expect(acquireUWSlot()).rejects.toThrow(
+      /per-minute cap \(5\) exceeded/,
+    );
+  });
+
+  it('ignores a non-numeric or non-positive override', () => {
+    process.env.UW_PER_MINUTE_CAP = 'not-a-number';
+    expect(getPerMinuteCap()).toBe(UW_PER_MINUTE_CAP);
+
+    process.env.UW_PER_MINUTE_CAP = '0';
+    expect(getPerMinuteCap()).toBe(UW_PER_MINUTE_CAP);
+
+    process.env.UW_PER_MINUTE_CAP = '-10';
+    expect(getPerMinuteCap()).toBe(UW_PER_MINUTE_CAP);
+  });
+
+  it('does not throttle traffic that the old 115 cap would have rejected', async () => {
+    // Regression guard for the 2026-09-07 retune: UW lifted its 120/min cap,
+    // so a 200-request minute must pass rather than throw.
+    delete process.env.UW_PER_MINUTE_CAP;
+    mockPipeline.exec.mockResolvedValueOnce([200, 1]);
+
+    await expect(acquireUWSlot()).resolves.toBeUndefined();
+    expect(mockIncrement).not.toHaveBeenCalled();
+  });
+
+  it('emits the observed per-minute count even when under cap', async () => {
+    mockPipeline.exec.mockResolvedValueOnce([37, 1]);
+
+    await acquireUWSlot();
+
+    expect(mockMinuteCount).toHaveBeenCalledWith(37);
+  });
+
+  it('does not emit a count when redis fails open', async () => {
+    mockPipeline.exec.mockResolvedValueOnce([null, 1]);
+
+    await acquireUWSlot();
+
+    expect(mockMinuteCount).not.toHaveBeenCalled();
   });
 
   it('fails open when redis pipeline throws', async () => {

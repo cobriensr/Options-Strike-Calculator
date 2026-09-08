@@ -1,9 +1,11 @@
 /**
  * Shared outbound budget guardrail for the Unusual Whales API.
  *
- * Enforces a per-minute request budget (`uw:rl:m:{epoch_min}`) under
- * UW's documented 120/min cap. Every `uwFetch()` call passes through
- * `acquireUWSlot()` before reaching the concurrency semaphore.
+ * Enforces a per-minute request budget (`uw:rl:m:{epoch_min}`) as a
+ * runaway guard. UW lifted its 120/min cap on 2026-08-13, so this is no
+ * longer sized against a UW ceiling — see `UW_PER_MINUTE_CAP` below.
+ * Every `uwFetch()` call passes through `acquireUWSlot()` before reaching
+ * the concurrency semaphore.
  *
  * Behavior:
  *   - per-minute cap exceeded → throw immediately (waiting ~30s for the
@@ -42,16 +44,53 @@ function isRedisConfigured(): boolean {
 // ── Tuning ────────────────────────────────────────────────────
 
 /**
- * Max UW requests in any 60-second window. Headroom under UW's 120/min.
+ * Max UW requests in any 60-second window — a RUNAWAY GUARD, not a throttle.
  *
- * Raised from 100 → 115 on 2026-05-19. Multiple every-minute crons
- * (fetch-strike-trade-volume, fetch-greek-flow-etf, fetch-nope,
- * fetch-flow-alerts, enrich-lottery-outcomes) plus on-demand
- * lottery-finder reads were collectively burning ~95-110 calls/min
- * during peak and tripping our self-cap (15 events/day across crons).
- * 115 keeps a 5-call buffer under UW's 120/min ceiling.
+ * History:
+ *   - 100 → 115 on 2026-05-19, sized as headroom under UW's then-real
+ *     120/min ceiling. Every-minute crons (fetch-strike-trade-volume,
+ *     fetch-greek-flow-etf, fetch-nope, fetch-flow-alerts,
+ *     enrich-lottery-outcomes) plus on-demand lottery-finder reads were
+ *     burning ~95-110 calls/min at peak and tripping the self-cap ~15x/day.
+ *   - 115 → 2000 on 2026-09-07. **UW lifted the 120/min cap on 2026-08-13**
+ *     and gave Advanced plans unlimited daily requests on 2026-08-09.
+ *     Confirmed empirically against live response headers, not just the
+ *     changelog: `x-uw-req-per-minute-remaining: 1000000`,
+ *     `x-uw-token-req-limit: 100000000`. Our 115 was therefore rejecting
+ *     requests roughly four orders of magnitude below the real ceiling —
+ *     self-inflicted data loss during exactly the peak minutes we care about.
+ *
+ * 2000 is deliberately ABOVE what this process can physically reach, i.e.
+ * the per-minute guard is now off by design. The real backstop is the
+ * concurrency semaphore in `uw-concurrency.ts`: `UW_CONCURRENCY_CAP = 3`
+ * in-flight against ~0.8-1.5s UW latency bounds throughput to roughly
+ * 200/min, so a runaway retry loop is stopped there, not here. Any cap low
+ * enough for this guard to actually fire would also fire on legitimate
+ * traffic the day UW's endpoints get faster — which is exactly the
+ * self-inflicted data loss being removed. Unreachable is the point.
+ *
+ * Do NOT re-tighten toward 120 without re-reading the live headers — see the
+ * `x-uw-*` capture in `uw-fetch.ts`, which gauges UW's self-reported budget.
+ * The next thing worth re-probing empirically is whether UW's 3-concurrent
+ * cap still holds; the lifted 120/min says nothing about it.
+ *
+ * Override without a deploy via the `UW_PER_MINUTE_CAP` env var.
  */
-export const UW_PER_MINUTE_CAP = 115;
+export const UW_PER_MINUTE_CAP = 2000;
+
+/**
+ * Effective cap, read at call time so tests can vary the override without
+ * re-importing the module. (On Vercel `process.env` is populated before
+ * module evaluation, so this is not about serverless env timing.) A
+ * non-numeric or non-positive override is ignored in favour of the default.
+ */
+export function getPerMinuteCap(): number {
+  const raw = process.env.UW_PER_MINUTE_CAP;
+  // Strict digits-only: `parseInt('5x')` would otherwise silently yield 5.
+  if (raw === undefined || !/^\d+$/.test(raw)) return UW_PER_MINUTE_CAP;
+  const parsed = Number.parseInt(raw, 10);
+  return parsed > 0 ? parsed : UW_PER_MINUTE_CAP;
+}
 
 // ── Internal helpers ──────────────────────────────────────────
 
@@ -102,10 +141,13 @@ export async function acquireUWSlot(): Promise<void> {
   const minCount = await incrWithTtl(minKey, MIN_KEY_TTL);
   if (minCount === null) return; // Redis down — fail open
 
-  if (minCount > UW_PER_MINUTE_CAP) {
+  // The INCR is already paid for; surface the count so per-minute UW call
+  // volume is observable even though the guard below effectively never fires.
+  metrics.uwMinuteCount(minCount);
+
+  const cap = getPerMinuteCap();
+  if (minCount > cap) {
     metrics.increment('uw.rate_limit.throw.minute');
-    throw new Error(
-      `UW rate limiter: per-minute cap (${UW_PER_MINUTE_CAP}) exceeded`,
-    );
+    throw new Error(`UW rate limiter: per-minute cap (${cap}) exceeded`);
   }
 }

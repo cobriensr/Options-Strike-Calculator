@@ -322,8 +322,11 @@ async function backfillTickerDate(ticker, date) {
 
     if (batch.length < PAGE_SIZE) break;
 
-    // Polite pacing within a date's pagination — UW caps at 120/min;
-    // 500ms between pages = ~120/min steady-state, just under the cap.
+    // Polite pacing within a date's pagination. NOTE: UW lifted its 120/min
+    // cap on 2026-08-13 (live headers report 1,000,000/min remaining), so this
+    // 500ms delay is now conservative-by-choice, not a cap requirement. Safe to
+    // reduce; the binding constraint is UW's ~3-concurrent limit, and this loop
+    // is serial so it never approaches that.
     await new Promise((r) => setTimeout(r, 500));
   }
 

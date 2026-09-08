@@ -47,6 +47,8 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: {
     rateLimited: vi.fn(),
     uwRateLimit: vi.fn(),
+    uwBudget: vi.fn(),
+    uwMinuteCount: vi.fn(),
     tokenRefresh: vi.fn(),
     schwabCall: vi.fn(() => vi.fn()),
     increment: vi.fn(),
@@ -638,6 +640,156 @@ describe('api-helpers', () => {
       );
       const result = await uwFetch('key123', '/market/SPY/etf-tide');
       expect(result).toEqual([{ a: 1 }]);
+    });
+
+    it('gauges UW budget headers on a sampled success', async () => {
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwBudget).mockClear();
+      // Force the sample branch — the capture is 1%-sampled by design.
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+
+      const headers: Record<string, string> = {
+        'x-uw-req-per-minute-remaining': '1000000',
+        'x-uw-token-req-limit': '100000000',
+        'x-uw-daily-req-count': '42',
+      };
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          headers: { get: (h: string) => headers[h] ?? null },
+          json: () => Promise.resolve({ data: [] }),
+        }),
+      );
+
+      await uwFetch('key123', '/path');
+
+      expect(mockedMetrics.uwBudget).toHaveBeenCalledWith({
+        minuteRemaining: 1000000,
+        dailyLimit: 100000000,
+        dailyUsed: 42,
+      });
+      vi.mocked(Math.random).mockRestore();
+    });
+
+    it('gauges UW budget even when unsampled if the minute budget is low', async () => {
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwBudget).mockClear();
+      // Never sample — the low-remaining branch must still fire, since that
+      // is how a reinstated UW cap would surface.
+      vi.spyOn(Math, 'random').mockReturnValue(0.999999);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          headers: {
+            get: (h: string) =>
+              h === 'x-uw-req-per-minute-remaining' ? '17' : null,
+          },
+          json: () => Promise.resolve({ data: [] }),
+        }),
+      );
+
+      await uwFetch('key123', '/path');
+
+      expect(mockedMetrics.uwBudget).toHaveBeenCalledWith({
+        minuteRemaining: 17,
+        dailyLimit: null,
+        dailyUsed: null,
+      });
+      vi.mocked(Math.random).mockRestore();
+    });
+
+    it('skips the budget gauge when unsampled and budget is healthy', async () => {
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwBudget).mockClear();
+      vi.spyOn(Math, 'random').mockReturnValue(0.999999);
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          headers: {
+            get: (h: string) =>
+              h === 'x-uw-req-per-minute-remaining' ? '1000000' : null,
+          },
+          json: () => Promise.resolve({ data: [] }),
+        }),
+      );
+
+      await uwFetch('key123', '/path');
+
+      expect(mockedMetrics.uwBudget).not.toHaveBeenCalled();
+      vi.mocked(Math.random).mockRestore();
+    });
+
+    it('still returns data when budget headers are absent', async () => {
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({ data: [{ a: 1 }] }),
+        }),
+      );
+
+      // No `headers` on the mock at all — observability must never break a fetch.
+      await expect(uwFetch('key123', '/path')).resolves.toEqual([{ a: 1 }]);
+      vi.mocked(Math.random).mockRestore();
+    });
+
+    it('gauges UW budget on a 429, bypassing the sample gate', async () => {
+      // The budget capture must run BEFORE the non-OK throw: a reinstated UW
+      // cap shows up as a 429, and UW sends the x-uw-* headers on 429.
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwBudget).mockClear();
+      vi.spyOn(Math, 'random').mockReturnValue(0.999999); // never sampled
+
+      const headers: Record<string, string> = {
+        'x-uw-req-per-minute-remaining': '0',
+        'x-uw-token-req-limit': '100000',
+        'x-uw-daily-req-count': '99',
+      };
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          headers: { get: (h: string) => headers[h] ?? null },
+          text: () => Promise.resolve('Rate limited'),
+        }),
+      );
+
+      await expect(uwFetch('key123', '/path')).rejects.toThrow('UW API 429');
+      expect(mockedMetrics.uwBudget).toHaveBeenCalledWith({
+        minuteRemaining: 0,
+        dailyLimit: 100000,
+        dailyUsed: 99,
+      });
+      vi.mocked(Math.random).mockRestore();
+    });
+
+    it('still returns data when the budget gauge itself throws', async () => {
+      // Pins the deliberate swallow in recordUWBudget: a Sentry failure must
+      // never turn a good UW response into a failed fetch.
+      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
+      vi.mocked(mockedMetrics.uwBudget).mockImplementationOnce(() => {
+        throw new Error('sentry down');
+      });
+      vi.spyOn(Math, 'random').mockReturnValue(0); // force the emit path
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          headers: { get: () => '1000000' },
+          json: () => Promise.resolve({ data: [{ a: 1 }] }),
+        }),
+      );
+
+      await expect(uwFetch('key123', '/path')).resolves.toEqual([{ a: 1 }]);
+      vi.mocked(Math.random).mockRestore();
     });
 
     it('returns empty array when body.data is missing', async () => {

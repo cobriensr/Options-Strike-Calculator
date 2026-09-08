@@ -15,7 +15,8 @@
  * Resumable (hole-aware): skips only (ticker, date) pairs that ALREADY have
  * rows, so a date that failed transiently is retried on the next run instead
  * of being permanently skipped. BYPASS_RESUME=1 forces a full re-fetch.
- * Rate-limited: a global limiter spaces ALL requests under UW's 120/min cap
+ * Rate-limited: a global limiter spaces ALL requests. NOTE: UW lifted the
+ * 120/min cap on 2026-08-13, so this pacing is now conservative-by-choice
  * regardless of CONCURRENCY; 429s are retried with exponential backoff.
  *
  * Filters:

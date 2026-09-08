@@ -140,6 +140,47 @@ function uwRateLimit(endpoint: string, retryAfter: string | null) {
   });
 }
 
+/**
+ * Gauge UW's self-reported request budget, read from `x-uw-*` response
+ * headers. UW publishes no usage endpoint — these headers on any 200 are
+ * the only source of truth for the real limits, and they are what tells us
+ * whether our own `UW_PER_MINUTE_CAP` guard is still sized sanely. Emitted
+ * on a low sample (and always when the minute budget runs low) so a UW-side
+ * limit change shows up as a step in the gauge instead of a silent surprise.
+ */
+function uwBudget(opts: {
+  minuteRemaining: number | null;
+  dailyLimit: number | null;
+  dailyUsed: number | null;
+}) {
+  const { minuteRemaining, dailyLimit, dailyUsed } = opts;
+  if (minuteRemaining !== null) {
+    Sentry.metrics.gauge('uw.budget.minute_remaining', minuteRemaining);
+  }
+  if (dailyLimit !== null) {
+    Sentry.metrics.gauge('uw.budget.daily_limit', dailyLimit);
+  }
+  if (dailyUsed !== null) {
+    Sentry.metrics.gauge('uw.budget.daily_used', dailyUsed);
+  }
+  if (dailyLimit !== null && dailyUsed !== null && dailyLimit > 0) {
+    Sentry.metrics.gauge(
+      'uw.budget.daily_pct_used',
+      (dailyUsed / dailyLimit) * 100,
+    );
+  }
+}
+
+/**
+ * Distribution of UW requests observed in the current 60s window. The
+ * limiter already pays for this INCR on every call; emitting it turns that
+ * round-trip into the one signal we otherwise lack — actual per-minute UW
+ * call volume — instead of discarding the count unless it trips the guard.
+ */
+function uwMinuteCount(count: number) {
+  Sentry.metrics.distribution('uw.rate_limit.minute_count', count);
+}
+
 /** Track a Schwab token refresh failure. */
 function tokenRefresh(success: boolean) {
   Sentry.metrics.count('schwab.token_refresh', 1, {
@@ -200,6 +241,8 @@ export const metrics = {
   schwabCall,
   rateLimited,
   uwRateLimit,
+  uwBudget,
+  uwMinuteCount,
   tokenRefresh,
   analyzeCall,
   dbSave,

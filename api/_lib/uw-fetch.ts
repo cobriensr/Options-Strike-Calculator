@@ -147,6 +147,56 @@ export async function mapWithConcurrency<T, R>(
 // ============================================================
 
 /**
+ * Fraction of successful UW responses whose budget headers are gauged.
+ * The headers are identical across calls in the same minute, so a low
+ * sample is enough to trend the limits without flooding Sentry.
+ */
+const UW_BUDGET_SAMPLE_RATE = 0.01;
+
+/**
+ * Emit a gauge below this many remaining per-minute requests regardless of
+ * sampling. Sized to catch UW reinstating a small cap (the old ceiling was
+ * 120/min); at today's reported 1,000,000 it never fires.
+ */
+const UW_BUDGET_ALERT_REMAINING = 500;
+
+function readIntHeader(res: Response, name: string): number | null {
+  const raw = res.headers?.get?.(name);
+  if (raw == null) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Record UW's self-reported request budget from `x-uw-*` response headers.
+ * UW exposes no usage endpoint, so these headers are the only way to know
+ * the real limits — and the only way to catch UW changing them under us.
+ *
+ * Called before the non-OK branch so a 429 still reports its budget: UW omits
+ * these headers on 401/403 but DOES send them on 429, which is precisely the
+ * moment we need them. `force` bypasses sampling for that case.
+ *
+ * Never throws: observability must not be able to fail a data fetch.
+ */
+function recordUWBudget(res: Response, force = false): void {
+  try {
+    const minuteRemaining = readIntHeader(res, 'x-uw-req-per-minute-remaining');
+    const low =
+      minuteRemaining !== null && minuteRemaining < UW_BUDGET_ALERT_REMAINING;
+    const sampled = Math.random() < UW_BUDGET_SAMPLE_RATE;
+    if (!force && !sampled && !low) return;
+
+    metrics.uwBudget({
+      minuteRemaining,
+      dailyLimit: readIntHeader(res, 'x-uw-token-req-limit'),
+      dailyUsed: readIntHeader(res, 'x-uw-daily-req-count'),
+    });
+  } catch {
+    // Deliberately swallowed — a metrics failure must never break a fetch.
+  }
+}
+
+/**
  * Fetch JSON from the Unusual Whales API.
  *
  * Handles auth header, timeout, non-OK responses, and returns the
@@ -176,6 +226,10 @@ export async function uwFetch<T>(
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(TIMEOUTS.UW_API),
     });
+
+    // Before the non-OK branch below throws — a 429 carries the budget
+    // headers and is exactly when we want them recorded.
+    recordUWBudget(res, res.status === 429);
 
     if (!res.ok) {
       const text = await res

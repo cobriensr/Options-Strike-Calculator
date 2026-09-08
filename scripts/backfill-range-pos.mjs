@@ -17,7 +17,8 @@
  *   - Groups fires by (ticker, date) so each UW endpoint call is
  *     hit exactly once per unique pair.
  *   - Sequential UW calls (no concurrency) — UW limit on the stock-
- *     ohlc endpoint is ~120/min for the Advanced tier; this is well
+ *     ohlc endpoint was ~120/min for the Advanced tier (cap lifted
+ *     2026-08-13; pacing kept as a conservative default); this is well
  *     under that even on a 626K-row backfill.
  *   - Batches the UPDATE in per-(ticker,date) groups so the round
  *     trip count is bounded by unique pairs, not row count.
@@ -62,7 +63,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Fetch with retry-on-429. UW Advanced tier caps /stock/{t}/ohlc/1m
- * at 120/min — first run hit the wall at request 121 with thousands
+ * at the then-current 120/min — first run hit the wall at request 121 with thousands
  * of 429s. We pace at 600ms between calls (100/min, safety margin)
  * and exponential-backoff retry up to 4 times on 429. Non-429
  * non-2xx returns [] immediately so transient server errors don't
@@ -110,7 +111,12 @@ async function fetchStockCandles1m(ticker, date, failures) {
   return [];
 }
 
-/** Steady-state pacing between calls — keeps us under the 120/min cap. */
+/**
+ * Steady-state pacing between calls. The 120/min cap this was sized for was
+ * lifted 2026-08-13 (live headers: 1,000,000/min remaining), so this is now a
+ * conservative default rather than a requirement — safe to lower if a backfill
+ * is too slow. Serial loop, so UW's ~3-concurrent cap is never approached.
+ */
 const UW_INTER_CALL_DELAY_MS = 600;
 
 function computeRangePos(candles, triggerTimeMs, spot) {
