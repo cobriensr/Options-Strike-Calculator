@@ -225,12 +225,35 @@ _BUTTERFLY_CELL_LIMIT: Final = 30_000
 
 
 # Butterfly body chunk size. The body x wing offset joins in
-# _butterfly_from_batch are eager and uncapped; a dense butterfly-eligible
-# cell (up to _BUTTERFLY_CELL_LIMIT rows) can build a large intermediate.
+# _butterfly_from_batch are eager and, below _BUTTERFLY_PAIR_CAP, uncapped;
+# a dense butterfly-eligible cell (up to _BUTTERFLY_CELL_LIMIT rows) can
+# build a large intermediate.
 # Body rows are independent in the body-wing join, so processing bodies in
 # slices is output-identical (the final triple-dedup runs on the concatenated
 # result). Chunk the body anchors to bound the per-join intermediate.
 _BUTTERFLY_BODY_CHUNK: Final = 2_000
+
+
+# Butterfly pair cap (skip, not sub-chunk). _BUTTERFLY_BODY_CHUNK bounds
+# only the body side of the body × wing join — each chunk is still
+# 2,000 × N pairs — and the per-body lo × hi join that follows is an
+# uncapped cartesian that no body chunking can bound. A dense
+# single-bucket window (production is one ticker over 60 s) built an
+# 8 GB / 204 s intermediate at 10 K prints while producing zero
+# butterflies. Above this many bodies × wings the batch skips butterfly
+# enumeration (one RuntimeWarning per batch) and the 2-leg stages proceed.
+# In dense windows the skip has been output-identical in every measured
+# run (0 butterflies at 5 K / 10 K prints; the 800-print test fixture
+# enumerates ~204 K butterfly candidates, all at 1.0, all out-competed):
+# nearly every print has a 1.0-confidence vertical partner and
+# _greedy_assign seats 2-leg candidates first on ties
+# (two_conf >= three_conf). Measured, not guaranteed — three prints whose
+# 1.0 verticals were all consumed by other pairs can still seat a 1.0
+# butterfly. Same threshold as _SELF_JOIN_PAIR_CAP / _CROSS_JOIN_PAIR_CAP.
+# Because bodies ⊆ batch, at defaults this cap fires before
+# _BUTTERFLY_BODY_CHUNK can (bodies > 2,000 ⇒ > 4 M pairs); the body-chunk
+# path is live only if this cap is raised above _BUTTERFLY_BODY_CHUNK².
+_BUTTERFLY_PAIR_CAP: Final = 250_000
 
 
 # Ticker overload threshold. Any ticker whose largest single
@@ -1686,9 +1709,14 @@ def _butterfly_from_batch(
     batch (bodies' bucket + 1 either side, via the batch iterator's
     ``all_buckets`` set).
 
-    Peak memory is bounded by chunking the body anchors: the body × wing
-    offset joins are eager and uncapped, so a dense butterfly-eligible cell
-    (up to ``_BUTTERFLY_CELL_LIMIT`` rows) can build a large intermediate.
+    Batches with more than ``_BUTTERFLY_PAIR_CAP`` body × wing pairs skip
+    butterfly enumeration entirely (warning once per batch); the 2-leg
+    stages are unaffected. Below the cap (at default constants this cap
+    fires before the body chunking below can — see
+    ``_BUTTERFLY_PAIR_CAP``), peak memory is bounded by chunking the body
+    anchors: the body × wing offset joins are eager and uncapped, so a
+    dense butterfly-eligible cell (up to ``_BUTTERFLY_CELL_LIMIT`` rows)
+    can build a large intermediate.
     When ``bodies.height`` exceeds ``_BUTTERFLY_BODY_CHUNK`` the bodies are
     sliced and each slice runs the full body×wing→filter→lo/hi→triple→score
     pipeline against the FULL wing frame; the per-slice candidate frames are
@@ -1708,6 +1736,18 @@ def _butterfly_from_batch(
 
     bodies = batch.filter(pl.col("_is_body"))
     if bodies.height == 0:
+        return _empty_candidates_3leg()
+
+    n_pairs = bodies.height * batch.height
+    if n_pairs > _BUTTERFLY_PAIR_CAP:
+        warnings.warn(
+            f"multileg matcher: skipping butterfly enumeration "
+            f"(bodies={bodies.height:,} × wings={batch.height:,} = "
+            f"{n_pairs:,} pairs > {_BUTTERFLY_PAIR_CAP:,} cap); "
+            f"2-leg patterns unaffected.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return _empty_candidates_3leg()
 
     # Common case: bodies fit under the chunk size → single-shot, scored once
