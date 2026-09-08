@@ -25,7 +25,8 @@ Endpoint contract (HTTP shape lives in ``server.py``):
     → 200: {"classifications": [MultilegClassification, ...]}
     → 400: empty or missing trades, malformed JSON, or non-standard JSON
            constants (bareword ``NaN`` / ``Infinity`` / ``-Infinity``
-           are rejected at parse time before Pydantic ever sees them).
+           are rejected at parse time before Pydantic ever sees them),
+           or pathologically nested JSON.
     → 422: schema validation error (Pydantic). Notable triggers:
            ``executed_at`` must be tz-aware ISO 8601 (naive datetime
            is rejected because the polars cast would relabel it as UTC
@@ -40,8 +41,8 @@ Endpoint contract (HTTP shape lives in ``server.py``):
 The matcher's required-fields contract is encoded in
 ``MultilegTradeInput``: id, underlying_symbol, executed_at, strike,
 expiry, option_type, size, price, nbbo_bid, nbbo_ask, premium, plus
-``option_chain_id`` for downstream attribution. ``delta`` is optional —
-the matcher tolerates absence.
+``option_chain_id`` for downstream attribution. ``delta`` is accepted
+(optional) but not forwarded to the matcher — see ``_classify_with_polars``.
 """
 
 from __future__ import annotations
@@ -135,9 +136,10 @@ _StrictFloat = Annotated[float, Field(allow_inf_nan=False)]
 class MultilegTradeInput(BaseModel):
     """One trade in the classify request.
 
-    Fields mirror the matcher's ``_REQUIRED_FIELDS`` plus the optional
-    columns it tolerates (delta). Schema validation here (Pydantic v2)
-    converts the 422 path off the matcher's ValueError.
+    Fields mirror the matcher's ``_REQUIRED_FIELDS``. ``delta`` is accepted
+    for wire compatibility (the TS client forwards it when the source row
+    has one) and validated, but is NOT forwarded to the matcher — see
+    ``_classify_with_polars``.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -295,7 +297,14 @@ def _classify_with_polars(request: MultilegClassifyRequest) -> list[dict]:
                 "nbbo_bid": float(t.nbbo_bid),
                 "nbbo_ask": float(t.nbbo_ask),
                 "premium": float(t.premium),
-                "delta": t.delta,
+                # delta is intentionally NOT forwarded: the matcher's
+                # _REQUIRED_FIELDS and its output `legs` projection never
+                # read it, and passing it through made polars infer a
+                # Null dtype from the first 100 rows (polars' default
+                # infer_schema_length; delta is nullable in the source
+                # table) and raise on the first later float.
+                # `delta` stays on MultilegTradeInput for wire
+                # compatibility with callers.
             }
         )
 
@@ -339,7 +348,7 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
     status code and the JSON payload.
 
     Error mapping:
-        - JSON decode error  → 400
+        - JSON decode error, or pathologically nested JSON → 400
         - empty/missing trades or invalid types → 422 (Pydantic)
         - unexpected matcher exception → 500 (reported to Sentry)
     """
@@ -356,7 +365,11 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
 
     try:
         payload = json.loads(body_bytes, parse_constant=_reject_constant)
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError, RecursionError):
+        # RecursionError: pathologically nested JSON (e.g. thousands of
+        # nested arrays) blows CPython's recursion limit inside the
+        # decoder. It's a RuntimeError subclass, not a ValueError, so it
+        # must be caught explicitly or it escapes as an unhandled 500.
         return 400, {"error": "body must be valid JSON"}
 
     if not isinstance(payload, dict):
