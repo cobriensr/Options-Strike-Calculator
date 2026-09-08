@@ -248,18 +248,25 @@ _BUTTERFLY_BODY_CHUNK: Final = 2_000
 # 8 GB / 204 s intermediate at 10 K prints while producing zero
 # butterflies. Above this many bodies × wings the batch skips butterfly
 # enumeration (one RuntimeWarning per batch) and the 2-leg stages proceed.
-# In dense windows the skip has been output-identical in every measured
-# run (0 butterflies at 5 K / 10 K prints; the 800-print test fixture
-# enumerates ~204 K butterfly candidates, all at 1.0, all out-competed):
-# nearly every print has a 1.0-confidence vertical partner and
-# _greedy_assign seats 2-leg candidates first on ties
-# (two_conf >= three_conf). Measured, not guaranteed — three prints whose
-# 1.0 verticals were all consumed by other pairs can still seat a 1.0
-# butterfly. Same threshold as _SELF_JOIN_PAIR_CAP / _CROSS_JOIN_PAIR_CAP.
+# In dense windows the skip was output-identical in every synthetic run
+# (0 butterflies at 5 K / 10 K prints; the 800-print test fixture
+# enumerates ~204 K butterfly candidates, all at 1.0, all out-competed
+# because _greedy_assign seats 2-leg candidates first on ties). It is
+# NOT identical on real tape at ~600-row cells: in the 2026-09-08
+# production replay (spec classifier-phase-a-butterfly-gate-2026-09-08.md,
+# "Task 4 results"), 2 of 26 replayable butterfly fires sat in
+# single-bucket cells of 350–372 K pairs and lost the label under a
+# 250 K cap — hence 400 K, the smallest round value covering both.
+# Measured, not guaranteed: 400 K covers the cells observed, not every
+# dense cell. The OOM regime is 5–10 K-row cells (25–100 M pairs),
+# 60–250× above this cap, so the fix is unaffected; a 632-row cell (the
+# new ceiling) is estimated at a few hundred MB from the ~850 MB /
+# 1,000-row probe, not measured. Sibling caps _SELF_JOIN_PAIR_CAP /
+# _CROSS_JOIN_PAIR_CAP stay at 250 K (they sub-chunk rather than skip).
 # Because bodies ⊆ batch, at defaults this cap fires before
 # _BUTTERFLY_BODY_CHUNK can (bodies > 2,000 ⇒ > 4 M pairs); the body-chunk
 # path is live only if this cap is raised above _BUTTERFLY_BODY_CHUNK².
-_BUTTERFLY_PAIR_CAP: Final = 250_000
+_BUTTERFLY_PAIR_CAP: Final = 400_000
 
 
 # Ticker overload threshold. Any ticker whose largest single

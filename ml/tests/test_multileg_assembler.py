@@ -1244,7 +1244,8 @@ def test_butterfly_small_cell_no_subbatch_warning(
 
 # ── Butterfly pair gate (classifier OOM fix, 2026-09-08) ─────────────────────
 #
-# See docs/tmp/classifier-code-review-2026-09-08.md §1. _BUTTERFLY_BODY_CHUNK
+# See docs/superpowers/specs/classifier-phase-a-butterfly-gate-2026-09-08.md
+# (its Evidence table has the same numbers). _BUTTERFLY_BODY_CHUNK
 # bounds only the body side of the body×wing join (2,000 × N pairs per
 # chunk) and the per-body lo×hi join is an uncapped cartesian, so a dense
 # single-bucket window (production is one ticker over 60 s) built an
@@ -1379,6 +1380,34 @@ def test_butterfly_gate_dense_same_type_window_output_identical(
         actual = ma.classify_trades(df, window_seconds=90)
 
     assert expected.sort("id").to_dicts() == actual.sort("id").to_dicts()
+
+
+def test_butterfly_default_cap_enumerates_replay_band_cells(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard for the 2026-09-08 replay: single-bucket cells in
+    the 250 K–400 K pair band (the two META fires at 350–372 K pairs) must
+    enumerate at the DEFAULT cap. The first arm is un-monkeypatched so a
+    regression to 250 K fails here; the second arm proves the fixture
+    really sits in the band (it trips at 250 K), so the first is not
+    vacuous."""
+    import multileg_assembler as ma
+
+    # 190 flies → 570 rows in one tbk bucket → 570 × 570 = 324,900 pairs.
+    df = _df(_dense_butterfly_cell(n_flies=190, expiry=date(2026, 6, 12)))
+
+    with warnings.catch_warnings():
+        # Only the gate is forbidden; the 250 K self-join sub-batching
+        # warning legitimately fires at 324,900 pairs.
+        warnings.filterwarnings(
+            "error", message=".*skipping butterfly enumeration.*"
+        )
+        out = classify_trades(df, window_seconds=90)
+    assert any(r["inferred_structure"] == "butterfly" for r in out.to_dicts())
+
+    monkeypatch.setattr(ma, "_BUTTERFLY_PAIR_CAP", 250_000)
+    with pytest.warns(RuntimeWarning, match="skipping butterfly enumeration"):
+        classify_trades(df, window_seconds=90)
 
 
 # ── Cross-type join sub-batching (OOM fix, 2026-06-04) ───────────────────────

@@ -69,6 +69,10 @@ Railway's edge proxy does not pool a broken upstream socket.
 
 ## Memory limit
 
+Root cause identified 2026-09-08: the uncapped butterfly enumeration
+stage, now gated by `_BUTTERFLY_PAIR_CAP` — see
+docs/superpowers/specs/classifier-phase-a-butterfly-gate-2026-09-08.md.
+
 The per-replica memory **ceiling** is NOT settable in `railway.toml`
 (config-as-code only covers `build`/`deploy`). It lives on a separate
 Railway surface. **Current recommendation: leave the 24 GB host ceiling

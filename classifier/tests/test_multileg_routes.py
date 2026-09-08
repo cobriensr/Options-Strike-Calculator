@@ -823,12 +823,10 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
     make_payload,
     sample_trade: dict[str, Any],
 ) -> None:
-    """Finding 3.4 (classifier-side mirror of the ml/ test): a request
-    body where half the trades omit ``delta`` (Pydantic emits ``None``)
-    and half carry a float must round-trip through
-    ``handle_classify_payload`` cleanly — no 500, no NaN
-    ``match_confidence``, and the response shape matches
-    ``MultilegClassification``.
+    """``delta`` is validated by Pydantic and dropped before the polars
+    frame (see ``_classify_with_polars``); this test guards that a wire
+    payload with ``delta`` mixed present/absent still round-trips through
+    the real matcher.
 
     Unlike most tests in this file, this one does NOT mock
     ``_classify_with_polars`` because the contract under test is the
@@ -872,7 +870,7 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
     body = make_payload(trades=trades, window_seconds=90)
     status, payload = multileg_routes.handle_classify_payload(body)
 
-    # 1. No 500. (The matcher tolerated mixed-null delta.)
+    # 1. No 500 (delta never reaches the frame).
     assert status == 200, f"expected 200, got {status}: {payload!r}"
 
     classifications = payload["classifications"]
@@ -895,8 +893,8 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
             "overload-skip null path)"
         )
         assert isinstance(mc, float) and not math.isnan(mc), (
-            f"NaN match_confidence on id={c['id']!r}: {mc!r} — likely "
-            "null-delta propagation through confidence scoring"
+            f"NaN match_confidence on id={c['id']!r}: {mc!r} — "
+            "confidence scoring must never emit NaN"
         )
 
     # 3. Every classification has a stable string pattern_group_id.
@@ -907,14 +905,10 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
         )
 
     # 4. At least one row was paired (proving the matcher didn't fail
-    #    over to ``isolated_leg`` for everything when ``delta`` was
-    #    partially null).
+    #    over to ``isolated_leg`` for everything).
     assert any(
         c["is_isolated_leg"] is False for c in classifications
-    ), (
-        "every trade fell to isolated_leg — mixed-null delta silently "
-        "rejected paired candidates; see Finding 3.4"
-    )
+    ), "every trade fell to isolated_leg"
 
 
 def test_handle_payload_null_delta_past_infer_schema_length_then_float_returns_200(

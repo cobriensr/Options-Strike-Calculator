@@ -32,7 +32,7 @@ where every print has a 1.0-confidence vertical partner — a butterfly cannot w
 
 | Constant | Value | Where | Rationale |
 |---|---|---|---|
-| `_BUTTERFLY_PAIR_CAP` | `250_000` | `ml/src/multileg_assembler.py` (new) | Same family as `_SELF_JOIN_PAIR_CAP` / `_CROSS_JOIN_PAIR_CAP`. `bodies × wings` above this → skip the stage for that batch. In a single bucket that is ~500 rows, already the regime where verticals saturate. |
+| `_BUTTERFLY_PAIR_CAP` | `400_000` (250_000 in Task 1; raised in Task 5 per the replay) | `ml/src/multileg_assembler.py` (new) | Same family as `_SELF_JOIN_PAIR_CAP` / `_CROSS_JOIN_PAIR_CAP`. `bodies × wings` above this → skip the stage for that batch. In a single bucket that is ~500 rows, already the regime where verticals saturate. |
 | `_QUEUE_WAIT_TIMEOUT_SEC` | `30.0 → 8.0` | `classifier/src/multileg_routes.py` | Client aborts at 15 s (`multileg-client.ts:165`). 8 s queue + ≤ ~5 s matcher (post-gate) fits inside it. |
 | `_REQUEST_BUDGET_SEC` | `13.0` (new) | `classifier/src/multileg_routes.py` | Hard deadline for parse+queue+matcher measured from `handle_classify_payload` entry; 2 s slack under the client's 15 s. |
 | `classify_trades(..., deadline=None)` | monotonic float | `ml/src/multileg_assembler.py` | Checked at the top of every per-ticker, per-cell and per-batch loop; raises `MatcherDeadlineExceeded` (subclass of `TimeoutError`). |
