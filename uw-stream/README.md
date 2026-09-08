@@ -12,6 +12,10 @@ Currently subscribes to:
   Lottery Finder ticker universe (~50 tickers). Writes to
   `ws_option_trades` (DDL: `sql/002_ws_option_trades.sql`). One shared
   handler instance services every per-ticker subscription.
+- **`futures_trades`** — global CME futures trade firehose, aggregated
+  into 1-minute OHLCV bars in `futures_bars`. Re-sources the bars the
+  Databento-fed `sidecar` used to write; the schema is unchanged, so no
+  migration and no reader changes. See "Futures bars" below.
 
 See `docs/superpowers/specs/uw-websocket-daemon-2026-05-02.md` for the
 phased build plan, `docs/superpowers/specs/lottery-finder-2026-05-02.md`
@@ -42,7 +46,7 @@ Single asyncio process, four components:
 
 ## Schema
 
-The daemon writes to two tables:
+The daemon writes to three tables:
 
 - `ws_flow_alerts` — flow-alerts channel (DDL: `sql/001_ws_flow_alerts.sql`).
   Raw fields only; derived values like `dte_at_alert`, `distance_pct`
@@ -53,14 +57,84 @@ The daemon writes to two tables:
   Input feed for the Lottery Finder cron's v4 trigger detector. Schema
   lives in `api/_lib/db-migrations.ts` migration #110; the daemon
   assumes the table exists (Vercel `migrate-db` provisions it).
+- `futures_bars` — `futures_trades` channel, aggregated to 1-minute
+  OHLCV. Pre-existing table from `api/_lib/db-migrations.ts` migration
+  #42 (`UNIQUE(symbol, ts)`); the daemon adds **no** migration and
+  changes **no** columns.
 
-Both tables follow the same shape: typed columns for everything the
-daemon explicitly extracts plus a `raw_payload JSONB` column carrying
-the full original WS payload for forward-compat.
+`ws_flow_alerts` and `ws_option_trades` follow the same shape: typed
+columns for everything the daemon explicitly extracts plus a
+`raw_payload JSONB` column carrying the full original WS payload for
+forward-compat. `futures_bars` is the exception — it is an aggregate,
+not a per-message table, so it has no `raw_payload`.
 
 The cron-fed `flow_alerts` table is **not touched**. Both will run in
 parallel during the soak window; cutover happens in a later phase per
 the migration plan.
+
+### Futures bars
+
+`src/handlers/futures_trades.py` folds the global CME trade firehose
+into `futures_bars`, replacing Databento as the source of those bars.
+
+**Six product roots**, matched by **exact equality** on the payload's
+`product` field:
+
+| Root  | Contract            |
+| ----- | ------------------- |
+| `ES`  | E-mini S&P 500      |
+| `NQ`  | E-mini Nasdaq-100   |
+| `RTY` | E-mini Russell 2000 |
+| `CL`  | WTI Crude Oil       |
+| `GC`  | Gold                |
+| `ZN`  | 10-Year T-Note      |
+
+The micros (`MES`, `MNQ`, `MGC`, `MYM`, `M2K`) are **separate `product`
+values** and are excluded. Never loosen the filter to a prefix match —
+folding micro prints into their full-size parent corrupts both volume
+and range.
+
+**DX and VX are unavailable**, and their absence is not a bug: `DX`
+(Dollar Index) is ICE-listed and `VX` (VIX futures) is Cboe CFE. Neither
+trades on the CME feed this channel carries, so no subscription or
+filter change can produce them. The Databento-era `futures_bars` rows
+for those symbols simply stop being extended.
+
+Design notes worth knowing before touching the handler:
+
+- We join the **global `futures_trades`** channel, not six
+  `futures:<CONTRACT>` ones (note UW's per-contract form uses a
+  different prefix than the channel name). One subscription instead of
+  six against the 50-channel-per-connection cap, and contract roll
+  (ESU6 → ESZ6) needs no expiry calendar.
+- **UW re-delivers every futures print 2–11×.** Naive summing inflated
+  volume 1.93×–3.09× over a live probe, so prints are deduped on
+  `(sym, trade_id)` within each minute bucket.
+- `futures_bars.symbol` holds the **root** (`'ES'`), so the many contract
+  months on the wire are collapsed to the one with the greatest
+  cumulative session volume — a self-rolling front-month pick.
+- Only minutes **strictly older** than the newest minute seen for a
+  product are written. That is what makes `ON CONFLICT DO NOTHING`
+  correct: a partial bar written early could never be revised. The
+  in-progress minute per product is deliberately lost on shutdown.
+- A minute in which the front month printed nothing but a back month
+  did is written as a **gap**, logged under `kind="front_sym_absent"`.
+  Filling it with the back month's price would inject a carry-basis
+  spike into the root series that `DO NOTHING` could never revise; a
+  missing minute is the safer failure.
+- **`/metrics` caveat:** this is the one aggregating handler, so its
+  `write_attempted` counts trade prints while `write_count` counts
+  bars. The gap between them is the aggregation ratio (~1.2M prints →
+  ~8.6k bars/day), **not** a dedup or failure rate. Judge the channel
+  by `write_count` and `last_message_ts`.
+
+**Before relying on this as the source of truth**, confirm the
+`sidecar/` bar writer (`sidecar/src/bar_writer.py`, wired into
+`sidecar/src/main.py`) is inert. Both services target `futures_bars`
+keyed on `UNIQUE(symbol, ts)`, and the sidecar upserts with
+`ON CONFLICT DO UPDATE` while this handler uses `DO NOTHING` — so a
+live sidecar silently wins every contested minute, and this handler
+would read healthy on `/metrics` while contributing almost nothing.
 
 ## Environment
 

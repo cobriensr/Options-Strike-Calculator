@@ -39,6 +39,13 @@ EXACT_CHANNEL_NAMES: frozenset[str] = frozenset(
     {
         "flow-alerts",
         "off_lit_trades",
+        # Global CME futures firehose. UW also offers a per-contract
+        # ``futures:<CONTRACT>`` form (note: a DIFFERENT prefix from the
+        # channel name), but we deliberately take the global channel: one
+        # subscription instead of six against the 50-channel-per-connection
+        # cap, and contract roll (ESU6 → ESZ6) needs no expiry calendar.
+        # The handler filters to six product roots client-side.
+        "futures_trades",
     },
 )
 
@@ -105,6 +112,7 @@ def handler_class_for_channel(channel: str) -> type[Handler]:
     that into a startup ``RuntimeError`` with a richer message.
     """
     from handlers.flow_alerts import FlowAlertsHandler
+    from handlers.futures_trades import FuturesTradesHandler
     from handlers.gex_strike_expiry import GexStrikeExpiryHandler
     from handlers.interval_ba import (
         QQQIntervalBAHandler,
@@ -118,6 +126,7 @@ def handler_class_for_channel(channel: str) -> type[Handler]:
     exact: dict[str, type[Handler]] = {
         "flow-alerts": FlowAlertsHandler,
         "off_lit_trades": OffLitTradesHandler,
+        "futures_trades": FuturesTradesHandler,
         # option_trades:{SPY,SPXW,QQQ} each get a dedicated subclass that
         # inherits the raw-tick write path from OptionTradesHandler AND
         # emits Interval B/A ask-side alerts into interval_ba_alerts. See
