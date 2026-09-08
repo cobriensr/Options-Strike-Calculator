@@ -1,11 +1,11 @@
 {
   "model_version": "rescore-v1-2026-05-22",
-  "trained_at": "2026-06-12T05:28:39.158938+00:00",
+  "trained_at": "2026-06-17T03:30:10.675348+00:00",
   "training_sample": {
-    "n": 138093,
+    "n": 134899,
     "date_range": [
-      "2026-03-16 00:00:00",
-      "2026-06-11 00:00:00"
+      "2026-03-19 00:00:00",
+      "2026-06-16 00:00:00"
     ],
     "filters_applied": [
       "last 90 days",
@@ -44,10 +44,10 @@
       2
     ],
     "vol_oi_quintile_boundaries": [
-      0.05955942606670463,
-      0.0950625951439236,
-      0.1529680365296803,
-      0.3696060037523452
+      0.059556888503979236,
+      0.09506410648464654,
+      0.15217391304347827,
+      0.3671595674244098
     ],
     "gamma_quintile_weights": [
       -1,
@@ -57,10 +57,10 @@
       1
     ],
     "gamma_quintile_boundaries": [
-      0.011935028722861027,
-      0.02483815759195978,
-      0.04109721870450829,
-      0.06862287686085901
+      0.01193201873015873,
+      0.024764634982693098,
+      0.04067617937929281,
+      0.06795747010463163
     ],
     "ask_pct_quintile_weights": [
       4,
@@ -128,7 +128,7 @@
       "PLTR": 0,
       "POET": 0,
       "QCOM": 0,
-      "QQQ": 3,
+      "QQQ": 4,
       "RBLX": -1,
       "RDDT": 0,
       "RGTI": -1,
@@ -249,13 +249,13 @@
     "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift."
   },
   "validation": {
-    "tier1_count": 9236,
-    "tier2_count": 15780,
-    "tier3_count": 113077,
-    "tier1_mean_outcome_pct": 331.51002351682007,
-    "tier2_mean_outcome_pct": 46.48132817227246,
-    "tier3_mean_outcome_pct": 20.108554183733315,
-    "spearman_score_outcome": -0.060745394915178365,
-    "spearman_p_value": 4.944513526967302e-113
+    "tier1_count": 9994,
+    "tier2_count": 15347,
+    "tier3_count": 109558,
+    "tier1_mean_outcome_pct": 308.60848132982443,
+    "tier2_mean_outcome_pct": 46.505808753991566,
+    "tier3_mean_outcome_pct": 21.01239876788,
+    "spearman_score_outcome": -0.06406901597173793,
+    "spearman_p_value": 1.0990376826629258e-122
   }
 }
