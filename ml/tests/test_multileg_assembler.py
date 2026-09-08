@@ -13,8 +13,12 @@ the motivating analysis (76% of $1M+ "whales" are spread legs).
 
 from __future__ import annotations
 
+import sys
+import time
 import warnings
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 
 import polars as pl
 import pytest
@@ -1944,3 +1948,171 @@ def test_cross_type_subbatch_both_orientations_chunk(
         f"expected both orientations to chunk (>=2 warnings), got "
         f"{[str(w.message) for w in subbatch_warnings]}"
     )
+
+
+# ── Matcher deadline (classifier timeout alignment, 2026-09-08) ──────────────
+#
+# ``classify_trades(..., deadline=<time.monotonic() timestamp>)`` lets the
+# classifier route hand the matcher a hard budget. The TS client aborts at
+# 15 s and never retries, so a matcher that outlives the client only burns
+# the single semaphore slot for a response nobody will read.
+
+
+def _vertical_rows() -> list[dict[str, object]]:
+    """Two-leg vertical fixture (same shape as ``test_vertical_matches``)."""
+    return [
+        _trade(
+            trade_id="t1",
+            offset_s=0.0,
+            strike=190.0,
+            option_type="call",
+            size=10,
+            price=11.00,
+            nbbo_bid=10.90,
+            nbbo_ask=11.00,  # price >= ask → buy
+        ),
+        _trade(
+            trade_id="t2",
+            offset_s=30.0,
+            strike=200.0,
+            option_type="call",
+            size=10,
+            price=5.00,
+            nbbo_bid=5.00,
+            nbbo_ask=5.10,  # price <= bid → sell
+        ),
+    ]
+
+
+def test_classify_trades_deadline_in_past_raises() -> None:
+    """A deadline already in the past raises before any matching runs, and
+    the exception is a ``TimeoutError`` so callers can catch it generically
+    without importing the matcher module."""
+    assert issubclass(multileg_assembler.MatcherDeadlineExceeded, TimeoutError)
+    with pytest.raises(multileg_assembler.MatcherDeadlineExceeded):
+        classify_trades(
+            _df(_vertical_rows()),
+            window_seconds=90,
+            deadline=time.monotonic() - 1,
+        )
+
+
+def test_classify_trades_deadline_none_and_future_unchanged() -> None:
+    """``deadline=None`` (the default) and a comfortably-future deadline are
+    output-identical, and both still find the vertical."""
+    df = _df(_vertical_rows())
+    no_deadline = classify_trades(df, window_seconds=90, deadline=None)
+    future = classify_trades(
+        df, window_seconds=90, deadline=time.monotonic() + 60
+    )
+
+    assert no_deadline.sort("id").to_dicts() == future.sort("id").to_dicts()
+    assert set(no_deadline["inferred_structure"].to_list()) == {"vertical"}
+    assert set(future["inferred_structure"].to_list()) == {"vertical"}
+
+
+def test_classify_trades_deadline_checked_per_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deadline is re-checked per batch as the matcher iterates.
+
+    A spy on ``_check_deadline`` counts calls and raises on call 3. On this
+    two-row, single-cell fixture the checks run ticker (1), cell (2),
+    same-type batch (3) — butterfly needs >= 3 rows and cross-type needs
+    both option types, so the same-type batch check is the last one. The
+    clock comparison itself is covered by
+    ``test_classify_trades_deadline_in_past_raises``.
+    """
+    deadline = 123.0
+    calls = 0
+
+    def spy(d: float | None) -> None:
+        nonlocal calls
+        calls += 1
+        assert d == deadline
+        if calls == 3:
+            raise multileg_assembler.MatcherDeadlineExceeded("spy")
+
+    monkeypatch.setattr(multileg_assembler, "_check_deadline", spy)
+
+    with pytest.raises(multileg_assembler.MatcherDeadlineExceeded):
+        classify_trades(_df(_vertical_rows()), window_seconds=90, deadline=deadline)
+
+    assert calls == 3, f"expected ticker+cell+batch checks, got {calls}"
+
+
+@pytest.mark.parametrize(
+    ("build_rows", "patches", "warning_match", "expected_frame"),
+    [
+        pytest.param(
+            partial(
+                _dense_same_type_calls, n=1200, size=1, expiry=date(2026, 6, 12)
+            ),
+            {"_SELF_JOIN_PAIR_CAP": 50_000},
+            "sub-batching dense same-type",
+            "_self_join_scored_chunked",
+            id="same-type-self-join",
+        ),
+        pytest.param(
+            partial(_dense_cross_type_bucket, n_calls=60, n_puts=60),
+            {"_CROSS_JOIN_PAIR_CAP": 1_000},
+            "sub-batching dense cross-type",
+            "_cross_type_scored_one_orientation",
+            id="cross-type-orientation",
+        ),
+        pytest.param(
+            partial(_dense_butterfly_cell, n_flies=120, expiry=date(2026, 6, 12)),
+            {"_BUTTERFLY_BODY_CHUNK": 50},
+            "sub-batching dense butterfly",
+            "_butterfly_from_batch",
+            id="butterfly-body-chunk",
+        ),
+    ],
+)
+def test_classify_trades_deadline_checked_per_sub_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+    build_rows: Callable[[], list[dict[str, object]]],
+    patches: dict[str, int],
+    warning_match: str,
+    expected_frame: str,
+) -> None:
+    """The deadline is re-checked inside each dense-batch sub-chunk loop.
+
+    In production every cell is one batch, so the per-ticker / per-cell /
+    per-batch checks each fire about once per stage; the quadratic work is
+    inside the three sub-chunk loops (same-type anchor chunks, cross-type
+    side-A chunks, butterfly body chunks), which must therefore check too.
+    Each case reuses the dense fixture + lowered cap that the matching
+    chunking-parity test uses to force that loop.
+
+    A plain call count cannot prove a check is inside a given loop (the
+    per-batch checks of later stages are reachable without any threading),
+    so the spy records each caller's frame and raises the first time it is
+    invoked from the expected chunk-loop function — which can only happen
+    if the deadline reaches that loop.
+    """
+    deadline = 123.0
+    callers: list[str] = []
+
+    def spy(d: float | None) -> None:
+        assert d == deadline
+        caller = sys._getframe(1).f_code.co_name
+        callers.append(caller)
+        if caller == expected_frame:
+            raise multileg_assembler.MatcherDeadlineExceeded("spy")
+
+    df = _df(build_rows())
+    for name, value in patches.items():
+        monkeypatch.setattr(multileg_assembler, name, value)
+    monkeypatch.setattr(multileg_assembler, "_check_deadline", spy)
+
+    with (
+        pytest.warns(RuntimeWarning, match=warning_match),
+        pytest.raises(multileg_assembler.MatcherDeadlineExceeded),
+    ):
+        classify_trades(df, window_seconds=90, deadline=deadline)
+
+    assert callers[-1] == expected_frame, callers
+    # Raised on the FIRST check inside that loop — no earlier stage was
+    # wrongly attributed to it.
+    assert callers.count(expected_frame) == 1, callers

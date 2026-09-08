@@ -765,7 +765,7 @@ def test_handle_payload_passes_null_classification_through(
     without being transformed or stripped.
     """
 
-    def fake(_request):
+    def fake(_request, **_kwargs):
         return [
             {
                 "id": "t1",

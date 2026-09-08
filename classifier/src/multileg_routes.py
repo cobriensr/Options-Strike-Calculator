@@ -36,6 +36,14 @@ Endpoint contract (HTTP shape lives in ``server.py``):
            ``window_seconds`` must be in [1, 600], ``strike_tolerance``
            in [0.0, 0.5], ``size_tolerance`` in [0.0, 1.0]; strict-mode
            rejects ``bool`` → ``float`` and ``str`` → number coercion.
+    → 503: matcher queue wait exceeded ``_QUEUE_WAIT_TIMEOUT_SEC`` (8 s),
+           or the request exceeded ``_REQUEST_BUDGET_SEC`` (13 s, measured
+           from route entry). Body carries ``retry_after_sec``; the server
+           lifts it into a ``Retry-After`` header. Informational only —
+           the TS client (``api/_lib/multileg-client.ts``) aborts at 15 s
+           and does not retry: ``multileg-classify-batch.ts`` returns null
+           and caches the null for that (ticker, chain, minute), so the
+           alert is inserted without a structure label.
     → 500: matcher raised unexpectedly (reported to Sentry).
 
 The matcher's required-fields contract is encoded in
@@ -83,27 +91,49 @@ logger = logging.getLogger(__name__)
 # cross-join cap 500K → 250K in multileg_assembler.py it bounds both the
 # concurrent and the single-request peak. This does NOT drop work in any
 # pipeline-breaking way: excess requests block on the semaphore, 503 on the
-# 30s queue timeout, and the batch caller (multileg-classify-batch.ts)
-# treats classifier failure as best-effort — the alert is still inserted,
-# just without a multileg structure label. Per-request matcher time is ~1s,
-# so a 30-deep serial queue still clears inside the 30s timeout; genuine
-# saturation only sheds the multileg enrichment for the rare hottest minute
-# (far less coverage loss than the OOM restart storm it replaces).
+# ``_QUEUE_WAIT_TIMEOUT_SEC`` queue timeout, and the batch caller
+# (multileg-classify-batch.ts) treats classifier failure as best-effort —
+# the alert is still inserted, just without a multileg structure label.
+# The TS client does not retry a 503 (see the request-budget block below),
+# so genuine saturation sheds the multileg enrichment for the rare hottest
+# minute (far less coverage loss than the OOM restart storm it replaces).
 #
 # A ``BoundedSemaphore`` (not regular ``Semaphore``) is used so an
 # accidental over-release raises ``ValueError`` — defence-in-depth against
 # a future refactor that double-frees on exit.
 _CLASSIFY_CONCURRENCY = 1
 _classify_semaphore = threading.BoundedSemaphore(_CLASSIFY_CONCURRENCY)
-# 30s is the hard ceiling on how long a request will sit in the matcher
-# queue before we 503 the caller. The TS client retries on 503 with
-# jitter, so a brief queue spike doesn't drop work — it just bounces.
-_QUEUE_WAIT_TIMEOUT_SEC = 30.0
+
+# ── Request budget ────────────────────────────────────────────────────────
+#
+# The TS client (api/_lib/multileg-client.ts, ``DEFAULT_TIMEOUT_MS``)
+# aborts every classify request at 15 s and does NOT retry: on 503 or
+# abort, multileg-classify-batch.ts returns null and caches the null for
+# that (ticker, chain, minute), so the alert is inserted without a
+# structure label. Both knobs below therefore fit inside 15 s — anything
+# the server spends past that is matcher time for a socket nobody is
+# reading, and it holds the single semaphore slot while doing so.
+#
+# Queue wait: hard ceiling on how long a request sits waiting for the
+# matcher semaphore before we 503. 8 s leaves ~5 s of matcher time (less
+# parse time) under the 13 s budget; the matcher runs ~1-4 s at production
+# densities after the butterfly gate (``_BUTTERFLY_PAIR_CAP`` in
+# multileg_assembler.py), so a request that gets a permit inside the queue
+# window normally finishes well inside the budget.
+_QUEUE_WAIT_TIMEOUT_SEC = 8.0
+# Hard deadline for the whole request — parse + validate + queue wait +
+# matcher — measured from ``handle_classify_payload`` entry. 2 s of slack
+# under the client's 15 s abort covers network + response serialization.
+# Forwarded to the matcher as a ``time.monotonic()`` timestamp; it raises
+# ``MatcherDeadlineExceeded`` (a ``TimeoutError``) at its next per-ticker /
+# per-cell / per-batch check and the route maps that to 503.
+_REQUEST_BUDGET_SEC = 13.0
 # Queue waits below this threshold are normal under burst load. Above it
 # we emit a Sentry breadcrumb so the next captured exception carries the
 # pressure context — operational signal, not an alert.
 _QUEUE_WAIT_BREADCRUMB_THRESHOLD_SEC = 5.0
-# Retry-After hint (seconds) returned to the caller on 503 queue timeout.
+# Retry-After hint (seconds) in every 503 body (queue timeout and matcher
+# deadline). Informational — the TS client logs it but does not retry.
 _RETRY_AFTER_SEC = 5
 
 # Finding 2.3: cold-start visibility for the lazy polars import. polars'
@@ -231,9 +261,14 @@ class MultilegClassifyResponse(BaseModel):
 # ── Matcher invocation ─────────────────────────────────────────────────────
 
 
-def _classify_with_polars(request: MultilegClassifyRequest) -> list[dict]:
+def _classify_with_polars(
+    request: MultilegClassifyRequest, *, deadline: float | None = None
+) -> list[dict]:
     """Convert Pydantic input → polars DataFrame, call classify_trades(),
     project to the response dict shape.
+
+    ``deadline`` is a ``time.monotonic()`` timestamp forwarded verbatim to
+    ``classify_trades`` (``None`` disables the matcher's deadline checks).
 
     Imports polars + multileg_assembler lazily so the module import is
     cheap when the endpoint isn't being hit (matters: polars binary is
@@ -320,6 +355,7 @@ def _classify_with_polars(request: MultilegClassifyRequest) -> list[dict]:
         window_seconds=request.window_seconds,
         strike_tolerance=request.strike_tolerance,
         size_tolerance=request.size_tolerance,
+        deadline=deadline,
     )
 
     # The matcher preserves input row order (it rebuilds output columns
@@ -350,8 +386,16 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
     Error mapping:
         - JSON decode error, or pathologically nested JSON → 400
         - empty/missing trades or invalid types → 422 (Pydantic)
+        - semaphore queue wait > ``_QUEUE_WAIT_TIMEOUT_SEC`` → 503
+        - request past ``_REQUEST_BUDGET_SEC`` (matcher deadline) → 503
+          (Sentry warning message, not an exception capture)
         - unexpected matcher exception → 500 (reported to Sentry)
     """
+    # The request budget starts here — before parsing — so parse +
+    # validate + queue wait + matcher all fit inside the TS client's abort.
+    t_entry = time.monotonic()
+    deadline = t_entry + _REQUEST_BUDGET_SEC
+
     import json
 
     # CPython's ``json.loads`` accepts bareword ``NaN`` / ``Infinity`` /
@@ -393,10 +437,17 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
     # BoundedSemaphore so the polars build phase can't hold the GIL long
     # enough to push ``/health`` past Railway's 5s healthcheck timeout
     # under burst load. Wait up to _QUEUE_WAIT_TIMEOUT_SEC; on timeout
-    # 503 the caller with a Retry-After hint so the TS client retries
-    # with jitter instead of failing the cron loop outright.
+    # 503 the caller. The TS client does not retry — multileg-classify-
+    # batch.ts returns null and caches it for that (ticker, chain, minute)
+    # — so the 503 sheds this one enrichment instead of holding the
+    # request past the client's 15 s abort.
     start_wait = time.monotonic()
-    acquired = _classify_semaphore.acquire(timeout=_QUEUE_WAIT_TIMEOUT_SEC)
+    # Never wait past the request budget: a slow parse plus a full queue
+    # wait must not overrun the deadline. Semaphore treats any timeout
+    # <= 0 as a non-blocking try; clamp at 0 so the "budget already gone"
+    # case is explicit rather than relying on that.
+    queue_timeout = max(0.0, min(_QUEUE_WAIT_TIMEOUT_SEC, deadline - start_wait))
+    acquired = _classify_semaphore.acquire(timeout=queue_timeout)
     queue_wait_sec = time.monotonic() - start_wait
     if not acquired:
         # Queue timeout. The server reads ``retry_after_sec`` out of the
@@ -436,7 +487,48 @@ def handle_classify_payload(body_bytes: bytes) -> tuple[int, dict]:
                 pass
 
         try:
-            results = _classify_with_polars(request)
+            results = _classify_with_polars(request, deadline=deadline)
+        except TimeoutError as exc:
+            # ``MatcherDeadlineExceeded`` subclasses ``TimeoutError`` and
+            # ``_classify_with_polars`` performs no I/O, so any
+            # ``TimeoutError`` here is the matcher deadline. Catching the
+            # base class keeps the matcher import lazy (no
+            # ``multileg_assembler`` import at route import time).
+            # Operational backpressure, not a bug: 503 + Sentry warning
+            # message, no exception capture.
+            elapsed_sec = round(time.monotonic() - t_entry, 2)
+            n_trades = len(request.trades)
+            logger.warning(
+                "multileg classify deadline exceeded after %.2fs (%d trades): %s",
+                elapsed_sec,
+                n_trades,
+                exc,
+            )
+            budget_extra = {
+                "elapsed_sec": elapsed_sec,
+                "n_trades": n_trades,
+                "budget_sec": _REQUEST_BUDGET_SEC,
+                "queue_wait_sec": round(queue_wait_sec, 2),
+                "concurrency_cap": _CLASSIFY_CONCURRENCY,
+            }
+            try:
+                from sentry_setup import capture_message
+
+                capture_message(
+                    "classifier matcher deadline exceeded",
+                    level="warning",
+                    extra=budget_extra,
+                )
+            except Exception:
+                # Never let a Sentry hiccup break the request path.
+                pass
+            return 503, {
+                "error": "classifier deadline exceeded; retry in a few seconds",
+                "elapsed_sec": elapsed_sec,
+                "n_trades": n_trades,
+                "budget_sec": _REQUEST_BUDGET_SEC,
+                "retry_after_sec": _RETRY_AFTER_SEC,
+            }
         except Exception as exc:
             logger.exception("multileg classify failed: unexpected")
             # Sentry capture is best-effort — sentry_setup is a no-op when

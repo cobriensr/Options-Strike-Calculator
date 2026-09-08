@@ -49,11 +49,17 @@ own thread, but parallel matcher invocations are bounded by a
 `threading.BoundedSemaphore(_CLASSIFY_CONCURRENCY)` in
 `multileg_routes.py`. The cap was lowered 8→4→2→**1** to keep the
 open-burst memory peak under the box ceiling (see "Memory limit"
-below); excess requests queue up to a 30s wait, then return
-`503` with `Retry-After` so the caller backs off. The batch caller
-(`api/_lib/multileg-classify-batch.ts`) treats a 503/failure as
-best-effort — the alert is still inserted, just without a multileg
-structure label — so backpressure never wedges the cron.
+below); excess requests queue up to 8 s (`_QUEUE_WAIT_TIMEOUT_SEC`),
+then return `503`. Every request also runs under a 13 s budget
+(`_REQUEST_BUDGET_SEC`, measured from route entry): the matcher takes a
+`deadline` and raises `MatcherDeadlineExceeded` at its next per-batch
+check, which the route maps to `503`. Both fit inside the TS client's
+15 s abort (`DEFAULT_TIMEOUT_MS` in `api/_lib/multileg-client.ts`). The
+client does not retry: on 503 or abort,
+`api/_lib/multileg-classify-batch.ts` returns null and caches the null
+for that (ticker, chain, minute), so the alert is still inserted, just
+without a multileg structure label — backpressure never wedges the
+cron. The `Retry-After` header on 503 is informational.
 
 Request-body size is capped at 50 MB; payloads above the cap
 short-circuit to `413` before the body is read off the wire (DoS
