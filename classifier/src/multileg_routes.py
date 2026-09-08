@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 # ``/health`` past Railway's 5s healthcheck timeout under burst load.
 #
 # Lowered 8 → 4 (2026-06-03), 4 → 2 (2026-06-06), then 2 → 1 (2026-06-09):
-# peak service memory ≈ concurrency × the per-request 0DTE calls×puts
+# peak service memory ≈ concurrency x the per-request 0DTE calls x puts
 # cross-join. 8-way spiked to ~21 GB; 4-way — even with the cross-join
 # sub-batch cap added 06-04 — still OOM-restarted the 24 GB box ~11x at the
 # 2026-06-05 open. The 06-06 2-way + 500K-cap fix was INSUFFICIENT: live
