@@ -26,6 +26,13 @@ class ChannelMetrics:
     delta ``write_attempted - write_count`` is the dedup rate — useful
     for spotting upstream replays (e.g. UW reconnect bursts) without
     digging through Postgres logs.
+
+    **``futures_trades`` is the exception.** That handler AGGREGATES —
+    it folds ~1.2M trade prints/day into ~8.6k 1-minute bars — so its
+    ``write_attempted`` counts prints while ``write_count`` counts bars.
+    The delta is the aggregation ratio, NOT a dedup or failure rate, and
+    a ~99% apparent "failure" there is the normal steady state. Judge
+    that channel by ``write_count`` and ``last_message_ts`` instead.
     """
 
     subscribed: bool = False
