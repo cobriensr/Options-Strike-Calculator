@@ -30,7 +30,7 @@ sidecar/          Databento futures data ingestion (Python, Railway, NOT Vercel)
 
 uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel — third Railway service)
                   asyncio + websockets + asyncpg (NOT psycopg2 — different from sidecar). Connector → router →
-                  per-channel handler queues → asyncpg COPY → Neon. Subscribes to flow-alerts (note hyphen,
+                  per-channel handler queues → chunked multi-row INSERT ... ON CONFLICT DO NOTHING → Neon. Subscribes to flow-alerts (note hyphen,
                   not flow_alerts) and option_trades:<TICKER> for the Lottery Finder universe (~50 tickers).
                   Writes to ws_flow_alerts (sql/001) and ws_option_trades (api migration #110); cron-fed
                   flow_alerts table is NOT touched and runs in parallel during the soak window.
