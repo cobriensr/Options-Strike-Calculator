@@ -160,11 +160,13 @@ Phase C alternative if Task 4 shows meaningful retention loss.
    where `ticker = $1 AND executed_at BETWEEN trigger-30s AND trigger+30s AND canceled = FALSE AND price > 0`,
    convert with the same `synthesizeNbbo` rule (ask→bid 0.01/ask price; bid→bid price/ask
    9999; else 0.01/9999), `option_type 'C'/'P' → 'call'/'put'`.
-3. Run the vendored matcher from a snapshot copy of `classifier/_vendored_ml/` (so Task 2
-   edits cannot race) twice per window: `_BUTTERFLY_PAIR_CAP = 10**12` vs `250_000`.
+3. Run the GATED vendored matcher (Task 1 merged; `_BUTTERFLY_PAIR_CAP = 250_000` as
+   shipped) from a snapshot copy of `classifier/_vendored_ml/` (so Task 2 edits cannot
+   race) once per window, capturing `RuntimeWarning`s. The production label is already
+   the ungated result, so there is no ungated replay (and none may be run — memory).
    Report: window size distribution, how many of the 100 anchor trades keep the
-   `butterfly` label, and how many windows tripped the gate. Write the table to
-   `docs/tmp/classifier-butterfly-replay-2026-09-08.md`.
+   `butterfly` label under the gate, and how many windows tripped the gate. Write the
+   table to `docs/tmp/classifier-butterfly-replay-2026-09-08.md`.
 4. Decision rule: retention ≥ 90 % → ship as is. Below that → raise the cap to the
    smallest value that restores ≥ 90 % (re-run the memory probe at that cap; must stay
    under ~3 GB at 10 K) or schedule the top-K-wing prune. Do not change code in this task.
