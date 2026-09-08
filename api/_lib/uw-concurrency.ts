@@ -40,13 +40,26 @@ import logger from './logger.js';
 /**
  * Max in-flight UW requests at any moment. Matches the UW account
  * concurrency cap confirmed by 429 body `"3 concurrent requests"`.
+ *
+ * Re-probed 2026-09-08 and the cap still exists — UW still returns
+ * "You have exceeded 3 concurrent requests, the maximum allowed for your
+ * current plan". But enforcement is soft, not a hard gate: sustained 5
+ * in-flight drew 0% 429s, 8 drew 1.2%, 12 drew 3.8%. Raising this above 3
+ * would buy real throughput (N=5 ≈ +71%) and `withRetry` already absorbs
+ * concurrent-429s with a 250-500 ms jittered backoff — but 3 is the limit
+ * UW *states* for this plan, so going above it is a deliberate decision to
+ * lean on lax enforcement, not a free win. Left at 3 pending that call.
  */
 export const UW_CONCURRENCY_CAP = 3;
 
 /**
  * Lease TTL for an acquired slot (ms). Must exceed the longest
- * realistic UW request — typical 0.8–1.5 s, p99 ~5 s. 30 s gives
- * ample margin while still recovering quickly from function crashes.
+ * realistic UW request. NOTE: the "typical 0.8–1.5 s" figure this was
+ * originally sized against is stale — a sustained probe on 2026-09-08
+ * measured p50 ~52 ms on `/stock/SPY/greek-exposure`. 30 s still gives
+ * ample margin (and must stay well above p99 for slow endpoints), but do
+ * NOT derive throughput ceilings from the old latency number: at
+ * `UW_CONCURRENCY_CAP = 3` real headroom is ~2,700 req/min, not ~200.
  */
 export const LEASE_MS = 30_000;
 

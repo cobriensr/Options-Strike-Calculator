@@ -60,19 +60,21 @@ function isRedisConfigured(): boolean {
  *     requests roughly four orders of magnitude below the real ceiling —
  *     self-inflicted data loss during exactly the peak minutes we care about.
  *
- * 2000 is deliberately ABOVE what this process can physically reach, i.e.
- * the per-minute guard is now off by design. The real backstop is the
- * concurrency semaphore in `uw-concurrency.ts`: `UW_CONCURRENCY_CAP = 3`
- * in-flight against ~0.8-1.5s UW latency bounds throughput to roughly
- * 200/min, so a runaway retry loop is stopped there, not here. Any cap low
- * enough for this guard to actually fire would also fire on legitimate
- * traffic the day UW's endpoints get faster — which is exactly the
- * self-inflicted data loss being removed. Unreachable is the point.
+ * 2000 is ~18x the observed production peak (~110/min) — high enough that
+ * legitimate bursts never trip it, low enough to still stop a runaway loop.
+ * It is a REAL guard, not a decorative one: measured 2026-09-08, the app can
+ * genuinely exceed it (see below), so it can and will fire on a true runaway.
+ *
+ * Sizing measured, not assumed. A sustained-concurrency probe against
+ * `/stock/SPY/greek-exposure` found UW p50 latency of ~52ms — NOT the
+ * ~0.8-1.5s this module was originally sized against. At
+ * `UW_CONCURRENCY_CAP = 3` that is ~2,700 req/min of headroom, so the
+ * concurrency semaphore does NOT bound us anywhere near 200/min. Anyone
+ * reasoning about throughput from the old latency figure will be off by
+ * more than an order of magnitude.
  *
  * Do NOT re-tighten toward 120 without re-reading the live headers — see the
  * `x-uw-*` capture in `uw-fetch.ts`, which gauges UW's self-reported budget.
- * The next thing worth re-probing empirically is whether UW's 3-concurrent
- * cap still holds; the lifted 120/min says nothing about it.
  *
  * Override without a deploy via the `UW_PER_MINUTE_CAP` env var.
  */
@@ -142,7 +144,7 @@ export async function acquireUWSlot(): Promise<void> {
   if (minCount === null) return; // Redis down — fail open
 
   // The INCR is already paid for; surface the count so per-minute UW call
-  // volume is observable even though the guard below effectively never fires.
+  // volume is observable regardless of whether the guard below fires.
   metrics.uwMinuteCount(minCount);
 
   const cap = getPerMinuteCap();
