@@ -244,38 +244,38 @@ Turning on `exactOptionalPropertyTypes` was evaluated during the 2026-04-16 Type
 
 ### Anti-patterns the reviewer rejects (R1–R7)
 
-Checkable text lives in `.claude/agents/code-reviewer.md`; rationale and the 2026-09-08 audit in `docs/superpowers/specs/llm-antipattern-audit-2026-09-08.md`. Short form:
+Checkable text lives in `.claude/agents/code-reviewer.md`; rationale, the 2026-09-08 audit, and the fix plan in `docs/superpowers/specs/llm-antipattern-audit-2026-09-08.md`. Short form:
 
-- **R1** Module-level state in `api/` persists across requests (Fluid Compute). Cap it, give it a TTL, clear in-flight markers in `finally`. No derived or prop-mirrored `useState`; every subscribing or polling effect returns a cleanup.
-- **R2** Secrets compare via the `timingSafeEqual` helpers; crypto only from `node:crypto`. No hand-rolled hashing, signing, or tokens.
-- **R3** Mock at the module boundary (`vi.mock`). No `deps` params, factories, or single-implementation interfaces that exist for tests.
-- **R4** Tests cover failure modes: upstream error, malformed payload, DB reject, each asserting the failure surfaces. Happy-path-only is not tested.
-- **R5** Stream or page anything over ~10 MB; batch DB writes (~500 rows); no per-row `await` in loops.
-- **R6** Idempotent writes (`ON CONFLICT`, conditional `UPDATE … RETURNING`, lease row) over locks. No in-process mutexes or `running` flags. Document any lease's renew / fail / expire semantics.
-- **R7** No env var, flag, or constant for one call site unless it is a deploy-free operational knob. New env vars: read in code + `env.ts` + the table below, same commit.
+- **R1** Module-level state in `api/` persists across requests (Fluid Compute). Cap it or evict on write (a read-time TTL is not a bound), drop in-flight markers on rejection. No derived or prop-mirrored `useState`; every subscribing or polling effect returns a cleanup.
+- **R2** Secrets compare via `secretEquals` / `bearerMatches`; crypto only from `node:crypto`. No hand-rolled hashing, signing, tokens, or copied compare blocks. A service split carries its auth gate.
+- **R3** Mock at the module boundary (`vi.mock`). No `deps` params, factories, or single-implementation interfaces that exist for tests. "So tests can" in a comment is the trigger to look for a double seam.
+- **R4** Tests cover failure modes: upstream error, malformed payload, DB reject, each asserting the surfacing by name. A cron whose write fails must not report `success`. Happy-path-only is not tested.
+- **R5** Batch data-driven DB writes (~500 rows, `unnest`); no per-row `await` over >50 rows/run. Stream or page anything unbounded; page by rows and bytes. Diff cumulative payloads against a high-water mark.
+- **R6** Idempotent writes over locks: `ON CONFLICT` on a source-derived or bucketed key (never `NOW()`), conditional `UPDATE … RETURNING`, or a lease row. Document renew / fail / expire and the TTL arithmetic; fence releases. Client: key ingests on a response-echoed identity and abort superseded fetches.
+- **R7** No env var, flag, or constant for one call site unless it is a deploy-free operational knob with a stated reason. New env vars: read in code + `env.ts` + the table below + `.env.example`, same commit.
 
 ## Environment Variables
 
 Required env vars (pulled via `vercel env pull .env.local`):
 
-| Variable                                   | Source                             |
-| ------------------------------------------ | ---------------------------------- |
-| `DATABASE_URL`                             | Neon Postgres (Vercel Marketplace) |
-| `KV_REST_API_URL`, `KV_REST_API_TOKEN`     | Upstash Redis (Vercel Marketplace) |
-| `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET` | Schwab developer portal            |
-| `ANTHROPIC_API_KEY`                        | Anthropic                          |
-| `OPENAI_API_KEY`                           | OpenAI                             |
-| `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                             |
-| `CRON_SECRET`                              | Vercel (cron job auth)             |
-| `UW_API_KEY`                               | Unusual Whales                     |
-| `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)  |
+| Variable                                   | Source                               |
+| ------------------------------------------ | ------------------------------------ |
+| `DATABASE_URL`                             | Neon Postgres (Vercel Marketplace)   |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN`     | Upstash Redis (Vercel Marketplace)   |
+| `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET` | Schwab developer portal              |
+| `ANTHROPIC_API_KEY`                        | Anthropic                            |
+| `OPENAI_API_KEY`                           | OpenAI                               |
+| `SENTRY_DSN`, `SENTRY_AUTH_TOKEN`          | Sentry                               |
+| `CRON_SECRET`                              | Vercel (cron job auth)               |
+| `UW_API_KEY`                               | Unusual Whales                       |
+| `GUEST_ACCESS_KEYS`                        | Comma-separated guest keys (opt.)    |
 | `UW_PER_MINUTE_CAP`                        | UW limiter override (opt., def 2000) |
-| `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)  |
-| `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)      |
-| `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)    |
-| `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)     |
-| `ARCHIVE_ROOT`                             | Volume path; default /data/archive |
-| `RAILWAY_RUN_UID`                          | `0` on Railway for volume write    |
+| `THETA_EMAIL`, `THETA_PASSWORD`            | Theta Data (Railway sidecar only)    |
+| `BLOB_READ_WRITE_TOKEN`                    | Vercel Blob (also on Railway)        |
+| `ARCHIVE_MANIFEST_URL`                     | Archive manifest (Railway only)      |
+| `ARCHIVE_SEED_TOKEN`                       | Gates seed POST (Railway only)       |
+| `ARCHIVE_ROOT`                             | Volume path; default /data/archive   |
+| `RAILWAY_RUN_UID`                          | `0` on Railway for volume write      |
 
 Never edit `.env*` files with Claude. Never commit secrets.
 
