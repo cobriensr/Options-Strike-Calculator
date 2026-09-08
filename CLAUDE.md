@@ -242,6 +242,18 @@ If you need genuine set-vs-unset semantics (rare — no production code in this 
 
 Turning on `exactOptionalPropertyTypes` was evaluated during the 2026-04-16 TypeScript audit (Phase 1B) and rejected: 119 type errors to fix, zero runtime bugs prevented in this codebase (verified by grepping for `in`/`hasOwnProperty` patterns). See `docs/superpowers/specs/react-ts-audit-2026-04-16.md`.
 
+### Anti-patterns the reviewer rejects (R1–R7)
+
+Checkable text lives in `.claude/agents/code-reviewer.md`; rationale and the 2026-09-08 audit in `docs/superpowers/specs/llm-antipattern-audit-2026-09-08.md`. Short form:
+
+- **R1** Module-level state in `api/` persists across requests (Fluid Compute). Cap it, give it a TTL, clear in-flight markers in `finally`. No derived or prop-mirrored `useState`; every subscribing or polling effect returns a cleanup.
+- **R2** Secrets compare via the `timingSafeEqual` helpers; crypto only from `node:crypto`. No hand-rolled hashing, signing, or tokens.
+- **R3** Mock at the module boundary (`vi.mock`). No `deps` params, factories, or single-implementation interfaces that exist for tests.
+- **R4** Tests cover failure modes: upstream error, malformed payload, DB reject, each asserting the failure surfaces. Happy-path-only is not tested.
+- **R5** Stream or page anything over ~10 MB; batch DB writes (~500 rows); no per-row `await` in loops.
+- **R6** Idempotent writes (`ON CONFLICT`, conditional `UPDATE … RETURNING`, lease row) over locks. No in-process mutexes or `running` flags. Document any lease's renew / fail / expire semantics.
+- **R7** No env var, flag, or constant for one call site unless it is a deploy-free operational knob. New env vars: read in code + `env.ts` + the table below, same commit.
+
 ## Environment Variables
 
 Required env vars (pulled via `vercel env pull .env.local`):
