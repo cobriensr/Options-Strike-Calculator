@@ -269,3 +269,87 @@ and 640 K pairs (still above 400 K) and 129.6 K (still below).
 3. Re-run the ml multileg suite, ruff, re-vendor, `cmp`, classifier + sidecar sync tests, and
    the probe at 5 K then 10 K `full` (expect ≈ unchanged: the 10 K cells are far above
    either cap). Commit: `perf(matcher): Raise butterfly pair cap to 400K per production replay`.
+
+## Phase A.1 — PR #202 review fixes (added 2026-09-08 15:30 CT)
+
+Source: the ten-angle `code-review` pass on PR #202. Six Important items plus the cheap
+Minor ones. Deferred to Phase B (touch `api/` or the sidecar): the TypeScript Sentry
+branch on the new `reason` field; deleting the `SIDECAR_URL` fallback route.
+
+### Task 6 — Matcher: exact gates, deadline coverage, countable skips
+
+**Files:** `ml/src/multileg_assembler.py` (+ re-vendor ×2), `ml/tests/test_multileg_assembler.py`.
+
+1. **Exact body×wing pair count** (review item 2). Replace `bodies.height * batch.height`
+   in `_butterfly_from_batch` with `_butterfly_pair_count(batch)`: per-bucket counts
+   `nb_b` (rows with `_is_body`) and `nw_b` (all rows) from one `group_by("tbk")`, then
+   `Σ_b nb_b × (nw_{b−1} + nw_b + nw_{b+1})` over buckets present in the batch. In a
+   single-bucket batch this equals `bodies × batch`, so the replay-validated production
+   behaviour is unchanged; multi-bucket batches stop over-firing by up to 2×.
+2. **Exact triple gate** (review item 1). In `_butterfly_candidates_for_bodies`, after the
+   `bw` window/size/side filter and before `lo`/`hi` are built, compute
+   `_butterfly_triple_count(bw)` = `Σ_body n_lo × n_hi` via one `group_by("ridx_body")`.
+   If it exceeds new `_BUTTERFLY_TRIPLE_CAP: Final = 5_000_000` (the production ceiling of
+   632 rows measured 3.3 M triples / ~700 MB; 5 M ≈ 1 GB), warn and return
+   `_empty_candidates_3leg()`. This is the join the pair cap never bounded (a 12-body
+   batch beside a 30 K-row bucket passes 400 K pairs and builds 713 M triples).
+3. **Deadline coverage** (review item 6). `_check_deadline` inside
+   `_butterfly_candidates_for_bodies` immediately before the `tri` join (thread
+   `deadline` from `_butterfly_from_batch`), and once in `_classify_ticker` before the
+   final `_prune_top_k_per_trade` / `_greedy_assign`. Correct the module docstring: the
+   body-chunk loop check is unreachable at default constants; the single-shot butterfly
+   path is now checked before its largest join.
+4. **Countable skips** (review item 5). New keyword-only `stats: dict[str, int] | None = None`
+   on `classify_trades`, threaded like `deadline` down to `_butterfly_from_batch` and
+   `_butterfly_candidates_for_bodies`; increment `butterfly_pair_gate_skips` /
+   `butterfly_triple_gate_skips` via a tiny `_bump(stats, key)` helper. Make both gate
+   warnings' text CONSTANT (no embedded counts; ASCII only — drop the `×`) so Python's
+   warning registry stays bounded and repeats are not silently suppressed; the counts live
+   in `stats`. Leave the four pre-existing sibling warnings as they are.
+5. Tests (TDD): unit tests for `_butterfly_pair_count` (single-bucket == bodies×batch;
+   a 3-bucket frame with known counts) and `_butterfly_triple_count`; the review's
+   12-bucket × 130-row fixture must NOT trip the 400 K pair gate (sentinel called) where
+   the old proxy would have; a sparse-bodies/dense-wings fixture (3 size-2 bodies + ~800
+   size-1 wings, ≤ 800 rows) trips the triple gate at a lowered cap and enumerates at
+   10**12; the frame spy gains rows for `_butterfly_candidates_for_bodies` and the
+   pre-prune `_classify_ticker` check (assert it is the last recorded frame on a
+   non-tripping run); `stats` counts skips and `stats=None` is a no-op; both gate
+   messages contain no digits.
+
+### Task 7 — Route/server: budget origin, `reason`, narrowed except, drift test, ruff
+
+**Files:** `classifier/src/server.py`, `classifier/src/multileg_routes.py`,
+`classifier/tests/test_server.py`, `classifier/tests/test_concurrency.py`,
+`classifier/tests/test_client_timeout_contract.py` (new), `classifier/pyproject.toml`.
+
+1. **Budget origin** (review item 3). `do_POST` takes `t_entry = time.monotonic()` before
+   `self.rfile.read(...)` and calls `handle_classify_payload(body_bytes, t_entry=t_entry)`;
+   the route's signature gains keyword-only `t_entry: float | None = None` (defaults to
+   now, so existing callers/tests are unchanged). Test in `test_server.py` with a
+   monkeypatched clock: the handler receives the pre-read timestamp.
+2. **`reason` field** (review item 4, server half). Queue-timeout 503 body gains
+   `"reason": "queue_timeout"` plus `elapsed_sec` and `budget_sec`; deadline 503 body
+   gains `"reason": "deadline"`. Assert in both tests. (TS branch on `reason` → Phase B.)
+3. **Narrow `except TimeoutError`** (Minor). Re-raise unless
+   `type(exc).__name__ == "MatcherDeadlineExceeded"` (keeps the matcher import lazy).
+   Test: a bare `TimeoutError` from the stub reaches the 500 path with `capture_exception`.
+4. **Comment honesty** (Minor). The `_QUEUE_WAIT_TIMEOUT_SEC` paragraph must say the
+   8 s wait sheds a request that would have completed inside 15 s (a queued third request
+   at ~9 s wait) and that this is the intended trade at concurrency 1.
+5. **Drift test** (Minor). `test_client_timeout_contract.py` reads
+   `api/_lib/multileg-client.ts` (path relative to the repo root, skip with a clear
+   message if absent) for `DEFAULT_TIMEOUT_MS = (\d[\d_]*)` and asserts
+   `_QUEUE_WAIT_TIMEOUT_SEC < _REQUEST_BUDGET_SEC < DEFAULT_TIMEOUT_MS / 1000`, replacing
+   the literal `< 15.0` in `test_concurrency.py`.
+6. **Ruff** (Minor). Add `exclude = ["_vendored_ml"]` under `[tool.ruff]` in
+   `classifier/pyproject.toml` (the copy is byte-identical to `ml/src`, which has its own
+   config); `ruff check .` from `classifier/` must then be clean.
+
+### Task 8 — Route: surface the skip counters (after Tasks 6 and 7)
+
+**Files:** `classifier/src/multileg_routes.py`, `classifier/tests/test_concurrency.py`.
+`_classify_with_polars(request, *, deadline, stats)` passes a caller-owned dict into
+`classify_trades`; `handle_classify_payload` creates it and, when any
+`butterfly_*_gate_skips` is non-zero, prints one structured line
+(`classifier: butterfly gate skipped pair=<n> triple=<n> n_trades=<n>`) and drops a
+Sentry breadcrumb with the same fields. Tests via a stub that fills `stats`.
