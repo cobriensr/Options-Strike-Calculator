@@ -437,6 +437,28 @@ def test_match_confidence_boundary_allow_inf_nan(
         )
 
 
+# ── RecursionError guard: pathologically nested JSON ──────────────────────
+
+
+def test_handle_payload_deeply_nested_json_returns_400(
+    mock_classify_trades,
+) -> None:
+    """CPython's ``json.loads`` recurses per nesting level. A body nested
+    deeply enough overflows the interpreter's recursion limit and raises
+    ``RecursionError`` — a ``RuntimeError`` subclass, not a
+    ``ValueError``/``json.JSONDecodeError`` — which previously escaped
+    ``handle_classify_payload`` unhandled instead of mapping to the
+    documented 400 JSON-decode-error response. CPython's C-level
+    recursion cap is ~1k on 3.11 and ~10k on 3.12/3.13; 200k clears all
+    of them, so this is deterministic across interpreters.
+    """
+    body = b"[" * 200_000
+    status, payload = multileg_routes.handle_classify_payload(body)
+    assert status == 400
+    assert payload == {"error": "body must be valid JSON"}
+    assert "call_count" not in mock_classify_trades
+
+
 # ── Finding 1.3: naive datetime rejection on executed_at ─────────────────
 
 
@@ -743,7 +765,7 @@ def test_handle_payload_passes_null_classification_through(
     without being transformed or stripped.
     """
 
-    def fake(_request):
+    def fake(_request, **_kwargs):
         return [
             {
                 "id": "t1",
@@ -801,12 +823,10 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
     make_payload,
     sample_trade: dict[str, Any],
 ) -> None:
-    """Finding 3.4 (classifier-side mirror of the ml/ test): a request
-    body where half the trades omit ``delta`` (Pydantic emits ``None``)
-    and half carry a float must round-trip through
-    ``handle_classify_payload`` cleanly — no 500, no NaN
-    ``match_confidence``, and the response shape matches
-    ``MultilegClassification``.
+    """``delta`` is validated by Pydantic and dropped before the polars
+    frame (see ``_classify_with_polars``); this test guards that a wire
+    payload with ``delta`` mixed present/absent still round-trips through
+    the real matcher.
 
     Unlike most tests in this file, this one does NOT mock
     ``_classify_with_polars`` because the contract under test is the
@@ -850,7 +870,7 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
     body = make_payload(trades=trades, window_seconds=90)
     status, payload = multileg_routes.handle_classify_payload(body)
 
-    # 1. No 500. (The matcher tolerated mixed-null delta.)
+    # 1. No 500 (delta never reaches the frame).
     assert status == 200, f"expected 200, got {status}: {payload!r}"
 
     classifications = payload["classifications"]
@@ -873,8 +893,8 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
             "overload-skip null path)"
         )
         assert isinstance(mc, float) and not math.isnan(mc), (
-            f"NaN match_confidence on id={c['id']!r}: {mc!r} — likely "
-            "null-delta propagation through confidence scoring"
+            f"NaN match_confidence on id={c['id']!r}: {mc!r} — "
+            "confidence scoring must never emit NaN"
         )
 
     # 3. Every classification has a stable string pattern_group_id.
@@ -885,11 +905,49 @@ def test_handle_payload_mixed_null_delta_round_trips_through_real_matcher(
         )
 
     # 4. At least one row was paired (proving the matcher didn't fail
-    #    over to ``isolated_leg`` for everything when ``delta`` was
-    #    partially null).
+    #    over to ``isolated_leg`` for everything).
     assert any(
         c["is_isolated_leg"] is False for c in classifications
-    ), (
-        "every trade fell to isolated_leg — mixed-null delta silently "
-        "rejected paired candidates; see Finding 3.4"
-    )
+    ), "every trade fell to isolated_leg"
+
+
+def test_handle_payload_null_delta_past_infer_schema_length_then_float_returns_200(
+    make_payload,
+    sample_trade: dict[str, Any],
+) -> None:
+    """``pl.DataFrame(rows)`` infers a column's dtype from the first 100
+    rows (polars' default ``infer_schema_length``). When ``delta`` is
+    absent (Pydantic default ``None``) on every one of the first 150
+    trades and a later trade carries a float, polars previously
+    inferred a ``Null``-typed ``delta`` column and
+    raised ``could not append value: 0.42 of type: f64`` on the first
+    later float — a real production failure mode, since ``delta`` is
+    nullable in the source table. ``delta`` is dropped from the matcher's
+    row dict entirely (see ``_classify_with_polars``), so this must now
+    round-trip cleanly with no 500.
+
+    Does NOT mock ``_classify_with_polars`` — the contract under test is
+    the real polars ``DataFrame`` construction + matcher path, exactly
+    like ``test_handle_payload_mixed_null_delta_round_trips_through_real_matcher``
+    above.
+    """
+    trades: list[dict[str, Any]] = []
+    base_time_fmt = "2026-05-15T15:30:{sec:02d}.{frac:06d}Z"
+    for idx in range(151):
+        t = copy.deepcopy(sample_trade)
+        t["id"] = f"t{idx:04d}"
+        # 0.1s apart, staying well under the 60s minute boundary.
+        t["executed_at"] = base_time_fmt.format(sec=idx // 10, frac=(idx % 10) * 100_000)
+        if idx < 150:
+            t.pop("delta", None)  # Pydantic default = None
+        else:
+            t["delta"] = 0.42
+        trades.append(t)
+
+    body = make_payload(trades=trades)
+    status, payload = multileg_routes.handle_classify_payload(body)
+
+    assert status == 200, f"expected 200, got {status}: {payload!r}"
+    classifications = payload["classifications"]
+    assert len(classifications) == 151
+    assert [c["id"] for c in classifications] == [f"t{i:04d}" for i in range(151)]

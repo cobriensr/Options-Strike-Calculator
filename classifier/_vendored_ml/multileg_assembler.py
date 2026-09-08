@@ -2,7 +2,12 @@
 
 PUBLIC API:
     classify_trades(trades, window_seconds=90, strike_tolerance=0.05,
-                    size_tolerance=0.1) -> pl.DataFrame
+                    size_tolerance=0.1, deadline=None) -> pl.DataFrame
+
+``deadline`` is an optional ``time.monotonic()`` timestamp; once the clock
+passes it the matcher raises ``MatcherDeadlineExceeded`` (a ``TimeoutError``)
+at the next per-ticker / per-cell / per-batch / per-sub-chunk check instead
+of finishing.
 
 Adds these columns to the input DataFrame:
     inferred_structure  — one of 'vertical', 'strangle', 'risk_reversal',
@@ -96,6 +101,7 @@ density threshold.
 from __future__ import annotations
 
 import hashlib
+import time
 import warnings
 from collections.abc import Iterable
 from typing import Final
@@ -225,12 +231,42 @@ _BUTTERFLY_CELL_LIMIT: Final = 30_000
 
 
 # Butterfly body chunk size. The body x wing offset joins in
-# _butterfly_from_batch are eager and uncapped; a dense butterfly-eligible
-# cell (up to _BUTTERFLY_CELL_LIMIT rows) can build a large intermediate.
+# _butterfly_from_batch are eager and, below _BUTTERFLY_PAIR_CAP, uncapped;
+# a dense butterfly-eligible cell (up to _BUTTERFLY_CELL_LIMIT rows) can
+# build a large intermediate.
 # Body rows are independent in the body-wing join, so processing bodies in
 # slices is output-identical (the final triple-dedup runs on the concatenated
 # result). Chunk the body anchors to bound the per-join intermediate.
 _BUTTERFLY_BODY_CHUNK: Final = 2_000
+
+
+# Butterfly pair cap (skip, not sub-chunk). _BUTTERFLY_BODY_CHUNK bounds
+# only the body side of the body × wing join — each chunk is still
+# 2,000 × N pairs — and the per-body lo × hi join that follows is an
+# uncapped cartesian that no body chunking can bound. A dense
+# single-bucket window (production is one ticker over 60 s) built an
+# 8 GB / 204 s intermediate at 10 K prints while producing zero
+# butterflies. Above this many bodies × wings the batch skips butterfly
+# enumeration (one RuntimeWarning per batch) and the 2-leg stages proceed.
+# In dense windows the skip was output-identical in every synthetic run
+# (0 butterflies at 5 K / 10 K prints; the 800-print test fixture
+# enumerates ~204 K butterfly candidates, all at 1.0, all out-competed
+# because _greedy_assign seats 2-leg candidates first on ties). It is
+# NOT identical on real tape at ~600-row cells: in the 2026-09-08
+# production replay (spec classifier-phase-a-butterfly-gate-2026-09-08.md,
+# "Task 4 results"), 2 of 26 replayable butterfly fires sat in
+# single-bucket cells of 350–372 K pairs and lost the label under a
+# 250 K cap — hence 400 K, the smallest round value covering both.
+# Measured, not guaranteed: 400 K covers the cells observed, not every
+# dense cell. The OOM regime is 5–10 K-row cells (25–100 M pairs),
+# 60–250× above this cap, so the fix is unaffected; a 632-row cell (the
+# new ceiling) is estimated at a few hundred MB from the ~850 MB /
+# 1,000-row probe, not measured. Sibling caps _SELF_JOIN_PAIR_CAP /
+# _CROSS_JOIN_PAIR_CAP stay at 250 K (they sub-chunk rather than skip).
+# Because bodies ⊆ batch, at defaults this cap fires before
+# _BUTTERFLY_BODY_CHUNK can (bodies > 2,000 ⇒ > 4 M pairs); the body-chunk
+# path is live only if this cap is raised above _BUTTERFLY_BODY_CHUNK².
+_BUTTERFLY_PAIR_CAP: Final = 400_000
 
 
 # Ticker overload threshold. Any ticker whose largest single
@@ -274,6 +310,28 @@ _REQUIRED_FIELDS: Final = (
 )
 
 
+# ── Deadline ──────────────────────────────────────────────────────────────
+
+
+class MatcherDeadlineExceeded(TimeoutError):
+    """Raised when classify_trades exceeds its caller-supplied monotonic deadline."""
+
+
+def _check_deadline(deadline: float | None) -> None:
+    """Raise ``MatcherDeadlineExceeded`` once ``time.monotonic()`` passes
+    ``deadline``. ``None`` disables the check (the default for library
+    callers); the classifier route passes its request budget so a request
+    the TS client has already abandoned stops occupying the matcher slot.
+    """
+    if deadline is None:
+        return
+    now = time.monotonic()
+    if now > deadline:
+        raise MatcherDeadlineExceeded(
+            f"multileg matcher deadline exceeded ({now - deadline:.2f}s past)"
+        )
+
+
 # ── Public API ────────────────────────────────────────────────────────────
 
 
@@ -282,10 +340,13 @@ def classify_trades(
     window_seconds: int = 90,
     strike_tolerance: float = 0.05,
     size_tolerance: float = 0.1,
+    deadline: float | None = None,
 ) -> pl.DataFrame:
     """Classify trades by multileg structure pattern.
 
     See module docstring for full algorithm and column semantics.
+    ``deadline`` is a ``time.monotonic()`` timestamp (or ``None``); see
+    ``_check_deadline`` for the raise semantics.
     """
     if trades.height == 0:
         return _empty_with_columns(trades)
@@ -314,6 +375,7 @@ def classify_trades(
         indexed.get_column("underlying_symbol").unique().to_list()
     )
     for ticker in tickers:
+        _check_deadline(deadline)
         ticker_df = indexed.filter(
             pl.col("underlying_symbol") == ticker
         ).sort(["executed_at", "_sid"])
@@ -325,6 +387,7 @@ def classify_trades(
             strike_tolerance=strike_tolerance,
             size_tolerance=size_tolerance,
             assignments=assignments,
+            deadline=deadline,
         )
         if not classified:
             skipped_sids.update(ticker_df.get_column("_sid").to_list())
@@ -443,6 +506,7 @@ def _classify_ticker(
     strike_tolerance: float,
     size_tolerance: float,
     assignments: dict[str, _Assignment],
+    deadline: float | None = None,
 ) -> bool:
     """Greedy non-overlapping match within one ticker.
 
@@ -569,6 +633,7 @@ def _classify_ticker(
 
     # ── Per-cell: same-type 2-leg + butterfly (same expiry, same opttype) ──
     for k in cell_keys:
+        _check_deadline(deadline)
         cell = cells[k]
         if cell.height < 2:
             continue
@@ -576,11 +641,13 @@ def _classify_ticker(
         cell_three: list[pl.DataFrame] = []
         if same_type_patterns:
             for batch in _iter_two_leg_batches(cell):
+                _check_deadline(deadline)
                 vcand = _two_leg_same_type_from_batch(
                     batch,
                     patterns=same_type_patterns,
                     window_seconds=window_seconds,
                     size_tolerance=size_tolerance,
+                    deadline=deadline,
                 )
                 if vcand.height > 0:
                     # Per-batch prune: very dense hot-cell batches can emit
@@ -593,11 +660,13 @@ def _classify_ticker(
                     cell_two.append(vcand)
         if cell.height >= 3 and cell.height <= _BUTTERFLY_CELL_LIMIT:
             for batch in _iter_butterfly_batches(cell):
+                _check_deadline(deadline)
                 bcand = _butterfly_from_batch(
                     batch,
                     window_seconds=window_seconds,
                     strike_tolerance=strike_tolerance,
                     size_tolerance=size_tolerance,
+                    deadline=deadline,
                 )
                 if bcand.height > 0:
                     if bcand.height > _PER_BATCH_PRUNE_THRESHOLD:
@@ -638,12 +707,14 @@ def _classify_ticker(
             for chunk_calls, chunk_puts in _iter_cross_type_batches(
                 calls, puts
             ):
+                _check_deadline(deadline)
                 ccand = _two_leg_cross_type_from_batch(
                     chunk_calls,
                     chunk_puts,
                     patterns=cross_type_patterns,
                     window_seconds=window_seconds,
                     size_tolerance=size_tolerance,
+                    deadline=deadline,
                 )
                 if ccand.height > 0:
                     if ccand.height > _PER_BATCH_PRUNE_THRESHOLD:
@@ -804,6 +875,7 @@ def _two_leg_same_type_from_batch(
     patterns: tuple[PatternSpec, ...],
     window_seconds: int,
     size_tolerance: float,
+    deadline: float | None = None,
 ) -> pl.DataFrame:
     """Pattern-driven self-join for same-option-type 2-leg patterns.
 
@@ -828,6 +900,7 @@ def _two_leg_same_type_from_batch(
         patterns=patterns,
         window_seconds=window_seconds,
         size_tolerance=size_tolerance,
+        deadline=deadline,
     )
 
 
@@ -837,6 +910,7 @@ def _self_join_scored_chunked(
     patterns: tuple[PatternSpec, ...],
     window_seconds: int,
     size_tolerance: float,
+    deadline: float | None = None,
 ) -> pl.DataFrame:
     """Self-join ``batch`` against itself, anchor-filter, window/size filter,
     and score — sub-batching the anchor (A) side when ``batch.height²``
@@ -892,6 +966,7 @@ def _self_join_scored_chunked(
     )
     chunk_out: list[pl.DataFrame] = []
     for start in range(0, n, chunk_rows):
+        _check_deadline(deadline)
         a_chunk = batch.slice(start, chunk_rows)
         scored = _score(
             _self_join_two_leg(
@@ -927,6 +1002,7 @@ def _two_leg_cross_type_from_batch(
     patterns: tuple[PatternSpec, ...],
     window_seconds: int,
     size_tolerance: float,
+    deadline: float | None = None,
 ) -> pl.DataFrame:
     """Pattern-driven cross-type join (calls × puts) for one batch.
 
@@ -954,6 +1030,7 @@ def _two_leg_cross_type_from_batch(
             patterns=patterns,
             window_seconds=window_seconds,
             size_tolerance=size_tolerance,
+            deadline=deadline,
         )
         for a, b in ((calls, puts), (puts, calls))
     ]
@@ -972,6 +1049,7 @@ def _cross_type_scored_one_orientation(
     patterns: tuple[PatternSpec, ...],
     window_seconds: int,
     size_tolerance: float,
+    deadline: float | None = None,
 ) -> pl.DataFrame:
     """Cross-join one orientation (a × b), then anchor-filter, window/size
     filter, and score — sub-batching side A when ``|a| × |b|`` exceeds
@@ -1024,6 +1102,7 @@ def _cross_type_scored_one_orientation(
     )
     chunk_out: list[pl.DataFrame] = []
     for start in range(0, a.height, chunk_rows):
+        _check_deadline(deadline)
         a_chunk = a.slice(start, chunk_rows)
         scored = _score(
             _cross_join_two_leg(
@@ -1679,6 +1758,7 @@ def _butterfly_from_batch(
     window_seconds: int,
     strike_tolerance: float,
     size_tolerance: float,
+    deadline: float | None = None,
 ) -> pl.DataFrame:
     """Body-centric butterfly enumeration over one (expiry, opttype) batch.
 
@@ -1686,9 +1766,14 @@ def _butterfly_from_batch(
     batch (bodies' bucket + 1 either side, via the batch iterator's
     ``all_buckets`` set).
 
-    Peak memory is bounded by chunking the body anchors: the body × wing
-    offset joins are eager and uncapped, so a dense butterfly-eligible cell
-    (up to ``_BUTTERFLY_CELL_LIMIT`` rows) can build a large intermediate.
+    Batches with more than ``_BUTTERFLY_PAIR_CAP`` body × wing pairs skip
+    butterfly enumeration entirely (warning once per batch); the 2-leg
+    stages are unaffected. Below the cap (at default constants this cap
+    fires before the body chunking below can — see
+    ``_BUTTERFLY_PAIR_CAP``), peak memory is bounded by chunking the body
+    anchors: the body × wing offset joins are eager and uncapped, so a
+    dense butterfly-eligible cell (up to ``_BUTTERFLY_CELL_LIMIT`` rows)
+    can build a large intermediate.
     When ``bodies.height`` exceeds ``_BUTTERFLY_BODY_CHUNK`` the bodies are
     sliced and each slice runs the full body×wing→filter→lo/hi→triple→score
     pipeline against the FULL wing frame; the per-slice candidate frames are
@@ -1708,6 +1793,18 @@ def _butterfly_from_batch(
 
     bodies = batch.filter(pl.col("_is_body"))
     if bodies.height == 0:
+        return _empty_candidates_3leg()
+
+    n_pairs = bodies.height * batch.height
+    if n_pairs > _BUTTERFLY_PAIR_CAP:
+        warnings.warn(
+            f"multileg matcher: skipping butterfly enumeration "
+            f"(bodies={bodies.height:,} × wings={batch.height:,} = "
+            f"{n_pairs:,} pairs > {_BUTTERFLY_PAIR_CAP:,} cap); "
+            f"2-leg patterns unaffected.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return _empty_candidates_3leg()
 
     # Common case: bodies fit under the chunk size → single-shot, scored once
@@ -1741,6 +1838,7 @@ def _butterfly_from_batch(
     )
     chunk_out: list[pl.DataFrame] = []
     for start in range(0, n_bodies, _BUTTERFLY_BODY_CHUNK):
+        _check_deadline(deadline)
         bodies_slice = bodies.slice(start, _BUTTERFLY_BODY_CHUNK)
         cand = _butterfly_candidates_for_bodies(
             bodies_slice,
