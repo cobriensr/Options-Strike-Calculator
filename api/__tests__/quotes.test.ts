@@ -140,6 +140,7 @@ describe('GET /api/quotes', () => {
       ok: false,
       error: 'Token expired',
       status: 401,
+      code: 'SCHWAB_TOKEN_EXPIRED',
     });
 
     const res = mockResponse();

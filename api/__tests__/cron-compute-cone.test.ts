@@ -339,6 +339,7 @@ describe('compute-cone handler', () => {
       ok: false,
       status: 500,
       error: 'upstream',
+      code: 'SCHWAB_TOKEN_ERROR',
     });
 
     const res = mockResponse();

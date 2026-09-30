@@ -23,6 +23,8 @@
 
 import { randomBytes } from 'node:crypto';
 
+import { z } from 'zod';
+
 import logger from './logger.js';
 import { Sentry, metrics } from './sentry.js';
 import { requireEnvGroup } from './env.js';
@@ -44,22 +46,23 @@ interface SchwabTokens {
   refreshExpiresAt: number; // Unix ms when refresh token expires
 }
 
-interface SchwabTokenResponse {
-  access_token: string;
-  refresh_token: string;
-  expires_in: number; // seconds (typically 1800 = 30 min)
-  token_type: string;
-  scope: string;
-  id_token: string;
-}
-
 /**
- * Schwab may omit `refresh_token` on a refresh-grant response; the stored
- * refresh token then stays the valid one.
+ * Token-endpoint 2xx body, validated before anything is stored: a
+ * malformed body must surface as a loud token_error rather than persist
+ * `accessToken: undefined` / `expiresAt: NaN` (which would re-refresh on
+ * every call). `expires_in` is in seconds (typically 1800). Schwab may omit
+ * `refresh_token` on a refresh grant — the stored one stays valid and is
+ * carried over — but the authorization-code exchange must return one.
  */
-type SchwabRefreshResponse = Omit<SchwabTokenResponse, 'refresh_token'> & {
-  refresh_token?: string;
-};
+const refreshResponseSchema = z.object({
+  access_token: z.string().min(1),
+  expires_in: z.number().positive(),
+  refresh_token: z.string().min(1).optional(),
+});
+
+const codeExchangeResponseSchema = refreshResponseSchema.extend({
+  refresh_token: z.string().min(1),
+});
 
 export interface SchwabAuthError {
   type: 'expired_refresh' | 'token_error' | 'missing_config';
@@ -89,9 +92,13 @@ class SchwabRefreshRejectedError extends Error {
 const KV_KEY = 'schwab:tokens';
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token';
 const BUFFER_MS = 60_000; // Refresh 1 minute before expiry
+/** Abort budget for a token-endpoint call (refresh + code exchange). */
+const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
 
 const NO_TOKENS_MESSAGE =
   'No tokens found. Run /api/auth/init to authenticate.';
+const REFRESH_EXPIRED_MESSAGE =
+  'Refresh token expired. Run /api/auth/init to re-authenticate.';
 const REJECTED_MESSAGE =
   'Schwab rejected the refresh token (invalid_grant). Run /api/auth/init to re-authenticate.';
 
@@ -110,6 +117,40 @@ function getCredentials(): { clientId: string; clientSecret: string } | null {
 function basicAuthHeader(clientId: string, clientSecret: string): string {
   const encoded = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
   return `Basic ${encoded}`;
+}
+
+/**
+ * Validate a token-endpoint 2xx body. The thrown message names the bad
+ * fields only — never the body, which carries token values.
+ */
+function parseTokenBody<T>(schema: z.ZodType<T>, body: unknown): T {
+  const parsed = schema.safeParse(body);
+  if (parsed.success) return parsed.data;
+  const fields = [
+    ...new Set(parsed.error.issues.map((i) => i.path.join('.') || '(body)')),
+  ].join(', ');
+  throw new Error(
+    `Schwab token endpoint returned a malformed response (invalid: ${fields})`,
+  );
+}
+
+/** Where a stored token record stands right now. */
+type TokenAssessment =
+  | { state: 'missing' }
+  | { state: 'refresh_expired' }
+  | { state: 'fresh' | 'stale'; tokens: SchwabTokens };
+
+function assessTokens(tokens: SchwabTokens | null): TokenAssessment {
+  if (!tokens) return { state: 'missing' };
+  const now = Date.now();
+  if (now > tokens.refreshExpiresAt) return { state: 'refresh_expired' };
+  // Access token still valid (with buffer) → fresh; otherwise refresh it.
+  const state = now < tokens.expiresAt - BUFFER_MS ? 'fresh' : 'stale';
+  return { state, tokens };
+}
+
+function loggedOutMessage(state: 'missing' | 'refresh_expired'): string {
+  return state === 'missing' ? NO_TOKENS_MESSAGE : REFRESH_EXPIRED_MESSAGE;
 }
 
 // ============================================================
@@ -268,15 +309,56 @@ let inMemoryTokenCache: {
  * (e.g. quotes + history) both need to refresh, only one calls
  * Schwab. The other waits for the lock to release, then reads
  * the fresh token from Redis.
+ *
+ * Semantics (R6):
+ *   - Value: a random token per acquisition, so a release is fenced —
+ *     it deletes the lock only if it still holds OUR token.
+ *   - Renew: none. The TTL is sized to outlive the longest hold instead.
+ *   - Expire: LOCK_TTL_SEC = 45 s. Longest hold = the token-endpoint call
+ *     (TOKEN_REQUEST_TIMEOUT_MS = 30 s; the abort signal also bounds
+ *     reading the body) + storeTokens' retry backoff (0.5 s + 1 s) + a few
+ *     Upstash round-trips (re-read, compare-and-delete, writes) ≈ 32 s,
+ *     leaving ~13 s of margin. A holder that still overruns can overlap
+ *     the next holder's refresh; the token record's compare-and-delete
+ *     keeps that safe, and the fenced release stops the late holder from
+ *     deleting the next holder's lock.
+ *   - Fail: acquisition FAILS OPEN — if Redis errors on all 3 SET NX
+ *     attempts we refresh without the lock, because a Redis outage must
+ *     not block every Schwab call (the per-invocation in-flight dedup
+ *     still bounds it to one refresh per instance). A failed release is
+ *     logged and the TTL reclaims the lock.
  */
 const LOCK_KEY = 'schwab:refresh_lock';
-const LOCK_TTL = 30; // seconds — must be >= SCHWAB_API timeout
+const LOCK_TTL_SEC = 45;
 
-async function acquireLock(): Promise<boolean> {
+/**
+ * Fenced release — STATIC script: delete the lock only if it still holds
+ * our token (it may have expired and been re-acquired by another instance).
+ *
+ * KEYS[1] = lock key; ARGV[1] = our lock token
+ * Returns: 1 = released, 0 = no longer ours (expired / taken over)
+ */
+const RELEASE_LOCK_LUA = `
+  if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+  end
+  return 0
+`;
+
+/**
+ * Try to take the refresh lock. Returns our lock token when held (or when
+ * failing open on a Redis outage — see above), or null when another
+ * instance holds it.
+ */
+async function acquireLock(): Promise<string | null> {
+  const lockToken = randomBytes(16).toString('hex');
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const result = await redis.set(LOCK_KEY, '1', { nx: true, ex: LOCK_TTL });
-      return result === 'OK';
+      const result = await redis.set(LOCK_KEY, lockToken, {
+        nx: true,
+        ex: LOCK_TTL_SEC,
+      });
+      return result === 'OK' ? lockToken : null;
     } catch (err) {
       logger.warn({ err, attempt }, 'Redis acquireLock attempt failed');
       metrics.increment('redis.error');
@@ -284,15 +366,26 @@ async function acquireLock(): Promise<boolean> {
         await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
     }
   }
-  logger.error('acquireLock: all retries exhausted, proceeding without lock');
-  return true;
+  logger.error(
+    'acquireLock: Redis unavailable, proceeding WITHOUT the lock (fail-open)',
+  );
+  return lockToken;
 }
 
-async function releaseLock(): Promise<void> {
+async function releaseLock(lockToken: string): Promise<void> {
   try {
-    await redis.del(LOCK_KEY);
+    const released = await redis.eval(
+      RELEASE_LOCK_LUA,
+      [LOCK_KEY],
+      [lockToken],
+    );
+    if (released !== 1) {
+      logger.warn(
+        'releaseLock: lock no longer held by us (expired or taken over); left alone',
+      );
+    }
   } catch (err) {
-    logger.warn({ err }, 'Redis releaseLock failed');
+    logger.warn({ err }, 'Redis releaseLock failed; the TTL will reclaim it');
     metrics.increment('redis.error');
   }
 }
@@ -327,7 +420,7 @@ async function refreshAccessToken(
       grant_type: 'refresh_token',
       refresh_token: stored.refreshToken,
     }),
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -338,7 +431,8 @@ async function refreshAccessToken(
     throw new Error(`Schwab token refresh failed (${res.status}): ${body}`);
   }
 
-  const data = (await res.json()) as SchwabRefreshResponse;
+  // Throws on a malformed body → captured token_error; nothing is stored.
+  const data = parseTokenBody(refreshResponseSchema, await res.json());
 
   return {
     accessToken: data.access_token,
@@ -384,6 +478,46 @@ async function handleRejectedRefresh(
 }
 
 /**
+ * The lock holder's refresh. Re-reads the record first (double-checked
+ * locking): the caller's snapshot predates the lock, and meanwhile another
+ * holder may have refreshed, a rejected token may have been cleared, or a
+ * re-auth may have landed. So it never sends a refresh token the store no
+ * longer holds. A failed re-read falls back to the snapshot rather than
+ * blocking the refresh (the compare-and-delete still guards a clear).
+ */
+async function refreshUnderLock(
+  snapshot: SchwabTokens,
+  clientId: string,
+  clientSecret: string,
+): Promise<RefreshOutcome> {
+  let record = snapshot;
+  const latest = await getStoredTokens();
+  if (latest.ok) {
+    const assessed = assessTokens(latest.tokens);
+    if (assessed.state === 'missing' || assessed.state === 'refresh_expired') {
+      return { kind: 'logged_out', message: loggedOutMessage(assessed.state) };
+    }
+    if (assessed.state === 'fresh') {
+      return { kind: 'refreshed', tokens: assessed.tokens };
+    }
+    record = assessed.tokens;
+  }
+
+  try {
+    const tokens = await refreshAccessToken(record, clientId, clientSecret);
+    await storeTokens(tokens);
+    inMemoryTokenCache = {
+      accessToken: tokens.accessToken,
+      expiresAt: tokens.expiresAt,
+    };
+    return { kind: 'refreshed', tokens };
+  } catch (err) {
+    if (!(err instanceof SchwabRefreshRejectedError)) throw err;
+    return await handleRejectedRefresh(record.refreshToken, err);
+  }
+}
+
+/**
  * Maximum number of lock-acquisition attempts before giving up. Three
  * handles the realistic failure modes (lose-race-then-read-fresh,
  * lose-race-then-winner-crashed-so-retry) while guaranteeing the loop
@@ -406,7 +540,9 @@ const LOCK_MAX_ATTEMPTS = 3;
  *
  * Lock protocol:
  *   1. Try to acquire the Redis SET-NX lock.
- *   2. If acquired → do the Schwab refresh, store tokens, release lock.
+ *   2. If acquired → re-read the record under the lock (it may already be
+ *      fresh, cleared, or replaced), refresh from THAT record, store
+ *      tokens, and release the lock (fenced).
  *   3. If NOT acquired → wait for the current holder to finish, then
  *      read the freshly-written token from Redis. If it's valid,
  *      return it.
@@ -433,29 +569,16 @@ async function refreshAccessTokenOnce(
 
   refreshInFlight = (async (): Promise<RefreshOutcome> => {
     for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
-      const gotLock = await acquireLock();
+      const lockToken = await acquireLock();
 
-      if (gotLock) {
+      if (lockToken !== null) {
         // We own the refresh. Only a lock holder ever calls Schwab,
         // so at most one cross-instance refresh is in flight at any
         // given moment.
         try {
-          const tokens = await refreshAccessToken(
-            stored,
-            clientId,
-            clientSecret,
-          );
-          await storeTokens(tokens);
-          inMemoryTokenCache = {
-            accessToken: tokens.accessToken,
-            expiresAt: tokens.expiresAt,
-          };
-          return { kind: 'refreshed', tokens };
-        } catch (err) {
-          if (!(err instanceof SchwabRefreshRejectedError)) throw err;
-          return await handleRejectedRefresh(stored.refreshToken, err);
+          return await refreshUnderLock(stored, clientId, clientSecret);
         } finally {
-          await releaseLock();
+          await releaseLock(lockToken);
         }
       }
 
@@ -465,11 +588,18 @@ async function refreshAccessTokenOnce(
       await waitForLockRelease();
       const fresh = await getStoredTokens();
       if (fresh.ok) {
-        if (fresh.tokens === null) {
-          return { kind: 'logged_out', message: NO_TOKENS_MESSAGE };
+        const assessed = assessTokens(fresh.tokens);
+        if (
+          assessed.state === 'missing' ||
+          assessed.state === 'refresh_expired'
+        ) {
+          return {
+            kind: 'logged_out',
+            message: loggedOutMessage(assessed.state),
+          };
         }
-        if (Date.now() < fresh.tokens.expiresAt - BUFFER_MS) {
-          return { kind: 'refreshed', tokens: fresh.tokens };
+        if (assessed.state === 'fresh') {
+          return { kind: 'refreshed', tokens: assessed.tokens };
         }
       }
 
@@ -553,32 +683,24 @@ async function resolveAccessToken(
     };
   }
 
-  const stored = read.tokens;
-  if (!stored) {
-    return { error: { type: 'expired_refresh', message: NO_TOKENS_MESSAGE } };
-  }
-
-  // Check if refresh token is expired
-  if (Date.now() > stored.refreshExpiresAt) {
+  const assessed = assessTokens(read.tokens);
+  if (assessed.state === 'missing' || assessed.state === 'refresh_expired') {
     return {
       error: {
         type: 'expired_refresh',
-        message:
-          'Refresh token expired. Run /api/auth/init to re-authenticate.',
+        message: loggedOutMessage(assessed.state),
       },
     };
   }
-
-  // Check if access token is still valid (with buffer)
-  if (Date.now() < stored.expiresAt - BUFFER_MS) {
-    return { token: stored.accessToken };
+  if (assessed.state === 'fresh') {
+    return { token: assessed.tokens.accessToken };
   }
 
   // Refresh the access token (deduplicated across parallel calls)
   let outcome: RefreshOutcome;
   try {
     outcome = await refreshAccessTokenOnce(
-      stored,
+      assessed.tokens,
       creds.clientId,
       creds.clientSecret,
     );
@@ -639,7 +761,7 @@ export async function storeInitialTokens(
         code: authCode,
         redirect_uri: redirectUri,
       }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(TOKEN_REQUEST_TIMEOUT_MS),
     });
 
     if (!res.ok) {
@@ -652,7 +774,8 @@ export async function storeInitialTokens(
       };
     }
 
-    const data = (await res.json()) as SchwabTokenResponse;
+    // Throws on a malformed body → token_error below; nothing is stored.
+    const data = parseTokenBody(codeExchangeResponseSchema, await res.json());
     const now = Date.now();
 
     const tokens: SchwabTokens = {

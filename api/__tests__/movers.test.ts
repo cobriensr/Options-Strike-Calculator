@@ -111,8 +111,18 @@ describe('GET /api/movers', () => {
 
     // Both return errors
     vi.mocked(schwabFetch)
-      .mockResolvedValueOnce({ ok: false, error: 'fail', status: 502 })
-      .mockResolvedValueOnce({ ok: false, error: 'fail', status: 502 });
+      .mockResolvedValueOnce({
+        ok: false,
+        error: 'fail',
+        status: 502,
+        code: 'SCHWAB_API_502',
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: 'fail',
+        status: 502,
+        code: 'SCHWAB_API_502',
+      });
 
     const res = mockResponse();
     await handler(mockRequest(), res);

@@ -217,6 +217,7 @@ describe('GET /api/history', () => {
       ok: false,
       error: 'Schwab API error (500): Internal error',
       status: 502,
+      code: 'SCHWAB_API_500',
     });
 
     const res = mockResponse();
@@ -247,6 +248,7 @@ describe('GET /api/history', () => {
           ok: false as const,
           error: 'Schwab API error (502): transient',
           status: 502,
+          code: 'SCHWAB_API_502' as const,
         };
       }
       return {

@@ -84,9 +84,41 @@ function tokenFailure(status: number, body: string) {
   return { ok: false, status, text: () => Promise.resolve(body) };
 }
 
+/** A successful token-endpoint response with EXACTLY this JSON body. */
+function okJson(body: unknown) {
+  return { ok: true, status: 200, json: () => Promise.resolve(body) };
+}
+
 /** Calls to the Redis SET mock that wrote the token record (not the lock). */
 function tokenWrites() {
   return mockRedisSet.mock.calls.filter((c) => c[0] === 'schwab:tokens');
+}
+
+/** SET NX calls against the refresh lock. */
+function lockAcquires() {
+  return mockRedisSet.mock.calls.filter((c) => c[0] === 'schwab:refresh_lock');
+}
+
+/** EVAL calls against the token record (the rejected-token compare-and-delete). */
+function tokenEvals() {
+  return mockRedisEval.mock.calls.filter((c) => c[1][0] === 'schwab:tokens');
+}
+
+/** EVAL calls against the refresh lock (the fenced release). */
+function lockReleases() {
+  return mockRedisEval.mock.calls.filter(
+    (c) => c[1][0] === 'schwab:refresh_lock',
+  );
+}
+
+/**
+ * Answer the token-record compare-and-delete with `tokenResult`
+ * (0 absent / 1 deleted / 2 different token) and the lock release with 1.
+ */
+function evalAnswers(tokenResult: number) {
+  mockRedisEval.mockImplementation((_script: string, keys: string[]) =>
+    Promise.resolve(keys[0] === 'schwab:tokens' ? tokenResult : 1),
+  );
 }
 
 import {
@@ -323,8 +355,11 @@ describe('schwab', () => {
       process.env.SCHWAB_CLIENT_ID = 'id';
       process.env.SCHWAB_CLIENT_SECRET = 'secret';
 
-      // Warm this instance's in-memory cache with a successful refresh.
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      // Warm this instance's in-memory cache with a successful refresh
+      // (initial read + the lock holder's re-read).
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens())
+        .mockResolvedValueOnce(staleTokens());
       mockRedisSet.mockResolvedValue('OK');
       mockRedisDel.mockResolvedValue(1);
       vi.stubGlobal(
@@ -372,7 +407,9 @@ describe('schwab', () => {
       process.env.SCHWAB_CLIENT_ID = 'id';
       process.env.SCHWAB_CLIENT_SECRET = 'secret';
 
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens())
+        .mockResolvedValueOnce(staleTokens());
       mockRedisSet.mockResolvedValue('OK');
       mockRedisDel.mockResolvedValue(1);
       vi.stubGlobal(
@@ -573,7 +610,9 @@ describe('schwab', () => {
           refreshToken: 'ref-tok',
           expiresAt: Date.now() + 30_000,
           refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
-        });
+        })
+        // our re-read once we hold the lock: still stale → refresh
+        .mockResolvedValueOnce(staleTokens());
 
       // Lock NOT acquired on first attempt, acquired on second.
       // (mockResolvedValue supplies all subsequent calls, including
@@ -614,7 +653,7 @@ describe('schwab', () => {
 
       // releaseLock must have been called after the successful retry,
       // so the next instance can proceed.
-      expect(mockRedisDel).toHaveBeenCalled();
+      expect(lockReleases()).toHaveLength(1);
 
       vi.unstubAllGlobals();
     });
@@ -691,6 +730,8 @@ describe('schwab', () => {
         // waitForLockRelease: Redis throws → returns early
         .mockRejectedValueOnce(new Error('Redis down'))
         // getStoredTokens after lock wait: still stale → retry the lock
+        .mockResolvedValueOnce(staleTokens())
+        // our re-read once we hold the lock: still stale → refresh
         .mockResolvedValueOnce(staleTokens());
 
       // Lock NOT acquired
@@ -737,7 +778,7 @@ describe('schwab', () => {
 
     it('keeps the stored refreshExpiresAt fixed across an access-token refresh', async () => {
       const refreshExpiresAt = Date.now() + 2 * DAY_MS;
-      mockRedisGet.mockResolvedValueOnce(staleTokens({ refreshExpiresAt }));
+      mockRedisGet.mockResolvedValue(staleTokens({ refreshExpiresAt }));
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue(
@@ -764,7 +805,7 @@ describe('schwab', () => {
     });
 
     it('keeps the stored refresh token when Schwab omits refresh_token on refresh', async () => {
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisGet.mockResolvedValue(staleTokens());
       vi.stubGlobal(
         'fetch',
         vi
@@ -779,7 +820,7 @@ describe('schwab', () => {
     });
 
     it('stores a rotated refresh token when Schwab returns one', async () => {
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisGet.mockResolvedValue(staleTokens());
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue(
@@ -829,8 +870,9 @@ describe('schwab', () => {
     });
 
     it('clears the tokens, captures ONE refresh_rejected warning, and returns expired_refresh', async () => {
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
-      mockRedisEval.mockResolvedValue(1); // compare-and-delete: deleted
+      const record = staleTokens();
+      mockRedisGet.mockResolvedValue(record);
+      evalAnswers(1); // compare-and-delete: deleted
       const fetchMock = vi
         .fn()
         .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
@@ -844,14 +886,18 @@ describe('schwab', () => {
           message: expect.stringContaining('re-authenticate'),
         },
       });
-      // Compare-and-delete keyed on the refresh token that FAILED, fenced
-      // by the JSON quotes so a token cannot prefix-match a longer one.
-      expect(mockRedisEval).toHaveBeenCalledTimes(1);
-      expect(mockRedisEval).toHaveBeenCalledWith(
-        expect.stringContaining("redis.call('DEL', KEYS[1])"),
-        ['schwab:tokens'],
-        ['"refreshToken":"ref-tok"'],
-      );
+      // One compare-and-delete, keyed on the refresh token that FAILED. The
+      // needle must be a fragment of the record exactly as @upstash/redis
+      // serializes it (JSON.stringify), fenced by the JSON quotes so it
+      // cannot prefix-match a longer token.
+      expect(tokenEvals()).toHaveLength(1);
+      const [script, keys, [needle]] = tokenEvals()[0]!;
+      expect(script).toContain("redis.call('DEL', KEYS[1])");
+      expect(keys).toEqual(['schwab:tokens']);
+      expect(JSON.stringify(record)).toContain(needle);
+      expect(
+        JSON.stringify({ ...record, refreshToken: `${record.refreshToken}2` }),
+      ).not.toContain(needle);
       expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
       expect(mockSentry.captureMessage).toHaveBeenCalledWith(
         'schwab.auth.refresh_rejected',
@@ -864,12 +910,47 @@ describe('schwab', () => {
       expect(mockSentry.captureException).not.toHaveBeenCalled();
       // Nothing re-persisted the dead tokens; the lock was released.
       expect(tokenWrites()).toHaveLength(0);
-      expect(mockRedisDel).toHaveBeenCalledWith('schwab:refresh_lock');
+      expect(lockReleases()).toHaveLength(1);
+    });
+
+    it('matches a token full of Lua pattern characters literally (plain find on the real serialization)', async () => {
+      // Every Lua magic character: without plain find these would be read
+      // as a pattern and could miss the stored token or match another.
+      const magic = 'a-b.c%d+e*f?g[h]i(j)k^l$m';
+      const record = staleTokens({ refreshToken: magic });
+      mockRedisGet.mockResolvedValue(record);
+      evalAnswers(1);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY)),
+      );
+
+      await getAccessToken();
+
+      const [script, , [needle]] = tokenEvals()[0]!;
+      // Plain find (4th arg true) disables Lua patterns → a substring test.
+      expect(script).toContain('string.find(raw, ARGV[1], 1, true)');
+      // …so JS `includes` on the JSON.stringify'd record is its exact model.
+      expect(JSON.stringify(record).includes(needle)).toBe(true);
+      expect(
+        JSON.stringify({ ...record, refreshToken: `${magic}x` }).includes(
+          needle,
+        ),
+      ).toBe(false);
+      expect(
+        JSON.stringify({
+          ...record,
+          accessToken: magic,
+          refreshToken: 'other',
+        }).includes(needle),
+      ).toBe(false);
     });
 
     it('stops at the local guard on the next call without calling Schwab again', async () => {
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
-      mockRedisEval.mockResolvedValue(1);
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens()) // initial read
+        .mockResolvedValueOnce(staleTokens()); // lock holder's re-read
+      evalAnswers(1);
       const fetchMock = vi
         .fn()
         .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
@@ -887,13 +968,13 @@ describe('schwab', () => {
         },
       });
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(mockRedisEval).toHaveBeenCalledTimes(1);
+      expect(tokenEvals()).toHaveLength(1);
       expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
     });
 
     it('treats a 401 invalid_grant the same as a 400', async () => {
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
-      mockRedisEval.mockResolvedValue(1);
+      mockRedisGet.mockResolvedValue(staleTokens());
+      evalAnswers(1);
       vi.stubGlobal(
         'fetch',
         vi
@@ -909,7 +990,7 @@ describe('schwab', () => {
 
     it('parallel callers sharing one rejected refresh produce exactly one capture', async () => {
       mockRedisGet.mockResolvedValue(staleTokens());
-      mockRedisEval.mockResolvedValue(1);
+      evalAnswers(1);
       const fetchMock = vi
         .fn()
         .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
@@ -925,13 +1006,15 @@ describe('schwab', () => {
         expect('error' in r && r.error.type).toBe('expired_refresh');
       }
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(mockRedisEval).toHaveBeenCalledTimes(1);
+      expect(tokenEvals()).toHaveLength(1);
       expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
     });
 
     it('does NOT wipe tokens a concurrent re-auth wrote mid-flight; uses them instead', async () => {
       mockRedisGet
         // initial read: the old, soon-to-be-rejected tokens
+        .mockResolvedValueOnce(staleTokens())
+        // lock holder's re-read: still the old tokens
         .mockResolvedValueOnce(staleTokens())
         // re-read after the compare-and-delete reported "replaced"
         .mockResolvedValueOnce({
@@ -940,7 +1023,7 @@ describe('schwab', () => {
           expiresAt: Date.now() + 1_800_000,
           refreshExpiresAt: Date.now() + 7 * DAY_MS,
         });
-      mockRedisEval.mockResolvedValue(2); // key holds a DIFFERENT refresh token
+      evalAnswers(2); // key holds a DIFFERENT refresh token
       const fetchMock = vi
         .fn()
         .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
@@ -960,7 +1043,7 @@ describe('schwab', () => {
       // Pathological: every read returns stale tokens and every
       // compare-and-delete says a different token is stored.
       mockRedisGet.mockResolvedValue(staleTokens());
-      mockRedisEval.mockResolvedValue(2);
+      evalAnswers(2);
       const fetchMock = vi
         .fn()
         .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
@@ -979,8 +1062,8 @@ describe('schwab', () => {
     });
 
     it('returns expired_refresh without a capture when the key was already cleared', async () => {
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
-      mockRedisEval.mockResolvedValue(0); // key absent — someone else cleared it
+      mockRedisGet.mockResolvedValue(staleTokens());
+      evalAnswers(0); // key absent — someone else cleared it
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY)),
@@ -994,7 +1077,7 @@ describe('schwab', () => {
     });
 
     it('surfaces a failed compare-and-delete loudly but still reports expired_refresh', async () => {
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisGet.mockResolvedValue(staleTokens());
       const evalErr = new Error('EVAL failed');
       mockRedisEval.mockRejectedValue(evalErr);
       vi.stubGlobal(
@@ -1055,7 +1138,7 @@ describe('schwab', () => {
     ])(
       '%s stays a captured token_error and keeps the tokens',
       async (_label, response) => {
-        mockRedisGet.mockResolvedValueOnce(staleTokens());
+        mockRedisGet.mockResolvedValue(staleTokens());
         vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
 
         const result = await getAccessToken();
@@ -1063,13 +1146,13 @@ describe('schwab', () => {
         expect('error' in result && result.error.type).toBe('token_error');
         expect(mockSentry.captureException).toHaveBeenCalledTimes(1);
         expect(mockSentry.captureMessage).not.toHaveBeenCalled();
-        expect(mockRedisEval).not.toHaveBeenCalled();
+        expect(tokenEvals()).toHaveLength(0);
         expect(mockRedisDel).not.toHaveBeenCalledWith('schwab:tokens');
       },
     );
 
     it('a timeout stays a captured token_error and keeps the tokens', async () => {
-      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisGet.mockResolvedValue(staleTokens());
       vi.stubGlobal(
         'fetch',
         vi
@@ -1083,8 +1166,308 @@ describe('schwab', () => {
 
       expect('error' in result && result.error.type).toBe('token_error');
       expect(mockSentry.captureException).toHaveBeenCalledTimes(1);
-      expect(mockRedisEval).not.toHaveBeenCalled();
+      expect(tokenEvals()).toHaveLength(0);
     });
+  });
+
+  describe('refresh lock (R6)', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisGet.mockResolvedValue(staleTokens());
+      mockRedisSet.mockResolvedValue('OK');
+      evalAnswers(1);
+    });
+
+    it('holds the lock with a random token for longer than the refresh fetch can take', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenResponse({ access_token: 'a' })),
+      );
+
+      await getAccessToken();
+
+      const refreshTimeoutMs = timeoutSpy.mock.calls[0]![0];
+      const [, lockToken, opts] = lockAcquires()[0]!;
+      expect(lockToken).toMatch(/^[0-9a-f]{32}$/);
+      expect(opts).toMatchObject({ nx: true });
+      // TTL must cover the whole hold: the fetch (bounded by its abort
+      // timeout) + storeTokens' retry backoff + Redis round-trips.
+      expect(opts.ex * 1000).toBeGreaterThanOrEqual(refreshTimeoutMs + 10_000);
+    });
+
+    it('uses a fresh lock token per acquisition', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenResponse({ access_token: 'a' })),
+      );
+
+      await getAccessToken();
+      await getAccessToken();
+
+      const [first, second] = lockAcquires();
+      expect(first![1]).not.toBe(second![1]);
+    });
+
+    it('releases with a fenced compare-and-delete of its own token, never a bare DEL', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenResponse({ access_token: 'a' })),
+      );
+
+      await getAccessToken();
+
+      const [, lockToken] = lockAcquires()[0]!;
+      expect(lockReleases()).toHaveLength(1);
+      const [script, keys, args] = lockReleases()[0]!;
+      expect(script).toContain("redis.call('GET', KEYS[1]) == ARGV[1]");
+      expect(keys).toEqual(['schwab:refresh_lock']);
+      expect(args).toEqual([lockToken]);
+      expect(mockRedisDel).not.toHaveBeenCalled();
+    });
+
+    it('leaves a lock it no longer owns alone (expired, re-acquired by another instance)', async () => {
+      // The fenced release reports 0: the key holds someone else's token.
+      mockRedisEval.mockResolvedValue(0);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenResponse({ access_token: 'a' })),
+      );
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({ token: 'a' });
+      expect(mockRedisDel).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('lock no longer held'),
+      );
+    });
+
+    it('fails open when Redis errors on every lock attempt', async () => {
+      mockRedisSet.mockImplementation((key: string) =>
+        key === 'schwab:refresh_lock'
+          ? Promise.reject(new Error('upstash down'))
+          : Promise.resolve('OK'),
+      );
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenResponse({ access_token: 'unlocked' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      // A Redis outage must not block every Schwab call.
+      expect(result).toEqual({ token: 'unlocked' });
+      expect(lockAcquires()).toHaveLength(3);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(mockLogger.error).toHaveBeenCalledWith(
+        expect.stringContaining('WITHOUT the lock'),
+      );
+    });
+
+    it('a lock loser whose post-wait read throws treats it as stale and retries the lock', async () => {
+      mockRedisGet
+        .mockReset()
+        .mockResolvedValueOnce(staleTokens()) // initial read
+        .mockResolvedValueOnce(null) // lock poll: released
+        .mockRejectedValueOnce(new Error('upstash blip')) // post-wait read
+        .mockResolvedValueOnce(staleTokens()); // our re-read under the lock
+      mockRedisSet.mockResolvedValueOnce(null).mockResolvedValue('OK');
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenResponse({ access_token: 'second-try' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({ token: 'second-try' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(lockAcquires()).toHaveLength(2);
+      expect(mockSentry.captureException).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('lock holder re-reads under the lock', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK');
+      evalAnswers(1);
+    });
+
+    it('stops without calling Schwab when the tokens were cleared before it got the lock', async () => {
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens()) // pre-lock snapshot
+        .mockResolvedValueOnce(null); // cleared by the previous holder
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('No tokens found'),
+        },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(lockReleases()).toHaveLength(1);
+    });
+
+    it('returns the tokens another holder already refreshed, without calling Schwab', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens()).mockResolvedValueOnce({
+        accessToken: 'theirs',
+        refreshToken: 'ref-tok',
+        expiresAt: Date.now() + 1_800_000,
+        refreshExpiresAt: Date.now() + 3 * DAY_MS,
+      });
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({ token: 'theirs' });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(tokenWrites()).toHaveLength(0);
+    });
+
+    it('stops when the refresh token expired by the time it holds the lock', async () => {
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens())
+        .mockResolvedValueOnce(
+          staleTokens({ refreshExpiresAt: Date.now() - 1000 }),
+        );
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('Refresh token expired'),
+        },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('refreshes from the re-read record, not the pre-lock snapshot', async () => {
+      const reread = staleTokens({
+        refreshToken: 'newer-ref',
+        refreshExpiresAt: Date.now() + DAY_MS,
+      });
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens({ refreshToken: 'old-ref' }))
+        .mockResolvedValueOnce(reread);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenResponse({ access_token: 'new-access' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      expect(await getAccessToken()).toEqual({ token: 'new-access' });
+
+      const body = fetchMock.mock.calls[0]![1].body as URLSearchParams;
+      expect(body.get('refresh_token')).toBe('newer-ref');
+      const [, written] = tokenWrites()[0]!;
+      expect(written.refreshToken).toBe('newer-ref');
+      expect(written.refreshExpiresAt).toBe(reread.refreshExpiresAt);
+    });
+
+    it('falls back to the pre-lock snapshot when the re-read fails', async () => {
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens())
+        .mockRejectedValueOnce(new Error('upstash blip'));
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenResponse({ access_token: 'from-snapshot' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      expect(await getAccessToken()).toEqual({ token: 'from-snapshot' });
+
+      const body = fetchMock.mock.calls[0]![1].body as URLSearchParams;
+      expect(body.get('refresh_token')).toBe('ref-tok');
+    });
+  });
+
+  describe('malformed token-endpoint responses', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisGet.mockResolvedValue(staleTokens());
+      mockRedisSet.mockResolvedValue('OK');
+      evalAnswers(1);
+    });
+
+    it.each([
+      ['an empty body {}', okJson({})],
+      ['an empty access_token', okJson({ access_token: '', expires_in: 1800 })],
+      ['a missing expires_in', okJson({ access_token: 'a' })],
+      [
+        'a string expires_in',
+        okJson({ access_token: 'a', expires_in: '1800' }),
+      ],
+      [
+        'a non-JSON body',
+        {
+          ok: true,
+          status: 200,
+          json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+        },
+      ],
+    ])(
+      'refresh: %s is a captured token_error that keeps the stored tokens',
+      async (_label, response) => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+
+        const result = await getAccessToken();
+
+        expect('error' in result && result.error.type).toBe('token_error');
+        expect(mockSentry.captureException).toHaveBeenCalledTimes(1);
+        expect(tokenWrites()).toHaveLength(0);
+        expect(tokenEvals()).toHaveLength(0);
+      },
+    );
+
+    it('names the bad fields without echoing token values', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          okJson({
+            access_token: '',
+            refresh_token: 'secret-ref-value',
+            expires_in: 'soon',
+          }),
+        ),
+      );
+
+      const result = await getAccessToken();
+
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error.message).toContain('access_token');
+        expect(result.error.message).toContain('expires_in');
+        expect(result.error.message).not.toContain('secret-ref-value');
+      }
+    });
+
+    it.each([
+      ['an empty body {}', okJson({})],
+      [
+        'a missing refresh_token',
+        okJson({ access_token: 'a', expires_in: 1800 }),
+      ],
+    ])(
+      'code exchange: %s is a token_error and nothing is stored',
+      async (_label, response) => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+
+        const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+        expect('error' in result && result.error.type).toBe('token_error');
+        expect(tokenWrites()).toHaveLength(0);
+      },
+    );
   });
 
   // ============================================================

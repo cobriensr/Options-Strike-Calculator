@@ -258,7 +258,7 @@ function quietExpansionChains() {
 }
 type ChainOrError =
   | ReturnType<typeof makeChain>
-  | { error: string; status: number; code?: SchwabErrorCode };
+  | { error: string; status: number; code: SchwabErrorCode };
 
 function mockChainSequence(chains: (ChainOrError | null)[]) {
   const mocked = vi.mocked(schwabFetch);
@@ -269,6 +269,7 @@ function mockChainSequence(chains: (ChainOrError | null)[]) {
         ok: false,
         error: 'fetch failed',
         status: 500,
+        code: 'SCHWAB_TOKEN_ERROR',
       });
     } else if ('error' in chain) {
       mocked.mockResolvedValueOnce({
@@ -591,11 +592,15 @@ describe('fetch-strike-iv handler', () => {
       ask: 0.8,
     });
 
-    // SPY returns a 401 (expired token) — must not abort SPXW or QQQ
+    // SPY's chain call is rejected (data-API 401) — must not abort SPXW or QQQ
     // or the other tickers.
     const q3 = quietExpansionChains();
     mockChainSequence([
-      { error: 'token expired', status: 401 },
+      {
+        error: '[SCHWAB_API_REJECTED] Schwab API error (401)',
+        status: 401,
+        code: 'SCHWAB_API_REJECTED',
+      },
       spxwChain,
       makeChain('$NDX', 22500, { contractRoot: 'NDXP' }),
       q3.rutw,

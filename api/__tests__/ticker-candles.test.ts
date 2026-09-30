@@ -76,6 +76,7 @@ describe('GET /api/ticker-candles', () => {
       ok: false,
       error: 'rate limited',
       status: 429,
+      code: 'SCHWAB_API_429',
     });
     const res = mockResponse();
     await handler(

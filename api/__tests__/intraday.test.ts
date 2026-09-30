@@ -80,6 +80,7 @@ describe('GET /api/intraday', () => {
       ok: false,
       error: 'API down',
       status: 502,
+      code: 'SCHWAB_API_502',
     });
 
     const res = mockResponse();

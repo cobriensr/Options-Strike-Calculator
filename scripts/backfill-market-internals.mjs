@@ -99,6 +99,15 @@ async function getSchwabToken() {
     process.exit(1);
   }
 
+  // Refresh token lapsed? It lives 7 days from the ORIGINAL login; sending a
+  // dead one only earns a 400 invalid_grant.
+  if (Date.now() > stored.refreshExpiresAt) {
+    console.error(
+      'Schwab refresh token expired. Run /api/auth/init to re-authenticate.',
+    );
+    process.exit(1);
+  }
+
   // Token still valid?
   if (Date.now() < stored.expiresAt - BUFFER_MS) {
     return stored.accessToken;
@@ -130,12 +139,23 @@ async function getSchwabToken() {
   }
 
   const data = await res.json();
+  if (
+    typeof data.access_token !== 'string' ||
+    data.access_token === '' ||
+    typeof data.expires_in !== 'number'
+  ) {
+    console.error('Token refresh returned a malformed response; not storing.');
+    process.exit(1);
+  }
   const now = Date.now();
   const newTokens = {
     accessToken: data.access_token,
-    refreshToken: data.refresh_token,
+    // Schwab may omit refresh_token on a refresh; the stored one stays valid.
+    refreshToken: data.refresh_token ?? stored.refreshToken,
     expiresAt: now + data.expires_in * 1000,
-    refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
+    // Fixed at the original login — a refresh must NOT slide the 7-day
+    // window forward (same rule as api/_lib/schwab.ts).
+    refreshExpiresAt: stored.refreshExpiresAt,
   };
 
   const ttlSec = Math.max(

@@ -294,6 +294,7 @@ describe('fetch-spx-candles-1m handler', () => {
       ok: false as const,
       status: 503,
       error: 'Service unavailable',
+      code: 'SCHWAB_API_503',
     });
 
     const res = mockResponse();
@@ -665,6 +666,7 @@ describe('fetch-spx-candles-1m handler', () => {
       ok: false as const,
       status: 503,
       error: 'Service unavailable',
+      code: 'SCHWAB_API_503',
     });
     vi.mocked(uwFetch).mockResolvedValue([makeCandleRow()]);
 

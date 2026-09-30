@@ -102,6 +102,7 @@ describe('GET /api/positions', () => {
       ok: false,
       error: 'Unauthorized',
       status: 401,
+      code: 'SCHWAB_API_REJECTED',
     });
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
@@ -127,6 +128,7 @@ describe('GET /api/positions', () => {
         ok: false,
         error: 'Server error',
         status: 502,
+        code: 'SCHWAB_API_502',
       });
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);

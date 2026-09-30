@@ -40,12 +40,12 @@ export type SchwabErrorCode =
 
 /**
  * Discriminated union for internal API call results.
- * Use `result.ok` to narrow the type instead of `'error' in result`.
- * `code` is always set by `schwabFetch` / `schwabTraderFetch`.
+ * Use `result.ok` to narrow the type instead of `'error' in result`, and
+ * `result.code` to branch on the failure kind.
  */
 export type ApiResult<T> =
   | { ok: true; data: T }
-  | { ok: false; error: string; status: number; code?: SchwabErrorCode };
+  | { ok: false; error: string; status: number; code: SchwabErrorCode };
 
 /**
  * Make an authenticated GET request to a Schwab API endpoint.

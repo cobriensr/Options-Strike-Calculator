@@ -67,6 +67,7 @@ import {
   withRetry,
 } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import type { SchwabErrorCode } from '../_lib/schwab-fetch.js';
 
 // Fixed "market hours" time: Tuesday 10:00 AM ET = 14:00 UTC
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
@@ -112,7 +113,9 @@ function quotesOk(addPrice: number, voldPrice: number) {
 }
 
 function quotesError(status = 401, error = 'Unauthorized') {
-  return { ok: false as const, status, error };
+  const code: SchwabErrorCode =
+    status === 401 ? 'SCHWAB_API_REJECTED' : `SCHWAB_API_${status}`;
+  return { ok: false as const, status, error, code };
 }
 
 /**
