@@ -526,6 +526,45 @@ describe('api-helpers', () => {
       }
     });
 
+    // UW 500s are usually ~1 s blips that hit several crons at once; one
+    // retry rides them out (Sentry C0 / HB, 2026-09-29).
+    it('retries a "UW API 500:" upstream error and succeeds', async () => {
+      const fn = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('UW API 500: Internal Server Error'))
+        .mockResolvedValue('recovered');
+      const result = await withRetry(fn, 1);
+      expect(result).toBe('recovered');
+      expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it('throws the 500 after retries are exhausted on consecutive 500s', async () => {
+      vi.useFakeTimers();
+      try {
+        const fn = vi
+          .fn()
+          .mockRejectedValue(new Error('UW API 500: Internal Server Error'));
+        const promise = withRetry(fn, 2);
+        const assertion = expect(promise).rejects.toThrow('UW API 500');
+        // Backoff is 1 s then 2 s — advance past both.
+        await vi.advanceTimersByTimeAsync(3_000);
+        await assertion;
+        expect(fn).toHaveBeenCalledTimes(3); // initial + 2 retries
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not retry when "500" appears only in a non-5xx error body', async () => {
+      const fn = vi
+        .fn()
+        .mockRejectedValue(
+          new Error('UW API 400: {"detail":"limit must be <= 500"}'),
+        );
+      await expect(withRetry(fn, 2)).rejects.toThrow('UW API 400');
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
     // AUD-L2: the 5xx classifier is anchored to the `UW API <status>:`
     // prefix, so a "50x" substring buried in a response BODY (e.g. a 200
     // payload that quotes a prior 502, or a 4xx error message that happens

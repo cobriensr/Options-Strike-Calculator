@@ -282,13 +282,16 @@ describe('fetch-etf-tide handler', () => {
     process.env.UW_API_KEY = 'uwkey';
     const row = makeEtfTideRow();
     // QQQ succeeds; default mockTransaction returns [{ id: 1 }] → stored.
-    let callCount = 0;
+    // SPY 500s on EVERY attempt: withRetry retries a one-off 500, so the
+    // failure must persist through the retries to demote the run. Fake
+    // setTimeout so the 1 s + 2 s backoff doesn't burn wall time; Date is
+    // faked too so the market-hours clock can be re-pinned on the fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.setSystemTime(MARKET_TIME);
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(async () => {
-        callCount++;
-        // First ticker (SPY) fails, second (QQQ) succeeds
-        if (callCount === 1) {
+      vi.fn().mockImplementation(async (url: string) => {
+        if (String(url).includes('/market/SPY/')) {
           return { ok: false, status: 500, text: async () => 'Server error' };
         }
         return { ok: true, json: async () => ({ data: [row] }) };
@@ -300,7 +303,9 @@ describe('fetch-etf-tide handler', () => {
       headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
-    await handler(req, res);
+    const run = handler(req, res);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await run;
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({

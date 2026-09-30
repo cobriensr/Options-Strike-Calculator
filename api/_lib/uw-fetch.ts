@@ -50,8 +50,8 @@ import {
  * Treating both with the same 1s/2s exponential is why per-minute
  * 429s exhausted all retries before the spec-compliant fix shipped.
  *
- * Network errors and 5xx upstream failures keep the existing
- * exponential `1000 × (attempt + 1)`.
+ * Network errors and 5xx upstream failures (500/502/503/504) keep the
+ * existing exponential `1000 × (attempt + 1)`.
  */
 function classifyRetryDelay(msg: string, attempt: number): number | null {
   // 429 — distinguish concurrency vs per-minute window
@@ -66,13 +66,15 @@ function classifyRetryDelay(msg: string, attempt: number): number | null {
     return 1000 * (attempt + 1);
   }
 
-  // Match a genuine upstream 5xx (502/503/504) only when it is the LEADING
-  // status token after a service prefix — `UW API 502: …`, `GEXBot 503 …`
+  // Match a genuine upstream 5xx (500/502/503/504) only when it is the LEADING
+  // status token after a service prefix — `UW API 500: …`, `GEXBot 503 …`
   // (withRetry is a generic helper shared across UW + GexBot + others). The
   // required ≥1 leading alphabetic word excludes a bare `502 Bad Gateway`, and
   // because the prefix run is letters-only it can't skip a non-5xx status to a
-  // `50x` buried later in the body (e.g. `UW API 400: …503…`). (AUD-L2)
-  if (/^(?:[A-Za-z]+ )+50[234]\b/.test(msg)) {
+  // `50x` buried later in the body (e.g. `UW API 400: …500…`). (AUD-L2)
+  // 500 is included because UW 500 incidents are usually ~1 s blips that hit
+  // several crons at once — one backoff-and-retry rides them out.
+  if (/^(?:[A-Za-z]+ )+50[0234]\b/.test(msg)) {
     return 1000 * (attempt + 1);
   }
 
