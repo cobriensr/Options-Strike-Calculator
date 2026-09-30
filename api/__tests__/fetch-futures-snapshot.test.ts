@@ -11,7 +11,11 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -25,6 +29,13 @@ vi.mock('../_lib/logger.js', () => ({
 vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: vi.fn(),
   withRetry: vi.fn((fn: () => unknown) => fn()),
+  // Cash session (holiday-aware) — gates the dead-feed alert. Set per
+  // test in beforeEach; tests of the off-session path override it.
+  isMarketOpen: vi.fn(),
+}));
+
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
 }));
 
 vi.mock('../../src/utils/timezone.js', () => ({
@@ -38,7 +49,8 @@ vi.mock('../../src/utils/timezone.js', () => ({
 }));
 
 import handler from '../cron/fetch-futures-snapshot.js';
-import { cronGuard } from '../_lib/api-helpers.js';
+import { cronGuard, isMarketOpen } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 import { Sentry } from '../_lib/sentry.js';
 
 const MARKET_TIME = new Date('2026-04-03T16:00:00.000Z');
@@ -52,7 +64,7 @@ function makeCronReq() {
 
 // ── SQL dispatch helper ────────────────────────────────────
 //
-// Because computeSnapshot runs 7 symbols concurrently via
+// Because computeSnapshot runs every symbol concurrently via
 // Promise.allSettled, mockResolvedValueOnce ordering is
 // non-deterministic. We instead build a dispatcher that
 // inspects the tagged template SQL strings to route responses.
@@ -62,10 +74,18 @@ interface SymbolData {
   latestClose: string;
   latestTs: string;
   hourAgoClose: string | null;
+  hourAgoTs: string;
   dayOpenClose: string | null;
+  dayOpenTs: string;
   avgVol: string | null;
   todayVol: string | null;
 }
+
+/**
+ * Every symbol that appeared as a bound value in a computeSnapshot
+ * query during the current test. Reset by setupSqlDispatch.
+ */
+const queriedSymbols = new Set<string>();
 
 /**
  * Configure mockSql to dispatch based on query template content.
@@ -93,6 +113,7 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
     const parsed = new Date(v);
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
   };
+  queriedSymbols.clear();
 
   mockSql.mockImplementation(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -109,6 +130,7 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
       ) as string | undefined;
 
       if (!symbol) return Promise.resolve([]);
+      queriedSymbols.add(symbol);
 
       const data = symbolMap[symbol];
       if (!data) return Promise.resolve([]); // no data → skip
@@ -124,14 +146,18 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
           ]);
         }
         if (data.hourAgoClose) {
-          return Promise.resolve([{ close: data.hourAgoClose }]);
+          return Promise.resolve([
+            { close: data.hourAgoClose, ts: data.hourAgoTs },
+          ]);
         }
         return Promise.resolve([]);
       }
 
       if (query.includes('ORDER BY ts ASC LIMIT 1')) {
         if (data.dayOpenClose) {
-          return Promise.resolve([{ close: data.dayOpenClose }]);
+          return Promise.resolve([
+            { close: data.dayOpenClose, ts: data.dayOpenTs },
+          ]);
         }
         return Promise.resolve([]);
       }
@@ -149,12 +175,26 @@ function setupSqlDispatch(symbolMap: Record<string, SymbolData | null>) {
   );
 }
 
+/** Symbols bound into each INSERT INTO futures_snapshots call, in order. */
+function insertedSymbols(): string[] {
+  return mockSql.mock.calls
+    .filter(([strings]) =>
+      (strings as TemplateStringsArray)
+        .join('')
+        .includes('INSERT INTO futures_snapshots'),
+    )
+    .map(([, , , symbol]) => symbol as string);
+}
+
 function makeSymbolData(overrides: Partial<SymbolData> = {}): SymbolData {
   return {
     latestClose: '5700',
     latestTs: MARKET_TIME.toISOString(),
     hourAgoClose: '5690',
+    hourAgoTs: new Date(MARKET_TIME.getTime() - 60 * 60 * 1000).toISOString(),
     dayOpenClose: '5680',
+    // Matches the mocked getETMarketOpenUtcIso (9:30 ET on 2026-04-03).
+    dayOpenTs: '2026-04-03T13:30:00.000Z',
     avgVol: '50000',
     todayVol: '60000',
     ...overrides,
@@ -175,6 +215,9 @@ describe('fetch-futures-snapshot handler', () => {
       apiKey: '',
       today: '2026-04-03',
     });
+    // Cash session open by default. isMarketOpen is mocked, so the
+    // fixture date (2026-04-03, actually Good Friday) doesn't matter.
+    vi.mocked(isMarketOpen).mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -192,9 +235,9 @@ describe('fetch-futures-snapshot handler', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  // ── Happy path: all 9 symbols ─────────────────────────────
+  // ── Happy path: all 8 symbols ─────────────────────────────
 
-  it('processes all 9 symbols and upserts snapshots', async () => {
+  it('processes all 8 symbols and upserts snapshots', async () => {
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({ latestClose: '20500' }),
@@ -204,7 +247,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: makeSymbolData({ latestClose: '2100' }),
       CL: makeSymbolData({ latestClose: '75.50' }),
       GC: makeSymbolData({ latestClose: '2350' }),
-      DX: makeSymbolData({ latestClose: '104.25' }),
     });
 
     const res = mockResponse();
@@ -216,9 +258,28 @@ describe('fetch-futures-snapshot handler', () => {
       skipped: number;
       symbols: { symbol: string }[];
     };
-    expect(json.stored).toBe(9);
+    expect(json.stored).toBe(8);
     expect(json.skipped).toBe(0);
-    expect(json.symbols).toHaveLength(9);
+    expect(json.symbols).toHaveLength(8);
+    expect(insertedSymbols()).toHaveLength(8);
+  });
+
+  // ── DX dropped (ICE; no UW feed) ──────────────────────────
+
+  it('never queries or writes DX', async () => {
+    // Even if DX bars existed and were fresh, the cron must not ask.
+    setupSqlDispatch({
+      ES: makeSymbolData(),
+      DX: makeSymbolData({ latestClose: '104.25' }),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(queriedSymbols.has('DX')).toBe(false);
+    expect(queriedSymbols.has('ES')).toBe(true);
+    expect(insertedSymbols()).toEqual(['ES']);
   });
 
   // ── Missing bars for some symbols ─────────────────────────
@@ -233,7 +294,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: null,
       CL: makeSymbolData({ latestClose: '75.50' }),
       GC: null,
-      DX: null,
     });
 
     const res = mockResponse();
@@ -242,7 +302,7 @@ describe('fetch-futures-snapshot handler', () => {
     expect(res._status).toBe(200);
     const json = res._json as { stored: number; skipped: number };
     expect(json.stored).toBe(4);
-    expect(json.skipped).toBe(5);
+    expect(json.skipped).toBe(4);
   });
 
   // ── Change percentage computation ─────────────────────────
@@ -261,7 +321,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: null,
       CL: null,
       GC: null,
-      DX: null,
     });
 
     const res = mockResponse();
@@ -294,7 +353,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: null,
       CL: null,
       GC: null,
-      DX: null,
     });
 
     const res = mockResponse();
@@ -310,34 +368,214 @@ describe('fetch-futures-snapshot handler', () => {
 
   // ── Stale data handling ───────────────────────────────────
 
-  it('stores bars regardless of age (no staleness filter)', async () => {
-    const oldTs = new Date(
-      MARKET_TIME.getTime() - 20 * 60 * 1000,
-    ).toISOString();
-
+  it('stores a snapshot when the latest bar is fresh', async () => {
     setupSqlDispatch({
-      ES: makeSymbolData({ latestClose: '5700', latestTs: oldTs }),
-      NQ: null,
-      VX1: null,
-      VX2: null,
-      ZN: null,
-      RTY: null,
-      CL: null,
-      GC: null,
-      DX: null,
+      ES: makeSymbolData({
+        latestClose: '5700',
+        latestTs: new Date(MARKET_TIME.getTime() - 2 * 60 * 1000).toISOString(),
+      }),
     });
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(200);
-    const json = res._json as { stored: number; skipped: number };
-    // ES stored even though bar is 20 min old, 8 others empty
+    expect(insertedSymbols()).toEqual(['ES']);
+  });
+
+  it('writes no row for a symbol whose latest bar is older than 15 min', async () => {
+    // Regression: the cron wrote ES = 7752.75 (the 2026-09-03 close) into
+    // every futures_snapshots row for ~4 weeks after the feed stopped.
+    setupSqlDispatch({
+      ES: makeSymbolData({
+        latestClose: '7752.75',
+        latestTs: '2026-03-27T21:59:00.000Z',
+      }),
+      NQ: makeSymbolData({ latestClose: '20500' }),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as {
+      stored: number;
+      skipped: number;
+      errors?: string[];
+    };
     expect(json.stored).toBe(1);
-    expect(json.skipped).toBe(8);
+    expect(json.skipped).toBe(7);
+    expect(json.errors).toBeUndefined();
+    expect(insertedSymbols()).toEqual(['NQ']);
+    // One stale symbol is not an error and not a dead feed.
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('writes only the fresh symbol when one is fresh and one is stale', async () => {
+    setupSqlDispatch({
+      ES: makeSymbolData({ latestClose: '5700' }),
+      NQ: makeSymbolData({
+        latestClose: '20500',
+        latestTs: new Date(
+          MARKET_TIME.getTime() - 16 * 60 * 1000,
+        ).toISOString(),
+      }),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    const json = res._json as {
+      stored: number;
+      symbols: { symbol: string }[];
+    };
+    expect(json.stored).toBe(1);
+    expect(json.symbols.map((s) => s.symbol)).toEqual(['ES']);
+    expect(insertedSymbols()).toEqual(['ES']);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  // ── Dead-feed alert ───────────────────────────────────────
+
+  it('alerts once and returns 503 when ES and NQ are both stale in the cash session', async () => {
+    // What would have caught the 2026-09-03 → 09-29 frozen-ES outage.
+    setupSqlDispatch({
+      ES: makeSymbolData({ latestTs: '2026-04-03T15:30:00.000Z' }),
+      NQ: makeSymbolData({ latestTs: '2026-04-03T15:20:00.000Z' }),
+      // A still-fresh thin symbol keeps its row despite the alert.
+      CL: makeSymbolData({ latestClose: '75.50' }),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({
+      job: 'fetch-futures-snapshot',
+      error: 'futures feed stale',
+      stored: 1,
+    });
+    expect(insertedSymbols()).toEqual(['CL']);
+
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'fetch-futures-snapshot: no fresh ES or NQ bar during the cash session',
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['futures-snapshot', 'feed-stale'],
+        extra: expect.objectContaining({
+          ES: {
+            kind: 'stale',
+            latestTs: '2026-04-03T15:30:00.000Z',
+            ageMinutes: 30,
+          },
+          NQ: {
+            kind: 'stale',
+            latestTs: '2026-04-03T15:20:00.000Z',
+            ageMinutes: 40,
+          },
+          VX1: { kind: 'missing' },
+        }),
+      }),
+    );
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-futures-snapshot',
+      expect.objectContaining({ status: 'error', feedStale: true }),
+    );
+  });
+
+  it('treats ES and NQ with no bars at all as a dead feed', async () => {
+    setupSqlDispatch({});
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(503);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(insertedSymbols()).toEqual([]);
+  });
+
+  it('does not alert when only CL is stale', async () => {
+    // CL/ZN legitimately go quiet for 15+ min, mostly overnight.
+    setupSqlDispatch({
+      ES: makeSymbolData(),
+      NQ: makeSymbolData(),
+      CL: makeSymbolData({
+        latestTs: new Date(
+          MARKET_TIME.getTime() - 25 * 60 * 1000,
+        ).toISOString(),
+      }),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(insertedSymbols()).toEqual(['ES', 'NQ']);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-futures-snapshot',
+      expect.objectContaining({ status: 'ok', feedStale: false }),
+    );
+  });
+
+  it('does not alert outside the cash session (e.g. the 17:00 CT reopen slot)', async () => {
+    // At the reopen the newest ES/NQ bar is the pre-break close (~61 min
+    // old); CME holiday halts look the same. Neither is a dead feed.
+    vi.mocked(isMarketOpen).mockReturnValue(false);
+    const preBreak = new Date(
+      MARKET_TIME.getTime() - 61 * 60 * 1000,
+    ).toISOString();
+    setupSqlDispatch({
+      ES: makeSymbolData({ latestTs: preBreak }),
+      NQ: makeSymbolData({ latestTs: preBreak }),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(insertedSymbols()).toEqual([]);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('nulls change_1h_pct when the 1H reference bar predates a feed gap', async () => {
+    setupSqlDispatch({
+      ES: makeSymbolData({
+        latestClose: '5700',
+        hourAgoClose: '5000',
+        hourAgoTs: '2026-03-20T20:59:00.000Z',
+      }),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    const json = res._json as {
+      symbols: { symbol: string; change1hPct: number | null }[];
+    };
+    expect(json.symbols[0]!.symbol).toBe('ES');
+    expect(json.symbols[0]!.change1hPct).toBeNull();
   });
 
   // ── Partial failure tolerance ─────────────────────────────
+
+  it('returns 500 and reports each symbol when every query rejects', async () => {
+    mockSql.mockRejectedValue(new Error('connection reset'));
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(500);
+    const json = res._json as { error: string; errors: string[] };
+    expect(json.error).toBe('All symbols failed');
+    expect(json.errors).toHaveLength(8);
+    expect(json.errors).toContain('ES: connection reset');
+    expect(Sentry.captureException).toHaveBeenCalledTimes(8);
+    expect(insertedSymbols()).toEqual([]);
+  });
 
   it('handles DB errors on individual symbol queries', async () => {
     // Set up dispatch for most symbols, but make NQ throw
@@ -350,7 +588,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: null,
       CL: null,
       GC: null,
-      DX: null,
     });
 
     // Override: intercept NQ queries to throw
@@ -377,9 +614,12 @@ describe('fetch-futures-snapshot handler', () => {
       errors: string[] | undefined;
     };
     expect(json.stored).toBe(1); // only ES
-    // NQ should have an error
-    expect(json.errors).toBeDefined();
-    expect(json.errors!.some((e) => e.includes('NQ'))).toBe(true);
+    // NQ's rejection surfaces by name, and reaches Sentry
+    expect(json.errors).toEqual(['NQ: connection reset']);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection reset' }),
+    );
+    expect(insertedSymbols()).toEqual(['ES']);
   });
 
   // ── Null change values ────────────────────────────────────
@@ -400,7 +640,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: null,
       CL: null,
       GC: null,
-      DX: null,
     });
 
     const res = mockResponse();
@@ -423,7 +662,7 @@ describe('fetch-futures-snapshot handler', () => {
 
   it('includes job name and durationMs in response', async () => {
     setupSqlDispatch({
-      ES: null,
+      ES: makeSymbolData(),
       NQ: null,
       VX1: null,
       VX2: null,
@@ -431,7 +670,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: null,
       CL: null,
       GC: null,
-      DX: null,
     });
 
     const res = mockResponse();
@@ -459,7 +697,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: null,
       CL: null,
       GC: null,
-      DX: null,
     });
 
     const res = mockResponse();
@@ -491,7 +728,6 @@ describe('fetch-futures-snapshot handler', () => {
       RTY: null,
       CL: null,
       GC: null,
-      DX: null,
     });
 
     // Override: make INSERT upsert throw
@@ -535,5 +771,7 @@ describe('fetch-futures-snapshot handler', () => {
       reason: 'futures market closed',
     });
     expect(mockSql).not.toHaveBeenCalled();
+    // No dead-feed alert while futures are closed.
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 });

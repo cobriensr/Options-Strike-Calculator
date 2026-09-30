@@ -5,12 +5,17 @@
  *
  * Default mode (no `at`): reads from `futures_snapshots` (populated
  *   every 5 min by the fetch-futures-snapshot cron) and returns the
- *   latest row for today.
+ *   rows at today's latest cron timestamp. The cron writes a row only
+ *   for symbols with a fresh bar, so a symbol that was stale on that run
+ *   (e.g. a quiet CL/ZN) is absent rather than shown at an old price.
  *
  * Historical mode (`?at=<ISO>`): derives a snapshot on the fly from
  *   the 1-minute `futures_bars` table, using the same `computeSnapshot`
  *   logic as the cron but with the caller-supplied moment. Nearest-bar
- *   snapping: the latest bar is the most recent bar with `ts <= at`.
+ *   snapping: the latest bar is the most recent bar with `ts <= at`,
+ *   and a symbol whose latest bar is more than MAX_BAR_AGE_MS (15 min)
+ *   before `at` is omitted — so a pick inside a weekend / maintenance
+ *   closure or a feed outage returns no snapshot for that symbol.
  *
  * Cross-symbol derived metrics (VX term spread, ES-SPX basis) are
  * computed from whichever snapshot set is returned. In historical mode,
@@ -265,15 +270,16 @@ async function handleHistorical(atIso: string, res: VercelResponse) {
   const derived: SnapshotRow[] = [];
   let anyRejected = false;
   for (const result of results) {
-    if (result.status === 'fulfilled' && result.value) {
-      derived.push(result.value);
-    } else if (result.status === 'rejected') {
+    if (result.status === 'rejected') {
       logger.warn(
         { err: result.reason },
         'historical computeSnapshot failed for one symbol',
       );
       Sentry.captureException(result.reason);
       anyRejected = true;
+    } else if (result.value.kind === 'fresh') {
+      // `stale` / `missing` symbols are omitted — no price at `at`.
+      derived.push(result.value.snapshot);
     }
   }
 
@@ -311,7 +317,7 @@ async function handleHistorical(atIso: string, res: VercelResponse) {
   // updatedAt = the newest actual bar ts across derived symbols
   let updatedAt: string | null = null;
   for (const d of derived) {
-    if (d.latestTs && (!updatedAt || d.latestTs > updatedAt)) {
+    if (!updatedAt || d.latestTs > updatedAt) {
       updatedAt = d.latestTs;
     }
   }

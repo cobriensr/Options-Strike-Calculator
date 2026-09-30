@@ -65,7 +65,9 @@ interface SymbolData {
   latestClose: string;
   latestTs: string;
   hourAgoClose: string | null;
+  hourAgoTs: string;
   dayOpenClose: string | null;
+  dayOpenTs: string;
   avgVol: string | null;
   todayVol: string | null;
 }
@@ -75,7 +77,11 @@ function makeSymbolData(overrides: Partial<SymbolData> = {}): SymbolData {
     latestClose: '5700',
     latestTs: BAR_TS,
     hourAgoClose: '5690',
+    // 1 min before PICKED_AT - 60m
+    hourAgoTs: '2026-04-17T18:29:00.000Z',
     dayOpenClose: '5680',
+    // 9:30 ET on 2026-04-17 (EDT)
+    dayOpenTs: '2026-04-17T13:30:00.000Z',
     avgVol: '50000',
     todayVol: '60000',
     ...overrides,
@@ -138,14 +144,18 @@ function setupHistoricalDispatch(opts: {
           ]);
         }
         if (data.hourAgoClose) {
-          return Promise.resolve([{ close: data.hourAgoClose }]);
+          return Promise.resolve([
+            { close: data.hourAgoClose, ts: data.hourAgoTs },
+          ]);
         }
         return Promise.resolve([]);
       }
 
       if (query.includes('ORDER BY ts ASC LIMIT 1')) {
         if (data.dayOpenClose) {
-          return Promise.resolve([{ close: data.dayOpenClose }]);
+          return Promise.resolve([
+            { close: data.dayOpenClose, ts: data.dayOpenTs },
+          ]);
         }
         return Promise.resolve([]);
       }
@@ -172,7 +182,6 @@ const ALL_NULL_SYMBOLS: Record<string, SymbolData | null> = {
   RTY: null,
   CL: null,
   GC: null,
-  DX: null,
 };
 
 // ── Suite ───────────────────────────────────────────────────
@@ -262,7 +271,12 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
 
     expect(res._status).toBe(200);
     const json = res._json as {
-      snapshots: { symbol: string; price: number }[];
+      snapshots: {
+        symbol: string;
+        price: number;
+        change1hPct: number | null;
+        changeDayPct: number | null;
+      }[];
       vxTermSpread: number;
       vxTermStructure: string;
       esSpxBasis: number;
@@ -275,6 +289,10 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
     expect(json.snapshots).toHaveLength(3);
     const es = json.snapshots.find((s) => s.symbol === 'ES');
     expect(es!.price).toBe(5710);
+    // Reference bars are within their windows, so both changes compute:
+    // (5710 - 5690) / 5690 and (5710 - 5680) / 5680, in %.
+    expect(es!.change1hPct).toBeCloseTo(0.3515, 3);
+    expect(es!.changeDayPct).toBeCloseTo(0.5282, 3);
 
     // VX term spread = 18.5 - 20.0 = -1.5 → CONTANGO
     expect(json.vxTermSpread).toBe(-1.5);
@@ -288,6 +306,40 @@ describe('GET /api/futures/snapshot?at=<ISO>', () => {
 
     expect(json.oldestTs).toBe('2026-03-15T13:30:00.000Z');
     expect(json.requestedAt).toBe(PICKED_AT);
+  });
+
+  // ── Stale bars are not a price for the picked moment ──────
+
+  it('omits a symbol whose latest bar is more than 15 min before `at`', async () => {
+    // e.g. a pick inside the weekend closure, or inside a feed outage:
+    // the newest bar at-or-before `at` is hours old and must not be
+    // presented as the price at `at`.
+    setupHistoricalDispatch({
+      symbols: {
+        ...ALL_NULL_SYMBOLS,
+        ES: makeSymbolData({ latestClose: '5710' }),
+        NQ: makeSymbolData({
+          latestClose: '20500',
+          latestTs: '2026-04-17T17:29:00.000Z',
+        }),
+      },
+      oldestTs: '2026-03-15T13:30:00.000Z',
+      spx: '5700',
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { at: PICKED_AT } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const json = res._json as {
+      snapshots: { symbol: string }[];
+      updatedAt: string | null;
+    };
+    expect(json.snapshots.map((s) => s.symbol)).toEqual(['ES']);
+    expect(json.updatedAt).toBe(BAR_TS);
   });
 
   // ── No bars before picked time ────────────────────────────
