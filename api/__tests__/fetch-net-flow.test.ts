@@ -399,6 +399,11 @@ describe('fetch-net-flow handler', () => {
   // ── Error handling ────────────────────────────────────────
 
   it('handles individual ticker API failures gracefully', async () => {
+    // The mocked 500 is retried by withRetry (1 s + 2 s backoff). Fake
+    // setTimeout so the retries don't burn wall time; Date is faked too so
+    // the market-hours clock can be re-pinned on the fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.setSystemTime(MARKET_TIME);
     process.env.UW_API_KEY = 'uwkey';
 
     // First call succeeds, second/third fail
@@ -422,7 +427,9 @@ describe('fetch-net-flow handler', () => {
       headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
-    await handler(req, res);
+    const run = handler(req, res);
+    await vi.advanceTimersByTimeAsync(6_000);
+    await run;
 
     // Should still return 200 — per-ticker errors are caught
     expect(res._status).toBe(200);
@@ -461,6 +468,11 @@ describe('fetch-net-flow handler', () => {
   // ── Status demotion on partial / total failure (BE-CRON-H4) ─
 
   it('partial: one source fails → status partial, healthy sources still stored', async () => {
+    // The mocked 500 is retried by withRetry (1 s + 2 s backoff). Fake
+    // setTimeout so the retries don't burn wall time; Date is faked too so
+    // the market-hours clock can be re-pinned on the fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.setSystemTime(MARKET_TIME);
     process.env.UW_API_KEY = 'uwkey';
     // SPX succeeds; SPY and QQQ fetches fail.
     let callCount = 0;
@@ -483,7 +495,9 @@ describe('fetch-net-flow handler', () => {
       headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
-    await handler(req, res);
+    const run = handler(req, res);
+    await vi.advanceTimersByTimeAsync(6_000);
+    await run;
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({

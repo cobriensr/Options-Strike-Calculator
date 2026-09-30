@@ -318,6 +318,11 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
   // ── Promise.allSettled fault isolation ───────────────────
 
   it('returns partial when one ticker fails and others succeed', async () => {
+    // The mocked 500 is retried by withRetry (1 s + 2 s backoff). Fake
+    // setTimeout so the retries don't burn wall time; Date is faked too so
+    // the market-hours clock can be re-pinned on the fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.setSystemTime(MARKET_TIME);
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -355,13 +360,15 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
     );
 
     const res = mockResponse();
-    await handler(
+    const run = handler(
       mockRequest({
         method: 'GET',
         headers: { authorization: 'Bearer test-secret' },
       }),
       res,
     );
+    await vi.advanceTimersByTimeAsync(3_000);
+    await run;
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ status: 'partial' });
@@ -386,6 +393,11 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
   });
 
   it('returns error status when all tickers fail', async () => {
+    // The mocked 500 is retried by withRetry (1 s + 2 s backoff). Fake
+    // setTimeout so the retries don't burn wall time; Date is faked too so
+    // the market-hours clock can be re-pinned on the fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.setSystemTime(MARKET_TIME);
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -397,13 +409,15 @@ describe('fetch-gex-strike-expiry-etfs handler', () => {
     );
 
     const res = mockResponse();
-    await handler(
+    const run = handler(
       mockRequest({
         method: 'GET',
         headers: { authorization: 'Bearer test-secret' },
       }),
       res,
     );
+    await vi.advanceTimersByTimeAsync(3_000);
+    await run;
 
     expect(res._status).toBe(200);
     // withCronInstrumentation spreads metadata as top-level keys

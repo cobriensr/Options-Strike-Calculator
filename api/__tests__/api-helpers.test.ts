@@ -529,13 +529,22 @@ describe('api-helpers', () => {
     // UW 500s are usually ~1 s blips that hit several crons at once; one
     // retry rides them out (Sentry C0 / HB, 2026-09-29).
     it('retries a "UW API 500:" upstream error and succeeds', async () => {
-      const fn = vi
-        .fn()
-        .mockRejectedValueOnce(new Error('UW API 500: Internal Server Error'))
-        .mockResolvedValue('recovered');
-      const result = await withRetry(fn, 1);
-      expect(result).toBe('recovered');
-      expect(fn).toHaveBeenCalledTimes(2);
+      vi.useFakeTimers();
+      try {
+        const fn = vi
+          .fn()
+          .mockRejectedValueOnce(new Error('UW API 500: Internal Server Error'))
+          .mockResolvedValue('recovered');
+        const promise = withRetry(fn, 1);
+        // Below the 1 s backoff the retry must not have fired yet.
+        await vi.advanceTimersByTimeAsync(999);
+        expect(fn).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(promise).resolves.toBe('recovered');
+        expect(fn).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('throws the 500 after retries are exhausted on consecutive 500s', async () => {
@@ -553,6 +562,16 @@ describe('api-helpers', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    // Pins the status class to 500/502/503/504: 501 Not Implemented is a
+    // permanent server answer, not a blip, so it must fail fast.
+    it('does not retry a "UW API 501:" error', async () => {
+      const fn = vi
+        .fn()
+        .mockRejectedValue(new Error('UW API 501: Not Implemented'));
+      await expect(withRetry(fn, 2)).rejects.toThrow('UW API 501');
+      expect(fn).toHaveBeenCalledTimes(1);
     });
 
     it('does not retry when "500" appears only in a non-5xx error body', async () => {

@@ -266,6 +266,11 @@ describe('fetch-spot-gex handler', () => {
   // ── Error handling ────────────────────────────────────────
 
   it('returns 500 when API returns error status', async () => {
+    // The mocked 500 is retried by withRetry (1 s + 2 s backoff). Fake
+    // setTimeout so the retries don't burn wall time; Date is faked too so
+    // the market-hours clock can be re-pinned on the fake clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    vi.setSystemTime(MARKET_TIME);
     process.env.UW_API_KEY = 'uwkey';
     vi.stubGlobal(
       'fetch',
@@ -281,7 +286,9 @@ describe('fetch-spot-gex handler', () => {
       headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
-    await handler(req, res);
+    const run = handler(req, res);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await run;
 
     expect(res._status).toBe(500);
     expect(res._json).toMatchObject({ error: 'Internal error' });

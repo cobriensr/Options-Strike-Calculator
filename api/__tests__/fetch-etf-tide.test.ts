@@ -288,15 +288,13 @@ describe('fetch-etf-tide handler', () => {
     // faked too so the market-hours clock can be re-pinned on the fake clock.
     vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
     vi.setSystemTime(MARKET_TIME);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockImplementation(async (url: string) => {
-        if (String(url).includes('/market/SPY/')) {
-          return { ok: false, status: 500, text: async () => 'Server error' };
-        }
-        return { ok: true, json: async () => ({ data: [row] }) };
-      }),
-    );
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (String(url).includes('/market/SPY/')) {
+        return { ok: false, status: 500, text: async () => 'Server error' };
+      }
+      return { ok: true, json: async () => ({ data: [row] }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
 
     const req = mockRequest({
       method: 'GET',
@@ -322,6 +320,8 @@ describe('fetch-etf-tide handler', () => {
     // The healthy QQQ leg still wrote one row.
     expect(mockTransaction).toHaveBeenCalledTimes(1);
     expect(Sentry.captureException).toHaveBeenCalled();
+    // SPY: initial attempt + 2 withRetry retries; QQQ: one clean fetch.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     vi.unstubAllGlobals();
   });
 
