@@ -2,15 +2,19 @@
  * GET /api/cron/cleanup-ws-option-trades
  *
  * Daily pre-market retention sweep for `ws_option_trades`. Deletes
- * rows older than today's ET date minus 2 days, so the table holds
- * the current trading day plus one prior session as a safety margin
- * for end-of-day outcome enrichment. The user's authoritative full-
- * tape archive is stored locally and on Cloudflare R2 — the DB only
- * needs the hot working set for live features.
+ * rows older than today's ET date minus WS_OPTION_TRADES_RETENTION_DAYS
+ * (api/_lib/constants.ts), so the table holds the current trading day
+ * plus prior session(s) as a safety margin for end-of-day outcome
+ * enrichment. The user's authoritative full-tape archive is stored
+ * locally and on Cloudflare R2 — the DB only needs the hot working set
+ * for live features.
  *
- * Read-horizon audit (no consumer reaches further than same-day):
+ * Read-horizon audit (only the periscope enrichment reads past same-day):
  *   - detect-lottery-fires, detect-silent-boom: NOW() - SCAN_WINDOW_MIN
  *   - enrich-{lottery,silent-boom}-outcomes: today's fires/alerts forward
+ *   - enrich-periscope-lottery-outcomes: unlocked fires back to
+ *     NOW() - WS_OPTION_TRADES_RETENTION_DAYS (bounded by this sweep so a
+ *     pruned fire is never locked at R = -1)
  *   - evaluate-round-trip: fire_time + WINDOW_MIN minutes
  *   - lottery-contract-tape: UI-supplied [fromTs, toTs] for a single fire
  *   - opening-flow-signal: opening 5-minute slice

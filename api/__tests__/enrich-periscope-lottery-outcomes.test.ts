@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
@@ -31,6 +31,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/enrich-periscope-lottery-outcomes.js';
 import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import { mockRequest, mockResponse } from './helpers';
 
@@ -62,11 +63,28 @@ const SAMPLE_FIRE = {
   entry_px: '0.10',
 };
 
+/** Pin the handler's run-time clock (only Date is faked). */
+function runAt(iso: string): void {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(iso));
+}
+
+/** Call fire on the 2026-05-18 0DTE (CDT: 15:00 CT close = 20:00 UTC). */
+function callFire(id: number, fireTime: string) {
+  return { ...SAMPLE_FIRE, id, fire_time: fireTime };
+}
+
 beforeEach(() => {
   mockSql.mockReset();
   vi.mocked(Sentry.captureException).mockReset();
+  vi.mocked(Sentry.captureMessage).mockReset();
+  vi.mocked(logger.warn).mockReset();
   mockCronGuard.mockReset();
   mockCronGuard.mockReturnValue({ apiKey: '', today: '2026-05-18' });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('enrich-periscope-lottery-outcomes cron', () => {
@@ -350,5 +368,207 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
     // No third call — the batched UPDATE that sets outcome_locked = TRUE
     // must never run when the trade read failed.
     expect(mockSql).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces a rejected locking UPDATE as a 500, never as success', async () => {
+    const dbError = new Error('connection terminated');
+    mockSql.mockResolvedValueOnce([SAMPLE_FIRE]); // 1: SELECT unenriched
+    mockSql.mockResolvedValueOnce([
+      { fire_id: 1, executed_at: '2026-05-18T19:00:00Z', price: '0.50' },
+    ]); // 2: batched read
+    mockSql.mockRejectedValueOnce(dbError); // 3: batched UPDATE rejects
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({ error: 'Internal error' });
+    expect(res._json).not.toMatchObject({ status: 'success' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+  });
+
+  describe('malformed ticks', () => {
+    it('ignores a non-numeric price and computes R from the valid ticks', async () => {
+      mockSql.mockResolvedValueOnce([SAMPLE_FIRE]);
+      mockSql.mockResolvedValueOnce([
+        { fire_id: 1, executed_at: '2026-05-18T18:50:00Z', price: 'garbage' },
+        { fire_id: 1, executed_at: '2026-05-18T19:00:00Z', price: '2.00' },
+      ]);
+      mockSql.mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      // UPDATE params: every value is an unnest array.
+      const params = sqlCall(2).values as unknown[][];
+      expect(params[0]).toEqual([1]);
+      expect(params[1]).toEqual([2]); // peak_px from the valid tick only
+      expect(params[5]?.[0]).toBeCloseTo((2 - 0.1) / 0.1, 6);
+      // No NaN reaches any numeric column.
+      for (const arr of params.slice(1)) {
+        expect(arr.some((v) => Number.isNaN(v))).toBe(false);
+      }
+      // The dropped tick is surfaced, not silently swallowed.
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        malformedTicks: 1,
+      });
+      expect(logger.warn).toHaveBeenCalled();
+    });
+
+    it('does not lock a fire whose ticks are all unreadable', async () => {
+      // Prints exist but none parse — "no trades → R = -1" does not apply,
+      // so locking would write a fabricated total loss.
+      mockSql.mockResolvedValueOnce([SAMPLE_FIRE]);
+      mockSql.mockResolvedValueOnce([
+        { fire_id: 1, executed_at: '2026-05-18T18:50:00Z', price: 'NaN' },
+        { fire_id: 1, executed_at: '2026-05-18T19:00:00Z', price: 'garbage' },
+      ]);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      // SELECT + read only — no locking UPDATE.
+      expect(mockSql).toHaveBeenCalledTimes(2);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        rows: 0,
+        updated: 0,
+        unreadable: 1,
+        malformedTicks: 2,
+      });
+      expect(logger.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('hold-window guard', () => {
+    it('does not lock a fire whose window has not elapsed yet (mid-session run)', async () => {
+      // 14:00 CDT on the fire's 0DTE — the contract still trades until
+      // 15:00 CT, so the outcome is not final.
+      runAt('2026-05-18T19:00:00Z');
+      mockSql.mockResolvedValueOnce([callFire(1, '2026-05-18T18:43:12Z')]);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      // No trade read and no UPDATE — the in-flight fire is left unlocked.
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        rows: 0,
+        updated: 0,
+        inFlight: 1,
+      });
+    });
+
+    it('locks a settled fire and skips an in-flight one in the same run', async () => {
+      runAt('2026-05-18T19:00:00Z');
+      const settled = callFire(1, '2026-05-15T18:00:00Z'); // prior session
+      const inFlight = callFire(2, '2026-05-18T18:43:12Z'); // today, open
+      mockSql.mockResolvedValueOnce([inFlight, settled]);
+      mockSql.mockResolvedValueOnce([
+        { fire_id: 1, executed_at: '2026-05-15T18:30:00Z', price: '0.40' },
+      ]);
+      mockSql.mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      // Only the settled fire is read and locked.
+      expect(sqlCall(1).values[0]).toEqual([1]);
+      expect(sqlCall(2).values[0]).toEqual([1]);
+      expect(res._json).toMatchObject({ updated: 1, inFlight: 1 });
+    });
+
+    it('treats a late fire as settled once its 0DTE contract has expired', async () => {
+      // Put fired 14:30 CDT: its 180m horizon runs to 17:30 CDT, but a
+      // 0DTE SPXW stops trading at 15:00 CT, so no print can land after
+      // the close. The 21:50 UTC scheduled run must lock it.
+      runAt('2026-05-18T21:50:00Z');
+      const latePut = {
+        ...SAMPLE_FIRE,
+        id: 7,
+        fire_type: 'put_lottery',
+        fire_time: '2026-05-18T19:30:00Z',
+      };
+      mockSql.mockResolvedValueOnce([latePut]);
+      mockSql.mockResolvedValueOnce([
+        { fire_id: 7, executed_at: '2026-05-18T19:45:00Z', price: '0.30' },
+      ]);
+      mockSql.mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      expect(sqlCall(2).values[0]).toEqual([7]);
+      expect(res._json).toMatchObject({ updated: 1, inFlight: 0 });
+    });
+  });
+
+  describe('all-empty tape guard', () => {
+    const threeFires = [
+      callFire(21, '2026-05-18T15:00:00Z'),
+      callFire(22, '2026-05-18T16:00:00Z'),
+      callFire(23, '2026-05-18T17:00:00Z'),
+    ];
+
+    it('does not lock anything and alerts when every settled fire has zero ticks', async () => {
+      // 3+ fires with not one print between them means the tape is missing
+      // (e.g. uw-stream down), not that every option died untraded.
+      mockSql.mockResolvedValueOnce(threeFires);
+      mockSql.mockResolvedValueOnce([]); // batched read: nothing at all
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      expect(mockSql).toHaveBeenCalledTimes(2); // no locking UPDATE
+      expect(res._json).toMatchObject({
+        status: 'error',
+        rows: 0,
+        updated: 0,
+        emptyFires: 3,
+      });
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('no ws_option_trades ticks'),
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: [
+            'enrich-periscope-lottery-outcomes',
+            'all-windows-empty',
+          ],
+        }),
+      );
+    });
+
+    it('still locks zero-tick fires at R = -1 when other fires have ticks', async () => {
+      mockSql.mockResolvedValueOnce(threeFires);
+      mockSql.mockResolvedValueOnce([
+        { fire_id: 22, executed_at: '2026-05-18T16:30:00Z', price: '0.50' },
+      ]);
+      mockSql.mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      const params = sqlCall(2).values;
+      expect(params[0]).toEqual([21, 22, 23]);
+      expect(params[5]).toEqual([-1, 4, -1]); // (0.50 - 0.10) / 0.10 = 4
+      expect(res._json).toMatchObject({ status: 'success', updated: 3 });
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('keeps the per-strategy lock below the threshold (2 empty fires)', async () => {
+      mockSql.mockResolvedValueOnce(threeFires.slice(0, 2));
+      mockSql.mockResolvedValueOnce([]);
+      mockSql.mockResolvedValueOnce([]);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      expect(sqlCall(2).values[0]).toEqual([21, 22]);
+      expect(res._json).toMatchObject({ status: 'success', updated: 2 });
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
   });
 });

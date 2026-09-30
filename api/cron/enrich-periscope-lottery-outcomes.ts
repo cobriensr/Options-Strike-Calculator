@@ -2,10 +2,11 @@
  * GET /api/cron/enrich-periscope-lottery-outcomes
  *
  * Backfills the realized-outcome columns on periscope_lottery_fires rows
- * where outcome_locked = FALSE. Runs once daily at 21:30 UTC (30 min
- * after the 0DTE SPX cash close at 15:00 CT — DST-anchored, NOT a
- * hardcoded UTC hour). Same schedule as enrich-lottery-outcomes /
- * enrich-silent-boom-outcomes.
+ * where outcome_locked = FALSE. Scheduled once daily at 21:50 UTC Mon-Fri
+ * (vercel.json `50 21 * * 1-5`). That is a FIXED UTC time: 16:50 CT
+ * during CDT, 15:50 CT during CST — after the 15:00 CT 0DTE close either
+ * way. Same post-close slot as enrich-lottery-outcomes (21:40 UTC) and
+ * enrich-silent-boom-outcomes (21:45 UTC).
  *
  * For each unenriched fire:
  *   1. Pull ws_option_trades for the trade_strike within the hold horizon
@@ -19,6 +20,14 @@
  *      - realized_r_eod: (eod_close - entry) / entry. Falls back to -1
  *        when no EOD print exists (assumes worthless expiry).
  *   5. UPDATE the row + set outcome_locked = TRUE.
+ *
+ * A fire is left UNLOCKED (retried next run, or recovered by
+ * scripts/backfill_periscope_lottery_outcomes.py) when:
+ *   - its window has not settled yet (prints can still land), or
+ *   - it has ticks but none parse (R would be fabricated), or
+ *   - every settled fire in a run of >= ALL_EMPTY_MIN_FIRES came back with
+ *     zero ticks — the tape is missing (e.g. uw-stream down), so the run
+ *     alerts (Sentry warning) and returns status 'error' instead.
  *
  * Idempotent — re-running the cron won't double-process a locked row.
  * Per-user direction (open question #3): we track BOTH peak and EOD R
@@ -35,6 +44,7 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { eodCtForTrigger } from '../_lib/flow-inversion.js';
+import { Sentry } from '../_lib/sentry.js';
 
 type DbNumeric = string | number;
 type DbTimestamp = string | Date;
@@ -76,15 +86,29 @@ function holdMinutes(fireType: 'call_lottery' | 'put_lottery'): number {
   return fireType === 'call_lottery' ? 120 : 180;
 }
 
+/**
+ * 15:00 CT on the contract's expiry date. SPXW stops trading then, so no
+ * print can land later (the fires are 0DTE, making this the fire-day
+ * close). 17:00 UTC is on the expiry's CT calendar day in CDT and CST.
+ */
+function expiryClose(expiry: string): Date {
+  return eodCtForTrigger(new Date(`${expiry}T17:00:00Z`));
+}
+
+/**
+ * Minimum settled fires in one run for "every fire has zero ticks" to be
+ * read as a missing tape (uw-stream down, ws_option_trades not ingesting)
+ * rather than options that genuinely never printed. With 1-2 fires an
+ * all-empty read is plausible for far-OTM lottery strikes, so those keep
+ * the per-strategy lock at R = -1.
+ */
+const ALL_EMPTY_MIN_FIRES = 3;
+
 export default withCronInstrumentation(
   'enrich-periscope-lottery-outcomes',
   async (ctx): Promise<CronResult> => {
     const sql = getDb();
 
-    // Only enrich fires where the hold window has FULLY elapsed. The
-    // call horizon is 120m and the put horizon is 180m; running at
-    // 20:30 UTC ensures every fire from this morning is settled.
-    //
     // Retention window: cleanup-ws-option-trades prunes trades older than
     // WS_OPTION_TRADES_RETENTION_DAYS (its cutoff is ET midnight N days
     // back, which is at or before NOW() - N days, so this bound never
@@ -92,7 +116,9 @@ export default withCronInstrumentation(
     // deleted, and the no-trades branch below would falsely lock it at
     // realized R = -1. So only retained fires are candidates, newest
     // first so today's fires are never starved by the LIMIT. The older
-    // unlocked backlog is handled separately, not by this cron.
+    // unlocked backlog is recovered from the parquet tape by
+    // scripts/backfill_periscope_lottery_outcomes.py, not by this cron.
+    // Whether a candidate's window has settled is checked per fire below.
     const unenriched = (await withDbRetry(
       () => sql`
         SELECT id, fire_type, fire_time, expiry::text AS expiry,
@@ -129,9 +155,13 @@ export default withCronInstrumentation(
       fireTime: Date;
       horizonEnd: Date;
       closeCutoff: Date;
+      /** End of the batched read: GREATEST(horizonEnd, closeCutoff). */
+      readEnd: Date;
     }
+    const nowMs = Date.now();
     const windows: FireWindow[] = [];
     let skipped = 0;
+    let inFlight = 0;
     for (const f of unenriched) {
       const fireTime = toDate(f.fire_time);
       const entryPx = toNum(f.entry_px);
@@ -144,6 +174,20 @@ export default withCronInstrumentation(
       );
       // 15:00 CT (DST-aware) — 20:00 UTC during CDT, 21:00 UTC during CST.
       const closeCutoff = eodCtForTrigger(fireTime);
+      const readEnd = horizonEnd > closeCutoff ? horizonEnd : closeCutoff;
+      // Settled = no more prints can land in [fireTime, readEnd]: the
+      // window has passed, or the contract has expired (a late fire's
+      // horizon can run past the 15:00 CT 0DTE close, where trading
+      // stops). Nothing else enforces this — marketHours: false leaves the
+      // run time ungated, so a manual mid-session run would otherwise lock
+      // today's fires (first, given newest-first order) on a partial
+      // peak/EOD.
+      const contractClose = expiryClose(f.expiry);
+      const settledAt = readEnd < contractClose ? readEnd : contractClose;
+      if (settledAt.getTime() > nowMs) {
+        inFlight += 1;
+        continue;
+      }
       windows.push({
         id: f.id,
         expiry: f.expiry,
@@ -153,18 +197,24 @@ export default withCronInstrumentation(
         fireTime,
         horizonEnd,
         closeCutoff,
+        readEnd,
       });
     }
 
     if (windows.length === 0) {
       ctx.logger.info(
-        { candidates: unenriched.length, updated: 0, skipped },
+        { candidates: unenriched.length, updated: 0, skipped, inFlight },
         'enrich-periscope-lottery-outcomes completed',
       );
       return {
         status: 'success',
         rows: 0,
-        metadata: { candidates: unenriched.length, updated: 0, skipped },
+        metadata: {
+          candidates: unenriched.length,
+          updated: 0,
+          skipped,
+          inFlight,
+        },
       };
     }
 
@@ -185,12 +235,7 @@ export default withCronInstrumentation(
     const strikes = windows.map((w) => w.strike);
     const optionTypes = windows.map((w) => w.optionType);
     const fireTimes = windows.map((w) => w.fireTime.toISOString());
-    const readEnds = windows.map((w) =>
-      (w.horizonEnd > w.closeCutoff
-        ? w.horizonEnd
-        : w.closeCutoff
-      ).toISOString(),
-    );
+    const readEnds = windows.map((w) => w.readEnd.toISOString());
 
     const tradeRows = (await withDbRetry(
       () => sql`
@@ -222,6 +267,37 @@ export default withCronInstrumentation(
       30_000,
     )) as BatchedTradeRow[];
 
+    // All-empty guard: every settled fire came back with zero ticks. With
+    // >= ALL_EMPTY_MIN_FIRES fires that means the tape is missing (e.g.
+    // uw-stream down), not that every option died untraded — locking them
+    // all at R = -1 would silently corrupt the outcomes. Leave them
+    // unlocked for the next run (or the parquet backfill) and alert.
+    if (tradeRows.length === 0 && windows.length >= ALL_EMPTY_MIN_FIRES) {
+      const message =
+        'enrich-periscope-lottery-outcomes: no ws_option_trades ticks for ' +
+        `any of ${windows.length} settled fires — tape likely missing; ` +
+        'left unlocked';
+      const detail = {
+        candidates: unenriched.length,
+        emptyFires: windows.length,
+        skipped,
+        inFlight,
+      };
+      ctx.logger.warn(detail, message);
+      Sentry.captureMessage(message, {
+        level: 'warning',
+        fingerprint: ['enrich-periscope-lottery-outcomes', 'all-windows-empty'],
+        tags: { 'cron.anomaly': 'periscope-lottery-empty-tape' },
+        extra: detail,
+      });
+      return {
+        status: 'error',
+        rows: 0,
+        message,
+        metadata: { ...detail, updated: 0 },
+      };
+    }
+
     // Group ticks by fire id (already ordered executed_at ASC per id).
     const ticksById = new Map<number, BatchedTradeRow[]>();
     for (const row of tradeRows) {
@@ -231,6 +307,12 @@ export default withCronInstrumentation(
     }
 
     const updates: EnrichUpdate[] = [];
+    // A tick whose price or timestamp does not parse is dropped (it cannot
+    // be placed in the peak/EOD windows). A fire whose ticks ALL fail to
+    // parse is left unlocked: the "no trades → R = -1" assumption does not
+    // hold when prints exist but are unreadable.
+    let malformedTicks = 0;
+    const unreadableFireIds: number[] = [];
     for (const w of windows) {
       const ticks = ticksById.get(w.id) ?? [];
 
@@ -244,10 +326,15 @@ export default withCronInstrumentation(
       // EOD print = the LAST trade at or before closeCutoff (the original
       // ordered DESC LIMIT 1; here we take the latest in-window tick).
       let eodClosePx: number | null = null;
+      let validTicks = 0;
       for (const t of ticks) {
         const p = toNum(t.price);
-        if (Number.isNaN(p)) continue;
         const execAt = toDate(t.executed_at);
+        if (Number.isNaN(p) || Number.isNaN(execAt.getTime())) {
+          malformedTicks += 1;
+          continue;
+        }
+        validTicks += 1;
         if (execAt <= w.horizonEnd && (peakPx === null || p > peakPx)) {
           peakPx = p;
           peakTime = execAt;
@@ -257,6 +344,10 @@ export default withCronInstrumentation(
           // equivalent to the original ORDER BY executed_at DESC LIMIT 1.
           eodClosePx = p;
         }
+      }
+      if (ticks.length > 0 && validTicks === 0) {
+        unreadableFireIds.push(w.id);
+        continue;
       }
 
       // Both branches assign — definite assignment, no `= null`
@@ -290,7 +381,8 @@ export default withCronInstrumentation(
     // staged rows (NULL-preserving typed arrays for the nullable columns)
     // and join on id. Every processed fire — tick or no-tick — gets the
     // same column set and outcome_locked = TRUE, exactly as the original
-    // per-fire UPDATE did (skipped/zero-entry fires are absent here).
+    // per-fire UPDATE did (skipped/zero-entry, in-flight and unreadable
+    // fires are absent here).
     const updated = updates.length;
     if (updated > 0) {
       const uIds = updates.map((u) => u.id);
@@ -327,23 +419,30 @@ export default withCronInstrumentation(
       );
     }
 
-    ctx.logger.info(
-      { candidates: unenriched.length, updated, skipped },
-      'enrich-periscope-lottery-outcomes completed',
-    );
+    const summary = {
+      candidates: unenriched.length,
+      updated,
+      skipped,
+      inFlight,
+      unreadable: unreadableFireIds.length,
+      malformedTicks,
+    };
+    if (malformedTicks > 0) {
+      ctx.logger.warn(
+        { ...summary, unreadableFireIds },
+        'enrich-periscope-lottery-outcomes: dropped malformed ticks',
+      );
+    }
+    ctx.logger.info(summary, 'enrich-periscope-lottery-outcomes completed');
 
     return {
-      status: 'success',
+      status: malformedTicks > 0 ? 'partial' : 'success',
       rows: updated,
-      metadata: {
-        candidates: unenriched.length,
-        updated,
-        skipped,
-      },
+      metadata: summary,
     };
   },
-  // marketHours: false is REQUIRED — this cron runs at 21:30 UTC which
-  // is after the close (cronGuard defaults to marketHours: true and
-  // would reject the request).
+  // marketHours: false is REQUIRED — this cron runs at 21:50 UTC, after
+  // the close (cronGuard defaults to marketHours: true and would reject
+  // the request).
   { marketHours: false, requireApiKey: false },
 );
