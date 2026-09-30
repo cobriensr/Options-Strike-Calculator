@@ -18,8 +18,8 @@ Boot sequence:
        - Watch proc.poll() and restart on unexpected exit with backoff.
 
 Never raises. Every failure path reports via sentry_setup.capture_*
-with tag `component=theta` so the sidecar's Databento relay keeps
-running even if Theta dies — Theta is additive, not critical.
+with tag `component=theta` so the sidecar's SHAP and archive serving
+keep running even if Theta dies — Theta is additive, not critical.
 """
 
 from __future__ import annotations

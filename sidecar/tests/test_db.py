@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import os
 import sys
-from decimal import Decimal
 from typing import Generator
 from unittest.mock import MagicMock
 
@@ -210,107 +209,6 @@ class TestExecuteValuesBatch:
             db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
 
         assert mock_execute_values.call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# Phase 5e — load_alert_config silent-fallback observability
-# ---------------------------------------------------------------------------
-
-
-class TestLoadAlertConfigObservability:
-    """Verify the empty-dict fallback now forwards unexpected exceptions
-    to Sentry. Empty config remains the documented runtime behavior;
-    the only behavior change is observability of the failure path.
-
-    Note on mocking psycopg2.errors.UndefinedTable: conftest mocks the
-    whole psycopg2 package, so its `errors` attribute is a MagicMock
-    where `UndefinedTable` is an auto-spec'd MagicMock (not an Exception
-    subclass — Python rejects it as an `except` target). Each test
-    that needs the UndefinedTable branch installs a real Exception
-    subclass for the duration of the test only.
-    """
-
-    @pytest.fixture
-    def real_undefined_table(self, monkeypatch: pytest.MonkeyPatch) -> type[Exception]:
-        """Install a real exception class for psycopg2.errors.UndefinedTable.
-
-        Without this, `except psycopg2.errors.UndefinedTable:` raises
-        TypeError because the mock's auto-attribute isn't a class.
-        """
-        import psycopg2
-
-        cls = type("UndefinedTable", (Exception,), {})
-        monkeypatch.setattr(psycopg2.errors, "UndefinedTable", cls)
-        return cls
-
-    def test_undefined_table_returns_empty_without_sentry(
-        self,
-        mock_conn_pool: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-        real_undefined_table: type[Exception],
-    ) -> None:
-        """Pre-init state (table doesn't exist yet) is a known-OK
-        condition — must NOT page Sentry, just log a warning."""
-        mock_conn_pool.execute.side_effect = real_undefined_table("table missing")
-
-        captured: list[BaseException] = []
-        monkeypatch.setattr(
-            "sentry_setup.capture_exception",
-            lambda exc, **_kw: captured.append(exc),
-        )
-
-        result = db.load_alert_config()
-
-        assert result == {}
-        # UndefinedTable is the known pre-init state; Sentry stays quiet.
-        assert captured == []
-
-    def test_unexpected_exception_forwards_to_sentry(
-        self,
-        mock_conn_pool: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-        real_undefined_table: type[Exception],
-    ) -> None:
-        """A non-UndefinedTable exception must surface in Sentry while
-        the empty-dict fallback is still returned (caller contract)."""
-        boom = RuntimeError("connection reset")
-        mock_conn_pool.execute.side_effect = boom
-
-        captured: list[tuple[BaseException, dict]] = []
-
-        def fake_capture(exc: BaseException, **kw: object) -> None:
-            captured.append((exc, kw))
-
-        monkeypatch.setattr("sentry_setup.capture_exception", fake_capture)
-
-        result = db.load_alert_config()
-
-        assert result == {}
-        assert len(captured) == 1
-        assert captured[0][0] is boom
-        # Tag + context shape locks the observability payload.
-        kwargs = captured[0][1]
-        assert kwargs.get("tags") == {"component": "db"}
-        assert kwargs.get("context") == {"phase": "load_alert_config"}
-
-    def test_sentry_failure_does_not_break_caller(
-        self,
-        mock_conn_pool: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-        real_undefined_table: type[Exception],
-    ) -> None:
-        """If Sentry forwarding itself raises, the empty-dict caller
-        contract must still hold — never let observability break the
-        runtime fallback."""
-        mock_conn_pool.execute.side_effect = RuntimeError("connection reset")
-
-        def boom_sentry(*_a: object, **_kw: object) -> None:
-            raise RuntimeError("sentry SDK exploded")
-
-        monkeypatch.setattr("sentry_setup.capture_exception", boom_sentry)
-
-        # Must not raise — caller relies on dict return.
-        assert db.load_alert_config() == {}
 
 
 # ---------------------------------------------------------------------------
@@ -777,39 +675,6 @@ class TestIsDbHealthy:
 
 
 # ---------------------------------------------------------------------------
-# load_alert_config — happy-path row iteration
-# ---------------------------------------------------------------------------
-
-
-class TestLoadAlertConfigHappyPath:
-    def test_returns_dict_keyed_by_alert_type(self, mock_conn_pool: MagicMock) -> None:
-        """fetchall returns RealDictCursor-style rows; load_alert_config
-        must reshape into {alert_type: {...}}."""
-        mock_conn_pool.fetchall.return_value = [
-            {
-                "alert_type": "gap_widening",
-                "enabled": True,
-                "params": {"threshold": 0.5},
-                "cooldown_minutes": 15,
-            },
-            {
-                "alert_type": "vol_spike",
-                "enabled": False,
-                "params": {},
-                "cooldown_minutes": 30,
-            },
-        ]
-
-        result = db.load_alert_config()
-
-        assert set(result.keys()) == {"gap_widening", "vol_spike"}
-        assert result["gap_widening"]["enabled"] is True
-        assert result["gap_widening"]["params"] == {"threshold": 0.5}
-        assert result["gap_widening"]["cooldown_minutes"] == 15
-        assert result["vol_spike"]["enabled"] is False
-
-
-# ---------------------------------------------------------------------------
 # has_theta_option_eod_rows
 # ---------------------------------------------------------------------------
 
@@ -826,43 +691,6 @@ class TestHasThetaOptionEodRows:
     def test_returns_false_when_no_row(self, mock_conn_pool: MagicMock) -> None:
         mock_conn_pool.fetchone.return_value = None
         assert db.has_theta_option_eod_rows("SPX") is False
-
-
-# ---------------------------------------------------------------------------
-# get_recent_bars
-# ---------------------------------------------------------------------------
-
-
-class TestGetRecentBars:
-    def test_returns_dict_per_row(self, mock_conn_pool: MagicMock) -> None:
-        from datetime import datetime as _datetime
-
-        rows = [
-            {
-                "ts": _datetime(2026, 4, 18, 14, 30),
-                "open": Decimal("5000.0"),
-                "high": Decimal("5005.0"),
-                "low": Decimal("4995.0"),
-                "close": Decimal("5002.0"),
-                "volume": 100,
-            },
-        ]
-        mock_conn_pool.fetchall.return_value = rows
-
-        result = db.get_recent_bars("ES", minutes=30)
-
-        assert len(result) == 1
-        assert result[0]["close"] == Decimal("5002.0")
-        sql, params = mock_conn_pool.execute.call_args[0]
-        assert "FROM futures_bars" in sql
-        assert "make_interval(mins => %s)" in sql
-        assert params == ("ES", 30)
-
-    def test_default_minutes_is_60(self, mock_conn_pool: MagicMock) -> None:
-        mock_conn_pool.fetchall.return_value = []
-        db.get_recent_bars("ES")
-        params = mock_conn_pool.execute.call_args[0][1]
-        assert params == ("ES", 60)
 
 
 # ---------------------------------------------------------------------------

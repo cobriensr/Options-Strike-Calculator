@@ -50,6 +50,7 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
         "verify_connection": MagicMock(),
         "start_health_server": MagicMock(),
         "wait_for_shutdown": MagicMock(),
+        "capture_exception": MagicMock(),
     }
 
     monkeypatch.setattr(main, "init_sentry", mocks["init_sentry"])
@@ -62,6 +63,7 @@ def patched_subsystems(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     monkeypatch.setattr(main, "verify_connection", mocks["verify_connection"])
     monkeypatch.setattr(main, "start_health_server", mocks["start_health_server"])
     monkeypatch.setattr(main, "wait_for_shutdown", mocks["wait_for_shutdown"])
+    monkeypatch.setattr(main, "capture_exception", mocks["capture_exception"])
     # Signal registration is process-global; never let a test install
     # the real shutdown handler into the pytest process.
     monkeypatch.setattr(main.signal, "signal", MagicMock())
@@ -173,22 +175,39 @@ def test_main_proceeds_when_required_env_present(
     patched_subsystems["wait_for_shutdown"].assert_called_once()
 
 
-def test_main_propagates_db_verification_failure(
+def test_main_keeps_booting_when_db_verification_fails(
     monkeypatch: pytest.MonkeyPatch,
     patched_subsystems: dict[str, MagicMock],
 ) -> None:
-    """An unreachable DB at boot must crash main() (so Railway restarts
-    the container) instead of starting a server that can't serve."""
+    """A Neon outage at boot must NOT take the sidecar down: SHAP and the
+    archive don't use Neon. main() reports the failure to Sentry and
+    still starts the HTTP server (whose /health then reports db:false)."""
     monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
-    patched_subsystems["verify_connection"].side_effect = RuntimeError(
-        "Database connection verification failed"
-    )
+    boom = RuntimeError("Database connection verification failed")
+    patched_subsystems["verify_connection"].side_effect = boom
 
-    with pytest.raises(RuntimeError, match="verification failed"):
-        main.main()
+    main.main()
 
-    patched_subsystems["start_health_server"].assert_not_called()
-    patched_subsystems["wait_for_shutdown"].assert_not_called()
+    capture = patched_subsystems["capture_exception"]
+    capture.assert_called_once()
+    assert capture.call_args.args[0] is boom
+    assert capture.call_args.kwargs["context"] == {"phase": "boot_verify_connection"}
+    assert capture.call_args.kwargs["tags"] == {"component": "main", "check": "db"}
+    patched_subsystems["start_health_server"].assert_called_once()
+    patched_subsystems["wait_for_shutdown"].assert_called_once()
+
+
+def test_main_does_not_report_when_db_verification_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+) -> None:
+    """The Sentry report is for the failure path only."""
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+
+    main.main()
+
+    patched_subsystems["verify_connection"].assert_called_once()
+    patched_subsystems["capture_exception"].assert_not_called()
 
 
 def test_main_wires_health_server_with_db_and_theta_reporters(

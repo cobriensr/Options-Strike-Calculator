@@ -16,8 +16,8 @@ Two entry points:
 
 Both paths short-circuit without raising when Theta's HTTP server
 isn't up, when credentials are missing, or when a root returns a
-subscription-denied response — the sidecar's Databento relay must
-continue to run independently. Every unexpected exception is captured
+subscription-denied response — the sidecar's SHAP and archive serving
+must continue to run independently. Every unexpected exception is captured
 via sentry_setup.capture_exception for visibility.
 
 Design notes:
@@ -45,7 +45,8 @@ from sentry_setup import capture_exception, capture_message
 from theta_client import EodRow, ThetaClient, ThetaSubscriptionError
 
 # Sentry tags applied to every Theta-sourced event so operators can
-# filter this feature independently from Databento / the Vercel backend.
+# filter this feature independently from the rest of the sidecar / the
+# Vercel backend.
 _THETA_TAGS = {"component": "theta"}
 
 # Sentry cron monitor slug. Configure the matching Monitor in the
@@ -68,7 +69,7 @@ MAX_JOB_DURATION_S = 30 * 60
 
 # Module-level scheduler handle (stopped via shutdown()). APScheduler's
 # BackgroundScheduler runs jobs in its own thread pool, so this doesn't
-# block the sidecar's main Databento loop.
+# block the sidecar's main thread.
 _scheduler: Any = None  # apscheduler.BackgroundScheduler | None
 _scheduler_lock = threading.Lock()
 

@@ -57,8 +57,8 @@ _ROOT = Path(os.environ.get("ARCHIVE_ROOT", "/data/archive"))
 # `archive_query_slot()` and, on failure, surface `ArchiveBusyError` so
 # the HTTP layer can return 503 instead of piling on more memory pressure.
 #
-# 2 is deliberate: it leaves headroom for /health + the Theta/Databento
-# relay while still allowing one backfill request to overlap a single
+# 2 is deliberate: it leaves headroom for /health, SHAP and Theta
+# while still allowing one backfill request to overlap a single
 # interactive analyze-context query. Override via env for ops tuning.
 _ARCHIVE_QUERY_CONCURRENCY = int(
     os.environ.get("ARCHIVE_QUERY_CONCURRENCY", "2")
@@ -161,7 +161,7 @@ def _connection() -> duckdb.DuckDBPyConnection:
         # allocate unbounded RAM until Railway kills the process. With
         # memory_limit set, DuckDB writes intermediate results to
         # temp_directory when it would otherwise exceed the limit.
-        # 500 MB leaves headroom for Python + Databento Live buffers +
+        # 500 MB leaves headroom for Python + the SHAP model bundles +
         # the cached _option_definitions dict within typical Railway
         # tier memory. Latency may rise modestly on spill but
         # correctness and process stability take priority.

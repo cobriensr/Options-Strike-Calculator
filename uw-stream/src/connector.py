@@ -66,13 +66,14 @@ _PING_TIMEOUT_S = 20.0
 _RECONNECT_STORM_THRESHOLD = 5
 
 # A session must stay up at least this long to count as "healthy" and reset
-# the reconnect backoff. Mirrors the Databento sidecar's MIN_HEALTHY_SESSION_S
-# (sidecar/src/main.py). Subscribe succeeding is NOT enough: a provider shedding
-# an over-cap connection (the 50-channel-cap incident class) accepts the joins
-# and then closes the socket ~immediately. If we reset backoff on subscribe
-# success alone, those sub-second sessions form a ~1s tight reconnect loop with
-# no escalation — exactly the silent flap this guards against. Genuinely healthy
-# sessions stream for minutes/hours and clear this bar trivially.
+# the reconnect backoff. Mirrors the MIN_HEALTHY_SESSION_S used by the
+# sidecar's (since removed) Databento reconnect loop. Subscribe succeeding
+# is NOT enough: a provider shedding an over-cap connection (the
+# 50-channel-cap incident class) accepts the joins and then closes the
+# socket ~immediately. If we reset backoff on subscribe success alone,
+# those sub-second sessions form a ~1s tight reconnect loop with no
+# escalation — exactly the silent flap this guards against. Genuinely
+# healthy sessions stream for minutes/hours and clear this bar trivially.
 _MIN_HEALTHY_SESSION_S = 60.0
 
 # Inter-join pacing. With the Lottery universe expanded across

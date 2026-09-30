@@ -914,7 +914,7 @@ def start_health_server(
       - `theta_*` exposes Theta Terminal status in the /health response.
         Omit to disable the `theta` block.
       - `seed_archive` / `seed_is_busy` enable POST /admin/seed-archive.
-        Omit to disable the admin endpoint (returns 503 if hit).
+        Omit to disable the admin endpoint (returns 401 if hit).
 
     Class-level state is reset between calls so tests that spin up
     multiple servers in one process don't bleed state across runs.

@@ -42,7 +42,7 @@ from config import settings
 from db import drain_pool, is_db_healthy, verify_connection
 from health import start_health_server
 from logger_setup import log
-from sentry_setup import init_sentry
+from sentry_setup import capture_exception, init_sentry
 
 _shutting_down = False
 
@@ -114,8 +114,20 @@ def main() -> None:
     # short-circuits /takeit/explain when disabled or when ML deps are
     # missing, leaving the rest of the sidecar unaffected.
 
-    # Verify database connection
-    verify_connection()
+    # Verify the database connection — NON-fatal. SHAP (/takeit/*) and
+    # the archive (/archive/*) don't touch Neon, so a Neon outage during
+    # a restart must not keep them down. Report it and keep booting;
+    # /health keeps reporting db:false (503) until Neon is reachable,
+    # which is the honest readiness signal.
+    try:
+        verify_connection()
+    except Exception as exc:  # noqa: BLE001 — any DB failure is non-fatal here
+        log.warning("Database unreachable at boot; continuing without it")
+        capture_exception(
+            exc,
+            context={"phase": "boot_verify_connection"},
+            tags={"component": "main", "check": "db"},
+        )
 
     # Build the archive seed callable when the required env is present.
     # Absence of either var disables the POST /admin/seed-archive endpoint;

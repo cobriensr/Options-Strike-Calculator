@@ -4,9 +4,6 @@ dist
 .env.*
 .git
 *.md
-vitest.config.ts
-test-ws.mjs
-src/__tests__
 __pycache__
 *.pyc
 *.pyo

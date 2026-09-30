@@ -30,8 +30,8 @@ DEFAULT_GETCONN_TIMEOUT_S = 10.0
 SLOW_GETCONN_WARNING_MS = 1000
 
 # Short borrow timeout used ONLY by the /health probe. The probe shares
-# the same 5-conn pool as the ingest path, so under burst all conns are
-# busy. With the default 10s timeout the probe would hang then return
+# the same 5-conn pool as the Theta EOD writes, so under a write burst
+# all conns can be busy. With the default 10s timeout the probe would hang then return
 # False -> HTTP 503 -> Railway may restart a HEALTHY-but-busy container.
 # A 2s deadline fails fast; pool saturation is then reported as
 # healthy-but-busy (see is_db_healthy). See Finding E.
@@ -60,8 +60,8 @@ def get_pool() -> psycopg2.pool.ThreadedConnectionPool:
         dsn = settings.database_url.split("?")[0]
         # TCP keepalives let the kernel notice a server-side SSL/TCP drop
         # before the next query lands on a dead socket. Neon silently tears
-        # down idle pooler connections (e.g. the Fri 4pm → Sun 5pm CT
-        # futures gap when the sidecar's pool sits quiet); without
+        # down idle pooler connections (e.g. the long gaps between Theta
+        # jobs when the sidecar's pool sits quiet); without
         # keepalives, the first borrow after that gap raises
         # ``OperationalError: SSL connection has been closed unexpectedly``
         # mid-batch and the in-flight rows are lost. With these settings
@@ -196,8 +196,9 @@ def is_db_healthy() -> bool:
     """Quick health check for the HTTP health endpoint.
 
     Distinguishes "pool saturated (alive but busy)" from "DB actually
-    unreachable" so an ingest burst doesn't trip a spurious 503 and a
-    Railway restart of a healthy container (Finding E):
+    unreachable" so a write burst (e.g. the Theta backfill) doesn't trip
+    a spurious 503 and a Railway restart of a healthy container
+    (Finding E):
 
     - Borrows with a SHORT timeout (``HEALTH_PROBE_TIMEOUT_S``) so the
       probe fails fast instead of hanging the full default 10s.
@@ -213,7 +214,7 @@ def is_db_healthy() -> bool:
                 return True
     except PoolTimeoutError:
         # Pool is saturated but the DB is alive — do NOT report unhealthy,
-        # or Railway may restart a container that's simply busy ingesting.
+        # or Railway may restart a container that's simply busy writing.
         try:
             from sentry_setup import capture_message
 
@@ -334,75 +335,6 @@ def has_theta_option_eod_rows(symbol: str) -> bool:
                 (symbol,),
             )
             return cur.fetchone() is not None
-
-
-def load_alert_config() -> dict[str, dict]:
-    """Load all alert configurations from the alert_config table.
-
-    Returns a dict keyed by alert_type with {enabled, params, cooldown_minutes}.
-
-    Phase 5e — silent-fallback investigation. There are currently
-    ZERO production callers of this function (alert_engine was
-    removed 2026-04-08; the table is preserved as a future-use
-    asset). The empty-dict fallback IS the intended runtime
-    behavior — "no alerts configured" is a valid state — but the
-    unexpected-Exception branch used to swallow without observability.
-    Now we forward to Sentry before returning empty so any future
-    drift (schema change, connection issue, RLS policy add) surfaces
-    rather than silently masking. The UndefinedTable branch stays a
-    plain log.warning since that's a known-OK pre-init state.
-    """
-    configs: dict[str, dict] = {}
-    try:
-        with get_conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT alert_type, enabled, params, cooldown_minutes FROM alert_config"
-                )
-                for row in cur.fetchall():
-                    configs[row["alert_type"]] = {
-                        "enabled": row["enabled"],
-                        "params": row["params"],
-                        "cooldown_minutes": row["cooldown_minutes"],
-                    }
-    except psycopg2.errors.UndefinedTable:
-        log.warning("alert_config table does not exist yet -- using defaults")
-    except Exception as exc:
-        log.error("Failed to load alert_config: %s", exc)
-        # Forward to Sentry so config-loading drift surfaces in
-        # observability instead of silently degrading to "no alerts."
-        # Lazy import to avoid pulling sentry_setup into the db.py
-        # import path of every test that touches Postgres.
-        try:
-            from sentry_setup import capture_exception
-
-            capture_exception(
-                exc,
-                context={"phase": "load_alert_config"},
-                tags={"component": "db"},
-            )
-        except Exception:  # noqa: BLE001
-            # Sentry path failure must never block the empty-dict
-            # fallback — caller depends on this returning a dict.
-            pass
-    return configs
-
-
-def get_recent_bars(symbol: str, minutes: int = 60) -> list[dict]:
-    """Fetch the most recent N minutes of bars for a symbol."""
-    with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT ts, open, high, low, close, volume
-                FROM futures_bars
-                WHERE symbol = %s
-                  AND ts >= NOW() - make_interval(mins => %s)
-                ORDER BY ts ASC
-                """,
-                (symbol, minutes),
-            )
-            return [dict(row) for row in cur.fetchall()]
 
 
 def drain_pool() -> None:
