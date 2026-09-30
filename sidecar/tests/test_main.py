@@ -183,10 +183,25 @@ def test_main_keeps_booting_when_db_verification_fails(
     archive don't use Neon. main() reports the failure to Sentry and
     still starts the HTTP server (whose /health then reports db:false)."""
     monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
-    boom = RuntimeError("Database connection verification failed")
+
+    class OperationalError(Exception):
+        """Stand-in for psycopg2.OperationalError (mocked in conftest)."""
+
+    # libpq-style messages can carry DSN parts — the boot log line must
+    # name the exception type without echoing the message.
+    boom = OperationalError(f"connection to {_FAKE_DB_URL} failed: timeout")
     patched_subsystems["verify_connection"].side_effect = boom
+    log_mock = MagicMock()
+    monkeypatch.setattr(main, "log", log_mock)
 
     main.main()
+
+    warnings = [c.args[0] % c.args[1:] for c in log_mock.warning.call_args_list]
+    boot_lines = [w for w in warnings if "Database unreachable at boot" in w]
+    assert len(boot_lines) == 1
+    assert "OperationalError" in boot_lines[0]
+    assert _FAKE_DB_URL not in boot_lines[0]
+    assert "timeout" not in boot_lines[0]
 
     capture = patched_subsystems["capture_exception"]
     capture.assert_called_once()

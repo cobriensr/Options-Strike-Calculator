@@ -122,7 +122,13 @@ def main() -> None:
     try:
         verify_connection()
     except Exception as exc:  # noqa: BLE001 — any DB failure is non-fatal here
-        log.warning("Database unreachable at boot; continuing without it")
+        # Type only — never str(exc): psycopg2 messages can echo DSN parts.
+        # The type separates a bad config (e.g. ProgrammingError) from an
+        # outage (OperationalError) in the Railway logs.
+        log.warning(
+            "Database unreachable at boot (%s); continuing without it",
+            type(exc).__name__,
+        )
         capture_exception(
             exc,
             context={"phase": "boot_verify_connection"},
