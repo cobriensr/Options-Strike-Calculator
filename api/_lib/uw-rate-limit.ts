@@ -11,7 +11,9 @@
  *   - per-minute cap exceeded → throw immediately (waiting ~30s for the
  *     next minute would blow function timeouts)
  *   - Redis error → fail OPEN. Don't block the data pipeline if the
- *     limiter itself is unavailable.
+ *     limiter itself is unavailable. Uses the fail-fast `limiterRedis`
+ *     client (no retries, 1.5 s per-request timeout) so an Upstash outage
+ *     costs each UW request ~1.5 s here, not ~64 s of client retries.
  *
  * History: this module previously enforced a per-SECOND cap of 3 to
  * approximate UW's concurrency limit, but a fixed-window rate limiter
@@ -24,7 +26,7 @@
  * `docs/superpowers/specs/uw-rate-limiter-2026-04-27.md` for context.
  */
 
-import { redis } from './redis.js';
+import { limiterRedis } from './redis.js';
 import { metrics, Sentry } from './sentry.js';
 import logger from './logger.js';
 
@@ -107,16 +109,30 @@ async function incrWithTtl(
   ttlSec: number,
 ): Promise<number | null> {
   try {
-    const pipe = redis.pipeline();
+    const pipe = limiterRedis.pipeline();
     pipe.incr(key);
     pipe.expire(key, ttlSec);
     const results = await pipe.exec();
-    const count = results[0] as number;
-    return typeof count === 'number' ? count : null;
+    const count: unknown = results[0];
+    if (typeof count === 'number') return count;
+    // A non-numeric INCR reply (e.g. the `"Aborted"` pseudo-result Upstash
+    // fabricates for an already-aborted static signal) is a limiter failure,
+    // not a count — fail open, but surface it like a thrown Redis error.
+    logger.warn({ count, key }, 'uw-rate-limit: malformed INCR reply');
+    metrics.increment('uw.rate_limit.redis_error');
+    return null;
   } catch (err) {
     logger.warn({ err, key }, 'uw-rate-limit: Redis call failed; failing open');
     metrics.increment('uw.rate_limit.redis_error');
-    Sentry.captureException(err);
+    // Warning, not error: the limiter degraded gracefully. The pinned
+    // fingerprint (shared shape with uw-concurrency.ts) collapses one Redis
+    // outage — which fires this on every UW request across every cron —
+    // into a single issue per limiter instead of one per transaction.
+    Sentry.captureException(err, {
+      level: 'warning',
+      fingerprint: ['uw-limiter-redis-unavailable', 'rate-limit'],
+      tags: { limiter: 'rate-limit' },
+    });
     return null;
   }
 }

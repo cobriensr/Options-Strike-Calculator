@@ -2,17 +2,33 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockEval, mockZrem, mockIncrement, mockDistribution } = vi.hoisted(
-  () => ({
-    mockEval: vi.fn(),
-    mockZrem: vi.fn(),
-    mockIncrement: vi.fn(),
-    mockDistribution: vi.fn(),
-  }),
-);
+const {
+  mockEval,
+  mockZrem,
+  mockDefaultEval,
+  mockDefaultZrem,
+  mockIncrement,
+  mockDistribution,
+  mockCaptureException,
+} = vi.hoisted(() => ({
+  mockEval: vi.fn(),
+  mockZrem: vi.fn(),
+  mockDefaultEval: vi.fn(),
+  mockDefaultZrem: vi.fn(),
+  mockIncrement: vi.fn(),
+  mockDistribution: vi.fn(),
+  mockCaptureException: vi.fn(),
+}));
 
+// The semaphore must use the fail-fast `limiterRedis` client; the shared
+// default `redis` client is mocked separately so a regression back to it
+// is caught.
 vi.mock('../_lib/redis.js', () => ({
   redis: {
+    eval: mockDefaultEval,
+    zrem: mockDefaultZrem,
+  },
+  limiterRedis: {
     eval: mockEval,
     zrem: mockZrem,
   },
@@ -21,7 +37,7 @@ vi.mock('../_lib/redis.js', () => ({
 vi.mock('../_lib/sentry.js', () => ({
   metrics: { increment: mockIncrement },
   Sentry: {
-    captureException: vi.fn(),
+    captureException: mockCaptureException,
     metrics: { distribution: mockDistribution },
   },
 }));
@@ -43,8 +59,11 @@ describe('uw-concurrency', () => {
   beforeEach(() => {
     mockEval.mockReset();
     mockZrem.mockReset();
+    mockDefaultEval.mockReset();
+    mockDefaultZrem.mockReset();
     mockIncrement.mockReset();
     mockDistribution.mockReset();
+    mockCaptureException.mockReset();
     process.env = {
       ...originalEnv,
       KV_REST_API_URL: 'https://test.upstash.io',
@@ -173,5 +192,62 @@ describe('uw-concurrency', () => {
     ).resolves.not.toThrow();
 
     expect(mockIncrement).toHaveBeenCalledWith('uw.concurrency.release_error');
+  });
+
+  // ── Fail-fast Redis client (Sentry HE, 2026-09-29 Upstash outage) ──
+
+  it('acquires and releases through the fail-fast limiter client, not the default client', async () => {
+    mockEval.mockResolvedValueOnce([1, 1]);
+    mockZrem.mockResolvedValueOnce(1);
+
+    const slotId = await acquireConcurrencySlot();
+    await releaseConcurrencySlot(slotId);
+
+    expect(mockEval).toHaveBeenCalledTimes(1);
+    expect(mockZrem).toHaveBeenCalledWith('uw:cc', slotId);
+    expect(mockDefaultEval).not.toHaveBeenCalled();
+    expect(mockDefaultZrem).not.toHaveBeenCalled();
+  });
+
+  it('reports an EVAL failure as a warning under the shared limiter fingerprint', async () => {
+    const err = new Error('connect timeout');
+    mockEval.mockRejectedValueOnce(err);
+
+    await expect(acquireConcurrencySlot()).resolves.toBe('');
+
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(mockCaptureException).toHaveBeenCalledWith(err, {
+      level: 'warning',
+      fingerprint: ['uw-limiter-redis-unavailable', 'concurrency'],
+      tags: { limiter: 'concurrency' },
+    });
+  });
+
+  it('fails open when the per-request timeout signal aborts the EVAL', async () => {
+    mockEval.mockRejectedValueOnce(
+      new DOMException(
+        'The operation was aborted due to timeout',
+        'TimeoutError',
+      ),
+    );
+
+    await expect(acquireConcurrencySlot()).resolves.toBe('');
+    expect(mockEval).toHaveBeenCalledTimes(1);
+    expect(mockIncrement).toHaveBeenCalledWith('uw.concurrency.redis_error');
+  });
+
+  it('fails open on a non-tuple EVAL reply instead of treating it as saturation', async () => {
+    // Upstash fabricates `{ result: "Aborted" }` when a STATIC signal is
+    // already aborted. Destructuring that string used to read as
+    // "not granted" and spin the wait loop (~15 s, then throw) — failing
+    // the UW request CLOSED. Any reply that isn't the Lua [granted, inUse]
+    // pair must fail open on the first attempt.
+    mockEval.mockResolvedValueOnce('Aborted');
+
+    await expect(acquireConcurrencySlot()).resolves.toBe('');
+
+    expect(mockEval).toHaveBeenCalledTimes(1);
+    expect(mockIncrement).not.toHaveBeenCalledWith('uw.concurrency.wait');
+    expect(mockIncrement).toHaveBeenCalledWith('uw.concurrency.redis_error');
   });
 });

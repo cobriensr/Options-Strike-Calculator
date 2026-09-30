@@ -11,7 +11,10 @@
  * Implementation: single Redis ZSET (`uw:cc`) where members are slot UUIDs
  * and scores are lease expiry timestamps (ms since epoch). Each acquire
  * lazily reaps expired leases before checking cardinality, so leaks from
- * crashed function instances self-heal in `LEASE_MS`.
+ * crashed function instances self-heal in `LEASE_MS`. The same applies to a
+ * limiter timeout that fires after Redis already ran the acquire EVAL: the
+ * caller fails open with no slot ID, leaving a phantom lease that
+ * self-expires in `LEASE_MS` (30 s).
  *
  * Acquire is atomic via a Redis-side Lua script. Release is a `ZREM`.
  *
@@ -20,7 +23,9 @@
  *   - cap saturated: sleep with jitter and retry up to MAX_ACQUIRE_ATTEMPTS
  *   - cap sustained: throw after attempts exhausted (cron handler logs)
  *   - Redis unavailable: fail OPEN (matches `acquireUWSlot()` posture —
- *     don't block the data pipeline if the limiter itself is down)
+ *     don't block the data pipeline if the limiter itself is down). Uses
+ *     the fail-fast `limiterRedis` client (no retries, 1.5 s per-request
+ *     timeout) so an Upstash outage costs ~1.5 s here, not ~64 s.
  *
  * Security note: the Lua source is a static `const` string. All inputs are
  * passed via `ARGV[]` — Redis treats these as opaque string values, never
@@ -31,7 +36,7 @@
  * behavior, add another ARGV slot.
  */
 
-import { redis } from './redis.js';
+import { limiterRedis } from './redis.js';
 import { metrics, Sentry } from './sentry.js';
 import logger from './logger.js';
 
@@ -144,7 +149,7 @@ export async function acquireConcurrencySlot(): Promise<string> {
 
     let result: [number, number] | null;
     try {
-      result = (await redis.eval(
+      result = (await limiterRedis.eval(
         ACQUIRE_LUA,
         [KEY],
         [slotId, String(now), String(expiresAt), String(UW_CONCURRENCY_CAP)],
@@ -152,11 +157,28 @@ export async function acquireConcurrencySlot(): Promise<string> {
     } catch (err) {
       logger.warn({ err }, 'uw-concurrency: Redis EVAL failed; failing open');
       metrics.increment('uw.concurrency.redis_error');
-      Sentry.captureException(err);
+      // Warning, not error: the limiter degraded gracefully. The pinned
+      // fingerprint (shared shape with uw-rate-limit.ts) collapses one Redis
+      // outage — which fires this on every UW request across every cron —
+      // into a single issue per limiter instead of one per transaction.
+      Sentry.captureException(err, {
+        level: 'warning',
+        fingerprint: ['uw-limiter-redis-unavailable', 'concurrency'],
+        tags: { limiter: 'concurrency' },
+      });
       return ''; // fail open
     }
 
-    if (!result) return ''; // fail open on null result
+    // Anything but the script's [granted, inUse] pair — null, or the
+    // `{ result: "Aborted" }` reply Upstash fabricates for an already-aborted
+    // static signal — is a limiter failure. Fail open now: destructuring a
+    // non-tuple reads as "not granted" and would spin the saturation loop
+    // (~15 s) before throwing, failing the UW request closed.
+    if (!Array.isArray(result)) {
+      logger.warn({ result }, 'uw-concurrency: malformed EVAL reply');
+      metrics.increment('uw.concurrency.redis_error');
+      return '';
+    }
 
     const [granted, inUse] = result;
     Sentry.metrics.distribution('uw.concurrency.in_use', inUse);
@@ -186,7 +208,7 @@ export async function releaseConcurrencySlot(slotId: string): Promise<void> {
   if (!slotId) return;
   if (!isRedisConfigured()) return;
   try {
-    await redis.zrem(KEY, slotId);
+    await limiterRedis.zrem(KEY, slotId);
   } catch (err) {
     // Lease will auto-expire; don't block the response on a release failure.
     logger.warn({ err }, 'uw-concurrency: Redis ZREM failed on release');

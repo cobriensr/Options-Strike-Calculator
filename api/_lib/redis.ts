@@ -14,33 +14,63 @@
  * Uses the REST-based client (no persistent connections needed).
  */
 
-import { Redis } from '@upstash/redis';
+import { Redis, type RedisConfigNodejs } from '@upstash/redis';
 import logger from './logger.js';
 import { metrics } from './sentry.js';
 import { requireEnvGroup } from './env.js';
+
+/** Per-client transport tuning layered over the env-derived url/token. */
+type RedisTuning = Pick<RedisConfigNodejs, 'retry' | 'signal'>;
 
 /**
  * Build the Upstash Redis client. Falls back to an unconfigured client that
  * fails at runtime (rather than at import) when the env vars are absent — this
  * keeps non-Redis code paths importable in environments without KV.
+ *
+ * @param tuning optional retry / abort-signal overrides; omitted, the client
+ *               keeps Upstash's defaults.
  */
-export function createRedis(): Redis {
+export function createRedis(tuning: RedisTuning = {}): Redis {
   try {
     const { url, token } = requireEnvGroup('redis');
-    return new Redis({ url, token });
+    return new Redis({ url, token, ...tuning });
   } catch {
     logger.warn('Redis not configured — operations will fail at runtime');
-    return new Redis({ url: '', token: '' });
+    return new Redis({ url: '', token: '', ...tuning });
   }
 }
 
 /**
  * Shared Upstash Redis singleton. Imported by `schwab.ts` (token storage +
- * locks), `last-good-cache.ts`, the UW rate-limit / concurrency limiters, and
- * the auth/cron helpers. The REST client holds no persistent connection, so a
- * single module-scoped instance is safe across serverless invocations.
+ * locks), `last-good-cache.ts`, and the auth/cron helpers. The REST client
+ * holds no persistent connection, so a single module-scoped instance is safe
+ * across serverless invocations. Keeps Upstash's default retry/backoff.
  */
 export const redis = createRedis();
+
+/**
+ * Fail-fast client for the UW rate-limit and concurrency limiters, which
+ * both fail OPEN on any Redis error. On Upstash defaults (5 retries with
+ * exponential backoff, undici's 10 s connect timeout) one limiter call took
+ * ~64 s to give up during the 2026-09-29 connect-timeout outage, and
+ * `uwFetch` makes up to three of them per UW request — stalling crons for
+ * minutes and dropping minute snapshots. Here a call either answers within
+ * 1.5 s (normal latency is single-digit ms) or throws, so the limiter fails
+ * open after one attempt:
+ *
+ *   - `retry: { retries: 0 }` — exactly one fetch. (Note `retry: false`
+ *     would still make TWO: Upstash maps it to `attempts: 1` and loops
+ *     `i <= attempts`.)
+ *   - `signal` is a FUNCTION so Upstash mints a fresh timeout per request.
+ *     A shared static signal would stay aborted after the first timeout,
+ *     and on an aborted static signal Upstash fabricates an HTTP 200
+ *     `{ result: "Aborted" }` instead of throwing; with the function form it
+ *     rethrows the abort error, which the limiters' catch handles.
+ */
+export const limiterRedis = createRedis({
+  retry: { retries: 0 },
+  signal: () => AbortSignal.timeout(1_500),
+});
 
 /**
  * Run a Redis operation, swallowing ANY throw: on error it increments the
