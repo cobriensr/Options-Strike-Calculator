@@ -202,7 +202,7 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
     expect(updateParams[5][0]).toBeCloseTo((24.5 - 0.42) / 0.42, 2);
   });
 
-  it('locks rows with no trades observed at realized_r = -1', async () => {
+  it('locks a zero-tick fire at realized_r = -1 when SPXW tape was flowing in its window', async () => {
     const fire = {
       id: 3,
       fire_type: 'call_lottery',
@@ -212,7 +212,11 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
       entry_px: '0.05',
     };
     mockSql.mockResolvedValueOnce([fire]);
-    mockSql.mockResolvedValueOnce([]); // batched read: no trades for this fire
+    // batched read: LEFT JOIN marker row — no prints for this contract, but
+    // the SPXW tape was live in the window, so the option genuinely died.
+    mockSql.mockResolvedValueOnce([
+      { fire_id: 3, executed_at: null, price: null, tape_live: true },
+    ]);
     mockSql.mockResolvedValueOnce([]); // batched UPDATE
 
     const req = mockRequest({ method: 'GET' });
@@ -220,6 +224,7 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
     await handler(req, res);
 
     expect(res._json).toMatchObject({ status: 'success', rows: 1 });
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
 
     const updateArgs = mockSql.mock.calls[2];
     const params = (updateArgs ?? []).slice(1);
@@ -414,7 +419,15 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
         status: 'partial',
         malformedTicks: 1,
       });
-      expect(logger.warn).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          malformedTicks: 1,
+          unreadable: 0,
+          unreadableFireIds: [],
+          updated: 1,
+        }),
+        'enrich-periscope-lottery-outcomes: dropped malformed ticks',
+      );
     });
 
     it('does not lock a fire whose ticks are all unreadable', async () => {
@@ -438,7 +451,15 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
         unreadable: 1,
         malformedTicks: 2,
       });
-      expect(logger.warn).toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          malformedTicks: 2,
+          unreadable: 1,
+          unreadableFireIds: [1],
+          updated: 0,
+        }),
+        'enrich-periscope-lottery-outcomes: dropped malformed ticks',
+      );
     });
   });
 
@@ -504,47 +525,142 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
       expect(sqlCall(2).values[0]).toEqual([7]);
       expect(res._json).toMatchObject({ updated: 1, inFlight: 0 });
     });
+
+    describe('CST (January) — 15:00 CT close is 21:00 UTC, not 20:00', () => {
+      // Put fired 14:00 CST: horizon runs to 17:00 CST (23:00 UTC); the
+      // 0DTE contract stops trading at 15:00 CST = 21:00 UTC.
+      const januaryLatePut = {
+        ...SAMPLE_FIRE,
+        id: 8,
+        fire_type: 'put_lottery',
+        fire_time: '2026-01-15T20:00:00Z',
+        expiry: '2026-01-15',
+      };
+
+      it('is still in flight at 14:30 CST (20:30 UTC)', async () => {
+        // A CDT-anchored close (20:00 UTC) would wrongly call this settled.
+        runAt('2026-01-15T20:30:00Z');
+        mockSql.mockResolvedValueOnce([januaryLatePut]);
+
+        const res = mockResponse();
+        await handler(mockRequest({ method: 'GET' }), res);
+
+        expect(mockSql).toHaveBeenCalledTimes(1);
+        expect(res._json).toMatchObject({ updated: 0, inFlight: 1 });
+      });
+
+      it('is settled once the 21:00 UTC close has passed', async () => {
+        runAt('2026-01-15T21:05:00Z');
+        mockSql.mockResolvedValueOnce([januaryLatePut]);
+        mockSql.mockResolvedValueOnce([
+          { fire_id: 8, executed_at: '2026-01-15T20:40:00Z', price: '0.30' },
+        ]);
+        mockSql.mockResolvedValueOnce([]);
+
+        const res = mockResponse();
+        await handler(mockRequest({ method: 'GET' }), res);
+
+        expect(sqlCall(2).values[0]).toEqual([8]);
+        expect(res._json).toMatchObject({ updated: 1, inFlight: 0 });
+      });
+    });
   });
 
-  describe('all-empty tape guard', () => {
-    const threeFires = [
-      callFire(21, '2026-05-18T15:00:00Z'),
-      callFire(22, '2026-05-18T16:00:00Z'),
-      callFire(23, '2026-05-18T17:00:00Z'),
+  describe('per-fire tape-gap guard', () => {
+    const TAPE_GAP_FINGERPRINT = [
+      'enrich-periscope-lottery-outcomes',
+      'tape-gap',
     ];
+    /** LEFT JOIN marker row: the fire's contract had no prints. */
+    const noPrints = (fireId: number, tapeLive: boolean) => ({
+      fire_id: fireId,
+      executed_at: null,
+      price: null,
+      tape_live: tapeLive,
+    });
 
-    it('does not lock anything and alerts when every settled fire has zero ticks', async () => {
-      // 3+ fires with not one print between them means the tape is missing
-      // (e.g. uw-stream down), not that every option died untraded.
-      mockSql.mockResolvedValueOnce(threeFires);
-      mockSql.mockResolvedValueOnce([]); // batched read: nothing at all
+    it('probes SPXW tape liveness per fire inside the single batched read', async () => {
+      mockSql.mockResolvedValueOnce([SAMPLE_FIRE]);
+      mockSql.mockResolvedValueOnce([noPrints(1, true)]);
+      mockSql.mockResolvedValueOnce([]);
+
+      await handler(mockRequest({ method: 'GET' }), mockResponse());
+
+      const text = renderSql(sqlCall(1).strings);
+      // One EXISTS probe per unnest row over the fire's own window,
+      // served by ws_option_trades_ticker_executed_idx (ticker,
+      // executed_at) — no per-fire round trips.
+      expect(text).toContain(
+        "EXISTS ( SELECT 1 FROM ws_option_trades WHERE ticker = 'SPXW' " +
+          'AND executed_at >= u.fire_time AND executed_at <= u.read_end )',
+      );
+      // LEFT JOIN so a zero-print fire still returns its liveness row.
+      expect(text).toContain('LEFT JOIN LATERAL');
+      expect(mockSql).toHaveBeenCalledTimes(3);
+    });
+
+    it('leaves fires from an outage day unlocked while locking the next day’s fires', async () => {
+      // uw-stream died on 05-18 and was redeployed 05-19. The 05-19 run
+      // re-selects the 05-18 fires (still inside the retention window)
+      // alongside the 05-19 fire. The 05-19 fire has prints, but that must
+      // not license locking the 05-18 fires at R = -1: their own windows
+      // had no SPXW tape at all.
+      const day1 = [
+        callFire(31, '2026-05-18T15:00:00Z'),
+        callFire(32, '2026-05-18T16:00:00Z'),
+        callFire(33, '2026-05-18T17:00:00Z'),
+      ];
+      const day2 = callFire(34, '2026-05-19T15:00:00Z');
+      mockSql.mockResolvedValueOnce([day2, ...day1]);
+      mockSql.mockResolvedValueOnce([
+        noPrints(31, false),
+        noPrints(32, false),
+        noPrints(33, false),
+        {
+          fire_id: 34,
+          executed_at: '2026-05-19T15:30:00Z',
+          price: '0.50',
+          tape_live: true,
+        },
+      ]);
+      mockSql.mockResolvedValueOnce([]);
 
       const res = mockResponse();
       await handler(mockRequest({ method: 'GET' }), res);
 
-      expect(mockSql).toHaveBeenCalledTimes(2); // no locking UPDATE
+      // Only the day-2 fire is locked.
+      expect(sqlCall(2).values[0]).toEqual([34]);
       expect(res._json).toMatchObject({
         status: 'error',
-        rows: 0,
-        updated: 0,
-        emptyFires: 3,
+        rows: 1,
+        updated: 1,
+        tapeGap: 3,
       });
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
       expect(Sentry.captureMessage).toHaveBeenCalledWith(
-        expect.stringContaining('no ws_option_trades ticks'),
+        expect.stringContaining('no SPXW tape'),
         expect.objectContaining({
           level: 'warning',
-          fingerprint: [
-            'enrich-periscope-lottery-outcomes',
-            'all-windows-empty',
-          ],
+          fingerprint: TAPE_GAP_FINGERPRINT,
+          extra: expect.objectContaining({ tapeGapFireIds: [31, 32, 33] }),
         }),
       );
     });
 
-    it('still locks zero-tick fires at R = -1 when other fires have ticks', async () => {
-      mockSql.mockResolvedValueOnce(threeFires);
+    it('handles a tape gap, a genuine zero-print fire, and a traded fire in one run', async () => {
+      const traded = callFire(41, '2026-05-18T15:00:00Z');
+      const diedUntraded = callFire(42, '2026-05-18T16:00:00Z');
+      const inGap = callFire(43, '2026-05-18T17:00:00Z');
+      mockSql.mockResolvedValueOnce([inGap, diedUntraded, traded]);
       mockSql.mockResolvedValueOnce([
-        { fire_id: 22, executed_at: '2026-05-18T16:30:00Z', price: '0.50' },
+        {
+          fire_id: 41,
+          executed_at: '2026-05-18T15:30:00Z',
+          price: '0.50',
+          tape_live: true,
+        },
+        noPrints(42, true),
+        noPrints(43, false),
       ]);
       mockSql.mockResolvedValueOnce([]);
 
@@ -552,23 +668,41 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
       await handler(mockRequest({ method: 'GET' }), res);
 
       const params = sqlCall(2).values;
-      expect(params[0]).toEqual([21, 22, 23]);
-      expect(params[5]).toEqual([-1, 4, -1]); // (0.50 - 0.10) / 0.10 = 4
-      expect(res._json).toMatchObject({ status: 'success', updated: 3 });
-      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      // The traded fire and the genuinely-untraded fire are locked (in
+      // candidate order, newest first); the fire whose window had no tape
+      // is not.
+      expect(params[0]).toEqual([42, 41]);
+      expect(params[5]).toEqual([-1, 4]); // (0.50 - 0.10) / 0.10 = 4
+      expect(res._json).toMatchObject({
+        status: 'error',
+        updated: 2,
+        tapeGap: 1,
+      });
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('no SPXW tape'),
+        expect.objectContaining({
+          fingerprint: TAPE_GAP_FINGERPRINT,
+          extra: expect.objectContaining({ tapeGapFireIds: [43] }),
+        }),
+      );
     });
 
-    it('keeps the per-strategy lock below the threshold (2 empty fires)', async () => {
-      mockSql.mockResolvedValueOnce(threeFires.slice(0, 2));
-      mockSql.mockResolvedValueOnce([]);
+    it('treats a fire missing from the read as a tape gap, never as a total loss', async () => {
+      // The LEFT JOIN returns >= 1 row per fire; a missing fire means the
+      // read is not trustworthy, so it must not fall into the R = -1 lock.
+      mockSql.mockResolvedValueOnce([SAMPLE_FIRE]);
       mockSql.mockResolvedValueOnce([]);
 
       const res = mockResponse();
       await handler(mockRequest({ method: 'GET' }), res);
 
-      expect(sqlCall(2).values[0]).toEqual([21, 22]);
-      expect(res._json).toMatchObject({ status: 'success', updated: 2 });
-      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(mockSql).toHaveBeenCalledTimes(2); // no locking UPDATE
+      expect(res._json).toMatchObject({
+        status: 'error',
+        updated: 0,
+        tapeGap: 1,
+      });
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
     });
   });
 });

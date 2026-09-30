@@ -25,9 +25,11 @@
  * scripts/backfill_periscope_lottery_outcomes.py) when:
  *   - its window has not settled yet (prints can still land), or
  *   - it has ticks but none parse (R would be fabricated), or
- *   - every settled fire in a run of >= ALL_EMPTY_MIN_FIRES came back with
- *     zero ticks — the tape is missing (e.g. uw-stream down), so the run
- *     alerts (Sentry warning) and returns status 'error' instead.
+ *   - it has no prints AND its window had no SPXW tape at all — a
+ *     ws_option_trades gap (e.g. uw-stream down), not an untraded option.
+ *     The run emits one fingerprinted Sentry warning and returns status
+ *     'error'. A no-print fire whose window DID have SPXW tape genuinely
+ *     never traded and keeps the per-strategy R = -1 lock.
  *
  * Idempotent — re-running the cron won't double-process a locked row.
  * Per-user direction (open question #3): we track BOTH peak and EOD R
@@ -58,11 +60,17 @@ interface UnenrichedFire {
   entry_px: DbNumeric | null;
 }
 
-/** One row of the batched LATERAL read — joins a fire id to a single tick. */
+/**
+ * One row of the batched LATERAL read: a fire id joined to a single tick,
+ * or — for a fire with no prints — one LEFT JOIN row with NULL
+ * executed_at/price. Every row carries the fire's tape-liveness flag.
+ */
 interface BatchedTradeRow {
   fire_id: number;
-  executed_at: DbTimestamp;
-  price: DbNumeric;
+  executed_at: DbTimestamp | null;
+  price: DbNumeric | null;
+  /** Any SPXW trade at all in [fire_time, read_end] (ingestion was live). */
+  tape_live: boolean;
 }
 
 /** Accumulated enrichment for one fire, staged for the batched UPDATE. */
@@ -94,15 +102,6 @@ function holdMinutes(fireType: 'call_lottery' | 'put_lottery'): number {
 function expiryClose(expiry: string): Date {
   return eodCtForTrigger(new Date(`${expiry}T17:00:00Z`));
 }
-
-/**
- * Minimum settled fires in one run for "every fire has zero ticks" to be
- * read as a missing tape (uw-stream down, ws_option_trades not ingesting)
- * rather than options that genuinely never printed. With 1-2 fires an
- * all-empty read is plausible for far-OTM lottery strikes, so those keep
- * the per-strategy lock at R = -1.
- */
-const ALL_EMPTY_MIN_FIRES = 3;
 
 export default withCronInstrumentation(
   'enrich-periscope-lottery-outcomes',
@@ -230,6 +229,13 @@ export default withCronInstrumentation(
     // into the per-fire arrays so the table predicate stays identical to
     // the original (ticker='SPXW' is a constant). Same pattern as
     // evaluate-round-trip.ts:148.
+    //
+    // Tape-liveness probe: per unnest row, EXISTS any SPXW trade in the
+    // fire's own window (index-served by ws_option_trades_ticker_executed_idx
+    // on (ticker, executed_at); stops at the first hit). It separates "this
+    // contract never printed" (tape live → R = -1) from "ws_option_trades
+    // has a hole here" (tape dead → leave unlocked). LEFT JOIN keeps a row
+    // for no-print fires so the flag always comes back.
     const ids = windows.map((w) => w.id);
     const expiries = windows.map((w) => w.expiry);
     const strikes = windows.map((w) => w.strike);
@@ -239,7 +245,8 @@ export default withCronInstrumentation(
 
     const tradeRows = (await withDbRetry(
       () => sql`
-        SELECT u.id AS fire_id, t.executed_at, t.price::numeric AS price
+        SELECT u.id AS fire_id, t.executed_at, t.price::numeric AS price,
+               g.tape_live
           FROM unnest(
                  ${ids}::int[],
                  ${expiries}::date[],
@@ -248,7 +255,16 @@ export default withCronInstrumentation(
                  ${fireTimes}::timestamptz[],
                  ${readEnds}::timestamptz[]
                ) AS u(id, expiry, strike, option_type, fire_time, read_end)
-          JOIN LATERAL (
+          CROSS JOIN LATERAL (
+                 SELECT EXISTS (
+                          SELECT 1
+                            FROM ws_option_trades
+                           WHERE ticker = 'SPXW'
+                             AND executed_at >= u.fire_time
+                             AND executed_at <= u.read_end
+                        ) AS tape_live
+               ) g
+          LEFT JOIN LATERAL (
                  SELECT executed_at, price
                    FROM ws_option_trades
                   WHERE ticker = 'SPXW'
@@ -267,40 +283,14 @@ export default withCronInstrumentation(
       30_000,
     )) as BatchedTradeRow[];
 
-    // All-empty guard: every settled fire came back with zero ticks. With
-    // >= ALL_EMPTY_MIN_FIRES fires that means the tape is missing (e.g.
-    // uw-stream down), not that every option died untraded — locking them
-    // all at R = -1 would silently corrupt the outcomes. Leave them
-    // unlocked for the next run (or the parquet backfill) and alert.
-    if (tradeRows.length === 0 && windows.length >= ALL_EMPTY_MIN_FIRES) {
-      const message =
-        'enrich-periscope-lottery-outcomes: no ws_option_trades ticks for ' +
-        `any of ${windows.length} settled fires — tape likely missing; ` +
-        'left unlocked';
-      const detail = {
-        candidates: unenriched.length,
-        emptyFires: windows.length,
-        skipped,
-        inFlight,
-      };
-      ctx.logger.warn(detail, message);
-      Sentry.captureMessage(message, {
-        level: 'warning',
-        fingerprint: ['enrich-periscope-lottery-outcomes', 'all-windows-empty'],
-        tags: { 'cron.anomaly': 'periscope-lottery-empty-tape' },
-        extra: detail,
-      });
-      return {
-        status: 'error',
-        rows: 0,
-        message,
-        metadata: { ...detail, updated: 0 },
-      };
-    }
-
-    // Group ticks by fire id (already ordered executed_at ASC per id).
+    // Group ticks by fire id (already ordered executed_at ASC per id) and
+    // record each fire's tape-liveness flag. A LEFT JOIN no-print row
+    // (NULL executed_at and price) carries only the flag, not a tick.
     const ticksById = new Map<number, BatchedTradeRow[]>();
+    const tapeLiveById = new Map<number, boolean>();
     for (const row of tradeRows) {
+      if (row.tape_live) tapeLiveById.set(row.fire_id, true);
+      if (row.executed_at == null && row.price == null) continue;
       const arr = ticksById.get(row.fire_id);
       if (arr) arr.push(row);
       else ticksById.set(row.fire_id, [row]);
@@ -313,8 +303,16 @@ export default withCronInstrumentation(
     // hold when prints exist but are unreadable.
     let malformedTicks = 0;
     const unreadableFireIds: number[] = [];
+    // No prints and no SPXW tape in the window: a ws_option_trades gap.
+    // A fire absent from the read entirely (the LEFT JOIN guarantees a
+    // row) is treated the same way — never as a total loss.
+    const tapeGapFireIds: number[] = [];
     for (const w of windows) {
       const ticks = ticksById.get(w.id) ?? [];
+      if (ticks.length === 0 && tapeLiveById.get(w.id) !== true) {
+        tapeGapFireIds.push(w.id);
+        continue;
+      }
 
       // Peak metrics over the hold window (executed_at <= horizonEnd). If
       // no trades observed, leave outcome NULL but still lock the row (the
@@ -329,7 +327,8 @@ export default withCronInstrumentation(
       let validTicks = 0;
       for (const t of ticks) {
         const p = toNum(t.price);
-        const execAt = toDate(t.executed_at);
+        const execAt =
+          t.executed_at == null ? new Date(Number.NaN) : toDate(t.executed_at);
         if (Number.isNaN(p) || Number.isNaN(execAt.getTime())) {
           malformedTicks += 1;
           continue;
@@ -377,12 +376,34 @@ export default withCronInstrumentation(
       });
     }
 
+    // Surface a tape gap BEFORE the write so it is reported even if the
+    // UPDATE then fails. One event per run (fingerprinted), listing fires.
+    let tapeGapMessage: string | undefined;
+    if (tapeGapFireIds.length > 0) {
+      tapeGapMessage =
+        `enrich-periscope-lottery-outcomes: ${tapeGapFireIds.length} ` +
+        'settled fire(s) had no SPXW tape in their window ' +
+        '(ws_option_trades gap, e.g. uw-stream down); left unlocked';
+      const detail = {
+        candidates: unenriched.length,
+        tapeGap: tapeGapFireIds.length,
+        tapeGapFireIds,
+      };
+      ctx.logger.warn(detail, tapeGapMessage);
+      Sentry.captureMessage(tapeGapMessage, {
+        level: 'warning',
+        fingerprint: ['enrich-periscope-lottery-outcomes', 'tape-gap'],
+        tags: { 'cron.anomaly': 'periscope-lottery-tape-gap' },
+        extra: detail,
+      });
+    }
+
     // ONE batched UPDATE replacing the prior N per-fire writes. unnest the
     // staged rows (NULL-preserving typed arrays for the nullable columns)
     // and join on id. Every processed fire — tick or no-tick — gets the
     // same column set and outcome_locked = TRUE, exactly as the original
-    // per-fire UPDATE did (skipped/zero-entry, in-flight and unreadable
-    // fires are absent here).
+    // per-fire UPDATE did (skipped/zero-entry, in-flight, unreadable and
+    // tape-gap fires are absent here).
     const updated = updates.length;
     if (updated > 0) {
       const uIds = updates.map((u) => u.id);
@@ -426,6 +447,7 @@ export default withCronInstrumentation(
       inFlight,
       unreadable: unreadableFireIds.length,
       malformedTicks,
+      tapeGap: tapeGapFireIds.length,
     };
     if (malformedTicks > 0) {
       ctx.logger.warn(
@@ -435,6 +457,14 @@ export default withCronInstrumentation(
     }
     ctx.logger.info(summary, 'enrich-periscope-lottery-outcomes completed');
 
+    if (tapeGapMessage !== undefined) {
+      return {
+        status: 'error',
+        rows: updated,
+        message: tapeGapMessage,
+        metadata: summary,
+      };
+    }
     return {
       status: malformedTicks > 0 ? 'partial' : 'success',
       rows: updated,

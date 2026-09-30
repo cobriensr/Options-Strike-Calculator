@@ -3,11 +3,13 @@
  *
  * Daily pre-market retention sweep for `ws_option_trades`. Deletes
  * rows older than today's ET date minus WS_OPTION_TRADES_RETENTION_DAYS
- * (api/_lib/constants.ts), so the table holds the current trading day
- * plus prior session(s) as a safety margin for end-of-day outcome
- * enrichment. The user's authoritative full-tape archive is stored
- * locally and on Cloudflare R2 — the DB only needs the hot working set
- * for live features.
+ * (api/_lib/constants.ts) CALENDAR days, as a safety margin for end-of-day
+ * outcome enrichment. With N = 2 on this Mon-Fri schedule, Tue-Fri sweeps
+ * keep the prior session, but Monday's sweep cuts at Saturday 00:00 ET and
+ * prunes Friday's session before Monday opens — so no Monday reader can
+ * rely on Friday's tape here. The user's authoritative full-tape archive
+ * is stored locally and on Cloudflare R2 — the DB only needs the hot
+ * working set for live features.
  *
  * Read-horizon audit (only the periscope enrichment reads past same-day):
  *   - detect-lottery-fires, detect-silent-boom: NOW() - SCAN_WINDOW_MIN
