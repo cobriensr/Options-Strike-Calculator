@@ -33,6 +33,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 import { cronGuard } from '../_lib/api-helpers.js';
+import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
@@ -41,7 +42,6 @@ export const config = { maxDuration: 300 };
 
 const BATCH_SIZE = 50_000;
 const WALL_BUDGET_MS = 295_000;
-const RETENTION_DAYS = 2;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const guard = cronGuard(req, res, {
@@ -64,7 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Postgres also keeps DST handling delegated to tzdata.
   const cutoffSql =
     'executed_at < ($1::date - ' +
-    `INTERVAL '${RETENTION_DAYS} days') AT TIME ZONE 'America/New_York'`;
+    `INTERVAL '${WS_OPTION_TRADES_RETENTION_DAYS} days') AT TIME ZONE 'America/New_York'`;
 
   try {
     while (true) {

@@ -30,10 +30,41 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/enrich-periscope-lottery-outcomes.js';
+import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
+import { Sentry } from '../_lib/sentry.js';
 import { mockRequest, mockResponse } from './helpers';
+
+/**
+ * Split a tagged-template mockSql call into its template strings and bound
+ * values. strings[i + 1] is the SQL text right after values[i], so tests
+ * can assert on the cast applied to a given parameter.
+ */
+function sqlCall(callIndex: number): { strings: string[]; values: unknown[] } {
+  const call = mockSql.mock.calls[callIndex] ?? [];
+  const [strings, ...values] = call as [TemplateStringsArray, ...unknown[]];
+  return { strings: [...strings], values };
+}
+
+/** Join template strings into one SQL string with `$n` placeholders. */
+function renderSql(strings: string[]): string {
+  return strings
+    .map((s, i) => (i === 0 ? s : `$${i}${s}`))
+    .join('')
+    .replaceAll(/\s+/g, ' ');
+}
+
+const SAMPLE_FIRE = {
+  id: 1,
+  fire_type: 'call_lottery',
+  fire_time: '2026-05-18T18:43:12Z',
+  expiry: '2026-05-18',
+  trade_strike: 7430,
+  entry_px: '0.10',
+};
 
 beforeEach(() => {
   mockSql.mockReset();
+  vi.mocked(Sentry.captureException).mockReset();
   mockCronGuard.mockReset();
   mockCronGuard.mockReturnValue({ apiKey: '', today: '2026-05-18' });
 });
@@ -260,5 +291,64 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
     expect(updateParams[0]).toEqual([10, 11]);
     // peak_px: fire 10 = 25, fire 11 = 1.00
     expect(updateParams[1]).toEqual([25, 1]);
+  });
+
+  it('binds the trade-query expiry array as date[] to match the DATE column', async () => {
+    // ws_option_trades.expiry is DATE. Binding the unnest array as text[]
+    // made `expiry = u.expiry` a date = text comparison, which Postgres
+    // rejects ("operator does not exist: date = text", Sentry F0).
+    mockSql.mockResolvedValueOnce([SAMPLE_FIRE]);
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
+
+    await handler(mockRequest({ method: 'GET' }), mockResponse());
+
+    const { strings, values } = sqlCall(1);
+    // The expiry values are plain YYYY-MM-DD strings (SELECT expiry::text),
+    // which cast cleanly to date.
+    const expiryIdx = values.findIndex(
+      (v) => Array.isArray(v) && v.length === 1 && v[0] === '2026-05-18',
+    );
+    expect(expiryIdx).toBeGreaterThanOrEqual(0);
+    // strings[i + 1] is the SQL text immediately after the i-th value.
+    expect(strings[expiryIdx + 1]).toMatch(/^::date\[\]/);
+    expect(renderSql(strings)).toContain('AND expiry = u.expiry');
+  });
+
+  it('only selects candidate fires still inside the ws_option_trades retention window, newest first', async () => {
+    mockSql.mockResolvedValueOnce([]);
+
+    await handler(mockRequest({ method: 'GET' }), mockResponse());
+
+    const { strings, values } = sqlCall(0);
+    const text = renderSql(strings);
+    // Older fires have had their trades pruned by cleanup-ws-option-trades;
+    // enriching them would falsely lock realized R = -1.
+    expect(text).toMatch(
+      /fire_time >= NOW\(\) - make_interval\(days => \$1::int\)/,
+    );
+    expect(values).toEqual([WS_OPTION_TRADES_RETENTION_DAYS]);
+    expect(text).toContain('ORDER BY fire_time DESC');
+    expect(text).not.toContain('ORDER BY fire_time ASC');
+    expect(text).toContain('LIMIT 500');
+  });
+
+  it('surfaces a trade-query DB error as a 500 without locking any fires', async () => {
+    const dbError = new Error('operator does not exist: date = text');
+    mockSql.mockResolvedValueOnce([SAMPLE_FIRE]); // 1: SELECT unenriched
+    mockSql.mockRejectedValueOnce(dbError); // 2: batched read rejects
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toMatchObject({
+      job: 'enrich-periscope-lottery-outcomes',
+      error: 'Internal error',
+    });
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+    // No third call — the batched UPDATE that sets outcome_locked = TRUE
+    // must never run when the trade read failed.
+    expect(mockSql).toHaveBeenCalledTimes(2);
   });
 });

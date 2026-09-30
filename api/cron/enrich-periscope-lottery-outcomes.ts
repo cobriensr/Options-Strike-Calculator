@@ -28,6 +28,7 @@
  * Spec: docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md
  */
 
+import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import {
   withCronInstrumentation,
@@ -83,6 +84,15 @@ export default withCronInstrumentation(
     // Only enrich fires where the hold window has FULLY elapsed. The
     // call horizon is 120m and the put horizon is 180m; running at
     // 20:30 UTC ensures every fire from this morning is settled.
+    //
+    // Retention window: cleanup-ws-option-trades prunes trades older than
+    // WS_OPTION_TRADES_RETENTION_DAYS (its cutoff is ET midnight N days
+    // back, which is at or before NOW() - N days, so this bound never
+    // reaches pruned data). A fire older than that has had its trades
+    // deleted, and the no-trades branch below would falsely lock it at
+    // realized R = -1. So only retained fires are candidates, newest
+    // first so today's fires are never starved by the LIMIT. The older
+    // unlocked backlog is handled separately, not by this cron.
     const unenriched = (await withDbRetry(
       () => sql`
         SELECT id, fire_type, fire_time, expiry::text AS expiry,
@@ -90,7 +100,8 @@ export default withCronInstrumentation(
         FROM periscope_lottery_fires
         WHERE outcome_locked = FALSE
           AND entry_px IS NOT NULL
-        ORDER BY fire_time ASC
+          AND fire_time >= NOW() - make_interval(days => ${WS_OPTION_TRADES_RETENTION_DAYS}::int)
+        ORDER BY fire_time DESC
         LIMIT 500
       `,
       2,
@@ -186,7 +197,7 @@ export default withCronInstrumentation(
         SELECT u.id AS fire_id, t.executed_at, t.price::numeric AS price
           FROM unnest(
                  ${ids}::int[],
-                 ${expiries}::text[],
+                 ${expiries}::date[],
                  ${strikes}::int[],
                  ${optionTypes}::text[],
                  ${fireTimes}::timestamptz[],

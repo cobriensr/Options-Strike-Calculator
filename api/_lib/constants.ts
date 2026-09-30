@@ -580,3 +580,16 @@ export const MACRO_WINDOW_MS = MACRO_WINDOW_DAYS * 24 * 3600 * 1000;
 
 // Days of lottery_kept_tickers history to retain. Floor is >=1 trading day (the never-vanish "current day" guarantee); 7 = margin for weekend/holiday gaps + late enrichment. The set-difference diff-skip in lottery-finder.ts depends on today's rows never being pruned, so this MUST stay >= 1.
 export const KEPT_RETENTION_DAYS = 7;
+
+// ============================================================
+// WS_OPTION_TRADES RETENTION
+// ============================================================
+
+/**
+ * Days of `ws_option_trades` history kept by the cleanup-ws-option-trades
+ * cron (it deletes rows older than today's ET date minus this many days).
+ * Readers that must not mistake "pruned" for "no trades" — e.g.
+ * enrich-periscope-lottery-outcomes, which locks a no-trade fire at
+ * realized R = -1 — bound their candidates to this window.
+ */
+export const WS_OPTION_TRADES_RETENTION_DAYS = 2;
