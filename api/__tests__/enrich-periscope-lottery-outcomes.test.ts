@@ -202,7 +202,7 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
     expect(updateParams[5][0]).toBeCloseTo((24.5 - 0.42) / 0.42, 2);
   });
 
-  it('locks a zero-tick fire at realized_r = -1 when SPXW tape was flowing in its window', async () => {
+  it('locks a zero-tick fire at realized_r = -1 when SPXW tape was flowing in its window tail', async () => {
     const fire = {
       id: 3,
       fire_type: 'call_lottery',
@@ -213,7 +213,8 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
     };
     mockSql.mockResolvedValueOnce([fire]);
     // batched read: LEFT JOIN marker row — no prints for this contract, but
-    // the SPXW tape was live in the window, so the option genuinely died.
+    // the SPXW tape was live through the end of the window, so the option
+    // genuinely died.
     mockSql.mockResolvedValueOnce([
       { fire_id: 3, executed_at: null, price: null, tape_live: true },
     ]);
@@ -314,6 +315,35 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
     expect(updateParams[0]).toEqual([10, 11]);
     // peak_px: fire 10 = 25, fire 11 = 1.00
     expect(updateParams[1]).toEqual([25, 1]);
+  });
+
+  it('matches ticks to fires when the driver returns BIGSERIAL ids as strings', async () => {
+    // The Neon HTTP driver parses int8 (periscope_lottery_fires.id is
+    // BIGSERIAL) as a STRING, while the read's fire_id comes from the
+    // ::int[] unnest column (int4 → number). A string-vs-number Map miss
+    // would make every fire look print-less.
+    mockSql.mockResolvedValueOnce([{ ...SAMPLE_FIRE, id: '101' }]);
+    mockSql.mockResolvedValueOnce([
+      {
+        fire_id: 101,
+        executed_at: '2026-05-18T19:00:00Z',
+        price: '0.50',
+        tape_live: true,
+      },
+    ]);
+    mockSql.mockResolvedValueOnce([]);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    const params = sqlCall(2).values as unknown[][];
+    expect(params[0]).toEqual([101]);
+    expect(params[1]).toEqual([0.5]); // peak_px from the matched tick
+    expect(res._json).toMatchObject({
+      status: 'success',
+      updated: 1,
+      tapeGap: 0,
+    });
   });
 
   it('binds the trade-query expiry array as date[] to match the DATE column', async () => {
@@ -579,24 +609,64 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
       tape_live: tapeLive,
     });
 
-    it('probes SPXW tape liveness per fire inside the single batched read', async () => {
+    it('probes SPXW tape in the tail of each fire’s settled window inside the single batched read', async () => {
       mockSql.mockResolvedValueOnce([SAMPLE_FIRE]);
       mockSql.mockResolvedValueOnce([noPrints(1, true)]);
       mockSql.mockResolvedValueOnce([]);
 
       await handler(mockRequest({ method: 'GET' }), mockResponse());
 
-      const text = renderSql(sqlCall(1).strings);
-      // One EXISTS probe per unnest row over the fire's own window,
+      const { strings, values } = sqlCall(1);
+      const text = renderSql(strings);
+      // One EXISTS probe per unnest row over the fire's own window TAIL,
       // served by ws_option_trades_ticker_executed_idx (ticker,
       // executed_at) — no per-fire round trips.
       expect(text).toContain(
-        "EXISTS ( SELECT 1 FROM ws_option_trades WHERE ticker = 'SPXW' " +
-          'AND executed_at >= u.fire_time AND executed_at <= u.read_end )',
+        'AS u(id, expiry, strike, option_type, fire_time, read_end, ' +
+          'tail_start, tail_end)',
       );
+      expect(text).toContain(
+        "EXISTS ( SELECT 1 FROM ws_option_trades WHERE ticker = 'SPXW' " +
+          'AND executed_at >= u.tail_start AND executed_at <= u.tail_end )',
+      );
+      // Call fired 13:43 CDT: settledAt = the 15:00 CDT 0DTE close
+      // (20:00 UTC), so the tail is the last 10 minutes, 14:50-15:00 CDT.
+      expect(values[6]).toEqual(['2026-05-18T19:50:00.000Z']);
+      expect(values[7]).toEqual(['2026-05-18T20:00:00.000Z']);
       // LEFT JOIN so a zero-print fire still returns its liveness row.
       expect(text).toContain('LEFT JOIN LATERAL');
       expect(mockSql).toHaveBeenCalledTimes(3);
+    });
+
+    it('clamps the tape tail to start no earlier than the fire', async () => {
+      // Fired 14:55 CDT: settledAt - 10 min (14:50) precedes the fire, so
+      // the tail is [fire_time, close].
+      mockSql.mockResolvedValueOnce([callFire(5, '2026-05-18T19:55:00Z')]);
+      mockSql.mockResolvedValueOnce([noPrints(5, true)]);
+      mockSql.mockResolvedValueOnce([]);
+
+      await handler(mockRequest({ method: 'GET' }), mockResponse());
+
+      const { values } = sqlCall(1);
+      expect(values[6]).toEqual(['2026-05-18T19:55:00.000Z']);
+      expect(values[7]).toEqual(['2026-05-18T20:00:00.000Z']);
+    });
+
+    it('leaves a zero-print fire unlocked when its window tail had no SPXW tape', async () => {
+      // tape_live is computed over the tail only, so a feed that died
+      // mid-window reads as dead even if it printed early in the window.
+      mockSql.mockResolvedValueOnce([SAMPLE_FIRE]);
+      mockSql.mockResolvedValueOnce([noPrints(1, false)]);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      expect(mockSql).toHaveBeenCalledTimes(2); // no locking UPDATE
+      expect(res._json).toMatchObject({ status: 'error', tapeGap: 1 });
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('no SPXW tape'),
+        expect.objectContaining({ fingerprint: TAPE_GAP_FINGERPRINT }),
+      );
     });
 
     it('leaves fires from an outage day unlocked while locking the next day’s fires', async () => {

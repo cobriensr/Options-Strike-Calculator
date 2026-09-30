@@ -25,11 +25,12 @@
  * scripts/backfill_periscope_lottery_outcomes.py) when:
  *   - its window has not settled yet (prints can still land), or
  *   - it has ticks but none parse (R would be fabricated), or
- *   - it has no prints AND its window had no SPXW tape at all — a
- *     ws_option_trades gap (e.g. uw-stream down), not an untraded option.
- *     The run emits one fingerprinted Sentry warning and returns status
- *     'error'. A no-print fire whose window DID have SPXW tape genuinely
- *     never traded and keeps the per-strategy R = -1 lock.
+ *   - it has no prints AND no SPXW tape landed in the last
+ *     TAPE_TAIL_MINUTES of its settled window — a ws_option_trades gap
+ *     (e.g. uw-stream died before the window finished), not an untraded
+ *     option. The run emits one fingerprinted Sentry warning and returns
+ *     status 'error'. A no-print fire whose window tail DID have SPXW tape
+ *     genuinely never traded and keeps the per-strategy R = -1 lock.
  *
  * Idempotent — re-running the cron won't double-process a locked row.
  * Per-user direction (open question #3): we track BOTH peak and EOD R
@@ -52,7 +53,8 @@ type DbNumeric = string | number;
 type DbTimestamp = string | Date;
 
 interface UnenrichedFire {
-  id: number;
+  /** BIGSERIAL — the Neon driver returns int8 as a STRING; normalize. */
+  id: DbNumeric;
   fire_type: 'call_lottery' | 'put_lottery';
   fire_time: DbTimestamp;
   expiry: string;
@@ -66,10 +68,10 @@ interface UnenrichedFire {
  * executed_at/price. Every row carries the fire's tape-liveness flag.
  */
 interface BatchedTradeRow {
-  fire_id: number;
+  fire_id: DbNumeric;
   executed_at: DbTimestamp | null;
   price: DbNumeric | null;
-  /** Any SPXW trade at all in [fire_time, read_end] (ingestion was live). */
+  /** Any SPXW trade in the fire's window tail (ingestion was still live). */
   tape_live: boolean;
 }
 
@@ -102,6 +104,9 @@ function holdMinutes(fireType: 'call_lottery' | 'put_lottery'): number {
 function expiryClose(expiry: string): Date {
   return eodCtForTrigger(new Date(`${expiry}T17:00:00Z`));
 }
+
+/** SPXW prints every few seconds into the close, so a silent 10 min = feed down. */
+const TAPE_TAIL_MINUTES = 10;
 
 export default withCronInstrumentation(
   'enrich-periscope-lottery-outcomes',
@@ -156,6 +161,9 @@ export default withCronInstrumentation(
       closeCutoff: Date;
       /** End of the batched read: GREATEST(horizonEnd, closeCutoff). */
       readEnd: Date;
+      /** Tape-liveness tail: [max(fireTime, settledAt - tail), settledAt]. */
+      tailStart: Date;
+      settledAt: Date;
     }
     const nowMs = Date.now();
     const windows: FireWindow[] = [];
@@ -187,8 +195,12 @@ export default withCronInstrumentation(
         inFlight += 1;
         continue;
       }
+      const tailFloor = new Date(
+        settledAt.getTime() - TAPE_TAIL_MINUTES * 60_000,
+      );
       windows.push({
-        id: f.id,
+        // Number(): int8 id arrives as a string, fire_id (int4) as a number.
+        id: Number(f.id),
         expiry: f.expiry,
         strike: f.trade_strike,
         optionType: f.fire_type === 'call_lottery' ? 'C' : 'P',
@@ -197,6 +209,8 @@ export default withCronInstrumentation(
         horizonEnd,
         closeCutoff,
         readEnd,
+        tailStart: tailFloor > fireTime ? tailFloor : fireTime,
+        settledAt,
       });
     }
 
@@ -231,17 +245,23 @@ export default withCronInstrumentation(
     // evaluate-round-trip.ts:148.
     //
     // Tape-liveness probe: per unnest row, EXISTS any SPXW trade in the
-    // fire's own window (index-served by ws_option_trades_ticker_executed_idx
-    // on (ticker, executed_at); stops at the first hit). It separates "this
-    // contract never printed" (tape live → R = -1) from "ws_option_trades
-    // has a hole here" (tape dead → leave unlocked). LEFT JOIN keeps a row
-    // for no-print fires so the flag always comes back.
+    // TAIL of the fire's settled window, [max(fire_time, settledAt -
+    // TAPE_TAIL_MINUTES), settledAt] (index-served by
+    // ws_option_trades_ticker_executed_idx on (ticker, executed_at); stops
+    // at the first hit). It separates "this contract never printed" (tape
+    // live to the end → R = -1) from "ws_option_trades has a hole here"
+    // (tape quiet at the end → leave unlocked). Probing the tail, not the
+    // whole window, catches a feed that died mid-window: early SPXW prints
+    // prove nothing about whether the option printed after the outage.
+    // LEFT JOIN keeps a row for no-print fires so the flag always returns.
     const ids = windows.map((w) => w.id);
     const expiries = windows.map((w) => w.expiry);
     const strikes = windows.map((w) => w.strike);
     const optionTypes = windows.map((w) => w.optionType);
     const fireTimes = windows.map((w) => w.fireTime.toISOString());
     const readEnds = windows.map((w) => w.readEnd.toISOString());
+    const tailStarts = windows.map((w) => w.tailStart.toISOString());
+    const tailEnds = windows.map((w) => w.settledAt.toISOString());
 
     const tradeRows = (await withDbRetry(
       () => sql`
@@ -253,15 +273,18 @@ export default withCronInstrumentation(
                  ${strikes}::int[],
                  ${optionTypes}::text[],
                  ${fireTimes}::timestamptz[],
-                 ${readEnds}::timestamptz[]
-               ) AS u(id, expiry, strike, option_type, fire_time, read_end)
+                 ${readEnds}::timestamptz[],
+                 ${tailStarts}::timestamptz[],
+                 ${tailEnds}::timestamptz[]
+               ) AS u(id, expiry, strike, option_type, fire_time, read_end,
+                      tail_start, tail_end)
           CROSS JOIN LATERAL (
                  SELECT EXISTS (
                           SELECT 1
                             FROM ws_option_trades
                            WHERE ticker = 'SPXW'
-                             AND executed_at >= u.fire_time
-                             AND executed_at <= u.read_end
+                             AND executed_at >= u.tail_start
+                             AND executed_at <= u.tail_end
                         ) AS tape_live
                ) g
           LEFT JOIN LATERAL (
@@ -289,11 +312,12 @@ export default withCronInstrumentation(
     const ticksById = new Map<number, BatchedTradeRow[]>();
     const tapeLiveById = new Map<number, boolean>();
     for (const row of tradeRows) {
-      if (row.tape_live) tapeLiveById.set(row.fire_id, true);
+      const fireId = Number(row.fire_id);
+      if (row.tape_live) tapeLiveById.set(fireId, true);
       if (row.executed_at == null && row.price == null) continue;
-      const arr = ticksById.get(row.fire_id);
+      const arr = ticksById.get(fireId);
       if (arr) arr.push(row);
-      else ticksById.set(row.fire_id, [row]);
+      else ticksById.set(fireId, [row]);
     }
 
     const updates: EnrichUpdate[] = [];
@@ -303,7 +327,7 @@ export default withCronInstrumentation(
     // hold when prints exist but are unreadable.
     let malformedTicks = 0;
     const unreadableFireIds: number[] = [];
-    // No prints and no SPXW tape in the window: a ws_option_trades gap.
+    // No prints and no SPXW tape in the window tail: a ws_option_trades gap.
     // A fire absent from the read entirely (the LEFT JOIN guarantees a
     // row) is treated the same way — never as a total loss.
     const tapeGapFireIds: number[] = [];
@@ -382,7 +406,7 @@ export default withCronInstrumentation(
     if (tapeGapFireIds.length > 0) {
       tapeGapMessage =
         `enrich-periscope-lottery-outcomes: ${tapeGapFireIds.length} ` +
-        'settled fire(s) had no SPXW tape in their window ' +
+        'settled fire(s) had no SPXW tape in their window tail ' +
         '(ws_option_trades gap, e.g. uw-stream down); left unlocked';
       const detail = {
         candidates: unenriched.length,
