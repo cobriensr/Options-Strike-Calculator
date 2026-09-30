@@ -1,6 +1,8 @@
 """HTTP server on port 8080 — health check + admin endpoints.
 
-Serves `GET /health` for liveness/readiness monitoring and
+Serves `GET /health` for liveness/readiness monitoring (DB
+reachability), the take-it SHAP + multileg routes under `/takeit/*`,
+read-only DuckDB queries under `/archive/*`, and
 `POST /admin/seed-archive` for one-shot seeding of the persistent
 volume from Vercel Blob. The admin endpoint is gated on a shared token
 and is safe to leave deployed — subsequent calls are cheap (SHA-based
@@ -183,16 +185,14 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
 class HealthHandler(BaseHTTPRequestHandler):
     """Handle GET /health + POST /admin/seed-archive requests."""
 
-    # Databento / DB checks — always required.
-    is_connected: Callable[[], bool]
-    last_bar_at: Callable[[], float]
+    # DB check — always required. The only input to /health's status.
     is_db_healthy: Callable[[], bool]
 
     # Theta Data reporters — optional. None when Theta is disabled
     # (credentials missing, jar not present, local dev). When set, the
     # handler emits a `theta` block in the response body but does NOT
     # factor Theta state into the overall healthy/degraded status —
-    # Theta is additive, the sidecar's core contract is Databento relay.
+    # Theta is additive, not part of the sidecar's core serving contract.
     theta_is_running: Callable[[], bool] | None = None
     theta_last_ready_at: Callable[[], float] | None = None
     theta_last_error: Callable[[], str | None] | None = None
@@ -253,16 +253,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Not found")
             return
 
-        checks = {
-            "databento": self.is_connected(),
-            "data_fresh": True,
-            "db": False,
-        }
-
-        # Data freshness: if we expect quotes, check staleness
-        if _is_data_expected():
-            staleness = _now_ts() - self.last_bar_at()
-            checks["data_fresh"] = staleness < 120  # 2 minutes
+        checks = {"db": False}
 
         try:
             checks["db"] = self.is_db_healthy()
@@ -907,44 +898,8 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _now_ts() -> float:
-    return datetime.now(timezone.utc).timestamp()
-
-
-def _is_data_expected() -> bool:
-    """Check if we should expect market data right now.
-
-    Futures trade nearly 24 hours. Globex is closed:
-    - Friday 5 PM CT to Sunday 5 PM CT
-    - Daily maintenance: 4-5 PM CT (Mon-Thu) / 3:15-3:30 PM CT (brief)
-
-    Simplified: skip weekends and the 5 PM CT hour (maintenance window).
-    """
-    import zoneinfo
-
-    ct = datetime.now(zoneinfo.ZoneInfo("America/Chicago"))
-    weekday = ct.weekday()  # Monday=0, Sunday=6
-
-    # Saturday all day
-    if weekday == 5:
-        return False
-    # Sunday before 5 PM CT
-    if weekday == 6 and ct.hour < 17:
-        return False
-    # Friday after 4 PM CT (Globex closes ~4:15 PM CT Friday)
-    if weekday == 4 and ct.hour >= 16:
-        return False
-    # Daily maintenance window
-    if ct.hour == 16:
-        return False
-
-    return True
-
-
 def start_health_server(
     port: int,
-    is_connected: Callable[[], bool],
-    last_bar_at: Callable[[], float],
     is_db_healthy: Callable[[], bool],
     *,
     theta_is_running: Callable[[], bool] | None = None,
@@ -964,8 +919,6 @@ def start_health_server(
     Class-level state is reset between calls so tests that spin up
     multiple servers in one process don't bleed state across runs.
     """
-    HealthHandler.is_connected = staticmethod(is_connected)  # type: ignore[assignment]
-    HealthHandler.last_bar_at = staticmethod(last_bar_at)  # type: ignore[assignment]
     HealthHandler.is_db_healthy = staticmethod(is_db_healthy)  # type: ignore[assignment]
 
     if theta_is_running is not None:

@@ -1,15 +1,14 @@
 """Configure pytest to find source modules in sidecar/src/.
 
 Also installs minimal session-wide mocks for external packages that
-are NOT in the local test venv (databento, psycopg2). This lets
+may NOT be in the local test venv (psycopg2, sentry_sdk). This lets
 source modules import at all. Every other mock (db, logger_setup,
-config, sentry_setup, symbol_manager) is managed per-test-file so
-each file's assertions match its own fixture setup.
+config, sentry_setup) is managed per-test-file so each file's
+assertions match its own fixture setup.
 """
 
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 # Add sidecar/src/ to Python path so test imports resolve correctly
@@ -24,18 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 # packages whose absence would cause `import foo` to fail at module
 # parse time, which would then make every test file fail to even load.
 #
-# Packages like `db`, `logger_setup`, `config`, `sentry_setup`, and
-# `symbol_manager` are all sidecar source modules that exist on disk
-# and can be imported directly from sidecar/src/. Test files that
-# want to mock those should install their own mocks per-file.
-
-# databento SDK — used by sidecar/src/databento_client.py. Not in venv.
-if "databento" not in sys.modules:
-    mock_databento = MagicMock()
-    mock_databento.ReconnectPolicy = SimpleNamespace(RECONNECT="reconnect")
-    mock_databento.Side = SimpleNamespace(ASK="A_sentinel", BID="B_sentinel")
-    mock_databento.Live = MagicMock()
-    sys.modules["databento"] = mock_databento
+# Packages like `db`, `logger_setup`, `config`, and `sentry_setup` are
+# all sidecar source modules that exist on disk and can be imported
+# directly from sidecar/src/. Test files that want to mock those should
+# install their own mocks per-file.
 
 # psycopg2 — used by sidecar/src/db.py. Not in venv.
 if "psycopg2" not in sys.modules:

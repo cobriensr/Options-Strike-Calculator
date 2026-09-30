@@ -83,29 +83,25 @@ def reset_handler_state() -> None:
 
 @pytest.fixture
 def configure_base_callables() -> None:
-    """Install connected/db-healthy/non-stale reporters that return OK."""
-    HealthHandler.is_connected = staticmethod(lambda: True)
-    HealthHandler.last_bar_at = staticmethod(lambda: 9e18)  # "recent"
+    """Install a DB-health reporter that returns OK."""
     HealthHandler.is_db_healthy = staticmethod(lambda: True)
 
 
 def test_health_returns_200_when_all_ok(configure_base_callables) -> None:
-    # Data-freshness logic only runs when _is_data_expected() is True;
-    # force False to avoid weekday/hour dependency in tests.
-    with patch("health._is_data_expected", return_value=False):
-        status, body = _run_request()
+    status, body = _run_request()
 
     assert status == 200
     assert body["status"] == "ok"
-    assert body["checks"] == {"databento": True, "data_fresh": True, "db": True}
+    # DB is the only check: Databento connectivity + futures data
+    # freshness were removed with the Databento ingestion path.
+    assert body["checks"] == {"db": True}
     # No Theta block when reporters aren't configured.
     assert "theta" not in body
 
 
 def test_health_returns_503_when_db_down(configure_base_callables) -> None:
     HealthHandler.is_db_healthy = staticmethod(lambda: False)
-    with patch("health._is_data_expected", return_value=False):
-        status, body = _run_request()
+    status, body = _run_request()
 
     assert status == 503
     assert body["status"] == "degraded"
@@ -124,8 +120,7 @@ def test_health_includes_theta_block_when_configured(
     HealthHandler.theta_last_ready_at = staticmethod(lambda: 1776549000.0)
     HealthHandler.theta_last_error = staticmethod(lambda: None)
 
-    with patch("health._is_data_expected", return_value=False):
-        status, body = _run_request()
+    status, body = _run_request()
 
     assert status == 200
     assert "theta" in body
@@ -139,7 +134,7 @@ def test_health_includes_theta_block_when_configured(
 def test_health_theta_never_downgrades_overall_status(
     configure_base_callables,
 ) -> None:
-    # Theta is additive — if Theta is dead but Databento + DB are fine,
+    # Theta is additive — if Theta is dead but the DB is fine,
     # overall status stays 'ok' / 200.
     HealthHandler.theta_is_running = staticmethod(lambda: False)
     HealthHandler.theta_last_ready_at = staticmethod(lambda: 0.0)
@@ -147,8 +142,7 @@ def test_health_theta_never_downgrades_overall_status(
         lambda: "Theta HTTP server failed to come up"
     )
 
-    with patch("health._is_data_expected", return_value=False):
-        status, body = _run_request()
+    status, body = _run_request()
 
     assert status == 200
     assert body["status"] == "ok"
@@ -169,8 +163,7 @@ def test_health_handles_theta_reporter_exceptions(
     HealthHandler.theta_last_ready_at = staticmethod(boom)
     HealthHandler.theta_last_error = staticmethod(boom)  # type: ignore[arg-type]
 
-    with patch("health._is_data_expected", return_value=False):
-        status, body = _run_request()
+    status, body = _run_request()
 
     assert status == 200
     assert body["theta"]["running"] is True
@@ -1087,41 +1080,38 @@ class TestTbboOfiPercentileBranches:
 
 
 # ---------------------------------------------------------------------------
-# Health endpoint freshness branch + DB-exception swallow
+# Health endpoint DB check — the only input to /health's status
 # ---------------------------------------------------------------------------
 
 
-class TestHealthFreshness:
-    def test_data_fresh_true_when_recent(self, configure_base_callables) -> None:
-        # last_bar_at returns "now" — staleness < 120s → fresh.
-        import time
-
-        HealthHandler.last_bar_at = staticmethod(lambda: time.time())
-        with patch("health._is_data_expected", return_value=True):
-            status, body = _run_request()
-        assert status == 200
-        assert body["checks"]["data_fresh"] is True
-
-    def test_data_fresh_false_when_stale(self, configure_base_callables) -> None:
-        # Bar was 5 minutes ago — staleness > 120s → degraded.
-        import time
-
-        HealthHandler.last_bar_at = staticmethod(lambda: time.time() - 600)
-        with patch("health._is_data_expected", return_value=True):
-            status, body = _run_request()
-        assert status == 503
-        assert body["checks"]["data_fresh"] is False
-        assert body["status"] == "degraded"
-
+class TestHealthDbCheck:
     def test_db_exception_swallowed_to_false(self, configure_base_callables) -> None:
         def boom() -> bool:
             raise RuntimeError("conn refused")
 
         HealthHandler.is_db_healthy = staticmethod(boom)
-        with patch("health._is_data_expected", return_value=False):
-            status, body = _run_request()
+        status, body = _run_request()
         assert status == 503
         assert body["checks"]["db"] is False
+
+    def test_db_exception_forwarded_to_sentry(self, configure_base_callables) -> None:
+        """A raising DB probe must reach Sentry tagged as the health/db
+        check, so an outage is visible before it becomes a sustained 503."""
+        exc = RuntimeError("conn refused")
+
+        def boom() -> bool:
+            raise exc
+
+        HealthHandler.is_db_healthy = staticmethod(boom)
+        with patch("sentry_setup.capture_exception") as capture:
+            status, _body = _run_request()
+        assert status == 503
+        capture.assert_called_once()
+        assert capture.call_args.args[0] is exc
+        assert capture.call_args.kwargs["tags"] == {
+            "component": "health",
+            "check": "db",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -1134,8 +1124,7 @@ class TestBuildThetaBlock:
         self, configure_base_callables
     ) -> None:
         # Default reset: theta_is_running is None → block omitted entirely.
-        with patch("health._is_data_expected", return_value=False):
-            _status, body = _run_request()
+        _status, body = _run_request()
         assert "theta" not in body
 
     def test_handles_missing_optional_callables(self, configure_base_callables) -> None:
@@ -1144,97 +1133,12 @@ class TestBuildThetaBlock:
         HealthHandler.theta_is_running = staticmethod(lambda: True)
         HealthHandler.theta_last_ready_at = None
         HealthHandler.theta_last_error = None
-        with patch("health._is_data_expected", return_value=False):
-            _status, body = _run_request()
+        _status, body = _run_request()
         assert body["theta"] == {
             "running": True,
             "last_ready_at": None,
             "last_error": None,
         }
-
-
-# ---------------------------------------------------------------------------
-# Pure helpers — _now_ts, _is_data_expected
-# ---------------------------------------------------------------------------
-
-
-class TestNowTs:
-    def test_returns_float(self) -> None:
-        import health
-
-        ts = health._now_ts()
-        assert isinstance(ts, float)
-        assert ts > 0
-
-
-class TestIsDataExpected:
-    """_is_data_expected branches by weekday + hour in CT."""
-
-    def _patched_dt(self, weekday: int, hour: int):
-        """Build a context manager that patches datetime.now to a fixed CT time."""
-        from datetime import datetime
-        from unittest.mock import patch as mpatch
-
-        # Pick a Wednesday base date (2024-01-03 was a Wednesday).
-        # Adjust by weekday delta. weekday(): Mon=0..Sun=6
-        from datetime import timedelta
-
-        wed = datetime(2024, 1, 3, hour, 0, 0)  # Wed (weekday=2)
-        delta = weekday - 2
-        target = wed + timedelta(days=delta)
-
-        class _FakeDateTime(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                # Return a tz-aware datetime in the requested tz.
-                if tz is None:
-                    return target
-                return target.replace(tzinfo=tz)
-
-        return mpatch("health.datetime", _FakeDateTime)
-
-    def test_saturday_returns_false(self) -> None:
-        import health
-
-        with self._patched_dt(weekday=5, hour=10):
-            assert health._is_data_expected() is False
-
-    def test_sunday_before_5pm_returns_false(self) -> None:
-        import health
-
-        with self._patched_dt(weekday=6, hour=10):
-            assert health._is_data_expected() is False
-
-    def test_sunday_after_5pm_returns_true(self) -> None:
-        import health
-
-        with self._patched_dt(weekday=6, hour=18):
-            assert health._is_data_expected() is True
-
-    def test_friday_after_4pm_returns_false(self) -> None:
-        import health
-
-        with self._patched_dt(weekday=4, hour=17):
-            assert health._is_data_expected() is False
-
-    def test_friday_morning_returns_true(self) -> None:
-        import health
-
-        with self._patched_dt(weekday=4, hour=10):
-            assert health._is_data_expected() is True
-
-    def test_maintenance_window_4pm_returns_false(self) -> None:
-        import health
-
-        # Tuesday 4 PM CT → maintenance window.
-        with self._patched_dt(weekday=1, hour=16):
-            assert health._is_data_expected() is False
-
-    def test_normal_weekday_returns_true(self) -> None:
-        import health
-
-        with self._patched_dt(weekday=2, hour=10):
-            assert health._is_data_expected() is True
 
 
 # ---------------------------------------------------------------------------
@@ -1246,8 +1150,6 @@ class TestStartHealthServer:
     def test_wires_class_callables_and_returns_server(self) -> None:
         import health
 
-        connected = lambda: True  # noqa: E731
-        last_bar = lambda: 0.0  # noqa: E731
         db_healthy = lambda: True  # noqa: E731
 
         # Patch ThreadingHTTPServer to avoid actually binding a port.
@@ -1259,19 +1161,15 @@ class TestStartHealthServer:
             patch("health.threading.Thread") as fake_thread,
         ):
             fake_srv_cls.return_value = fake_server
-            result = health.start_health_server(
-                0,
-                connected,
-                last_bar,
-                db_healthy,
-            )
+            result = health.start_health_server(0, db_healthy)
         assert result is fake_server
         fake_srv_cls.assert_called_once()
         fake_thread.assert_called_once()
         # Class-level callables must be installed.
-        assert health.HealthHandler.is_connected() is True
-        assert health.HealthHandler.last_bar_at() == pytest.approx(0.0)
         assert health.HealthHandler.is_db_healthy() is True
+        # The Databento reporters are gone from the handler contract.
+        assert not hasattr(health.HealthHandler, "is_connected")
+        assert not hasattr(health.HealthHandler, "last_bar_at")
         # Theta defaults: server invoked without theta args → cleared.
         assert health.HealthHandler.theta_is_running is None
         assert health.HealthHandler.theta_last_ready_at is None
@@ -1292,8 +1190,6 @@ class TestStartHealthServer:
             fake_srv_cls.return_value = _MagicMock()
             health.start_health_server(
                 0,
-                lambda: True,
-                lambda: 0.0,
                 lambda: True,
                 theta_is_running=lambda: True,
                 theta_last_ready_at=lambda: 1.0,
@@ -1322,8 +1218,6 @@ class TestStartHealthServer:
             fake_srv_cls.return_value = _MagicMock()
             health.start_health_server(
                 0,
-                lambda: True,
-                lambda: 0.0,
                 lambda: True,
                 theta_is_running=lambda: True,
                 theta_last_ready_at=None,

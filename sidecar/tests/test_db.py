@@ -1,8 +1,8 @@
 """Tests for sidecar/src/db.py.
 
-Scope: minimal coverage of the SIDE-003 idempotency change. Full db.py
-coverage (connection pool lifecycle, upsert semantics) requires a real
-Postgres instance and is out of scope for pytest.
+Scope: pool/borrow semantics, the batch-insert retry helper, and the
+remaining query helpers, all against mocked psycopg2. Real upsert
+semantics require a live Postgres instance and are out of scope here.
 
 Mock strategy:
 - conftest.py provides session-wide mocks for psycopg2, psycopg2.pool,
@@ -13,15 +13,14 @@ Mock strategy:
   monkeypatched per-test via the mock_conn_pool fixture, which also
   intercepts execute_values via sys.modules["psycopg2.extras"].
 - No module-level sys.modules clobbering — every patch is per-test
-  via monkeypatch, so sibling test files (test_trade_processor.py,
-  test_databento_client.py, test_sentry_setup.py) stay hermetic.
+  via monkeypatch, so sibling test files (test_theta_fetcher.py,
+  test_sentry_setup.py) stay hermetic.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from datetime import date
 from decimal import Decimal
 from typing import Generator
 from unittest.mock import MagicMock
@@ -29,7 +28,6 @@ from unittest.mock import MagicMock
 # Required env vars for config.py's pydantic-settings validation.
 # The DATABASE_URL is a throwaway test fixture — psycopg2 is mocked
 # via conftest.py so no real connection is ever attempted.
-os.environ.setdefault("DATABENTO_API_KEY", "test-key")
 _FAKE_DB_URL = "postgresql://test:" + "fakefixture" + "@localhost/test"
 os.environ.setdefault("DATABASE_URL", _FAKE_DB_URL)
 
@@ -46,7 +44,7 @@ import db  # noqa: E402
 def mock_execute_values(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Monkeypatch psycopg2.extras.execute_values per-test.
 
-    db.batch_insert_options_trades calls `psycopg2.extras.execute_values(...)`
+    db._execute_values_batch calls `psycopg2.extras.execute_values(...)`
     — we intercept that call by patching the attribute on the shared
     psycopg2.extras mock from conftest.py. monkeypatch auto-restores
     after each test, so no cross-test pollution.
@@ -81,201 +79,15 @@ def mock_conn_pool(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# batch_insert_options_trades — SIDE-003 idempotency
-# ---------------------------------------------------------------------------
-
-
-SAMPLE_ROW = (
-    "ES",
-    "2026-04-06",
-    Decimal("5300.0"),
-    "C",
-    "2026-04-05 14:30:00+00",
-    Decimal("50.25"),
-    1,
-    "B",
-    "2026-04-05",
-)
-
-
-class TestBatchInsertIdempotency:
-    def test_sql_contains_on_conflict_do_nothing(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """The INSERT must include ON CONFLICT DO NOTHING for Databento resends.
-
-        This is the SIDE-003 fix: without the ON CONFLICT clause, Databento
-        resending a trade after a brief disconnect would accumulate duplicate
-        rows in futures_options_trades over time.
-        """
-        db.batch_insert_options_trades([SAMPLE_ROW])
-
-        mock_execute_values.assert_called_once()
-        sql_arg = mock_execute_values.call_args[0][1]  # second positional arg
-        assert "INSERT INTO futures_options_trades" in sql_arg
-        assert "ON CONFLICT" in sql_arg
-        assert "DO NOTHING" in sql_arg
-
-    def test_sql_conflict_target_matches_unique_index(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """The ON CONFLICT target must match the natural-key tuple created by
-        migration #50's unique index. If these drift, the ON CONFLICT clause
-        will raise a 'no unique or exclusion constraint matching' error at
-        runtime instead of silently deduping.
-        """
-        db.batch_insert_options_trades([SAMPLE_ROW])
-
-        sql_arg = mock_execute_values.call_args[0][1]
-        # All 8 natural-key columns in order
-        for col in (
-            "ts",
-            "underlying",
-            "expiry",
-            "strike",
-            "option_type",
-            "price",
-            "size",
-            "side",
-        ):
-            assert col in sql_arg
-
-    def test_empty_rows_is_noop(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """Empty batch must not issue any SQL."""
-        db.batch_insert_options_trades([])
-        mock_execute_values.assert_not_called()
-
-    def test_preserves_page_size(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """page_size=500 is the batch chunk size — used to tune Postgres
-        round-trip overhead. Pinning this so nobody accidentally removes it."""
-        db.batch_insert_options_trades([SAMPLE_ROW])
-        kwargs = mock_execute_values.call_args.kwargs
-        assert kwargs.get("page_size") == 500
-
-
-# ---------------------------------------------------------------------------
-# batch_insert_top_of_book (Phase 2a, pre-trade BBO from TBBO records)
-# ---------------------------------------------------------------------------
-
-
-SAMPLE_TOB_ROW = (
-    "ES",
-    "2026-04-18 14:30:00+00",
-    Decimal("5000.25"),  # bid
-    10,  # bid_size
-    Decimal("5000.50"),  # ask
-    12,  # ask_size
-)
-
-
-class TestBatchInsertTopOfBook:
-    def test_sql_targets_correct_table_and_columns(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        db.batch_insert_top_of_book([SAMPLE_TOB_ROW])
-        mock_execute_values.assert_called_once()
-        sql_arg = mock_execute_values.call_args[0][1]
-        assert "INSERT INTO futures_top_of_book" in sql_arg
-        for col in ("symbol", "ts", "bid", "bid_size", "ask", "ask_size"):
-            assert col in sql_arg
-
-    def test_no_on_conflict_clause(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """Migration #71 intentionally omits a UNIQUE constraint — the
-        quote stream is high-volume (one row per trade via TBBO) and
-        dedup isn't meaningful at this layer. Pin this behavior so nobody
-        adds an ON CONFLICT clause that would then fail at runtime with
-        'no unique or exclusion constraint matching'."""
-        db.batch_insert_top_of_book([SAMPLE_TOB_ROW])
-        sql_arg = mock_execute_values.call_args[0][1]
-        assert "ON CONFLICT" not in sql_arg
-
-    def test_empty_rows_is_noop(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        db.batch_insert_top_of_book([])
-        mock_execute_values.assert_not_called()
-
-    def test_preserves_page_size(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        db.batch_insert_top_of_book([SAMPLE_TOB_ROW])
-        kwargs = mock_execute_values.call_args.kwargs
-        assert kwargs.get("page_size") == 500
-
-    def test_multiple_rows_passed_through(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        rows = [SAMPLE_TOB_ROW] * 3
-        db.batch_insert_top_of_book(rows)
-        rows_arg = mock_execute_values.call_args[0][2]
-        assert len(rows_arg) == 3
-
-
-# ---------------------------------------------------------------------------
-# batch_insert_trade_ticks (Phase 2a, TBBO ingest)
-# ---------------------------------------------------------------------------
-
-
-SAMPLE_TRADE_ROW = (
-    "ES",
-    "2026-04-18 14:30:00+00",
-    Decimal("5000.50"),  # price
-    5,  # size
-    "B",  # aggressor_side
-)
-
-
-class TestBatchInsertTradeTicks:
-    def test_sql_targets_correct_table_and_columns(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        db.batch_insert_trade_ticks([SAMPLE_TRADE_ROW])
-        mock_execute_values.assert_called_once()
-        sql_arg = mock_execute_values.call_args[0][1]
-        assert "INSERT INTO futures_trade_ticks" in sql_arg
-        for col in ("symbol", "ts", "price", "size", "aggressor_side"):
-            assert col in sql_arg
-
-    def test_no_on_conflict_clause(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        """Migration #72 has no UNIQUE constraint on the trade-tick table
-        either — same reasoning as futures_top_of_book."""
-        db.batch_insert_trade_ticks([SAMPLE_TRADE_ROW])
-        sql_arg = mock_execute_values.call_args[0][1]
-        assert "ON CONFLICT" not in sql_arg
-
-    def test_empty_rows_is_noop(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        db.batch_insert_trade_ticks([])
-        mock_execute_values.assert_not_called()
-
-    def test_preserves_page_size(
-        self, mock_conn_pool: MagicMock, mock_execute_values: MagicMock
-    ) -> None:
-        db.batch_insert_trade_ticks([SAMPLE_TRADE_ROW])
-        kwargs = mock_execute_values.call_args.kwargs
-        assert kwargs.get("page_size") == 500
-
-
-# ---------------------------------------------------------------------------
-# _execute_values_batch helper — the shared shape lifted out of the four
-# batch_insert callers above.
+# _execute_values_batch helper — batch-insert shape used by
+# upsert_theta_option_eod_batch.
 # ---------------------------------------------------------------------------
 
 
 class TestExecuteValuesBatch:
-    """Direct coverage of the helper. The four batch_insert public
-    functions exercise it transitively, but pinning behavior here
-    makes future tweaks (page size override, additional callers) safe
-    without dragging assertions through the SQL-shape suites."""
+    """Direct coverage of the helper. Pinning behavior here makes
+    future tweaks (page size override, additional callers) safe without
+    dragging assertions through caller-specific SQL-shape suites."""
 
     SAMPLE_SQL = "INSERT INTO some_table (a, b) VALUES %s"
     SAMPLE_ROW = (1, 2)
@@ -398,122 +210,6 @@ class TestExecuteValuesBatch:
             db._execute_values_batch(self.SAMPLE_SQL, [self.SAMPLE_ROW])
 
         assert mock_execute_values.call_count == 1
-
-
-# ---------------------------------------------------------------------------
-# _execute_with_retry helper — single-statement sibling of
-# _execute_values_batch. Same retry shape so the SSL-drop coverage now
-# extends to upsert_options_daily and any future single-statement caller
-# wired through the helper.
-# ---------------------------------------------------------------------------
-
-
-class TestExecuteWithRetry:
-    """Direct coverage for the single-statement retry helper added to
-    fix SENTRY-EMERALD-DESERT-6W (the option-stat upsert path's Neon
-    SSL drop)."""
-
-    SAMPLE_SQL = "INSERT INTO some_table (a, b) VALUES (%s, %s)"
-    SAMPLE_PARAMS = (1, 2)
-
-    def test_success_on_first_attempt(self, mock_conn_pool: MagicMock) -> None:
-        db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
-        mock_conn_pool.execute.assert_called_once_with(
-            self.SAMPLE_SQL, self.SAMPLE_PARAMS
-        )
-
-    def test_operational_error_retries_once_and_succeeds(
-        self,
-        mock_conn_pool: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """First borrowed connection is stale (Neon SSL drop after idle);
-        the helper retries on a fresh connection."""
-        import psycopg2
-
-        class _FakeOpError(Exception):
-            pass
-
-        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
-        mock_conn_pool.execute.side_effect = [
-            _FakeOpError("SSL connection has been closed unexpectedly"),
-            None,
-        ]
-
-        db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
-
-        assert mock_conn_pool.execute.call_count == 2
-
-    def test_operational_error_raises_when_retry_also_fails(
-        self,
-        mock_conn_pool: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        import psycopg2
-
-        class _FakeOpError(Exception):
-            pass
-
-        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
-        mock_conn_pool.execute.side_effect = _FakeOpError("still broken")
-
-        with pytest.raises(_FakeOpError, match="still broken"):
-            db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
-
-        assert mock_conn_pool.execute.call_count == 2
-
-    def test_non_operational_error_does_not_retry(
-        self,
-        mock_conn_pool: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        import psycopg2
-
-        class _FakeOpError(Exception):
-            pass
-
-        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
-        mock_conn_pool.execute.side_effect = ValueError("bad SQL")
-
-        with pytest.raises(ValueError, match="bad SQL"):
-            db._execute_with_retry(self.SAMPLE_SQL, self.SAMPLE_PARAMS)
-
-        assert mock_conn_pool.execute.call_count == 1
-
-    def test_upsert_options_daily_routes_through_retry_helper(
-        self,
-        mock_conn_pool: MagicMock,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Smoke: a transient SSL drop on the option-stat upsert path
-        now recovers without dropping the in-flight stat (the failure
-        mode that produced SENTRY-EMERALD-DESERT-6W)."""
-        import psycopg2
-
-        class _FakeOpError(Exception):
-            pass
-
-        monkeypatch.setattr(psycopg2, "OperationalError", _FakeOpError)
-        mock_conn_pool.execute.side_effect = [
-            _FakeOpError("SSL connection has been closed unexpectedly"),
-            None,
-        ]
-
-        db.upsert_options_daily(
-            "ES",
-            date(2026, 5, 14),
-            date(2026, 5, 16),
-            Decimal("4400.0"),
-            "C",
-            open_interest=123,
-        )
-
-        assert mock_conn_pool.execute.call_count == 2
-        # Guard against a future rewire silently sending this path
-        # through a different SQL: pin that the call hits the target
-        # table.
-        sql_arg = mock_conn_pool.execute.call_args.args[0]
-        assert "INSERT INTO futures_options_daily" in sql_arg
 
 
 # ---------------------------------------------------------------------------
@@ -1078,107 +774,6 @@ class TestIsDbHealthy:
         monkeypatch.setattr(db, "get_conn", boom_get_conn)
 
         assert db.is_db_healthy() is False
-
-
-# ---------------------------------------------------------------------------
-# upsert_futures_bar — single-row execute SQL shape
-# ---------------------------------------------------------------------------
-
-
-class TestUpsertFuturesBar:
-    def test_execute_called_with_expected_sql_and_params(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
-        from datetime import datetime as _datetime
-
-        ts = _datetime(2026, 4, 18, 14, 30)
-        db.upsert_futures_bar(
-            "ES",
-            ts,
-            Decimal("5000.0"),
-            Decimal("5005.0"),
-            Decimal("4995.0"),
-            Decimal("5002.0"),
-            123,
-        )
-        mock_conn_pool.execute.assert_called_once()
-        sql, params = mock_conn_pool.execute.call_args[0]
-        assert "INSERT INTO futures_bars" in sql
-        assert "ON CONFLICT (symbol, ts) DO UPDATE" in sql
-        # Params tuple in declaration order.
-        assert params == (
-            "ES",
-            ts,
-            Decimal("5000.0"),
-            Decimal("5005.0"),
-            Decimal("4995.0"),
-            Decimal("5002.0"),
-            123,
-        )
-
-
-# ---------------------------------------------------------------------------
-# upsert_options_daily — single-row execute SQL shape
-# ---------------------------------------------------------------------------
-
-
-class TestUpsertOptionsDaily:
-    def test_execute_called_with_expected_sql_and_params(
-        self, mock_conn_pool: MagicMock
-    ) -> None:
-        from datetime import date as _date
-
-        trade_date = _date(2026, 4, 5)
-        expiry = _date(2026, 4, 6)
-        db.upsert_options_daily(
-            "ES",
-            trade_date,
-            expiry,
-            Decimal("5300.0"),
-            "C",
-            open_interest=100,
-            volume=200,
-            settlement=Decimal("12.50"),
-            implied_vol=Decimal("0.18"),
-            delta=Decimal("0.42"),
-            is_final=True,
-        )
-        mock_conn_pool.execute.assert_called_once()
-        sql, params = mock_conn_pool.execute.call_args[0]
-        assert "INSERT INTO futures_options_daily" in sql
-        assert (
-            "ON CONFLICT (underlying, trade_date, expiry, strike, option_type)" in sql
-        )
-        assert params == (
-            "ES",
-            trade_date,
-            expiry,
-            Decimal("5300.0"),
-            "C",
-            100,
-            200,
-            Decimal("12.50"),
-            Decimal("0.18"),
-            Decimal("0.42"),
-            True,
-        )
-
-    def test_defaults_propagate_as_none(self, mock_conn_pool: MagicMock) -> None:
-        """All optional kwargs default to None so the COALESCE() upsert
-        on the SQL side keeps the existing column value."""
-        from datetime import date as _date
-
-        db.upsert_options_daily(
-            "ES",
-            _date(2026, 4, 5),
-            _date(2026, 4, 6),
-            Decimal("5300.0"),
-            "C",
-        )
-        params = mock_conn_pool.execute.call_args[0][1]
-        # Trailing 6 params: open_interest, volume, settlement, implied_vol,
-        # delta default to None; is_final defaults to False.
-        assert params[5:] == (None, None, None, None, None, False)
 
 
 # ---------------------------------------------------------------------------

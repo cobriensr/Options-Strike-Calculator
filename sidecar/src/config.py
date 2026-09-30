@@ -8,16 +8,13 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """All environment variables required by the sidecar."""
 
-    # Databento
-    databento_api_key: str
-
     # Postgres (Neon)
     database_url: str
 
     # Theta Data — nightly EOD ingest. Credentials (THETA_EMAIL /
     # THETA_PASSWORD) are read directly by theta_launcher from os.environ
     # at boot time; they deliberately live outside Settings so the sidecar
-    # starts fine without them (Databento-only mode).
+    # starts fine without them (Theta disabled).
     theta_roots: str = "SPXW,VIX,VIXW,NDXP"
     theta_backfill_days: int = 90
 

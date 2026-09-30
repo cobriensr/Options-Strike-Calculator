@@ -1,16 +1,24 @@
-"""Futures data sidecar entry point.
+"""Railway sidecar entry point.
 
-Streams multi-symbol futures OHLCV-1m bars + ES options trades via
-Databento and writes them to Neon Postgres. Downstream Vercel crons
-and the frontend consume the data (futures_bars, futures_options_daily,
-futures_options_trades) for overnight calculations, ML features, and
-the futures dashboard panel.
+Starts the HTTP server (port 8080) that serves:
 
-The sidecar previously also ran a Twilio-backed alert engine
-(es_momentum, vx_backwardation, es_nq_divergence, zn_flight_safety,
-cl_spike, es_options_volume). That whole path was removed on
-2026-04-08 — see the audit note under SIDE-001. The sidecar is now a
-pure data relay; all intelligence lives in Vercel crons and the UI.
+- ``GET /health`` — liveness/readiness (DB reachability).
+- ``GET /takeit/health`` + ``POST /takeit/explain`` — take-it SHAP
+  explainer used by the ``takeit-fill-shap`` Vercel cron.
+- ``POST /takeit/multileg-classify`` — multi-leg classifier fallback.
+- ``GET /archive/*`` — read-only DuckDB queries over the frozen
+  historical Parquet archive on the ``/data`` volume.
+- ``POST /admin/seed-archive`` — one-shot archive seed from Vercel Blob.
+
+Also launches the co-resident Theta Data Terminal (when credentials are
+present) and its nightly EOD scheduler.
+
+The sidecar previously streamed futures OHLCV-1m bars, top-of-book,
+trade ticks, and ES options trades/statistics from Databento. That
+subscription was cancelled and the ingestion path was removed on
+2026-09-29; futures data now arrives via the ``uw-stream`` Railway
+service. The Twilio-backed alert engine was removed earlier, on
+2026-04-08 (SIDE-001).
 
 Runs 24/7 on Railway as a persistent process.
 """
@@ -31,24 +39,11 @@ import archive_seeder
 import theta_fetcher
 import theta_launcher
 from config import settings
-from databento_client import DatabentoClient
 from db import drain_pool, is_db_healthy, verify_connection
 from health import start_health_server
 from logger_setup import log
-from quote_processor import QuoteProcessor
-from sentry_setup import capture_exception, init_sentry
-from trade_processor import TradeProcessor
+from sentry_setup import init_sentry
 
-# A reconnect that survives at least this long is treated as a "healthy"
-# session and resets the backoff to 1.0s. Shorter sessions are flaps:
-# the backoff keeps escalating so we don't hammer Databento in a tight
-# reconnect loop.
-MIN_HEALTHY_SESSION_S = 60.0
-
-# Global references for shutdown
-_client: DatabentoClient | None = None
-_trade_processor: TradeProcessor | None = None
-_quote_processor: QuoteProcessor | None = None
 _shutting_down = False
 
 
@@ -62,25 +57,12 @@ def shutdown(signum: int, frame: object) -> None:
     sig_name = signal.Signals(signum).name
     log.info("Shutting down gracefully (signal: %s)", sig_name)
 
-    if _client:
-        _client.stop()
-
     # Stop Theta's APScheduler before killing the jar, so no nightly
     # job fires mid-shutdown against a dead HTTP server.
     theta_fetcher.stop_scheduler()
 
     # Stop the Theta Terminal subprocess. No-op when Theta was never started.
     theta_launcher.shutdown()
-
-    # Flush + stop the data processors BEFORE draining the pool. Their
-    # background flush thread is a daemon and would be killed with rows
-    # still buffered; stop() joins the thread and performs a final flush
-    # so buffered trades/quotes land in Neon before the pool closes.
-    # Guarded for None — shutdown can fire before main() created them.
-    if _trade_processor is not None:
-        _trade_processor.stop()
-    if _quote_processor is not None:
-        _quote_processor.stop()
 
     # Give pending writes a moment to complete
     time.sleep(1)
@@ -90,10 +72,8 @@ def shutdown(signum: int, frame: object) -> None:
 
 
 def main() -> None:
-    """Main entry point: verify env, connect DB, start streaming."""
-    global _client
-
-    log.info("Futures relay sidecar starting")
+    """Main entry point: verify env, connect DB, start the HTTP server."""
+    log.info("Sidecar starting")
 
     # Initialize Sentry first so any later failures get reported.
     # No-op locally if SENTRY_DSN is unset. Never raises.
@@ -103,7 +83,7 @@ def main() -> None:
     # env used to fall through past the Theta launcher (~60s blocking
     # subprocess boot) and only fail at the verify_connection() call —
     # wasted Railway compute and confusing logs. Fail fast instead.
-    required = ["DATABENTO_API_KEY", "DATABASE_URL"]
+    required = ["DATABASE_URL"]
     missing = [key for key in required if not os.environ.get(key)]
     if missing:
         log.error(
@@ -115,7 +95,7 @@ def main() -> None:
     # Launch the co-resident Theta Terminal subprocess. Blocks up to
     # 60s waiting for its HTTP server. No-op when THETA_EMAIL /
     # THETA_PASSWORD are unset (local dev, or deliberate disable).
-    # Failures are reported to Sentry but never block Databento startup.
+    # Failures are reported to Sentry but never block sidecar startup.
     if theta_launcher.start():
         # Nightly 17:25 ET scheduler + one-time backfill in a daemon thread.
         # Both are safe no-ops when Theta is dead or the table already has data.
@@ -128,35 +108,18 @@ def main() -> None:
 
     # Take-It SHAP routes (Phase 3d, spec
     # docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md)
-    # are served by the existing health_server on port 8080 — no separate
-    # process needed. Enable per-deployment via TAKEIT_SERVER_ENABLED=1 +
+    # are served by the health server on port 8080 — no separate process
+    # needed. Enable per-deployment via TAKEIT_SERVER_ENABLED=1 +
     # TAKEIT_SIDECAR_SHARED_SECRET; sidecar/src/takeit_server.is_enabled()
     # short-circuits /takeit/explain when disabled or when ML deps are
-    # missing, leaving the rest of the sidecar (Databento streaming)
-    # unaffected.
+    # missing, leaving the rest of the sidecar unaffected.
 
     # Verify database connection
     verify_connection()
 
-    # Initialize components. Promote to module globals so shutdown() can
-    # flush their buffered rows before the DB pool is drained — they are
-    # daemon-backed and would otherwise be killed mid-buffer on SIGTERM.
-    global _trade_processor, _quote_processor
-    trade_processor = TradeProcessor()
-    trade_processor.start_background_flush()
-    quote_processor = QuoteProcessor()
-    _trade_processor = trade_processor
-    _quote_processor = quote_processor
-
-    # Create the Databento client
-    _client = DatabentoClient(
-        trade_processor=trade_processor,
-        quote_processor=quote_processor,
-    )
-
     # Build the archive seed callable when the required env is present.
     # Absence of either var disables the POST /admin/seed-archive endpoint;
-    # the handler returns 503 rather than a confusing 500.
+    # the handler returns 401 (see health.do_POST) rather than a confusing 500.
     manifest_url = os.environ.get("ARCHIVE_MANIFEST_URL", "").strip()
     blob_token = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
     archive_root = os.environ.get("ARCHIVE_ROOT", "/data/archive").strip()
@@ -180,8 +143,6 @@ def main() -> None:
     # False / 0.0 / None and the /health response honestly reports that.
     start_health_server(
         port=settings.port,
-        is_connected=lambda: _client.is_connected if _client else False,
-        last_bar_at=lambda: _client.last_bar_ts if _client else 0.0,
         is_db_healthy=is_db_healthy,
         theta_is_running=theta_launcher.is_running,
         theta_last_ready_at=theta_launcher.last_ready_at,
@@ -194,57 +155,20 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    # Connect with retry loop
-    connect_with_retry(_client)
+    wait_for_shutdown()
 
 
-def connect_with_retry(client: DatabentoClient) -> None:
-    """Start the Databento client with exponential backoff on failure."""
-    backoff = 1.0
-    max_backoff = 30.0
+def wait_for_shutdown() -> None:
+    """Park the main thread until a signal handler ends the process.
 
+    The HTTP server runs on a daemon thread, so returning from main()
+    would exit the process immediately. ``time.sleep`` is interrupted by
+    signals: ``shutdown()`` runs in this thread and its ``sys.exit(0)``
+    raises SystemExit out of the sleep. The flag check covers a
+    shutdown that has already begun.
+    """
     while not _shutting_down:
-        try:
-            client.start()
-
-            # Block until the connection closes (reconnection is handled
-            # internally by the SDK with ReconnectPolicy.RECONNECT)
-            session_start = time.monotonic()
-            client.block_for_close()
-            session_dur = time.monotonic() - session_start
-
-            # If we get here, the client exited cleanly or lost connection
-            # permanently. The SDK's reconnect policy handles transient failures.
-            if _shutting_down:
-                break
-
-            log.warning("Databento client exited, will retry")
-            # Clean up old client state before restarting
-            client.stop()
-            # Only reset backoff if the session lasted long enough to be
-            # "healthy". A session that returns near-instantly is a flap —
-            # resetting to 1.0s there would reconnect in a tight loop
-            # forever with no escalation. Leaving backoff alone lets the
-            # min(backoff*2, max_backoff) below keep escalating.
-            if session_dur >= MIN_HEALTHY_SESSION_S:
-                backoff = 1.0
-
-        except KeyboardInterrupt:
-            break
-        except Exception as exc:
-            capture_exception(exc, context={"backoff_s": backoff})
-            # Clean up on error too
-            try:
-                client.stop()
-            except Exception:
-                pass
-
-        if _shutting_down:
-            break
-
-        log.info("Reconnecting after %.1fs backoff", backoff)
-        time.sleep(backoff)
-        backoff = min(backoff * 2, max_backoff)
+        time.sleep(1.0)
 
 
 if __name__ == "__main__":

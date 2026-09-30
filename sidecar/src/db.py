@@ -1,4 +1,4 @@
-"""PostgreSQL connection pool and upsert operations for futures data.
+"""PostgreSQL connection pool and query helpers for the sidecar.
 
 Uses psycopg2 (not @neondatabase/serverless) since this runs on Railway,
 not Vercel serverless. Connection pooling via psycopg2.pool.
@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from datetime import date, datetime
-from decimal import Decimal
 from typing import Any, Generator, Sequence
 
 import psycopg2
@@ -23,7 +21,7 @@ _pool: psycopg2.pool.ThreadedConnectionPool | None = None
 # Default timeout for borrowing a connection from the pool. If the pool
 # is saturated (all maxconn connections are in use), the borrow will
 # fail with PoolTimeoutError after this many seconds rather than
-# blocking the Databento callback thread forever. See SIDE-005.
+# blocking the calling thread forever. See SIDE-005.
 DEFAULT_GETCONN_TIMEOUT_S = 10.0
 
 # Log a warning when a borrow takes longer than this threshold. This
@@ -43,7 +41,7 @@ HEALTH_PROBE_TIMEOUT_S = 2.0
 # every batch insert in this module. Tuned for Neon's round-trip
 # overhead: smaller pages let RTT dominate; larger pages risk
 # proportionally larger rollbacks on a single bad row. 500 has been the
-# stable value across all four batch-insert call sites since SIDE-003.
+# stable value for every batch-insert call site since SIDE-003.
 _DEFAULT_BATCH_PAGE_SIZE = 500
 
 
@@ -256,7 +254,7 @@ def _execute_values_batch(
     drop on a stale pooled connection). ``get_conn`` discards the dead
     connection via ``pool.putconn(close=True)`` in its finally block,
     so the second borrow lands on a fresh socket. Without the retry,
-    the in-flight batch (typically 500 TBBO rows) is lost — only
+    the in-flight batch (up to 500 rows) is lost — only
     ``capture_exception`` is called by the caller, no recovery. See
     SENTRY-EMERALD-DESERT-6X.
     """
@@ -278,176 +276,8 @@ def _execute_values_batch(
 
 
 # ---------------------------------------------------------------------------
-# Upsert operations
+# Theta Data writes
 # ---------------------------------------------------------------------------
-
-
-def upsert_futures_bar(
-    symbol: str,
-    ts: datetime,
-    open_: Decimal,
-    high: Decimal,
-    low: Decimal,
-    close: Decimal,
-    volume: int,
-) -> None:
-    """Insert or update a 1-minute OHLCV bar in futures_bars."""
-    _execute_with_retry(
-        """
-        INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (symbol, ts) DO UPDATE SET
-            open   = futures_bars.open,
-            high   = GREATEST(futures_bars.high, EXCLUDED.high),
-            low    = LEAST(futures_bars.low, EXCLUDED.low),
-            close  = EXCLUDED.close,
-            volume = GREATEST(futures_bars.volume, EXCLUDED.volume)
-        """,
-        (symbol, ts, open_, high, low, close, volume),
-    )
-
-
-def batch_insert_options_trades(rows: list[tuple]) -> None:
-    """Batch insert ES options trades for efficiency.
-
-    Each tuple: (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
-
-    Uses ON CONFLICT DO NOTHING against the unique index created by
-    migration #50 on `(ts, underlying, expiry, strike, option_type,
-    price, size, side)`. This makes the insert idempotent so Databento
-    re-sends (which happen after brief disconnects) don't accumulate
-    duplicate rows. See SIDE-003 in the audit for the full story.
-    """
-    _execute_values_batch(
-        """
-        INSERT INTO futures_options_trades
-            (underlying, expiry, strike, option_type, ts, price, size, side, trade_date)
-        VALUES %s
-        ON CONFLICT (ts, underlying, expiry, strike, option_type, price, size, side)
-        DO NOTHING
-        """,
-        rows,
-    )
-
-
-def _execute_with_retry(sql: str, params: tuple) -> None:
-    """Run a single ``cur.execute(sql, params)`` with one retry on
-    :class:`psycopg2.OperationalError`.
-
-    Mirrors :func:`_execute_values_batch`'s retry shape but for the
-    single-statement upsert/insert call sites that don't go through
-    ``execute_values``. ``get_conn`` discards the dead connection via
-    ``pool.putconn(close=True)`` in its finally block, so the second
-    attempt lands on a fresh socket.
-
-    The low-frequency option-stat path (one stat record per strike per
-    tick of Databento Statistics traffic) leaves pooled connections
-    idle long enough that Neon silently tears them down between bursts.
-    Without the retry, the next ``upsert_options_daily`` call lands on
-    a stale socket, raises ``OperationalError: SSL connection has been
-    closed unexpectedly``, and the in-flight upsert is lost. See
-    SENTRY-EMERALD-DESERT-6W.
-    """
-    for attempt in (1, 2):
-        try:
-            with get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params)
-            return
-        except psycopg2.OperationalError:
-            if attempt == 2:
-                raise
-            log.warning(
-                "_execute_with_retry: OperationalError on attempt 1, "
-                "retrying with a fresh connection"
-            )
-
-
-def upsert_options_daily(
-    underlying: str,
-    trade_date: date,
-    expiry: date,
-    strike: Decimal,
-    option_type: str,
-    *,
-    open_interest: int | None = None,
-    volume: int | None = None,
-    settlement: Decimal | None = None,
-    implied_vol: Decimal | None = None,
-    delta: Decimal | None = None,
-    is_final: bool = False,
-) -> None:
-    """Upsert EOD statistics for an ES option strike."""
-    _execute_with_retry(
-        """
-        INSERT INTO futures_options_daily
-            (underlying, trade_date, expiry, strike, option_type,
-             open_interest, volume, settlement, implied_vol, delta, is_final)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (underlying, trade_date, expiry, strike, option_type)
-        DO UPDATE SET
-            open_interest = COALESCE(EXCLUDED.open_interest, futures_options_daily.open_interest),
-            volume        = COALESCE(EXCLUDED.volume, futures_options_daily.volume),
-            settlement    = COALESCE(EXCLUDED.settlement, futures_options_daily.settlement),
-            implied_vol   = COALESCE(EXCLUDED.implied_vol, futures_options_daily.implied_vol),
-            delta         = COALESCE(EXCLUDED.delta, futures_options_daily.delta),
-            is_final      = COALESCE(EXCLUDED.is_final, futures_options_daily.is_final)
-        """,
-        (
-            underlying,
-            trade_date,
-            expiry,
-            strike,
-            option_type,
-            open_interest,
-            volume,
-            settlement,
-            implied_vol,
-            delta,
-            is_final,
-        ),
-    )
-
-
-def batch_insert_top_of_book(rows: list[tuple]) -> None:
-    """Batch insert pre-trade top-of-book snapshots into futures_top_of_book.
-
-    Each tuple: (symbol, ts, bid, bid_size, ask, ask_size)
-
-    Rows come from Databento TBBO records (``levels[0]`` BBO seen at the
-    moment of each trade). No ON CONFLICT dance because migration #71
-    intentionally omits the UNIQUE constraint — dedup at this layer isn't
-    meaningful; a brief Databento resend just adds a few extra rows and
-    downstream Phase 2b compute jobs will aggregate.
-    """
-    _execute_values_batch(
-        """
-        INSERT INTO futures_top_of_book
-            (symbol, ts, bid, bid_size, ask, ask_size)
-        VALUES %s
-        """,
-        rows,
-    )
-
-
-def batch_insert_trade_ticks(rows: list[tuple]) -> None:
-    """Batch insert Databento TBBO trade events into futures_trade_ticks.
-
-    Each tuple: (symbol, ts, price, size, aggressor_side)
-
-    aggressor_side is one of 'B' (buyer-initiated), 'S' (seller-initiated),
-    or 'N' (trade printed between the spread) — classified by
-    quote_processor.classify_aggressor() from the pre-trade BBO in the
-    TBBO record's levels[0]. See migration #72's CHECK constraint.
-    """
-    _execute_values_batch(
-        """
-        INSERT INTO futures_trade_ticks
-            (symbol, ts, price, size, aggressor_side)
-        VALUES %s
-        """,
-        rows,
-    )
 
 
 def upsert_theta_option_eod_batch(rows: list[tuple]) -> None:
