@@ -3,9 +3,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockSql, mockSentryMessage } = vi.hoisted(() => ({
+const { mockSql, mockSentryMessage, mockSentryException } = vi.hoisted(() => ({
   mockSql: vi.fn().mockResolvedValue([]),
   mockSentryMessage: vi.fn(),
+  mockSentryException: vi.fn(),
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -21,7 +22,7 @@ vi.mock('../_lib/logger.js', () => ({
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     setTag: vi.fn(),
-    captureException: vi.fn(),
+    captureException: mockSentryException,
     captureMessage: mockSentryMessage,
   },
   metrics: {},
@@ -106,7 +107,7 @@ describe('populate-periscope-from-gexbot handler', () => {
     process.env = originalEnv;
   });
 
-  it('skips outside the futures-RTH window (cronGuard auto-gates via isFuturesRthCt)', async () => {
+  it('skips outside the GexBot live window (cronGuard auto-gates via isGexbotLiveCt)', async () => {
     vi.setSystemTime(WEEKEND_TIME);
     const req = mockRequest({
       method: 'GET',
@@ -118,10 +119,10 @@ describe('populate-periscope-from-gexbot handler', () => {
     expect(res._json).toMatchObject({ skipped: true });
   });
 
-  it('runs in the late-session window (15:30 CT) the old equity-RTH gate rejected', async () => {
-    // 20:30 UTC = 15:30 CT. The old isMarketHours() gate closed at 15:05 CT
-    // (would skip); isFuturesRthCt() runs through 15:55 CT to capture the
-    // futures settlement window. Anchors the gate swap so a revert is caught.
+  it('skips after the cash close (16:30 ET) without querying or warning', async () => {
+    // 20:30 UTC = 16:30 ET (15:30 CT). GexBot's snapshot is frozen at the
+    // 16:00 ET close, so the upstream fetch crons stop at 16:01 ET — a
+    // populate run here would only find stale rows and warn "no fresh row".
     vi.setSystemTime(new Date('2026-05-27T20:30:00.000Z'));
     const req = mockRequest({
       method: 'GET',
@@ -129,9 +130,119 @@ describe('populate-periscope-from-gexbot handler', () => {
     });
     const res = mockResponse();
     await handler(req, res);
-    // Gate passed → handler ran its panel SELECTs (never called if skipped).
-    expect(res._json).not.toMatchObject({ skipped: true });
-    expect(mockSql).toHaveBeenCalled();
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ skipped: true });
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockSentryMessage).not.toHaveBeenCalled();
+  });
+
+  it('treats an all-panels miss in the first minutes after the open as a skipped warm-up, not a Sentry warning', async () => {
+    // 13:31 UTC = 09:31 ET. The 09:30 populate run races the same-minute
+    // strikes insert, so no row falls inside the 5-min staleness window
+    // (D9: daily "3 panel(s) failed" at 13:30:16 UTC).
+    vi.setSystemTime(new Date('2026-05-27T13:31:00.000Z'));
+    mockSql.mockResolvedValue([]); // every panel SELECT: no fresh row
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      rows: 0,
+      panelsWritten: 0,
+    });
+    expect(mockSql).toHaveBeenCalledTimes(3); // 3 SELECTs, no INSERTs
+    expect(mockSentryMessage).not.toHaveBeenCalled();
+  });
+
+  it('warns again once the warm-up ends (all-panels miss at 09:33 ET)', async () => {
+    // Boundary: the warm-up covers 09:30–09:32 ET only (sinceOpen < 3).
+    vi.setSystemTime(new Date('2026-05-27T13:33:00.000Z')); // 09:33 ET
+    mockSql.mockResolvedValue([]);
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ status: 'partial', panelsWritten: 0 });
+    expect(mockSentryMessage).toHaveBeenCalledWith(
+      'populate-periscope-from-gexbot: 3 panel(s) failed',
+      expect.objectContaining({ level: 'warning' }),
+    );
+  });
+
+  it('still warns on an all-panels miss mid-session (11:00 ET)', async () => {
+    vi.setSystemTime(new Date('2026-05-27T15:00:00.000Z')); // 11:00 ET
+    mockSql.mockResolvedValue([]);
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'partial', panelsWritten: 0 });
+    expect(mockSentryMessage).toHaveBeenCalledTimes(1);
+    expect(mockSentryMessage).toHaveBeenCalledWith(
+      'populate-periscope-from-gexbot: 3 panel(s) failed',
+      expect.objectContaining({ level: 'warning' }),
+    );
+  });
+
+  it('still warns on a partial miss during the open warm-up', async () => {
+    // Only an ALL-panels miss is the open race; one stale panel at 09:31
+    // ET while the others are fresh is a real gap and must page as before.
+    vi.setSystemTime(new Date('2026-05-27T13:31:00.000Z'));
+    const fresh = new Date(Date.now() - 30_000);
+    const payload = { mini_contracts: [[7435, 0, 0, 100, [], 0, null]] };
+    mockSql
+      .mockResolvedValueOnce([{ captured_at: fresh, raw_response: payload }])
+      .mockResolvedValueOnce([{ strike: 7435 }])
+      .mockResolvedValueOnce([]) // charm: no fresh row
+      .mockResolvedValueOnce([{ captured_at: fresh, raw_response: payload }])
+      .mockResolvedValueOnce([{ strike: 7435 }]);
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ status: 'partial', panelsWritten: 2 });
+    expect(mockSentryMessage).toHaveBeenCalledWith(
+      'populate-periscope-from-gexbot: 1 panel(s) failed',
+      expect.objectContaining({ level: 'warning' }),
+    );
+  });
+
+  it('returns 500 and reports to Sentry when the periscope_snapshots INSERT rejects', async () => {
+    const fresh = new Date(MARKET_TIME.getTime() - 60_000);
+    mockSql
+      .mockResolvedValueOnce([
+        {
+          captured_at: fresh,
+          raw_response: { mini_contracts: [[7435, 0, 0, 100, [], 0, null]] },
+        },
+      ])
+      .mockRejectedValueOnce(new Error('neon: connection terminated'));
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(mockSentryException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'neon: connection terminated' }),
+    );
   });
 
   it('rejects without CRON_SECRET', async () => {

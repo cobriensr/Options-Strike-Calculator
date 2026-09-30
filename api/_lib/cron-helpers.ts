@@ -84,8 +84,9 @@ export function isPastCashOpen(graceMinutes = 0): boolean {
  * Futures-tied RTH window: 08:30–15:55 CT (== 09:30–16:55 ET).
  *
  * Wider than `isMarketHours()` on the close side (15:55 CT vs equity
- * close + 5 min = 15:05 CT) so futures-anchored crons (GEXBot, ES
- * mechanics) keep capturing through the futures settlement window.
+ * close + 5 min = 15:05 CT) so futures-anchored crons keep capturing
+ * through the futures settlement window. (GexBot crons use the narrower
+ * `isGexbotLiveCt()` — GexBot itself stops updating at the cash close.)
  *
  * Holiday-aware via the same event calendar — returns false on closed
  * sessions. Early-close days still respect the 16:55 ET cap; this
@@ -105,6 +106,30 @@ export function isFuturesRthCt(): boolean {
   const openMin = 9 * 60 + 30; // 09:30 ET = 08:30 CT
   const closeMin = 16 * 60 + 55; // 16:55 ET = 15:55 CT
   return totalMin >= openMin && totalMin <= closeMin;
+}
+
+/**
+ * GexBot capture window: 09:30 ET through the day's cash close + 1 minute,
+ * inclusive (16:01 ET normally, 13:01 ET on a half-day). Holiday- and
+ * weekend-aware; DST-safe because it is evaluated in ET.
+ *
+ * Narrower than `isFuturesRthCt()` on purpose: GexBot freezes its snapshot
+ * at the equity close (every ticker/state key carries the same 16:00:00
+ * source_timestamp afterwards), so post-close fetches only re-download a
+ * duplicate — and that hour produced 99.8% of the GexBot TimeoutErrors.
+ * The extra minute keeps the close-minute snapshot despite cron jitter.
+ */
+export function isGexbotLiveCt(): boolean {
+  const now = new Date();
+  const day = getETDayOfWeek(now);
+  if (day === 0 || day === 6) return false;
+
+  const closeHour = getMarketCloseHourET(getETDateStr(now));
+  if (closeHour == null) return false; // holiday
+
+  const { hour, minute } = getETTime(now);
+  const totalMin = hour * 60 + minute;
+  return totalMin >= MARKET_MINUTES.OPEN && totalMin <= closeHour * 60 + 1;
 }
 
 /**

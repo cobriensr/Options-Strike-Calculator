@@ -166,8 +166,8 @@ describe('audit-gexbot-health cron', () => {
   });
 
   it('does NOT alert on zero snapshots when today is a market holiday', async () => {
-    // GexBot is gated to futures RTH; a weekday holiday produces 0 rows by
-    // design. The cron still runs (it is not market-gated), so the holiday
+    // GexBot is gated to the cash session; a weekday holiday produces 0 rows
+    // by design. The cron still runs (it is not market-gated), so the holiday
     // guard is what prevents ~10 false "outage" pages per year.
     mockIsTradingDayET.mockReturnValue(false);
     mockSql.mockResolvedValueOnce([healthRow({ rows_all: 0, rows_spx: 0 })]);

@@ -22,7 +22,7 @@
  * Environment: GEXBOT_API_KEY, CRON_SECRET
  */
 
-import { isFuturesRthCt } from '../_lib/cron-helpers.js';
+import { isGexbotLiveCt } from '../_lib/cron-helpers.js';
 import { mapWithConcurrency, withRetry } from '../_lib/uw-fetch.js';
 import {
   withCronInstrumentation,
@@ -101,7 +101,17 @@ export default withCronInstrumentation(
       if (!result.ok) {
         failed += 1;
         if (sentryCaptured < SENTRY_CAPTURE_CAP) {
+          // Stable grouping: one issue per (cron, error class). Without it
+          // Sentry split the same TimeoutError into two issues (8F by
+          // message, 76 by internal timer frames).
+          const errName =
+            result.err instanceof Error ? result.err.name : 'UnknownError';
           Sentry.captureException(result.err, {
+            fingerprint: [
+              'gexbot-fetch-failure',
+              'fetch-gexbot-strikes',
+              errName,
+            ],
             tags: {
               'gexbot.cron': 'strikes',
               'gexbot.ticker': result.ticker,
@@ -132,6 +142,8 @@ export default withCronInstrumentation(
         `fetch-gexbot-strikes: ${failed - SENTRY_CAPTURE_CAP} additional failures suppressed (cap=${SENTRY_CAPTURE_CAP})`,
         {
           level: 'warning',
+          // The message embeds a varying count; pin one issue per cron.
+          fingerprint: ['gexbot-failures-suppressed', 'fetch-gexbot-strikes'],
           tags: {
             'gexbot.cron': 'strikes',
             'gexbot.summary': 'true',
@@ -153,9 +165,9 @@ export default withCronInstrumentation(
       metadata: { captures: captures.length, failed },
     };
   },
-  // Gate to futures-tied RTH (08:30–15:55 CT) — keeps capture aligned
-  // with the sibling fetch-gexbot-fast (which uses the same gate) so
-  // per-strike rows continue to land alongside the orderflow scalars
-  // through the futures settlement window past equity close.
-  { requireApiKey: false, timeCheck: isFuturesRthCt },
+  // Gate to the GexBot live window (09:30 ET → cash close + 1 min), same
+  // as the sibling fetch-gexbot-fast. GexBot freezes at the close, so
+  // post-close ticks only re-fetch a duplicate snapshot (and were the
+  // source of 99.8% of GexBot TimeoutErrors).
+  { requireApiKey: false, timeCheck: isGexbotLiveCt },
 );

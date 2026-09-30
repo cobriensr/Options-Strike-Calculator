@@ -2,8 +2,9 @@
  * GET /api/cron/audit-gexbot-health
  *
  * Daily data-quality monitor for the GEXBot classic-basic merge. Runs at
- * 22:30 UTC (17:30 CT, after the 21:55 UTC capture window closes) on
- * weekdays. Confirms the 10 aggregate columns revived by the 2026-05-29
+ * 22:30 UTC (17:30 CT) on weekdays, after the capture window closes at the
+ * cash close + 1 min (20:01 UTC under EDT, 21:01 UTC under EST). Confirms
+ * the 10 aggregate columns revived by the 2026-05-29
  * `/classic/gex_zero` capture (see spec) are actually populating — a
  * recurrence of the orderflow spec-drift would return HTTP 200 with the
  * fields silently absent, which the per-tick `enriched` metric can't catch.
@@ -90,10 +91,11 @@ export default withCronCheckin('audit-gexbot-health', async (req, res) => {
 
       const alerts: string[] = [];
       if (rowsAll === 0) {
-        // GexBot is gated to futures RTH, so weekends/holidays legitimately
-        // produce zero snapshots — not an outage. Only a real trading day with
-        // no rows is a capture failure worth paging on. (This cron runs Mon–Fri
-        // UTC, but a weekday market holiday would otherwise false-alarm.)
+        // GexBot is gated to the cash session (isGexbotLiveCt), so
+        // weekends/holidays legitimately produce zero snapshots — not an
+        // outage. Only a real trading day with no rows is a capture failure
+        // worth paging on. (This cron runs Mon–Fri UTC, but a weekday market
+        // holiday would otherwise false-alarm.)
         if (isTradingDayET()) {
           alerts.push(
             `no gexbot_snapshots in last ${LOOKBACK_HOURS}h (capture outage?)`,

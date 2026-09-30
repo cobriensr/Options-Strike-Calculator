@@ -3,9 +3,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockSql, mockSentryCapture } = vi.hoisted(() => ({
+const { mockSql, mockSentryCapture, mockSentryMessage } = vi.hoisted(() => ({
   mockSql: vi.fn().mockResolvedValue([]),
   mockSentryCapture: vi.fn(),
+  mockSentryMessage: vi.fn(),
 }));
 
 vi.mock('../_lib/db.js', () => ({
@@ -25,7 +26,7 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     setTag: vi.fn(),
     captureException: mockSentryCapture,
-    captureMessage: vi.fn(),
+    captureMessage: mockSentryMessage,
   },
   metrics: { uwRateLimit: vi.fn() },
 }));
@@ -41,6 +42,10 @@ import {
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 // Fixed weekend date: Saturday
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
+// 15:55 ET (EDT) — last minutes before the 16:00 ET cash close.
+const PRE_CLOSE_TIME = new Date('2026-03-24T19:55:00.000Z');
+// 16:30 ET (EDT) — GexBot's snapshot is frozen at the close by now.
+const POST_CLOSE_TIME = new Date('2026-03-24T20:30:00.000Z');
 
 const CLASSIC_BASIC_COUNT = GEXBOT_TICKERS.length;
 const CLASSIC_MAXCHANGE_COUNT =
@@ -114,24 +119,25 @@ const CLASSIC_BASIC_RE = /\/classic\/(gex_zero|gex_one|gex_full)$/;
  * gets the appropriate shape so happy-path inserts pick up both
  * snapshot and capture rows, and the classic-basic merge has real fields.
  */
+function happyResponse(url: string): Response {
+  const ticker =
+    url.split('/').find((seg) => GEXBOT_TICKERS.includes(seg as never)) ??
+    'SPX';
+  let body: Record<string, unknown>;
+  if (url.includes('/orderflow/orderflow')) {
+    body = makeOrderflowBody(ticker);
+  } else if (CLASSIC_BASIC_RE.test(url)) {
+    body = makeClassicBasicBody(ticker);
+  } else {
+    body = makeMaxchangeBody(ticker);
+  }
+  return { ok: true, status: 200, json: async () => body } as Response;
+}
+
 function stubFetchHappyPath() {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (input: string) => {
-      const url = String(input);
-      const ticker =
-        url.split('/').find((seg) => GEXBOT_TICKERS.includes(seg as never)) ??
-        'SPX';
-      let body: Record<string, unknown>;
-      if (url.includes('/orderflow/orderflow')) {
-        body = makeOrderflowBody(ticker);
-      } else if (CLASSIC_BASIC_RE.test(url)) {
-        body = makeClassicBasicBody(ticker);
-      } else {
-        body = makeMaxchangeBody(ticker);
-      }
-      return { ok: true, status: 200, json: async () => body } as Response;
-    }),
+    vi.fn(async (input: string) => happyResponse(String(input))),
   );
 }
 
@@ -186,6 +192,23 @@ describe('fetch-gexbot-fast handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ skipped: true });
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('skips after the cash close without fetching (GexBot snapshot is frozen)', async () => {
+    vi.setSystemTime(POST_CLOSE_TIME);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ skipped: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockSentryCapture).not.toHaveBeenCalled();
   });
 
   // ── Missing API key ───────────────────────────────────────
@@ -470,5 +493,147 @@ describe('fetch-gexbot-fast handler', () => {
     expect(res._json).toMatchObject({ status: 'success', failed: 0 });
     expect(mockSentryCapture).not.toHaveBeenCalled();
     expect(callsByPath.get('/v2/SPX/orderflow/orderflow')).toBe(2);
+  });
+
+  // ── Sentry grouping + failure modes ───────────────────────
+
+  it('reports a pre-close timeout to Sentry under the stable gexbot-fetch-failure fingerprint', async () => {
+    // AbortSignal.timeout surfaces as a DOMException named TimeoutError.
+    // withRetry retries it twice (1s + 2s backoff), then the failure must
+    // still reach Sentry — grouped by (cron, err.name), not by stack/message.
+    vi.useFakeTimers();
+    vi.setSystemTime(PRE_CLOSE_TIME);
+    let timeoutCalls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/SPX/orderflow/orderflow')) {
+          timeoutCalls += 1;
+          throw new DOMException(
+            'The operation was aborted due to timeout',
+            'TimeoutError',
+          );
+        }
+        return happyResponse(url);
+      }),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    const pending = handler(req, res);
+    await vi.advanceTimersByTimeAsync(3500);
+    await pending;
+
+    expect(timeoutCalls).toBe(3);
+    expect(res._json).toMatchObject({ status: 'partial', failed: 1 });
+    expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+    expect(mockSentryCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'TimeoutError' }),
+      expect.objectContaining({
+        fingerprint: [
+          'gexbot-fetch-failure',
+          'fetch-gexbot-fast',
+          'TimeoutError',
+        ],
+        tags: expect.objectContaining({
+          'gexbot.cron': 'fast',
+          'gexbot.ticker': 'SPX',
+          'gexbot.endpoint': 'orderflow',
+        }),
+      }),
+    );
+  });
+
+  it('captures a malformed 2xx body (res.json() rejects) as a fetch failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/QQQ/classic/gex_one/maxchange')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => {
+              throw new SyntaxError('Unexpected token < in JSON');
+            },
+          } as unknown as Response;
+        }
+        return happyResponse(url);
+      }),
+    );
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      rows: STORED_ROWS - 1,
+      failed: 1,
+    });
+    expect(mockSentryCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'SyntaxError' }),
+      expect.objectContaining({
+        fingerprint: [
+          'gexbot-fetch-failure',
+          'fetch-gexbot-fast',
+          'SyntaxError',
+        ],
+      }),
+    );
+  });
+
+  it('caps Sentry exceptions at 10 and emits one fingerprinted summary during a full outage', async () => {
+    // 400 (non-retryable) so withRetry exits on the first attempt.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          ({
+            ok: false,
+            status: 400,
+            text: async () => 'bad request',
+          }) as Response,
+      ),
+    );
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ rows: 0, failed: FETCH_TASKS });
+    expect(mockSentryCapture).toHaveBeenCalledTimes(10);
+    expect(mockSentryMessage).toHaveBeenCalledTimes(1);
+    expect(mockSentryMessage).toHaveBeenCalledWith(
+      `fetch-gexbot-fast: ${FETCH_TASKS - 10} additional failures suppressed (cap=10)`,
+      expect.objectContaining({
+        level: 'warning',
+        fingerprint: ['gexbot-failures-suppressed', 'fetch-gexbot-fast'],
+      }),
+    );
+  });
+
+  it('returns 500 and reports to Sentry when the snapshot INSERT rejects', async () => {
+    stubFetchHappyPath();
+    mockSql.mockRejectedValueOnce(new Error('neon: connection terminated'));
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(500);
+    expect(mockSentryCapture).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'neon: connection terminated' }),
+    );
   });
 });

@@ -29,12 +29,13 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { isFuturesRthCt } from '../_lib/cron-helpers.js';
+import { MARKET_MINUTES } from '../_lib/constants.js';
+import { isGexbotLiveCt } from '../_lib/cron-helpers.js';
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
+import { getETDateStr, getETTime } from '../../src/utils/timezone.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import {
@@ -47,6 +48,23 @@ import {
 } from '../_lib/periscope-gexbot.js';
 
 export const config = { maxDuration: 30 };
+
+/**
+ * Minutes after the 09:30 ET open during which an ALL-panels "no fresh row"
+ * miss is the expected open race, not an outage: the 09:30 populate run
+ * queries before the same-minute fetch-gexbot-strikes run has inserted, so
+ * no row falls inside the 5-min staleness window (the prior session's last
+ * capture is hours old) — D9, a daily "3 panel(s) failed" warning at
+ * 13:30:16 UTC.
+ */
+const OPEN_WARMUP_MINUTES = 3;
+
+/** True during the first OPEN_WARMUP_MINUTES minutes from 09:30 ET. */
+function inOpenWarmup(now: Date): boolean {
+  const { hour, minute } = getETTime(now);
+  const sinceOpen = hour * 60 + minute - MARKET_MINUTES.OPEN;
+  return sinceOpen >= 0 && sinceOpen < OPEN_WARMUP_MINUTES;
+}
 
 // Re-export for the existing test file that imports `decodeStrikes` from
 // this module. New callers should import from _lib/periscope-gexbot.
@@ -85,6 +103,7 @@ export default withCronInstrumentation(
 
     let totalRows = 0;
     let panelsWritten = 0;
+    let stalePanels = 0;
     const errors: string[] = [];
 
     for (const panel of PANELS) {
@@ -103,6 +122,7 @@ export default withCronInstrumentation(
       )) as { captured_at: Date | string; raw_response: GexbotStatePayload }[];
 
       if (rows.length === 0) {
+        stalePanels += 1;
         errors.push(`no fresh ${category} row for ${TICKER}`);
         continue;
       }
@@ -150,6 +170,23 @@ export default withCronInstrumentation(
       );
     }
 
+    // Every panel stale right after the open = the 09:30 race with the
+    // strikes capture (see OPEN_WARMUP_MINUTES), so skip quietly; the next
+    // 10-min tick picks the slice up. A partial miss, a decode failure, or
+    // an all-stale run later in the session still warns below.
+    if (stalePanels === PANELS.length && inOpenWarmup(new Date())) {
+      logger.info(
+        { errors },
+        'populate-periscope-from-gexbot: no fresh GexBot rows yet (open warm-up)',
+      );
+      return {
+        status: 'skipped',
+        rows: 0,
+        message: 'open warm-up: GexBot strikes not captured yet',
+        metadata: { panelsWritten, errors },
+      };
+    }
+
     if (errors.length > 0) {
       Sentry.captureMessage(
         `populate-periscope-from-gexbot: ${errors.length} panel(s) failed`,
@@ -163,9 +200,9 @@ export default withCronInstrumentation(
       metadata: { panelsWritten, errors },
     };
   },
-  // Gate to futures-tied RTH (08:30–15:55 CT), matching the upstream
-  // gexbot capture crons it reads from. Without this, ticks outside the
-  // gexbot window find no fresh `gexbot_api_capture` row and emit a
+  // Gate to the GexBot live window (09:30 ET → close + 1 min), matching
+  // the upstream gexbot capture crons it reads from. Without this, ticks
+  // outside that window find no fresh `gexbot_api_capture` row and emit a
   // "no fresh row" Sentry warning every cycle.
-  { requireApiKey: false, timeCheck: isFuturesRthCt },
+  { requireApiKey: false, timeCheck: isGexbotLiveCt },
 );

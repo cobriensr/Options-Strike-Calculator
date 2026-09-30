@@ -30,7 +30,7 @@
  */
 
 import { getDb, withDbRetry } from '../_lib/db.js';
-import { isFuturesRthCt } from '../_lib/cron-helpers.js';
+import { isGexbotLiveCt } from '../_lib/cron-helpers.js';
 import { mapWithConcurrency, withRetry } from '../_lib/uw-fetch.js';
 import {
   withCronInstrumentation,
@@ -305,7 +305,13 @@ export default withCronInstrumentation(
             result.task.kind === 'orderflow'
               ? 'orderflow'
               : result.task.category;
+          // Stable grouping: one issue per (cron, error class). Without it
+          // Sentry split the same TimeoutError into two issues (8F by
+          // message, 76 by internal timer frames).
+          const errName =
+            result.err instanceof Error ? result.err.name : 'UnknownError';
           Sentry.captureException(result.err, {
+            fingerprint: ['gexbot-fetch-failure', 'fetch-gexbot-fast', errName],
             tags: {
               'gexbot.cron': 'fast',
               'gexbot.ticker': result.task.ticker,
@@ -359,6 +365,8 @@ export default withCronInstrumentation(
         `fetch-gexbot-fast: ${failed - SENTRY_CAPTURE_CAP} additional failures suppressed (cap=${SENTRY_CAPTURE_CAP})`,
         {
           level: 'warning',
+          // The message embeds a varying count; pin one issue per cron.
+          fingerprint: ['gexbot-failures-suppressed', 'fetch-gexbot-fast'],
           tags: {
             'gexbot.cron': 'fast',
             'gexbot.summary': 'true',
@@ -400,8 +408,9 @@ export default withCronInstrumentation(
       },
     };
   },
-  // Gate to futures-tied RTH (08:30–15:55 CT) instead of the default
-  // equity-RTH window — GEXBot publishes through the futures settlement
-  // window, and we want to keep capturing past the equity close at 15:00 CT.
-  { requireApiKey: false, timeCheck: isFuturesRthCt },
+  // Gate to the GexBot live window (09:30 ET → cash close + 1 min).
+  // GexBot freezes its snapshot at the equity close, so post-close ticks
+  // only re-fetch a duplicate (and were the source of 99.8% of GexBot
+  // TimeoutErrors). The +1 min keeps the close-minute snapshot.
+  { requireApiKey: false, timeCheck: isGexbotLiveCt },
 );
