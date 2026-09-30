@@ -4,8 +4,7 @@
  *
  * Phase 5b (2026-04-19) turns four raw UW data streams into delta /
  * velocity / cumulative-net summaries for Claude's analyze context.
- * Same architectural pattern as Phase 2b (`microstructure-signals.ts`)
- * — pure compute layer, no cron, no external API call, no snapshot
+ * Pure compute layer — no cron, no external API call, no snapshot
  * table.
  *
  * ── Source tables (verified against migrations + cron handlers) ──
@@ -244,8 +243,7 @@ function rthOpenIsoFor(now: Date): string {
 }
 
 /**
- * Population stddev. Matches the shape used in
- * microstructure-signals — each per-bucket observation is treated as
+ * Population stddev — each per-bucket observation is treated as
  * a population sample of "bucket count at time K", not a sample from
  * a meta-distribution.
  */

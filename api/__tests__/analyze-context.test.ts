@@ -303,13 +303,6 @@ vi.mock('../_lib/vix-divergence.js', () => ({
   formatVixDivergenceForClaude: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock('../_lib/microstructure-signals.js', () => ({
-  computeMicrostructureSignals: vi.fn().mockResolvedValue(null),
-  computeAllSymbolSignals: vi.fn().mockResolvedValue({ es: null, nq: null }),
-  formatMicrostructureForClaude: vi.fn().mockReturnValue(null),
-  formatMicrostructureDualSymbolForClaude: vi.fn().mockReturnValue(null),
-}));
-
 vi.mock('../_lib/uw-deltas.js', () => ({
   computeUwDeltas: vi.fn().mockResolvedValue(null),
   formatUwDeltasForClaude: vi.fn().mockReturnValue(null),
@@ -758,20 +751,68 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('Cross-Asset Regime');
     expect(text).toContain('Prior-Day Volume Profile (ES)');
     expect(text).toContain('VIX/SPX Divergence');
-    expect(text).toContain('Microstructure Signals (ES + NQ)');
     expect(text).toContain('UW Deltas (dark pool / GEX / whale / ETF tide)');
+    expect(text).toContain('- Futures Context');
+    // Microstructure (Databento top-of-book / OFI) was removed with no
+    // substitute — it must not be advertised as a failed source.
+    expect(text).not.toContain('Microstructure');
     vi.unstubAllGlobals();
   });
 
-  it('renders the new cross-asset / volume-profile / VIX-divergence / microstructure sections when fetchers return data', async () => {
+  it('forwards the entry-time cutoff (asOf) and SPX to the futures formatter', async () => {
+    const { formatFuturesForClaude } =
+      await import('../_lib/futures-context.js');
+    vi.mocked(formatFuturesForClaude).mockClear();
+
+    await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-06',
+      entryTime: '10:30 AM CT',
+      spx: 5700,
+      isBacktest: true,
+    });
+
+    expect(formatFuturesForClaude).toHaveBeenCalledWith(
+      expect.anything(),
+      '2026-04-06',
+      5700,
+      parseEntryTimeAsUtc('10:30 AM CT', '2026-04-06'),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it('renders the futures block without any microstructure section when futures data is present', async () => {
+    const { formatFuturesForClaude } =
+      await import('../_lib/futures-context.js');
+    vi.mocked(formatFuturesForClaude).mockResolvedValueOnce(
+      '## Futures Context\n\nES Futures (/ES):\n  Current: 5,700.00',
+    );
+
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-04',
+    });
+
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('## Futures Context'),
+    );
+    expect(textBlock).toBeDefined();
+    const text = (textBlock as { type: 'text'; text: string }).text;
+    expect(text).toContain('ES Futures (/ES)');
+    expect(text).toContain('<futures_context_rules>');
+    expect(text).not.toContain('- Futures Context');
+    expect(text).not.toContain('Microstructure');
+    expect(text).not.toMatch(/\bOFI\b/);
+    vi.unstubAllGlobals();
+  });
+
+  it('renders the new cross-asset / volume-profile / VIX-divergence / UW-deltas sections when fetchers return data', async () => {
     const { formatCrossAssetRegimeForClaude } =
       await import('../_lib/cross-asset-regime.js');
     const { formatVolumeProfileForClaude } =
       await import('../_lib/volume-profile.js');
     const { formatVixDivergenceForClaude } =
       await import('../_lib/vix-divergence.js');
-    const { formatMicrostructureDualSymbolForClaude } =
-      await import('../_lib/microstructure-signals.js');
     const { formatUwDeltasForClaude } = await import('../_lib/uw-deltas.js');
 
     vi.mocked(formatCrossAssetRegimeForClaude).mockReturnValue(
@@ -782,18 +823,6 @@ describe('buildAnalysisContext', () => {
     );
     vi.mocked(formatVixDivergenceForClaude).mockReturnValue(
       'VIX 5-min return: +4.50%\n  DIVERGENCE TRIGGERED',
-    );
-    vi.mocked(formatMicrostructureDualSymbolForClaude).mockReturnValue(
-      [
-        '<microstructure_signals>',
-        '  ES (latest front-month):',
-        '    OFI 1h: +0.10 → BALANCED',
-        '  NQ (latest front-month):',
-        '    OFI 1h: +0.42 → AGGRESSIVE_BUY',
-        '  Cross-asset read (1h OFI):',
-        '    ALIGNED_BULLISH',
-        '</microstructure_signals>',
-      ].join('\n'),
     );
     vi.mocked(formatUwDeltasForClaude).mockReturnValue(
       [
@@ -826,11 +855,6 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('POC: 5000.00');
     expect(text).toContain('VIX/SPX Divergence Flag');
     expect(text).toContain('DIVERGENCE TRIGGERED');
-    expect(text).toContain('Dual-Symbol Microstructure Signals');
-    expect(text).toContain('ES (latest front-month)');
-    expect(text).toContain('NQ (latest front-month)');
-    expect(text).toContain('ALIGNED_BULLISH');
-    expect(text).toContain('AGGRESSIVE_BUY');
     expect(text).toContain('UW Deltas');
     expect(text).toContain('<uw_deltas>');
     expect(text).toContain('Classification: SURGE');
@@ -838,7 +862,7 @@ describe('buildAnalysisContext', () => {
     expect(text).toContain('Classification: AGGRESSIVE_CALL_BIAS');
     expect(text).toContain('Classification: SPY_LEADING_BULL');
 
-    // All five sections should NOT appear in the unavailable manifest
+    // All four sections should NOT appear in the unavailable manifest
     const unavailableBlock = result.content.find(
       (b) => b.type === 'text' && b.text.includes('Data Sources Unavailable'),
     );
@@ -847,7 +871,6 @@ describe('buildAnalysisContext', () => {
       expect(uText).not.toContain('- Cross-Asset Regime');
       expect(uText).not.toContain('- Prior-Day Volume Profile (ES)');
       expect(uText).not.toContain('- VIX/SPX Divergence');
-      expect(uText).not.toContain('- Microstructure Signals (ES + NQ)');
       expect(uText).not.toContain(
         '- UW Deltas (dark pool / GEX / whale / ETF tide)',
       );

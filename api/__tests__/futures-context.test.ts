@@ -1,28 +1,42 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { formatFuturesForClaude } from '../_lib/futures-context.js';
+import logger from '../_lib/logger.js';
+import { metrics, Sentry } from '../_lib/sentry.js';
 
 // ── Mock logger so debug calls don't pollute output ──────────
 vi.mock('../_lib/logger.js', () => ({
   default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+vi.mock('../_lib/sentry.js', () => ({
+  metrics: { increment: vi.fn() },
+  Sentry: { captureException: vi.fn() },
+}));
+
 // ── Types matching the module's internal shapes ──────────────
 
 interface SnapshotRow {
   symbol: string;
-  price: string;
+  ts: string | Date;
+  price: string | null;
   change_1h_pct: string | null;
   change_day_pct: string | null;
   volume_ratio: string | null;
 }
 
-interface EsOptionsRow {
-  strike: string;
-  option_type: string;
-  open_interest: string | null;
-  volume: string | null;
+// ── Clock ────────────────────────────────────────────────────
+//
+// Freshness is judged against the analysis reference time (wall clock
+// when no entry-time cutoff is given). Pin the wall clock so the
+// "fresh by default" fixtures below stay fresh.
+
+const NOW = new Date('2026-04-06T15:00:00.000Z');
+const MINUTE_MS = 60_000;
+
+function minutesBefore(ref: Date, minutes: number): string {
+  return new Date(ref.getTime() - minutes * MINUTE_MS).toISOString();
 }
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -33,6 +47,7 @@ function makeSnapshot(
 ): SnapshotRow {
   return {
     symbol,
+    ts: minutesBefore(NOW, 2),
     price: '5700.00',
     change_1h_pct: '0.15',
     change_day_pct: '-0.30',
@@ -41,25 +56,35 @@ function makeSnapshot(
   };
 }
 
-function makeEsOption(overrides: Partial<EsOptionsRow> = {}): EsOptionsRow {
-  return {
-    strike: '5700',
-    option_type: 'P',
-    open_interest: '25000',
-    volume: '4500',
-    ...overrides,
-  };
-}
-
-const analysisDate = '2026-04-05';
+const analysisDate = '2026-04-06';
 
 // ── Mock sql (tagged template literal) ───────────────────────
 
 let mockSql: ReturnType<typeof vi.fn>;
 
+function mockSnapshots(rows: SnapshotRow[]): void {
+  mockSql.mockResolvedValueOnce(rows);
+}
+
+/** Tagged-template params of the Nth sql call (strings array stripped). */
+function queryParams(callIndex = 0): unknown[] {
+  return mockSql.mock.calls[callIndex]!.slice(1);
+}
+
+function queryText(callIndex = 0): string {
+  const strings = mockSql.mock.calls[callIndex]![0] as readonly string[];
+  return strings.join('$?');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(NOW);
   mockSql = vi.fn();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 // ============================================================
@@ -69,35 +94,249 @@ beforeEach(() => {
 describe('formatFuturesForClaude', () => {
   // ── Error handling ───────────────────────────────────────
 
-  it('returns null when futures_snapshots table does not exist', async () => {
-    mockSql.mockRejectedValueOnce(
-      new Error('relation "futures_snapshots" does not exist'),
+  it('returns null and reports to Sentry when the snapshot query rejects', async () => {
+    const err = new Error('relation "futures_snapshots" does not exist');
+    mockSql.mockRejectedValueOnce(err);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toBeNull();
+    expect(Sentry.captureException).toHaveBeenCalledWith(err);
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'futures_context.fetch_error',
     );
+  });
+
+  it('returns null when no snapshot rows exist', async () => {
+    mockSnapshots([]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toBeNull();
   });
 
-  it('returns null when no snapshot rows exist', async () => {
-    mockSql.mockResolvedValueOnce([]); // snapshots query
+  it('drops a malformed row with a schema warning and keeps valid rows', async () => {
+    mockSnapshots([
+      makeSnapshot('ES'),
+      makeSnapshot('NQ', { price: null }),
+      makeSnapshot('ZN', { ts: 'not-a-timestamp' }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(result).not.toContain('NQ Futures');
+    expect(result).not.toContain('10Y Treasury');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        row: expect.objectContaining({ symbol: 'NQ' }),
+      }),
+      'futures_snapshots row failed schema validation — dropping',
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        row: expect.objectContaining({ symbol: 'ZN' }),
+      }),
+      'futures_snapshots row failed schema validation — dropping',
+    );
+  });
+
+  it('accepts ts as a Date object (Neon TIMESTAMPTZ parsing)', async () => {
+    mockSnapshots([
+      makeSnapshot('ES', { ts: new Date(NOW.getTime() - 3 * MINUTE_MS) }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toContain('ES Futures (/ES)');
+  });
+
+  // ── Removed Databento-only sources ──────────────────────
+
+  it('issues exactly one query — no futures_options_daily lookup', async () => {
+    mockSnapshots([makeSnapshot('ES')]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(queryText()).toContain('futures_snapshots');
+    expect(queryText()).not.toContain('futures_options_daily');
+    expect(result).not.toContain('ES Options');
+    expect(result).not.toContain('Top Put OI');
+  });
+
+  it('does not render DX even when a fresh DX snapshot row is present', async () => {
+    mockSnapshots([
+      makeSnapshot('ES'),
+      makeSnapshot('DX', { price: '104.50', change_day_pct: '0.80' }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(result).not.toContain('/DX');
+    expect(result).not.toContain('Dollar');
+    expect(result).not.toContain('DOLLAR');
+  });
+
+  it('returns null when DX is the only symbol with a snapshot', async () => {
+    mockSnapshots([makeSnapshot('DX', { price: '104.50' })]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toBeNull();
+  });
+
+  // ── Max-age guard ───────────────────────────────────────
+
+  it('renders a symbol whose latest snapshot is within the 15-minute max age', async () => {
+    mockSnapshots([makeSnapshot('ES', { ts: minutesBefore(NOW, 14) })]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('omits a stale symbol, keeps fresh ones, and names the stale symbol in a warning', async () => {
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '0.50' }),
+      makeSnapshot('NQ', {
+        price: '20500.00',
+        change_day_pct: '0.80',
+        ts: minutesBefore(NOW, 16),
+      }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(result).not.toContain('NQ Futures');
+    // Cross-symbol derivations must not read the stale NQ row either.
+    expect(result).not.toContain('NQ/ES Ratio');
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stale: [expect.objectContaining({ symbol: 'NQ', ageMin: 16 })],
+      }),
+      'futures_snapshots rows stale — omitting symbols from analyze context',
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'futures_context.stale_snapshot',
+    );
+  });
+
+  it('returns null when every snapshot is stale so the caller marks Futures Context unavailable', async () => {
+    mockSnapshots([
+      makeSnapshot('ES', { ts: minutesBefore(NOW, 60 * 24 * 26) }),
+      makeSnapshot('NQ', { ts: minutesBefore(NOW, 30) }),
+    ]);
+
+    const result = await formatFuturesForClaude(
+      mockSql as never,
+      analysisDate,
+      5700,
+    );
+
+    expect(result).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stale: [
+          expect.objectContaining({ symbol: 'ES' }),
+          expect.objectContaining({ symbol: 'NQ' }),
+        ],
+      }),
+      'futures_snapshots rows stale — omitting symbols from analyze context',
+    );
+  });
+
+  it('bounds the query to rows at-or-before wall clock when no asOf is given', async () => {
+    mockSnapshots([makeSnapshot('ES')]);
+
+    await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(queryText()).toMatch(/ts <= \$\?/);
+    expect(queryParams()).toEqual(
+      expect.arrayContaining([analysisDate, NOW.toISOString()]),
+    );
+  });
+
+  it('judges freshness against the analysis timestamp (asOf) in backtest mode, not wall clock', async () => {
+    const asOf = '2026-03-10T15:30:59.000Z';
+    const historicalDate = '2026-03-10';
+    const rows = [
+      makeSnapshot('ES', { ts: minutesBefore(new Date(asOf), 4) }),
+      makeSnapshot('NQ', { ts: minutesBefore(new Date(asOf), 20) }),
+    ];
+    mockSnapshots(rows);
+
+    const result = await formatFuturesForClaude(
+      mockSql as never,
+      historicalDate,
+      undefined,
+      asOf,
+    );
+
+    // ES is 4 min before the entry time → fresh; NQ 20 min → stale.
+    expect(result).toContain('ES Futures (/ES)');
+    expect(result).not.toContain('NQ Futures');
+    // Query bounded at the entry time, so rows after it can't leak in.
+    expect(queryParams()).toEqual(
+      expect.arrayContaining([historicalDate, asOf]),
+    );
+  });
+
+  it('treats the same historical rows as stale when judged against wall clock', async () => {
+    const asOf = '2026-03-10T15:30:59.000Z';
+    mockSnapshots([
+      makeSnapshot('ES', { ts: minutesBefore(new Date(asOf), 4) }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, '2026-03-10');
+
+    expect(result).toBeNull();
+  });
+
+  it('clamps a future asOf (pre-market default entry time) to wall clock', async () => {
+    const futureAsOf = new Date(NOW.getTime() + 2 * 60 * MINUTE_MS);
+    mockSnapshots([makeSnapshot('ES', { ts: minutesBefore(NOW, 3) })]);
+
+    const result = await formatFuturesForClaude(
+      mockSql as never,
+      analysisDate,
+      undefined,
+      futureAsOf.toISOString(),
+    );
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(queryParams()).toContain(NOW.toISOString());
+    expect(queryParams()).not.toContain(futureAsOf.toISOString());
+  });
+
+  it('falls back to wall clock when asOf is not a parseable timestamp', async () => {
+    mockSnapshots([makeSnapshot('ES')]);
+
+    const result = await formatFuturesForClaude(
+      mockSql as never,
+      analysisDate,
+      undefined,
+      'garbage',
+    );
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(queryParams()).toContain(NOW.toISOString());
   });
 
   // ── ES section ───────────────────────────────────────────
 
   it('formats ES section with momentum and basis', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5720.50',
-      change_1h_pct: '0.25',
-      change_day_pct: '-0.40',
-      volume_ratio: '1.5',
-    });
-    mockSql.mockResolvedValueOnce([es]); // snapshots
-    mockSql.mockResolvedValueOnce([]); // options (empty)
+    mockSnapshots([
+      makeSnapshot('ES', {
+        price: '5720.50',
+        change_1h_pct: '0.25',
+        change_day_pct: '-0.40',
+        volume_ratio: '1.5',
+      }),
+    ]);
 
     const result = await formatFuturesForClaude(
       mockSql as never,
@@ -115,9 +354,7 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('omits ES-SPX basis when spxPrice is not provided', async () => {
-    const es = makeSnapshot('ES', { price: '5720.50' });
-    mockSql.mockResolvedValueOnce([es]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([makeSnapshot('ES', { price: '5720.50' })]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -128,17 +365,14 @@ describe('formatFuturesForClaude', () => {
   // ── NQ section with NQ/ES ratio ─────────────────────────
 
   it('formats NQ section with NQ/ES ratio and direction', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '0.50',
-    });
-    const nq = makeSnapshot('NQ', {
-      price: '20500.00',
-      change_1h_pct: '0.30',
-      change_day_pct: '0.80',
-    });
-    mockSql.mockResolvedValueOnce([es, nq]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '0.50' }),
+      makeSnapshot('NQ', {
+        price: '20500.00',
+        change_1h_pct: '0.30',
+        change_day_pct: '0.80',
+      }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -152,16 +386,10 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('shows NQ-ES DIVERGING when day directions differ', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '-0.30',
-    });
-    const nq = makeSnapshot('NQ', {
-      price: '20500.00',
-      change_day_pct: '0.50',
-    });
-    mockSql.mockResolvedValueOnce([es, nq]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '-0.30' }),
+      makeSnapshot('NQ', { price: '20500.00', change_day_pct: '0.50' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -171,10 +399,10 @@ describe('formatFuturesForClaude', () => {
   // ── VX section with term structure ──────────────────────
 
   it('formats VX section with CONTANGO signal', async () => {
-    const vxm1 = makeSnapshot('VX1', { price: '18.00' });
-    const vxm2 = makeSnapshot('VX2', { price: '19.50' });
-    mockSql.mockResolvedValueOnce([vxm1, vxm2]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('VX1', { price: '18.00' }),
+      makeSnapshot('VX2', { price: '19.50' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -185,10 +413,10 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('formats VX section with BACKWARDATION signal', async () => {
-    const vxm1 = makeSnapshot('VX1', { price: '22.00' });
-    const vxm2 = makeSnapshot('VX2', { price: '20.00' });
-    mockSql.mockResolvedValueOnce([vxm1, vxm2]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('VX1', { price: '22.00' }),
+      makeSnapshot('VX2', { price: '20.00' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -198,10 +426,10 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('formats VX section with FLAT term structure', async () => {
-    const vxm1 = makeSnapshot('VX1', { price: '19.10' });
-    const vxm2 = makeSnapshot('VX2', { price: '19.00' });
-    mockSql.mockResolvedValueOnce([vxm1, vxm2]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('VX1', { price: '19.10' }),
+      makeSnapshot('VX2', { price: '19.00' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -211,20 +439,28 @@ describe('formatFuturesForClaude', () => {
     expect(result).not.toContain('Near-term stress');
   });
 
+  it('formats VX section with only front month when VX2 is missing', async () => {
+    mockSnapshots([makeSnapshot('VX1', { price: '20.00' })]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toContain('VIX Futures (/VX)');
+    expect(result).toContain('Front Month: 20.00');
+    // No term structure info because VX2 is absent
+    expect(result).not.toContain('Term Structure:');
+  });
+
   // ── ZN section with flight-to-safety ────────────────────
 
   it('formats ZN section with flight-to-safety signal', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '-0.50',
-    });
-    const zn = makeSnapshot('ZN', {
-      price: '110.50',
-      change_1h_pct: '0.10',
-      change_day_pct: '0.30',
-    });
-    mockSql.mockResolvedValueOnce([es, zn]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '-0.50' }),
+      makeSnapshot('ZN', {
+        price: '110.50',
+        change_1h_pct: '0.10',
+        change_day_pct: '0.30',
+      }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -234,16 +470,10 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('detects broad liquidation when bonds and equities both sell', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '-0.50',
-    });
-    const zn = makeSnapshot('ZN', {
-      price: '109.00',
-      change_day_pct: '-0.30',
-    });
-    mockSql.mockResolvedValueOnce([es, zn]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '-0.50' }),
+      makeSnapshot('ZN', { price: '109.00', change_day_pct: '-0.30' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -251,16 +481,10 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('shows ZN flat signal when ZN change is negligible', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '-0.50',
-    });
-    const zn = makeSnapshot('ZN', {
-      price: '110.00',
-      change_day_pct: '0.05',
-    });
-    mockSql.mockResolvedValueOnce([es, zn]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '-0.50' }),
+      makeSnapshot('ZN', { price: '110.00', change_day_pct: '0.05' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -271,13 +495,13 @@ describe('formatFuturesForClaude', () => {
   // ── CL section with vol signals ─────────────────────────
 
   it('formats CL section with vol compression signal', async () => {
-    const cl = makeSnapshot('CL', {
-      price: '72.50',
-      change_1h_pct: '-0.10',
-      change_day_pct: '-2.50',
-    });
-    mockSql.mockResolvedValueOnce([cl]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('CL', {
+        price: '72.50',
+        change_1h_pct: '-0.10',
+        change_day_pct: '-2.50',
+      }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -287,12 +511,9 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('formats CL section with vol expansion signal', async () => {
-    const cl = makeSnapshot('CL', {
-      price: '80.00',
-      change_day_pct: '3.00',
-    });
-    mockSql.mockResolvedValueOnce([cl]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('CL', { price: '80.00', change_day_pct: '3.00' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -300,56 +521,13 @@ describe('formatFuturesForClaude', () => {
     expect(result).toContain('vol expansion likely');
   });
 
-  // ── ES Options institutional activity ───────────────────
-
-  it('includes ES options institutional activity', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00' });
-    mockSql.mockResolvedValueOnce([es]); // snapshots
-
-    const putOption = makeEsOption({
-      strike: '5650',
-      option_type: 'P',
-      open_interest: '150000',
-    });
-    const callOption = makeEsOption({
-      strike: '5750',
-      option_type: 'C',
-      open_interest: '120000',
-    });
-    mockSql.mockResolvedValueOnce([putOption, callOption]); // options
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    expect(result).toContain('ES Options Institutional Activity');
-    expect(result).toContain('Top Put OI: 5650P');
-    expect(result).toContain('150.0K OI');
-    expect(result).toContain('Top Call OI: 5750C');
-    expect(result).toContain('120.0K OI');
-  });
-
-  it('gracefully handles futures_options_daily table missing', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00' });
-    mockSql.mockResolvedValueOnce([es]); // snapshots OK
-    mockSql.mockRejectedValueOnce(
-      new Error('relation "futures_options_daily" does not exist'),
-    ); // options fails
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    // Should still return ES data, just without options section
-    expect(result).not.toBeNull();
-    expect(result).toContain('ES Futures (/ES)');
-    expect(result).not.toContain('ES Options Institutional Activity');
-  });
-
   // ── Partial data ────────────────────────────────────────
 
   it('handles partial data with only some symbols present', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00' });
-    const cl = makeSnapshot('CL', { price: '75.00' });
-    // Only ES and CL, no NQ/VX/ZN/RTY
-    mockSql.mockResolvedValueOnce([es, cl]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00' }),
+      makeSnapshot('CL', { price: '75.00' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -365,17 +543,14 @@ describe('formatFuturesForClaude', () => {
   // ── RTY section ─────────────────────────────────────────────
 
   it('formats RTY section with aligned breadth signal', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '0.40',
-    });
-    const rty = makeSnapshot('RTY', {
-      price: '2100.00',
-      change_1h_pct: '0.20',
-      change_day_pct: '0.60',
-    });
-    mockSql.mockResolvedValueOnce([es, rty]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '0.40' }),
+      makeSnapshot('RTY', {
+        price: '2100.00',
+        change_1h_pct: '0.20',
+        change_day_pct: '0.60',
+      }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -385,16 +560,10 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('formats RTY section with diverging breadth signal', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '0.40',
-    });
-    const rty = makeSnapshot('RTY', {
-      price: '2100.00',
-      change_day_pct: '-0.30',
-    });
-    mockSql.mockResolvedValueOnce([es, rty]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '0.40' }),
+      makeSnapshot('RTY', { price: '2100.00', change_day_pct: '-0.30' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -405,17 +574,14 @@ describe('formatFuturesForClaude', () => {
   // ── GC section ───────────────────────────────────────────────
 
   it('formats GC section with safe-haven bid signal', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '-0.50',
-    });
-    const gc = makeSnapshot('GC', {
-      price: '2900.00',
-      change_1h_pct: '0.30',
-      change_day_pct: '1.20',
-    });
-    mockSql.mockResolvedValueOnce([es, gc]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '-0.50' }),
+      makeSnapshot('GC', {
+        price: '2900.00',
+        change_1h_pct: '0.30',
+        change_day_pct: '1.20',
+      }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -426,20 +592,11 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('formats GC with HIGH-CONVICTION flight to safety when ZN also bid', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '-0.50',
-    });
-    const zn = makeSnapshot('ZN', {
-      price: '110.00',
-      change_day_pct: '0.30',
-    });
-    const gc = makeSnapshot('GC', {
-      price: '2900.00',
-      change_day_pct: '1.20',
-    });
-    mockSql.mockResolvedValueOnce([es, zn, gc]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '-0.50' }),
+      makeSnapshot('ZN', { price: '110.00', change_day_pct: '0.30' }),
+      makeSnapshot('GC', { price: '2900.00', change_day_pct: '1.20' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -448,16 +605,10 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('formats GC section with risk-on rotation signal', async () => {
-    const es = makeSnapshot('ES', {
-      price: '5700.00',
-      change_day_pct: '0.50',
-    });
-    const gc = makeSnapshot('GC', {
-      price: '2800.00',
-      change_day_pct: '-1.00',
-    });
-    mockSql.mockResolvedValueOnce([es, gc]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', change_day_pct: '0.50' }),
+      makeSnapshot('GC', { price: '2800.00', change_day_pct: '-1.00' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -467,12 +618,9 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('shows no signal on GC when moves are below threshold', async () => {
-    const gc = makeSnapshot('GC', {
-      price: '2850.00',
-      change_day_pct: '0.10',
-    });
-    mockSql.mockResolvedValueOnce([gc]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('GC', { price: '2850.00', change_day_pct: '0.10' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -482,77 +630,10 @@ describe('formatFuturesForClaude', () => {
     expect(result).not.toContain('Risk-on rotation');
   });
 
-  // ── DX section ───────────────────────────────────────────────
-
-  it('formats DX section with dollar strength signal', async () => {
-    const dx = makeSnapshot('DX', {
-      price: '104.50',
-      change_1h_pct: '0.20',
-      change_day_pct: '0.80',
-    });
-    mockSql.mockResolvedValueOnce([dx]);
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    expect(result).toContain('US Dollar Index (/DX)');
-    // dxDay > 0.5 → dollar strength
-    expect(result).toContain('DOLLAR STRENGTH');
-    expect(result).toContain('equity headwind');
-  });
-
-  it('formats DX section with dollar weakness signal', async () => {
-    const dx = makeSnapshot('DX', {
-      price: '102.00',
-      change_day_pct: '-0.80',
-    });
-    mockSql.mockResolvedValueOnce([dx]);
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    // dxDay < -0.5 → dollar weakness
-    expect(result).toContain('DOLLAR WEAKNESS');
-    expect(result).toContain('equity tailwind');
-  });
-
-  it('shows no signal on DX when change is within ±0.5 threshold', async () => {
-    const dx = makeSnapshot('DX', {
-      price: '103.00',
-      change_day_pct: '0.20',
-    });
-    mockSql.mockResolvedValueOnce([dx]);
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    expect(result).toContain('US Dollar Index (/DX)');
-    expect(result).not.toContain('DOLLAR STRENGTH');
-    expect(result).not.toContain('DOLLAR WEAKNESS');
-  });
-
-  // ── VX section with only front month ─────────────────────────
-
-  it('formats VX section with only front month when VX2 is missing', async () => {
-    const vxm1 = makeSnapshot('VX1', { price: '20.00' });
-    // No VX2
-    mockSql.mockResolvedValueOnce([vxm1]);
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    expect(result).toContain('VIX Futures (/VX)');
-    expect(result).toContain('Front Month: 20.00');
-    // No term structure info because VX2 is absent
-    expect(result).not.toContain('Term Structure:');
-  });
-
   // ── ES-SPX basis stress label ─────────────────────────────────
 
   it('labels ES-SPX basis as "slightly wide" when between 2 and 5 pts', async () => {
-    const es = makeSnapshot('ES', { price: '5710.00' });
-    mockSql.mockResolvedValueOnce([es]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([makeSnapshot('ES', { price: '5710.00' })]);
 
     // SPX at 5707 → basis = 3.00 pts → slightly wide (>2, ≤5)
     const result = await formatFuturesForClaude(
@@ -565,9 +646,7 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('labels ES-SPX basis as "STRESS" when above 5 pts', async () => {
-    const es = makeSnapshot('ES', { price: '5714.00' });
-    mockSql.mockResolvedValueOnce([es]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([makeSnapshot('ES', { price: '5714.00' })]);
 
     // SPX at 5700 → basis = 14 pts → STRESS (>5)
     const result = await formatFuturesForClaude(
@@ -579,66 +658,12 @@ describe('formatFuturesForClaude', () => {
     expect(result).toContain('STRESS');
   });
 
-  // ── ES Options with only puts or only calls ───────────────────
-
-  it('handles ES options where only put rows are present', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00' });
-    mockSql.mockResolvedValueOnce([es]);
-    const putOption = makeEsOption({
-      strike: '5600',
-      option_type: 'P',
-      open_interest: '200000',
-    });
-    // Only a put row, no calls
-    mockSql.mockResolvedValueOnce([putOption]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    expect(result).toContain('Top Put OI: 5600P');
-    expect(result).not.toContain('Top Call OI');
-  });
-
-  it('handles ES options where only call rows are present', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00' });
-    mockSql.mockResolvedValueOnce([es]);
-    const callOption = makeEsOption({
-      strike: '5800',
-      option_type: 'C',
-      open_interest: '100000',
-    });
-    // Only a call row, no puts
-    mockSql.mockResolvedValueOnce([callOption]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    expect(result).toContain('Top Call OI: 5800C');
-    expect(result).not.toContain('Top Put OI');
-  });
-
-  // ── fmtOI M-suffix ────────────────────────────────────────────
-
-  it('formats OI in millions for very large open interest values', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00' });
-    mockSql.mockResolvedValueOnce([es]);
-    const bigPut = makeEsOption({
-      strike: '5500',
-      option_type: 'P',
-      open_interest: '2500000',
-    });
-    mockSql.mockResolvedValueOnce([bigPut]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    // 2,500,000 OI → "2.5M OI"
-    expect(result).toContain('2.5M OI');
-  });
-
   // ── fmtVolRatio labels ────────────────────────────────────────
 
   it('shows VERY ELEVATED volume ratio label when ratio >= 2.0', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00', volume_ratio: '2.5' });
-    mockSql.mockResolvedValueOnce([es]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', volume_ratio: '2.5' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -646,9 +671,9 @@ describe('formatFuturesForClaude', () => {
   });
 
   it('shows LOW volume ratio label when ratio < 0.7', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00', volume_ratio: '0.50' });
-    mockSql.mockResolvedValueOnce([es]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('ES', { price: '5700.00', volume_ratio: '0.50' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -658,9 +683,9 @@ describe('formatFuturesForClaude', () => {
   // ── NQ without ES present ─────────────────────────────────────
 
   it('omits NQ/ES ratio when ES is absent', async () => {
-    const nq = makeSnapshot('NQ', { price: '20500.00', change_day_pct: '0.5' });
-    mockSql.mockResolvedValueOnce([nq]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([
+      makeSnapshot('NQ', { price: '20500.00', change_day_pct: '0.5' }),
+    ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
@@ -674,9 +699,7 @@ describe('formatFuturesForClaude', () => {
   // ── Output structure ────────────────────────────────────
 
   it('wraps output in Futures Context header', async () => {
-    const es = makeSnapshot('ES', { price: '5700.00' });
-    mockSql.mockResolvedValueOnce([es]);
-    mockSql.mockResolvedValueOnce([]);
+    mockSnapshots([makeSnapshot('ES', { price: '5700.00' })]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 

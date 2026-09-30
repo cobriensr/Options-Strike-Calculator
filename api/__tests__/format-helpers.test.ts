@@ -5,7 +5,7 @@
  *
  * Covers boundary cases at scale thresholds and parity with the
  * pre-existing reinvented homes (futures-context, uw-deltas,
- * microstructure-signals, darkpool). Adoption (Phase 5d) must produce
+ * darkpool). Adoption (Phase 5d) must produce
  * identical Claude-prompt output, so each test pins a known string.
  */
 
@@ -14,7 +14,6 @@ import {
   fmtPct,
   fmtPrice,
   formatSigned,
-  fmtOI,
   fmtDp,
   formatDollarAbbrev,
 } from '../_lib/format-helpers.js';
@@ -75,35 +74,6 @@ describe('formatSigned', () => {
   it('honors digits override', () => {
     expect(formatSigned(-1.234, { digits: 3 })).toBe('-1.234');
     expect(formatSigned(7, { digits: 0 })).toBe('+7');
-  });
-});
-
-describe('fmtOI', () => {
-  it('returns N/A for null / non-finite', () => {
-    expect(fmtOI(null)).toBe('N/A');
-    expect(fmtOI(Number.NaN)).toBe('N/A');
-  });
-
-  it('formats raw integer < 1K', () => {
-    expect(fmtOI(0)).toBe('0');
-    expect(fmtOI(950)).toBe('950');
-    expect(fmtOI(999)).toBe('999');
-  });
-
-  it('formats K-scale at the 1_000 boundary', () => {
-    expect(fmtOI(1_000)).toBe('1.0K');
-    expect(fmtOI(1_500)).toBe('1.5K');
-    expect(fmtOI(999_999)).toBe('1000.0K');
-  });
-
-  it('formats M-scale at the 1_000_000 boundary', () => {
-    expect(fmtOI(1_000_000)).toBe('1.0M');
-    expect(fmtOI(5_400_000)).toBe('5.4M');
-    expect(fmtOI(12_345_678)).toBe('12.3M');
-  });
-
-  it('handles negative values by sign-prefixing magnitude', () => {
-    expect(fmtOI(-1_500)).toBe('-1.5K');
   });
 });
 

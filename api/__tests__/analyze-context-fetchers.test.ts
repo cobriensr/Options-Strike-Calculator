@@ -94,11 +94,6 @@ vi.mock('../_lib/vix-divergence.js', () => ({
   formatVixDivergenceForClaude: vi.fn(() => 'vix-divergence'),
 }));
 
-vi.mock('../_lib/microstructure-signals.js', () => ({
-  computeAllSymbolSignals: vi.fn(),
-  formatMicrostructureDualSymbolForClaude: vi.fn(() => 'microstructure'),
-}));
-
 vi.mock('../_lib/uw-deltas.js', () => ({
   computeUwDeltas: vi.fn(),
   formatUwDeltasForClaude: vi.fn(() => 'uw-deltas'),
@@ -110,7 +105,6 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 vi.mock('../_lib/archive-sidecar.js', () => ({
-  fetchTbboOfiPercentile: vi.fn(),
   fetchDaySummary: vi.fn(),
   fetchDayFeatures: vi.fn(),
 }));
@@ -183,7 +177,6 @@ import {
   fetchCrossAssetRegimeBlock,
   fetchVolumeProfileBlock,
   fetchVixDivergenceBlock,
-  fetchMicrostructureBlock,
   fetchUwDeltasBlock,
   fetchSimilarDaysContext,
   fetchRangeForecastContext,
@@ -199,7 +192,6 @@ import { formatPriorDayFlowForClaude } from '../_lib/analyze-context-formatters.
 import { computeCrossAssetRegime } from '../_lib/cross-asset-regime.js';
 import { computeVolumeProfile } from '../_lib/volume-profile.js';
 import { computeVixSpxDivergence } from '../_lib/vix-divergence.js';
-import { computeAllSymbolSignals } from '../_lib/microstructure-signals.js';
 import { computeUwDeltas } from '../_lib/uw-deltas.js';
 import { fetchCurrentSnapshot } from '../_lib/current-snapshot.js';
 import { fetchDaySummary, fetchDayFeatures } from '../_lib/archive-sidecar.js';
@@ -327,6 +319,26 @@ describe('analyze-context-fetchers — catch fallbacks', () => {
     expect(await fetchFuturesContext({ spx: 6605 }, '2026-04-29')).toBeNull();
   });
 
+  it('fetchFuturesContext forwards SPX and the asOf cutoff to the formatter', async () => {
+    const sql = vi.fn();
+    vi.mocked(getDb).mockReturnValue(sql as never);
+    vi.mocked(formatFuturesForClaude).mockResolvedValueOnce('futures');
+
+    const result = await fetchFuturesContext(
+      { spx: 6605 },
+      '2026-04-29',
+      '2026-04-29T15:30:59.000Z',
+    );
+
+    expect(result).toBe('futures');
+    expect(formatFuturesForClaude).toHaveBeenCalledWith(
+      sql,
+      '2026-04-29',
+      6605,
+      '2026-04-29T15:30:59.000Z',
+    );
+  });
+
   it('fetchPriorDayFlowContext returns null on throw', async () => {
     vi.mocked(formatPriorDayFlowForClaude).mockRejectedValueOnce(
       new Error('DB'),
@@ -364,11 +376,6 @@ describe('analyze-context-fetchers — catch fallbacks', () => {
   it('fetchVixDivergenceBlock returns null on throw', async () => {
     vi.mocked(computeVixSpxDivergence).mockRejectedValueOnce(new Error('boom'));
     expect(await fetchVixDivergenceBlock()).toBeNull();
-  });
-
-  it('fetchMicrostructureBlock returns null on throw', async () => {
-    vi.mocked(computeAllSymbolSignals).mockRejectedValueOnce(new Error('boom'));
-    expect(await fetchMicrostructureBlock()).toBeNull();
   });
 
   it('fetchUwDeltasBlock returns null on throw', async () => {

@@ -67,12 +67,6 @@ import {
   computeVixSpxDivergence,
   formatVixDivergenceForClaude,
 } from './vix-divergence.js';
-import {
-  computeAllSymbolSignals,
-  formatMicrostructureDualSymbolForClaude,
-  type MicrostructureOfiRanks,
-} from './microstructure-signals.js';
-import { fetchTbboOfiPercentile } from './archive-sidecar.js';
 import { computeUwDeltas, formatUwDeltasForClaude } from './uw-deltas.js';
 import { formatFuturesForClaude } from './futures-context.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
@@ -619,11 +613,12 @@ export async function fetchMlCalibrationContext(): Promise<string | null> {
 export async function fetchFuturesContext(
   context: Record<string, unknown>,
   analysisDate: string,
+  asOf?: string,
 ): Promise<string | null> {
   try {
     const sql = getDb();
     const currentSpx = context.spx as number | undefined;
-    return await formatFuturesForClaude(sql, analysisDate, currentSpx);
+    return await formatFuturesForClaude(sql, analysisDate, currentSpx, asOf);
   } catch (error_) {
     logger.debug({ err: error_ }, 'Futures context fetch failed — skipping');
     Sentry.captureException(error_);
@@ -822,106 +817,6 @@ export async function fetchVixDivergenceBlock(): Promise<string | null> {
     Sentry.captureException(err);
     return null;
   }
-}
-
-// ── Microstructure signals (dual-symbol: ES + NQ) ─────────────
-//
-// Phase 5a widens this from ES-only to both symbols. The validated
-// signal is NQ 1h OFI (Phase 4d: ρ=0.313, p_bonf<0.001, n=312); ES
-// microstructure is retained as qualitative tape flavor and as the
-// cross-asset confirmation leg. See `microstructure-signals.ts` for
-// why we keep ES here even though it's not a validated predictor.
-
-export async function fetchMicrostructureBlock(): Promise<string | null> {
-  try {
-    const result = await computeAllSymbolSignals(new Date());
-    const ranks = await fetchPercentileRanks(result);
-    return formatMicrostructureDualSymbolForClaude(result, ranks);
-  } catch (err) {
-    logger.error({ err }, 'microstructure signals fetch failed');
-    metrics.increment('analyze_context.microstructure_error');
-    Sentry.captureException(err);
-    return null;
-  }
-}
-
-/**
- * Enrich the live Phase 5a dual-symbol signals with each symbol's 1h
- * OFI historical percentile rank from the sidecar's TBBO archive
- * (Phase 4b). Returns null when both symbols lack a 1h OFI value or
- * when the sidecar is unreachable — the formatter gracefully drops the
- * Historical rank line.
- *
- * Per-symbol fetches run in parallel via `Promise.allSettled` so one
- * side failing (archive doesn't have ES history yet, transient 5xx,
- * whatever) never suppresses the other side's rank. Non-finite 1h OFI
- * values short-circuit without a fetch.
- */
-async function fetchPercentileRanks(
-  result: Awaited<ReturnType<typeof computeAllSymbolSignals>>,
-): Promise<MicrostructureOfiRanks | null> {
-  const esOfi1h = result.es?.ofi1h ?? null;
-  const nqOfi1h = result.nq?.ofi1h ?? null;
-  if (
-    !(esOfi1h != null && Number.isFinite(esOfi1h)) &&
-    !(nqOfi1h != null && Number.isFinite(nqOfi1h))
-  ) {
-    return null;
-  }
-  const [esRank, nqRank] = await Promise.allSettled([
-    esOfi1h != null && Number.isFinite(esOfi1h)
-      ? fetchTbboOfiPercentile('ES', esOfi1h, '1h')
-      : Promise.resolve(null),
-    nqOfi1h != null && Number.isFinite(nqOfi1h)
-      ? fetchTbboOfiPercentile('NQ', nqOfi1h, '1h')
-      : Promise.resolve(null),
-  ]);
-  if (esRank.status === 'rejected') {
-    logger.warn(
-      { err: esRank.reason },
-      'TBBO OFI 1h percentile fetch failed (ES)',
-    );
-    Sentry.captureException(esRank.reason, {
-      tags: {
-        module: 'analyze-context-fetchers',
-        signal: 'tbbo_ofi',
-        symbol: 'ES',
-      },
-    });
-  }
-  if (nqRank.status === 'rejected') {
-    logger.warn(
-      { err: nqRank.reason },
-      'TBBO OFI 1h percentile fetch failed (NQ)',
-    );
-    Sentry.captureException(nqRank.reason, {
-      tags: {
-        module: 'analyze-context-fetchers',
-        signal: 'tbbo_ofi',
-        symbol: 'NQ',
-      },
-    });
-  }
-  return {
-    es:
-      esRank.status === 'fulfilled' && esRank.value != null
-        ? {
-            percentile: esRank.value.percentile,
-            mean: esRank.value.mean,
-            std: esRank.value.std,
-            count: esRank.value.count,
-          }
-        : null,
-    nq:
-      nqRank.status === 'fulfilled' && nqRank.value != null
-        ? {
-            percentile: nqRank.value.percentile,
-            mean: nqRank.value.mean,
-            std: nqRank.value.std,
-            count: nqRank.value.count,
-          }
-        : null,
-  };
 }
 
 // ── UW deltas (Phase 5b: DP velocity, GEX delta, whale, ETF) ──

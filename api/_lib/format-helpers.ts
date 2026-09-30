@@ -13,10 +13,9 @@
  *                         shapes via `opts.fromDecimal`.
  *   - fmtPrice         — futures-context.ts: locale-formatted with fixed
  *                         decimal count.
- *   - formatSigned     — uw-deltas.ts + microstructure-signals.ts (verbatim
- *                         copies). Adds a leading '+' when v >= 0.
- *   - fmtOI            — futures-context.ts: open-interest scaling
- *                         (1.2K / 5.0M).
+ *   - formatSigned     — uw-deltas.ts (and the since-removed
+ *                         microstructure formatter, a verbatim copy).
+ *                         Adds a leading '+' when v >= 0.
  *   - fmtDp            — darkpool.ts: dark-pool premium scaling
  *                         (5.0K / 12.5M / 1.2B). Always non-negative — caller
  *                         passes Math.abs() or already-positive sums.
@@ -96,27 +95,6 @@ export function formatSigned(
   const digits = opts.digits ?? 2;
   const sign = value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(digits)}`;
-}
-
-// ── Open interest scaling ──────────────────────────────────
-
-/**
- * Open-interest scaling matching `futures-context.ts`:
- *
- *   fmtOI(950)        → '950'
- *   fmtOI(1_500)      → '1.5K'
- *   fmtOI(5_400_000)  → '5.4M'
- *
- * Negative values aren't expected for OI but we tolerate them by
- * formatting the magnitude — caller intent is preserved.
- */
-export function fmtOI(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return NA;
-  const abs = Math.abs(value);
-  const sign = value < 0 ? '-' : '';
-  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}${Math.round(abs)}`;
 }
 
 // ── Dark-pool premium scaling ──────────────────────────────

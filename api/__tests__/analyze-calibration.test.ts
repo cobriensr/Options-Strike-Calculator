@@ -52,6 +52,18 @@ describe('analyze-calibration.ts', () => {
       expect(unknownResult).toBe(defaultResult);
     });
 
+    it.each(['entry', 'midday', 'review'])(
+      '%s example cites no removed Databento-only source (DX, ES options, OFI)',
+      (mode) => {
+        // Few-shot outputs that quote a feed the context no longer carries
+        // teach the model to invent a reading for it.
+        const example = getCalibrationExample(mode);
+        expect(example).not.toMatch(/\bDX\b/);
+        expect(example).not.toMatch(/ES options/i);
+        expect(example).not.toMatch(/\bOFI\b/);
+      },
+    );
+
     it('returns the entry calibration for an empty string mode', () => {
       const defaultResult = getCalibrationExample('entry');
       const emptyResult = getCalibrationExample('');

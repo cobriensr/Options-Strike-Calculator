@@ -1,14 +1,16 @@
 /**
  * Futures context formatting for the /api/analyze endpoint.
  *
- * Queries futures_snapshots and futures_options_daily to assemble
- * a human-readable context block that Claude can use for analysis.
- * Gracefully handles missing symbols/tables during initial deployment.
+ * Queries futures_snapshots to assemble a human-readable context block
+ * that Claude can use for analysis. Gracefully handles missing symbols
+ * and tables, and omits any symbol whose latest snapshot is older than
+ * MAX_SNAPSHOT_AGE_MS relative to the analysis reference time, so a
+ * stalled snapshot cron never feeds frozen prices into the prompt.
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { z } from 'zod';
-import { fmtOI, fmtPct, fmtPrice } from './format-helpers.js';
+import { fmtPct, fmtPrice } from './format-helpers.js';
 import logger from './logger.js';
 import { numOrNull } from './numeric-coercion.js';
 import { metrics, Sentry } from './sentry.js';
@@ -24,6 +26,9 @@ type Sql = NeonQueryFunction<false, false>;
 
 const futuresSnapshotSchema = z.object({
   symbol: z.string(),
+  // TIMESTAMPTZ — Neon may hand back a Date or an ISO string; an
+  // unparseable value fails validation and the row is dropped.
+  ts: z.coerce.date(),
   price: z.string(),
   change_1h_pct: z.string().nullable(),
   change_day_pct: z.string().nullable(),
@@ -31,13 +36,12 @@ const futuresSnapshotSchema = z.object({
 });
 type FuturesSnapshot = z.infer<typeof futuresSnapshotSchema>;
 
-const esOptionsDailyRowSchema = z.object({
-  strike: z.string(),
-  option_type: z.string(),
-  open_interest: z.string().nullable(),
-  volume: z.string().nullable(),
-});
-type EsOptionsDailyRow = z.infer<typeof esOptionsDailyRowSchema>;
+/**
+ * A symbol whose latest snapshot is older than this (relative to the
+ * analysis reference time) is omitted. fetch-futures-snapshot writes
+ * every 5 minutes, so 15 minutes tolerates two missed runs.
+ */
+const MAX_SNAPSHOT_AGE_MS = 15 * 60 * 1000;
 
 interface DerivedSignals {
   esSpxBasis: number | null;
@@ -256,32 +260,10 @@ const renderGc: Renderer = (bySymbol) => {
   return lines;
 };
 
-const renderDx: Renderer = (bySymbol) => {
-  const dx = bySymbol.get('DX');
-  if (!dx) return null;
-
-  const lines = [
-    `US Dollar Index (/DX):`,
-    `  Current: ${fmtPrice(numOrNull(dx.price))} | 1H: ${fmtPct(numOrNull(dx.change_1h_pct))} | Day: ${fmtPct(numOrNull(dx.change_day_pct))}`,
-  ];
-  const dxDay = numOrNull(dx.change_day_pct);
-  if (dxDay != null) {
-    if (dxDay > 0.5) {
-      lines.push(
-        `  Signal: DOLLAR STRENGTH — equity headwind. Strong dollar pressures multinational earnings and risk assets.`,
-      );
-    } else if (dxDay < -0.5) {
-      lines.push(
-        `  Signal: DOLLAR WEAKNESS — equity tailwind. Weak dollar supports risk appetite.`,
-      );
-    }
-  }
-  return lines;
-};
-
-// Renderer iteration order matches the original file's section order
-// (ES → NQ → VX → ZN → RTY → CL → GC → DX). Tests assert exact section
-// boundaries via section index, so the ORDER here is load-bearing.
+// Renderer iteration order is the section order in the prompt
+// (ES → NQ → VX → ZN → RTY → CL → GC). DX has no renderer: its feed
+// was Databento-only (ICE) and has no Unusual Whales substitute, so any
+// DX snapshot row still in the table is ignored.
 const SYMBOL_RENDERERS: ReadonlyArray<readonly [string, Renderer]> = [
   ['ES', renderEs],
   ['NQ', renderNq],
@@ -290,36 +272,56 @@ const SYMBOL_RENDERERS: ReadonlyArray<readonly [string, Renderer]> = [
   ['RTY', renderRty],
   ['CL', renderCl],
   ['GC', renderGc],
-  ['DX', renderDx],
 ];
 
 // ── Core formatter ─────────────────────────────────────────
 
 /**
+ * The moment freshness is judged against: the entry-time cutoff when
+ * one is given (historical / backtest runs, or a live run pinned to an
+ * earlier time), else wall clock. A cutoff in the future — the
+ * calculator defaults to 10:00 AM CT outside market hours — is clamped
+ * to wall clock, since no snapshot can be newer than now.
+ */
+function resolveReferenceTime(asOf: string | undefined): Date {
+  const now = new Date();
+  if (asOf == null) return now;
+  const cutoff = new Date(asOf);
+  if (Number.isNaN(cutoff.getTime())) return now;
+  return cutoff < now ? cutoff : now;
+}
+
+/**
  * Build the futures context block for Claude analysis.
  *
- * Queries:
- *   - futures_snapshots for latest data on all 7 symbols
- *   - futures_options_daily for ES options OI concentration
+ * Reads the latest futures_snapshots row per symbol at-or-before the
+ * reference time (see `resolveReferenceTime`), then drops any symbol
+ * whose row is older than MAX_SNAPSHOT_AGE_MS.
  *
- * Returns null if no futures data is available (tables may not
- * exist yet during initial deployment).
+ * Returns null when no fresh snapshot is available (table missing, no
+ * rows, or every row stale); the caller then lists "Futures Context" in
+ * the unavailable-data manifest.
+ *
+ * @param asOf - optional ISO entry-time cutoff (`parseEntryTimeAsUtc`)
  */
 export async function formatFuturesForClaude(
   sql: Sql,
   analysisDate: string,
   spxPrice?: number,
+  asOf?: string,
 ): Promise<string | null> {
+  const referenceTime = resolveReferenceTime(asOf);
+  const referenceIso = referenceTime.toISOString();
   const snapshots: FuturesSnapshot[] = [];
-  const esOptionsRows: EsOptionsDailyRow[] = [];
 
   // Fetch latest snapshots — gracefully handle missing table
   try {
     const rawRows = await sql`
       SELECT DISTINCT ON (symbol)
-        symbol, price, change_1h_pct, change_day_pct, volume_ratio
+        symbol, ts, price, change_1h_pct, change_day_pct, volume_ratio
       FROM futures_snapshots
       WHERE trade_date = ${analysisDate}
+        AND ts <= ${referenceIso}
       ORDER BY symbol, ts DESC
     `;
     for (const row of rawRows) {
@@ -340,44 +342,31 @@ export async function formatFuturesForClaude(
     return null;
   }
 
-  if (snapshots.length === 0) return null;
-
-  // Build a lookup map
+  // Build a lookup map of fresh snapshots only — a stale row must not
+  // feed its own section or any cross-symbol derivation (basis, ratios).
   const bySymbol = new Map<string, FuturesSnapshot>();
+  const stale: Array<{ symbol: string; ts: string; ageMin: number }> = [];
   for (const row of snapshots) {
-    bySymbol.set(row.symbol, row);
+    const ageMs = referenceTime.getTime() - row.ts.getTime();
+    if (ageMs > MAX_SNAPSHOT_AGE_MS) {
+      stale.push({
+        symbol: row.symbol,
+        ts: row.ts.toISOString(),
+        ageMin: Math.round(ageMs / 60_000),
+      });
+    } else {
+      bySymbol.set(row.symbol, row);
+    }
+  }
+  if (stale.length > 0) {
+    logger.warn(
+      { stale, referenceTime: referenceIso },
+      'futures_snapshots rows stale — omitting symbols from analyze context',
+    );
+    metrics.increment('futures_context.stale_snapshot');
   }
 
-  // Fetch ES options OI concentration — gracefully handle missing
-  try {
-    const rawRows = await sql`
-      SELECT strike, option_type, open_interest, volume
-      FROM futures_options_daily
-      WHERE underlying = 'ES'
-        AND trade_date = ${analysisDate}
-        AND open_interest IS NOT NULL
-      ORDER BY open_interest DESC
-      LIMIT 20
-    `;
-    for (const row of rawRows) {
-      const parsed = esOptionsDailyRowSchema.safeParse(row);
-      if (parsed.success) {
-        esOptionsRows.push(parsed.data);
-      } else {
-        logger.warn(
-          { issues: parsed.error.issues, row },
-          'futures_options_daily row failed schema validation — dropping',
-        );
-      }
-    }
-  } catch (err) {
-    logger.debug(
-      { err },
-      'futures_options_daily table not available — skipping',
-    );
-    metrics.increment('futures_context.fetch_error');
-    Sentry.captureException(err);
-  }
+  if (bySymbol.size === 0) return null;
 
   // Compute derived signals
   const derived = computeDerivedSignals(bySymbol, spxPrice);
@@ -387,27 +376,6 @@ export async function formatFuturesForClaude(
   for (const [, renderer] of SYMBOL_RENDERERS) {
     const lines = renderer(bySymbol, derived);
     if (lines) sections.push(lines.join('\n'));
-  }
-
-  // ES Options section (uses esOptionsRows, not the snapshot map, so it
-  // doesn't fit the (bySymbol, derived) Renderer signature — kept inline).
-  if (esOptionsRows.length > 0) {
-    const putRows = esOptionsRows.filter((r) => r.option_type === 'P');
-    const callRows = esOptionsRows.filter((r) => r.option_type === 'C');
-    const lines = [`ES Options Institutional Activity:`];
-    if (putRows.length > 0) {
-      const topPut = putRows[0]!;
-      lines.push(
-        `  Top Put OI: ${topPut.strike}P — ${fmtOI(Number(topPut.open_interest))} OI`,
-      );
-    }
-    if (callRows.length > 0) {
-      const topCall = callRows[0]!;
-      lines.push(
-        `  Top Call OI: ${topCall.strike}C — ${fmtOI(Number(topCall.open_interest))} OI`,
-      );
-    }
-    sections.push(lines.join('\n'));
   }
 
   if (sections.length === 0) return null;

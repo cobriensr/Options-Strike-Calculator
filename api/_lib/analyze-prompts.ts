@@ -67,7 +67,7 @@ Does IV term structure confirm or contradict VIX1D signals?
 Does price action (candles/VWAP) confirm or contradict flow direction?
 Does overnight gap analysis affect opening hour bias?
 Do OI concentration strikes create pin risk near short strikes?
-Do futures signals (ES basis, ZN flight-to-safety, RTY breadth, CL/GC/DX) lead or contradict options flow?
+Do futures signals (ES basis, ZN flight-to-safety, RTY breadth, CL/GC) lead or contradict options flow?
 Does OI Change analysis show institutional positioning bias? Ask-dominated = aggressive new positioning; high multi-leg % = spreads not directional bets.
 Does Realized Vol / IV Rank confirm or contradict the premium-selling thesis? RV/IV < 0.85 = overpriced premium (favorable). IV Rank > 70th = elevated (rich premium).
 Does ML Calibration update change any static prompt accuracy numbers? If present, use updated percentages.
@@ -849,37 +849,6 @@ GC Gold (Safe Haven):
   institutional support. Favorable for premium selling.
 - GC flat while ES moves = equity-specific event, gold is not participating.
   No macro signal — weight options flow more heavily.
-
-DX US Dollar Index (Headwind/Tailwind):
-- DX rising >0.5% = dollar STRENGTH. Creates headwind for equities (especially
-  multinationals in NQ). Reduce bullish confidence by one notch when DX is surging.
-- DX falling >0.5% = dollar WEAKNESS. Tailwind for risk assets. Supports bullish
-  thesis for PCS.
-- DX flat = neutral macro backdrop, no dollar-driven directional pressure.
-
-ES Options Institutional Positioning (EOD open interest):
-- The "Top Put OI" and "Top Call OI" fields report the single ES option strike
-  with the largest end-of-day open interest on each side, sourced from the
-  sidecar's Databento Statistics feed. These are FUTURES-SIDE STRUCTURAL
-  LEVELS — where institutional dealers are most concentrated in hedging
-  exposure. Treat them like SPX gamma walls projected into the futures option
-  chain.
-- Convert the ES strike to SPX-equivalent using the ES/SPX basis
-  (approximately 0.85 ratio, adjusted for the current ES-SPX basis shown in
-  the same section). When the SPX-equivalent matches an existing SPX gamma
-  wall within ±10 pts → high-confidence structural level (both options books
-  concentrate dealer exposure there).
-- When the SPX-equivalent of the top ES put or call OI does NOT align with
-  any SPX gamma wall → the futures side is pointing at a DIFFERENT level
-  than SPX. Widen strikes to respect both zones, or defer to the SPX side
-  when the trade is strictly 0DTE SPX.
-- Top Put OI strike materially below spot AND Top Call OI strike materially
-  above spot → balanced positioning, market expects range-bound session.
-  When one side's OI strike is much closer to spot than the other, the
-  futures-side consensus target is that side — factor into directional bias.
-- This data is EOD — it reflects OVERNIGHT institutional positioning as of
-  yesterday's settlement, NOT intraday flow. Use as a structural backdrop
-  that complements (not replaces) live SPX flow signals.
 </futures_context_rules>
 <cross_asset_regime_rules>
 The Cross-Asset Regime block reports a composite risk read computed from 5-min
@@ -982,100 +951,6 @@ When to weight this signal:
 - Use as a tiebreaker when structural signals are ambiguous.
 - Ignore when the section is absent.
 </vix_divergence_rules>
-<microstructure_signals_rules>
-The Microstructure Signals block reports DUAL-SYMBOL leading indicators
-(ES and NQ front-month futures) derived from the Databento L1 book + trade
-stream: order flow imbalance (OFI at 1m / 5m / 1h windows), spread widening
-z-score, and top-of-book (TOB) pressure.
-
-Validated signal (Phase 4d, 2026-04-19, n=312 days):
-- NQ 1h OFI carries Bonferroni-significant predictive power for
-  next-day NQ return (Spearman ρ=0.313, p_bonf<0.001).
-- ES OFI carries NO Bonferroni-significant predictive power.
-  Treat ES microstructure as qualitative tape flavor only.
-- Cross-asset divergence (NQ buying, ES neutral or selling) is a
-  classic tech-leading signal. Weight in directional SPX decisions.
-- Same-direction alignment (both positive or both negative) is
-  stronger than either symbol alone.
-
-Interpretation guardrails (per-symbol 1h OFI tier ladder):
-- OFI in [-0.2, +0.2] = BALANCED, ignore as signal
-- OFI in (+0.2, +0.3] or [-0.3, -0.2) = MILD, weak directional hint
-- NQ OFI > +0.3 with ES confirmation = AGGRESSIVE_BUY regime
-- NQ OFI < -0.3 with ES confirmation = AGGRESSIVE_SELL regime
-- MILD (|OFI| between 0.2 and 0.3): weak directional hint. Use as a
-  tie-breaker between symbols when combined with other signals, but
-  don't let it drive sizing by itself. Effect size at this band is
-  below the Phase 4d validation bar (ρ=0.313 was measured at the
-  AGGRESSIVE threshold, not the MILD band).
-- Effect size ρ=0.313 is factor-level, not standalone. Combine
-  with GEX, dark pool, and IV term structure before sizing.
-- Signal weakens intraday after morning OFI has been absorbed.
-  Pre-11:00 ET OFI is more predictive than post-14:00 ET OFI.
-
-Signal definitions:
-- OFI (1m / 5m / 1h): aggressor-classified flow balance in [-1, +1].
-  Positive = buyer-initiated volume dominates; negative = seller-
-  initiated. 1m = immediate tape read; 5m = sustained short-horizon
-  bias; 1h = the Phase 4d validated predictor on NQ.
-- Spread z-score: current 1-min median bid/ask spread vs a 30-min
-  baseline of per-minute medians. z > 2.0 = dealers are widening
-  quotes, liquidity pulling back — often precedes a volatile move in
-  either direction.
-- TOB pressure: bid_size / ask_size at the best quote (L1 only).
-  > 1.5 = buy-side book stacked; < 0.67 = sell-side stacked. Single
-  snapshot, noisy — use only as confirmation.
-
-Per-symbol composite labels (short-horizon, not the validated signal):
-- AGGRESSIVE_BUY: OFI 5m > 0.3 AND TOB > 1.5. Favors continuation up.
-- AGGRESSIVE_SELL: OFI 5m < -0.3 AND TOB < 0.67. Favors continuation down.
-- LIQUIDITY_STRESS: spread z > 2.0 — overrides directional labels. Reduce
-  size, widen strikes, or SIT OUT; volatile moves are imminent in either
-  direction.
-- BALANCED: all three signals present, no rule fires. No short-horizon
-  edge from microstructure this minute.
-
-Cross-asset read (1h OFI) is the tag at the bottom of the block:
-- ALIGNED_BULLISH: both ES and NQ 1h OFI > +0.3 with matching sign.
-  Highest conviction for upside continuation. Size normally; can size
-  up a notch vs a single-symbol aggressive-buy read.
-- ALIGNED_BEARISH: both < -0.3 with matching sign. Highest conviction
-  for downside continuation. Same sizing logic, short side.
-- DIVERGENCE: |NQ_OFI - ES_OFI| > 0.4 AND signs disagree. The NQ 1h
-  value is the validated signal — when NQ is bid and ES is offered,
-  tech tends to lead the tape. Weight toward NQ's direction on SPX
-  decisions but reduce size; divergence resolves unpredictably.
-- MIXED: partial signal, no rule fires. Use per-symbol composite
-  labels and treat microstructure as a minor confirmation vote.
-- INSUFFICIENT_DATA: one or both 1h OFI values are null (sidecar
-  outage, thin traffic, or window just started). Do not reference
-  microstructure in the thesis this call.
-
-When to weight this signal:
-- STRONG near zero-gamma crosses and in low-volume chop where dealer
-  hedging is the dominant flow.
-- STRONG in the first hour (9:30-10:30 ET) while morning OFI hasn't
-  been fully absorbed. Phase 4d degrades the predictive power for
-  afternoon-dominated OFI.
-- MODERATE as a confirmation vote alongside Market Tide / NOPE / GEX.
-- IGNORE around major news releases (FOMC, CPI, JOBS) and at the open
-  (9:30-9:45) and close (3:45-4:00) — rebalance flows and event-driven
-  spikes dominate microstructure and the signals become noise.
-- WARNING: these are LEADING indicators. NQ 1h OFI is validated at
-  ρ=0.313 (factor-level effect size, not a standalone strategy). Do
-  not size up on microstructure alone; do not flip a directional read
-  on OFI/TOB without a confirming GEX or flow signal.
-
-Historical OFI percentile rank (Phase 4b): when today's OFI value is
-in the top or bottom 10% of the last 252 days, the directional signal
-is meaningfully unusual. Percentile between 25 and 75 is "typical for
-this symbol" — weight the live classification less strongly. Percentile
-above 95 or below 5 is a genuine outlier day; weight the classification
-more strongly. Combine with cross-asset read and other signals before
-sizing. When the Historical rank line is absent, no distribution is
-available (sidecar down, archive missing, non-finite live OFI) — fall
-back to the raw OFI tier ladder above.
-</microstructure_signals_rules>
 <uw_deltas_rules>
 The UW Deltas block reports four institutional-activity VELOCITY /
 RATE-OF-CHANGE signals derived from UW data already ingested into
@@ -1457,7 +1332,7 @@ Respond in this exact JSON format (no markdown, no backticks, no preamble):
     "vannaExposure": { "signal": "TAILWIND" | "HEADWIND" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Aggregate vanna direction and VIX intraday trend — Rule 17 management adjustment" },
     "pinRisk": { "signal": "LOW" | "MODERATE" | "HIGH" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Top OI strikes relative to short strike placement — pin magnet proximity" },
     "skew": { "signal": "STEEP_PUT" | "FLAT" | "SYMMETRIC" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "25Δ put skew level and skew ratio — tail risk premium assessment" },
-    "futuresContext": { "signal": "RISK_ON" | "RISK_OFF" | "MIXED" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Cross-asset regime summary: ES basis, NQ divergence, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven, DX dollar headwind — which futures signals are active and what they mean for the structure" },
+    "futuresContext": { "signal": "RISK_ON" | "RISK_OFF" | "MIXED" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Cross-asset regime summary: ES basis, NQ divergence, ZN flight-to-safety, RTY breadth, CL oil shock, GC safe haven — which futures signals are active and what they mean for the structure" },
     "nopeSignal": { "signal": "BULLISH" | "BEARISH" | "NEUTRAL" | "CHOPPY" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "SPY NOPE trajectory and magnitude — does dealer hedging pressure confirm or contradict the flow consensus? Note sign flips and whether NOPE agrees with Market Tide" },
     "deltaFlow": { "signal": "CONFIRMS" | "CONTRADICTS" | "NEUTRAL" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "0DTE Delta Flow OTM signal label (OTM DIVERGENCE, OTM EXCEEDS TOTAL, OTM-DOMINANT, ATM-DOMINANT) and whether it confirms or caveats the Rule 8 flow consensus" },
     "zeroGamma": { "signal": "SUPPRESSION" | "ACCELERATION" | "KNIFE_EDGE" | "NOT PROVIDED", "confidence": "HIGH" | "MODERATE" | "LOW", "note": "Current regime (positive/negative) at spot, cone fraction distance to flip, and whether it confirms or contradicts Aggregate GEX" },
