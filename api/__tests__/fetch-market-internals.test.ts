@@ -66,6 +66,7 @@ import {
   checkDataQuality,
   withRetry,
 } from '../_lib/api-helpers.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 // Fixed "market hours" time: Tuesday 10:00 AM ET = 14:00 UTC
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
@@ -320,6 +321,72 @@ describe('fetch-market-internals handler', () => {
     expect(Sentry.captureException).toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalled();
   });
+
+  // ── Schwab logged out vs. loud token failures ──────────────
+
+  it('skips quietly when Schwab is logged out (SCHWAB_TOKEN_EXPIRED)', async () => {
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
+      status: 401,
+      error: '[SCHWAB_TOKEN_EXPIRED] No tokens found.',
+      code: 'SCHWAB_TOKEN_EXPIRED',
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-market-internals',
+      status: 'skipped',
+      reason: 'schwab_logged_out',
+    });
+    // Logged out is an expected state until a manual re-auth — no Sentry.
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-market-internals',
+      expect.objectContaining({ status: 'skipped' }),
+    );
+  });
+
+  it.each([
+    ['SCHWAB_TOKEN_ERROR', 500],
+    ['SCHWAB_API_REJECTED', 401],
+    ['SCHWAB_API_502', 502],
+  ] as const)(
+    'stays loud on %s: captured per symbol, not skipped',
+    async (code, status) => {
+      vi.mocked(schwabFetch).mockResolvedValue({
+        ok: false,
+        status,
+        error: `[${code}] boom`,
+        code,
+      });
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer test-secret' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      const body = res._json as Record<string, unknown>;
+      expect(body.status).not.toBe('skipped');
+      expect(body).toMatchObject({ successCount: 0, failureCount: 4 });
+      // One capture per pricehistory symbol ($TICK, $TRIN).
+      expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+    },
+  );
 
   // ── Extended-hours filter ──────────────────────────────────
 

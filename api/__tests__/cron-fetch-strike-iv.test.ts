@@ -102,6 +102,8 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/fetch-strike-iv.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
+import type { SchwabErrorCode } from '../_lib/schwab-fetch.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
 
@@ -256,7 +258,7 @@ function quietExpansionChains() {
 }
 type ChainOrError =
   | ReturnType<typeof makeChain>
-  | { error: string; status: number };
+  | { error: string; status: number; code?: SchwabErrorCode };
 
 function mockChainSequence(chains: (ChainOrError | null)[]) {
   const mocked = vi.mocked(schwabFetch);
@@ -273,6 +275,7 @@ function mockChainSequence(chains: (ChainOrError | null)[]) {
         ok: false,
         error: chain.error,
         status: chain.status,
+        code: chain.code,
       });
     } else {
       // The cron reads only `underlying`, `callExpDateMap`, `putExpDateMap`
@@ -439,6 +442,8 @@ describe('fetch-strike-iv handler', () => {
     }
     // Three transactions (the three tickers that had rows).
     expect(mockSql.transaction).toHaveBeenCalledTimes(3);
+    // Empty chains are no-work legs, not failures.
+    expect((res._json as { status: string }).status).toBe('success');
   });
 
   // ── SPXW root filter drops SPX monthlies under the `$SPX` chain ─
@@ -632,7 +637,59 @@ describe('fetch-strike-iv handler', () => {
     });
     // SPXW + QQQ actually inserted rows; everything else skipped.
     expect(body.results.filter((r) => !r.skipped)).toHaveLength(2);
+    // One real failure among three tickers with work → partial, not success.
+    expect((res._json as { status: string }).status).toBe('partial');
   });
+
+  // ── Schwab logged out vs. honest total failure ──────────────
+
+  it('reports skipped with no capture when every ticker is logged out', async () => {
+    vi.mocked(schwabFetch).mockResolvedValue({
+      ok: false,
+      status: 401,
+      error: '[SCHWAB_TOKEN_EXPIRED] No tokens found.',
+      code: 'SCHWAB_TOKEN_EXPIRED',
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-strike-iv',
+      status: 'skipped',
+      reason: 'schwab_logged_out',
+    });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(mockSql.transaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['SCHWAB_TOKEN_ERROR', 500],
+    ['SCHWAB_API_REJECTED', 401],
+    ['SCHWAB_API_NETWORK', 504],
+  ] as const)(
+    'reports error (not success) when every ticker fails with %s',
+    async (code, status) => {
+      vi.mocked(schwabFetch).mockResolvedValue({
+        ok: false,
+        status,
+        error: `[${code}] boom`,
+        code,
+      });
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      const body = res._json as {
+        status: string;
+        results: Array<{ reason?: string }>;
+      };
+      expect(body.status).toBe('error');
+      expect(body.results.every((r) => r.reason === 'schwab_error')).toBe(true);
+    },
+  );
 
   // ── IV inversion fails → row skipped, cron continues ─────
 

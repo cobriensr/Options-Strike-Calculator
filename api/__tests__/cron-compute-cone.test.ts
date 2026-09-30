@@ -54,6 +54,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/compute-cone.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
+import { Sentry } from '../_lib/sentry.js';
 
 // ── Fixtures ──────────────────────────────────────────────────
 
@@ -345,6 +346,52 @@ describe('compute-cone handler', () => {
 
     expect(mockSql).not.toHaveBeenCalled();
   });
+
+  it('skips quietly when Schwab is logged out (SCHWAB_TOKEN_EXPIRED)', async () => {
+    vi.mocked(schwabFetch).mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      error: '[SCHWAB_TOKEN_EXPIRED] No tokens found.',
+      code: 'SCHWAB_TOKEN_EXPIRED',
+    });
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'compute-cone',
+      status: 'skipped',
+      reason: 'schwab_logged_out',
+    });
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['SCHWAB_TOKEN_ERROR', 500],
+    ['SCHWAB_API_REJECTED', 401],
+    ['SCHWAB_API_502', 502],
+  ] as const)(
+    'still reports error (red check-in) on %s',
+    async (code, status) => {
+      vi.mocked(schwabFetch).mockResolvedValueOnce({
+        ok: false,
+        status,
+        error: `[${code}] boom`,
+        code,
+      });
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'error',
+        reason: 'schwab_fetch_failed',
+      });
+      expect(mockSql).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not INSERT when underlying.last is invalid', async () => {
     vi.mocked(schwabFetch).mockResolvedValueOnce({

@@ -28,6 +28,9 @@
  *   always resolves to a SymbolResult, with an `error` field on failure).
  *   If one symbol fails, the other three still commit. Per-symbol errors
  *   are logged and sent to Sentry but do not fail the whole run.
+ *   Exception: when Schwab is logged out (SCHWAB_TOKEN_EXPIRED — expected
+ *   until a manual re-auth) nothing is captured and a fully logged-out
+ *   run reports `skipped`, so a lapsed login doesn't page every minute.
  *
  * Idempotence:
  *   INSERT ... ON CONFLICT (ts, symbol) DO NOTHING — safe to rerun.
@@ -88,6 +91,20 @@ interface SymbolResult {
   stored: number;
   skipped: number;
   error?: string;
+  /** Failed only because Schwab is logged out (SCHWAB_TOKEN_EXPIRED). */
+  loggedOut?: boolean;
+}
+
+/**
+ * Schwab returned SCHWAB_TOKEN_EXPIRED: the login lapsed. Thrown past
+ * `withRetry` (not a transient pattern) and caught in `processSymbol`
+ * without a Sentry capture.
+ */
+class SchwabLoggedOutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SchwabLoggedOutError';
+  }
 }
 
 // Regular-session bounds in ET minutes-of-day.
@@ -128,7 +145,11 @@ async function fetchInternalCandles(
   );
 
   if (!result.ok) {
-    throw new Error(`Schwab pricehistory ${result.status}: ${result.error}`);
+    const message = `Schwab pricehistory ${result.status}: ${result.error}`;
+    if (result.code === 'SCHWAB_TOKEN_EXPIRED') {
+      throw new SchwabLoggedOutError(message);
+    }
+    throw new Error(message);
   }
   return result.data.candles ?? [];
 }
@@ -236,6 +257,17 @@ async function processSymbol(
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    if (err instanceof SchwabLoggedOutError) {
+      return {
+        symbol,
+        fetched: 0,
+        filtered: 0,
+        stored: 0,
+        skipped: 0,
+        error: msg,
+        loggedOut: true,
+      };
+    }
     logger.warn({ err, symbol }, 'fetch-market-internals: per-symbol failure');
     Sentry.setTag('cron.symbol', symbol);
     Sentry.captureException(err);
@@ -277,6 +309,7 @@ async function processQuoteSymbols(
         stored: 0,
         skipped: 0,
         error: `Schwab quotes ${result.status}: ${result.error}`,
+        loggedOut: result.code === 'SCHWAB_TOKEN_EXPIRED',
       }));
     }
 
@@ -377,6 +410,17 @@ export default withCronInstrumentation(
     ]);
 
     const results = [...priceHistoryResults, ...quoteResults];
+
+    if (results.every((r) => r.loggedOut)) {
+      ctx.logger.warn(
+        'fetch-market-internals: Schwab logged out — skipping until re-auth',
+      );
+      return {
+        status: 'skipped',
+        message: 'Schwab logged out — re-auth at /api/auth/init',
+        metadata: { reason: 'schwab_logged_out' },
+      };
+    }
 
     const totals = results.reduce(
       (acc, r) => ({

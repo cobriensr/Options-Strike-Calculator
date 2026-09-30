@@ -114,6 +114,17 @@ const mainCron = withCronInstrumentation(
     );
 
     if (!intradayResult.ok) {
+      // Logged out is expected until a manual re-auth — skip without a
+      // capture. Every other failure (token store down, data-API 401,
+      // 5xx, network) stays a captured 502 below.
+      if (intradayResult.code === 'SCHWAB_TOKEN_EXPIRED') {
+        log.warn('fetch-outcomes: Schwab logged out — skipping until re-auth');
+        return {
+          status: 'skipped',
+          message: 'Schwab logged out — re-auth at /api/auth/init',
+          metadata: { skipped: true, reason: 'schwab_logged_out' },
+        };
+      }
       log.error(
         { error: intradayResult.error },
         'fetch-outcomes: Schwab intraday fetch failed',

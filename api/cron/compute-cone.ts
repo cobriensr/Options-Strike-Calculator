@@ -173,6 +173,16 @@ export default withCronInstrumentation(
 
     const result = await schwabFetch<SchwabChainResponse>(path);
     if (!result.ok) {
+      // Logged out is expected until a manual re-auth — skip instead of a
+      // red check-in. Every other failure keeps the `error` status.
+      if (result.code === 'SCHWAB_TOKEN_EXPIRED') {
+        logger.warn('compute-cone: Schwab logged out — skipping until re-auth');
+        return {
+          status: 'skipped',
+          message: 'Schwab logged out — re-auth at /api/auth/init',
+          metadata: { reason: 'schwab_logged_out' },
+        };
+      }
       logger.warn(
         { status: result.status, error: result.error },
         'compute-cone: Schwab chain fetch failed',

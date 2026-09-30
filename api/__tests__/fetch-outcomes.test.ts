@@ -30,6 +30,16 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// Spy on captureException only; the rest of the Sentry surface stays real.
+const mockCaptureException = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/sentry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/sentry.js')>();
+  return {
+    ...actual,
+    Sentry: { ...actual.Sentry, captureException: mockCaptureException },
+  };
+});
+
 import handler from '../cron/fetch-outcomes.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
 
@@ -319,6 +329,59 @@ describe('fetch-outcomes handler', () => {
     expect(res._status).toBe(502);
     expect(res._json).toEqual({ error: 'Schwab API down' });
     expect(mockSaveOutcome).not.toHaveBeenCalled();
+  });
+
+  it('skips quietly (200, skipped, no capture) when Schwab is logged out', async () => {
+    mockedSchwabFetch.mockResolvedValueOnce({
+      ok: false,
+      error: '[SCHWAB_TOKEN_EXPIRED] No tokens found.',
+      status: 401,
+      code: 'SCHWAB_TOKEN_EXPIRED',
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      skipped: true,
+      reason: 'schwab_logged_out',
+    });
+    expect(mockCaptureException).not.toHaveBeenCalled();
+    expect(mockSaveOutcome).not.toHaveBeenCalled();
+    // No follow-up VIX fetch once we know we're logged out.
+    expect(mockedSchwabFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['SCHWAB_TOKEN_ERROR', 500],
+    ['SCHWAB_API_REJECTED', 401],
+    ['SCHWAB_API_NETWORK', 504],
+  ] as const)('stays a captured 502 on %s', async (code, status) => {
+    mockedSchwabFetch.mockResolvedValueOnce({
+      ok: false,
+      error: `[${code}] boom`,
+      status,
+      code,
+    });
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(502);
+    expect(res._json).toEqual({ error: `[${code}] boom` });
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
   });
 
   it('returns 200 with skipped when no candles found for today', async () => {

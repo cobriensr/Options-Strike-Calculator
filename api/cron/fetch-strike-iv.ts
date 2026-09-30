@@ -27,6 +27,11 @@
  * may legitimately have no 0DTE listed on some sessions — logged as
  * `empty_chain`, not an error.
  *
+ * Run status: `deriveCronStatus` over the tickers that had work (empty
+ * chains excluded) — every one failing is `error` (red check-in), some
+ * failing is `partial`. When Schwab is logged out (SCHWAB_TOKEN_EXPIRED,
+ * expected until a manual re-auth) on every ticker the run is `skipped`.
+ *
  * Cron cadence: `* 13-21 * * 1-5` — every minute during market hours.
  * Volume budget: 13 tickers × 1 request/min = 780 Schwab requests/hour,
  * still well under the per-app rate limit.
@@ -36,7 +41,11 @@
 
 import { getDb } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
-import { mapWithConcurrency, schwabFetch } from '../_lib/api-helpers.js';
+import {
+  mapWithConcurrency,
+  schwabFetch,
+  type ApiResult,
+} from '../_lib/api-helpers.js';
 import {
   STRIKE_IV_TICKER_CONCURRENCY,
   STRIKE_IV_OTM_RANGE_PCT_CASH_INDEX,
@@ -56,6 +65,7 @@ import { impliedVolatility } from '../../src/utils/black-scholes.js';
 import { getETCloseUtcIso } from '../../src/utils/timezone.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
+  deriveCronStatus,
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
@@ -342,7 +352,7 @@ async function fetchChain(
   ticker: StrikeIVTicker,
   fromDate: string,
   toDate: string,
-): Promise<SchwabChainResponse | null> {
+): Promise<ApiResult<SchwabChainResponse>> {
   const symbol = encodeURIComponent(schwabSymbol(ticker));
   // `strategy=SINGLE&range=ALL&strikeCount=500` pulls the full strike ladder
   // across the date window — we filter to the ±3% OTM band downstream.
@@ -351,14 +361,13 @@ async function fetchChain(
     `&strategy=SINGLE&range=ALL` +
     `&fromDate=${fromDate}&toDate=${toDate}&strikeCount=500`;
   const result = await schwabFetch<SchwabChainResponse>(path);
-  if (!result.ok) {
+  if (!result.ok && result.code !== 'SCHWAB_TOKEN_EXPIRED') {
     logger.warn(
       { ticker, status: result.status, error: result.error },
       'fetch-strike-iv: Schwab chain fetch failed',
     );
-    return null;
   }
-  return result.data;
+  return result;
 }
 
 // ── Row extraction (per ticker) ──────────────────────────────
@@ -542,15 +551,19 @@ async function runTicker(
     const fromDate = expiries[0]!;
     const toDate = expiries.at(-1)!;
 
-    const chain = await fetchChain(ticker, fromDate, toDate);
-    if (chain == null) {
+    const result = await fetchChain(ticker, fromDate, toDate);
+    if (!result.ok) {
       return {
         ticker,
         rowsInserted: 0,
         skipped: true,
-        reason: 'schwab_error',
+        reason:
+          result.code === 'SCHWAB_TOKEN_EXPIRED'
+            ? 'schwab_logged_out'
+            : 'schwab_error',
       };
     }
+    const chain = result.data;
 
     const rows = extractRows(chain, ticker, allowed, nowMs);
     if (rows.length === 0) {
@@ -624,10 +637,34 @@ export default withCronInstrumentation(
 
     const totalInserted = results.reduce((sum, r) => sum + r.rowsInserted, 0);
 
+    if (
+      results.length > 0 &&
+      results.every((r) => r.reason === 'schwab_logged_out')
+    ) {
+      ctx.logger.warn(
+        'fetch-strike-iv: Schwab logged out — skipping until re-auth',
+      );
+      return {
+        status: 'skipped',
+        message: 'Schwab logged out — re-auth at /api/auth/init',
+        metadata: { reason: 'schwab_logged_out' },
+      };
+    }
+
+    // Tickers with work: drop no-work legs (empty chain) and logged-out
+    // legs (a mid-run logout; the next run skips outright).
+    const attempted = results.filter(
+      (r) => r.reason !== 'empty_chain' && r.reason !== 'schwab_logged_out',
+    );
+    const failed = attempted.filter(
+      (r) => r.reason === 'schwab_error' || r.reason === 'exception',
+    ).length;
+
     return {
-      status: 'success',
+      status: deriveCronStatus(failed, attempted.length),
       metadata: {
         totalInserted,
+        failed,
         results,
       },
     };
