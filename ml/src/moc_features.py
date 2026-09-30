@@ -27,18 +27,19 @@ Why two timestamps:
     15:50 to 15:55, that's a very different signal than "big at 15:50,
     faded by 15:55".
 
-Input:
-    - ml/data/moc_imbalance_raw.parquet  (from moc_inspect.py)
-    - QQQ ohlcv-1m DBN file (path via --bars-input)
+Input (cached parquet; the Databento DBN decoders that produced these —
+moc_inspect.py and this script's former --bars-input path — were removed
+on 2026-09-30 when the Databento subscription was cancelled):
+    - ml/data/moc_imbalance_raw.parquet  (QQQ/SPY imbalance messages)
+    - ml/data/qqq_bars_1m.parquet        (QQQ 1-minute bars)
 
 Output:
     - ml/data/moc_features_qqq.parquet (one row per trading day)
 
 Usage:
-    ml/.venv/bin/python ml/src/moc_features.py \\
-        --bars-input ~/Downloads/XNAS-20260414-PSQVX5VACS/xnas-itch-20180501-20260413.ohlcv-1m.dbn.zst
+    ml/.venv/bin/python ml/src/moc_features.py
 
-Requires: databento, pandas, numpy
+Requires: pandas, numpy
 """
 
 import argparse
@@ -46,12 +47,11 @@ import sys
 from pathlib import Path
 
 try:
-    import databento as db
     import numpy as np
     import pandas as pd
 except ImportError:
     print("Missing dependencies. Run:")
-    print("  ml/.venv/bin/pip install databento pandas numpy")
+    print("  ml/.venv/bin/pip install pandas numpy")
     sys.exit(1)
 
 from utils import ML_ROOT, section, subsection, takeaway
@@ -80,19 +80,13 @@ def parse_args() -> argparse.Namespace:
         "--imbalance-parquet",
         type=Path,
         default=ML_ROOT / "data" / "moc_imbalance_raw.parquet",
-        help="Cached parquet from moc_inspect.py",
-    )
-    parser.add_argument(
-        "--bars-input",
-        type=Path,
-        required=True,
-        help="Path to the ohlcv-1m .dbn.zst file",
+        help="Cached imbalance-message parquet",
     )
     parser.add_argument(
         "--bars-parquet",
         type=Path,
         default=ML_ROOT / "data" / "qqq_bars_1m.parquet",
-        help="Where to cache decoded bars (for faster re-runs)",
+        help="Cached QQQ 1-minute bars parquet",
     )
     parser.add_argument(
         "--output",
@@ -109,7 +103,10 @@ def parse_args() -> argparse.Namespace:
 def load_imbalance(parquet_path: Path) -> pd.DataFrame:
     """Load the cached imbalance data and filter to QQQ closing auctions."""
     if not parquet_path.exists():
-        print(f"ERROR: {parquet_path} not found. Run moc_inspect.py first.")
+        print(
+            f"ERROR: {parquet_path} not found. It was produced by the removed "
+            "Databento decoder (moc_inspect.py); restore it from a backup."
+        )
         sys.exit(1)
 
     print(f"  Loading imbalance cache: {parquet_path.name}")
@@ -120,31 +117,17 @@ def load_imbalance(parquet_path: Path) -> pd.DataFrame:
     return frame
 
 
-def load_bars(dbn_path: Path, parquet_cache: Path) -> pd.DataFrame:
-    """
-    Decode the 1-minute OHLCV DBN and cache to parquet. Subsequent runs
-    read straight from parquet (fast).
-    """
-    if parquet_cache.exists():
-        print(f"  Loading bars cache: {parquet_cache.name}")
-        return pd.read_parquet(parquet_cache)
-
-    if not dbn_path.exists():
-        print(f"ERROR: bars file not found: {dbn_path}")
+def load_bars(parquet_cache: Path) -> pd.DataFrame:
+    """Load the cached QQQ 1-minute bars parquet."""
+    if not parquet_cache.exists():
+        print(
+            f"ERROR: {parquet_cache} not found. It was decoded from a Databento "
+            "DBN file by a code path removed on 2026-09-30; restore it from a "
+            "backup."
+        )
         sys.exit(1)
-
-    print(
-        f"  Decoding bars from {dbn_path.name} ({dbn_path.stat().st_size / 1e6:.1f} MB)"
-    )
-    store = db.DBNStore.from_file(str(dbn_path))
-    frame = store.to_df(map_symbols=True)
-    frame = frame[frame["symbol"] == SYMBOL]
-    print(f"  {len(frame):,} QQQ 1-minute bars")
-
-    parquet_cache.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_parquet(parquet_cache)
-    print(f"  Cached to {parquet_cache.name} for fast re-runs")
-    return frame
+    print(f"  Loading bars cache: {parquet_cache.name}")
+    return pd.read_parquet(parquet_cache)
 
 
 # ── Snapshot extraction ──────────────────────────────────────
@@ -372,7 +355,7 @@ def main() -> None:
     section("MOC Imbalance — Phase 1: Feature Construction")
 
     imbalance = load_imbalance(args.imbalance_parquet)
-    bars = load_bars(args.bars_input, args.bars_parquet)
+    bars = load_bars(args.bars_parquet)
 
     subsection("Building per-day rows")
     frame = build_per_day_rows(imbalance, bars)

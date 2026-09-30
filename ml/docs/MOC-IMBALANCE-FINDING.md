@@ -3,7 +3,7 @@
 **Status:** Closed, negative result. Protective rule adopted.
 **Date range studied:** 2018-05-01 → 2026-04-13 (1,991 trading days)
 **Data cost:** ~$3 total (Databento historical, DBN format)
-**Code:** `ml/src/moc_inspect.py`, `moc_features.py`, `moc_eda.py`, `moc_regime_vix.py`
+**Code:** `ml/src/moc_inspect.py` (removed 2026-09-30 with the Databento decoders), `moc_features.py`, `moc_eda.py`, `moc_regime_vix.py`
 
 ---
 
@@ -121,6 +121,8 @@ VIX close      Short-gamma 0DTE rule
 ## Files
 
 - `ml/src/moc_inspect.py` — decode DBN, validate schema, cache parquet.
+  (Removed 2026-09-30 with the Databento decoders; the cached parquet in
+  `ml/data/` is now the only copy.)
 - `ml/src/moc_features.py` — per-day features (snapshots at 15:50 + 15:55,
   targets MAE/MFE/return from 1-min bars).
 - `ml/src/moc_eda.py` — 8 plots + correlation matrices.

@@ -5,7 +5,8 @@
  * Railway sidecar can seed its persistent volume from it.
  *
  * Source:  ml/data/archive/  (produced by ml/src/archive_convert.py
- *          and ml/src/tbbo_convert.py)
+ *          and ml/src/tbbo_convert.py — both removed 2026-09-30 with
+ *          the Databento decoders; the archive is now frozen)
  * Target:  archive/v1/<relative-path> on Vercel Blob (private access;
  *          matches this project's Blob store configuration).
  * Output:  archive/v1/manifest.json listing every uploaded file with

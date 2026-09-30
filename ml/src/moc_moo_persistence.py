@@ -82,7 +82,10 @@ plt.rcParams.update({"figure.dpi": 110, "savefig.dpi": 140})
 def load_moo_messages() -> pd.DataFrame:
     """Filter raw imbalance data to QQQ opening-cross messages."""
     if not IMBALANCE_CACHE.exists():
-        print(f"ERROR: {IMBALANCE_CACHE} not found. Run moc_inspect.py first.")
+        print(
+            f"ERROR: {IMBALANCE_CACHE} not found. It was produced by the removed "
+            "Databento decoder (moc_inspect.py); restore it from a backup."
+        )
         sys.exit(1)
     raw = pd.read_parquet(IMBALANCE_CACHE)
     moo = raw[(raw["symbol"] == SYMBOL) & (raw["auction_type"] == "O")]
@@ -92,7 +95,10 @@ def load_moo_messages() -> pd.DataFrame:
 
 def load_bars() -> pd.DataFrame:
     if not BARS_CACHE.exists():
-        print(f"ERROR: {BARS_CACHE} not found. Run moc_features.py first.")
+        print(
+            f"ERROR: {BARS_CACHE} not found. It was decoded from a Databento DBN "
+            "file by a code path removed on 2026-09-30; restore it from a backup."
+        )
         sys.exit(1)
     return pd.read_parquet(BARS_CACHE)
 

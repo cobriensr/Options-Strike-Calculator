@@ -25,7 +25,7 @@ Claude's prompt, confirm the signal exists.
 - Databento TBBO, dataset `GLBX.MDP3`, parent symbols `ES.FUT` + `NQ.FUT`,
   2025-04-20 → 2026-04-17 (312 daily DBN files, ~5 GB compressed).
 - Converted to year-partitioned Parquet via `ml/src/tbbo_convert.py`
-  (Phase 4a). Output: 210.6M trade events across 16 contracts.
+  (Phase 4a; converter removed 2026-09-30 with the Databento decoders). Output: 210.6M trade events across 16 contracts.
 - Per-day microstructure features computed via
   `ml/src/features/microstructure.py` (Phase 4c). Output: 624 rows × 28
   columns at `ml/data/features/microstructure_daily.parquet`.
@@ -113,7 +113,8 @@ one representative per family rather than training on all 23 features:
 
 All four planned changes are live:
 
-1. **Sidecar:** `sidecar/src/databento_client.py:213-217` subscribes to
+1. **Sidecar (removed 2026-09-29 with the Databento ingestion):**
+   `sidecar/src/databento_client.py:213-217` subscribed to
    `["ES.FUT", "NQ.FUT"]` TBBO on CME GLBX.MDP3 with `stype_in="parent"`.
    Both tables (`futures_trade_ticks`, `futures_top_of_book`) carry a
    `symbol` column; `_handle_tbbo` dispatches on it.
