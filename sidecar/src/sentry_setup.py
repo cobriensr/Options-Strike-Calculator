@@ -15,11 +15,87 @@ structured logger so Railway log drains still see them.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from logger_setup import log
 
 _sentry_enabled = False
+
+
+# ---------------------------------------------------------------------------
+# Credential redaction
+# ---------------------------------------------------------------------------
+#
+# psycopg2/libpq errors can echo the connection string verbatim (e.g.
+# ``invalid dsn: missing "=" after "postgresql://user:pass@host/db"``), and
+# Sentry's default scrubber keys on field NAMES ("password", "token"), not on
+# secrets embedded inside free text or in innocuously named locals such as
+# ``dsn``. Both the log line and the outgoing Sentry event are therefore run
+# through ``redact_credentials``.
+
+# ``scheme://userinfo@`` — userinfo cannot contain ``/``, ``@`` or
+# whitespace, so ``https://example.com/a@b`` (an ``@`` in the path) is not
+# touched.
+_URL_USERINFO_RE = re.compile(
+    r"(?P<scheme>\b[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/@'\"<>]+@"
+)
+
+# libpq ``key=value`` secrets (conninfo strings and URI query params):
+# ``password=secret``, ``password = 'quoted secret'``, ``sslpassword=...``.
+# libpq allows whitespace around ``=``, so prose like "password= foo" is
+# also masked — over-redaction is the safe side of that trade.
+_KV_SECRET_RE = re.compile(
+    r"\b(?P<key>sslpassword|password)(?P<eq>\s*=\s*)"
+    r"(?:'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|[^\s&'\",;)]+)",
+    re.IGNORECASE,
+)
+
+_REDACTED = "***"
+
+
+def redact_credentials(text: str) -> str:
+    """Mask URL userinfo and libpq password params in ``text``.
+
+    ``postgresql://user:pass@host/db`` → ``postgresql://***@host/db``;
+    ``password=secret`` / ``sslpassword='x y'`` → ``password=***``.
+    Text without credentials is returned unchanged.
+    """
+    text = _URL_USERINFO_RE.sub(rf"\g<scheme>{_REDACTED}@", text)
+    return _KV_SECRET_RE.sub(rf"\g<key>\g<eq>{_REDACTED}", text)
+
+
+def _redact_value(value: Any) -> Any:
+    """Recursively apply ``redact_credentials`` to every string in ``value``.
+
+    Walks dicts, lists and tuples; any other type passes through as-is.
+    Returns a new structure rather than mutating the input.
+    """
+    if isinstance(value, str):
+        return redact_credentials(value)
+    if isinstance(value, dict):
+        return {k: _redact_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_value(v) for v in value)
+    return value
+
+
+def _before_send(event: Any, hint: Any) -> Any:
+    """Sentry ``before_send`` hook: scrub credentials from the whole event.
+
+    Walks every string in the event — exception values, ``message`` /
+    ``logentry``, breadcrumbs, extras, and stack-frame locals (where a
+    ``dsn`` variable would otherwise ship the password). Never raises: if
+    the walk fails the original event is returned so the error still
+    reaches Sentry, and the failure is logged.
+    """
+    try:
+        return _redact_value(event)
+    except Exception as inner:  # noqa: BLE001 — must never drop the event
+        log.warning("before_send credential scrub failed: %s", type(inner).__name__)
+        return event
 
 
 def init_sentry() -> None:
@@ -63,6 +139,9 @@ def init_sentry() -> None:
             # separate so we can filter.
             server_name="futures-sidecar",
             release=os.environ.get("RAILWAY_DEPLOYMENT_ID"),
+            # Scrub credentials (DSNs, libpq password params) from every
+            # outgoing event — see redact_credentials.
+            before_send=_before_send,
         )
         _sentry_enabled = True
         log.info("Sentry initialized for futures-sidecar")
@@ -120,10 +199,8 @@ def capture_exception(
     `tags` become Sentry scope tags (filterable in the Sentry UI).
     `context` becomes scope extras (full-fidelity values in events).
     """
-    if context:
-        log.error("%s (context=%s)", exc, context)
-    else:
-        log.error("%s", exc)
+    text = f"{exc} (context={context})" if context else str(exc)
+    log.error("%s", redact_credentials(text))
 
     if not _sentry_enabled:
         return
@@ -154,10 +231,8 @@ def capture_message(
     `tags` become Sentry scope tags (filterable in the Sentry UI).
     `context` becomes scope extras.
     """
-    if context:
-        log.warning("%s (context=%s)", message, context)
-    else:
-        log.warning("%s", message)
+    text = f"{message} (context={context})" if context else message
+    log.warning("%s", redact_credentials(text))
 
     if not _sentry_enabled:
         return

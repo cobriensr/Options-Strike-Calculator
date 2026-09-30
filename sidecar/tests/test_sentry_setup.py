@@ -208,3 +208,203 @@ class TestCaptureExceptionEnabled:
 
         mock_sentry_sdk.capture_exception.assert_called_once_with(exc)
         mock_scope.set_extra.assert_called_once_with("symbol", "ES")
+
+    def test_init_registers_before_send_scrubber(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every outgoing event goes through the credential scrubber;
+        send_default_pii is left at the SDK default (not passed)."""
+        monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
+        mock_sentry_sdk = MagicMock()
+        monkeypatch.setitem(sys.modules, "sentry_sdk", mock_sentry_sdk)
+
+        sentry_setup.init_sentry()
+
+        init_kwargs = mock_sentry_sdk.init.call_args.kwargs
+        assert init_kwargs["before_send"] is sentry_setup._before_send
+        assert "send_default_pii" not in init_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Credential redaction — log lines + Sentry before_send
+# ---------------------------------------------------------------------------
+
+SECRET = "s3cr3t-pw"
+# psycopg2 echoes the offending conninfo for a malformed DSN.
+PG_DSN_ERROR = (
+    f'invalid dsn: missing "=" after "postgresql://neon_user:{SECRET}'
+    '@ep-x.us-east-2.aws.neon.tech/neondb" in connection info string'
+)
+PG_KV_ERROR = (
+    "connection to server failed: host=ep-x.neon.tech user=neon_user "
+    f"password={SECRET} dbname=neondb sslmode=require"
+)
+
+
+def _logged_text(log_method: MagicMock) -> str:
+    """Render every call on a mocked log method the way logging would."""
+    return "\n".join(
+        c.args[0] % c.args[1:] if len(c.args) > 1 else str(c.args[0])
+        for c in log_method.call_args_list
+    )
+
+
+class TestRedactCredentials:
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (
+                f"postgresql://u:{SECRET}@h:5432/db?sslmode=require",
+                "postgresql://***@h:5432/db?sslmode=require",
+            ),
+            (f"postgres://u:{SECRET}@h/db", "postgres://***@h/db"),
+            (f"redis://default:{SECRET}@cache:6379", "redis://***@cache:6379"),
+            (f"https://u:{SECRET}@api.example.com/x", "https://***@api.example.com/x"),
+            (f"password={SECRET} dbname=db", "password=*** dbname=db"),
+            (f"password = '{SECRET} with space'", "password = ***"),
+            (f"sslpassword={SECRET}", "sslpassword=***"),
+            (f"PASSWORD={SECRET}", "PASSWORD=***"),
+            (
+                f"postgresql://h/db?user=u&password={SECRET}",
+                "postgresql://h/db?user=u&password=***",
+            ),
+        ],
+    )
+    def test_masks_credentials(self, raw: str, expected: str) -> None:
+        assert sentry_setup.redact_credentials(raw) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "db pool saturated: could not borrow a connection within 10.0s",
+            'password authentication failed for user "neon_user"',
+            "https://example.com/path/a@b?q=1",
+            "contact ops@example.com about the outage",
+            "password reset required for user neon_user",
+            "",
+        ],
+    )
+    def test_normal_text_passes_through(self, text: str) -> None:
+        assert sentry_setup.redact_credentials(text) == text
+
+
+class TestCaptureRedactsLogLines:
+    def test_capture_exception_redacts_dsn_in_message(self) -> None:
+        sentry_setup.capture_exception(RuntimeError(PG_DSN_ERROR))
+        logged = _logged_text(mock_log.error)
+        assert SECRET not in logged
+        assert "postgresql://***@ep-x.us-east-2.aws.neon.tech/neondb" in logged
+
+    def test_capture_exception_redacts_libpq_password(self) -> None:
+        sentry_setup.capture_exception(RuntimeError(PG_KV_ERROR))
+        logged = _logged_text(mock_log.error)
+        assert SECRET not in logged
+        assert "password=***" in logged
+
+    def test_capture_exception_redacts_context(self) -> None:
+        sentry_setup.capture_exception(
+            ValueError("boom"),
+            context={"dsn": f"postgresql://u:{SECRET}@h/db"},
+        )
+        logged = _logged_text(mock_log.error)
+        assert SECRET not in logged
+        assert "boom" in logged
+
+    def test_capture_exception_normal_message_unchanged(self) -> None:
+        sentry_setup.capture_exception(ValueError("plain failure"))
+        assert _logged_text(mock_log.error) == "plain failure"
+
+    def test_capture_message_redacts(self) -> None:
+        sentry_setup.capture_message(f"retrying {PG_KV_ERROR}")
+        logged = _logged_text(mock_log.warning)
+        assert SECRET not in logged
+
+
+def _event_with_secrets() -> dict:
+    """A Sentry-event-shaped dict with the secret in every text surface."""
+    return {
+        "level": "error",
+        "message": f"db down: {PG_KV_ERROR}",
+        "logentry": {"message": PG_DSN_ERROR, "formatted": PG_DSN_ERROR},
+        "exception": {
+            "values": [
+                {
+                    "type": "OperationalError",
+                    "value": PG_DSN_ERROR,
+                    "stacktrace": {
+                        "frames": [
+                            {
+                                "function": "get_pool",
+                                "lineno": 74,
+                                "vars": {
+                                    "dsn": f"'postgresql://u:{SECRET}@h/db'",
+                                    "timeout_s": 10.0,
+                                },
+                            }
+                        ]
+                    },
+                }
+            ]
+        },
+        "breadcrumbs": {
+            "values": [{"category": "log", "message": PG_KV_ERROR, "level": "warning"}]
+        },
+        "extra": {"context": (f"password={SECRET}", 3)},
+        "tags": {"component": "db"},
+    }
+
+
+class TestBeforeSend:
+    def test_scrubs_every_text_surface(self) -> None:
+        import json
+
+        result = sentry_setup._before_send(_event_with_secrets(), {})
+
+        assert SECRET not in json.dumps(result)
+        exc_value = result["exception"]["values"][0]
+        assert exc_value["value"].startswith("invalid dsn: missing")
+        assert "password=***" in result["breadcrumbs"]["values"][0]["message"]
+        assert "password=***" in result["message"]
+        # Non-string leaves and structure are preserved.
+        assert exc_value["stacktrace"]["frames"][0]["vars"]["timeout_s"] == 10.0
+        assert result["extra"]["context"][1] == 3
+        assert result["tags"] == {"component": "db"}
+
+    def test_normal_event_passes_through_unchanged(self) -> None:
+        event = {
+            "level": "warning",
+            "message": "db health probe: pool saturated (healthy but busy)",
+            "exception": {"values": [{"type": "ValueError", "value": "boom"}]},
+            "breadcrumbs": {"values": [{"message": "GET /health 200"}]},
+        }
+        assert sentry_setup._before_send(event, {}) == event
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            {},
+            {"exception": None, "breadcrumbs": "not-a-dict", "extra": 42},
+            {"exception": {"values": [None, 7, object()]}},
+            {"message": None, "logentry": {"params": [b"bytes", 1.5, None]}},
+        ],
+    )
+    def test_never_raises_on_odd_event_shapes(self, event: dict) -> None:
+        result = sentry_setup._before_send(event, None)
+        assert isinstance(result, dict)
+        assert result.keys() == event.keys()
+
+    def test_returns_original_event_when_scrub_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scrubber bug must not drop the error report — the event is
+        returned as-is and the failure is logged (by type only)."""
+
+        def _boom(_value: object) -> object:
+            raise RecursionError("too deep")
+
+        monkeypatch.setattr(sentry_setup, "_redact_value", _boom)
+        event = {"message": "anything"}
+
+        assert sentry_setup._before_send(event, {}) is event
+        mock_log.warning.assert_called_once()
+        assert "RecursionError" in _logged_text(mock_log.warning)
