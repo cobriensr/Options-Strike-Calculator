@@ -4,11 +4,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { _resetEnvCache } from '../_lib/env.js';
 
 // Use vi.hoisted so these are available when vi.mock factory runs (hoisted above imports)
-const { mockRedisGet, mockRedisSet, mockRedisDel } = vi.hoisted(() => ({
-  mockRedisGet: vi.fn(),
-  mockRedisSet: vi.fn(),
-  mockRedisDel: vi.fn(),
-}));
+const { mockRedisGet, mockRedisSet, mockRedisDel, mockRedisEval } = vi.hoisted(
+  () => ({
+    mockRedisGet: vi.fn(),
+    mockRedisSet: vi.fn(),
+    mockRedisDel: vi.fn(),
+    mockRedisEval: vi.fn(),
+  }),
+);
 
 const mockLogger = vi.hoisted(() => ({
   info: vi.fn(),
@@ -16,7 +19,17 @@ const mockLogger = vi.hoisted(() => ({
   error: vi.fn(),
 }));
 
+const mockSentry = vi.hoisted(() => ({
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+}));
+
 vi.mock('../_lib/logger.js', () => ({ default: mockLogger }));
+
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: mockSentry,
+  metrics: { increment: vi.fn() },
+}));
 
 vi.mock('@upstash/redis', () => {
   return {
@@ -24,9 +37,57 @@ vi.mock('@upstash/redis', () => {
       get = mockRedisGet;
       set = mockRedisSet;
       del = mockRedisDel;
+      eval = mockRedisEval;
     },
   };
 });
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The 400 body Schwab actually returned in prod (2026-09-21 → 09-28) for a
+ * dead refresh token: the real `invalid_grant` is double-encoded inside an
+ * outer `unsupported_token_type` error.
+ */
+const INVALID_GRANT_BODY =
+  '{"error":"unsupported_token_type","error_description":"400 Bad Request: \\"{\\"error_description\\":\\"Refresh token is invalid, expired or revoked\\",\\"error\\":\\"invalid_grant\\"}\\""}';
+
+/** Stored tokens whose access token is inside the 60 s refresh buffer. */
+function staleTokens(overrides: Record<string, unknown> = {}) {
+  return {
+    accessToken: 'old-tok',
+    refreshToken: 'ref-tok',
+    expiresAt: Date.now() + 30_000,
+    refreshExpiresAt: Date.now() + 3 * DAY_MS,
+    ...overrides,
+  };
+}
+
+/** A successful Schwab token-endpoint response. */
+function tokenResponse(body: Record<string, unknown>) {
+  return {
+    ok: true,
+    status: 200,
+    json: () =>
+      Promise.resolve({
+        expires_in: 1800,
+        token_type: 'Bearer',
+        scope: 'api',
+        id_token: '',
+        ...body,
+      }),
+  };
+}
+
+/** A failed Schwab token-endpoint response. */
+function tokenFailure(status: number, body: string) {
+  return { ok: false, status, text: () => Promise.resolve(body) };
+}
+
+/** Calls to the Redis SET mock that wrote the token record (not the lock). */
+function tokenWrites() {
+  return mockRedisSet.mock.calls.filter((c) => c[0] === 'schwab:tokens');
+}
 
 import {
   getAccessToken,
@@ -44,10 +105,15 @@ describe('schwab', () => {
     mockRedisGet.mockReset();
     mockRedisSet.mockReset();
     mockRedisDel.mockReset();
+    mockRedisEval.mockReset();
+    mockSentry.captureException.mockClear();
+    mockSentry.captureMessage.mockClear();
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   // ============================================================
@@ -253,21 +319,82 @@ describe('schwab', () => {
       vi.unstubAllGlobals();
     });
 
-    it('handles Redis get failure gracefully', async () => {
+    it('serves the warm in-memory token when the Redis read fails', async () => {
       process.env.SCHWAB_CLIENT_ID = 'id';
       process.env.SCHWAB_CLIENT_SECRET = 'secret';
-      mockRedisGet.mockRejectedValue(new Error('redis down'));
+
+      // Warm this instance's in-memory cache with a successful refresh.
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            tokenResponse({ access_token: 'warm-tok', refresh_token: 'r' }),
+          ),
+      );
+      expect(await getAccessToken()).toEqual({ token: 'warm-tok' });
+
+      // Upstash blip: the read throws, the warm access token still works.
+      mockRedisGet.mockRejectedValueOnce(new Error('upstash down'));
+      expect(await getAccessToken()).toEqual({ token: 'warm-tok' });
+      expect(mockSentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('reports a Redis read error as token_error, not "No tokens found"', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      // Push the clock a day forward so any in-memory token warmed by an
+      // earlier test is expired and the fallback cannot mask the error.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(Date.now() + DAY_MS);
+      const redisErr = new Error('upstash down');
+      mockRedisGet.mockRejectedValue(redisErr);
 
       const result = await getAccessToken();
-      // After earlier tests refresh tokens, the in-memory cache may
-      // be populated — getAccessToken falls back to it. Either outcome
-      // is valid: in-memory fallback returns { token }, or cold start
-      // returns { error: expired_refresh }.
-      if ('token' in result) {
-        expect(result.token).toBeTruthy();
-      } else {
-        expect(result.error.type).toBe('expired_refresh');
+
+      expect(result).toEqual({
+        error: {
+          type: 'token_error',
+          message: expect.stringContaining('upstash down'),
+        },
+      });
+      if ('error' in result) {
+        expect(result.error.message).not.toContain('No tokens found');
       }
+      // Loud: the read failure is captured, not silently mapped to "logged out".
+      expect(mockSentry.captureException).toHaveBeenCalledWith(redisErr);
+    });
+
+    it('reports an absent token key as expired_refresh even with a warm in-memory token', async () => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            tokenResponse({ access_token: 'warm-tok', refresh_token: 'r' }),
+          ),
+      );
+      expect(await getAccessToken()).toEqual({ token: 'warm-tok' });
+
+      // The key is genuinely gone (TTL or a cleared rejection) — that is
+      // "logged out", and the in-memory fallback is only for read errors.
+      mockRedisGet.mockResolvedValueOnce(null);
+      const result = await getAccessToken();
+      expect(result).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('No tokens found'),
+        },
+      });
     });
 
     it('handles Redis store failure gracefully during refresh', async () => {
@@ -563,8 +690,8 @@ describe('schwab', () => {
         })
         // waitForLockRelease: Redis throws → returns early
         .mockRejectedValueOnce(new Error('Redis down'))
-        // getStoredTokens after lock wait: returns null (stale)
-        .mockResolvedValueOnce(null);
+        // getStoredTokens after lock wait: still stale → retry the lock
+        .mockResolvedValueOnce(staleTokens());
 
       // Lock NOT acquired
       mockRedisSet.mockResolvedValueOnce(null).mockResolvedValue('OK');
@@ -593,6 +720,370 @@ describe('schwab', () => {
       }
 
       vi.unstubAllGlobals();
+    });
+  });
+
+  // ============================================================
+  // Refresh-token lifetime + rejection (2026-09-29 logout incident)
+  // ============================================================
+
+  describe('refresh-token lifetime', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+    });
+
+    it('keeps the stored refreshExpiresAt fixed across an access-token refresh', async () => {
+      const refreshExpiresAt = Date.now() + 2 * DAY_MS;
+      mockRedisGet.mockResolvedValueOnce(staleTokens({ refreshExpiresAt }));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          tokenResponse({
+            access_token: 'new-access',
+            refresh_token: 'ref-tok',
+          }),
+        ),
+      );
+
+      expect(await getAccessToken()).toEqual({ token: 'new-access' });
+
+      const writes = tokenWrites();
+      expect(writes).toHaveLength(1);
+      const [, written, opts] = writes[0]!;
+      expect(written.accessToken).toBe('new-access');
+      // The refresh token's 7 days run from the ORIGINAL login — a refresh
+      // must not slide the expiry forward.
+      expect(written.refreshExpiresAt).toBe(refreshExpiresAt);
+      // TTL = remaining refresh lifetime + 1 day buffer (≈ 3 days), not 8.
+      const expectedTtlSec = Math.floor((2 * DAY_MS + DAY_MS) / 1000);
+      expect(opts.ex).toBeGreaterThan(expectedTtlSec - 5);
+      expect(opts.ex).toBeLessThanOrEqual(expectedTtlSec);
+    });
+
+    it('keeps the stored refresh token when Schwab omits refresh_token on refresh', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(tokenResponse({ access_token: 'new-access' })),
+      );
+
+      expect(await getAccessToken()).toEqual({ token: 'new-access' });
+
+      const [, written] = tokenWrites()[0]!;
+      expect(written.refreshToken).toBe('ref-tok');
+    });
+
+    it('stores a rotated refresh token when Schwab returns one', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          tokenResponse({
+            access_token: 'new-access',
+            refresh_token: 'rotated-ref',
+          }),
+        ),
+      );
+
+      await getAccessToken();
+
+      const [, written] = tokenWrites()[0]!;
+      expect(written.refreshToken).toBe('rotated-ref');
+    });
+
+    it('sets a fresh 7-day refresh expiry only on the authorization-code exchange', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          tokenResponse({
+            access_token: 'a',
+            refresh_token: 'r',
+          }),
+        ),
+      );
+      const before = Date.now();
+
+      await storeInitialTokens('code', 'https://example.com/cb');
+
+      const [, written] = tokenWrites()[0]!;
+      expect(written.refreshExpiresAt).toBeGreaterThanOrEqual(
+        before + 7 * DAY_MS,
+      );
+      expect(written.refreshExpiresAt).toBeLessThanOrEqual(
+        Date.now() + 7 * DAY_MS,
+      );
+    });
+  });
+
+  describe('rejected refresh token (invalid_grant)', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK'); // refresh lock acquired
+      mockRedisDel.mockResolvedValue(1);
+    });
+
+    it('clears the tokens, captures ONE refresh_rejected warning, and returns expired_refresh', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisEval.mockResolvedValue(1); // compare-and-delete: deleted
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('re-authenticate'),
+        },
+      });
+      // Compare-and-delete keyed on the refresh token that FAILED, fenced
+      // by the JSON quotes so a token cannot prefix-match a longer one.
+      expect(mockRedisEval).toHaveBeenCalledTimes(1);
+      expect(mockRedisEval).toHaveBeenCalledWith(
+        expect.stringContaining("redis.call('DEL', KEYS[1])"),
+        ['schwab:tokens'],
+        ['"refreshToken":"ref-tok"'],
+      );
+      expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(mockSentry.captureMessage).toHaveBeenCalledWith(
+        'schwab.auth.refresh_rejected',
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: ['schwab.auth.refresh_rejected'],
+        }),
+      );
+      // A rejection is a state transition, not an exception.
+      expect(mockSentry.captureException).not.toHaveBeenCalled();
+      // Nothing re-persisted the dead tokens; the lock was released.
+      expect(tokenWrites()).toHaveLength(0);
+      expect(mockRedisDel).toHaveBeenCalledWith('schwab:refresh_lock');
+    });
+
+    it('stops at the local guard on the next call without calling Schwab again', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisEval.mockResolvedValue(1);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
+      vi.stubGlobal('fetch', fetchMock);
+      await getAccessToken();
+
+      // The compare-and-delete removed the key.
+      mockRedisGet.mockResolvedValueOnce(null);
+      const second = await getAccessToken();
+
+      expect(second).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('No tokens found'),
+        },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(mockRedisEval).toHaveBeenCalledTimes(1);
+      expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats a 401 invalid_grant the same as a 400', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisEval.mockResolvedValue(1);
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(tokenFailure(401, '{"error":"invalid_grant"}')),
+      );
+
+      const result = await getAccessToken();
+
+      expect('error' in result && result.error.type).toBe('expired_refresh');
+      expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('parallel callers sharing one rejected refresh produce exactly one capture', async () => {
+      mockRedisGet.mockResolvedValue(staleTokens());
+      mockRedisEval.mockResolvedValue(1);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const results = await Promise.all([
+        getAccessToken(),
+        getAccessToken(),
+        getAccessToken(),
+      ]);
+
+      for (const r of results) {
+        expect('error' in r && r.error.type).toBe('expired_refresh');
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(mockRedisEval).toHaveBeenCalledTimes(1);
+      expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT wipe tokens a concurrent re-auth wrote mid-flight; uses them instead', async () => {
+      mockRedisGet
+        // initial read: the old, soon-to-be-rejected tokens
+        .mockResolvedValueOnce(staleTokens())
+        // re-read after the compare-and-delete reported "replaced"
+        .mockResolvedValueOnce({
+          accessToken: 'reauth-access',
+          refreshToken: 'reauth-ref',
+          expiresAt: Date.now() + 1_800_000,
+          refreshExpiresAt: Date.now() + 7 * DAY_MS,
+        });
+      mockRedisEval.mockResolvedValue(2); // key holds a DIFFERENT refresh token
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({ token: 'reauth-access' });
+      expect(mockRedisDel).not.toHaveBeenCalledWith('schwab:tokens');
+      expect(tokenWrites()).toHaveLength(0);
+      expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+      // The re-read found a fresh access token — no second Schwab call.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-reads at most once: a second replace in the same call is a token_error', async () => {
+      // Pathological: every read returns stale tokens and every
+      // compare-and-delete says a different token is stored.
+      mockRedisGet.mockResolvedValue(staleTokens());
+      mockRedisEval.mockResolvedValue(2);
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({
+        error: {
+          type: 'token_error',
+          message: expect.stringContaining('replaced twice'),
+        },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('returns expired_refresh without a capture when the key was already cleared', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      mockRedisEval.mockResolvedValue(0); // key absent — someone else cleared it
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY)),
+      );
+
+      const result = await getAccessToken();
+
+      expect('error' in result && result.error.type).toBe('expired_refresh');
+      expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+      expect(mockSentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a failed compare-and-delete loudly but still reports expired_refresh', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      const evalErr = new Error('EVAL failed');
+      mockRedisEval.mockRejectedValue(evalErr);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY)),
+      );
+
+      const result = await getAccessToken();
+
+      // Auth state is still "rejected" — the caller must re-auth either way.
+      expect('error' in result && result.error.type).toBe('expired_refresh');
+      // The dead state was NOT persisted, so this is an error, not the
+      // one-shot transition warning.
+      expect(mockSentry.captureException).toHaveBeenCalledWith(evalErr);
+      expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('a lock loser that finds the tokens cleared while waiting stops without calling Schwab', async () => {
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens()) // initial read
+        .mockResolvedValueOnce(null) // waitForLockRelease: lock released
+        .mockResolvedValueOnce(null); // post-wait read: winner cleared the tokens
+      mockRedisSet.mockResolvedValue(null); // lock NOT acquired
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('No tokens found'),
+        },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('refresh failures that are NOT a rejection', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisDel.mockResolvedValue(1);
+    });
+
+    it.each([
+      [
+        'a 400 without invalid_grant',
+        tokenFailure(400, '{"error":"invalid_request"}'),
+      ],
+      [
+        'a 5xx that mentions invalid_grant',
+        tokenFailure(502, 'upstream invalid_grant proxy page'),
+      ],
+      ['a 503', tokenFailure(503, 'Service Unavailable')],
+    ])(
+      '%s stays a captured token_error and keeps the tokens',
+      async (_label, response) => {
+        mockRedisGet.mockResolvedValueOnce(staleTokens());
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response));
+
+        const result = await getAccessToken();
+
+        expect('error' in result && result.error.type).toBe('token_error');
+        expect(mockSentry.captureException).toHaveBeenCalledTimes(1);
+        expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+        expect(mockRedisEval).not.toHaveBeenCalled();
+        expect(mockRedisDel).not.toHaveBeenCalledWith('schwab:tokens');
+      },
+    );
+
+    it('a timeout stays a captured token_error and keeps the tokens', async () => {
+      mockRedisGet.mockResolvedValueOnce(staleTokens());
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockRejectedValue(
+            new DOMException('The operation timed out.', 'TimeoutError'),
+          ),
+      );
+
+      const result = await getAccessToken();
+
+      expect('error' in result && result.error.type).toBe('token_error');
+      expect(mockSentry.captureException).toHaveBeenCalledTimes(1);
+      expect(mockRedisEval).not.toHaveBeenCalled();
     });
   });
 

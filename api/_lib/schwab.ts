@@ -6,7 +6,13 @@
  *
  * Token lifecycle:
  *   - Access token: expires every 30 minutes → auto-refreshed
- *   - Refresh token: expires every 7 days → requires manual re-auth
+ *   - Refresh token: expires 7 days after the ORIGINAL login (the
+ *     authorization-code exchange). Refreshing the access token does NOT
+ *     extend it, so `refreshExpiresAt` is fixed at login and carried over
+ *     unchanged on every refresh → requires manual re-auth.
+ *   - If Schwab rejects the refresh token (400/401 `invalid_grant`) the
+ *     stored tokens are cleared (compare-and-delete) so later calls stop
+ *     locally with `expired_refresh` instead of re-sending a dead token.
  *
  * Environment variables required:
  *   SCHWAB_CLIENT_ID        — App Key from developer.schwab.com
@@ -47,9 +53,33 @@ interface SchwabTokenResponse {
   id_token: string;
 }
 
+/**
+ * Schwab may omit `refresh_token` on a refresh-grant response; the stored
+ * refresh token then stays the valid one.
+ */
+type SchwabRefreshResponse = Omit<SchwabTokenResponse, 'refresh_token'> & {
+  refresh_token?: string;
+};
+
 export interface SchwabAuthError {
   type: 'expired_refresh' | 'token_error' | 'missing_config';
   message: string;
+}
+
+/**
+ * Schwab's token endpoint rejected the refresh token itself — it is
+ * expired, revoked, or superseded, and only a manual re-auth recovers.
+ * Distinct from transient failures (5xx, timeouts, other 4xx), which stay
+ * loud and must NOT clear the stored tokens.
+ */
+class SchwabRefreshRejectedError extends Error {
+  readonly status: number;
+
+  constructor(status: number, body: string) {
+    super(`Schwab rejected the refresh token (${status}): ${body}`);
+    this.name = 'SchwabRefreshRejectedError';
+    this.status = status;
+  }
 }
 
 // ============================================================
@@ -59,6 +89,11 @@ export interface SchwabAuthError {
 const KV_KEY = 'schwab:tokens';
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token';
 const BUFFER_MS = 60_000; // Refresh 1 minute before expiry
+
+const NO_TOKENS_MESSAGE =
+  'No tokens found. Run /api/auth/init to authenticate.';
+const REJECTED_MESSAGE =
+  'Schwab rejected the refresh token (invalid_grant). Run /api/auth/init to re-authenticate.';
 
 // ============================================================
 // HELPERS
@@ -81,18 +116,27 @@ function basicAuthHeader(clientId: string, clientSecret: string): string {
 // TOKEN STORAGE (Upstash Redis)
 // ============================================================
 
-async function getStoredTokens(): Promise<SchwabTokens | null> {
+/**
+ * A read of the token record. A Redis failure is kept distinct from an
+ * absent key: "the store is down" must not be reported as "logged out".
+ */
+type StoredTokensRead =
+  | { ok: true; tokens: SchwabTokens | null }
+  | { ok: false; error: unknown };
+
+async function getStoredTokens(): Promise<StoredTokensRead> {
   try {
-    return await redis.get<SchwabTokens>(KV_KEY);
+    return { ok: true, tokens: await redis.get<SchwabTokens>(KV_KEY) };
   } catch (err) {
     logger.warn({ err }, 'Redis getStoredTokens failed');
     metrics.increment('redis.error');
-    return null;
+    return { ok: false, error: err };
   }
 }
 
 async function storeTokens(tokens: SchwabTokens): Promise<void> {
-  // TTL = refresh token lifetime + 1 day buffer
+  // TTL = REMAINING refresh-token lifetime + 1 day buffer (refreshExpiresAt
+  // is fixed at login, so this shrinks with each refresh). Floored at 1 h.
   const ttlMs = tokens.refreshExpiresAt - Date.now() + 86_400_000;
   const ttlSec = Math.max(Math.floor(ttlMs / 1000), 3600);
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -112,16 +156,101 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
   );
 }
 
+/**
+ * Atomic compare-and-delete of the token record — STATIC script, all inputs
+ * via ARGV. Deletes the key only if it still holds the refresh token that
+ * Schwab rejected, so a concurrent re-auth's fresh tokens are never wiped.
+ *
+ * `@upstash/redis` stores the record as `JSON.stringify(tokens)`, so ARGV[1]
+ * is the exact `"refreshToken":"<token>"` fragment. JSON escaping means an
+ * unescaped `"` only appears at real key/value boundaries, and the closing
+ * quote fences the value (a token cannot prefix-match a longer one). The
+ * 4th `string.find` arg (`true`) disables Lua patterns.
+ *
+ * KEYS[1] = token key
+ * ARGV[1] = `"refreshToken":` + JSON-encoded rejected refresh token
+ *
+ * Returns: 0 = key absent, 1 = deleted, 2 = key holds a different token
+ */
+const CLEAR_REJECTED_LUA = `
+  local raw = redis.call('GET', KEYS[1])
+  if not raw then return 0 end
+  if string.find(raw, ARGV[1], 1, true) then
+    redis.call('DEL', KEYS[1])
+    return 1
+  end
+  return 2
+`;
+
+type ClearOutcome = 'cleared' | 'replaced' | 'absent' | 'failed';
+
+/**
+ * Clear the token record for a refresh token Schwab rejected. Deleting
+ * (rather than re-writing it with `refreshExpiresAt = 0`) leaves one
+ * logged-out state — "no tokens" — instead of a dead record that the 1 h
+ * TTL floor in `storeTokens` would drop an hour later anyway, and it keeps
+ * the compare-and-set a single static script with no JSON rewrite in Lua.
+ */
+async function clearRejectedTokens(
+  rejectedRefreshToken: string,
+): Promise<ClearOutcome> {
+  try {
+    const result = await redis.eval(
+      CLEAR_REJECTED_LUA,
+      [KV_KEY],
+      [`"refreshToken":${JSON.stringify(rejectedRefreshToken)}`],
+    );
+    if (result === 1) return 'cleared';
+    if (result === 2) return 'replaced';
+    return 'absent';
+  } catch (err) {
+    // The dead token stays stored, so the next call will re-send it and be
+    // rejected again — this must be loud.
+    logger.error(
+      { err },
+      'clearRejectedTokens: compare-and-delete failed; rejected tokens NOT cleared',
+    );
+    metrics.increment('redis.error');
+    Sentry.captureException(err);
+    return 'failed';
+  }
+}
+
+/**
+ * Schwab double-encodes the real OAuth error inside an outer one, e.g.
+ * `{"error":"unsupported_token_type","error_description":"400 Bad Request:
+ * \"{\"error_description\":\"Refresh token is invalid, expired or
+ * revoked\",\"error\":\"invalid_grant\"}\""}` — so classify on the
+ * `invalid_grant` substring, not the outer `error` field. Deliberately
+ * narrow: a false positive clears live tokens and forces a needless re-auth.
+ */
+function isRefreshRejection(status: number, body: string): boolean {
+  return (status === 400 || status === 401) && body.includes('invalid_grant');
+}
+
 // ============================================================
 // TOKEN REFRESH (with mutex to prevent concurrent refreshes)
 // ============================================================
+
+/**
+ * Result of a (deduplicated) refresh attempt.
+ *   - refreshed:  fresh tokens (ours, or a lock winner's read from Redis)
+ *   - logged_out: the refresh token is dead or the tokens are gone →
+ *                 caller reports `expired_refresh`
+ *   - replaced:   Schwab rejected OUR refresh token, but a concurrent
+ *                 re-auth had already stored new tokens → re-read them
+ */
+type RefreshOutcome =
+  | { kind: 'refreshed'; tokens: SchwabTokens }
+  | { kind: 'logged_out'; message: string }
+  | { kind: 'replaced' };
 
 /**
  * In-memory dedup: when 5 parallel schwabFetch calls in the same
  * serverless invocation all see an expired token, only the first
  * one calls Schwab's OAuth endpoint. The rest await the same promise.
  */
-let refreshInFlight: Promise<SchwabTokens> | null = null;
+let refreshInFlight: Promise<RefreshOutcome> | null = null;
 
 /**
  * Last-resort in-memory token cache. Only helps within the same
@@ -184,7 +313,7 @@ async function waitForLockRelease(maxWaitMs = 30_000): Promise<void> {
 }
 
 async function refreshAccessToken(
-  refreshToken: string,
+  stored: SchwabTokens,
   clientId: string,
   clientSecret: string,
 ): Promise<SchwabTokens> {
@@ -196,25 +325,62 @@ async function refreshAccessToken(
     },
     body: new URLSearchParams({
       grant_type: 'refresh_token',
-      refresh_token: refreshToken,
+      refresh_token: stored.refreshToken,
     }),
     signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
     const body = await res.text();
+    if (isRefreshRejection(res.status, body)) {
+      throw new SchwabRefreshRejectedError(res.status, body);
+    }
     throw new Error(`Schwab token refresh failed (${res.status}): ${body}`);
   }
 
-  const data = (await res.json()) as SchwabTokenResponse;
-  const now = Date.now();
+  const data = (await res.json()) as SchwabRefreshResponse;
 
   return {
     accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresAt: now + data.expires_in * 1000,
-    refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
+    refreshToken: data.refresh_token ?? stored.refreshToken,
+    expiresAt: Date.now() + data.expires_in * 1000,
+    // Fixed at login: a refresh must not slide the 7-day window forward.
+    // (It used to, which made the local expiry guard unreachable while
+    // crons kept refreshing — the dead token was then re-sent to Schwab
+    // for a week, 2026-09-21 → 09-28.)
+    refreshExpiresAt: stored.refreshExpiresAt,
   };
+}
+
+/**
+ * Handle a refresh token Schwab rejected. Runs inside the refresh lock, so
+ * no other lock-respecting instance can re-send the dead token while it is
+ * being cleared, and inside the in-flight dedup, so parallel callers in one
+ * invocation share a single clear + capture.
+ */
+async function handleRejectedRefresh(
+  rejectedRefreshToken: string,
+  err: SchwabRefreshRejectedError,
+): Promise<RefreshOutcome> {
+  const outcome = await clearRejectedTokens(rejectedRefreshToken);
+  logger.warn(
+    { status: err.status, outcome },
+    'Schwab rejected the refresh token',
+  );
+  if (outcome === 'replaced') return { kind: 'replaced' };
+
+  inMemoryTokenCache = null;
+  if (outcome === 'cleared') {
+    // Exactly one event per live → dead transition: only the call whose
+    // compare-and-delete removed the key reports it. A warning, not an
+    // exception — the login lapsing is expected; the fix is a re-auth.
+    Sentry.captureMessage('schwab.auth.refresh_rejected', {
+      level: 'warning',
+      fingerprint: ['schwab.auth.refresh_rejected'],
+      extra: { status: err.status, detail: err.message },
+    });
+  }
+  return { kind: 'logged_out', message: REJECTED_MESSAGE };
 }
 
 /**
@@ -246,19 +412,26 @@ const LOCK_MAX_ATTEMPTS = 3;
  *      return it.
  *   4. If the post-wait token is still stale (winner crashed or
  *      Schwab returned nothing), go back to step 1 for another
- *      attempt. Up to LOCK_MAX_ATTEMPTS loops.
+ *      attempt. Up to LOCK_MAX_ATTEMPTS loops. If the tokens are GONE
+ *      after the wait (the winner cleared a rejected refresh token, or
+ *      the key expired), stop — never send a refresh token the store no
+ *      longer holds.
  *   5. After exhausting attempts, throw a token_error so the caller
  *      gets a loud failure rather than silently refreshing without
  *      coordination.
+ *
+ * A Schwab `invalid_grant` rejection is handled inside the lock (see
+ * `handleRejectedRefresh`) and resolves to `logged_out` / `replaced`
+ * rather than throwing; every other failure throws.
  */
 async function refreshAccessTokenOnce(
-  refreshToken: string,
+  stored: SchwabTokens,
   clientId: string,
   clientSecret: string,
-): Promise<SchwabTokens> {
+): Promise<RefreshOutcome> {
   if (refreshInFlight !== null) return refreshInFlight;
 
-  refreshInFlight = (async () => {
+  refreshInFlight = (async (): Promise<RefreshOutcome> => {
     for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt++) {
       const gotLock = await acquireLock();
 
@@ -268,7 +441,7 @@ async function refreshAccessTokenOnce(
         // given moment.
         try {
           const tokens = await refreshAccessToken(
-            refreshToken,
+            stored,
             clientId,
             clientSecret,
           );
@@ -277,18 +450,27 @@ async function refreshAccessTokenOnce(
             accessToken: tokens.accessToken,
             expiresAt: tokens.expiresAt,
           };
-          return tokens;
+          return { kind: 'refreshed', tokens };
+        } catch (err) {
+          if (!(err instanceof SchwabRefreshRejectedError)) throw err;
+          return await handleRejectedRefresh(stored.refreshToken, err);
         } finally {
           await releaseLock();
         }
       }
 
       // Lost the race. Wait for the current holder to release (or for
-      // the lock's TTL to expire), then read what they wrote.
+      // the lock's TTL to expire), then read what they wrote. A read
+      // error counts as "still stale" and loops.
       await waitForLockRelease();
       const fresh = await getStoredTokens();
-      if (fresh && Date.now() < fresh.expiresAt - BUFFER_MS) {
-        return fresh;
+      if (fresh.ok) {
+        if (fresh.tokens === null) {
+          return { kind: 'logged_out', message: NO_TOKENS_MESSAGE };
+        }
+        if (Date.now() < fresh.tokens.expiresAt - BUFFER_MS) {
+          return { kind: 'refreshed', tokens: fresh.tokens };
+        }
       }
 
       // Winner either crashed, timed out, or didn't write fresh
@@ -311,14 +493,16 @@ async function refreshAccessTokenOnce(
 // PUBLIC API
 // ============================================================
 
+type AccessTokenResult = { token: string } | { error: SchwabAuthError };
+
 /**
  * Get a valid Schwab access token.
- * Auto-refreshes if expired. Returns an error if the refresh token
- * is expired (requires manual re-auth).
+ * Auto-refreshes if expired. Returns `expired_refresh` when the login has
+ * lapsed (no tokens, refresh token expired, or rejected by Schwab — all
+ * require manual re-auth) and `token_error` for everything transient
+ * (token store unreachable, refresh endpoint 5xx / timeout / other 4xx).
  */
-export async function getAccessToken(): Promise<
-  { token: string } | { error: SchwabAuthError }
-> {
+export async function getAccessToken(): Promise<AccessTokenResult> {
   const creds = getCredentials();
   if (!creds) {
     return {
@@ -328,11 +512,23 @@ export async function getAccessToken(): Promise<
       },
     };
   }
+  return resolveAccessToken(creds, true);
+}
 
-  const stored = await getStoredTokens();
+/**
+ * @param allowReread one re-resolve is allowed when a concurrent re-auth
+ *   replaced the tokens between our read and Schwab's rejection; a second
+ *   such race in the same call gives up with a token_error.
+ */
+async function resolveAccessToken(
+  creds: { clientId: string; clientSecret: string },
+  allowReread: boolean,
+): Promise<AccessTokenResult> {
+  const read = await getStoredTokens();
 
-  if (!stored) {
-    // Redis read returned null — check in-memory cache as last resort
+  if (!read.ok) {
+    // Token store unreachable. The in-memory cache is the last resort for
+    // exactly this case (a Redis blip inside a warm invocation).
     if (
       inMemoryTokenCache &&
       inMemoryTokenCache.expiresAt > Date.now() + BUFFER_MS
@@ -340,12 +536,26 @@ export async function getAccessToken(): Promise<
       logger.warn('Using in-memory token fallback — Redis read failed');
       return { token: inMemoryTokenCache.accessToken };
     }
+    // NOT "No tokens found": the tokens are probably intact, so this must
+    // stay a loud token_error rather than read as a logout.
+    logger.error(
+      { err: read.error },
+      'getAccessToken: token store read failed',
+    );
+    Sentry.captureException(read.error);
+    const reason =
+      read.error instanceof Error ? read.error.message : String(read.error);
     return {
       error: {
-        type: 'expired_refresh',
-        message: 'No tokens found. Run /api/auth/init to authenticate.',
+        type: 'token_error',
+        message: `Token store read failed: ${reason}`,
       },
     };
+  }
+
+  const stored = read.tokens;
+  if (!stored) {
+    return { error: { type: 'expired_refresh', message: NO_TOKENS_MESSAGE } };
   }
 
   // Check if refresh token is expired
@@ -365,13 +575,13 @@ export async function getAccessToken(): Promise<
   }
 
   // Refresh the access token (deduplicated across parallel calls)
+  let outcome: RefreshOutcome;
   try {
-    const newTokens = await refreshAccessTokenOnce(
-      stored.refreshToken,
+    outcome = await refreshAccessTokenOnce(
+      stored,
       creds.clientId,
       creds.clientSecret,
     );
-    return { token: newTokens.accessToken };
   } catch (err) {
     logger.error({ err }, 'getAccessToken: token refresh failed');
     Sentry.captureException(err);
@@ -382,6 +592,21 @@ export async function getAccessToken(): Promise<
       },
     };
   }
+
+  if (outcome.kind === 'refreshed') {
+    return { token: outcome.tokens.accessToken };
+  }
+  if (outcome.kind === 'logged_out') {
+    return { error: { type: 'expired_refresh', message: outcome.message } };
+  }
+  if (allowReread) return resolveAccessToken(creds, false);
+  return {
+    error: {
+      type: 'token_error',
+      message:
+        'Schwab tokens were replaced twice while refreshing; retry the request.',
+    },
+  };
 }
 
 /**

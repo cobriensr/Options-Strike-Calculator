@@ -247,6 +247,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
         status: 401,
+        code: 'SCHWAB_TOKEN_EXPIRED',
       });
     });
 
@@ -259,6 +260,20 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_TOKEN_ERROR] Something broke',
         status: 500,
+        code: 'SCHWAB_TOKEN_ERROR',
+      });
+    });
+
+    it('maps missing_config to SCHWAB_TOKEN_ERROR (loud, not logged-out)', async () => {
+      vi.mocked(getAccessToken).mockResolvedValue({
+        error: { type: 'missing_config', message: 'creds unset' },
+      });
+      const result = await schwabFetch('/quotes');
+      expect(result).toEqual({
+        ok: false,
+        error: '[SCHWAB_TOKEN_ERROR] creds unset',
+        status: 500,
+        code: 'SCHWAB_TOKEN_ERROR',
       });
     });
 
@@ -292,6 +307,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_API_403] Schwab API error (403): Forbidden',
         status: 502,
+        code: 'SCHWAB_API_403',
       });
       vi.unstubAllGlobals();
     });
@@ -311,6 +327,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_API_REJECTED] Schwab API error (401): Unauthorized',
         status: 401,
+        code: 'SCHWAB_API_REJECTED',
       });
       vi.unstubAllGlobals();
     });
@@ -362,6 +379,7 @@ describe('api-helpers', () => {
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.status).toBe(504);
+        expect(result.code).toBe('SCHWAB_API_NETWORK');
         expect(result.error).toMatch(/^\[SCHWAB_API_NETWORK\]/);
         expect(result.error).toContain('aborted due to timeout');
       }
@@ -1478,6 +1496,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_TOKEN_EXPIRED] Token expired',
         status: 401,
+        code: 'SCHWAB_TOKEN_EXPIRED',
       });
     });
 
@@ -1514,6 +1533,7 @@ describe('api-helpers', () => {
         ok: false,
         error: '[SCHWAB_API_429] Schwab API error (429): Rate limited',
         status: 429,
+        code: 'SCHWAB_API_429',
       });
     });
   });

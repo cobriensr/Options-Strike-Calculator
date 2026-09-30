@@ -18,12 +18,34 @@ const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 const SCHWAB_TRADER_BASE = 'https://api.schwabapi.com/trader/v1';
 
 /**
+ * Machine-readable failure kind on a failed `ApiResult`, so callers branch
+ * on `result.code` instead of parsing `error` text.
+ *   SCHWAB_TOKEN_EXPIRED — logged out: no tokens, or the refresh token
+ *                          expired / was rejected. Only a manual re-auth
+ *                          fixes it (HTTP 401).
+ *   SCHWAB_TOKEN_ERROR   — the token path failed for any other reason:
+ *                          token store unreachable, refresh endpoint
+ *                          5xx / timeout / other 4xx, missing credentials
+ *                          (HTTP 500).
+ *   SCHWAB_API_REJECTED  — the data API returned 401 for a token we hold.
+ *   SCHWAB_API_NETWORK   — no response after retries (timeout / reset).
+ *   SCHWAB_API_<status>  — any other non-2xx from the data API.
+ */
+export type SchwabErrorCode =
+  | 'SCHWAB_TOKEN_EXPIRED'
+  | 'SCHWAB_TOKEN_ERROR'
+  | 'SCHWAB_API_REJECTED'
+  | 'SCHWAB_API_NETWORK'
+  | `SCHWAB_API_${number}`;
+
+/**
  * Discriminated union for internal API call results.
  * Use `result.ok` to narrow the type instead of `'error' in result`.
+ * `code` is always set by `schwabFetch` / `schwabTraderFetch`.
  */
 export type ApiResult<T> =
   | { ok: true; data: T }
-  | { ok: false; error: string; status: number; code?: string };
+  | { ok: false; error: string; status: number; code?: SchwabErrorCode };
 
 /**
  * Make an authenticated GET request to a Schwab API endpoint.
@@ -38,7 +60,7 @@ async function schwabApiFetch<T>(
   if ('error' in authResult) {
     metrics.tokenRefresh(false);
     const status = authResult.error.type === 'expired_refresh' ? 401 : 500;
-    const code =
+    const code: SchwabErrorCode =
       authResult.error.type === 'expired_refresh'
         ? 'SCHWAB_TOKEN_EXPIRED'
         : 'SCHWAB_TOKEN_ERROR';
@@ -46,6 +68,7 @@ async function schwabApiFetch<T>(
       ok: false,
       error: `[${code}] ${authResult.error.message}`,
       status,
+      code,
     };
   }
 
@@ -114,18 +137,20 @@ async function schwabApiFetch<T>(
       ok: false,
       error: `[SCHWAB_API_NETWORK] Schwab API network error: ${errMessage}`,
       status: 504,
+      code: 'SCHWAB_API_NETWORK',
     };
   }
 
   if (!res.ok) {
     done(false);
     const body = await res.text();
-    const code =
+    const code: SchwabErrorCode =
       res.status === 401 ? 'SCHWAB_API_REJECTED' : `SCHWAB_API_${res.status}`;
     return {
       ok: false,
       error: `[${code}] Schwab API error (${res.status}): ${body}`,
       status: res.status === 401 ? 401 : res.status === 429 ? 429 : 502,
+      code,
     };
   }
 
