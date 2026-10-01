@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  fetchDaySummary,
-  fetchTbboOfiPercentile,
-} from '../_lib/archive-sidecar.js';
+import { fetchDaySummary } from '../_lib/archive-sidecar.js';
 
 describe('archive-sidecar', () => {
   const originalEnv = process.env.SIDECAR_URL;
@@ -69,107 +66,36 @@ describe('archive-sidecar', () => {
     );
   });
 
-  // ── TBBO OFI percentile (Phase 4b) ─────────────────────────────
-
-  describe('fetchTbboOfiPercentile', () => {
-    it('returns the percentile body on 200', async () => {
-      const body = {
-        symbol: 'NQ' as const,
-        window: '1h' as const,
-        current_value: 0.38,
-        percentile: 92.1,
-        mean: 0.02,
-        std: 0.09,
-        count: 252,
-      };
-      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => body,
-      } as Response);
-      const result = await fetchTbboOfiPercentile('NQ', 0.38, '1h');
-      expect(result).toEqual(body);
-    });
-
-    it('returns null on 404 (no history available)', async () => {
-      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
-        ok: false,
-        status: 404,
-        json: async () => ({ error: 'no history' }),
-      } as Response);
-      expect(await fetchTbboOfiPercentile('ES', 0.1, '1h')).toBeNull();
-    });
-
-    it('returns null without fetching when value is non-finite', async () => {
-      const spy = vi.spyOn(globalThis, 'fetch');
-      expect(await fetchTbboOfiPercentile('ES', Number.NaN, '1h')).toBeNull();
-      expect(
-        await fetchTbboOfiPercentile('ES', Number.POSITIVE_INFINITY, '1h'),
-      ).toBeNull();
-      expect(spy).not.toHaveBeenCalled();
-    });
-
-    it('defaults window to 1h when omitted', async () => {
-      const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          symbol: 'ES',
-          window: '1h',
-          current_value: 0,
-          percentile: 50,
-          mean: 0,
-          std: 0,
-          count: 1,
-        }),
-      } as Response);
-      await fetchTbboOfiPercentile('ES', 0);
-      expect(spy).toHaveBeenCalledWith(
-        'https://sidecar.example/archive/tbbo-ofi-percentile?symbol=ES&value=0&window=1h',
-        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  it('returns null when the sidecar exceeds the 2s timeout', async () => {
+    // Simulate a sidecar that never responds (common sign of a hung
+    // worker) and confirm the fetcher aborts + returns null rather than
+    // letting the caller stall.
+    //
+    // We wire a Promise that rejects with an AbortError when the
+    // AbortSignal fires, mirroring how `fetch()` actually behaves when
+    // its signal aborts. Fake timers drive the 2000ms clock without
+    // burning real wall time.
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(globalThis, 'fetch').mockImplementationOnce(
+        (_input, init) =>
+          new Promise((_resolve, reject) => {
+            const signal = (init as RequestInit | undefined)?.signal;
+            signal?.addEventListener('abort', () => {
+              reject(
+                new DOMException('The operation was aborted', 'AbortError'),
+              );
+            });
+          }),
       );
-    });
 
-    it('returns null and does not throw on network error', async () => {
-      vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(
-        new Error('socket hang up'),
-      );
-      expect(await fetchTbboOfiPercentile('NQ', 0.1, '1h')).toBeNull();
-    });
-
-    it('returns null when the sidecar exceeds the 2s timeout', async () => {
-      // Phase 4b rework: the 2-second AbortSignal timeout was previously
-      // untested. Simulate a sidecar that never responds (common sign
-      // of a hung worker) and confirm the fetcher aborts + returns null
-      // rather than letting the analyze endpoint stall.
-      //
-      // We wire a Promise that rejects with an AbortError when the
-      // AbortSignal fires, mirroring how `fetch()` actually behaves
-      // when its signal aborts. Fake timers drive the 2000ms clock
-      // without burning real wall time.
-      vi.useFakeTimers();
-      try {
-        vi.spyOn(globalThis, 'fetch').mockImplementationOnce(
-          (_input, init) =>
-            new Promise((_resolve, reject) => {
-              const signal = (init as RequestInit | undefined)?.signal;
-              signal?.addEventListener('abort', () => {
-                reject(
-                  new DOMException('The operation was aborted', 'AbortError'),
-                );
-              });
-            }),
-        );
-
-        const promise = fetchTbboOfiPercentile('NQ', 0.25, '1h');
-        // Advance past the 2000ms AbortSignal timeout wired in
-        // archive-sidecar.getJson.
-        await vi.advanceTimersByTimeAsync(2100);
-        const result = await promise;
-        expect(result).toBeNull();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
+      const promise = fetchDaySummary('2024-08-05');
+      // Advance past the 2000ms AbortSignal timeout wired in
+      // archive-sidecar.getJson.
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(await promise).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

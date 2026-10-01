@@ -89,39 +89,3 @@ export async function fetchDayFeatures(
   if (!body || !Array.isArray(body.vector)) return null;
   return body.vector;
 }
-
-/** Historical percentile rank of a given OFI value. */
-export interface TbboOfiPercentile {
-  symbol: 'ES' | 'NQ';
-  window: '5m' | '15m' | '1h';
-  current_value: number;
-  percentile: number;
-  mean: number;
-  std: number;
-  count: number;
-}
-
-/**
- * Fetch the historical percentile rank of an OFI `value` for `symbol`
- * at `window`, against the last ~1y of archive data.
- *
- * Used by the analyze endpoint to enrich the Phase 5a live OFI signal
- * with "today's 1h OFI is in the Nth percentile of the last 252 days"
- * historical context. Null on any failure — the formatter drops the
- * Historical rank line cleanly.
- */
-export async function fetchTbboOfiPercentile(
-  symbol: 'ES' | 'NQ',
-  value: number,
-  window: '5m' | '15m' | '1h' = '1h',
-): Promise<TbboOfiPercentile | null> {
-  if (!Number.isFinite(value)) return null;
-  const qs =
-    `symbol=${encodeURIComponent(symbol)}` +
-    `&value=${encodeURIComponent(String(value))}` +
-    `&window=${encodeURIComponent(window)}`;
-  const body = await getJson<TbboOfiPercentile>(
-    `/archive/tbbo-ofi-percentile?${qs}`,
-  );
-  return body ?? null;
-}
