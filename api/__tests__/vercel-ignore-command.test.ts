@@ -2,8 +2,8 @@
 
 /**
  * Behavior test for the `vercel.json` `ignoreCommand` (Vercel's Ignored
- * Build Step). Exit 0 skips the deploy, exit 1 builds, and any other code
- * fails the build outright.
+ * Build Step). Exit 0 skips the deploy and exit 1 builds — the only two
+ * codes Vercel documents, so the command maps every failure onto exit 1.
  *
  * The real command string from `vercel.json` runs under `sh` inside a
  * throwaway git repo, so the shell logic itself is pinned rather than a copy
@@ -28,10 +28,17 @@ const { ignoreCommand } = JSON.parse(
   readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
 ) as { ignoreCommand: string };
 
+let repo = '';
+/** Empty global gitconfig, outside the scratch repo so `add -A` skips it. */
+let configDir = '';
+const sha: Record<string, string> = {};
+
 /**
  * Child env without GIT_* vars: a git hook (e.g. pre-commit running tests)
  * exports GIT_DIR / GIT_INDEX_FILE, which would otherwise point the scratch
- * repo's git calls at the real repository.
+ * repo's git calls at the real repository. System and global git config are
+ * also neutralised so a developer's hooksPath, aliases, or a Windows system
+ * gitconfig can't change how the scratch repo behaves.
  */
 function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
@@ -40,11 +47,13 @@ function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
       env[key] = value;
     }
   }
-  return { ...env, ...extra };
+  return {
+    ...env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: join(configDir, 'gitconfig'),
+    ...extra,
+  };
 }
-
-let repo = '';
-const sha: Record<string, string> = {};
 
 function git(...args: string[]): string {
   return execFileSync(
@@ -80,19 +89,26 @@ function runIgnoreCommand(previousSha?: string): number | null {
     previousSha === undefined ? {} : { VERCEL_GIT_PREVIOUS_SHA: previousSha };
   // Test-only: Vercel runs ignoreCommand through a PATH-resolved shell too.
   // eslint-disable-next-line sonarjs/no-os-command-from-path
-  return spawnSync('sh', ['-c', ignoreCommand], {
+  const result = spawnSync('sh', ['-c', ignoreCommand], {
     cwd: repo,
     env: cleanEnv(extra),
-  }).status;
+  });
+  // A missing `sh` (e.g. Windows outside Git Bash) would otherwise surface
+  // as a confusing "expected null to be 1".
+  if (result.error) throw result.error;
+  return result.status;
 }
 
 beforeAll(() => {
+  configDir = mkdtempSync(join(tmpdir(), 'ignore-command-config-'));
+  writeFileSync(join(configDir, 'gitconfig'), '');
   repo = mkdtempSync(join(tmpdir(), 'ignore-command-'));
   git('init', '-q');
   commit('base', { 'api/handler.ts': 'v1\n', 'docs/notes.md': 'v1\n' });
   commit('api-change', { 'api/handler.ts': 'v2\n' });
   commit('docs-change', { 'docs/notes.md': 'v2\n' });
-  // HEAD: touches every ignored path family and nothing deployable.
+  // HEAD: touches only ignored paths (docs/ is covered by docs-change above)
+  // and nothing deployable.
   commit('ignored-only', {
     'sidecar/app.py': 'x\n',
     'ml/model.py': 'x\n',
@@ -105,6 +121,7 @@ beforeAll(() => {
 
 afterAll(() => {
   if (repo) rmSync(repo, { recursive: true, force: true });
+  if (configDir) rmSync(configDir, { recursive: true, force: true });
 });
 
 describe('vercel.json ignoreCommand', () => {
@@ -122,5 +139,9 @@ describe('vercel.json ignoreCommand', () => {
 
   it('skips when every commit since the previous deploy touches only ignored paths', () => {
     expect(runIgnoreCommand(sha['api-change'])).toBe(0);
+  });
+
+  it('skips a same-commit redeploy (previous SHA equals HEAD)', () => {
+    expect(runIgnoreCommand(sha['ignored-only'])).toBe(0);
   });
 });

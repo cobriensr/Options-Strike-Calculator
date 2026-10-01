@@ -601,7 +601,9 @@ def _event_with_secrets() -> dict:
                                 "function": "get_pool",
                                 "lineno": 74,
                                 "vars": {
-                                    "dsn": "'" + _dsn("postgresql", "u", SECRET, "h", "/db") + "'",
+                                    "dsn": "'"
+                                    + _dsn("postgresql", "u", SECRET, "h", "/db")
+                                    + "'",
                                     "timeout_s": 10.0,
                                 },
                             }
