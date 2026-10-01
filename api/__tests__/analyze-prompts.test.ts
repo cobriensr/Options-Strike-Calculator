@@ -67,6 +67,13 @@ describe('analyze system prompt — remaining futures rules stay coherent', () =
     }
   });
 
+  it('tells the model to treat symbols in the stale-omitted line as unknown', () => {
+    const rules = section('futures_context_rules');
+    expect(rules).toContain('Omitted (stale >15m)');
+    expect(rules).toMatch(/treat them as unknown \(not flat or neutral\)/);
+    expect(rules).toMatch(/do not apply their rules/);
+  });
+
   it('lists only live futures signals in the cross-reference step', () => {
     expect(PROMPT).toContain(
       'Do futures signals (ES basis, ZN flight-to-safety, RTY breadth, CL/GC) lead or contradict options flow?',

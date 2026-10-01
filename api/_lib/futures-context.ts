@@ -16,7 +16,8 @@ import { fmtPct, fmtPrice } from './format-helpers.js';
 import logger from './logger.js';
 import { numOrNull } from './numeric-coercion.js';
 import { metrics, Sentry } from './sentry.js';
-import { getETCloseUtcIso } from '../../src/utils/timezone.js';
+import { getMarketCloseHourET } from '../../src/data/marketHours.js';
+import { etWallClockToUtcIso } from '../../src/utils/timezone.js';
 
 type Sql = NeonQueryFunction<false, false>;
 
@@ -304,20 +305,22 @@ const CONTEXT_SYMBOLS: readonly string[] = [
 /**
  * The moment freshness is judged against, and the upper bound of the
  * read so later rows can't leak in: the entry-time cutoff (`asOf`) when
- * it parses, else the analysis date's 4:00 PM ET cash close — so a
+ * it parses, else the analysis date's actual cash close (13:00 ET on
+ * early-close days, 16:00 ET otherwise, including holidays) — so a
  * historical run with no entry time still reads that day's session
  * rather than being judged against today's wall clock. Either is then
  * clamped to wall clock (the calculator defaults to 10:00 AM CT outside
- * market hours, which can be in the future). Early-close days still use
- * 4:00 PM ET; their futures halt earlier, so a no-asOf run on one can
- * come back all-stale (null, reported unavailable) rather than wrong.
+ * market hours, which can be in the future).
  */
 function resolveReferenceTime(
   analysisDate: string,
   asOf: string | undefined,
 ): Date {
   const now = new Date();
-  const cutoff = parseIso(asOf) ?? parseIso(getETCloseUtcIso(analysisDate));
+  const closeMinuteET = (getMarketCloseHourET(analysisDate) ?? 16) * 60;
+  const cutoff =
+    parseIso(asOf) ??
+    parseIso(etWallClockToUtcIso(analysisDate, closeMinuteET));
   if (cutoff == null) return now;
   return cutoff < now ? cutoff : now;
 }

@@ -360,6 +360,23 @@ describe('formatFuturesForClaude', () => {
     expect(queryParams()).toContain(close);
   });
 
+  it('caps a no-asOf run on an early-close day at that day’s actual close', async () => {
+    // 2026-11-27 (Black Friday) closes at 13:00 ET; EST → 18:00 UTC.
+    vi.setSystemTime(new Date('2026-12-01T15:00:00.000Z'));
+    const close = '2026-11-27T18:00:00.000Z';
+    mockSnapshots([
+      makeSnapshot('ES', {
+        ts: minutesBefore(new Date(close), 2),
+        bar_ts: minutesBefore(new Date(close), 4),
+      }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, '2026-11-27');
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(queryParams()).toContain(close);
+  });
+
   it('caps today’s run at the session close once the session is over', async () => {
     vi.setSystemTime(new Date('2026-04-06T22:00:00.000Z')); // 6 PM ET
     mockSnapshots([

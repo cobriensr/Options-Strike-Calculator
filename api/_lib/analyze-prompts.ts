@@ -796,6 +796,8 @@ When futures signals disagree with options flow, futures are usually more reliab
 institutional desks execute in futures first (fastest, deepest liquidity), then hedge via
 options — not the other way around.
 
+If the Futures Context block ends with "Omitted (stale >15m): <symbols>", those symbols had no fresh price and were excluded — treat them as unknown (not flat or neutral) and do not apply their rules.
+
 ES-SPX Basis:
 - Normal range: ±2 pts. Basis tracks fair value (dividends + interest).
 - Widening beyond ±5 pts signals liquidity stress — reduce confidence by one tier.
