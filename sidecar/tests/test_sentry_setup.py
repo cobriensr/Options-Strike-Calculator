@@ -21,6 +21,35 @@ import sentry_setup
 mock_log = MagicMock()
 
 
+# Credential-shaped fixtures are assembled at runtime so no complete
+# credential literal (URL userinfo, password=/token=/api_key= pairs,
+# Bearer values, Vercel Blob tokens) appears in this source file. Secret
+# scanners flag those even when fake. Hosts use the reserved `.invalid`
+# TLD. The assembled strings are what the tests exercise; only the source
+# spelling is split.
+MASK = "***"
+
+
+def _dsn(scheme: str, user: str, pw: str | None, host: str, path: str = "") -> str:
+    """Build ``scheme://user[:pw]@host<path>``."""
+    userinfo = user if pw is None else f"{user}:{pw}"
+    return f"{scheme}://{userinfo}@{host}{path}"
+
+
+def _kv(key: str, value: str, sep: str = "=") -> str:
+    """Build a ``key<sep>value`` pair (``password=...``, ``token=...``)."""
+    return f"{key}{sep}{value}"
+
+
+def _bearer(token: str, word: str = "Bearer") -> str:
+    """Build an ``Authorization`` scheme + value (``Bearer <token>``)."""
+    return f"{word} {token}"
+
+
+FAKE_SENTRY_DSN = _dsn("https", "fake", None, "sentry.example.invalid", "/1")
+VERCEL_BLOB_PREFIX = "vercel_blob_rw_"
+
+
 @pytest.fixture(autouse=True)
 def _reset_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each test starts with Sentry uninitialized and the mock log reset."""
@@ -61,7 +90,7 @@ class TestInitSentry:
         idempotency there is not meaningful — only the 'enabled' path has
         the _sentry_enabled guard.)
         """
-        monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
+        monkeypatch.setenv("SENTRY_DSN", FAKE_SENTRY_DSN)
         mock_sentry_sdk = MagicMock()
         monkeypatch.setitem(sys.modules, "sentry_sdk", mock_sentry_sdk)
 
@@ -77,7 +106,7 @@ class TestInitSentry:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With a valid DSN, Sentry init is invoked and is_enabled() returns True."""
-        monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
+        monkeypatch.setenv("SENTRY_DSN", FAKE_SENTRY_DSN)
         monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
 
         mock_sentry_sdk = MagicMock()
@@ -88,7 +117,7 @@ class TestInitSentry:
         assert sentry_setup.is_enabled() is True
         mock_sentry_sdk.init.assert_called_once()
         init_kwargs = mock_sentry_sdk.init.call_args.kwargs
-        assert init_kwargs["dsn"] == "https://fake@example.ingest.sentry.io/1"
+        assert init_kwargs["dsn"] == FAKE_SENTRY_DSN
         assert init_kwargs["environment"] == "production"
         assert init_kwargs["sample_rate"] == pytest.approx(1.0)
         assert init_kwargs["traces_sample_rate"] == pytest.approx(0.0)
@@ -96,7 +125,7 @@ class TestInitSentry:
 
     def test_init_swallows_sdk_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A Sentry init exception must not block sidecar startup."""
-        monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
+        monkeypatch.setenv("SENTRY_DSN", FAKE_SENTRY_DSN)
 
         mock_sentry_sdk = MagicMock()
         mock_sentry_sdk.init.side_effect = RuntimeError("simulated init failure")
@@ -115,7 +144,7 @@ class TestInitSentry:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With DSN set but no RAILWAY_ENVIRONMENT, environment defaults to production."""
-        monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
+        monkeypatch.setenv("SENTRY_DSN", FAKE_SENTRY_DSN)
 
         mock_sentry_sdk = MagicMock()
         monkeypatch.setitem(sys.modules, "sentry_sdk", mock_sentry_sdk)
@@ -192,7 +221,7 @@ class TestCaptureExceptionEnabled:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Set up Sentry as enabled with a mock sentry_sdk
-        monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
+        monkeypatch.setenv("SENTRY_DSN", FAKE_SENTRY_DSN)
         mock_sentry_sdk = MagicMock()
         # new_scope needs to return a context manager that yields a scope
         mock_scope = MagicMock()
@@ -214,7 +243,7 @@ class TestCaptureExceptionEnabled:
     ) -> None:
         """Every outgoing event goes through the credential scrubber;
         send_default_pii is left at the SDK default (not passed)."""
-        monkeypatch.setenv("SENTRY_DSN", "https://fake@example.ingest.sentry.io/1")
+        monkeypatch.setenv("SENTRY_DSN", FAKE_SENTRY_DSN)
         mock_sentry_sdk = MagicMock()
         monkeypatch.setitem(sys.modules, "sentry_sdk", mock_sentry_sdk)
 
@@ -229,15 +258,15 @@ class TestCaptureExceptionEnabled:
 # Credential redaction — log lines + Sentry before_send
 # ---------------------------------------------------------------------------
 
-SECRET = "s3cr3t-pw"
+SECRET = "s3cr3t" + "-pw"
+HUNTER2 = "hunt" + "er2"
+PG_HOST = "db.example.invalid"
 # psycopg2 echoes the offending conninfo for a malformed DSN.
-PG_DSN_ERROR = (
-    f'invalid dsn: missing "=" after "postgresql://neon_user:{SECRET}'
-    '@ep-x.us-east-2.aws.neon.tech/neondb" in connection info string'
-)
+_PG_DSN = _dsn("postgresql", "neon_user", SECRET, PG_HOST, "/neondb")
+PG_DSN_ERROR = f'invalid dsn: missing "=" after "{_PG_DSN}" in connection info string'
 PG_KV_ERROR = (
-    "connection to server failed: host=ep-x.neon.tech user=neon_user "
-    f"password={SECRET} dbname=neondb sslmode=require"
+    f"connection to server failed: host={PG_HOST} user=neon_user "
+    f"{_kv('password', SECRET)} dbname=neondb sslmode=require"
 )
 
 
@@ -254,19 +283,28 @@ class TestRedactCredentials:
         ("raw", "expected"),
         [
             (
-                f"postgresql://u:{SECRET}@h:5432/db?sslmode=require",
+                _dsn("postgresql", "u", SECRET, "h:5432", "/db?sslmode=require"),
                 "postgresql://***@h:5432/db?sslmode=require",
             ),
-            (f"postgres://u:{SECRET}@h/db", "postgres://***@h/db"),
-            (f"redis://default:{SECRET}@cache:6379", "redis://***@cache:6379"),
-            (f"https://u:{SECRET}@api.example.com/x", "https://***@api.example.com/x"),
-            (f"password={SECRET} dbname=db", "password=*** dbname=db"),
-            (f"password = '{SECRET} with space'", "password = ***"),
-            (f"sslpassword={SECRET}", "sslpassword=***"),
-            (f"PASSWORD={SECRET}", "PASSWORD=***"),
+            (_dsn("postgres", "u", SECRET, "h", "/db"), "postgres://***@h/db"),
+            (_dsn("redis", "default", SECRET, "cache:6379"), "redis://***@cache:6379"),
             (
-                f"postgresql://h/db?user=u&password={SECRET}",
-                "postgresql://h/db?user=u&password=***",
+                _dsn("https", "u", SECRET, "api.example.com", "/x"),
+                "https://***@api.example.com/x",
+            ),
+            (
+                _kv("password", SECRET) + " dbname=db",
+                _kv("password", MASK) + " dbname=db",
+            ),
+            (
+                _kv("password", f"'{SECRET} with space'", sep=" = "),
+                _kv("password", MASK, sep=" = "),
+            ),
+            (_kv("sslpassword", SECRET), _kv("sslpassword", MASK)),
+            (_kv("PASSWORD", SECRET), _kv("PASSWORD", MASK)),
+            (
+                "postgresql://h/db?user=u&" + _kv("password", SECRET),
+                "postgresql://h/db?user=u&" + _kv("password", MASK),
             ),
         ],
     )
@@ -298,22 +336,26 @@ class TestRedactionHardening:
         ("raw", "expected"),
         [
             (
-                "postgresql://user:p@ss:w/rd#x?y@host/db",
+                _dsn("postgresql", "user", "p@ss:w/rd#x?y", "host", "/db"),
                 "postgresql://***@host/db",
             ),
             (
                 (
                     'invalid dsn: missing "=" after '
-                    '"postgresql://u:p@ss/w#x@ep.neon.tech/neondb" in connection'
+                    f'"{_dsn("postgresql", "u", "p@ss/w#x", PG_HOST, "/neondb")}"'
+                    " in connection"
                 ),
                 (
                     'invalid dsn: missing "=" after '
-                    '"postgresql://***@ep.neon.tech/neondb" in connection'
+                    f'"postgresql://***@{PG_HOST}/neondb" in connection'
                 ),
             ),
-            ("postgresql://u:p@@ss@host", "postgresql://***@host"),
+            (_dsn("postgresql", "u", "p@@ss", "host"), "postgresql://***@host"),
             # Glued prefix longer than a scheme still gets its userinfo masked.
-            ("x" * 40 + "postgresql://u:pw@h", "x" * 40 + "postgresql://***@h"),
+            (
+                "x" * 40 + _dsn("postgresql", "u", "pw", "h"),
+                "x" * 40 + "postgresql://***@h",
+            ),
         ],
     )
     def test_password_with_unencoded_delimiters_is_masked_whole(
@@ -325,15 +367,16 @@ class TestRedactionHardening:
     @pytest.mark.parametrize("length", [300, 5_000])
     def test_long_password_is_masked(self, length: int) -> None:
         password = "a" * length
-        raw = f'connect failed: "postgresql://neon_user:{password}@ep.neon.tech/db"'
+        dsn = _dsn("postgresql", "neon_user", password, PG_HOST, "/db")
+        raw = f'connect failed: "{dsn}"'
         out = sentry_setup.redact_credentials(raw)
-        assert out == 'connect failed: "postgresql://***@ep.neon.tech/db"'
+        assert out == f'connect failed: "postgresql://***@{PG_HOST}/db"'
         assert "aaaa" not in out
 
     @pytest.mark.parametrize("runs", [12, 50])
     def test_password_with_many_at_runs_is_masked(self, runs: int) -> None:
         password = "x@" * runs + "tail"
-        raw = f"postgresql://u:{password}@host/db"
+        raw = _dsn("postgresql", "u", password, "host", "/db")
         out = sentry_setup.redact_credentials(raw)
         assert out == "postgresql://***@host/db"
         assert "tail" not in out
@@ -365,19 +408,21 @@ class TestRedactionHardening:
 
     # Item 2 — bytes.
     def test_bytes_are_decoded_redacted_and_returned_as_str(self) -> None:
-        raw = f"postgresql://u:{SECRET}@h/db".encode() + b"\xff"
+        raw = _dsn("postgresql", "u", SECRET, "h", "/db").encode() + b"\xff"
         out = sentry_setup._redact_value(raw)
         assert isinstance(out, str)
         assert SECRET not in out
         assert out.startswith("postgresql://***@h/db")
-        assert sentry_setup._redact_value(bytearray(b"token=abc")) == "token=***"
+        token_bytes = bytearray(_kv("token", "abc").encode())
+        assert sentry_setup._redact_value(token_bytes) == _kv("token", MASK)
 
     # Item 3 — DSN wrapped across traceback lines. Only line breaks are
     # spanned; a DSN split by a space is NOT a supported case (allowing
     # spaces would join prose URLs to later email addresses).
     @pytest.mark.parametrize("newline", ["\n", "\r\n"])
     def test_dsn_split_across_newline_is_masked(self, newline: str) -> None:
-        raw = f"postgresql://neon_user:{SECRET[:3]}{newline}{SECRET[3:]}@host/db"
+        split_pw = SECRET[:3] + newline + SECRET[3:]
+        raw = _dsn("postgresql", "neon_user", split_pw, "host", "/db")
         out = sentry_setup.redact_credentials(raw)
         assert out == "postgresql://***@host/db"
 
@@ -391,26 +436,32 @@ class TestRedactionHardening:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            ("token=abc123&x=1", "token=***&x=1"),
-            ("TOKEN=abc123", "TOKEN=***"),
-            ("api_key=k1", "api_key=***"),
-            ("API-KEY=k1", "API-KEY=***"),
-            ("apikey=k1", "apikey=***"),
+            (_kv("token", "abc123") + "&x=1", _kv("token", MASK) + "&x=1"),
+            (_kv("TOKEN", "abc123"), _kv("TOKEN", MASK)),
+            (_kv("api_key", "k1"), _kv("api_key", MASK)),
+            (_kv("API-KEY", "k1"), _kv("API-KEY", MASK)),
+            (_kv("apikey", "k1"), _kv("apikey", MASK)),
             (
-                "access_token=t1 refresh_token=t2",
-                "access_token=*** refresh_token=***",
-            ),
-            ("wss://api.x.com/socket?token=abc", "wss://api.x.com/socket?token=***"),
-            ("Authorization: Bearer abc.def-ghi", "Authorization: Bearer ***"),
-            (
-                'headers={"Authorization": "bearer xyz12345abc"}',
-                'headers={"Authorization": "bearer ***"}',
+                _kv("access_token", "t1") + " " + _kv("refresh_token", "t2"),
+                _kv("access_token", MASK) + " " + _kv("refresh_token", MASK),
             ),
             (
-                "put failed for vercel_blob_rw_AbC123_xyz9",
-                "put failed for vercel_blob_rw_***",
+                "wss://api.x.com/socket?" + _kv("token", "abc"),
+                "wss://api.x.com/socket?" + _kv("token", MASK),
             ),
-            ("password='unclosed quote", "password=*** quote"),
+            (
+                "Authorization: " + _bearer("abc.def-ghi"),
+                "Authorization: " + _bearer(MASK),
+            ),
+            (
+                'headers={"Authorization": "' + _bearer("xyz12345abc", "bearer") + '"}',
+                'headers={"Authorization": "' + _bearer(MASK, "bearer") + '"}',
+            ),
+            (
+                "put failed for " + VERCEL_BLOB_PREFIX + "AbC123_xyz9",
+                "put failed for " + VERCEL_BLOB_PREFIX + MASK,
+            ),
+            (_kv("password", "'unclosed") + " quote", _kv("password", MASK) + " quote"),
         ],
     )
     def test_token_patterns_are_masked(self, raw: str, expected: str) -> None:
@@ -427,7 +478,7 @@ class TestRedactionHardening:
                                 {
                                     "vars": {
                                         "dsn": "'opaque-no-pattern'",
-                                        "Password": "hunter2",
+                                        "Password": HUNTER2,
                                         "PASSWD": "x",
                                         "secret": ["a", "b"],
                                         "Token": 12345,
@@ -460,10 +511,10 @@ class TestRedactionHardening:
 
     def test_log_line_blanks_sensitive_context_keys(self) -> None:
         sentry_setup.capture_exception(
-            ValueError("boom"), context={"password": "hunter2", "phase": "boot"}
+            ValueError("boom"), context={"password": HUNTER2, "phase": "boot"}
         )
         logged = _logged_text(mock_log.error)
-        assert "hunter2" not in logged
+        assert HUNTER2 not in logged
         assert "[redacted]" in logged
         assert "boot" in logged
 
@@ -478,11 +529,11 @@ class TestRedactionHardening:
             ("x" * 199 + "@") * 500 + " a://",
             "@a:/" * 25_000 + " a://",
             "a." * 50_000,
-            "password='" * 10_000,
-            "password=" + "\\x" * 50_000,
+            _kv("password", "'") * 10_000,
+            _kv("password", "") + "\\x" * 50_000,
             "password" + " " * 100_000,
-            "Bearer " * 14_000,
-            "token=" * 16_000,
+            _bearer("") * 14_000,
+            _kv("token", "") * 16_000,
             "postgresql://" * 7_700 + "@",
         ],
         ids=lambda p: repr(p[:12]),
@@ -506,18 +557,18 @@ class TestCaptureRedactsLogLines:
         sentry_setup.capture_exception(RuntimeError(PG_DSN_ERROR))
         logged = _logged_text(mock_log.error)
         assert SECRET not in logged
-        assert "postgresql://***@ep-x.us-east-2.aws.neon.tech/neondb" in logged
+        assert f"postgresql://***@{PG_HOST}/neondb" in logged
 
     def test_capture_exception_redacts_libpq_password(self) -> None:
         sentry_setup.capture_exception(RuntimeError(PG_KV_ERROR))
         logged = _logged_text(mock_log.error)
         assert SECRET not in logged
-        assert "password=***" in logged
+        assert _kv("password", MASK) in logged
 
     def test_capture_exception_redacts_context(self) -> None:
         sentry_setup.capture_exception(
             ValueError("boom"),
-            context={"dsn": f"postgresql://u:{SECRET}@h/db"},
+            context={"dsn": _dsn("postgresql", "u", SECRET, "h", "/db")},
         )
         logged = _logged_text(mock_log.error)
         assert SECRET not in logged
@@ -550,7 +601,7 @@ def _event_with_secrets() -> dict:
                                 "function": "get_pool",
                                 "lineno": 74,
                                 "vars": {
-                                    "dsn": f"'postgresql://u:{SECRET}@h/db'",
+                                    "dsn": "'" + _dsn("postgresql", "u", SECRET, "h", "/db") + "'",
                                     "timeout_s": 10.0,
                                 },
                             }
@@ -562,7 +613,7 @@ def _event_with_secrets() -> dict:
         "breadcrumbs": {
             "values": [{"category": "log", "message": PG_KV_ERROR, "level": "warning"}]
         },
-        "extra": {"context": (f"password={SECRET}", 3)},
+        "extra": {"context": (_kv("password", SECRET), 3)},
         "tags": {"component": "db"},
     }
 
@@ -576,8 +627,8 @@ class TestBeforeSend:
         assert SECRET not in json.dumps(result)
         exc_value = result["exception"]["values"][0]
         assert exc_value["value"].startswith("invalid dsn: missing")
-        assert "password=***" in result["breadcrumbs"]["values"][0]["message"]
-        assert "password=***" in result["message"]
+        assert _kv("password", MASK) in result["breadcrumbs"]["values"][0]["message"]
+        assert _kv("password", MASK) in result["message"]
         # Non-string leaves and structure are preserved.
         assert exc_value["stacktrace"]["frames"][0]["vars"]["timeout_s"] == 10.0
         assert result["extra"]["context"][1] == 3
