@@ -40,17 +40,21 @@ _sentry_enabled = False
 # ``scheme://userinfo@``. The userinfo is masked up to the LAST ``@``
 # (through up to 8 more ``@``-runs, each segment <= 200 chars), so a
 # password holding an unencoded ``@ / # ?`` (an invalid DSN — exactly what
-# psycopg2 echoes back) is masked whole. Segments may contain whitespace,
-# so a DSN wrapped across lines is still caught. Quotes and ``<>`` end it,
-# because messages quote the DSN. Over-redaction (e.g. a normal URL with
-# ``@`` later in its path) is the accepted trade-off.
+# psycopg2 echoes back) is masked whole. Segments may span line breaks
+# (``\n``, ``\r\n``), so a DSN wrapped across traceback lines is still
+# caught, but NOT spaces or tabs: otherwise prose such as
+# "fetch https://api.example.com/v1 failed for ops@example.com" would
+# collapse into one masked span. A DSN split by a space is therefore not
+# a supported case. Quotes and ``<>`` end the userinfo, because messages
+# quote the DSN. Over-redaction (e.g. a normal URL with ``@`` later in its
+# path) is the accepted trade-off.
 #
 # The pattern runs on the REVERSED text. Scanning forward from every
 # ``scheme://`` costs a full window scan per candidate (~130 ms on 100 KB of
 # ``a://``). Reversed, candidate starts are ``@``-runs only (``(?<!@)@++``),
 # and every repetition is bounded and possessive, so the cost stays linear.
 _URL_USERINFO_REVERSED_RE = re.compile(
-    r"(?<!@)@++(?:[^'\"<>@]{1,200}+@++){0,8}[^'\"<>@]{0,200}//:"
+    r"(?<!@)@++(?:[^'\"<>@ \t\f\v]{1,200}+@++){0,8}[^'\"<>@ \t\f\v]{0,200}//:"
     r"(?P<rscheme>[A-Za-z0-9+.\-]{0,31}[A-Za-z])"
 )
 

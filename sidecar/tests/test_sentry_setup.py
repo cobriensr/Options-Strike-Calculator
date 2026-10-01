@@ -342,14 +342,15 @@ class TestRedactionHardening:
         "raw",
         [
             "fetch https://api.example.com/v1 failed for ops@example.com",
+            "fetch https://api.example.com/v1\tfailed for ops@example.com",
             'url="https://example.com/x" owner="ops@example.com"',
             "<https://example.com/x>@not-userinfo",
         ],
     )
-    def test_fail_closed_pass_stops_at_token_boundaries(self, raw: str) -> None:
-        # The fail-closed pass alone never joins across whitespace, quotes
-        # or <>. (The regex pass may still join a URL and a later @ within
-        # 200 chars across whitespace; that over-redaction is documented.)
+    def test_url_and_later_at_are_not_joined_across_boundaries(self, raw: str) -> None:
+        # Neither pass joins a URL to an @ in a later word: spaces, tabs,
+        # quotes and <> end the userinfo, keeping debug context intact.
+        assert sentry_setup.redact_credentials(raw) == raw
         assert sentry_setup._mask_userinfo_fail_closed(raw) == raw
 
     def test_fail_closed_pass_leaves_regex_masked_span_alone(self) -> None:
@@ -371,9 +372,12 @@ class TestRedactionHardening:
         assert out.startswith("postgresql://***@h/db")
         assert sentry_setup._redact_value(bytearray(b"token=abc")) == "token=***"
 
-    # Item 3 — DSN wrapped across a newline.
-    def test_dsn_split_across_newline_is_masked(self) -> None:
-        raw = f"postgresql://neon_user:{SECRET[:3]}\n{SECRET[3:]}@host/db"
+    # Item 3 — DSN wrapped across traceback lines. Only line breaks are
+    # spanned; a DSN split by a space is NOT a supported case (allowing
+    # spaces would join prose URLs to later email addresses).
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"])
+    def test_dsn_split_across_newline_is_masked(self, newline: str) -> None:
+        raw = f"postgresql://neon_user:{SECRET[:3]}{newline}{SECRET[3:]}@host/db"
         out = sentry_setup.redact_credentials(raw)
         assert out == "postgresql://***@host/db"
 
