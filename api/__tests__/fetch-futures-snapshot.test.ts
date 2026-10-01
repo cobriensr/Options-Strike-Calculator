@@ -215,10 +215,17 @@ describe('fetch-futures-snapshot handler', () => {
       apiKey: '',
       today: '2026-04-03',
     });
-    // Cash session open by default. isMarketOpen is mocked, so the
-    // fixture date (2026-04-03, actually Good Friday) doesn't matter.
-    vi.mocked(isMarketOpen).mockReturnValue(true);
+    // Cash session closed by default, so data-path tests that seed only
+    // ES (NQ absent) don't trip the dead-feed alert. Every alert test —
+    // positive and negative — opens the session explicitly via
+    // openCashSession(). isMarketOpen is mocked, so the fixture date
+    // (2026-04-03, actually Good Friday) doesn't matter.
+    vi.mocked(isMarketOpen).mockReturnValue(false);
   });
+
+  function openCashSession() {
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+  }
 
   afterEach(() => {
     process.env = originalEnv;
@@ -386,6 +393,7 @@ describe('fetch-futures-snapshot handler', () => {
   it('writes no row for a symbol whose latest bar is older than 15 min', async () => {
     // Regression: the cron wrote ES = 7752.75 (the 2026-09-03 close) into
     // every futures_snapshots row for ~4 weeks after the feed stopped.
+    // (Cash session closed here — the alert is covered below.)
     setupSqlDispatch({
       ES: makeSymbolData({
         latestClose: '7752.75',
@@ -407,12 +415,51 @@ describe('fetch-futures-snapshot handler', () => {
     expect(json.skipped).toBe(7);
     expect(json.errors).toBeUndefined();
     expect(insertedSymbols()).toEqual(['NQ']);
-    // One stale symbol is not an error and not a dead feed.
+    // A stale bar is not an exception.
     expect(Sentry.captureException).not.toHaveBeenCalled();
-    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
-  it('writes only the fresh symbol when one is fresh and one is stale', async () => {
+  // ── Dead-feed alert (ES or NQ stale in the cash session) ──
+
+  it('alerts once and returns 503 when only ES is stale in the cash session', async () => {
+    // e.g. a uw-stream front-month roll glitch: NQ keeps printing, ES
+    // (which drives the ES-SPX basis) freezes.
+    openCashSession();
+    setupSqlDispatch({
+      ES: makeSymbolData({
+        latestClose: '7752.75',
+        latestTs: '2026-04-03T15:30:00.000Z',
+      }),
+      NQ: makeSymbolData({ latestClose: '20500' }),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(503);
+    expect(res._json).toMatchObject({
+      error: 'futures feed stale',
+      stored: 1,
+    });
+    // The fresh symbol is still written; the stale one is not.
+    expect(insertedSymbols()).toEqual(['NQ']);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    const [, ctx] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    const extra = (ctx as { extra: Record<string, unknown> }).extra;
+    expect(extra.ES).toEqual({
+      kind: 'stale',
+      latestTs: '2026-04-03T15:30:00.000Z',
+      ageMinutes: 30,
+    });
+    expect(extra.NQ).toBeUndefined();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-futures-snapshot',
+      expect.objectContaining({ status: 'error', feedStale: true }),
+    );
+  });
+
+  it('alerts once and returns 503 when only NQ is stale in the cash session', async () => {
+    openCashSession();
     setupSqlDispatch({
       ES: makeSymbolData({ latestClose: '5700' }),
       NQ: makeSymbolData({
@@ -426,7 +473,7 @@ describe('fetch-futures-snapshot handler', () => {
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(res._status).toBe(200);
+    expect(res._status).toBe(503);
     const json = res._json as {
       stored: number;
       symbols: { symbol: string }[];
@@ -434,13 +481,37 @@ describe('fetch-futures-snapshot handler', () => {
     expect(json.stored).toBe(1);
     expect(json.symbols.map((s) => s.symbol)).toEqual(['ES']);
     expect(insertedSymbols()).toEqual(['ES']);
-    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    const [, ctx] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    expect((ctx as { extra: Record<string, unknown> }).extra.NQ).toEqual({
+      kind: 'stale',
+      latestTs: new Date(MARKET_TIME.getTime() - 16 * 60 * 1000).toISOString(),
+      ageMinutes: 16,
+    });
   });
 
-  // ── Dead-feed alert ───────────────────────────────────────
+  it('does not alert when ES and NQ are both fresh', async () => {
+    openCashSession();
+    setupSqlDispatch({
+      ES: makeSymbolData(),
+      NQ: makeSymbolData(),
+    });
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(insertedSymbols()).toEqual(['ES', 'NQ']);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-futures-snapshot',
+      expect.objectContaining({ status: 'ok', feedStale: false }),
+    );
+  });
 
   it('alerts once and returns 503 when ES and NQ are both stale in the cash session', async () => {
     // What would have caught the 2026-09-03 → 09-29 frozen-ES outage.
+    openCashSession();
     setupSqlDispatch({
       ES: makeSymbolData({ latestTs: '2026-04-03T15:30:00.000Z' }),
       NQ: makeSymbolData({ latestTs: '2026-04-03T15:20:00.000Z' }),
@@ -461,7 +532,7 @@ describe('fetch-futures-snapshot handler', () => {
 
     expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
-      'fetch-futures-snapshot: no fresh ES or NQ bar during the cash session',
+      'fetch-futures-snapshot: no fresh ES/NQ bar during the cash session',
       expect.objectContaining({
         level: 'warning',
         fingerprint: ['futures-snapshot', 'feed-stale'],
@@ -487,6 +558,7 @@ describe('fetch-futures-snapshot handler', () => {
   });
 
   it('treats ES and NQ with no bars at all as a dead feed', async () => {
+    openCashSession();
     setupSqlDispatch({});
 
     const res = mockResponse();
@@ -499,6 +571,7 @@ describe('fetch-futures-snapshot handler', () => {
 
   it('does not alert when only CL is stale', async () => {
     // CL/ZN legitimately go quiet for 15+ min, mostly overnight.
+    openCashSession();
     setupSqlDispatch({
       ES: makeSymbolData(),
       NQ: makeSymbolData(),

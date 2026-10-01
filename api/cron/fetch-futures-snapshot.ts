@@ -7,12 +7,11 @@
  *
  * A symbol with no bar, or whose latest bar is too old to be a current
  * price (see MAX_BAR_AGE_MS in futures-derive.ts), gets no row this run.
- * One quiet symbol is normal — CL/ZN can go 15+ min without a trade
- * overnight. ES and NQ BOTH lacking a fresh bar during the cash session
- * means the feed itself is down: the run then emits one fingerprinted
- * Sentry warning and returns 503 so the cron monitor records a failure.
- * That is what would have caught the 2026-09-03 → 09-29 frozen-ES
- * outage.
+ * A quiet CL/ZN/RTY/GC is normal — thin symbols can go 15+ min without a
+ * trade, mostly overnight. ES or NQ lacking a fresh bar during the cash
+ * session is not: the run then emits one fingerprinted Sentry warning
+ * and returns 503 so the cron monitor records a failure. That is what
+ * would have caught the 2026-09-03 → 09-29 frozen-ES outage.
  *
  * Schedule: every 5 min, Sun-Fri (vercel.json); skipped at runtime
  * while futures are closed (isFuturesMarketOpen).
@@ -38,15 +37,20 @@ import {
 type NoFreshBar = Exclude<SnapshotResult, { kind: 'fresh' }>;
 
 /**
- * True when the feed itself looks down: ES and NQ — the two densest
- * symbols — both lack a fresh bar while the cash session is open.
+ * True when the feed looks broken: ES or NQ — the two densest symbols —
+ * lacks a fresh bar while the cash session is open.
+ *
+ * Either one is enough. Both trade every minute of the cash session, so
+ * one going stale there is already abnormal — and the realistic partial
+ * failure (e.g. a uw-stream front-month roll glitch) hits a single
+ * product while the other keeps printing. ES alone matters most: it
+ * drives the ES-SPX basis.
  *
  * Gated on the holiday- and early-close-aware cash session rather than
  * on isFuturesMarketOpen alone: at every 17:00 CT reopen the newest
  * ES/NQ bar is the pre-break close (~60 min old), and CME holiday halts
  * have no bars at all, so a futures-hours gate would page daily and
- * through every holiday. ES and NQ trade every minute of the cash
- * session, so there both being stale can only mean the feed stopped.
+ * through every holiday.
  *
  * Blind spot: an outage that starts after the cash close is first
  * reported at the next 9:30 ET open — until then the run returns 200,
@@ -55,7 +59,7 @@ type NoFreshBar = Exclude<SnapshotResult, { kind: 'fresh' }>;
 function isFeedStale(
   noFreshBar: Partial<Record<FuturesSymbol, NoFreshBar>>,
 ): boolean {
-  return noFreshBar.ES != null && noFreshBar.NQ != null && isMarketOpen();
+  return (noFreshBar.ES != null || noFreshBar.NQ != null) && isMarketOpen();
 }
 
 // ── Handler ─────────────────────────────────────────────────
@@ -150,7 +154,7 @@ export default withCronCheckin('fetch-futures-snapshot', async (req, res) => {
     if (feedStale) {
       logger.warn({ noFreshBar }, 'fetch-futures-snapshot: futures feed stale');
       Sentry.captureMessage(
-        'fetch-futures-snapshot: no fresh ES or NQ bar during the cash session',
+        'fetch-futures-snapshot: no fresh ES/NQ bar during the cash session',
         {
           level: 'warning',
           fingerprint: ['futures-snapshot', 'feed-stale'],
