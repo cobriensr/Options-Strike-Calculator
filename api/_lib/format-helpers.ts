@@ -13,9 +13,7 @@
  *                         shapes via `opts.fromDecimal`.
  *   - fmtPrice         — futures-context.ts: locale-formatted with fixed
  *                         decimal count.
- *   - formatSigned     — uw-deltas.ts (and the since-removed
- *                         microstructure formatter, a verbatim copy).
- *                         Adds a leading '+' when v >= 0.
+ *   - formatSigned     — uw-deltas.ts. Adds a leading '+' when v >= 0.
  *   - fmtDp            — darkpool.ts: dark-pool premium scaling
  *                         (5.0K / 12.5M / 1.2B). Always non-negative — caller
  *                         passes Math.abs() or already-positive sums.

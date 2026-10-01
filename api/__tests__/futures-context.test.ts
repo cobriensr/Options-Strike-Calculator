@@ -15,11 +15,14 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
 }));
 
-// ── Types matching the module's internal shapes ──────────────
+// ── Types matching the query's row shape ─────────────────────
 
 interface SnapshotRow {
   symbol: string;
+  /** futures_snapshots.ts — the cron's write time. */
   ts: string | Date;
+  /** Latest futures_bars.ts at-or-before the snapshot (null = no bar). */
+  bar_ts: string | Date | null;
   price: string | null;
   change_1h_pct: string | null;
   change_day_pct: string | null;
@@ -28,12 +31,15 @@ interface SnapshotRow {
 
 // ── Clock ────────────────────────────────────────────────────
 //
-// Freshness is judged against the analysis reference time (wall clock
-// when no entry-time cutoff is given). Pin the wall clock so the
-// "fresh by default" fixtures below stay fresh.
+// Freshness is judged against the analysis reference time. Pin the
+// wall clock mid-session (11:00 ET) so the "fresh by default" fixtures
+// below stay fresh.
 
 const NOW = new Date('2026-04-06T15:00:00.000Z');
 const MINUTE_MS = 60_000;
+const STALE_NOTE = 'Omitted (stale >15m):';
+const STALE_LOG_MSG =
+  'futures price stale — omitting symbols from analyze context';
 
 function minutesBefore(ref: Date, minutes: number): string {
   return new Date(ref.getTime() - minutes * MINUTE_MS).toISOString();
@@ -48,6 +54,7 @@ function makeSnapshot(
   return {
     symbol,
     ts: minutesBefore(NOW, 2),
+    bar_ts: minutesBefore(NOW, 3),
     price: '5700.00',
     change_1h_pct: '0.15',
     change_day_pct: '-0.30',
@@ -94,13 +101,17 @@ afterEach(() => {
 describe('formatFuturesForClaude', () => {
   // ── Error handling ───────────────────────────────────────
 
-  it('returns null and reports to Sentry when the snapshot query rejects', async () => {
+  it('returns null, warns, and reports to Sentry when the query rejects', async () => {
     const err = new Error('relation "futures_snapshots" does not exist');
     mockSql.mockRejectedValueOnce(err);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { err },
+      'futures context query failed — omitting Futures Context',
+    );
     expect(Sentry.captureException).toHaveBeenCalledWith(err);
     expect(metrics.increment).toHaveBeenCalledWith(
       'futures_context.fetch_error',
@@ -119,7 +130,7 @@ describe('formatFuturesForClaude', () => {
     mockSnapshots([
       makeSnapshot('ES'),
       makeSnapshot('NQ', { price: null }),
-      makeSnapshot('ZN', { ts: 'not-a-timestamp' }),
+      makeSnapshot('ZN', { bar_ts: 'not-a-timestamp' }),
     ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
@@ -141,9 +152,12 @@ describe('formatFuturesForClaude', () => {
     );
   });
 
-  it('accepts ts as a Date object (Neon TIMESTAMPTZ parsing)', async () => {
+  it('accepts ts and bar_ts as Date objects (Neon TIMESTAMPTZ parsing)', async () => {
     mockSnapshots([
-      makeSnapshot('ES', { ts: new Date(NOW.getTime() - 3 * MINUTE_MS) }),
+      makeSnapshot('ES', {
+        ts: new Date(NOW.getTime() - 2 * MINUTE_MS),
+        bar_ts: new Date(NOW.getTime() - 3 * MINUTE_MS),
+      }),
     ]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
@@ -151,60 +165,59 @@ describe('formatFuturesForClaude', () => {
     expect(result).toContain('ES Futures (/ES)');
   });
 
-  // ── Removed Databento-only sources ──────────────────────
+  // ── Query shape ─────────────────────────────────────────
 
-  it('issues exactly one query — no futures_options_daily lookup', async () => {
+  it('reads every rendered symbol in one lateral query that seeks by (symbol, ts)', async () => {
     mockSnapshots([makeSnapshot('ES')]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(mockSql).toHaveBeenCalledTimes(1);
-    expect(queryText()).toContain('futures_snapshots');
-    expect(queryText()).not.toContain('futures_options_daily');
-    expect(result).not.toContain('ES Options');
-    expect(result).not.toContain('Top Put OI');
-  });
-
-  it('does not render DX even when a fresh DX snapshot row is present', async () => {
-    mockSnapshots([
-      makeSnapshot('ES'),
-      makeSnapshot('DX', { price: '104.50', change_day_pct: '0.80' }),
+    const text = queryText();
+    expect(text).toContain('unnest(');
+    expect(text).toContain('WITH ORDINALITY');
+    expect(text).toContain('CROSS JOIN LATERAL');
+    expect(text).toContain('futures_snapshots');
+    expect(text).toContain('futures_bars');
+    expect(text).toMatch(/ts <= \$\?/);
+    // trade_date is unindexed — the seek is on (symbol, ts).
+    expect(text).not.toContain('trade_date');
+    expect(text).not.toContain('futures_options_daily');
+    // DX (Databento-only, no UW substitute) is never requested.
+    expect(queryParams()).toContainEqual([
+      'ES',
+      'NQ',
+      'VX1',
+      'VX2',
+      'ZN',
+      'RTY',
+      'CL',
+      'GC',
     ]);
+    expect(result).not.toContain('ES Options');
+  });
+
+  // ── Price-age guard (age of the underlying bar) ─────────
+
+  it('renders a symbol whose underlying bar is within the 15-minute max age', async () => {
+    mockSnapshots([makeSnapshot('ES', { bar_ts: minutesBefore(NOW, 14) })]);
 
     const result = await formatFuturesForClaude(mockSql as never, analysisDate);
 
     expect(result).toContain('ES Futures (/ES)');
-    expect(result).not.toContain('/DX');
-    expect(result).not.toContain('Dollar');
-    expect(result).not.toContain('DOLLAR');
-  });
-
-  it('returns null when DX is the only symbol with a snapshot', async () => {
-    mockSnapshots([makeSnapshot('DX', { price: '104.50' })]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    expect(result).toBeNull();
-  });
-
-  // ── Max-age guard ───────────────────────────────────────
-
-  it('renders a symbol whose latest snapshot is within the 15-minute max age', async () => {
-    mockSnapshots([makeSnapshot('ES', { ts: minutesBefore(NOW, 14) })]);
-
-    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
-
-    expect(result).toContain('ES Futures (/ES)');
+    expect(result).not.toContain(STALE_NOTE);
     expect(logger.warn).not.toHaveBeenCalled();
+    expect(metrics.increment).not.toHaveBeenCalled();
   });
 
-  it('omits a stale symbol, keeps fresh ones, and names the stale symbol in a warning', async () => {
+  it('omits a symbol whose snapshot row is fresh but whose underlying bar is frozen', async () => {
     mockSnapshots([
       makeSnapshot('ES', { price: '5700.00', change_day_pct: '0.50' }),
       makeSnapshot('NQ', {
         price: '20500.00',
         change_day_pct: '0.80',
-        ts: minutesBefore(NOW, 16),
+        ts: minutesBefore(NOW, 1), // cron still writing…
+        bar_ts: minutesBefore(NOW, 60 * 24 * 26), // …a 26-day-old price
       }),
     ]);
 
@@ -214,21 +227,87 @@ describe('formatFuturesForClaude', () => {
     expect(result).not.toContain('NQ Futures');
     // Cross-symbol derivations must not read the stale NQ row either.
     expect(result).not.toContain('NQ/ES Ratio');
+    expect(result).toContain(`${STALE_NOTE} NQ`);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
-        stale: [expect.objectContaining({ symbol: 'NQ', ageMin: 16 })],
+        stale: [expect.objectContaining({ symbol: 'NQ', ageMin: 37440 })],
       }),
-      'futures_snapshots rows stale — omitting symbols from analyze context',
+      STALE_LOG_MSG,
     );
     expect(metrics.increment).toHaveBeenCalledWith(
       'futures_context.stale_snapshot',
     );
   });
 
-  it('returns null when every snapshot is stale so the caller marks Futures Context unavailable', async () => {
+  it('treats a null bar ts (no bar behind the snapshot) as stale', async () => {
+    mockSnapshots([makeSnapshot('ES'), makeSnapshot('ZN', { bar_ts: null })]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(result).not.toContain('10Y Treasury');
+    expect(result).toContain(`${STALE_NOTE} ZN`);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stale: [{ symbol: 'ZN', barTs: null, ageMin: null }],
+      }),
+      STALE_LOG_MSG,
+    );
+  });
+
+  it('names every omitted stale symbol in one note line at the end of the block', async () => {
     mockSnapshots([
-      makeSnapshot('ES', { ts: minutesBefore(NOW, 60 * 24 * 26) }),
-      makeSnapshot('NQ', { ts: minutesBefore(NOW, 30) }),
+      makeSnapshot('ES'),
+      makeSnapshot('ZN', { bar_ts: minutesBefore(NOW, 16) }),
+      makeSnapshot('GC', { bar_ts: minutesBefore(NOW, 45) }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toMatch(/^## Futures Context\n\nES Futures \(\/ES\):/);
+    expect(result).toMatch(/\n\nOmitted \(stale >15m\): ZN, GC$/);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stale: [
+          expect.objectContaining({ symbol: 'ZN', ageMin: 16 }),
+          expect.objectContaining({ symbol: 'GC', ageMin: 45 }),
+        ],
+      }),
+      STALE_LOG_MSG,
+    );
+  });
+
+  it('drops the frozen VX section (VX1/VX2 bars last printed in April)', async () => {
+    const later = new Date('2026-09-29T15:00:00.000Z');
+    vi.setSystemTime(later);
+    const fresh = {
+      ts: minutesBefore(later, 2),
+      bar_ts: minutesBefore(later, 3),
+    };
+    mockSnapshots([
+      makeSnapshot('ES', fresh),
+      makeSnapshot('VX1', {
+        price: '18.00',
+        ts: fresh.ts, // cron still writing…
+        bar_ts: '2026-04-10T20:00:00.000Z', // …an April price
+      }),
+      makeSnapshot('VX2', {
+        price: '19.50',
+        ts: fresh.ts,
+        bar_ts: '2026-04-10T20:00:00.000Z',
+      }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, '2026-09-29');
+
+    expect(result).not.toContain('VIX Futures');
+    expect(result).toContain(`${STALE_NOTE} VX1, VX2`);
+  });
+
+  it('returns null when every symbol is stale so the caller marks Futures Context unavailable', async () => {
+    mockSnapshots([
+      makeSnapshot('ES', { bar_ts: minutesBefore(NOW, 60 * 24 * 26) }),
+      makeSnapshot('NQ', { bar_ts: null }),
     ]);
 
     const result = await formatFuturesForClaude(
@@ -245,60 +324,75 @@ describe('formatFuturesForClaude', () => {
           expect.objectContaining({ symbol: 'NQ' }),
         ],
       }),
-      'futures_snapshots rows stale — omitting symbols from analyze context',
+      STALE_LOG_MSG,
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'futures_context.stale_snapshot',
     );
   });
 
-  it('bounds the query to rows at-or-before wall clock when no asOf is given', async () => {
+  // ── Reference time ──────────────────────────────────────
+
+  it('bounds the query at wall clock during the session when no asOf is given', async () => {
     mockSnapshots([makeSnapshot('ES')]);
 
     await formatFuturesForClaude(mockSql as never, analysisDate);
 
-    expect(queryText()).toMatch(/ts <= \$\?/);
-    expect(queryParams()).toEqual(
-      expect.arrayContaining([analysisDate, NOW.toISOString()]),
-    );
+    expect(queryParams()).toContain(NOW.toISOString());
   });
 
-  it('judges freshness against the analysis timestamp (asOf) in backtest mode, not wall clock', async () => {
+  it('judges freshness against asOf in backtest mode, not wall clock', async () => {
     const asOf = '2026-03-10T15:30:59.000Z';
-    const historicalDate = '2026-03-10';
-    const rows = [
-      makeSnapshot('ES', { ts: minutesBefore(new Date(asOf), 4) }),
-      makeSnapshot('NQ', { ts: minutesBefore(new Date(asOf), 20) }),
-    ];
-    mockSnapshots(rows);
+    mockSnapshots([
+      makeSnapshot('ES', { bar_ts: minutesBefore(new Date(asOf), 4) }),
+      makeSnapshot('NQ', { bar_ts: minutesBefore(new Date(asOf), 20) }),
+    ]);
 
     const result = await formatFuturesForClaude(
       mockSql as never,
-      historicalDate,
+      '2026-03-10',
       undefined,
       asOf,
     );
 
-    // ES is 4 min before the entry time → fresh; NQ 20 min → stale.
+    // ES bar is 4 min before the entry time → fresh; NQ 20 min → stale.
     expect(result).toContain('ES Futures (/ES)');
     expect(result).not.toContain('NQ Futures');
+    expect(result).toContain(`${STALE_NOTE} NQ`);
     // Query bounded at the entry time, so rows after it can't leak in.
-    expect(queryParams()).toEqual(
-      expect.arrayContaining([historicalDate, asOf]),
-    );
+    expect(queryParams()).toContain(asOf);
   });
 
-  it('treats the same historical rows as stale when judged against wall clock', async () => {
-    const asOf = '2026-03-10T15:30:59.000Z';
+  it('caps a historical run with no asOf at that date’s 4 PM ET session close', async () => {
+    // 2026-03-10 is EDT → 16:00 ET = 20:00 UTC.
+    const close = '2026-03-10T20:00:00.000Z';
     mockSnapshots([
-      makeSnapshot('ES', { ts: minutesBefore(new Date(asOf), 4) }),
+      makeSnapshot('ES', { bar_ts: minutesBefore(new Date(close), 4) }),
     ]);
 
     const result = await formatFuturesForClaude(mockSql as never, '2026-03-10');
 
-    expect(result).toBeNull();
+    expect(result).toContain('ES Futures (/ES)');
+    expect(queryParams()).toContain(close);
+  });
+
+  it('caps today’s run at the session close once the session is over', async () => {
+    vi.setSystemTime(new Date('2026-04-06T22:00:00.000Z')); // 6 PM ET
+    mockSnapshots([
+      makeSnapshot('ES', {
+        bar_ts: minutesBefore(new Date('2026-04-06T20:00:00.000Z'), 1),
+      }),
+    ]);
+
+    const result = await formatFuturesForClaude(mockSql as never, analysisDate);
+
+    expect(result).toContain('ES Futures (/ES)');
+    expect(queryParams()).toContain('2026-04-06T20:00:00.000Z');
   });
 
   it('clamps a future asOf (pre-market default entry time) to wall clock', async () => {
     const futureAsOf = new Date(NOW.getTime() + 2 * 60 * MINUTE_MS);
-    mockSnapshots([makeSnapshot('ES', { ts: minutesBefore(NOW, 3) })]);
+    mockSnapshots([makeSnapshot('ES')]);
 
     const result = await formatFuturesForClaude(
       mockSql as never,
@@ -312,7 +406,7 @@ describe('formatFuturesForClaude', () => {
     expect(queryParams()).not.toContain(futureAsOf.toISOString());
   });
 
-  it('falls back to wall clock when asOf is not a parseable timestamp', async () => {
+  it('falls back to the session-close default when asOf is unparseable', async () => {
     mockSnapshots([makeSnapshot('ES')]);
 
     const result = await formatFuturesForClaude(
@@ -322,6 +416,7 @@ describe('formatFuturesForClaude', () => {
       'garbage',
     );
 
+    // Mid-session, min(session close, now) = now.
     expect(result).toContain('ES Futures (/ES)');
     expect(queryParams()).toContain(NOW.toISOString());
   });

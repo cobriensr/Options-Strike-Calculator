@@ -1,11 +1,13 @@
 /**
  * Futures context formatting for the /api/analyze endpoint.
  *
- * Queries futures_snapshots to assemble a human-readable context block
- * that Claude can use for analysis. Gracefully handles missing symbols
- * and tables, and omits any symbol whose latest snapshot is older than
- * MAX_SNAPSHOT_AGE_MS relative to the analysis reference time, so a
- * stalled snapshot cron never feeds frozen prices into the prompt.
+ * Reads the latest futures_snapshots row per symbol plus the futures_bars
+ * bar that priced it, and assembles a human-readable context block that
+ * Claude can use for analysis. A symbol whose underlying bar is older
+ * than MAX_PRICE_AGE_MS (relative to the analysis reference time) is
+ * omitted and named in an "Omitted (stale)" note: the snapshot cron
+ * keeps writing fresh-timestamped rows with a frozen price when the bar
+ * feed dies, so the snapshot's own ts says nothing about the price.
  */
 
 import type { NeonQueryFunction } from '@neondatabase/serverless';
@@ -14,6 +16,7 @@ import { fmtPct, fmtPrice } from './format-helpers.js';
 import logger from './logger.js';
 import { numOrNull } from './numeric-coercion.js';
 import { metrics, Sentry } from './sentry.js';
+import { getETCloseUtcIso } from '../../src/utils/timezone.js';
 
 type Sql = NeonQueryFunction<false, false>;
 
@@ -26,9 +29,12 @@ type Sql = NeonQueryFunction<false, false>;
 
 const futuresSnapshotSchema = z.object({
   symbol: z.string(),
-  // TIMESTAMPTZ — Neon may hand back a Date or an ISO string; an
+  // TIMESTAMPTZ columns — Neon may hand back a Date or an ISO string; an
   // unparseable value fails validation and the row is dropped.
   ts: z.coerce.date(),
+  // Latest futures_bars ts at-or-before the snapshot, i.e. the bar that
+  // priced it. Null when no bar exists — nothing backs the price.
+  bar_ts: z.coerce.date().nullable(),
   price: z.string(),
   change_1h_pct: z.string().nullable(),
   change_day_pct: z.string().nullable(),
@@ -37,11 +43,13 @@ const futuresSnapshotSchema = z.object({
 type FuturesSnapshot = z.infer<typeof futuresSnapshotSchema>;
 
 /**
- * A symbol whose latest snapshot is older than this (relative to the
- * analysis reference time) is omitted. fetch-futures-snapshot writes
- * every 5 minutes, so 15 minutes tolerates two missed runs.
+ * A symbol whose price comes from a bar older than this (relative to the
+ * analysis reference time) is omitted. Bars are 1-minute and the
+ * snapshot cron runs every 5 minutes, so a healthy price is at most ~6
+ * minutes old; 15 minutes tolerates about two missed cron runs.
  */
-const MAX_SNAPSHOT_AGE_MS = 15 * 60 * 1000;
+const MAX_PRICE_AGE_MS = 15 * 60 * 1000;
+const MAX_PRICE_AGE_MIN = MAX_PRICE_AGE_MS / 60_000;
 
 interface DerivedSignals {
   esSpxBasis: number | null;
@@ -274,33 +282,66 @@ const SYMBOL_RENDERERS: ReadonlyArray<readonly [string, Renderer]> = [
   ['GC', renderGc],
 ];
 
+/**
+ * futures_snapshots / futures_bars symbols the renderers read, in
+ * section order (VX1 + VX2 feed the single VX section). The query
+ * returns rows in this order, so the stale note lists symbols in it too.
+ */
+const CONTEXT_SYMBOLS: readonly string[] = [
+  'ES',
+  'NQ',
+  'VX1',
+  'VX2',
+  'ZN',
+  'RTY',
+  'CL',
+  'GC',
+];
+
 // ── Core formatter ─────────────────────────────────────────
 
 /**
- * The moment freshness is judged against: the entry-time cutoff when
- * one is given (historical / backtest runs, or a live run pinned to an
- * earlier time), else wall clock. A cutoff in the future — the
- * calculator defaults to 10:00 AM CT outside market hours — is clamped
- * to wall clock, since no snapshot can be newer than now.
+ * The moment freshness is judged against, and the upper bound of the
+ * read so later rows can't leak in: the entry-time cutoff (`asOf`) when
+ * it parses, else the analysis date's 4:00 PM ET cash close — so a
+ * historical run with no entry time still reads that day's session
+ * rather than being judged against today's wall clock. Either is then
+ * clamped to wall clock (the calculator defaults to 10:00 AM CT outside
+ * market hours, which can be in the future). Early-close days still use
+ * 4:00 PM ET; their futures halt earlier, so a no-asOf run on one can
+ * come back all-stale (null, reported unavailable) rather than wrong.
  */
-function resolveReferenceTime(asOf: string | undefined): Date {
+function resolveReferenceTime(
+  analysisDate: string,
+  asOf: string | undefined,
+): Date {
   const now = new Date();
-  if (asOf == null) return now;
-  const cutoff = new Date(asOf);
-  if (Number.isNaN(cutoff.getTime())) return now;
+  const cutoff = parseIso(asOf) ?? parseIso(getETCloseUtcIso(analysisDate));
+  if (cutoff == null) return now;
   return cutoff < now ? cutoff : now;
+}
+
+function parseIso(iso: string | null | undefined): Date | null {
+  if (iso == null) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /**
  * Build the futures context block for Claude analysis.
  *
- * Reads the latest futures_snapshots row per symbol at-or-before the
- * reference time (see `resolveReferenceTime`), then drops any symbol
- * whose row is older than MAX_SNAPSHOT_AGE_MS.
+ * One query: for each CONTEXT_SYMBOLS entry, the latest futures_snapshots
+ * row at-or-before the reference time (seek on UNIQUE(symbol, ts)) and
+ * the latest futures_bars ts at-or-before that snapshot (seek on
+ * idx_futures_bars_symbol_ts). Freshness is the age of that bar — the
+ * price the snapshot actually carries — not the snapshot's write time.
+ * A symbol with no snapshot at all is simply absent (never existed); a
+ * symbol whose bar is stale or missing is dropped from every section and
+ * derivation and named in a trailing "Omitted (stale …)" note.
  *
- * Returns null when no fresh snapshot is available (table missing, no
- * rows, or every row stale); the caller then lists "Futures Context" in
- * the unavailable-data manifest.
+ * Returns null when nothing fresh is left to render (query failed, no
+ * rows, or every symbol stale); the caller then lists "Futures Context"
+ * in the unavailable-data manifest.
  *
  * @param asOf - optional ISO entry-time cutoff (`parseEntryTimeAsUtc`)
  */
@@ -310,19 +351,29 @@ export async function formatFuturesForClaude(
   spxPrice?: number,
   asOf?: string,
 ): Promise<string | null> {
-  const referenceTime = resolveReferenceTime(asOf);
+  const referenceTime = resolveReferenceTime(analysisDate, asOf);
   const referenceIso = referenceTime.toISOString();
   const snapshots: FuturesSnapshot[] = [];
 
-  // Fetch latest snapshots — gracefully handle missing table
   try {
     const rawRows = await sql`
-      SELECT DISTINCT ON (symbol)
-        symbol, ts, price, change_1h_pct, change_day_pct, volume_ratio
-      FROM futures_snapshots
-      WHERE trade_date = ${analysisDate}
-        AND ts <= ${referenceIso}
-      ORDER BY symbol, ts DESC
+      SELECT s.symbol, snap.ts, bar.bar_ts, snap.price,
+             snap.change_1h_pct, snap.change_day_pct, snap.volume_ratio
+      FROM unnest(${CONTEXT_SYMBOLS as string[]}::text[])
+        WITH ORDINALITY AS s(symbol, ord)
+      CROSS JOIN LATERAL (
+        SELECT ts, price, change_1h_pct, change_day_pct, volume_ratio
+        FROM futures_snapshots
+        WHERE symbol = s.symbol AND ts <= ${referenceIso}
+        ORDER BY ts DESC
+        LIMIT 1
+      ) AS snap
+      CROSS JOIN LATERAL (
+        SELECT MAX(ts) AS bar_ts
+        FROM futures_bars
+        WHERE symbol = s.symbol AND ts <= snap.ts
+      ) AS bar
+      ORDER BY s.ord
     `;
     for (const row of rawRows) {
       const parsed = futuresSnapshotSchema.safeParse(row);
@@ -336,23 +387,34 @@ export async function formatFuturesForClaude(
       }
     }
   } catch (err) {
-    logger.debug({ err }, 'futures_snapshots table not available — skipping');
+    logger.warn(
+      { err },
+      'futures context query failed — omitting Futures Context',
+    );
     metrics.increment('futures_context.fetch_error');
     Sentry.captureException(err);
     return null;
   }
 
-  // Build a lookup map of fresh snapshots only — a stale row must not
-  // feed its own section or any cross-symbol derivation (basis, ratios).
+  // Build a lookup map of fresh-priced snapshots only — a stale row must
+  // not feed its own section or any cross-symbol derivation (basis,
+  // ratios, flight-to-safety).
   const bySymbol = new Map<string, FuturesSnapshot>();
-  const stale: Array<{ symbol: string; ts: string; ageMin: number }> = [];
+  const stale: Array<{
+    symbol: string;
+    barTs: string | null;
+    ageMin: number | null;
+  }> = [];
   for (const row of snapshots) {
-    const ageMs = referenceTime.getTime() - row.ts.getTime();
-    if (ageMs > MAX_SNAPSHOT_AGE_MS) {
+    const ageMs =
+      row.bar_ts == null
+        ? null
+        : referenceTime.getTime() - row.bar_ts.getTime();
+    if (ageMs == null || ageMs > MAX_PRICE_AGE_MS) {
       stale.push({
         symbol: row.symbol,
-        ts: row.ts.toISOString(),
-        ageMin: Math.round(ageMs / 60_000),
+        barTs: row.bar_ts?.toISOString() ?? null,
+        ageMin: ageMs == null ? null : Math.round(ageMs / 60_000),
       });
     } else {
       bySymbol.set(row.symbol, row);
@@ -361,7 +423,7 @@ export async function formatFuturesForClaude(
   if (stale.length > 0) {
     logger.warn(
       { stale, referenceTime: referenceIso },
-      'futures_snapshots rows stale — omitting symbols from analyze context',
+      'futures price stale — omitting symbols from analyze context',
     );
     metrics.increment('futures_context.stale_snapshot');
   }
@@ -379,6 +441,12 @@ export async function formatFuturesForClaude(
   }
 
   if (sections.length === 0) return null;
+
+  // Name what was dropped so Claude can tell "stale" from "never existed".
+  if (stale.length > 0) {
+    const names = stale.map((s) => s.symbol).join(', ');
+    sections.push(`Omitted (stale >${MAX_PRICE_AGE_MIN}m): ${names}`);
+  }
 
   return '## Futures Context\n\n' + sections.join('\n\n');
 }
