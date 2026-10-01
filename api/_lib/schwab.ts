@@ -28,6 +28,7 @@ import { z } from 'zod';
 import logger from './logger.js';
 import { Sentry, metrics } from './sentry.js';
 import { requireEnvGroup } from './env.js';
+import { redactUpstreamBody } from './redact-upstream-body.js';
 // The Redis singleton lives in the neutral lower-layer `redis.ts` so this
 // auth module isn't the source of the shared KV client (avoids inverting the
 // layering). Re-exported below for back-compat with existing importers.
@@ -79,7 +80,9 @@ class SchwabRefreshRejectedError extends Error {
   readonly status: number;
 
   constructor(status: number, body: string) {
-    super(`Schwab rejected the refresh token (${status}): ${body}`);
+    super(
+      `Schwab rejected the refresh token (${status}): ${redactUpstreamBody(body)}`,
+    );
     this.name = 'SchwabRefreshRejectedError';
     this.status = status;
   }
@@ -175,15 +178,39 @@ async function getStoredTokens(): Promise<StoredTokensRead> {
   }
 }
 
-async function storeTokens(tokens: SchwabTokens): Promise<void> {
-  // TTL = REMAINING refresh-token lifetime + 1 day buffer (refreshExpiresAt
-  // is fixed at login, so this shrinks with each refresh). Floored at 1 h.
+/**
+ * TTL for the token record = REMAINING refresh-token lifetime + 1 day buffer
+ * (refreshExpiresAt is fixed at login, so this shrinks with each refresh).
+ * Floored at 1 h.
+ */
+function tokenTtlSec(tokens: SchwabTokens): number {
   const ttlMs = tokens.refreshExpiresAt - Date.now() + 86_400_000;
-  const ttlSec = Math.max(Math.floor(ttlMs / 1000), 3600);
+  return Math.max(Math.floor(ttlMs / 1000), 3600);
+}
+
+/**
+ * The `"refreshToken":<JSON string>` fragment of the record as
+ * `@upstash/redis` stores it (`JSON.stringify(tokens)`). JSON escaping means
+ * an unescaped `"` only appears at real key/value boundaries, and the closing
+ * quote fences the value, so a token cannot prefix-match a longer one. The
+ * scripts below look for it with plain `string.find` (4th arg `true`), which
+ * disables Lua patterns.
+ */
+function refreshTokenNeedle(refreshToken: string): string {
+  return `"refreshToken":${JSON.stringify(refreshToken)}`;
+}
+
+/**
+ * Run a token-record write up to 3× with backoff. When every attempt throws,
+ * log + capture and return `{ ok: false }` — callers keep going, because a
+ * refreshed access token is still valid even if it couldn't be persisted.
+ */
+async function retryTokenWrite<T>(
+  write: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false }> {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await redis.set(KV_KEY, tokens, { ex: ttlSec });
-      return;
+      return { ok: true, value: await write() };
     } catch (err) {
       logger.error({ err, attempt }, 'storeTokens: Redis write failed');
       metrics.increment('redis.error');
@@ -195,6 +222,67 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
   Sentry.captureException(
     new Error('storeTokens: all attempts exhausted, tokens NOT persisted'),
   );
+  return { ok: false };
+}
+
+/**
+ * Unconditional write — for the authorization-code exchange only: a human
+ * re-login always wins over whatever is stored. Refreshes use
+ * `storeRefreshedTokens` (compare-and-set) instead.
+ */
+async function storeTokens(tokens: SchwabTokens): Promise<void> {
+  await retryTokenWrite(() =>
+    redis.set(KV_KEY, tokens, { ex: tokenTtlSec(tokens) }),
+  );
+}
+
+/**
+ * Compare-and-set of a refreshed record — STATIC script, all inputs via
+ * ARGV. Writes only if the key still holds the refresh token we refreshed
+ * with: a re-login that lands during the (up to 30 s) refresh must not be
+ * overwritten by our now-stale refresh token and refreshExpiresAt, and a
+ * record cleared meanwhile must not be resurrected.
+ *
+ * KEYS[1] = token key
+ * ARGV[1] = refreshTokenNeedle(the refresh token we refreshed with)
+ * ARGV[2] = JSON.stringify(new tokens) — exactly what `redis.set(key, obj)`
+ *           stores, so `redis.get` reads it back as the same object
+ * ARGV[3] = TTL seconds
+ *
+ * Returns: 0 = key absent, 1 = written, 2 = key holds a different token
+ */
+const STORE_REFRESHED_LUA = `
+  local raw = redis.call('GET', KEYS[1])
+  if not raw then return 0 end
+  if not string.find(raw, ARGV[1], 1, true) then return 2 end
+  redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+  return 1
+`;
+
+/**
+ * Persist a refreshed record via compare-and-set.
+ *   - written: stored
+ *   - changed: the record changed during the refresh (re-login or clear),
+ *              so our result is stale — the caller discards it
+ *   - failed:  Redis kept failing (captured); the access token still works
+ */
+async function storeRefreshedTokens(
+  tokens: SchwabTokens,
+  refreshedWith: string,
+): Promise<'written' | 'changed' | 'failed'> {
+  const result = await retryTokenWrite(() =>
+    redis.eval(
+      STORE_REFRESHED_LUA,
+      [KV_KEY],
+      [
+        refreshTokenNeedle(refreshedWith),
+        JSON.stringify(tokens),
+        String(tokenTtlSec(tokens)),
+      ],
+    ),
+  );
+  if (!result.ok) return 'failed';
+  return result.value === 1 ? 'written' : 'changed';
 }
 
 /**
@@ -202,14 +290,8 @@ async function storeTokens(tokens: SchwabTokens): Promise<void> {
  * via ARGV. Deletes the key only if it still holds the refresh token that
  * Schwab rejected, so a concurrent re-auth's fresh tokens are never wiped.
  *
- * `@upstash/redis` stores the record as `JSON.stringify(tokens)`, so ARGV[1]
- * is the exact `"refreshToken":"<token>"` fragment. JSON escaping means an
- * unescaped `"` only appears at real key/value boundaries, and the closing
- * quote fences the value (a token cannot prefix-match a longer one). The
- * 4th `string.find` arg (`true`) disables Lua patterns.
- *
  * KEYS[1] = token key
- * ARGV[1] = `"refreshToken":` + JSON-encoded rejected refresh token
+ * ARGV[1] = refreshTokenNeedle(the rejected refresh token)
  *
  * Returns: 0 = key absent, 1 = deleted, 2 = key holds a different token
  */
@@ -239,7 +321,7 @@ async function clearRejectedTokens(
     const result = await redis.eval(
       CLEAR_REJECTED_LUA,
       [KV_KEY],
-      [`"refreshToken":${JSON.stringify(rejectedRefreshToken)}`],
+      [refreshTokenNeedle(rejectedRefreshToken)],
     );
     if (result === 1) return 'cleared';
     if (result === 2) return 'replaced';
@@ -278,8 +360,10 @@ function isRefreshRejection(status: number, body: string): boolean {
  *   - refreshed:  fresh tokens (ours, or a lock winner's read from Redis)
  *   - logged_out: the refresh token is dead or the tokens are gone →
  *                 caller reports `expired_refresh`
- *   - replaced:   Schwab rejected OUR refresh token, but a concurrent
- *                 re-auth had already stored new tokens → re-read them
+ *   - replaced:   the record no longer holds the refresh token we used — a
+ *                 concurrent re-auth replaced it (or it was cleared) — so
+ *                 Schwab's rejection of it, or our refreshed result, is
+ *                 stale → re-read the store
  */
 type RefreshOutcome =
   | { kind: 'refreshed'; tokens: SchwabTokens }
@@ -428,7 +512,9 @@ async function refreshAccessToken(
     if (isRefreshRejection(res.status, body)) {
       throw new SchwabRefreshRejectedError(res.status, body);
     }
-    throw new Error(`Schwab token refresh failed (${res.status}): ${body}`);
+    throw new Error(
+      `Schwab token refresh failed (${res.status}): ${redactUpstreamBody(body)}`,
+    );
   }
 
   // Throws on a malformed body → captured token_error; nothing is stored.
@@ -505,7 +591,16 @@ async function refreshUnderLock(
 
   try {
     const tokens = await refreshAccessToken(record, clientId, clientSecret);
-    await storeTokens(tokens);
+    const stored = await storeRefreshedTokens(tokens, record.refreshToken);
+    if (stored === 'changed') {
+      // A re-login (or a clear) changed the record during the refresh, so
+      // our result is stale: discard it and let the caller re-read.
+      logger.warn(
+        'Schwab token record changed during refresh; discarding the refreshed tokens',
+      );
+      return { kind: 'replaced' };
+    }
+    // 'written', or 'failed' (already captured): the token is valid either way.
     inMemoryTokenCache = {
       accessToken: tokens.accessToken,
       expiresAt: tokens.expiresAt,
@@ -769,7 +864,8 @@ export async function storeInitialTokens(
       return {
         error: {
           type: 'token_error',
-          message: `Initial token exchange failed (${res.status}): ${body}`,
+          // Redacted at the source: callback.ts forwards this to Sentry.
+          message: `Initial token exchange failed (${res.status}): ${redactUpstreamBody(body)}`,
         },
       };
     }

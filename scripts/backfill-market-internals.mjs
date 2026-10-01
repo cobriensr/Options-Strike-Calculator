@@ -11,6 +11,13 @@
  * cron uses). If the access token is expired, the script auto-refreshes
  * it via the stored refresh token.
  *
+ * WARNING — this runs against PRODUCTION: `.env.local` points at the
+ * production Neon branch AND the production Upstash Redis that holds the
+ * live Schwab token record. Run it only while the Schwab crons are idle
+ * (outside 13-21 UTC on weekdays) so its token refresh doesn't race theirs.
+ * Its token write is a compare-and-set (it never overwrites a re-login or
+ * resurrects a cleared record), but it does not take the refresh lock.
+ *
  * Usage:
  *   source .env.local && node scripts/backfill-market-internals.mjs
  *   source .env.local && node scripts/backfill-market-internals.mjs 10   # 10 calendar days
@@ -62,6 +69,22 @@ const SCHWAB_BASE = 'https://api.schwabapi.com/marketdata/v1';
 const TOKEN_URL = 'https://api.schwabapi.com/v1/oauth/token';
 const KV_KEY = 'schwab:tokens';
 const BUFFER_MS = 60_000;
+
+/**
+ * Compare-and-set of a refreshed token record — keep in sync with
+ * STORE_REFRESHED_LUA in api/_lib/schwab.ts. Writes only if the record still
+ * holds the refresh token we refreshed with (plain-find on its
+ * `"refreshToken":<JSON>` fragment), so a re-login that lands mid-refresh is
+ * never overwritten and a cleared record is never resurrected.
+ * Returns: 0 = key absent, 1 = written, 2 = key holds a different token.
+ */
+const STORE_REFRESHED_LUA = `
+  local raw = redis.call('GET', KEYS[1])
+  if not raw then return 0 end
+  if not string.find(raw, ARGV[1], 1, true) then return 2 end
+  redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+  return 1
+`;
 
 // ── ET timezone helpers (mirrors backfill-spx-candles-1m) ──
 
@@ -162,7 +185,30 @@ async function getSchwabToken() {
     Math.floor((newTokens.refreshExpiresAt - now + 86_400_000) / 1000),
     3600,
   );
-  await redis.set(KV_KEY, newTokens, { ex: ttlSec });
+  const written = await redis.eval(
+    STORE_REFRESHED_LUA,
+    [KV_KEY],
+    [
+      `"refreshToken":${JSON.stringify(stored.refreshToken)}`,
+      JSON.stringify(newTokens),
+      String(ttlSec),
+    ],
+  );
+  if (written !== 1) {
+    // The record changed under us (a re-login, or a clear). Use what is
+    // stored now if it's valid; otherwise stop rather than overwrite it.
+    const current = await redis.get(KV_KEY);
+    if (current && Date.now() < current.expiresAt - BUFFER_MS) {
+      console.log(
+        '  Token record changed during refresh (re-login?); using the stored token.',
+      );
+      return current.accessToken;
+    }
+    console.error(
+      'Token record changed or was cleared during refresh; not overwriting it. Re-run the script.',
+    );
+    process.exit(1);
+  }
   console.log('  Token refreshed and stored.');
   return newTokens.accessToken;
 }

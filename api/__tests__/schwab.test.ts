@@ -99,9 +99,26 @@ function lockAcquires() {
   return mockRedisSet.mock.calls.filter((c) => c[0] === 'schwab:refresh_lock');
 }
 
-/** EVAL calls against the token record (the rejected-token compare-and-delete). */
+/**
+ * EVAL calls against the token record: the rejected-token
+ * compare-and-delete and the refreshed-token compare-and-set.
+ */
 function tokenEvals() {
   return mockRedisEval.mock.calls.filter((c) => c[1][0] === 'schwab:tokens');
+}
+
+/** The refreshed-token compare-and-set EVAL calls. */
+function storeEvals() {
+  return tokenEvals().filter(([script]) => String(script).includes("'SET'"));
+}
+
+/** Refreshed records written via compare-and-set, as Redis would hold them. */
+function refreshStores() {
+  return storeEvals().map(([, , args]) => ({
+    needle: args[0] as string,
+    tokens: JSON.parse(args[1] as string) as Record<string, unknown>,
+    ttlSec: Number(args[2]),
+  }));
 }
 
 /** EVAL calls against the refresh lock (the fenced release). */
@@ -112,12 +129,13 @@ function lockReleases() {
 }
 
 /**
- * Answer the token-record compare-and-delete with `tokenResult`
- * (0 absent / 1 deleted / 2 different token) and the lock release with 1.
+ * Answer every token-record EVAL (compare-and-delete / compare-and-set) with
+ * `tokenResult` (0 absent / 1 done / 2 record holds a different token) and
+ * the fenced lock release with `lockResult` (1 released / 0 not ours).
  */
-function evalAnswers(tokenResult: number) {
+function evalAnswers(tokenResult: number, lockResult = 1) {
   mockRedisEval.mockImplementation((_script: string, keys: string[]) =>
-    Promise.resolve(keys[0] === 'schwab:tokens' ? tokenResult : 1),
+    Promise.resolve(keys[0] === 'schwab:tokens' ? tokenResult : lockResult),
   );
 }
 
@@ -138,6 +156,8 @@ describe('schwab', () => {
     mockRedisSet.mockReset();
     mockRedisDel.mockReset();
     mockRedisEval.mockReset();
+    // Default: the refreshed-token compare-and-set writes, the release frees.
+    evalAnswers(1);
     mockSentry.captureException.mockClear();
     mockSentry.captureMessage.mockClear();
   });
@@ -448,16 +468,13 @@ describe('schwab', () => {
         refreshExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       });
 
-      // Lock acquisition succeeds
-      let setCallCount = 0;
-      mockRedisSet.mockImplementation(() => {
-        setCallCount++;
-        // First call is lock acquisition (succeeds)
-        if (setCallCount === 1) return Promise.resolve('OK');
-        // Second call is storeTokens (fails)
-        return Promise.reject(new Error('Redis write failed'));
-      });
-      mockRedisDel.mockResolvedValue(1);
+      // Lock acquisition succeeds; the refreshed-token compare-and-set fails.
+      mockRedisSet.mockResolvedValue('OK');
+      mockRedisEval.mockImplementation((_script: string, keys: string[]) =>
+        keys[0] === 'schwab:tokens'
+          ? Promise.reject(new Error('Redis write failed'))
+          : Promise.resolve(1),
+      );
 
       vi.stubGlobal(
         'fetch',
@@ -489,6 +506,8 @@ describe('schwab', () => {
       expect(mockLogger.error).toHaveBeenCalledWith(
         'storeTokens: all attempts exhausted, tokens NOT persisted',
       );
+      expect(storeEvals()).toHaveLength(3);
+      expect(mockSentry.captureException).toHaveBeenCalledTimes(1);
 
       vi.unstubAllGlobals();
     });
@@ -791,17 +810,19 @@ describe('schwab', () => {
 
       expect(await getAccessToken()).toEqual({ token: 'new-access' });
 
-      const writes = tokenWrites();
-      expect(writes).toHaveLength(1);
-      const [, written, opts] = writes[0]!;
+      // Written by compare-and-set only — never an unconditional SET.
+      expect(tokenWrites()).toHaveLength(0);
+      const stores = refreshStores();
+      expect(stores).toHaveLength(1);
+      const { tokens: written, ttlSec } = stores[0]!;
       expect(written.accessToken).toBe('new-access');
       // The refresh token's 7 days run from the ORIGINAL login — a refresh
       // must not slide the expiry forward.
       expect(written.refreshExpiresAt).toBe(refreshExpiresAt);
       // TTL = remaining refresh lifetime + 1 day buffer (≈ 3 days), not 8.
       const expectedTtlSec = Math.floor((2 * DAY_MS + DAY_MS) / 1000);
-      expect(opts.ex).toBeGreaterThan(expectedTtlSec - 5);
-      expect(opts.ex).toBeLessThanOrEqual(expectedTtlSec);
+      expect(ttlSec).toBeGreaterThan(expectedTtlSec - 5);
+      expect(ttlSec).toBeLessThanOrEqual(expectedTtlSec);
     });
 
     it('keeps the stored refresh token when Schwab omits refresh_token on refresh', async () => {
@@ -815,7 +836,7 @@ describe('schwab', () => {
 
       expect(await getAccessToken()).toEqual({ token: 'new-access' });
 
-      const [, written] = tokenWrites()[0]!;
+      const { tokens: written } = refreshStores()[0]!;
       expect(written.refreshToken).toBe('ref-tok');
     });
 
@@ -833,7 +854,7 @@ describe('schwab', () => {
 
       await getAccessToken();
 
-      const [, written] = tokenWrites()[0]!;
+      const { tokens: written } = refreshStores()[0]!;
       expect(written.refreshToken).toBe('rotated-ref');
     });
 
@@ -1229,7 +1250,7 @@ describe('schwab', () => {
 
     it('leaves a lock it no longer owns alone (expired, re-acquired by another instance)', async () => {
       // The fenced release reports 0: the key holds someone else's token.
-      mockRedisEval.mockResolvedValue(0);
+      evalAnswers(1, 0);
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue(tokenResponse({ access_token: 'a' })),
@@ -1330,6 +1351,7 @@ describe('schwab', () => {
       expect(result).toEqual({ token: 'theirs' });
       expect(fetchMock).not.toHaveBeenCalled();
       expect(tokenWrites()).toHaveLength(0);
+      expect(tokenEvals()).toHaveLength(0);
     });
 
     it('stops when the refresh token expired by the time it holds the lock', async () => {
@@ -1369,7 +1391,9 @@ describe('schwab', () => {
 
       const body = fetchMock.mock.calls[0]![1].body as URLSearchParams;
       expect(body.get('refresh_token')).toBe('newer-ref');
-      const [, written] = tokenWrites()[0]!;
+      const { needle, tokens: written } = refreshStores()[0]!;
+      // The write is conditioned on the record we actually refreshed from.
+      expect(JSON.stringify(reread)).toContain(needle);
       expect(written.refreshToken).toBe('newer-ref');
       expect(written.refreshExpiresAt).toBe(reread.refreshExpiresAt);
     });
@@ -1387,6 +1411,169 @@ describe('schwab', () => {
 
       const body = fetchMock.mock.calls[0]![1].body as URLSearchParams;
       expect(body.get('refresh_token')).toBe('ref-tok');
+    });
+  });
+
+  describe('refreshed-token write (compare-and-set)', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisSet.mockResolvedValue('OK');
+    });
+
+    it('writes only if the record still holds the refresh token it refreshed with', async () => {
+      const record = staleTokens();
+      mockRedisGet.mockResolvedValue(record);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenResponse({ access_token: 'new-a' })),
+      );
+
+      expect(await getAccessToken()).toEqual({ token: 'new-a' });
+
+      expect(storeEvals()).toHaveLength(1);
+      const [script, keys] = storeEvals()[0]!;
+      expect(keys).toEqual(['schwab:tokens']);
+      expect(script).toContain('string.find(raw, ARGV[1], 1, true)');
+      expect(script).toContain(
+        "redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])",
+      );
+      const { needle, tokens } = refreshStores()[0]!;
+      // Needle = the refresh-token fragment of the record as @upstash/redis
+      // serializes it; it must not match a different refresh token.
+      expect(JSON.stringify(record)).toContain(needle);
+      expect(
+        JSON.stringify({ ...record, refreshToken: 'reauth-ref' }),
+      ).not.toContain(needle);
+      expect(tokens).toMatchObject({
+        accessToken: 'new-a',
+        refreshToken: 'ref-tok',
+        refreshExpiresAt: record.refreshExpiresAt,
+      });
+      expect(tokenWrites()).toHaveLength(0);
+    });
+
+    it('a re-auth that lands mid-refresh survives: the stale result is discarded', async () => {
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens()) // initial read
+        .mockResolvedValueOnce(staleTokens()) // lock holder's re-read
+        .mockResolvedValueOnce({
+          // re-read after the write was refused: the new login
+          accessToken: 'reauth-access',
+          refreshToken: 'reauth-ref',
+          expiresAt: Date.now() + 1_800_000,
+          refreshExpiresAt: Date.now() + 7 * DAY_MS,
+        });
+      evalAnswers(2); // compare-and-set: record holds a DIFFERENT token
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(tokenResponse({ access_token: 'stale-result' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({ token: 'reauth-access' });
+      expect(storeEvals()).toHaveLength(1); // refused, not retried
+      expect(tokenWrites()).toHaveLength(0); // nothing overwrote the login
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(mockSentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('does not resurrect a record that was cleared mid-refresh', async () => {
+      mockRedisGet
+        .mockResolvedValueOnce(staleTokens())
+        .mockResolvedValueOnce(staleTokens())
+        .mockResolvedValueOnce(null); // re-read after the refused write
+      evalAnswers(0); // compare-and-set: key absent
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenResponse({ access_token: 'orphan' })),
+      );
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('No tokens found'),
+        },
+      });
+      expect(tokenWrites()).toHaveLength(0);
+    });
+  });
+
+  describe('upstream error bodies are redacted', () => {
+    // JWT-shaped secret: must never appear verbatim in an error, Sentry, or logs.
+    const LEAKY =
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0b2tlbiJ9.c2lnbmF0dXJlLXNlY3JldA';
+
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisGet.mockResolvedValue(staleTokens());
+      mockRedisSet.mockResolvedValue('OK');
+    });
+
+    it('a non-2xx refresh body is redacted in the error and the Sentry capture', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            tokenFailure(503, `{"error":"server_error","trace":"${LEAKY}"}`),
+          ),
+      );
+
+      const result = await getAccessToken();
+
+      expect('error' in result && result.error.type).toBe('token_error');
+      if ('error' in result) {
+        expect(result.error.message).not.toContain(LEAKY);
+        expect(result.error.message).toContain('server_error');
+      }
+      const captured = mockSentry.captureException.mock.calls[0]![0] as Error;
+      expect(captured.message).not.toContain(LEAKY);
+    });
+
+    it('the refresh_rejected warning carries a redacted detail', async () => {
+      evalAnswers(1);
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            tokenFailure(
+              400,
+              `{"error":"invalid_grant","refresh_token":"${LEAKY}"}`,
+            ),
+          ),
+      );
+
+      await getAccessToken();
+
+      const [, context] = mockSentry.captureMessage.mock.calls[0]!;
+      const detail = String(context.extra.detail);
+      expect(detail).toContain('invalid_grant');
+      expect(detail).not.toContain(LEAKY);
+    });
+
+    it('a failed code exchange returns a redacted message', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockResolvedValue(
+            tokenFailure(400, `{"error":"invalid_client","echo":"${LEAKY}"}`),
+          ),
+      );
+
+      const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+      expect('error' in result).toBe(true);
+      if ('error' in result) {
+        expect(result.error.message).toContain('invalid_client');
+        expect(result.error.message).not.toContain(LEAKY);
+      }
     });
   });
 
