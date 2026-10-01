@@ -32,49 +32,135 @@ _sentry_enabled = False
 # Sentry's default scrubber keys on field NAMES ("password", "token"), not on
 # secrets embedded inside free text or in innocuously named locals such as
 # ``dsn``. Both the log line and the outgoing Sentry event are therefore run
-# through ``redact_credentials``.
+# through ``redact_credentials`` (text) and ``_redact_value`` (structures).
+#
+# Every quantifier below is bounded or linear, so adversarial input cannot
+# trigger catastrophic backtracking (see the 100 KB timing test).
 
-# ``scheme://userinfo@`` — userinfo cannot contain ``/``, ``@`` or
-# whitespace, so ``https://example.com/a@b`` (an ``@`` in the path) is not
-# touched.
-_URL_USERINFO_RE = re.compile(
-    r"(?P<scheme>\b[A-Za-z][A-Za-z0-9+.\-]*://)[^\s/@'\"<>]+@"
+# ``scheme://userinfo@``. The userinfo is masked up to the LAST ``@``
+# (through up to 8 more ``@``-runs, each segment <= 200 chars), so a
+# password holding an unencoded ``@ / # ?`` (an invalid DSN — exactly what
+# psycopg2 echoes back) is masked whole. Segments may contain whitespace,
+# so a DSN wrapped across lines is still caught. Quotes and ``<>`` end it,
+# because messages quote the DSN. Over-redaction (e.g. a normal URL with
+# ``@`` later in its path) is the accepted trade-off.
+#
+# The pattern runs on the REVERSED text. Scanning forward from every
+# ``scheme://`` costs a full window scan per candidate (~130 ms on 100 KB of
+# ``a://``). Reversed, candidate starts are ``@``-runs only (``(?<!@)@++``),
+# and every repetition is bounded and possessive, so the cost stays linear.
+_URL_USERINFO_REVERSED_RE = re.compile(
+    r"(?<!@)@++(?:[^'\"<>@]{1,200}+@++){0,8}[^'\"<>@]{0,200}//:"
+    r"(?P<rscheme>[A-Za-z0-9+.\-]{0,31}[A-Za-z])"
 )
 
-# libpq ``key=value`` secrets (conninfo strings and URI query params):
-# ``password=secret``, ``password = 'quoted secret'``, ``sslpassword=...``.
-# libpq allows whitespace around ``=``, so prose like "password= foo" is
-# also masked — over-redaction is the safe side of that trade.
+# ``key=value`` secrets: libpq conninfo (``password=secret``,
+# ``password = 'quoted secret'``, ``sslpassword=...``), URI query params,
+# and common token/API-key params. libpq allows whitespace around ``=``,
+# so prose like "password= foo" is also masked; over-redaction is the
+# safe side. A quote that never closes still has its first token masked.
 _KV_SECRET_RE = re.compile(
-    r"\b(?P<key>sslpassword|password)(?P<eq>\s*=\s*)"
-    r"(?:'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|[^\s&'\",;)]+)",
+    r"\b(?P<key>sslpassword|password|access_token|refresh_token|"
+    r"api[_-]?key|token)(?P<eq>\s{0,8}=\s{0,8})"
+    r"(?:'(?:[^'\\]|\\.){0,256}'|\"(?:[^\"\\]|\\.){0,256}\"|['\"]?[^\s&'\",;)]+)",
     re.IGNORECASE,
 )
 
+# ``Authorization: Bearer <token>`` (any case; the value must look like a
+# token, 8+ token chars, so prose such as "the bearer of" is left alone)
+# and Vercel Blob read-write tokens.
+_BEARER_RE = re.compile(
+    r"\b(?P<scheme>bearer)\s{1,8}(?=[A-Za-z0-9._~+/=\-]{8})[^\s'\",;]+",
+    re.IGNORECASE,
+)
+_VERCEL_BLOB_TOKEN_RE = re.compile(r"vercel_blob_rw_[A-Za-z0-9_]+")
+
 _REDACTED = "***"
+
+# Dict keys (frame locals, extras, ...) whose value is blanked whatever it
+# holds, compared case-insensitively.
+_SENSITIVE_KEYS = frozenset(
+    {
+        "dsn",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "sslpassword",
+        "access_token",
+        "refresh_token",
+    }
+)
+_BLANKED = "[redacted]"
+
+_DROPPED_EVENT_MESSAGE = "sidecar event dropped: redaction failed"
+# SDK-generated envelope fields that carry no user data. The SDK needs
+# ``event_id`` to build the envelope after before_send runs.
+_ENVELOPE_KEYS = (
+    "event_id",
+    "timestamp",
+    "level",
+    "platform",
+    "environment",
+    "release",
+    "server_name",
+)
 
 
 def redact_credentials(text: str) -> str:
-    """Mask URL userinfo and libpq password params in ``text``.
+    """Mask credentials in ``text``.
 
-    ``postgresql://user:pass@host/db`` → ``postgresql://***@host/db``;
-    ``password=secret`` / ``sslpassword='x y'`` → ``password=***``.
+    - URL userinfo: ``postgresql://user:pass@host/db`` →
+      ``postgresql://***@host/db``.
+    - ``key=value`` secrets (password, sslpassword, token, api_key / api-key
+      / apikey, access_token, refresh_token) → ``key=***``.
+    - ``Bearer <token>`` → ``Bearer ***``; ``vercel_blob_rw_<id>`` →
+      ``vercel_blob_rw_***``.
+
     Text without credentials is returned unchanged.
     """
-    text = _URL_USERINFO_RE.sub(rf"\g<scheme>{_REDACTED}@", text)
-    return _KV_SECRET_RE.sub(rf"\g<key>\g<eq>{_REDACTED}", text)
+    text = _redact_url_userinfo(text)
+    text = _KV_SECRET_RE.sub(rf"\g<key>\g<eq>{_REDACTED}", text)
+    text = _BEARER_RE.sub(rf"\g<scheme> {_REDACTED}", text)
+    return _VERCEL_BLOB_TOKEN_RE.sub(f"vercel_blob_rw_{_REDACTED}", text)
+
+
+def _redact_url_userinfo(text: str) -> str:
+    """Mask ``scheme://userinfo@`` (see ``_URL_USERINFO_REVERSED_RE``)."""
+    if "@" not in text or "://" not in text:
+        return text
+    reversed_text = text[::-1]
+    masked = _URL_USERINFO_REVERSED_RE.sub(
+        rf"@{_REDACTED}//:\g<rscheme>", reversed_text
+    )
+    return masked[::-1]
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    return isinstance(key, str) and key.lower() in _SENSITIVE_KEYS
 
 
 def _redact_value(value: Any) -> Any:
-    """Recursively apply ``redact_credentials`` to every string in ``value``.
+    """Recursively redact credentials in ``value``.
 
-    Walks dicts, lists and tuples; any other type passes through as-is.
-    Returns a new structure rather than mutating the input.
+    Strings go through ``redact_credentials``. Bytes are decoded (UTF-8,
+    ``errors="replace"``), redacted, and returned as ``str``. Dict values
+    whose key is sensitive (``dsn``, ``password``, ``token``, ...) are
+    blanked whatever they hold. That covers Sentry frame locals and extras.
+    Walks dicts, lists and tuples; other types pass through. Returns a new
+    structure rather than mutating the input.
     """
     if isinstance(value, str):
         return redact_credentials(value)
+    if isinstance(value, (bytes, bytearray)):
+        return redact_credentials(bytes(value).decode("utf-8", errors="replace"))
     if isinstance(value, dict):
-        return {k: _redact_value(v) for k, v in value.items()}
+        return {
+            k: _BLANKED if _is_sensitive_key(k) else _redact_value(v)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         return [_redact_value(v) for v in value]
     if isinstance(value, tuple):
@@ -82,20 +168,68 @@ def _redact_value(value: Any) -> Any:
     return value
 
 
+def _minimal_event(event: Any) -> dict[str, Any]:
+    """Build a value-free stand-in for an event that could not be redacted.
+
+    Keeps only the SDK envelope fields, the exception TYPE names, and the
+    existing tags (string pairs). No exception values, locals, breadcrumbs,
+    extras or message text survive, so nothing unredacted can leak.
+    """
+    source = event if isinstance(event, dict) else {}
+    minimal: dict[str, Any] = {
+        key: source[key]
+        for key in _ENVELOPE_KEYS
+        if isinstance(source.get(key), (str, int, float))
+    }
+    minimal["message"] = _DROPPED_EVENT_MESSAGE
+    minimal.setdefault("level", "error")
+
+    exception = source.get("exception")
+    values = exception.get("values") if isinstance(exception, dict) else None
+    if isinstance(values, list):
+        types = [
+            v["type"]
+            for v in values
+            if isinstance(v, dict) and isinstance(v.get("type"), str)
+        ]
+        if types:
+            minimal["exception"] = {"values": [{"type": t} for t in types]}
+
+    tags = source.get("tags")
+    if isinstance(tags, dict):
+        minimal["tags"] = {
+            k: v for k, v in tags.items() if isinstance(k, str) and isinstance(v, str)
+        }
+    return minimal
+
+
 def _before_send(event: Any, hint: Any) -> Any:
     """Sentry ``before_send`` hook: scrub credentials from the whole event.
 
-    Walks every string in the event — exception values, ``message`` /
+    Walks every value in the event: exception values, ``message`` and
     ``logentry``, breadcrumbs, extras, and stack-frame locals (where a
-    ``dsn`` variable would otherwise ship the password). Never raises: if
-    the walk fails the original event is returned so the error still
-    reaches Sentry, and the failure is logged.
+    ``dsn`` variable would otherwise carry the password). Never raises. If
+    redaction fails, it sends a minimal, value-free event (exception types
+    and tags only) rather than the raw one, and logs the failure type.
     """
     try:
         return _redact_value(event)
-    except Exception as inner:  # noqa: BLE001 — must never drop the event
+    except Exception as inner:  # noqa: BLE001 — must never raise into the SDK
         log.warning("before_send credential scrub failed: %s", type(inner).__name__)
-        return event
+        try:
+            return _minimal_event(event)
+        except Exception:  # noqa: BLE001 — last resort: send nothing
+            return None
+
+
+def _format_for_log(subject: object, context: dict[str, Any] | None) -> str:
+    """Render ``subject`` (+ context) for a log line with credentials redacted.
+
+    Context dict values under sensitive keys are blanked before formatting,
+    because ``{'password': 'x'}`` has no ``=`` for the text patterns to find.
+    """
+    text = f"{subject} (context={_redact_value(context)})" if context else str(subject)
+    return redact_credentials(text)
 
 
 def init_sentry() -> None:
@@ -199,8 +333,7 @@ def capture_exception(
     `tags` become Sentry scope tags (filterable in the Sentry UI).
     `context` becomes scope extras (full-fidelity values in events).
     """
-    text = f"{exc} (context={context})" if context else str(exc)
-    log.error("%s", redact_credentials(text))
+    log.error("%s", _format_for_log(exc, context))
 
     if not _sentry_enabled:
         return
@@ -231,8 +364,7 @@ def capture_message(
     `tags` become Sentry scope tags (filterable in the Sentry UI).
     `context` becomes scope extras.
     """
-    text = f"{message} (context={context})" if context else message
-    log.warning("%s", redact_credentials(text))
+    log.warning("%s", _format_for_log(message, context))
 
     if not _sentry_enabled:
         return

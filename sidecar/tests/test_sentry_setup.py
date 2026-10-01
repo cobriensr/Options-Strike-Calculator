@@ -278,14 +278,186 @@ class TestRedactCredentials:
         [
             "db pool saturated: could not borrow a connection within 10.0s",
             'password authentication failed for user "neon_user"',
-            "https://example.com/path/a@b?q=1",
+            "https://example.com/path/index.html?q=1",
             "contact ops@example.com about the outage",
+            "csrf_token is missing; tokens rotate hourly",
+            "the bearer of bad news",
             "password reset required for user neon_user",
             "",
         ],
     )
     def test_normal_text_passes_through(self, text: str) -> None:
         assert sentry_setup.redact_credentials(text) == text
+
+
+class TestRedactionHardening:
+    """Review follow-ups to the first redaction pass (items 1-6)."""
+
+    # Item 1 — unencoded ``@ / # ?`` in the password: mask up to the LAST @.
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (
+                "postgresql://user:p@ss:w/rd#x?y@host/db",
+                "postgresql://***@host/db",
+            ),
+            (
+                (
+                    'invalid dsn: missing "=" after '
+                    '"postgresql://u:p@ss/w#x@ep.neon.tech/neondb" in connection'
+                ),
+                (
+                    'invalid dsn: missing "=" after '
+                    '"postgresql://***@ep.neon.tech/neondb" in connection'
+                ),
+            ),
+            ("postgresql://u:p@@ss@host", "postgresql://***@host"),
+            # Glued prefix longer than a scheme still gets its userinfo masked.
+            ("x" * 40 + "postgresql://u:pw@h", "x" * 40 + "postgresql://***@h"),
+        ],
+    )
+    def test_password_with_unencoded_delimiters_is_masked_whole(
+        self, raw: str, expected: str
+    ) -> None:
+        assert sentry_setup.redact_credentials(raw) == expected
+
+    def test_url_with_at_in_path_is_accepted_over_redaction(self) -> None:
+        # Greedy-to-last-@ cannot tell a path @ from a password @; masking
+        # more than needed is the accepted trade-off.
+        out = sentry_setup.redact_credentials("https://example.com/path/a@b?q=1")
+        assert out == "https://***@b?q=1"
+
+    # Item 2 — bytes.
+    def test_bytes_are_decoded_redacted_and_returned_as_str(self) -> None:
+        raw = f"postgresql://u:{SECRET}@h/db".encode() + b"\xff"
+        out = sentry_setup._redact_value(raw)
+        assert isinstance(out, str)
+        assert SECRET not in out
+        assert out.startswith("postgresql://***@h/db")
+        assert sentry_setup._redact_value(bytearray(b"token=abc")) == "token=***"
+
+    # Item 3 — DSN wrapped across a newline.
+    def test_dsn_split_across_newline_is_masked(self) -> None:
+        raw = f"postgresql://neon_user:{SECRET[:3]}\n{SECRET[3:]}@host/db"
+        out = sentry_setup.redact_credentials(raw)
+        assert out == "postgresql://***@host/db"
+
+    def test_userinfo_window_is_bounded(self) -> None:
+        """A scheme more than ~200 chars from the next @ is not joined to it,
+        so one stray @ can't swallow a whole paragraph."""
+        raw = "see https://example.com/" + "x" * 300 + " mail ops@example.com"
+        assert sentry_setup.redact_credentials(raw) == raw
+
+    # Item 5 — token / API-key / bearer / Vercel Blob patterns.
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("token=abc123&x=1", "token=***&x=1"),
+            ("TOKEN=abc123", "TOKEN=***"),
+            ("api_key=k1", "api_key=***"),
+            ("API-KEY=k1", "API-KEY=***"),
+            ("apikey=k1", "apikey=***"),
+            (
+                "access_token=t1 refresh_token=t2",
+                "access_token=*** refresh_token=***",
+            ),
+            ("wss://api.x.com/socket?token=abc", "wss://api.x.com/socket?token=***"),
+            ("Authorization: Bearer abc.def-ghi", "Authorization: Bearer ***"),
+            (
+                'headers={"Authorization": "bearer xyz12345abc"}',
+                'headers={"Authorization": "bearer ***"}',
+            ),
+            (
+                "put failed for vercel_blob_rw_AbC123_xyz9",
+                "put failed for vercel_blob_rw_***",
+            ),
+            ("password='unclosed quote", "password=*** quote"),
+        ],
+    )
+    def test_token_patterns_are_masked(self, raw: str, expected: str) -> None:
+        assert sentry_setup.redact_credentials(raw) == expected
+
+    # Item 6 — sensitive-named frame vars and extras are blanked.
+    def test_sensitive_named_keys_are_blanked_whatever_the_value(self) -> None:
+        event = {
+            "exception": {
+                "values": [
+                    {
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "vars": {
+                                        "dsn": "'opaque-no-pattern'",
+                                        "Password": "hunter2",
+                                        "PASSWD": "x",
+                                        "secret": ["a", "b"],
+                                        "Token": 12345,
+                                        "api_key": {"nested": "k"},
+                                        "APIKEY": None,
+                                        "timeout_s": 10.0,
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "extra": {"dsn": "raw", "symbol": "ES"},
+        }
+        out = sentry_setup._before_send(event, {})
+        frame_vars = out["exception"]["values"][0]["stacktrace"]["frames"][0]["vars"]
+        for key in (
+            "dsn",
+            "Password",
+            "PASSWD",
+            "secret",
+            "Token",
+            "api_key",
+            "APIKEY",
+        ):
+            assert frame_vars[key] == "[redacted]"
+        assert frame_vars["timeout_s"] == 10.0
+        assert out["extra"] == {"dsn": "[redacted]", "symbol": "ES"}
+
+    def test_log_line_blanks_sensitive_context_keys(self) -> None:
+        sentry_setup.capture_exception(
+            ValueError("boom"), context={"password": "hunter2", "phase": "boot"}
+        )
+        logged = _logged_text(mock_log.error)
+        assert "hunter2" not in logged
+        assert "[redacted]" in logged
+        assert "boot" in logged
+
+    # Adversarial performance: every pattern is bounded/linear.
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            "a://" * 25_000 + "@",
+            "x@" * 50_000 + " a://",
+            ("x" * 199 + "@") * 500 + " a://",
+            "@a:/" * 25_000 + " a://",
+            "a." * 50_000,
+            "password='" * 10_000,
+            "password=" + "\\x" * 50_000,
+            "password" + " " * 100_000,
+            "Bearer " * 14_000,
+            "token=" * 16_000,
+            "postgresql://" * 7_700 + "@",
+        ],
+        ids=lambda p: repr(p[:12]),
+    )
+    def test_adversarial_100kb_input_redacts_fast(self, payload: str) -> None:
+        import timeit
+
+        assert len(payload) >= 96_000
+        # Best of 3 to keep a loaded CI box from flaking the bound; the
+        # worst case measured locally is ~25 ms.
+        elapsed = min(
+            timeit.repeat(
+                lambda: sentry_setup.redact_credentials(payload), number=1, repeat=3
+            )
+        )
+        assert elapsed < 0.1, f"redaction took {elapsed * 1000:.1f} ms"
 
 
 class TestCaptureRedactsLogLines:
@@ -393,18 +565,44 @@ class TestBeforeSend:
         assert isinstance(result, dict)
         assert result.keys() == event.keys()
 
-    def test_returns_original_event_when_scrub_fails(
+    def test_scrub_failure_sends_minimal_value_free_event(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A scrubber bug must not drop the error report — the event is
-        returned as-is and the failure is logged (by type only)."""
+        """A redactor bug must not ship the raw event: only envelope fields,
+        exception TYPES and tags survive, plus a fixed message."""
 
         def _boom(_value: object) -> object:
             raise RecursionError("too deep")
 
         monkeypatch.setattr(sentry_setup, "_redact_value", _boom)
-        event = {"message": "anything"}
+        event = _event_with_secrets()
+        event["event_id"] = "abc123"
+        event["timestamp"] = "2026-10-01T00:00:00Z"
 
-        assert sentry_setup._before_send(event, {}) is event
+        out = sentry_setup._before_send(event, {})
+
+        assert out == {
+            "event_id": "abc123",
+            "timestamp": "2026-10-01T00:00:00Z",
+            "level": "error",
+            "message": "sidecar event dropped: redaction failed",
+            "exception": {"values": [{"type": "OperationalError"}]},
+            "tags": {"component": "db"},
+        }
         mock_log.warning.assert_called_once()
         assert "RecursionError" in _logged_text(mock_log.warning)
+
+    def test_scrub_failure_on_non_dict_event_still_returns_minimal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(_value: object) -> object:
+            raise ValueError("bad")
+
+        monkeypatch.setattr(sentry_setup, "_redact_value", _boom)
+
+        out = sentry_setup._before_send(["not", "a", "dict"], None)
+
+        assert out == {
+            "message": "sidecar event dropped: redaction failed",
+            "level": "error",
+        }
