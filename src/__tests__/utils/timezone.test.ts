@@ -476,5 +476,21 @@ describe('timezone utilities', () => {
       // 2026-05-10 (Sun) 23:30 UTC = 18:30 CT
       expect(isFuturesMarketOpen(new Date('2026-05-10T23:30:00Z'))).toBe(true);
     });
+
+    it('tracks the CST regime (UTC-6): the break and weekly edges shift an hour later in UTC', () => {
+      // 2026-12-01 (Tue) 21:59 UTC = 15:59 CST — last minute before the break
+      expect(isFuturesMarketOpen(new Date('2026-12-01T21:59:00Z'))).toBe(true);
+      // 2026-12-01 (Tue) 22:00 UTC = 16:00 CST — break (this instant is
+      // 17:00 CDT, i.e. open, under daylight time)
+      expect(isFuturesMarketOpen(new Date('2026-12-01T22:00:00Z'))).toBe(false);
+      // 2026-12-01 (Tue) 23:00 UTC = 17:00 CST — reopen
+      expect(isFuturesMarketOpen(new Date('2026-12-01T23:00:00Z'))).toBe(true);
+      // 2026-12-04 (Fri) 22:00 UTC = 16:00 CST — weekly close
+      expect(isFuturesMarketOpen(new Date('2026-12-04T22:00:00Z'))).toBe(false);
+      // 2026-12-06 (Sun) 22:59 UTC = 16:59 CST — before the weekly open
+      expect(isFuturesMarketOpen(new Date('2026-12-06T22:59:00Z'))).toBe(false);
+      // 2026-12-06 (Sun) 23:00 UTC = 17:00 CST — weekly open
+      expect(isFuturesMarketOpen(new Date('2026-12-06T23:00:00Z'))).toBe(true);
+    });
   });
 });

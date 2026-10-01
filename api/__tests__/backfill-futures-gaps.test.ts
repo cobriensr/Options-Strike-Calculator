@@ -3,565 +3,640 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-// ── Mocks ─────────────────────────────────────────────────
+// ── Mocks (module boundary — R3) ──────────────────────────
 
-const mockSql = vi.fn().mockResolvedValue([]);
-(mockSql as unknown as Record<string, unknown>).query = vi
-  .fn()
-  .mockResolvedValue([]);
+const mockSql = vi.fn();
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
-vi.mock('../_lib/logger.js', () => ({
-  default: {
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+vi.mock('../_lib/sentry.js', () => ({
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    setTag: vi.fn(),
   },
+  metrics: { increment: vi.fn() },
+}));
+
+vi.mock('../_lib/logger.js', () => ({
+  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock('../_lib/axiom.js', () => ({
+  reportCronRun: vi.fn(),
+}));
+
+const { mockUwFetch, mockCronGuard, mockWithRetry } = vi.hoisted(() => ({
+  mockUwFetch: vi.fn(),
+  mockCronGuard: vi.fn(),
+  mockWithRetry: vi.fn((fn: () => unknown) => fn()),
 }));
 
 vi.mock('../_lib/api-helpers.js', () => ({
-  cronGuard: vi.fn(),
-  checkDataQuality: vi.fn().mockResolvedValue(undefined),
+  uwFetch: mockUwFetch,
+  cronGuard: mockCronGuard,
+  withRetry: mockWithRetry,
 }));
 
-// Mock global fetch
-const mockFetch = vi.fn();
-vi.stubGlobal('fetch', mockFetch);
-
 import handler from '../cron/backfill-futures-gaps.js';
-import { cronGuard, checkDataQuality } from '../_lib/api-helpers.js';
-import logger from '../_lib/logger.js';
+import { Sentry } from '../_lib/sentry.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
-// ── Helpers ───────────────────────────────────────────────
+// ── Fixtures ──────────────────────────────────────────────
 
-function makeCronReq() {
-  return mockRequest({
-    method: 'GET',
-    headers: { authorization: 'Bearer test-secret' },
-  });
-}
+const GUARD = { apiKey: 'test-uw-key', today: '2026-09-30' };
+// 06:00 UTC run → window is the three prior UTC days.
+const NOW = '2026-09-30T06:00:00Z';
+const WINDOW_START = '2026-09-27T00:00:00.000Z';
+const WINDOW_END = '2026-09-30T00:00:00.000Z';
+const CONTRACTS_PATH = '/futures/contracts?days=5';
+const candlesPath = (contract: string) =>
+  `/futures/${contract}/candles?interval=1m&range=5d`;
 
-function makeNdjsonResponse(records: Array<Record<string, unknown>>): string {
-  return records.map((r) => JSON.stringify(r)).join('\n');
-}
+/** Live `/futures/contracts` shape (probed 2026-09-30), trimmed. */
+const CONTRACTS = [
+  { name: 'ESZ6', product: 'ES', is_spread: false, volume: 3_267_170 },
+  // Micro: `q=ES` substring-matches it, so the resolver must use EQUALITY.
+  { name: 'MESZ6', product: 'MES', is_spread: false, volume: 2_363_415 },
+  { name: 'ESH7', product: 'ES', is_spread: false, volume: 1_562 },
+  { name: 'ESZ7', product: 'ES', is_spread: false, volume: 5 },
+  { name: 'ESZ6-ESH7', product: 'ES', is_spread: true, volume: 9_999_999 },
+  { name: 'NQZ6', product: 'NQ', is_spread: false, volume: 1_270_100 },
+  { name: 'NQH7', product: 'NQ', is_spread: false, volume: 1_789 },
+];
 
-function makeOhlcvRecord(
-  overrides: Partial<{
-    ts_event: string;
-    open: string;
-    high: string;
-    low: string;
-    close: string;
-    volume: string;
-  }> = {},
+function candle(
+  start: string,
+  o: number,
+  v: number,
+  overrides: Record<string, unknown> = {},
 ) {
+  const startMs = Date.parse(start);
   return {
-    hd: { ts_event: overrides.ts_event ?? '1775001600000000000' },
-    open: overrides.open ?? '5700000000000',
-    high: overrides.high ?? '5710000000000',
-    low: overrides.low ?? '5690000000000',
-    close: overrides.close ?? '5705000000000',
-    volume: overrides.volume ?? '500',
+    start,
+    end: Number.isFinite(startMs)
+      ? new Date(startMs + 60_000).toISOString()
+      : start,
+    date: start.slice(0, 10),
+    market: 'r',
+    o: o.toFixed(9),
+    h: (o + 1).toFixed(9),
+    l: (o - 1).toFixed(9),
+    c: (o + 0.5).toFixed(9),
+    v,
+    vol: v,
+    tv: v,
+    ...overrides,
   };
 }
 
-/**
- * Stub fetch so only the first symbol (ES — first entry in SYMBOLS order)
- * returns real NDJSON. All other symbols get an empty response. This
- * isolates per-symbol rejection assertions from the 6-symbol fan-out.
- *
- * BRITTLENESS NOTE: this helper depends on ES being iterated FIRST in
- * `Object.entries(SYMBOLS)` in the handler. If a future edit reorders
- * SYMBOLS in `backfill-futures-gaps.ts`, every test that uses this helper
- * will silently attribute ES's records to whichever symbol comes first.
- * Keep ES as the first key in SYMBOLS, or switch this helper to match on
- * the request URL (which embeds the symbol code).
- */
-function stubEsOnly(records: Array<Record<string, unknown>>): void {
-  let call = 0;
-  mockFetch.mockImplementation(() => {
-    call += 1;
-    return Promise.resolve({
-      ok: true,
-      text: () =>
-        Promise.resolve(call === 1 ? makeNdjsonResponse(records) : ''),
-    });
+/** Gap-query row: bars exist at prev and next, everything between is missing. */
+function gapRow(symbol: string, prev: string, next: string) {
+  return { symbol, prev_bar: new Date(prev), next_bar: new Date(next) };
+}
+
+type Route = unknown[] | Error | Record<string, unknown>;
+
+/** Route uwFetch by path so assertions don't depend on call order. */
+function routeUw(routes: Record<string, Route>) {
+  mockUwFetch.mockImplementation(async (_key: string, path: string) => {
+    const r = routes[path];
+    if (r === undefined) throw new Error(`unexpected UW path ${path}`);
+    if (r instanceof Error) throw r;
+    return r;
   });
 }
 
-// ── Test suite ────────────────────────────────────────────
+function sqlText(callIdx: number): string {
+  const strings = mockSql.mock.calls[callIdx]?.[0] as readonly string[];
+  return strings.join('?');
+}
+
+function sqlValues(callIdx: number): unknown[] {
+  return mockSql.mock.calls[callIdx]!.slice(1);
+}
+
+/** Index of each INSERT call (the gap query is always call 0). */
+function insertCalls(): number[] {
+  return mockSql.mock.calls
+    .map((_, i) => i)
+    .filter((i) => sqlText(i).includes('INSERT INTO futures_bars'));
+}
+
+async function run() {
+  const res = mockResponse();
+  await handler(
+    mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    }),
+    res,
+  );
+  return res;
+}
+
+// A Tuesday 09:00–09:30 CDT hole (14:00Z–14:30Z): 29 open minutes missing.
+const ES_GAP = gapRow('ES', '2026-09-29T14:00:00Z', '2026-09-29T14:30:00Z');
 
 describe('backfill-futures-gaps handler', () => {
-  const originalEnv = process.env.DATABENTO_API_KEY;
-
   beforeEach(() => {
-    vi.clearAllMocks();
-    process.env.DATABENTO_API_KEY = 'db-test-key';
-    vi.mocked(cronGuard).mockReturnValue({} as ReturnType<typeof cronGuard>);
+    vi.resetAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(NOW));
+    mockCronGuard.mockReturnValue(GUARD);
+    mockWithRetry.mockImplementation((fn: () => unknown) => fn());
   });
 
   afterEach(() => {
-    if (originalEnv !== undefined) {
-      process.env.DATABENTO_API_KEY = originalEnv;
-    } else {
-      delete process.env.DATABENTO_API_KEY;
-    }
+    vi.useRealTimers();
   });
 
-  // ── Guard checks ──────────────────────────────────────
+  // ── Guard + wiring ────────────────────────────────────
 
-  it('returns early when cronGuard rejects', async () => {
-    vi.mocked(cronGuard).mockReturnValue(null);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(mockFetch).not.toHaveBeenCalled();
+  it('exits without touching the DB or UW when cronGuard rejects', async () => {
+    mockCronGuard.mockReturnValue(null);
+    await run();
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockUwFetch).not.toHaveBeenCalled();
   });
 
-  it('returns 500 when DATABENTO_API_KEY is missing', async () => {
-    delete process.env.DATABENTO_API_KEY;
+  it('runs outside market hours (daily 06:00 UTC schedule)', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    await run();
+    expect(mockCronGuard).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ marketHours: false }),
+    );
+  });
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
+  // ── Gap detection ─────────────────────────────────────
+
+  it('scans the three prior UTC days for the six UW-covered roots (no DX)', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    await run();
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    const text = sqlText(0);
+    expect(text).toContain('FROM futures_bars');
+    expect(text).toContain('LEAD(ts) OVER (PARTITION BY symbol ORDER BY ts)');
+    const values = sqlValues(0);
+    expect(values).toContainEqual(['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN']);
+    expect(values).toContain(WINDOW_START);
+    expect(values).toContain(WINDOW_END);
+  });
+
+  it('no-gap run: makes no UW calls and reports success with zero rows', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    const res = await run();
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
+  });
+
+  it('ignores missing intervals that fall entirely in the daily halt or the weekend', async () => {
+    mockSql.mockResolvedValueOnce([
+      // Mon 15:59 → 17:00 CDT: only the 16:xx halt is missing.
+      gapRow('ES', '2026-09-28T20:59:00Z', '2026-09-28T22:00:00Z'),
+      // Fri 15:59 CDT → Sun 17:00 CDT: the weekend.
+      gapRow('NQ', '2026-09-25T20:59:00Z', '2026-09-27T22:00:00Z'),
+    ]);
+    const res = await run();
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ status: 'success', rows: 0 });
+  });
+
+  it('repairs a single missing open minute (a deploy / lease-handoff hole)', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-09-29T14:00:00Z', '2026-09-29T14:02:00Z'),
+      ])
+      .mockResolvedValueOnce([{}]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [
+        candle('2026-09-29T14:00:00Z', 7740, 10),
+        candle('2026-09-29T14:01:00Z', 7741, 10),
+        candle('2026-09-29T14:02:00Z', 7742, 10),
+      ],
+      [candlesPath('ESH7')]: [],
+    });
+
+    const res = await run();
+
+    expect(sqlValues(insertCalls()[0]!)).toContainEqual([
+      '2026-09-29T14:01:00.000Z',
+    ]);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      symbols: { ES: expect.objectContaining({ gapMinutes: 1 }) },
+    });
+  });
+
+  it('fills the open minutes on both sides of a hole that straddles the daily halt', async () => {
+    // 15:57 → 17:02 CDT: 15:58-15:59 and 17:00-17:01 are open (4 minutes).
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-09-28T20:57:00Z', '2026-09-28T22:02:00Z'),
+      ])
+      .mockResolvedValueOnce([{}, {}, {}, {}]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [
+        candle('2026-09-28T20:58:00Z', 7740, 10),
+        candle('2026-09-28T20:59:00Z', 7741, 10),
+        candle('2026-09-28T22:00:00Z', 7742, 10),
+        candle('2026-09-28T22:01:00Z', 7743, 10),
+      ],
+      [candlesPath('ESH7')]: [],
+    });
+
+    const res = await run();
+
+    expect(sqlValues(insertCalls()[0]!)).toContainEqual([
+      '2026-09-28T20:58:00.000Z',
+      '2026-09-28T20:59:00.000Z',
+      '2026-09-28T22:00:00.000Z',
+      '2026-09-28T22:01:00.000Z',
+    ]);
+    expect(res._json).toMatchObject({
+      rows: 4,
+      symbols: { ES: expect.objectContaining({ gapMinutes: 4 }) },
+    });
+  });
+
+  // ── Front-month resolution + fetch ────────────────────
+
+  it('gap → fetches 1m candles for the top-2 exact-product, non-spread contracts by volume', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
+      [candlesPath('ESH7')]: [],
+    });
+    await run();
+    expect(mockUwFetch.mock.calls.map((c) => c[1])).toEqual([
+      CONTRACTS_PATH,
+      candlesPath('ESZ6'),
+      candlesPath('ESH7'),
+    ]);
+    expect(mockUwFetch.mock.calls.every((c) => c[0] === 'test-uw-key')).toBe(
+      true,
+    );
+  });
+
+  it('upserts only the front-month bars inside the gap via one batched unnest ON CONFLICT DO NOTHING', async () => {
+    mockSql
+      .mockResolvedValueOnce([ES_GAP])
+      .mockResolvedValueOnce([{ ts: 'a' }, { ts: 'b' }]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [
+        candle('2026-09-29T14:00:00Z', 7740, 500), // bounding bar: exists already
+        candle('2026-09-29T14:05:00Z', 7745, 400),
+        candle('2026-09-29T14:06:00Z', 7746, 300),
+        candle('2026-09-29T14:30:00Z', 7750, 200), // bounding bar
+        candle('2026-09-29T15:00:00Z', 7760, 100), // outside the gap
+      ],
+      [candlesPath('ESH7')]: [candle('2026-09-29T14:05:00Z', 7805, 3)],
+    });
+
+    const res = await run();
+
+    const inserts = insertCalls();
+    expect(inserts).toHaveLength(1);
+    const text = sqlText(inserts[0]!);
+    expect(text).toContain('unnest(');
+    expect(text).toContain('ON CONFLICT (symbol, ts) DO NOTHING');
+    const values = sqlValues(inserts[0]!);
+    expect(values).toContain('ES');
+    expect(values).toContainEqual([
+      '2026-09-29T14:05:00.000Z',
+      '2026-09-29T14:06:00.000Z',
+    ]);
+    expect(values).toContainEqual([7745, 7746]); // opens — ESZ6, not ESH7
+    expect(values).toContainEqual([400, 300]); // volumes
+    expect(res._status).toBe(200);
+    // rows = what ON CONFLICT actually inserted (RETURNING), not bars sent.
+    expect(res._json).toMatchObject({ status: 'success', rows: 2 });
+  });
+
+  it('mirrors the uw-stream front-month rule: per minute, the larger cumulative UTC-day volume wins, ties to the larger symbol, and a leader with no print that minute leaves the minute empty', async () => {
+    // Mon 18:50 CDT → Mon 19:20 CDT spans the 00:00 UTC session reset.
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-09-28T23:50:00Z', '2026-09-29T00:20:00Z'),
+      ])
+      .mockResolvedValueOnce([]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [
+        candle('2026-09-28T23:55:00Z', 7740, 10),
+        candle('2026-09-29T00:00:00Z', 7741, 20),
+        candle('2026-09-29T00:02:00Z', 7742, 5),
+        candle('2026-09-29T00:03:00Z', 7743, 10),
+      ],
+      [candlesPath('ESH7')]: [
+        candle('2026-09-28T23:55:00Z', 7800, 1_000),
+        candle('2026-09-29T00:00:00Z', 7801, 20),
+        candle('2026-09-29T00:01:00Z', 7802, 100),
+        candle('2026-09-29T00:03:00Z', 7803, 10),
+      ],
+    });
+
+    await run();
+
+    const values = sqlValues(insertCalls()[0]!);
+    // 23:55 ESH7 leads the 09-28 tally (1000 vs 10).
+    // 00:00 new UTC day resets the tally: 20 vs 20 tie → 'ESZ6' > 'ESH7'.
+    // 00:01 ESH7 overtakes (120 vs 20).
+    // 00:02 ESH7 still leads (120 vs 25) but has no candle → skipped.
+    // 00:03 ESH7 (130 vs 35).
+    expect(values).toContainEqual([
+      '2026-09-28T23:55:00.000Z',
+      '2026-09-29T00:00:00.000Z',
+      '2026-09-29T00:01:00.000Z',
+      '2026-09-29T00:03:00.000Z',
+    ]);
+    expect(values).toContainEqual([7800, 7741, 7802, 7803]);
+  });
+
+  it('chunks large repairs into 500-row batches', async () => {
+    // Mon 22:00 CDT → Tue 08:01 CDT: 600 open minutes missing.
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-09-29T03:00:00Z', '2026-09-29T13:01:00Z'),
+      ])
+      .mockResolvedValueOnce(Array.from({ length: 500 }, () => ({})))
+      .mockResolvedValueOnce(Array.from({ length: 100 }, () => ({})));
+    const start = Date.parse('2026-09-29T03:01:00Z');
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: Array.from({ length: 600 }, (_, i) =>
+        candle(new Date(start + i * 60_000).toISOString(), 7700 + i, 10),
+      ),
+      [candlesPath('ESH7')]: [],
+    });
+
+    const res = await run();
+
+    const inserts = insertCalls();
+    expect(inserts).toHaveLength(2);
+    expect((sqlValues(inserts[0]!)[1] as unknown[]).length).toBe(500);
+    expect((sqlValues(inserts[1]!)[1] as unknown[]).length).toBe(100);
+    expect(res._json).toMatchObject({ status: 'success', rows: 600 });
+  });
+
+  // ── Failure modes (R4) ────────────────────────────────
+
+  it('UW non-OK on /futures/contracts → 500, Sentry exception, error reported (not ok)', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    routeUw({ [CONTRACTS_PATH]: new Error('UW API 500: upstream down') });
+
+    const res = await run();
 
     expect(res._status).toBe(500);
-    expect(res._json).toEqual({ error: 'Missing DATABENTO_API_KEY' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'UW API 500: upstream down' }),
+    );
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backfill-futures-gaps',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(insertCalls()).toHaveLength(0);
   });
 
-  // ── Happy path ────────────────────────────────────────
+  it('a non-array /futures/contracts payload → 500, Sentry exception, error reported', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    routeUw({ [CONTRACTS_PATH]: { unexpected: 'shape' } });
 
-  it('fetches and inserts bars for all symbols', async () => {
-    const ndjson = makeNdjsonResponse([
-      makeOhlcvRecord(),
-      makeOhlcvRecord({ ts_event: '1775001660000000000' }),
-    ]);
+    const res = await run();
 
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(ndjson),
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/non-array/) }),
+    );
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backfill-futures-gaps',
+      expect.objectContaining({ status: 'error' }),
+    );
+    expect(insertCalls()).toHaveLength(0);
+  });
+
+  it('a candle payload at the UW row cap that no longer reaches the gap fails the symbol instead of reporting a clean run', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    // 5,000 rows (UW keeps the NEWEST at the cap) starting after the gap.
+    const start = Date.parse('2026-09-29T15:00:00Z');
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: Array.from({ length: 5000 }, (_, i) =>
+        candle(new Date(start + i * 60_000).toISOString(), 7700, 10),
+      ),
+      [candlesPath('ESH7')]: [],
     });
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      job: string;
-      totalInserted: number;
-      symbols: Array<{ symbol: string; inserted: number }>;
-    };
-    expect(json.job).toBe('backfill-futures-gaps');
-    // Mock price 5705 is in-bounds for ES, NQ, RTY, GC (4 symbols × 2 bars)
-    // Out-of-bounds for ZN (50-200), CL (20-250)
-    expect(json.totalInserted).toBe(8);
-    expect(json.symbols).toHaveLength(6);
-    expect(mockFetch).toHaveBeenCalledTimes(6);
+    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/truncated/) }),
+      expect.anything(),
+    );
+    expect(insertCalls()).toHaveLength(0);
   });
 
-  // ── Empty response ────────────────────────────────────
-
-  it('handles empty API responses gracefully', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(''),
+  it('a capped payload that reaches the gap but not the start of its UTC day also fails (the front-month tally needs the whole day)', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    // Starts 10:00Z — before the 14:01Z gap minute but after 00:00Z, so the
+    // replay's UTC-day volume tally for 2026-09-29 would be incomplete.
+    const start = Date.parse('2026-09-29T10:00:00Z');
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: Array.from({ length: 5000 }, (_, i) =>
+        candle(new Date(start + i * 60_000).toISOString(), 7700, 10),
+      ),
+      [candlesPath('ESH7')]: [],
     });
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    const json = res._json as { totalInserted: number };
-    expect(json.totalInserted).toBe(0);
+    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/truncated/) }),
+      expect.anything(),
+    );
+    expect(insertCalls()).toHaveLength(0);
   });
 
-  // ── API errors ────────────────────────────────────────
-
-  it('handles Databento API errors without crashing', async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 422,
-      text: () => Promise.resolve('{"detail":"some error"}'),
+  it('network error on one symbol surfaces to Sentry while the other symbol still repairs → partial', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        ES_GAP,
+        gapRow('NQ', '2026-09-29T14:00:00Z', '2026-09-29T14:30:00Z'),
+      ])
+      .mockResolvedValueOnce([{}]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: new TypeError('fetch failed'),
+      [candlesPath('NQZ6')]: [candle('2026-09-29T14:10:00Z', 26_000, 50)],
+      [candlesPath('NQH7')]: [],
     });
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    const json = res._json as { totalInserted: number };
-    expect(json.totalInserted).toBe(0);
-  });
-
-  // ── Overflow filtering ────────────────────────────────
-
-  it('filters out bars with overflow prices (INT64_MAX sentinel)', async () => {
-    const ndjson = makeNdjsonResponse([
-      makeOhlcvRecord(), // valid
-      makeOhlcvRecord({
-        // INT64_MAX sentinel — should be filtered
-        open: '9223372036854775807',
-        high: '9223372036854775807',
-        low: '9223372036854775807',
-        close: '9223372036854775807',
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'fetch failed' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ symbol: 'ES' }),
       }),
-    ]);
+    );
+    expect(insertCalls()).toHaveLength(1);
+    expect(sqlValues(insertCalls()[0]!)).toContain('NQ');
+    expect(res._json).toMatchObject({ status: 'partial', rows: 1 });
+  });
 
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(ndjson),
+  it('every gap symbol failing reports status error, never ok', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: new Error('UW API 502: bad gateway'),
     });
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      totalInserted: number;
-      symbols: Array<{ symbol: string; inserted: number }>;
-    };
-    // 1 valid bar per in-bounds symbol (ES, NQ, RTY, GC = 4)
-    expect(json.totalInserted).toBe(4);
+    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
+    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backfill-futures-gaps',
+      expect.objectContaining({ status: 'error' }),
+    );
   });
 
-  // ── Partial failures ──────────────────────────────────
-
-  it('continues processing other symbols when one fetch throws', async () => {
-    let callCount = 0;
-    mockFetch.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) {
-        return Promise.reject(new Error('Network timeout'));
-      }
-      return Promise.resolve({
-        ok: true,
-        text: () => Promise.resolve(makeNdjsonResponse([makeOhlcvRecord()])),
-      });
+  it('an empty candle payload for the most-active contract is a failure, not a clean zero-row success', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [],
+      [candlesPath('ESH7')]: [],
     });
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      totalInserted: number;
-      errors: string[] | undefined;
-    };
-    // ES fails (network), 5 fetch. Of those, NQ/RTY/GC in-bounds = 3 bars
-    expect(json.totalInserted).toBe(3);
-    expect(json.errors).toHaveLength(1);
+    expect(res._json).toMatchObject({ status: 'error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/no candles/) }),
+      expect.anything(),
+    );
+    expect(insertCalls()).toHaveLength(0);
   });
 
-  // ── Status derivation (AUD-M9) ────────────────────────
-
-  it('reports status "error" when every symbol fetch throws', async () => {
-    // All 6 symbol fetches reject → every leg lands in the catch block →
-    // errors.length === total → deriveCronStatus returns 'error' instead of
-    // the old hardcoded 'ok'. HTTP stays 200 (handler-detected failure, not
-    // a thrown exception).
-    mockFetch.mockRejectedValue(new Error('Network down'));
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      status: string;
-      totalInserted: number;
-      errors: string[] | undefined;
-    };
-    expect(json.status).toBe('error');
-    expect(json.totalInserted).toBe(0);
-    expect(json.errors).toHaveLength(6);
-  });
-
-  it('reports status "partial" when some symbols fail and some succeed', async () => {
-    // First symbol (ES) throws; the rest succeed → 'partial'.
-    let callCount = 0;
-    mockFetch.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) {
-        return Promise.reject(new Error('Network timeout'));
-      }
-      return Promise.resolve({
-        ok: true,
-        text: () => Promise.resolve(makeNdjsonResponse([makeOhlcvRecord()])),
-      });
+  it('skips malformed candles, surfaces them via captureMessage, and still inserts the valid ones', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]).mockResolvedValueOnce([{}]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [
+        candle('2026-09-29T14:05:00Z', 7745, 100),
+        candle('not-a-date', 7745, 100),
+        candle('2026-09-29T14:06:30Z', 7745, 100), // not minute-aligned
+        candle('2026-09-29T14:07:00Z', 7745, 100, { o: 'abc' }),
+        candle('2026-09-29T14:08:00Z', 7745, 100, { h: '7000.0' }), // h < l
+        candle('2026-09-29T14:09:00Z', 7745, -5),
+        candle('2026-09-29T14:10:00Z', 7745, 1.5),
+        candle('2026-09-29T14:11:00Z', 1e9, 100), // overflows NUMERIC(12,4)
+      ],
+      [candlesPath('ESH7')]: [],
     });
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    const json = res._json as { status: string };
-    expect(json.status).toBe('partial');
-  });
-
-  it('reports status "success" when all symbols complete without error', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(makeNdjsonResponse([makeOhlcvRecord()])),
-    });
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    const json = res._json as { status: string };
-    expect(json.status).toBe('success');
-  });
-
-  // ── Auth format ───────────────────────────────────────
-
-  it('sends API key as Basic auth username', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(''),
-    });
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    const firstCall = mockFetch.mock.calls[0];
-    const headers = firstCall?.[1]?.headers as Record<string, string>;
-    const auth = headers.Authorization ?? '';
-    const decoded = Buffer.from(
-      auth.replace('Basic ', ''),
-      'base64',
-    ).toString();
-    expect(decoded).toBe('db-test-key:');
-  });
-
-  // ── Response shape ────────────────────────────────────
-
-  it('includes range and durationMs in response', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve(''),
-    });
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      job: string;
-      range: string;
-      durationMs: number;
-    };
-    expect(json.job).toBe('backfill-futures-gaps');
-    expect(json.range).toMatch(/^\d{4}-\d{2}-\d{2} to \d{4}-\d{2}-\d{2}$/);
-    expect(json.durationMs).toBeGreaterThanOrEqual(0);
-  });
-
-  // ── BE-CRON-006: Rejection observability ──────────────
-
-  it('keeps in-bounds bars and does not count them as rejected', async () => {
-    // close = 5705, low = 5690 — in bounds for ES [1000, 20000]
-    stubEsOnly([makeOhlcvRecord()]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      totalInserted: number;
-      totalRejected: number;
-      rejected: Record<string, number>;
-    };
-    expect(json.rejected.ES).toBe(0);
-    expect(json.totalRejected).toBe(0);
-    // ES inserted the single bar
-    const esRow = (
-      json as unknown as {
-        symbols: Array<{ symbol: string; inserted: number }>;
-      }
-    ).symbols.find((s) => s.symbol === 'ES');
-    expect(esRow?.inserted).toBe(1);
-  });
-
-  it('rejects a bar whose close exceeds the upper bound and logs the bounds', async () => {
-    // close = 25000 > ES hi (20000)
-    stubEsOnly([
-      makeOhlcvRecord({
-        close: '25000000000000',
-        high: '25000000000000',
-        low: '24990000000000',
-        open: '24995000000000',
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      expect.stringContaining('malformed'),
+      expect.objectContaining({
+        level: 'warning',
+        extra: expect.objectContaining({ symbol: 'ES', malformed: 7 }),
       }),
+    );
+    expect(sqlValues(insertCalls()[0]!)).toContainEqual([
+      '2026-09-29T14:05:00.000Z',
     ]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    const json = res._json as {
-      totalRejected: number;
-      rejected: Record<string, number>;
-    };
-    expect(json.rejected.ES).toBe(1);
-
-    const warnCalls = vi.mocked(logger.warn).mock.calls;
-    const boundsRejection = warnCalls.find((call) => {
-      const ctx = call[0] as { symbol?: string; bounds?: [number, number] };
-      return ctx.symbol === 'ES' && Array.isArray(ctx.bounds);
-    });
-    expect(boundsRejection).toBeDefined();
-    const ctx = boundsRejection![0] as {
-      symbol: string;
-      close: number;
-      low: number;
-      bounds: [number, number];
-    };
-    expect(ctx.close).toBe(25000);
-    expect(ctx.bounds).toEqual([1000, 20000]);
+    expect(res._json).toMatchObject({ status: 'success', rows: 1 });
   });
 
-  it('rejects a bar whose low < lo * 0.5 and counts it', async () => {
-    // ES lo = 1000, lo * 0.5 = 500. low = 400 < 500. close in bounds.
-    stubEsOnly([
-      makeOhlcvRecord({
-        close: '5705000000000',
-        high: '5710000000000',
-        low: '400000000000', // 400 after nano conversion
-        open: '5700000000000',
-      }),
-    ]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    const json = res._json as {
-      rejected: Record<string, number>;
-      symbols: Array<{ symbol: string; inserted: number }>;
-    };
-    expect(json.rejected.ES).toBe(1);
-    const esRow = json.symbols.find((s) => s.symbol === 'ES');
-    expect(esRow?.inserted).toBe(0);
-
-    const warnCalls = vi.mocked(logger.warn).mock.calls;
-    const lowRejection = warnCalls.find((call) => {
-      const ctx = call[0] as { symbol?: string; low?: number };
-      return ctx.symbol === 'ES' && ctx.low === 400;
+  it('a payload of only malformed candles fails the symbol', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [candle('garbage', 7745, 100)],
     });
-    expect(lowRejection).toBeDefined();
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({ status: 'error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/malformed/) }),
+      expect.anything(),
+    );
+    expect(insertCalls()).toHaveLength(0);
   });
 
-  it('mixed batch: 5 good + 2 bad yields stored=5, rejected=2, two warn calls', async () => {
-    const good = (tsSuffix: string) =>
-      makeOhlcvRecord({ ts_event: `17750016${tsSuffix}0000000` });
-    const badHigh = (tsSuffix: string) =>
-      makeOhlcvRecord({
-        ts_event: `17750016${tsSuffix}0000000`,
-        close: '25000000000000', // > ES hi
-        high: '25000000000000',
-        low: '24990000000000',
-        open: '24995000000000',
-      });
-    const badLow = (tsSuffix: string) =>
-      makeOhlcvRecord({
-        ts_event: `17750016${tsSuffix}0000000`,
-        close: '5705000000000',
-        high: '5710000000000',
-        low: '400000000000', // < ES lo * 0.5
-        open: '5700000000000',
-      });
-
-    stubEsOnly([
-      good('00'),
-      good('60'),
-      badHigh('70'),
-      good('80'),
-      good('90'),
-      badLow('95'),
-      good('99'),
-    ]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    const json = res._json as {
-      rejected: Record<string, number>;
-      symbols: Array<{ symbol: string; inserted: number }>;
-    };
-    expect(json.rejected.ES).toBe(2);
-    const esRow = json.symbols.find((s) => s.symbol === 'ES');
-    expect(esRow?.inserted).toBe(5);
-
-    // Exactly two ES-scoped bounds-rejection warn calls
-    const warnCalls = vi.mocked(logger.warn).mock.calls;
-    const esBoundsWarns = warnCalls.filter((call) => {
-      const ctx = call[0] as { symbol?: string; bounds?: unknown };
-      return ctx.symbol === 'ES' && Array.isArray(ctx.bounds);
+  it('a non-array candle payload fails the symbol', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: { unexpected: 'shape' },
     });
-    expect(esBoundsWarns).toHaveLength(2);
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({ status: 'error' });
+    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(insertCalls()).toHaveLength(0);
   });
 
-  it('calls checkDataQuality with (total>0, nonzero=0) when every ES bar is rejected', async () => {
-    // Two bars, both above the ES upper bound. All get rejected, so
-    // bars.length === 0 after the filter and the handler enters the
-    // all-rejected branch which fires checkDataQuality so Sentry can
-    // warn on silent Databento drift.
-    stubEsOnly([
-      makeOhlcvRecord({
-        close: '25000000000000',
-        high: '25000000000000',
-        low: '24990000000000',
-        open: '24995000000000',
-      }),
-      makeOhlcvRecord({
-        ts_event: '1775001660000000000',
-        close: '26000000000000',
-        high: '26000000000000',
-        low: '25990000000000',
-        open: '25995000000000',
-      }),
-    ]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    const esCall = vi
-      .mocked(checkDataQuality)
-      .mock.calls.find(
-        (c) => (c[0] as { sourceFilter?: string }).sourceFilter === 'symbol=ES',
-      );
-    expect(esCall).toBeDefined();
-    const opts = esCall![0] as {
-      job: string;
-      table: string;
-      sourceFilter: string;
-      total: number;
-      nonzero: number;
-    };
-    expect(opts).toMatchObject({
-      job: 'backfill-futures-gaps',
-      table: 'futures_bars',
-      sourceFilter: 'symbol=ES',
-      nonzero: 0,
+  it('fails the symbol when /futures/contracts lists no contract for its root', async () => {
+    mockSql.mockResolvedValueOnce([ES_GAP]);
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS.filter((c) => c.product !== 'ES'),
     });
-    expect(opts.total).toBeGreaterThanOrEqual(2);
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({ status: 'error' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringMatching(/ES/) }),
+      expect.anything(),
+    );
   });
 
-  it('does NOT call checkDataQuality when ES bars are successfully inserted', async () => {
-    // Per BE-CRON-006 reviewer: the helper is only called on the
-    // all-rejected path. When inserts land, checkDataQuality's Sentry
-    // trigger (nonzero === 0) can never fire by construction, so the
-    // call was dropped. Pin this behavior.
-    stubEsOnly([makeOhlcvRecord()]);
+  it('a rejected DB insert fails the symbol (status error + Sentry), not success', async () => {
+    mockSql
+      .mockResolvedValueOnce([ES_GAP])
+      .mockRejectedValueOnce(new Error('numeric field overflow'));
+    routeUw({
+      [CONTRACTS_PATH]: CONTRACTS,
+      [candlesPath('ESZ6')]: [candle('2026-09-29T14:05:00Z', 7745, 100)],
+      [candlesPath('ESH7')]: [],
+    });
 
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
+    const res = await run();
 
-    expect(res._status).toBe(200);
-    const esCalls = vi
-      .mocked(checkDataQuality)
-      .mock.calls.filter(
-        (c) => (c[0] as { sourceFilter?: string }).sourceFilter === 'symbol=ES',
-      );
-    expect(esCalls).toHaveLength(0);
+    expect(res._json).toMatchObject({ status: 'error', rows: 0 });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'numeric field overflow' }),
+      expect.anything(),
+    );
+  });
+
+  it('a rejected gap query → 500 + Sentry, and no UW calls', async () => {
+    mockSql.mockRejectedValueOnce(new Error('db attempt timeout'));
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(mockUwFetch).not.toHaveBeenCalled();
   });
 });
