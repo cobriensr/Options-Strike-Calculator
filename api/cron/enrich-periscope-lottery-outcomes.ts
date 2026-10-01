@@ -420,20 +420,48 @@ export default withCronInstrumentation(
     let updated = 0;
     const unreadableFireIds: number[] = [];
     const tapeGapFireIds: number[] = [];
-    for (let i = 0; i < windows.length; i += READ_CHUNK_SIZE) {
-      const chunk = windows.slice(i, i + READ_CHUNK_SIZE);
-      const rows = await readAggregates(sql, chunk);
-      const rowById = new Map(rows.map((r) => [Number(r.fire_id), r]));
-      const updates: EnrichUpdate[] = [];
-      for (const w of chunk) {
-        const outcome = outcomeFor(w, rowById.get(w.id));
-        if (outcome.kind === 'locked') updates.push(outcome.update);
-        else if (outcome.kind === 'tapeGap') tapeGapFireIds.push(w.id);
-        else unreadableFireIds.push(w.id);
+    let tapeGapMessage: string | undefined;
+    try {
+      for (let i = 0; i < windows.length; i += READ_CHUNK_SIZE) {
+        const chunk = windows.slice(i, i + READ_CHUNK_SIZE);
+        const rows = await readAggregates(sql, chunk);
+        const rowById = new Map(rows.map((r) => [Number(r.fire_id), r]));
+        const updates: EnrichUpdate[] = [];
+        for (const w of chunk) {
+          const outcome = outcomeFor(w, rowById.get(w.id));
+          if (outcome.kind === 'locked') updates.push(outcome.update);
+          else if (outcome.kind === 'tapeGap') tapeGapFireIds.push(w.id);
+          else unreadableFireIds.push(w.id);
+        }
+        if (updates.length > 0) {
+          await lockOutcomes(sql, updates);
+          updated += updates.length;
+        }
       }
-      if (updates.length > 0) {
-        await lockOutcomes(sql, updates);
-        updated += updates.length;
+    } finally {
+      // One event per run (fingerprinted), listing the tape-gap fires. In
+      // `finally` so gaps found in earlier chunks are still named when a
+      // later chunk throws — on a Friday they would otherwise be lost for
+      // good, since Monday's retention window no longer reaches Friday.
+      if (tapeGapFireIds.length > 0) {
+        tapeGapMessage =
+          `enrich-periscope-lottery-outcomes: ${tapeGapFireIds.length} ` +
+          'settled fire(s) had no SPXW tape in their window tail ' +
+          '(ws_option_trades gap, e.g. uw-stream down); left unlocked. ' +
+          'Retried while inside the retention window; after that run ' +
+          'scripts/backfill_periscope_lottery_outcomes.py';
+        const detail = {
+          candidates: unenriched.length,
+          tapeGap: tapeGapFireIds.length,
+          tapeGapFireIds,
+        };
+        ctx.logger.warn(detail, tapeGapMessage);
+        Sentry.captureMessage(tapeGapMessage, {
+          level: 'warning',
+          fingerprint: ['enrich-periscope-lottery-outcomes', 'tape-gap'],
+          tags: { 'cron.anomaly': 'periscope-lottery-tape-gap' },
+          extra: detail,
+        });
       }
     }
 
@@ -451,29 +479,6 @@ export default withCronInstrumentation(
         { ...summary, unreadableFireIds },
         'enrich-periscope-lottery-outcomes: unreadable aggregates; fires left unlocked',
       );
-    }
-
-    // One event per run (fingerprinted), listing the tape-gap fires.
-    let tapeGapMessage: string | undefined;
-    if (tapeGapFireIds.length > 0) {
-      tapeGapMessage =
-        `enrich-periscope-lottery-outcomes: ${tapeGapFireIds.length} ` +
-        'settled fire(s) had no SPXW tape in their window tail ' +
-        '(ws_option_trades gap, e.g. uw-stream down); left unlocked. ' +
-        'Retried while inside the retention window; after that run ' +
-        'scripts/backfill_periscope_lottery_outcomes.py';
-      const detail = {
-        candidates: unenriched.length,
-        tapeGap: tapeGapFireIds.length,
-        tapeGapFireIds,
-      };
-      ctx.logger.warn(detail, tapeGapMessage);
-      Sentry.captureMessage(tapeGapMessage, {
-        level: 'warning',
-        fingerprint: ['enrich-periscope-lottery-outcomes', 'tape-gap'],
-        tags: { 'cron.anomaly': 'periscope-lottery-tape-gap' },
-        extra: detail,
-      });
     }
 
     ctx.logger.info(summary, 'enrich-periscope-lottery-outcomes completed');

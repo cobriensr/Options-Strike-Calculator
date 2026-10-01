@@ -486,6 +486,45 @@ describe('enrich-periscope-lottery-outcomes cron', () => {
       expect(res._json).not.toMatchObject({ status: 'success' });
       expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
     });
+
+    it('still names an earlier chunk’s tape gap when a later chunk read throws', async () => {
+      // A gap found in chunk 1 must be reported even though the run then
+      // fails: on a Friday it would otherwise be lost for good (Monday's
+      // retention window no longer reaches Friday).
+      const ids = Array.from({ length: 150 }, (_, i) => 3000 + i);
+      const fires = ids.map((id) => callFire(id, '2026-05-18T15:00:00Z'));
+      const gapId = 3005;
+      const dbError = new Error('statement timeout');
+      mockSql.mockResolvedValueOnce(fires);
+      mockSql.mockResolvedValueOnce(
+        ids
+          .slice(0, 100)
+          .map((id) =>
+            id === gapId
+              ? agg(id, { tape_live: false })
+              : traded(id, '0.5000', '2026-05-18T15:30:00Z', '0.0500'),
+          ),
+      );
+      mockSql.mockResolvedValueOnce([]); // UPDATE chunk 1 lands
+      mockSql.mockRejectedValueOnce(dbError); // read chunk 2 fails
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      expect(sqlCall(2).values[0]).toEqual(
+        ids.slice(0, 100).filter((id) => id !== gapId),
+      );
+      expect(res._status).toBe(500);
+      expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('no SPXW tape'),
+        expect.objectContaining({
+          fingerprint: ['enrich-periscope-lottery-outcomes', 'tape-gap'],
+          extra: expect.objectContaining({ tapeGapFireIds: [gapId] }),
+        }),
+      );
+    });
   });
 
   it('surfaces a read DB error as a 500 without locking any fires', async () => {
