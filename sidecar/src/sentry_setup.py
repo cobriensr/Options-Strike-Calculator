@@ -77,6 +77,9 @@ _VERCEL_BLOB_TOKEN_RE = re.compile(r"vercel_blob_rw_[A-Za-z0-9_]+")
 
 _REDACTED = "***"
 
+# Token boundary for the fail-closed userinfo pass: whitespace, quotes, <>.
+_TOKEN_BOUNDARY_RE = re.compile(r"[\s'\"<>]")
+
 # Dict keys (frame locals, extras, ...) whose value is blanked whatever it
 # holds, compared case-insensitively.
 _SENSITIVE_KEYS = frozenset(
@@ -128,14 +131,53 @@ def redact_credentials(text: str) -> str:
 
 
 def _redact_url_userinfo(text: str) -> str:
-    """Mask ``scheme://userinfo@`` (see ``_URL_USERINFO_REVERSED_RE``)."""
+    """Mask ``scheme://userinfo@``.
+
+    Two passes. The regex (``_URL_USERINFO_REVERSED_RE``) handles userinfo
+    that spans whitespace, such as a DSN wrapped across lines. Its bounds
+    (200-char segments, 8 extra ``@``-runs) would fail OPEN on longer
+    passwords, so ``_mask_userinfo_fail_closed`` then masks whatever is
+    still unmasked between each ``://`` and the last ``@`` of its token.
+    """
     if "@" not in text or "://" not in text:
         return text
     reversed_text = text[::-1]
     masked = _URL_USERINFO_REVERSED_RE.sub(
         rf"@{_REDACTED}//:\g<rscheme>", reversed_text
     )
-    return masked[::-1]
+    return _mask_userinfo_fail_closed(masked[::-1])
+
+
+def _mask_userinfo_fail_closed(text: str) -> str:
+    """Mask everything between ``://`` and the last ``@`` of its token.
+
+    A token runs from ``://`` to the next whitespace, quote or ``<>``, with
+    no length cap: a password of any length, or with any number of ``@``s,
+    is masked. Linear: each token is scanned once, and the search for the
+    next ``://`` resumes at the token end, so a long token holding many
+    ``://`` is not rescanned. A span the regex pass already reduced to
+    ``***`` is left as-is.
+    """
+    if "@" not in text or "://" not in text:
+        return text
+    parts: list[str] = []
+    pos = 0
+    idx = text.find("://")
+    while idx != -1:
+        start = idx + 3
+        boundary = _TOKEN_BOUNDARY_RE.search(text, start)
+        end = boundary.start() if boundary else len(text)
+        at = text.rfind("@", start, end)
+        already_masked = at - start == len(_REDACTED) and text.startswith(
+            _REDACTED, start
+        )
+        if at != -1 and not already_masked:
+            parts.append(text[pos:start])
+            parts.append(_REDACTED)
+            pos = at
+        idx = text.find("://", end)
+    parts.append(text[pos:])
+    return "".join(parts)
 
 
 def _is_sensitive_key(key: Any) -> bool:

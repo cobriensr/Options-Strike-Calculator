@@ -321,6 +321,41 @@ class TestRedactionHardening:
     ) -> None:
         assert sentry_setup.redact_credentials(raw) == expected
 
+    # Fail-closed pass: the regex's 200-char / 8-run bounds must not leak.
+    @pytest.mark.parametrize("length", [300, 5_000])
+    def test_long_password_is_masked(self, length: int) -> None:
+        password = "a" * length
+        raw = f'connect failed: "postgresql://neon_user:{password}@ep.neon.tech/db"'
+        out = sentry_setup.redact_credentials(raw)
+        assert out == 'connect failed: "postgresql://***@ep.neon.tech/db"'
+        assert "aaaa" not in out
+
+    @pytest.mark.parametrize("runs", [12, 50])
+    def test_password_with_many_at_runs_is_masked(self, runs: int) -> None:
+        password = "x@" * runs + "tail"
+        raw = f"postgresql://u:{password}@host/db"
+        out = sentry_setup.redact_credentials(raw)
+        assert out == "postgresql://***@host/db"
+        assert "tail" not in out
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "fetch https://api.example.com/v1 failed for ops@example.com",
+            'url="https://example.com/x" owner="ops@example.com"',
+            "<https://example.com/x>@not-userinfo",
+        ],
+    )
+    def test_fail_closed_pass_stops_at_token_boundaries(self, raw: str) -> None:
+        # The fail-closed pass alone never joins across whitespace, quotes
+        # or <>. (The regex pass may still join a URL and a later @ within
+        # 200 chars across whitespace; that over-redaction is documented.)
+        assert sentry_setup._mask_userinfo_fail_closed(raw) == raw
+
+    def test_fail_closed_pass_leaves_regex_masked_span_alone(self) -> None:
+        raw = "postgresql://***@host/db"
+        assert sentry_setup._mask_userinfo_fail_closed(raw) == raw
+
     def test_url_with_at_in_path_is_accepted_over_redaction(self) -> None:
         # Greedy-to-last-@ cannot tell a path @ from a password @; masking
         # more than needed is the accepted trade-off.
@@ -433,6 +468,8 @@ class TestRedactionHardening:
         "payload",
         [
             "a://" * 25_000 + "@",
+            "a://" + "x" * 99_990 + "@",
+            "a:// " * 20_000 + "@",
             "x@" * 50_000 + " a://",
             ("x" * 199 + "@") * 500 + " a://",
             "@a:/" * 25_000 + " a://",
