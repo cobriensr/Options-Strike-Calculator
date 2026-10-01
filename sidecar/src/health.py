@@ -47,9 +47,9 @@ def _is_today_or_future_utc(date_str: str) -> bool:
 
     SIDE-017: used by /archive/day-summary and /archive/day-features
     to short-circuit queries for dates that cannot possibly be in the
-    archive yet. The refresh-current-snapshot Vercel cron polls for
-    today's summary+features every 5 min during RTH (``*/5 13-20 * *
-    1-5``), but the archive only gets today's partitions after the
+    archive yet. The (since removed, 2026-09-30) refresh-current-snapshot
+    Vercel cron used to poll for today's summary+features every 5 min
+    during RTH, but the archive only gets today's partitions after the
     EOD ETL. Before this guard, each doomed call ran a 3–7s DuckDB
     query against 3.9 GB of Parquet just to discover the date had
     no rows — ~96 wasted queries per session, each contributing
@@ -589,8 +589,8 @@ class HealthHandler(BaseHTTPRequestHandler):
             return
 
         # SIDE-017: short-circuit today/future — same rationale as
-        # _handle_archive_day_summary. The refresh-current-snapshot
-        # cron fires both of these in parallel every 5 min in RTH.
+        # _handle_archive_day_summary (analyze still asks for today's
+        # date on live runs).
         if _is_today_or_future_utc(d):
             self._send_json(404, {"error": "date not yet in archive (today or future)"})
             return

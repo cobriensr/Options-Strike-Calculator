@@ -862,22 +862,13 @@ export async function fetchSimilarDaysContext(
       await import('./archive-sidecar.js');
     const { formatSimilarDaysForClaude } =
       await import('./analyze-context-formatters.js');
-    const { fetchCurrentSnapshot } = await import('./current-snapshot.js');
 
-    // Fast path: refresh-current-snapshot cron materializes today's
-    // summary + features into Neon every 5 min during market hours.
-    // Hit that first so the analyze endpoint never pays the sidecar's
-    // DuckDB-cold-scan penalty on the hot path.
-    const snapshot = await fetchCurrentSnapshot(analysisDate);
-    let summary: string | null = snapshot?.summary ?? null;
-    let features: number[] | null = snapshot?.features ?? null;
-
-    if (!summary) summary = await fetchDaySummary(analysisDate);
+    const summary = await fetchDaySummary(analysisDate);
     if (!summary) return null;
 
     if (backend === 'features') {
       const { findSimilarDaysByFeatures } = await import('./day-features.js');
-      if (!features) features = await fetchDayFeatures(analysisDate);
+      const features = await fetchDayFeatures(analysisDate);
       if (!features) return null;
       const neighbors = await findSimilarDaysByFeatures(
         features,
@@ -950,12 +941,10 @@ export async function fetchRangeForecastContext(
 ): Promise<string | null> {
   try {
     const { fetchDaySummary } = await import('./archive-sidecar.js');
-    const { fetchCurrentSnapshot } = await import('./current-snapshot.js');
     const { getRangeForecast, formatRangeForecast, vixBucketOf } =
       await import('./analog-range-forecast.js');
 
-    const snapshot = await fetchCurrentSnapshot(analysisDate);
-    const summary = snapshot?.summary ?? (await fetchDaySummary(analysisDate));
+    const summary = await fetchDaySummary(analysisDate);
     if (!summary) return null;
 
     // VIX bucket drives the Phase-4 regime-matched cohort. Null → the

@@ -142,10 +142,6 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
-vi.mock('../_lib/current-snapshot.js', () => ({
-  fetchCurrentSnapshot: vi.fn(),
-}));
-
 vi.mock('../_lib/day-features.js', () => ({
   findSimilarDaysByFeatures: vi.fn(),
 }));
@@ -193,7 +189,6 @@ import { computeCrossAssetRegime } from '../_lib/cross-asset-regime.js';
 import { computeVolumeProfile } from '../_lib/volume-profile.js';
 import { computeVixSpxDivergence } from '../_lib/vix-divergence.js';
 import { computeUwDeltas } from '../_lib/uw-deltas.js';
-import { fetchCurrentSnapshot } from '../_lib/current-snapshot.js';
 import { fetchDaySummary, fetchDayFeatures } from '../_lib/archive-sidecar.js';
 import { findSimilarDaysForSummary } from '../_lib/day-embeddings.js';
 import { findSimilarDaysByFeatures } from '../_lib/day-features.js';
@@ -383,13 +378,13 @@ describe('analyze-context-fetchers — catch fallbacks', () => {
     expect(await fetchUwDeltasBlock()).toBeNull();
   });
 
-  it('fetchSimilarDaysContext returns null on dynamic-import-side throw', async () => {
-    vi.mocked(fetchCurrentSnapshot).mockRejectedValueOnce(new Error('boom'));
+  it('fetchSimilarDaysContext returns null on throw', async () => {
+    vi.mocked(fetchDaySummary).mockRejectedValueOnce(new Error('boom'));
     expect(await fetchSimilarDaysContext('2026-04-29')).toBeNull();
   });
 
   it('fetchRangeForecastContext returns null on throw', async () => {
-    vi.mocked(fetchCurrentSnapshot).mockRejectedValueOnce(new Error('boom'));
+    vi.mocked(fetchDaySummary).mockRejectedValueOnce(new Error('boom'));
     expect(await fetchRangeForecastContext('2026-04-29', 18)).toBeNull();
   });
 });
@@ -538,25 +533,18 @@ describe('analyze-context-fetchers — outcome discrimination', () => {
 
 describe('analyze-context-fetchers — analog backends', () => {
   it('fetchSimilarDaysContext returns null when no summary is available', async () => {
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce(null as never);
     vi.mocked(fetchDaySummary).mockResolvedValueOnce(null as never);
     expect(await fetchSimilarDaysContext('2026-04-29')).toBeNull();
   });
 
   it('fetchSimilarDaysContext returns null when text-backend finds zero analogs', async () => {
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce({
-      summary: 'today summary',
-      features: null,
-    } as never);
+    vi.mocked(fetchDaySummary).mockResolvedValueOnce('today summary' as never);
     vi.mocked(findSimilarDaysForSummary).mockResolvedValueOnce([]);
     expect(await fetchSimilarDaysContext('2026-04-29')).toBeNull();
   });
 
   it('fetchSimilarDaysContext returns formatted block on text-backend success', async () => {
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce({
-      summary: 'today summary',
-      features: null,
-    } as never);
+    vi.mocked(fetchDaySummary).mockResolvedValueOnce('today summary' as never);
     vi.mocked(findSimilarDaysForSummary).mockResolvedValueOnce([
       {
         date: '2024-09-15',
@@ -569,16 +557,12 @@ describe('analyze-context-fetchers — analog backends', () => {
   });
 
   it('fetchRangeForecastContext returns null when no summary is available', async () => {
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce(null as never);
     vi.mocked(fetchDaySummary).mockResolvedValueOnce(null as never);
     expect(await fetchRangeForecastContext('2026-04-29')).toBeNull();
   });
 
   it('fetchRangeForecastContext returns formatted block on success', async () => {
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce({
-      summary: 'today summary',
-      features: null,
-    } as never);
+    vi.mocked(fetchDaySummary).mockResolvedValueOnce('today summary' as never);
     vi.mocked(getRangeForecast).mockResolvedValueOnce({} as never);
     expect(await fetchRangeForecastContext('2026-04-29', 18)).toBe(
       'range-forecast',
@@ -589,30 +573,23 @@ describe('analyze-context-fetchers — analog backends', () => {
 
   it('features-backend returns null when no features are available', async () => {
     process.env.DAY_ANALOG_BACKEND = 'features';
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce({
-      summary: 'today summary',
-      features: null,
-    } as never);
+    vi.mocked(fetchDaySummary).mockResolvedValueOnce('today summary' as never);
     vi.mocked(fetchDayFeatures).mockResolvedValueOnce(null as never);
     expect(await fetchSimilarDaysContext('2026-04-29')).toBeNull();
   });
 
   it('features-backend returns null when nearest-neighbor search yields no rows', async () => {
     process.env.DAY_ANALOG_BACKEND = 'features';
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce({
-      summary: 'today summary',
-      features: [0.1, 0.2, 0.3],
-    } as never);
+    vi.mocked(fetchDaySummary).mockResolvedValueOnce('today summary' as never);
+    vi.mocked(fetchDayFeatures).mockResolvedValueOnce([0.1, 0.2, 0.3] as never);
     vi.mocked(findSimilarDaysByFeatures).mockResolvedValueOnce([]);
     expect(await fetchSimilarDaysContext('2026-04-29')).toBeNull();
   });
 
   it('features-backend formats neighbors with summaries from day_embeddings', async () => {
     process.env.DAY_ANALOG_BACKEND = 'features';
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce({
-      summary: 'today summary',
-      features: [0.1, 0.2, 0.3],
-    } as never);
+    vi.mocked(fetchDaySummary).mockResolvedValueOnce('today summary' as never);
+    vi.mocked(fetchDayFeatures).mockResolvedValueOnce([0.1, 0.2, 0.3] as never);
     vi.mocked(findSimilarDaysByFeatures).mockResolvedValueOnce([
       { date: '2024-09-15', symbol: 'SPX', distance: 0.08 },
       { date: '2024-10-22', symbol: 'SPX', distance: 0.11 },
@@ -624,25 +601,6 @@ describe('analyze-context-fetchers — analog backends', () => {
       { date: '2024-09-15', summary: 'analog 1 summary' },
       { date: '2024-10-22', summary: 'analog 2 summary' },
     ]);
-    vi.mocked(getDb).mockReturnValue(sql as never);
-    expect(await fetchSimilarDaysContext('2026-04-29')).toBe('similar');
-  });
-
-  it('features-backend falls back to fetchDayFeatures when snapshot lacks features', async () => {
-    process.env.DAY_ANALOG_BACKEND = 'features';
-    vi.mocked(fetchCurrentSnapshot).mockResolvedValueOnce({
-      summary: 'today summary',
-      features: null,
-    } as never);
-    vi.mocked(fetchDayFeatures).mockResolvedValueOnce([0.5, 0.6, 0.7] as never);
-    vi.mocked(findSimilarDaysByFeatures).mockResolvedValueOnce([
-      { date: '2024-09-15', symbol: 'SPX', distance: 0.08 },
-    ] as never);
-    const sql = vi
-      .fn()
-      .mockResolvedValueOnce([
-        { date: '2024-09-15', summary: 'analog summary' },
-      ]);
     vi.mocked(getDb).mockReturnValue(sql as never);
     expect(await fetchSimilarDaysContext('2026-04-29')).toBe('similar');
     expect(fetchDayFeatures).toHaveBeenCalledOnce();
