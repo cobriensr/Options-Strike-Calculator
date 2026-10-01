@@ -381,11 +381,13 @@ describe('analyze-context-fetchers — catch fallbacks', () => {
   it('fetchSimilarDaysContext returns null on throw', async () => {
     vi.mocked(fetchDaySummary).mockRejectedValueOnce(new Error('boom'));
     expect(await fetchSimilarDaysContext('2026-04-29')).toBeNull();
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
   });
 
   it('fetchRangeForecastContext returns null on throw', async () => {
     vi.mocked(fetchDaySummary).mockRejectedValueOnce(new Error('boom'));
     expect(await fetchRangeForecastContext('2026-04-29', 18)).toBeNull();
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
   });
 });
 
