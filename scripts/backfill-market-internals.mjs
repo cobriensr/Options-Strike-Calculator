@@ -113,6 +113,17 @@ const SESSION_CLOSE_MIN = 960; // 4:00 PM ET
 
 // ── Schwab auth ────────────────────────────────────────────
 
+/**
+ * Mask token-like runs, then cap the length — same rule as
+ * api/_lib/redact-upstream-body.ts (keep in sync): 24+ chars of
+ * `A-Za-z0-9+/=_.-\%` become `[redacted]`, then truncate to 200.
+ */
+function redactBody(body) {
+  const masked = body.replaceAll(/[A-Za-z0-9+/=_.%\\-]{24,}/g, '[redacted]');
+  if (masked.length <= 200) return masked;
+  return `${masked.slice(0, 200)}… (${body.length} chars)`;
+}
+
 async function getSchwabToken() {
   const stored = await redis.get(KV_KEY);
   if (!stored) {
@@ -157,7 +168,7 @@ async function getSchwabToken() {
 
   if (!res.ok) {
     const body = await res.text();
-    console.error(`Token refresh failed (${res.status}): ${body}`);
+    console.error(`Token refresh failed (${res.status}): ${redactBody(body)}`);
     process.exit(1);
   }
 

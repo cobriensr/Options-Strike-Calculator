@@ -31,16 +31,44 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: { increment: vi.fn() },
 }));
 
+/** Every Redis client the modules build, with the config it was built with. */
+interface MockRedisClient {
+  config: {
+    retry?: { retries?: number };
+    signal?: () => AbortSignal;
+  };
+}
+const redisClients = vi.hoisted(() => [] as MockRedisClient[]);
+
 vi.mock('@upstash/redis', () => {
   return {
     Redis: class MockRedis {
+      // Shared mocks; `mock.contexts` records WHICH client served each call.
       get = mockRedisGet;
       set = mockRedisSet;
       del = mockRedisDel;
       eval = mockRedisEval;
+      config: MockRedisClient['config'];
+      constructor(config: MockRedisClient['config']) {
+        this.config = config;
+        redisClients.push(this);
+      }
     },
   };
 });
+
+/** The fail-fast client schwab.ts builds for its lock-path calls. */
+function lockPathClient() {
+  return redisClients.find((c) => c.config.retry?.retries === 1);
+}
+
+/** The client (`this`) that served each call of a mock, paired with its args. */
+function callsWithClient(mock: typeof mockRedisGet) {
+  return mock.mock.calls.map((args, i) => ({
+    args,
+    client: mock.mock.contexts[i] as MockRedisClient,
+  }));
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -1574,6 +1602,218 @@ describe('schwab', () => {
         expect(result.error.message).toContain('invalid_client');
         expect(result.error.message).not.toContain(LEAKY);
       }
+    });
+  });
+
+  describe('lock-path Redis client (fail-fast)', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      mockRedisGet.mockResolvedValue(staleTokens());
+      mockRedisSet.mockResolvedValue('OK');
+    });
+
+    it('is built with one retry and a fresh 2 s abort signal per command', () => {
+      const client = lockPathClient();
+      expect(client).toBeDefined();
+      expect(client!.config.retry).toEqual({ retries: 1 });
+      // Function form: Upstash mints a fresh signal per command (a shared
+      // static signal would stay aborted after the first timeout).
+      expect(typeof client!.config.signal).toBe('function');
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      const signal = client!.config.signal!();
+      expect(timeoutSpy).toHaveBeenCalledWith(2_000);
+      expect(signal.aborted).toBe(false);
+    });
+
+    it('serves every call made under the lock: acquire, re-read, compare-and-set, release', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenResponse({ access_token: 'a' })),
+      );
+
+      await getAccessToken();
+
+      const lockClient = lockPathClient();
+      const [initialRead, reRead] = callsWithClient(mockRedisGet);
+      // The caller's first read keeps the default (retrying) client…
+      expect(initialRead!.client).not.toBe(lockClient);
+      // …everything while holding the lock is fail-fast.
+      expect(reRead!.client).toBe(lockClient);
+      const acquires = callsWithClient(mockRedisSet).filter(
+        (c) => c.args[0] === 'schwab:refresh_lock',
+      );
+      expect(acquires).toHaveLength(1);
+      expect(acquires[0]!.client).toBe(lockClient);
+      const evals = callsWithClient(mockRedisEval);
+      expect(evals).toHaveLength(2); // compare-and-set + fenced release
+      for (const c of evals) expect(c.client).toBe(lockClient);
+    });
+
+    it('serves the compare-and-delete of a rejected token', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(tokenFailure(400, INVALID_GRANT_BODY)),
+      );
+
+      await getAccessToken();
+
+      const clears = callsWithClient(mockRedisEval).filter(
+        (c) => c.args[1][0] === 'schwab:tokens',
+      );
+      expect(clears).toHaveLength(1);
+      expect(clears[0]!.client).toBe(lockPathClient());
+    });
+  });
+
+  describe('routine login lapse (refresh token past its 7 days)', () => {
+    const lapsed = () => staleTokens({ refreshExpiresAt: Date.now() - 1_000 });
+
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+    });
+
+    it('clears the dead record and emits ONE login_lapsed warning, without calling Schwab', async () => {
+      const record = lapsed();
+      mockRedisGet.mockResolvedValueOnce(record);
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('Refresh token expired'),
+        },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(tokenEvals()).toHaveLength(1);
+      const [script, , [needle]] = tokenEvals()[0]!;
+      expect(script).toContain("redis.call('DEL', KEYS[1])");
+      expect(JSON.stringify(record)).toContain(needle);
+      expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(mockSentry.captureMessage).toHaveBeenCalledWith(
+        'schwab.auth.login_lapsed',
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: ['schwab.auth.login_lapsed'],
+        }),
+      );
+      expect(mockSentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('later reads find the key gone and emit nothing more', async () => {
+      mockRedisGet.mockResolvedValueOnce(lapsed()).mockResolvedValue(null);
+
+      await getAccessToken();
+      const later = await getAccessToken();
+      await getAccessToken();
+
+      expect(later).toEqual({
+        error: {
+          type: 'expired_refresh',
+          message: expect.stringContaining('No tokens found'),
+        },
+      });
+      expect(tokenEvals()).toHaveLength(1);
+      expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('parallel callers on the lapsed record produce exactly one event', async () => {
+      mockRedisGet.mockResolvedValue(lapsed());
+      let deleted = false;
+      mockRedisEval.mockImplementation((_script: string, keys: string[]) => {
+        if (keys[0] !== 'schwab:tokens') return Promise.resolve(1);
+        // The first compare-and-delete removes it; the rest find it absent.
+        const result = deleted ? 0 : 1;
+        deleted = true;
+        return Promise.resolve(result);
+      });
+
+      const results = await Promise.all([
+        getAccessToken(),
+        getAccessToken(),
+        getAccessToken(),
+      ]);
+
+      for (const r of results) {
+        expect('error' in r && r.error.type).toBe('expired_refresh');
+      }
+      expect(tokenEvals()).toHaveLength(3);
+      expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not clear a re-login that landed meanwhile; uses it instead', async () => {
+      mockRedisGet.mockResolvedValueOnce(lapsed()).mockResolvedValueOnce({
+        accessToken: 'reauth-access',
+        refreshToken: 'reauth-ref',
+        expiresAt: Date.now() + 1_800_000,
+        refreshExpiresAt: Date.now() + 7 * DAY_MS,
+      });
+      evalAnswers(2); // the record holds a DIFFERENT refresh token
+
+      const result = await getAccessToken();
+
+      expect(result).toEqual({ token: 'reauth-access' });
+      expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('authorization-code exchange persistence', () => {
+    beforeEach(() => {
+      process.env.SCHWAB_CLIENT_ID = 'id';
+      process.env.SCHWAB_CLIENT_SECRET = 'secret';
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          tokenResponse({
+            access_token: 'login-access',
+            refresh_token: 'login-ref',
+          }),
+        ),
+      );
+    });
+
+    it('reports a failed write as token_error instead of success', async () => {
+      mockRedisSet.mockRejectedValue(new Error('upstash down'));
+
+      const result = await storeInitialTokens('code', 'https://e.x/cb');
+
+      expect(result).toEqual({
+        error: {
+          type: 'token_error',
+          message: expect.stringContaining('could not be stored'),
+        },
+      });
+      expect(tokenWrites()).toHaveLength(3); // retried before giving up
+      // Captured once — by the callback that receives this error, not here.
+      expect(mockSentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('warms the in-memory fallback so a Redis read blip right after login still works', async () => {
+      mockRedisSet.mockResolvedValue('OK');
+
+      expect(await storeInitialTokens('code', 'https://e.x/cb')).toEqual({
+        success: true,
+      });
+      mockRedisGet.mockRejectedValueOnce(new Error('upstash blip'));
+
+      expect(await getAccessToken()).toEqual({ token: 'login-access' });
+    });
+
+    it('does not warm the fallback when the write failed', async () => {
+      // A day ahead, so tokens cached by earlier tests are already expired.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(Date.now() + DAY_MS);
+      mockRedisSet.mockRejectedValue(new Error('upstash down'));
+      await storeInitialTokens('code', 'https://e.x/cb');
+      mockRedisGet.mockRejectedValueOnce(new Error('upstash blip'));
+
+      const result = await getAccessToken();
+
+      expect('error' in result && result.error.type).toBe('token_error');
     });
   });
 

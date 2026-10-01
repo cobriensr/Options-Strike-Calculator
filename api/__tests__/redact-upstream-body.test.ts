@@ -18,6 +18,21 @@ describe('redactUpstreamBody', () => {
     expect(out).toContain('"error":"x"');
   });
 
+  it.each([
+    [
+      'a JSON-escaped slash (\\/)',
+      'Abc123Def456Ghi\\/Jkl789Mno012Pqr\\/Stu345',
+    ],
+    ['a URL-encoded slash (%2F)', 'Abc123Def456Ghi%2FJkl789Mno012Pqr%2FStu345'],
+  ])('masks a token split by %s', (_label, secret) => {
+    // Each segment alone is under 24 chars; only the whole token is long.
+    const out = redactUpstreamBody(`{"token":"${secret}"}`);
+
+    expect(out).not.toContain('Abc123Def456Ghi');
+    expect(out).not.toContain('Jkl789Mno012Pqr');
+    expect(out).toContain('[redacted]');
+  });
+
   it('leaves ordinary error text untouched', () => {
     const body =
       '{"error":"invalid_request","error_description":"Bad Request: missing grant_type"}';

@@ -32,9 +32,29 @@ import { redactUpstreamBody } from './redact-upstream-body.js';
 // The Redis singleton lives in the neutral lower-layer `redis.ts` so this
 // auth module isn't the source of the shared KV client (avoids inverting the
 // layering). Re-exported below for back-compat with existing importers.
-import { redis } from './redis.js';
+import { createRedis, redis } from './redis.js';
 
 export { redis };
+
+/**
+ * Fail-fast client for every call made while holding or contending for the
+ * refresh lock (acquire, poll, re-read, release) and for the token-record
+ * compare-and-set / compare-and-delete. On Upstash's defaults (5 retries,
+ * exponential backoff ≈ 4.3 s of sleeps per command) a Redis blip could
+ * stretch the lock hold past its TTL. Here a command answers within ~2 s or
+ * throws:
+ *   - `retry: { retries: 1 }` — at most two fetches, 50 ms apart.
+ *   - `signal` is a FUNCTION, so Upstash mints one 2 s timeout per command,
+ *     shares it across that command's attempts, and rethrows an abort without
+ *     retrying — so ~2.05 s bounds the whole command. (A static signal would
+ *     stay aborted after the first timeout; see `limiterRedis` in redis.ts.)
+ * The caller's first token read keeps the default, retrying client: it holds
+ * no lock, and a failure there has the in-memory fallback.
+ */
+const lockPathRedis = createRedis({
+  retry: { retries: 1 },
+  signal: () => AbortSignal.timeout(2_000),
+});
 
 // ============================================================
 // TYPES
@@ -140,13 +160,14 @@ function parseTokenBody<T>(schema: z.ZodType<T>, body: unknown): T {
 /** Where a stored token record stands right now. */
 type TokenAssessment =
   | { state: 'missing' }
-  | { state: 'refresh_expired' }
-  | { state: 'fresh' | 'stale'; tokens: SchwabTokens };
+  | { state: 'refresh_expired' | 'fresh' | 'stale'; tokens: SchwabTokens };
 
 function assessTokens(tokens: SchwabTokens | null): TokenAssessment {
   if (!tokens) return { state: 'missing' };
   const now = Date.now();
-  if (now > tokens.refreshExpiresAt) return { state: 'refresh_expired' };
+  if (now > tokens.refreshExpiresAt) {
+    return { state: 'refresh_expired', tokens };
+  }
   // Access token still valid (with buffer) → fresh; otherwise refresh it.
   const state = now < tokens.expiresAt - BUFFER_MS ? 'fresh' : 'stale';
   return { state, tokens };
@@ -168,9 +189,15 @@ type StoredTokensRead =
   | { ok: true; tokens: SchwabTokens | null }
   | { ok: false; error: unknown };
 
-async function getStoredTokens(): Promise<StoredTokensRead> {
+/**
+ * @param client the default retrying client for a caller's first read;
+ *   `lockPathRedis` for reads made while holding or contending for the lock.
+ */
+async function getStoredTokens(
+  client: typeof redis = redis,
+): Promise<StoredTokensRead> {
   try {
-    return { ok: true, tokens: await redis.get<SchwabTokens>(KV_KEY) };
+    return { ok: true, tokens: await client.get<SchwabTokens>(KV_KEY) };
   } catch (err) {
     logger.warn({ err }, 'Redis getStoredTokens failed');
     metrics.increment('redis.error');
@@ -200,10 +227,13 @@ function refreshTokenNeedle(refreshToken: string): string {
   return `"refreshToken":${JSON.stringify(refreshToken)}`;
 }
 
+const STORE_EXHAUSTED_MESSAGE =
+  'storeTokens: all attempts exhausted, tokens NOT persisted';
+
 /**
  * Run a token-record write up to 3× with backoff. When every attempt throws,
- * log + capture and return `{ ok: false }` — callers keep going, because a
- * refreshed access token is still valid even if it couldn't be persisted.
+ * log and return `{ ok: false }`; each caller decides how to surface it (a
+ * refresh keeps going with its valid access token, a login reports failure).
  */
 async function retryTokenWrite<T>(
   write: () => Promise<T>,
@@ -218,22 +248,21 @@ async function retryTokenWrite<T>(
         await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }
   }
-  logger.error('storeTokens: all attempts exhausted, tokens NOT persisted');
-  Sentry.captureException(
-    new Error('storeTokens: all attempts exhausted, tokens NOT persisted'),
-  );
+  logger.error(STORE_EXHAUSTED_MESSAGE);
   return { ok: false };
 }
 
 /**
  * Unconditional write — for the authorization-code exchange only: a human
  * re-login always wins over whatever is stored. Refreshes use
- * `storeRefreshedTokens` (compare-and-set) instead.
+ * `storeRefreshedTokens` (compare-and-set) instead. Returns whether the
+ * tokens were persisted.
  */
-async function storeTokens(tokens: SchwabTokens): Promise<void> {
-  await retryTokenWrite(() =>
+async function storeTokens(tokens: SchwabTokens): Promise<boolean> {
+  const result = await retryTokenWrite(() =>
     redis.set(KV_KEY, tokens, { ex: tokenTtlSec(tokens) }),
   );
+  return result.ok;
 }
 
 /**
@@ -271,7 +300,7 @@ async function storeRefreshedTokens(
   refreshedWith: string,
 ): Promise<'written' | 'changed' | 'failed'> {
   const result = await retryTokenWrite(() =>
-    redis.eval(
+    lockPathRedis.eval(
       STORE_REFRESHED_LUA,
       [KV_KEY],
       [
@@ -281,21 +310,26 @@ async function storeRefreshedTokens(
       ],
     ),
   );
-  if (!result.ok) return 'failed';
+  if (!result.ok) {
+    // Nobody else reports this: the caller still returns the valid token.
+    Sentry.captureException(new Error(STORE_EXHAUSTED_MESSAGE));
+    return 'failed';
+  }
   return result.value === 1 ? 'written' : 'changed';
 }
 
 /**
  * Atomic compare-and-delete of the token record — STATIC script, all inputs
- * via ARGV. Deletes the key only if it still holds the refresh token that
- * Schwab rejected, so a concurrent re-auth's fresh tokens are never wiped.
+ * via ARGV. Deletes the key only if it still holds the dead refresh token
+ * (rejected by Schwab, or past its 7-day lifetime), so a concurrent
+ * re-auth's fresh tokens are never wiped.
  *
  * KEYS[1] = token key
- * ARGV[1] = refreshTokenNeedle(the rejected refresh token)
+ * ARGV[1] = refreshTokenNeedle(the dead refresh token)
  *
  * Returns: 0 = key absent, 1 = deleted, 2 = key holds a different token
  */
-const CLEAR_REJECTED_LUA = `
+const CLEAR_DEAD_TOKENS_LUA = `
   local raw = redis.call('GET', KEYS[1])
   if not raw then return 0 end
   if string.find(raw, ARGV[1], 1, true) then
@@ -308,30 +342,32 @@ const CLEAR_REJECTED_LUA = `
 type ClearOutcome = 'cleared' | 'replaced' | 'absent' | 'failed';
 
 /**
- * Clear the token record for a refresh token Schwab rejected. Deleting
- * (rather than re-writing it with `refreshExpiresAt = 0`) leaves one
- * logged-out state — "no tokens" — instead of a dead record that the 1 h
- * TTL floor in `storeTokens` would drop an hour later anyway, and it keeps
- * the compare-and-set a single static script with no JSON rewrite in Lua.
+ * Clear the token record for a dead refresh token (rejected by Schwab, or
+ * past its 7-day lifetime). Deleting (rather than re-writing it with
+ * `refreshExpiresAt = 0`) leaves one logged-out state — "no tokens" —
+ * instead of a dead record that the 1 h TTL floor in `storeTokens` would
+ * drop an hour later anyway, and it keeps the compare-and-set a single
+ * static script with no JSON rewrite in Lua. Only the call that gets
+ * `cleared` reports the transition, so it is reported exactly once.
  */
-async function clearRejectedTokens(
-  rejectedRefreshToken: string,
+async function clearDeadTokens(
+  deadRefreshToken: string,
 ): Promise<ClearOutcome> {
   try {
-    const result = await redis.eval(
-      CLEAR_REJECTED_LUA,
+    const result = await lockPathRedis.eval(
+      CLEAR_DEAD_TOKENS_LUA,
       [KV_KEY],
-      [refreshTokenNeedle(rejectedRefreshToken)],
+      [refreshTokenNeedle(deadRefreshToken)],
     );
     if (result === 1) return 'cleared';
     if (result === 2) return 'replaced';
     return 'absent';
   } catch (err) {
-    // The dead token stays stored, so the next call will re-send it and be
-    // rejected again — this must be loud.
+    // The dead record stays stored, so the next call trips over it again
+    // (and a rejected token gets re-sent) — this must be loud.
     logger.error(
       { err },
-      'clearRejectedTokens: compare-and-delete failed; rejected tokens NOT cleared',
+      'clearDeadTokens: compare-and-delete failed; dead tokens NOT cleared',
     );
     metrics.increment('redis.error');
     Sentry.captureException(err);
@@ -398,22 +434,34 @@ let inMemoryTokenCache: {
  *   - Value: a random token per acquisition, so a release is fenced —
  *     it deletes the lock only if it still holds OUR token.
  *   - Renew: none. The TTL is sized to outlive the longest hold instead.
- *   - Expire: LOCK_TTL_SEC = 45 s. Longest hold = the token-endpoint call
- *     (TOKEN_REQUEST_TIMEOUT_MS = 30 s; the abort signal also bounds
- *     reading the body) + storeTokens' retry backoff (0.5 s + 1 s) + a few
- *     Upstash round-trips (re-read, compare-and-delete, writes) ≈ 32 s,
- *     leaving ~13 s of margin. A holder that still overruns can overlap
- *     the next holder's refresh; the token record's compare-and-delete
- *     keeps that safe, and the fenced release stops the late holder from
- *     deleting the next holder's lock.
+ *   - Expire: LOCK_TTL_SEC = 60 s. Every Redis call made while holding the
+ *     lock goes through `lockPathRedis`, bounded at ~2.05 s per command (one
+ *     2 s abort shared by both attempts + a 50 ms backoff). Worst-case hold,
+ *     from the SET NX to the release:
+ *       re-read under the lock                         ≈  2.05 s
+ *       token-endpoint call (TOKEN_REQUEST_TIMEOUT_MS;
+ *         the abort also bounds reading the body)      = 30 s
+ *       compare-and-set: 3 tries × 2.05 s + 0.5 + 1 s ≈  7.65 s
+ *         (the rejection path's one compare-and-delete is ≈ 2.05 s)
+ *       total                                          ≈ 39.7 s
+ *     leaving ~20 s of margin under the 60 s TTL. A holder that still
+ *     overruns can overlap the next holder's refresh; the compare-and-set /
+ *     compare-and-delete on the token record keep that safe, and the fenced
+ *     release stops the late holder from deleting the next holder's lock.
  *   - Fail: acquisition FAILS OPEN — if Redis errors on all 3 SET NX
  *     attempts we refresh without the lock, because a Redis outage must
  *     not block every Schwab call (the per-invocation in-flight dedup
  *     still bounds it to one refresh per instance). A failed release is
  *     logged and the TTL reclaims the lock.
+ *   - Assumption: Schwab does NOT rotate or invalidate the refresh token
+ *     when it is used, so two overlapping refreshes (an overrun or a
+ *     fail-open) both succeed. If Schwab ever starts rotating, an overlap
+ *     could leave the stored refresh token superseded; the next refresh then
+ *     gets `invalid_grant`, which clears the record and fires
+ *     `schwab.auth.refresh_rejected` — loud, not silent.
  */
 const LOCK_KEY = 'schwab:refresh_lock';
-const LOCK_TTL_SEC = 45;
+const LOCK_TTL_SEC = 60;
 
 /**
  * Fenced release — STATIC script: delete the lock only if it still holds
@@ -438,7 +486,7 @@ async function acquireLock(): Promise<string | null> {
   const lockToken = randomBytes(16).toString('hex');
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const result = await redis.set(LOCK_KEY, lockToken, {
+      const result = await lockPathRedis.set(LOCK_KEY, lockToken, {
         nx: true,
         ex: LOCK_TTL_SEC,
       });
@@ -458,7 +506,7 @@ async function acquireLock(): Promise<string | null> {
 
 async function releaseLock(lockToken: string): Promise<void> {
   try {
-    const released = await redis.eval(
+    const released = await lockPathRedis.eval(
       RELEASE_LOCK_LUA,
       [LOCK_KEY],
       [lockToken],
@@ -479,7 +527,7 @@ async function waitForLockRelease(maxWaitMs = 30_000): Promise<void> {
   while (Date.now() - start < maxWaitMs) {
     await new Promise((r) => setTimeout(r, 300));
     try {
-      const held = await redis.get(LOCK_KEY);
+      const held = await lockPathRedis.get(LOCK_KEY);
       if (!held) return;
     } catch (err) {
       logger.warn({ err }, 'Redis lock check failed, proceeding');
@@ -542,7 +590,7 @@ async function handleRejectedRefresh(
   rejectedRefreshToken: string,
   err: SchwabRefreshRejectedError,
 ): Promise<RefreshOutcome> {
-  const outcome = await clearRejectedTokens(rejectedRefreshToken);
+  const outcome = await clearDeadTokens(rejectedRefreshToken);
   logger.warn(
     { status: err.status, outcome },
     'Schwab rejected the refresh token',
@@ -569,7 +617,9 @@ async function handleRejectedRefresh(
  * holder may have refreshed, a rejected token may have been cleared, or a
  * re-auth may have landed. So it never sends a refresh token the store no
  * longer holds. A failed re-read falls back to the snapshot rather than
- * blocking the refresh (the compare-and-delete still guards a clear).
+ * blocking the refresh (the compare-and-set still guards the write). A
+ * lapsed login found here is left for the caller's next read to clear and
+ * report (see `handleLapsedLogin`).
  */
 async function refreshUnderLock(
   snapshot: SchwabTokens,
@@ -577,7 +627,7 @@ async function refreshUnderLock(
   clientSecret: string,
 ): Promise<RefreshOutcome> {
   let record = snapshot;
-  const latest = await getStoredTokens();
+  const latest = await getStoredTokens(lockPathRedis);
   if (latest.ok) {
     const assessed = assessTokens(latest.tokens);
     if (assessed.state === 'missing' || assessed.state === 'refresh_expired') {
@@ -681,7 +731,7 @@ async function refreshAccessTokenOnce(
       // the lock's TTL to expire), then read what they wrote. A read
       // error counts as "still stale" and loops.
       await waitForLockRelease();
-      const fresh = await getStoredTokens();
+      const fresh = await getStoredTokens(lockPathRedis);
       if (fresh.ok) {
         const assessed = assessTokens(fresh.tokens);
         if (
@@ -779,13 +829,11 @@ async function resolveAccessToken(
   }
 
   const assessed = assessTokens(read.tokens);
-  if (assessed.state === 'missing' || assessed.state === 'refresh_expired') {
-    return {
-      error: {
-        type: 'expired_refresh',
-        message: loggedOutMessage(assessed.state),
-      },
-    };
+  if (assessed.state === 'missing') {
+    return { error: { type: 'expired_refresh', message: NO_TOKENS_MESSAGE } };
+  }
+  if (assessed.state === 'refresh_expired') {
+    return handleLapsedLogin(creds, assessed.tokens, allowReread);
   }
   if (assessed.state === 'fresh') {
     return { token: assessed.tokens.accessToken };
@@ -823,6 +871,40 @@ async function resolveAccessToken(
       message:
         'Schwab tokens were replaced twice while refreshing; retry the request.',
     },
+  };
+}
+
+/**
+ * The 7-day login lapsed (refreshExpiresAt passed). The local guard trips
+ * before Schwab is called, so without this the routine weekly lapse would
+ * be silent: crons skip quietly and `refresh_rejected` never fires. Clear
+ * the dead record by compare-and-delete; only the call that actually
+ * removes it reports, so there is exactly ONE `schwab.auth.login_lapsed`
+ * per lapse however many callers race. Later reads find no tokens and stay
+ * quiet. A re-login that landed meanwhile (the record now holds a
+ * different refresh token) is left alone and re-read.
+ */
+async function handleLapsedLogin(
+  creds: { clientId: string; clientSecret: string },
+  tokens: SchwabTokens,
+  allowReread: boolean,
+): Promise<AccessTokenResult> {
+  const outcome = await clearDeadTokens(tokens.refreshToken);
+  if (outcome === 'replaced' && allowReread) {
+    return resolveAccessToken(creds, false);
+  }
+  if (outcome === 'cleared') {
+    inMemoryTokenCache = null;
+    Sentry.captureMessage('schwab.auth.login_lapsed', {
+      level: 'warning',
+      fingerprint: ['schwab.auth.login_lapsed'],
+      extra: {
+        refreshExpiredAt: new Date(tokens.refreshExpiresAt).toISOString(),
+      },
+    });
+  }
+  return {
+    error: { type: 'expired_refresh', message: REFRESH_EXPIRED_MESSAGE },
   };
 }
 
@@ -881,7 +963,23 @@ export async function storeInitialTokens(
       refreshExpiresAt: now + 7 * 24 * 60 * 60 * 1000,
     };
 
-    await storeTokens(tokens);
+    if (!(await storeTokens(tokens))) {
+      // A login that wasn't persisted must not look like it worked: the
+      // callback turns this into a 500 and captures it once.
+      return {
+        error: {
+          type: 'token_error',
+          message:
+            'Schwab token exchange succeeded but the tokens could not be stored (Redis write failed)',
+        },
+      };
+    }
+    // Warm this instance's fallback so a Redis read blip right after the
+    // login still serves the new access token.
+    inMemoryTokenCache = {
+      accessToken: tokens.accessToken,
+      expiresAt: tokens.expiresAt,
+    };
     return { success: true };
   } catch (err) {
     return {

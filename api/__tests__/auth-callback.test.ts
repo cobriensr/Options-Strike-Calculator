@@ -16,6 +16,16 @@ vi.mock('../_lib/redis.js', () => ({
   redis: mockRedis,
 }));
 
+// Spy on Sentry captures only; the isolation scope and metrics stay real.
+const mockSentryCapture = vi.hoisted(() => ({
+  captureMessage: vi.fn(),
+  captureException: vi.fn(),
+}));
+vi.mock('../_lib/sentry.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/sentry.js')>();
+  return { ...actual, Sentry: { ...actual.Sentry, ...mockSentryCapture } };
+});
+
 vi.mock('../_lib/api-helpers.js', () => ({
   OWNER_COOKIE: 'sc-owner',
   OWNER_COOKIE_MAX_AGE: 604800,
@@ -129,6 +139,33 @@ describe('GET /api/auth/callback', () => {
     const body = (res._json as { error: string }).error;
     expect(body).toBe('Token exchange failed');
     expect(body).not.toContain('Exchange failed');
+  });
+
+  it('a login whose tokens could not be stored fails visibly: 500, no cookie, one capture', async () => {
+    process.env.OWNER_SECRET = 'secret';
+    mockSentryCapture.captureMessage.mockClear();
+    mockSentryCapture.captureException.mockClear();
+    vi.mocked(storeInitialTokens).mockResolvedValue({
+      error: {
+        type: 'token_error',
+        message: 'Token exchange succeeded but the tokens could not be stored',
+      },
+    });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        query: { code: 'auth-code-123', state: 'valid-state' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Token exchange failed' });
+    // No owner session for a login that wasn't persisted.
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+    expect(mockSentryCapture.captureMessage).toHaveBeenCalledTimes(1);
+    expect(mockSentryCapture.captureException).not.toHaveBeenCalled();
   });
 
   it('sets owner cookie and returns HTML on success', async () => {
