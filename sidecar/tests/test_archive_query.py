@@ -724,591 +724,63 @@ def test_day_features_vector_forward_fills_gaps(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# TBBO fixture helpers (Phase 4b)
+# TZ-boundary regression — guards `SET TimeZone = 'UTC'` in _connection()
 # ---------------------------------------------------------------------------
 
 
-def _build_tbbo_archive(
-    root: Path,
-    bars: list[tuple],
-    symbology: list[tuple],
-) -> None:
-    """Write tbbo/year=YYYY/part.parquet + symbology.parquet under ``root``.
-
-    ``bars`` tuples: ``(ts_recv, instrument_id, side, size,
-    bid_px_00, ask_px_00, bid_sz_00, ask_sz_00, symbol)``.
-    """
-    conn = duckdb.connect()
-
-    years = sorted({ts.year for (ts, *_rest) in bars})
-    for year in years:
-        year_bars = [row for row in bars if row[0].year == year]
-        year_dir = root / "tbbo" / f"year={year}"
-        year_dir.mkdir(parents=True, exist_ok=True)
-        part = year_dir / "part.parquet"
-
-        conn.execute(
-            """
-            CREATE OR REPLACE TEMP TABLE tbbo_tmp (
-                ts_recv TIMESTAMPTZ,
-                instrument_id INTEGER,
-                side VARCHAR,
-                size INTEGER,
-                bid_px_00 DOUBLE,
-                ask_px_00 DOUBLE,
-                bid_sz_00 INTEGER,
-                ask_sz_00 INTEGER,
-                symbol VARCHAR
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO tbbo_tmp
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            year_bars,
-        )
-        conn.execute(f"COPY tbbo_tmp TO '{part}' (FORMAT PARQUET)")
-
-    conn.execute(
-        """
-        CREATE OR REPLACE TEMP TABLE sym_tmp (
-            instrument_id INTEGER,
-            symbol VARCHAR,
-            first_seen TIMESTAMPTZ,
-            last_seen TIMESTAMPTZ
-        )
-        """
-    )
-    conn.executemany("INSERT INTO sym_tmp VALUES (?, ?, ?, ?)", symbology)
-    conn.execute(f"COPY sym_tmp TO '{root / 'symbology.parquet'}' (FORMAT PARQUET)")
-    conn.close()
-
-
-def _tbbo_day_trades(
-    date_tuple: tuple[int, int, int],
-    instrument_id: int,
-    symbol: str,
-    trades: list[tuple[int, str, int]],
-) -> list[tuple]:
-    """Build a single-day list of TBBO trade rows.
-
-    ``trades``: list of ``(minute_offset, side, size)`` — side in
-    {'B','A','N'}. Minute 0 is 14:30 UTC (the session-open proxy we use
-    throughout the archive tests).
-    """
-    from datetime import datetime, timezone, timedelta
-
-    d0 = datetime(*date_tuple, 14, 30, tzinfo=timezone.utc)
-    rows: list[tuple] = []
-    for minute_off, side, size in trades:
-        ts = d0 + timedelta(minutes=minute_off)
-        rows.append(
-            (
-                ts,
-                instrument_id,
-                side,
-                size,
-                # Fixed bid/ask — the summary endpoint doesn't use them;
-                # they're here only so the schema matches production.
-                5300.0,
-                5300.25,
-                10,
-                10,
-                symbol,
-            )
-        )
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# tbbo_day_microstructure
-# ---------------------------------------------------------------------------
-
-
-def test_tbbo_day_microstructure_picks_front_month_and_computes_ofi(
-    tmp_path: Path,
-) -> None:
-    """Happy path: one day, one contract, mix of B/A trades produces a
-    positive 1h OFI when buys dominate."""
-    from datetime import datetime, timezone
-
-    # 80 buys, 20 sells across 80 minutes (20+ per window → passes noise gate).
-    # Expected OFI sign: positive.
-    trades: list[tuple[int, str, int]] = []
-    for i in range(80):
-        trades.append((i, "B", 5))
-    for i in range(80):
-        trades.append((i, "A", 1))
-    bars = _tbbo_day_trades((2024, 6, 3), 101, "ESU4", trades)
-    # Include a losing contender on the same day to exercise front-month pick.
-    bars += _tbbo_day_trades(
-        (2024, 6, 3),
-        202,
-        "ESZ4",
-        [(0, "B", 1)],
-    )
-
-    sym_open = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
-    sym_close = datetime(2024, 6, 3, 20, 0, tzinfo=timezone.utc)
-    symbology = [
-        (101, "ESU4", sym_open, sym_close),
-        (202, "ESZ4", sym_open, sym_close),
-    ]
-    _build_tbbo_archive(tmp_path, bars, symbology)
-
-    result = archive_query.tbbo_day_microstructure("2024-06-03", "ES", root=tmp_path)
-
-    assert result["date"] == "2024-06-03"
-    assert result["symbol"] == "ES"
-    # Front month picked by top volume → ESU4, not ESZ4.
-    assert result["front_month_contract"] == "ESU4"
-    # 80 buys + 20 sells on ESU4 + 1 buy on ESZ4 = 101 total TBBO rows
-    # filtered to the front month = 160 per-minute groups summed.
-    assert result["trade_count"] == 160
-    # Mix is mostly buys, so OFI must be meaningfully positive.
-    assert result["ofi_1h_mean"] is not None
-    assert result["ofi_1h_mean"] > 0.5
-
-
-def test_tbbo_day_microstructure_rejects_unknown_symbol(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="symbol must be"):
-        archive_query.tbbo_day_microstructure("2024-06-03", "CL", root=tmp_path)
-
-
-def test_tbbo_day_microstructure_raises_on_missing_date(
-    tmp_path: Path,
-) -> None:
-    from datetime import datetime, timezone
-
-    bars = _tbbo_day_trades((2024, 6, 3), 101, "ESU4", [(0, "B", 10)])
-    _build_tbbo_archive(
-        tmp_path,
-        bars,
-        [
-            (
-                101,
-                "ESU4",
-                datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc),
-                datetime(2024, 6, 3, 20, 0, tzinfo=timezone.utc),
-            )
-        ],
-    )
-
-    with pytest.raises(ValueError, match="2024-06-04"):
-        archive_query.tbbo_day_microstructure("2024-06-04", "ES", root=tmp_path)
-
-
-# ---------------------------------------------------------------------------
-# tbbo_ofi_percentile
-# ---------------------------------------------------------------------------
-
-
-def _spread_days(
-    start_date: tuple[int, int, int],
-    instrument_id: int,
-    symbol: str,
-    day_profiles: list[tuple[int, int]],
-) -> list[tuple]:
-    """Build N days of synthetic TBBO data where each day has a
-    deterministic buy/sell volume split.
-
-    ``day_profiles``: list of ``(buy_volume_per_minute, sell_volume_per_minute)``
-    — one entry per consecutive day starting from ``start_date``. Every day
-    gets 80 minutes of trading so the 1h window contains 20+ trades on
-    both sides (passes the noise-floor gate).
-    """
-    from datetime import date as _date
-    from datetime import timedelta
-
-    d0 = _date(*start_date)
-    bars: list[tuple] = []
-    for i, (buy_sz, sell_sz) in enumerate(day_profiles):
-        d = d0 + timedelta(days=i)
-        trades: list[tuple[int, str, int]] = []
-        for m in range(80):
-            if buy_sz > 0:
-                trades.append((m, "B", buy_sz))
-            if sell_sz > 0:
-                trades.append((m, "A", sell_sz))
-        bars += _tbbo_day_trades(
-            (d.year, d.month, d.day), instrument_id, symbol, trades
-        )
-    return bars
-
-
-def test_tbbo_ofi_percentile_ranks_value_against_history(
-    tmp_path: Path,
-) -> None:
-    """With a monotonic ramp of daily buy/sell ratios, a value near the
-    top of the distribution ranks high; a value near the bottom ranks low.
-    """
-    from datetime import datetime, timezone
-
-    # 10 days: buy pct ramps from 0.1 to 1.0 → daily-mean OFI ramps from
-    # roughly -0.8 to +1.0.
-    # Each day has (buy_size, sell_size) such that OFI = (b - s) / (b + s).
-    profiles: list[tuple[int, int]] = [
-        (1, 9),  # OFI ~ -0.8
-        (2, 8),
-        (3, 7),
-        (4, 6),
-        (5, 5),  # OFI ~ 0
-        (6, 4),
-        (7, 3),
-        (8, 2),
-        (9, 1),
-        (10, 0),  # OFI = +1
-    ]
-    bars = _spread_days((2024, 6, 3), 101, "ESU4", profiles)
-    sym_open = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
-    sym_close = datetime(2024, 6, 13, 20, 0, tzinfo=timezone.utc)
-    _build_tbbo_archive(tmp_path, bars, [(101, "ESU4", sym_open, sym_close)])
-
-    # Value near the top of the distribution ranks high.
-    result_high = archive_query.tbbo_ofi_percentile(
-        "ES", 0.9, window="1h", horizon_days=252, root=tmp_path
-    )
-    assert result_high["symbol"] == "ES"
-    assert result_high["window"] == "1h"
-    assert result_high["count"] == 10
-    assert result_high["percentile"] >= 80.0
-    assert result_high["mean"] == pytest.approx(
-        sum((b - s) / (b + s) for (b, s) in profiles) / len(profiles),
-        rel=1e-6,
-    )
-
-    # Value near the bottom ranks low.
-    result_low = archive_query.tbbo_ofi_percentile(
-        "ES", -0.9, window="1h", horizon_days=252, root=tmp_path
-    )
-    assert result_low["percentile"] <= 20.0
-
-    # Value below the minimum still valid: percentile = 0.
-    result_min = archive_query.tbbo_ofi_percentile(
-        "ES", -10.0, window="1h", horizon_days=252, root=tmp_path
-    )
-    assert result_min["percentile"] == 0.0
-
-    # Value above the maximum: percentile = 100.
-    result_max = archive_query.tbbo_ofi_percentile(
-        "ES", 10.0, window="1h", horizon_days=252, root=tmp_path
-    )
-    assert result_max["percentile"] == 100.0
-
-
-def test_tbbo_ofi_percentile_uses_front_contract_only(tmp_path: Path) -> None:
-    """With two contracts on the same day, the daily-mean OFI must come from
-    the higher-volume (front) contract only.
-
-    Guards the aggregate-early rewrite (SIDE-OOM NQ): it pre-aggregates to
-    (day, contract, minute) and then joins to front_contract, so the
-    lower-volume back month must not bleed into the rolling-window OFI. A
-    regression that aggregated both contracts together would blend +1 and -1
-    toward the volume-weighted ~+0.33 instead of the front's +1.0.
-    """
-    from datetime import datetime, timezone
-
-    # Front month (NQU4): buy-only, 80 min x 10 -> volume 800, OFI = +1.
-    front = _tbbo_day_trades(
-        (2024, 6, 3), 101, "NQU4", [(m, "B", 10) for m in range(80)]
-    )
-    # Back month (NQZ4): sell-only, 80 min x 5 -> volume 400 (< front), OFI = -1.
-    back = _tbbo_day_trades((2024, 6, 3), 202, "NQZ4", [(m, "A", 5) for m in range(80)])
-    sym_open = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
-    sym_close = datetime(2024, 6, 3, 21, 0, tzinfo=timezone.utc)
-    _build_tbbo_archive(
-        tmp_path,
-        front + back,
-        [
-            (101, "NQU4", sym_open, sym_close),
-            (202, "NQZ4", sym_open, sym_close),
-        ],
-    )
-
-    result = archive_query.tbbo_ofi_percentile(
-        "NQ", 0.5, window="1h", horizon_days=252, root=tmp_path
-    )
-    # One session; daily-mean OFI reflects the front contract (+1.0), not the
-    # volume-weighted blend of both contracts (~+0.33).
-    assert result["count"] == 1
-    assert result["mean"] == pytest.approx(1.0, rel=1e-6)
-
-
-def test_tbbo_ofi_percentile_validates_inputs(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="symbol must be"):
-        archive_query.tbbo_ofi_percentile("CL", 0.1, window="1h", root=tmp_path)
-    with pytest.raises(ValueError, match="window must be"):
-        archive_query.tbbo_ofi_percentile("ES", 0.1, window="1d", root=tmp_path)
-    with pytest.raises(ValueError, match="horizon_days"):
-        archive_query.tbbo_ofi_percentile(
-            "ES", 0.1, window="1h", horizon_days=0, root=tmp_path
-        )
-    # Upper-bound cap (Phase 4b rework): anything above
-    # `_TBBO_OFI_MAX_HORIZON_DAYS` must be rejected at the library layer.
-    # Guards a public unauthenticated endpoint against the
-    # `horizon_days=10_000_000` full-archive-scan attack.
-    with pytest.raises(ValueError, match="horizon_days"):
-        archive_query.tbbo_ofi_percentile(
-            "ES",
-            0.1,
-            window="1h",
-            horizon_days=archive_query._TBBO_OFI_MAX_HORIZON_DAYS + 1,
-            root=tmp_path,
-        )
-    with pytest.raises(ValueError, match="finite"):
-        archive_query.tbbo_ofi_percentile(
-            "ES", float("nan"), window="1h", root=tmp_path
-        )
-    with pytest.raises(ValueError, match="finite"):
-        archive_query.tbbo_ofi_percentile(
-            "ES", float("inf"), window="1h", root=tmp_path
-        )
-
-
-def test_tbbo_ofi_percentile_raises_on_empty_archive(tmp_path: Path) -> None:
-    """When the archive exists but has no rows for the requested symbol,
-    the query raises rather than returning a misleading 0/0."""
-    from datetime import datetime, timezone
-
-    # Build a 1-day archive with NQ bars only; then ask for ES percentile.
-    bars = _tbbo_day_trades((2024, 6, 3), 101, "NQU4", [(0, "B", 10)])
-    sym = [
-        (
-            101,
-            "NQU4",
-            datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc),
-            datetime(2024, 6, 3, 20, 0, tzinfo=timezone.utc),
-        )
-    ]
-    _build_tbbo_archive(tmp_path, bars, sym)
-
-    with pytest.raises(ValueError, match="No TBBO ES"):
-        archive_query.tbbo_ofi_percentile("ES", 0.1, window="1h", root=tmp_path)
-
-
-def test_tbbo_ofi_percentile_respects_horizon_days(tmp_path: Path) -> None:
-    """``horizon_days`` caps the distribution to the last N days; older
-    days are ignored."""
-    from datetime import datetime, timezone
-
-    # 5 days with variety of OFIs, then a 6th day at extreme +1.
-    profiles: list[tuple[int, int]] = [
-        (1, 9),
-        (2, 8),
-        (5, 5),
-        (8, 2),
-        (9, 1),
-        (10, 0),
-    ]
-    bars = _spread_days((2024, 6, 3), 101, "ESU4", profiles)
-    sym_open = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
-    sym_close = datetime(2024, 6, 9, 20, 0, tzinfo=timezone.utc)
-    _build_tbbo_archive(tmp_path, bars, [(101, "ESU4", sym_open, sym_close)])
-
-    # horizon_days=1 → only the most recent day in the distribution.
-    result = archive_query.tbbo_ofi_percentile(
-        "ES", 0.5, window="1h", horizon_days=1, root=tmp_path
-    )
-    assert result["count"] == 1
-    # The last day's OFI is +1 (10 buys, 0 sells) → +0.5 < +1 → percentile 0.
-    assert result["percentile"] == 0.0
-
-    # horizon_days=3 → three most recent days, OFIs +0.6, +0.8, +1.0.
-    result3 = archive_query.tbbo_ofi_percentile(
-        "ES", 0.9, window="1h", horizon_days=3, root=tmp_path
-    )
-    assert result3["count"] == 3
-
-
-def test_tbbo_ofi_percentile_horizon_excludes_pre_gap_days(
+def test_es_day_summary_honors_utc_day_on_non_utc_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SIDE-OOM regression: the heavy distribution query must be DATE-FILTERED
-    to the distinct-day horizon cutoff (``>= ?::DATE``) so the per-minute /
-    rolling-window intermediate is bounded to ``horizon_days`` instead of
-    scanning the whole archive (the cause of the temp-spill OOM).
-
-    The final ``LIMIT horizon_days`` belt makes the *output* correct even
-    without the filter, so output assertions alone can't catch a regression.
-    We therefore spy on the executed SQL and assert the heavy query carries
-    the cutoff predicate and the correct distinct-day cutoff bind — then keep
-    the output assertions as a secondary correctness check.
-    """
-    from datetime import date, datetime, timezone
-
-    # Old cluster: 3 days in January 2024 with NEGATIVE / neutral OFI.
-    old = _spread_days(
-        (2024, 1, 8),
-        101,
-        "ESH4",
-        [(1, 9), (2, 8), (5, 5)],  # -0.8, -0.6, 0.0
-    )
-    # Recent cluster: 3 days in June 2024 with POSITIVE OFI, ~5 months later.
-    recent = _spread_days(
-        (2024, 6, 3),
-        101,
-        "ESM4",
-        [(8, 2), (9, 1), (10, 0)],  # +0.6, +0.8, +1.0
-    )
-    sym = [
-        (
-            101,
-            "ESH4",
-            datetime(2024, 1, 8, 14, 0, tzinfo=timezone.utc),
-            datetime(2024, 6, 5, 20, 0, tzinfo=timezone.utc),
-        )
-    ]
-    _build_tbbo_archive(tmp_path, old + recent, sym)
-
-    # Record every SQL the function executes while delegating to the real
-    # DuckDB connection, so we can inspect how the heavy query was scoped.
-    executed: list[tuple[str, object]] = []
-    real_connection = archive_query._connection
-
-    class _RecordingConn:
-        def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
-            self._conn = conn
-
-        def execute(self, sql: str, params: object = None):  # type: ignore[no-untyped-def]
-            executed.append((sql, params))
-            if params is None:
-                return self._conn.execute(sql)
-            return self._conn.execute(sql, params)
-
-    monkeypatch.setattr(
-        archive_query, "_connection", lambda: _RecordingConn(real_connection())
-    )
-
-    # horizon_days=3 must capture ONLY the recent cluster.
-    result = archive_query.tbbo_ofi_percentile(
-        "ES", 0.5, window="1h", horizon_days=3, root=tmp_path
-    )
-
-    # --- Primary: the heavy windowed query is bounded by the cutoff. ---
-    heavy = [(sql, params) for (sql, params) in executed if "per_minute" in sql]
-    assert len(heavy) == 1, "expected exactly one per-minute/rolling query"
-    heavy_sql, heavy_params = heavy[0]
-    # The filtered CTE must carry the horizon date filter, not the unbounded
-    # full-archive scan that caused the OOM. With the filter disabled (the
-    # pre-fix `IS NOT NULL` fallback) this predicate and the cutoff bind below
-    # are both absent — so these two assertions are what discriminate the fix.
-    assert ">= ?::DATE" in heavy_sql
-    # The cutoff bind is the 3rd-most-recent DISTINCT session day = the recent
-    # cluster's first day (2024-06-03). A calendar-based cutoff or an
-    # off-by-one would bind a different date.
-    assert isinstance(heavy_params, list)
-    assert date(2024, 6, 3) in heavy_params
-
-    # --- Secondary: output correctness (the old cluster is excluded). ---
-    assert result["count"] == 3
-    # Mean of only the recent cluster (+0.6, +0.8, +1.0) = 0.8. With the old
-    # cluster leaking in the mean would be ~0.333.
-    assert result["mean"] == pytest.approx(0.8, rel=1e-6)
-    # 0.5 is below every recent value, so percentile 0. If the old negative
-    # days were included, 0.5 would rank above them (percentile ~50).
-    assert result["percentile"] == 0.0
-
-
-# ---------------------------------------------------------------------------
-# TZ-boundary regression (Phase 4b rework — Phase 4c bug re-landed)
-# ---------------------------------------------------------------------------
-
-
-def test_tbbo_day_microstructure_honors_utc_day_on_non_utc_host(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Regression: a trade at 00:30 UTC must bucket into the UTC date,
+    """Regression: a bar at 00:30 UTC must bucket into the UTC date,
     regardless of the host's OS timezone.
 
     DuckDB's ``date_trunc('day', <TIMESTAMPTZ>)`` honors the session
     ``TimeZone``, which DuckDB initializes from the host ``TZ`` env var.
     Without the ``SET TimeZone = 'UTC'`` hook in
-    ``archive_query._connection``, a trade at 2025-10-16 00:30 UTC on
-    a Chicago (CT, UTC-5/-6) host would bucket into the 2025-10-15 CT
-    calendar day — silently shifting a whole day of TBBO activity into
-    the wrong feature row. This exact bug landed once in Phase 4c
-    (``ml/src/features/microstructure.py``, commit ``dd9f390``) and was
-    fixed there; Phase 4b's first cut re-introduced it on the sidecar
-    side.
+    ``archive_query._connection``, a bar at 2025-10-16 00:30 UTC on a
+    Chicago (CT, UTC-5/-6) host would bucket into the 2025-10-15 CT
+    calendar day. Every single-date archive query shares this bucketing
+    (the ``*_batch`` variants use ``session_date_expr``), so
+    ``es_day_summary`` stands in for all of them. (This guard previously
+    lived on the TBBO microstructure query, removed with Databento.)
 
     The test forces ``TZ=America/Chicago`` via ``monkeypatch.setenv`` +
     ``time.tzset()`` so the assertion actually exercises the bug path.
-    Under the fix this test passes; without it, the 00:30 UTC trade
-    leaks into the prior date and both assertions below fail.
     """
     import time as _time
     from datetime import datetime, timezone
 
-    # time.tzset() is Unix-only. Skip on platforms where it's unavailable
-    # (rare in this project's CI, but be defensive).
+    # time.tzset() is Unix-only. Skip on platforms where it's unavailable.
     if not hasattr(_time, "tzset"):
         pytest.skip("time.tzset() unavailable on this platform")
 
     monkeypatch.setenv("TZ", "America/Chicago")
     _time.tzset()
-
-    # Drop any thread-local DuckDB connection that was built before
-    # this test set TZ, so `_connection()` re-opens under the patched
-    # environment. Important: pytest's test ordering can otherwise
-    # recycle a connection that silently cached the wrong SESSION TZ
-    # resolution from an earlier test's fresh connect().
+    # Drop any connection opened before TZ was patched so `_connection()`
+    # re-opens under the patched environment.
     archive_query.reset_connection_for_tests()
 
-    # Two trades, both on UTC date 2025-10-16:
-    #   1) 00:30 UTC — under CT (UTC-5), this clock time is 19:30 on
-    #      2025-10-15 local. A buggy session-TZ-aware date_trunc would
-    #      bucket this into 2025-10-15.
-    #   2) 12:00 UTC — deep inside 2025-10-16 under any reasonable TZ.
-    # Need ≥ 20 trades total to clear the OFI noise floor in the 1h
-    # window (_TBBO_OFI_MIN_TRADES_PER_WINDOW). We pad with extra
-    # neutral minutes on 10-16 at 12:00+.
-    from datetime import timedelta
-
+    # 00:30 UTC on 10-16 is 19:30 CT on 10-15 — the bug-path bar.
     ts_boundary = datetime(2025, 10, 16, 0, 30, tzinfo=timezone.utc)
+    # 12:00 UTC sits inside 10-16 under any reasonable TZ.
     ts_midday = datetime(2025, 10, 16, 12, 0, tzinfo=timezone.utc)
-    padding = [
-        (
-            ts_midday + timedelta(minutes=i),
-            101,
-            "B",
-            1,
-            5300.0,
-            5300.25,
-            10,
-            10,
-            "ESZ5",
-        )
-        for i in range(25)
+    bars = [
+        (ts_boundary, 101, 5300.0, 5302.0, 5299.0, 5301.0, 1_000),
+        (ts_midday, 101, 5301.0, 5305.0, 5300.0, 5304.0, 2_000),
     ]
-    bars: list[tuple] = [
-        (ts_boundary, 101, "B", 5, 5300.0, 5300.25, 10, 10, "ESZ5"),
-        (ts_midday, 101, "B", 5, 5300.0, 5300.25, 10, 10, "ESZ5"),
-        *padding,
-    ]
-    sym_first_seen = datetime(2025, 10, 16, 0, 0, tzinfo=timezone.utc)
-    sym_last_seen = datetime(2025, 10, 16, 23, 59, tzinfo=timezone.utc)
-    _build_tbbo_archive(
-        tmp_path,
-        bars,
-        [(101, "ESZ5", sym_first_seen, sym_last_seen)],
-    )
+    _build_archive(tmp_path, bars, [(101, "ESZ5", ts_boundary, ts_midday)])
 
-    # Querying UTC date 2025-10-16 must see BOTH trades (the boundary
-    # one + midday) plus the padding — total trade_count 27.
-    row_1016 = archive_query.tbbo_day_microstructure("2025-10-16", "ES", root=tmp_path)
-    assert row_1016["trade_count"] == 27
-    assert row_1016["front_month_contract"] == "ESZ5"
+    # UTC date 2025-10-16 must see BOTH bars.
+    result = archive_query.es_day_summary("2025-10-16", root=tmp_path)
+    assert result["bar_count"] == 2
+    assert result["volume"] == 3_000
+    assert result["open"] == 5300.0
 
-    # Querying UTC date 2025-10-15 must see NONE — the archive has no
-    # trades on 10-15 UTC. Pre-fix, the 00:30 UTC trade on 2025-10-16
-    # would leak into the 2025-10-15 CT day and produce a non-empty
-    # result here.
+    # UTC date 2025-10-15 has no bars. Pre-fix, the 00:30 UTC bar would
+    # leak into the 2025-10-15 CT day and this would not raise.
     with pytest.raises(ValueError, match="2025-10-15"):
-        archive_query.tbbo_day_microstructure("2025-10-15", "ES", root=tmp_path)
+        archive_query.es_day_summary("2025-10-15", root=tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1318,7 +790,7 @@ def test_tbbo_day_microstructure_honors_utc_day_on_non_utc_host(
 
 def test_connection_sets_memory_limit_and_temp_directory(tmp_path: Path) -> None:
     """Every DuckDB connection must have memory_limit + temp_directory
-    set so a cold-cache query over the 3.9 GB TBBO archive spills to
+    set so a cold-cache archive scan spills to
     disk instead of OOM-killing the Railway container."""
     archive_query.reset_connection_for_tests()
     try:
@@ -1357,7 +829,7 @@ def test_connection_sets_memory_limit_and_temp_directory(tmp_path: Path) -> None
 
 def test_connection_caps_temp_directory_size(tmp_path: Path) -> None:
     """Every DuckDB connection must cap on-disk temp spill. Without
-    max_temp_directory_size, a cold TBBO scan can fill the container
+    max_temp_directory_size, a cold archive scan can fill the container
     overlay even though memory_limit forces the spill in the first place."""
     archive_query.reset_connection_for_tests()
     try:
@@ -1390,10 +862,10 @@ def test_connection_caps_temp_directory_size(tmp_path: Path) -> None:
 #
 # The shared `front_month_cte` builder standardizes the
 # `filtered -> contract_volume -> front_contract -> fb` chain across
-# `day_features_batch`, `day_summary_batch`,
-# `day_summary_prediction_batch`, and `tbbo_ofi_percentile`. Three of
-# those sites (the OHLCV ones) previously had no explicit volume-tie
-# tiebreak and relied on DuckDB row order. The adoption pins
+# `day_features_batch`, `day_summary_batch`, and
+# `day_summary_prediction_batch`. Those three OHLCV sites previously
+# had no explicit volume-tie tiebreak and relied on DuckDB row order.
+# The adoption pins
 # `tiebreak='contract_asc'` everywhere, so the fixtures below
 # deliberately construct a tied-volume case and assert the
 # lexicographically-smaller contract wins.

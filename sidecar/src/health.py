@@ -47,7 +47,7 @@ def _is_today_or_future_utc(date_str: str) -> bool:
 
     SIDE-017: used by /archive/day-summary and /archive/day-features
     to short-circuit queries for dates that cannot possibly be in the
-    archive yet. The (since removed, 2026-09-30) refresh-current-snapshot
+    archive yet. The (since removed, 2026-10-01) refresh-current-snapshot
     Vercel cron used to poll for today's summary+features every 5 min
     during RTH, but the archive only gets today's partitions after the
     EOD ETL. Before this guard, each doomed call ran a 3–7s DuckDB
@@ -223,11 +223,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         ("/archive/day-summary", "_handle_archive_day_summary"),
         ("/archive/day-features-batch", "_handle_archive_day_features_batch"),
         ("/archive/day-features", "_handle_archive_day_features"),
-        (
-            "/archive/tbbo-day-microstructure",
-            "_handle_archive_tbbo_day_microstructure",
-        ),
-        ("/archive/tbbo-ofi-percentile", "_handle_archive_tbbo_ofi_percentile"),
     )
 
     def do_GET(self) -> None:
@@ -717,122 +712,6 @@ class HealthHandler(BaseHTTPRequestHandler):
                 end,
                 exc,
                 date=f"{start}..{end}",
-            )
-
-    def _handle_archive_tbbo_day_microstructure(self) -> None:
-        """GET /archive/tbbo-day-microstructure?date=YYYY-MM-DD&symbol=ES|NQ
-
-        Returns the per-day microstructure summary (OFI at 5m / 15m / 1h
-        plus trade count) for the requested ``(date, symbol)``.
-
-        Unauthenticated — TBBO data is public market data, and the
-        sidecar doesn't expose any secrets through this shape.
-        """
-        qs = parse_qs(urlparse(self.path).query)
-        symbol = (qs.get("symbol") or [""])[0].upper()
-
-        try:
-            d = _parse_date_param(qs, "date")
-        except _BadRequest as exc:
-            self._send_json(400, {"error": str(exc)})
-            return
-        if symbol not in {"ES", "NQ"}:
-            self._send_json(400, {"error": "symbol must be 'ES' or 'NQ'"})
-            return
-
-        try:
-            result = _aq().tbbo_day_microstructure(d, symbol)
-            self._send_json(200, result)
-        except ValueError as exc:
-            # "No TBBO X bars found..." = 404; invalid-input errors were
-            # caught by the regex / allowlist above. Any ValueError here
-            # is a missing-data case.
-            self._send_json(404, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
-            self._archive_500(
-                "tbbo-day-microstructure",
-                exc,
-                "tbbo-day-microstructure failed for %s/%s: %s",
-                d,
-                symbol,
-                exc,
-                date=d,
-                symbol=symbol,
-            )
-
-    def _handle_archive_tbbo_ofi_percentile(self) -> None:
-        """GET /archive/tbbo-ofi-percentile?symbol=ES|NQ&value=<float>&window=5m|15m|1h
-
-        Returns ``{symbol, window, current_value, percentile, mean, std, count}``
-        describing where ``value`` falls in the last 252 days of historical
-        daily-mean OFI at ``window`` for ``symbol`` (front-month only).
-        """
-        import math
-
-        qs = parse_qs(urlparse(self.path).query)
-        symbol = (qs.get("symbol") or [""])[0].upper()
-        value_raw = (qs.get("value") or [""])[0]
-        window = (qs.get("window") or ["1h"])[0]
-
-        if symbol not in {"ES", "NQ"}:
-            self._send_json(400, {"error": "symbol must be 'ES' or 'NQ'"})
-            return
-        if window not in {"5m", "15m", "1h"}:
-            self._send_json(400, {"error": "window must be '5m', '15m', or '1h'"})
-            return
-        if not value_raw:
-            self._send_json(400, {"error": "value is required"})
-            return
-        try:
-            value = float(value_raw)
-        except ValueError:
-            self._send_json(400, {"error": "value must be a finite number"})
-            return
-        if not math.isfinite(value):
-            self._send_json(400, {"error": "value must be a finite number"})
-            return
-
-        kwargs: dict[str, object] = {"window": window}
-        try:
-            horizon = _parse_optional_int(qs, "horizon_days", lo=1)
-        except _BadRequest as exc:
-            self._send_json(400, {"error": str(exc)})
-            return
-        if horizon is not None:
-            # Public unauthenticated endpoint — cap at ~4 trading
-            # years to bound query cost. A caller requesting an
-            # absurd horizon would otherwise full-scan the archive.
-            if horizon > _aq()._TBBO_OFI_MAX_HORIZON_DAYS:
-                self._send_json(
-                    400,
-                    {
-                        "error": (
-                            "horizon_days must be <= "
-                            f"{_aq()._TBBO_OFI_MAX_HORIZON_DAYS}"
-                        )
-                    },
-                )
-                return
-            kwargs["horizon_days"] = horizon
-
-        try:
-            result = _aq().tbbo_ofi_percentile(symbol, value, **kwargs)
-            self._send_json(200, result)
-        except ValueError as exc:
-            # No-data errors → 404 (empty archive / window never had data);
-            # other ValueError messages are input-shape (shouldn't reach
-            # the query layer after the validation above).
-            self._send_json(404, {"error": str(exc)})
-        except Exception as exc:  # noqa: BLE001
-            self._archive_500(
-                "tbbo-ofi-percentile",
-                exc,
-                "tbbo-ofi-percentile failed for %s/%s: %s",
-                symbol,
-                window,
-                exc,
-                symbol=symbol,
-                window=window,
             )
 
     def _archive_500(

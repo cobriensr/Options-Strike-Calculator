@@ -113,6 +113,23 @@ def test_health_returns_404_for_unknown_path(configure_base_callables) -> None:
     assert status == 404
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/archive/tbbo-day-microstructure?date=2025-01-15&symbol=ES",
+        "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h",
+    ],
+)
+def test_removed_tbbo_routes_fall_through_to_404(
+    configure_base_callables, path: str
+) -> None:
+    """The TBBO routes were removed with Databento; they must not dispatch."""
+    status, body = _run_request(path=path)
+    assert status == 404
+    # Plain-text fallthrough 404, not a handler's JSON no-data 404.
+    assert body == {"_raw": "Not found"}
+
+
 def test_health_includes_theta_block_when_configured(
     configure_base_callables,
 ) -> None:
@@ -169,147 +186,6 @@ def test_health_handles_theta_reporter_exceptions(
     assert body["theta"]["running"] is True
     assert body["theta"]["last_ready_at"] is None
     assert body["theta"]["last_error"] is None
-
-
-# ---------------------------------------------------------------------------
-# TBBO archive endpoints (Phase 4b)
-# ---------------------------------------------------------------------------
-
-
-def test_tbbo_day_microstructure_400_on_malformed_date(
-    configure_base_callables,
-) -> None:
-    status, body = _run_request(
-        path="/archive/tbbo-day-microstructure?date=bad&symbol=ES"
-    )
-    assert status == 400
-    assert "YYYY-MM-DD" in body["error"]
-
-
-def test_tbbo_day_microstructure_400_on_unknown_symbol(
-    configure_base_callables,
-) -> None:
-    status, body = _run_request(
-        path="/archive/tbbo-day-microstructure?date=2025-01-15&symbol=CL"
-    )
-    assert status == 400
-    assert "ES" in body["error"]
-
-
-def test_tbbo_day_microstructure_200_happy_path(
-    configure_base_callables,
-) -> None:
-    sample = {
-        "date": "2025-01-15",
-        "symbol": "ES",
-        "front_month_contract": "ESH5",
-        "trade_count": 123,
-        "ofi_5m_mean": 0.01,
-        "ofi_15m_mean": 0.02,
-        "ofi_1h_mean": 0.03,
-    }
-    with patch("archive_query.tbbo_day_microstructure", return_value=sample):
-        status, body = _run_request(
-            path="/archive/tbbo-day-microstructure?date=2025-01-15&symbol=ES"
-        )
-    assert status == 200
-    assert body == sample
-
-
-def test_tbbo_day_microstructure_404_on_missing_data(
-    configure_base_callables,
-) -> None:
-    with patch(
-        "archive_query.tbbo_day_microstructure",
-        side_effect=ValueError("No TBBO ES bars found for 2099-01-01"),
-    ):
-        status, body = _run_request(
-            path="/archive/tbbo-day-microstructure?date=2099-01-01&symbol=ES"
-        )
-    assert status == 404
-    assert "No TBBO" in body["error"]
-
-
-def test_tbbo_ofi_percentile_400_on_missing_value(
-    configure_base_callables,
-) -> None:
-    status, _body = _run_request(
-        path="/archive/tbbo-ofi-percentile?symbol=ES&window=1h"
-    )
-    assert status == 400
-
-
-def test_tbbo_ofi_percentile_400_on_bad_window(
-    configure_base_callables,
-) -> None:
-    status, _body = _run_request(
-        path="/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1d"
-    )
-    assert status == 400
-
-
-def test_tbbo_ofi_percentile_400_on_non_finite_value(
-    configure_base_callables,
-) -> None:
-    status, _body = _run_request(
-        path="/archive/tbbo-ofi-percentile?symbol=ES&value=nan&window=1h"
-    )
-    assert status == 400
-
-
-def test_tbbo_ofi_percentile_200_happy_path(
-    configure_base_callables,
-) -> None:
-    sample = {
-        "symbol": "NQ",
-        "window": "1h",
-        "current_value": 0.38,
-        "percentile": 92.1,
-        "mean": 0.02,
-        "std": 0.09,
-        "count": 252,
-    }
-    with patch("archive_query.tbbo_ofi_percentile", return_value=sample):
-        status, body = _run_request(
-            path="/archive/tbbo-ofi-percentile?symbol=NQ&value=0.38&window=1h"
-        )
-    assert status == 200
-    assert body == sample
-
-
-def test_tbbo_ofi_percentile_404_on_missing_history(
-    configure_base_callables,
-) -> None:
-    with patch(
-        "archive_query.tbbo_ofi_percentile",
-        side_effect=ValueError("No TBBO ES OFI history available for window 1h"),
-    ):
-        status, body = _run_request(
-            path="/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h"
-        )
-    assert status == 404
-    assert "No TBBO" in body["error"]
-
-
-def test_tbbo_ofi_percentile_400_on_horizon_days_over_cap(
-    configure_base_callables,
-) -> None:
-    """Phase 4b rework: the HTTP handler caps ``horizon_days`` to
-    protect the public unauthenticated endpoint from a full-archive
-    scan request. Library-layer cap is defense-in-depth; this HTTP
-    gate is the first line. Importing `archive_query` for the cap
-    value keeps the test coupled to the code, not a magic number."""
-    import archive_query
-
-    over_cap = archive_query._TBBO_OFI_MAX_HORIZON_DAYS + 1
-    status, body = _run_request(
-        path=(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
-            f"&window=1h&horizon_days={over_cap}"
-        )
-    )
-    assert status == 400
-    assert "horizon_days" in body["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -986,100 +862,6 @@ class TestArchiveBatchHandlers:
 
 
 # ---------------------------------------------------------------------------
-# /archive/tbbo-day-microstructure exception path + 500 path
-# ---------------------------------------------------------------------------
-
-
-class TestTbboDayMicrostructureMore:
-    def test_500_on_unexpected_exception(self, configure_base_callables) -> None:
-        with patch(
-            "archive_query.tbbo_day_microstructure",
-            side_effect=RuntimeError("disk crashed"),
-        ):
-            status, body = _run_request(
-                "/archive/tbbo-day-microstructure?date=2024-01-15&symbol=ES"
-            )
-        assert status == 500
-        assert body["error"] == "query failed"
-
-
-# ---------------------------------------------------------------------------
-# /archive/tbbo-ofi-percentile — input branch coverage
-# ---------------------------------------------------------------------------
-
-
-class TestTbboOfiPercentileBranches:
-    def test_400_on_bad_symbol(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=CL&value=0.1&window=1h"
-        )
-        assert status == 400
-        assert "ES" in body["error"]
-
-    def test_400_on_bad_window(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=999"
-        )
-        assert status == 400
-        assert "window" in body["error"]
-
-    def test_400_on_value_unparseable(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=abc&window=1h"
-        )
-        assert status == 400
-        assert "finite" in body["error"]
-
-    def test_400_on_value_inf(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=inf&window=1h"
-        )
-        assert status == 400
-        assert "finite" in body["error"]
-
-    def test_400_on_horizon_below_lo(self, configure_base_callables) -> None:
-        status, body = _run_request(
-            "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h&horizon_days=0"
-        )
-        assert status == 400
-        assert ">= 1" in body["error"]
-
-    def test_500_on_unexpected_exception(self, configure_base_callables) -> None:
-        with patch(
-            "archive_query.tbbo_ofi_percentile",
-            side_effect=RuntimeError("boom"),
-        ):
-            status, body = _run_request(
-                "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1&window=1h"
-            )
-        assert status == 500
-        assert body["error"] == "query failed"
-
-    def test_horizon_kwarg_passed_when_within_cap(
-        self, configure_base_callables
-    ) -> None:
-        sample = {
-            "symbol": "ES",
-            "window": "1h",
-            "current_value": 0.1,
-            "percentile": 50.0,
-            "mean": 0.0,
-            "std": 0.1,
-            "count": 100,
-        }
-        with patch("archive_query.tbbo_ofi_percentile", return_value=sample) as mock_q:
-            status, body = _run_request(
-                "/archive/tbbo-ofi-percentile?symbol=ES&value=0.1"
-                "&window=1h&horizon_days=100"
-            )
-        assert status == 200
-        assert body == sample
-        # Confirm the horizon_days kwarg was forwarded.
-        kwargs = mock_q.call_args.kwargs
-        assert kwargs.get("horizon_days") == 100
-
-
-# ---------------------------------------------------------------------------
 # Health endpoint DB check — the only input to /health's status
 # ---------------------------------------------------------------------------
 
@@ -1506,23 +1288,5 @@ class TestArchive500Sentry:
         _args, kwargs = cap.call_args
         assert kwargs["tags"]["route"] == "es-range"
         assert kwargs["tags"]["component"] == "archive"
-
-    def test_tbbo_microstructure_500_captures_to_sentry(
-        self, configure_base_callables
-    ) -> None:
-        with (
-            patch(
-                "archive_query.tbbo_day_microstructure",
-                side_effect=RuntimeError("boom"),
-            ),
-            patch("sentry_setup.capture_exception") as cap,
-        ):
-            status, body = _run_request(
-                "/archive/tbbo-day-microstructure?date=2024-01-15&symbol=ES"
-            )
-        assert status == 500
-        assert body["error"] == "query failed"
-        cap.assert_called_once()
-        _args, kwargs = cap.call_args
-        assert kwargs["tags"]["route"] == "tbbo-day-microstructure"
-        assert kwargs["tags"]["symbol"] == "ES"
+        # Caller-supplied tags (`**tags` in _archive_500) reach Sentry too.
+        assert kwargs["tags"]["date"] == "2024-01-15"

@@ -55,8 +55,7 @@ def session_date_expr(ts_column: TsColumn = "ts_event") -> str:
 
     This is the single source of truth for the session-date bucket. Both
     :func:`front_month_cte` and any caller that needs to pre-compute a
-    horizon cutoff over the same buckets (e.g.
-    ``archive_query.tbbo_ofi_percentile``) MUST use this expression so the
+    horizon cutoff over the same buckets MUST use this expression so the
     day grouping can never drift between the cutoff scan and the main query.
     """
     return (

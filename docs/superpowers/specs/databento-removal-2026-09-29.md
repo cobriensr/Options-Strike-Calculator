@@ -50,7 +50,17 @@ Phase 1 code landed locally in d1ecc3c5 but was never pushed or enabled.
   frozen ~2026-04-17; Postgres fallback covers new days).
 - Drop from `sidecar/`: Databento ingestion, Theta (never running), the
   `/takeit/multileg-classify` fallback (`CLASSIFIER_URL` set in prod),
-  `fetchTbboDayMicrostructure` (no callers).
+  `fetchTbboDayMicrostructure` (no callers), and:
+  - `/archive/tbbo-day-microstructure` route + `tbbo_day_microstructure`
+    query (Vercel caller deleted) — **done** 2026-10-01.
+  - `/archive/tbbo-ofi-percentile` route + `tbbo_ofi_percentile` query
+    (Vercel caller deleted) — **done** 2026-10-01.
+  - Follow-up (open): nothing in the sidecar reads TBBO now, but
+    `scripts/upload-archive-to-blob.mjs` still ships `tbbo/`,
+    `tbbo_condition.json` and `tbbo_convert_summary.json` (~3.9 GB of the
+    5 GB volume). Drop them from `ARCHIVE_SUBTREES` and the header,
+    regenerate the manifest, then purge `/data/archive/tbbo` on Railway
+    (ops).
 - Tables stay in Neon (historical research reads them).
 
 ## UW substitution map

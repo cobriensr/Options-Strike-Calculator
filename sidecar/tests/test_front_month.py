@@ -221,8 +221,9 @@ def test_ohlcv_batch_shape() -> None:
     assert "BETWEEN ?::DATE AND ?::DATE" in sql
 
 
-def test_tbbo_ofi_percentile_shape() -> None:
-    """Shape used by ``tbbo_ofi_percentile`` after Phase 2b adoption."""
+def test_trade_tick_shape() -> None:
+    """Exercises the non-default ts_recv / size / contract / exclude_hyphenated
+    options (no production caller since the TBBO queries were removed)."""
     sql = front_month_cte(
         symbol_like="?",  # caller binds the LIKE pattern via ``execute``
         parquet_path_param="?",
